@@ -11,7 +11,6 @@ import { MAX_COMPOSER_CHARS } from "../lib/compose.ts";
 import { formatChars } from "../lib/composerLength.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
-// #2493: Paste and send reads this device's clipboard on the press and sends it through Send's own path
 const pane = "paste-pane", draftKey = `ovis:composer-draft:${pane}`;
 const otherPane = "paste-other", otherKey = `ovis:composer-draft:${otherPane}`;
 const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];

@@ -10,7 +10,6 @@ export function screenText(raw: string): string {
   return stripVTControlCharacters(raw.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")).replace(/\r\n?/g, "\n");
 }
 
-/** The providers whose sign-in the browser can follow: the CLI prints a page to open, and a code or a code box. */
 export type PromptProvider = "claude" | "codex";
 
 /**
@@ -32,7 +31,7 @@ function trusted(provider: PromptProvider, address: string): boolean {
 /**
  * What a login asks of its user, from its screen's text (screenText of its private PTY, where a long address
  * stays one line): the page to open, the one-time code to enter there (Codex's device code), and whether the
- * CLI waits for a code pasted back (Claude Code). The latest of each counts, as the screen shows it.
+ * CLI waits for a code pasted back (Claude Code).
  */
 export function loginPrompt(provider: PromptProvider, text: string): UsageLoginPromptText {
   const addresses = [...text.matchAll(/https?:\/\/[^\s<>"'`\u0007\u001b]+/g)].map((match) => match[0].replace(/[.,;:)\]]+$/, ""));

@@ -1,24 +1,10 @@
 /**
- * Earlier sessions of a workspace's folder (#1314), from the workspace row's ⋯ menu and from
- * /resume in the chat: one agent's sessions as its own store lists them (GET /api/sessions/history),
- * newest first, each with its title (else its first prompt), its first prompt and the time it was
- * last touched. Resume starts the row's verified argv as the agent of a new tab in the workspace,
- * one at a time (lib/sessionHistory.ts inFlightGuard), so a double click starts one agent; a
- * session a pane of the workspace already shows is reached by selecting that pane in the browser
- * (herdr's focus stays where it is), and so is one Resume started a moment ago whose pane herdr has
- * not reported on yet (App's RecentResume records, `recent`): the list reopened in that window
- * offers Open, not a second Resume, for as long as the pane is listed without a session. A row
- * whose resume syntax is not verified is listed with no button. A Claude row is the session in the
+ * A row whose resume syntax is not verified is listed with no button. A Claude row is the session in the
  * store of the pane the list was asked for from (`sourcePaneId`): its Resume goes to POST
  * /api/sessions/resume, which starts it in that store or names the pane already showing it there;
  * a store that changed since the list is read again with its rows held in place and the focus kept
- * on the row that asked, and a bridge that gives no source (an older
- * one, or a store it cannot choose again) offers no Resume rather than one in another store. Escape, the scrim and Cancel close
- * it, Tab stays inside, arrows move along the rows, and focus returns to what opened it. The design follows the resume pickers of Codex CLI (`/resume`)
- * and Claude Code (`claude --resume`): one session per row, newest first, the first prompt as its
- * text and the time it was last touched beside it, Enter resuming; here in the worktree dialog's
- * row anatomy, with the agent above the rows in the New workspace dialog's picker (each agent with
- * its mark, no Shell entry), whose open list takes its own Escape.
+ * on the row that asked, and a bridge that gives no source (an older one, or a store it cannot
+ * choose again) offers no Resume rather than one in another store.
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -37,21 +23,15 @@ import { readSessionHistory } from "../lib/sessionHistoryRetry.ts";
 interface Props {
   workspace: WorkspaceInfo;
   machineName?: string;
-  /** the PC's panes in tab order: the one already showing a listed session is selected instead of a new tab */
   panes: readonly HerdrPane[];
-  /** the agent listed first: the pane's, or the workspace row's */
   agent: SessionHistoryAgent;
-  /** the pane the list is asked for from: Claude's sessions are that pane's store's */
   sourcePaneId?: string | null;
-  /** the original request and selection, kept when the Agent picker changes the list's source */
   askingPaneId?: string | null;
   selectedPaneId?: string | null;
-  /** the Resumes of a moment ago whose panes have not reported their session yet (lib/useRecentResumes.ts) */
   recent?: readonly RecentResume[];
   onClose: () => void;
   /** browser selection only: herdr's focus stays where it is */
   onSelectPane: (paneId: string) => void;
-  /** the tab herdr made for the row's session, which the caller records until herdr reports it */
   onResumed: (opened: TabCreated, session: { agent: SessionHistoryAgent; id: string; store: string }) => void;
 }
 
@@ -66,24 +46,18 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
   const machineId = useMachineId();
   const { createTab, fetchAgentKinds, fetchSessionHistory, resumeSession } = useMachineApi();
   const [agent, setAgent] = useState<SessionHistoryAgent>(firstAgent);
-  // Re-pick on an Agent change or a closed source, using the current roster rather than a stale pane.
   const sourcePaneId = sessionHistorySourcePane(agent, panes, { workspaceId: workspace.workspace_id, askingPaneId, selectedPaneId });
   const [kinds, setKinds] = useState<AgentKind[]>([]);
   const [answer, setAnswer] = useState<SessionHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyRetry, setBusyRetry] = useState(false);
-  /** the key (rowKey) of the row whose Resume is in flight */
   const [pending, setPending] = useState<string | null>(null);
-  /** bumped to read the list again: a Claude store that changed since it was read */
   const [reload, setReload] = useState(0);
   const [relisted, setRelisted] = useState(false);
-  /** the list being read again after a changed store: its rows stay, without their buttons, until the new ones come */
   const [relisting, setRelisting] = useState(false);
   const keepRows = useRef(false);
-  /** the session whose Resume found the store changed: its row takes the focus back once the list is read again */
   const refocus = useRef<string | null>(null);
   const guard = useRef(inFlightGuard());
-  /** known refusals in the user's words; other errors as the bridge says them */
   const refusal = useCallback((reason: unknown): string => {
     if (routeMissing(reason)) return t("This PC's bridge does not offer this yet");
     if (reason instanceof ApiError && reason.code === "claude_store_unknown") return t("Which Claude store this pane uses can't be told, so its sessions aren't listed. Check that one Claude runs in this pane and its store folder exists, then open the list again.");
@@ -110,8 +84,6 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
     placed.current = picker.current;
     return () => { if (opener.current?.isConnected) opener.current.focus({ preventScroll: true }); };
   }, []);
-  // the first row's button takes the focus once the rows are in; until then the agent field. Focus
-  // the user moved meanwhile (Tab to Cancel, the field opened) stays where they put it
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const again = refocus.current;
@@ -120,7 +92,6 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
       if (row) { row.focus(); placed.current = row; return; }
       const active = document.activeElement;
       if (surface.current?.contains(active) && active !== placed.current) return;
-      // an open agent list keeps the focus: its keys and Escape still belong to the list
       if (picker.current?.getAttribute("aria-expanded") === "true") return;
       const target = list.current?.querySelector<HTMLElement>("button:not(:disabled)") ?? picker.current;
       target?.focus();
@@ -133,7 +104,6 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
       if (event.key !== "Escape") return;
       const active = document.activeElement;
       if (active && active !== document.body && !surface.current?.contains(active)) return;
-      // the agent picker's open list takes this Escape, wherever the focus is: it closes the list, not the dialog
       if (picker.current?.getAttribute("aria-expanded") === "true") return;
       event.stopPropagation();
       event.preventDefault();
@@ -150,7 +120,6 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
-    // a list read again after a changed store keeps its rows until the new ones come: nothing moves under the pointer
     if (!keepRows.current) setAnswer(null);
     keepRows.current = false;
     setError(null);
@@ -204,7 +173,6 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
     setRelisted(false);
     started.then(
       (opened) => {
-        // the pane already showing the session in this store: selected, as Open does
         if ("opened" in opened) { setPending(null); onSelectPane(opened.opened); return; }
         if (opened.agent_started === false && opened.error) { setPending(null); setError(opened.error.message); return; }
         onResumed(opened, { agent, id: row.id, store });
@@ -263,8 +231,6 @@ export function SessionHistory({ workspace, machineName, panes, agent: firstAgen
                 const title = row.title ?? row.firstMessage ?? row.id;
                 const detail = row.title !== null ? row.firstMessage : null;
                 const when = sessionRowTime(row, now, locale, t);
-                // a pane that reports the session, else the pane of a Resume a moment ago; a record whose pane
-                // the roster has not listed yet withholds Resume and offers nothing to open until it does
                 const resumed = standingResume(recent, panes, machineId, workspace.workspace_id, agent, row.id, momentAgo, rowStore(row));
                 const shown = paneShowingRow(panes, workspace.workspace_id, agent, row) ?? recentlyResumedPane(recent, panes, machineId, workspace.workspace_id, agent, row.id, momentAgo, rowStore(row));
                 const withheld = resumed !== undefined && shown === undefined;

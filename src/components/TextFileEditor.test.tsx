@@ -35,7 +35,6 @@ afterEach(async () => {
 
 const opened = (text: string, revision: string): EditableText => ({ path: "/work/notes.md", text, revision, line_endings: "lf", size: text.length, modified: "2026-11-05T00:00:00.000Z" });
 
-/** A PC answering GET /api/fs/text from `reads` in turn and PUT /api/fs/text with `put`; what was sent is kept. */
 function pc(reads: Response[], put: () => Response): { sent: unknown[]; reads: number } {
   const seen = { sent: [] as unknown[], reads: 0 };
   setTransport({
@@ -96,7 +95,6 @@ test("a draft outlives the editor it was typed in until it is saved or cancelled
   const done: boolean[] = [];
   let root = await render((saved) => done.push(saved));
   await type(root, "kept draft\n");
-  // closed, moved beside the pane, Back: the editor goes away
   await act(async () => renderer?.unmount());
   root = await render((saved) => done.push(saved));
   expect(seen.reads).toBe(1);
@@ -149,7 +147,6 @@ test("a save answering late leaves the draft of an editor opened again meanwhile
   await press(root, "Save");
   await act(async () => button(root, "Save").props.onClick());
   await act(async () => renderer?.unmount());
-  // opened again while the save is on its way: it takes the kept draft
   root = await render(() => {});
   expect(root.findByType("textarea").props.value).toBe("only copy\n");
   await act(async () => { answer(Response.json({ path: "/work/notes.md", revision: "r2", size: 10, modified: "2026-11-05T00:00:01.000Z" })); });

@@ -3,9 +3,8 @@ import { AGENT_CATALOG, CATALOG_PLATFORMS, type CatalogPlatform } from "../share
 import type { AgentSessionInfo, AgentStatus } from "../shared/herdr-api.generated.ts";
 
 /**
- * Which agent a pane runs, decided in one place from the facts a runtime gives about it, so the
- * same answer holds whatever runtime serves the pane. Today herdr-core's snapshot names its panes
- * here (herdr's TUI names its own); sessions and status are to follow.
+ * Today herdr-core's snapshot names its panes here (herdr's TUI names its own); sessions and status
+ * are to follow.
  */
 export interface PaneFacts {
   /** the app the program reported itself as (herdr-core's OSC 7501 `app`), in the runtime's words */
@@ -18,10 +17,6 @@ export interface PaneFacts {
   launcher?: { readonly argv: readonly string[]; readonly pid?: number | null } | null;
 }
 
-/**
- * The platform a pane's programs run on, as far as it is known: one platform, `posix` for Linux or
- * macOS without saying which, or null for none known.
- */
 export type ProgramPlatform = CatalogPlatform | "posix" | null;
 
 function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
@@ -29,18 +24,15 @@ function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
   return platform === "posix" ? ["linux", "macos"] : [platform];
 }
 
-/** Runtimes' names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
 const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "grok-build": "grok" };
 
 /** The interpreters an agent's script runs under when its install is a script (npm's node bin, a Python entry point). */
 const INTERPRETERS = new Set(["node", "bun", "python", "python3"]);
 
-/** A program's name in a process listing: its path's last part, without a Windows or script extension. */
 export function programName(word: string): string {
   return nodePath.posix.basename(word.replace(/\\/g, "/")).replace(/\.(?:exe|cmd|js|mjs|cjs)$/i, "");
 }
 
-/** The agent a reported app names, by herdr's name; null for no report. */
 export function reportedAgent(app: string | null | undefined): string | null {
   if (!app) return null;
   return Object.hasOwn(REPORTED_NAMES, app) ? REPORTED_NAMES[app]! : app;
@@ -57,7 +49,6 @@ function fileName(word: string, platform: CatalogPlatform, program: boolean): st
 /** Interpreter options after which the next word is code or a module, not a script file. */
 const NOT_A_SCRIPT = new Set(["-e", "--eval", "-p", "--print", "-c", "-m", "-"]);
 
-/** The script an interpreter runs: the first word after its own options; null for code or a module given inline. */
 function scriptOf(argv: readonly string[]): string | null {
   for (const word of argv.slice(1)) {
     if (NOT_A_SCRIPT.has(word) || word === "--") return null;
@@ -114,7 +105,7 @@ export const LETTA_ASKING_TITLE = /^\[ [.!] \] Action Required \| /;
 /**
  * The status an agent's own terminal title says, for an agent known to set one: Letta's spinner
  * prefix while it works, its "Action Required" mark while it waits for the user's approval. The
- * program writes the title itself; nothing is read off the screen. Null for another agent or no title.
+ * program writes the title itself; nothing is read off the screen.
  */
 export function titleStatus(agent: string | null, title: string | null | undefined): "working" | "idle" | "blocked" | null {
   if (agent !== "letta" || typeof title !== "string" || title === "") return null;
@@ -122,11 +113,9 @@ export function titleStatus(agent: string | null, title: string | null | undefin
   return LETTA_BUSY_TITLE.test(title) ? "working" : "idle";
 }
 
-/** What a runtime tells about which conversation a pane's agent shows. */
 export interface SessionFacts {
   /** the sessions the agent named as busy while it ran here (OpenCode's OSC 7501 records), the newest last */
   named?: readonly string[];
-  /** the sessions in the agent's own store whose title is the pane's terminal title */
   titled?: readonly string[];
 }
 

@@ -7,7 +7,6 @@ const key = { APPLE_API_KEY: "/keys/AuthKey.p8", APPLE_API_KEY_ID: "KEYID", APPL
 
 type Answer = string | Error;
 
-/** a list answers one call each, in order, then repeats its last */
 function recorder(answers: Record<string, Answer | Answer[]> = {}) {
   const calls: string[][] = [];
   const run = async (file: string, args: string[]) => {

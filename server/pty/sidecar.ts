@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrIdentity } from "../../shared/machines.ts";
-import { servingCore } from "../herdr-core/runtime.ts";
+import { COMPILED, ROOT } from "../entries.ts";
+import { capabilities } from "../runtime/capabilities.ts";
 import { rustSidecar } from "./host.ts";
 
 /**
@@ -78,7 +79,7 @@ const here: SidecarRuntime = {
   node: nodeHere,
   pty: () => {
     try {
-      Bun.resolveSync("@lydell/node-pty", import.meta.dir);
+      Bun.resolveSync("@lydell/node-pty", COMPILED ? ROOT : import.meta.dir);
       return true;
     } catch {
       return false;
@@ -98,37 +99,29 @@ export function nodeSidecarAvailable(): boolean {
   return node;
 }
 
-/** One rule for every runtime, this one included: the Rust host needs no Node; the Node sidecar needs Node and node-pty. */
 const attaches = (runtime: SidecarRuntime, node: () => boolean): boolean => (runtime.rust?.() ?? false) || node();
 
-/** Forgets what was taken of this runtime. Tests only. */
 export function resetSidecarForTests(): void {
   node = null;
   known = null;
   probed.clear();
 }
 
-/**
- * This runtime's answer is taken once, at startup, where the Rust host's check runs and says which host
- * attaches: every caller (attach, /api/health, /api/bridge) gets the same one. The Rust host needs no Node.
- */
 export function sidecarAvailable(runtime?: SidecarRuntime): boolean {
   if (runtime) return attaches(runtime, () => runtime.pty() && runtime.node());
   if (known === null) {
     const rust = here.rust!();
     known = attaches({ ...here, rust: () => rust }, nodeSidecarAvailable);
-    // the Rust host announces itself; without it, say which way the panes go
     if (!rust && process.platform !== "win32") console.log(known ? "PTY host: Node" : "PTY host: none (no Rust host and no Node for the sidecar), so panes are mirrored");
   }
   return known;
 }
 
 /**
- * herdr's identity as this bridge can serve it: without the sidecar, told the way a herdr that cannot
- * attach tells it. Where this process serves herdr-core, the live terminal is a stream on the server's own hc connection
- * (server/herdr-core/attach-session.ts), so no PTY host is needed.
+ * Where the runtime's live terminal is a stream (`streamed`: on herdr-core, one on the server's own hc
+ * connection, server/herdr-core/attach-session.ts), no PTY host is needed.
  */
-export function attachableIdentity(identity: HerdrIdentity, sidecar: boolean, onCore = servingCore()): HerdrIdentity {
-  if (sidecar || onCore || identity.terminal_attach === false) return identity;
+export function attachableIdentity(identity: HerdrIdentity, sidecar: boolean, streamed = capabilities().attach !== "pty-cli"): HerdrIdentity {
+  if (sidecar || streamed || identity.terminal_attach === false) return identity;
   return { ...identity, terminal_attach: false, terminal_mirror: true };
 }

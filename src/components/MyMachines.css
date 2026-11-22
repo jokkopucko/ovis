@@ -1,0 +1,232 @@
+/*
+ * The "My machines" screens (MyMachines.tsx and the views it mounts; DESIGN.md "My machines"): the
+ * relay dashboard's frame (RelayDashboard.css) around lists that share one row. From 720px of its
+ * own width a row is one line (what it is, a few short cells, its action) with, where it has
+ * something to say, a second line: under the State cell where it says why a machine is in its
+ * state, under the name where it is about the whole row. Narrower, the cells flow under the name
+ * and the second line under them. Each list sets its columns in --acct-cols. Tokens only.
+ */
+
+/* where a button shares the title's line (above a phone's width), the line is as tall without it:
+   the title does not move between places */
+@media (min-width: 769px) {
+  .relay-dash[data-acct-place] .relay-dash-top { min-height: var(--control-h); }
+}
+
+@media (pointer: coarse) and (min-width: 769px) {
+  .relay-dash[data-acct-place] .relay-dash-top { min-height: var(--touch-target); }
+}
+
+.acct-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+  min-width: 0;
+}
+
+@media (min-width: 1100px) {
+  .acct-split.is-selected { grid-template-columns: minmax(0, 1fr) var(--relay-detail-w); }
+}
+
+.acct-split > .relay-pc-details { scroll-margin-top: var(--space-4); }
+.acct-split .relay-pc-details-title:focus, .acct-split .relay-pc-details-title:focus-visible { outline: none; }
+
+.acct-stack { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
+.acct-list { container-type: inline-size; min-width: 0; }
+
+.acct-list[data-list="machines"] {
+  --acct-cols: minmax(0, 1.3fr) minmax(0, 1.5fr) 7rem 8.5rem minmax(6.5rem, max-content);
+  --acct-indent: calc(2 * var(--dot-size) + var(--space-2));
+}
+
+.acct-list-head,
+.acct-row {
+  display: grid;
+  grid-template-columns: var(--acct-cols);
+  column-gap: var(--space-3);
+  align-items: center;
+}
+
+.acct-list-head {
+  min-height: var(--relay-table-head-h);
+  padding: 0 var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+}
+
+.acct-rows { margin: 0; padding: 0; list-style: none; }
+/* a control the keyboard brings into view in a dialog that scrolls (showFocused) keeps its ring clear of the dialog's edge */
+.add-machine-sheet :focus-visible { scroll-margin-block: var(--space-3); }
+
+.acct-row {
+  row-gap: var(--space-1);
+  min-height: var(--table-row-h);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+  font-size: max(var(--relay-fs-body-min), var(--fs-md));
+  line-height: var(--lh-base);
+}
+
+.acct-row > *, .acct-row-meta > * { min-width: 0; }
+
+.acct-row.is-clickable {
+  cursor: pointer;
+  transition: background-color var(--dur-base) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .acct-row.is-clickable:hover { background: var(--bg-hover); }
+}
+
+.acct-row.is-selected { background: var(--bg-elevated); }
+
+/* the glyph never leaves the name: a long name wraps beside it, and what follows the name wraps under the name */
+.acct-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.acct-row-names { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-width: 0; }
+.acct-row-main > .status-dot { flex: none; }
+.acct-name-btn {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: var(--pointer-target);
+  margin: calc(-1 * var(--space-1));
+  padding: var(--space-1);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-strong);
+  font-family: var(--font-ui);
+  font-size: inherit;
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.acct-row-meta { display: contents; }
+.acct-cell { color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.acct-cell.is-dim { color: var(--text-dim); }
+
+.acct-row-why {
+  grid-column: var(--acct-why-col, 2 / -2);
+  grid-row: 2;
+  margin: 0;
+  padding-bottom: var(--space-1);
+  padding-left: var(--acct-why-indent, 0px);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+  overflow-wrap: break-word;
+  text-wrap: pretty;
+}
+
+.acct-row-act {
+  grid-column: -2 / -1;
+  grid-row: 1;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.acct-row-act .btn { min-width: calc(var(--touch-target) + var(--space-8)); }
+
+.acct-quiet { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: var(--lh-base); text-wrap: pretty; }
+
+.acct-notices { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.acct-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--notice-tint);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+}
+
+/* the icon and its sentence stay on one line together; the buttons go under them where both do not fit */
+.acct-notice-lead { display: flex; align-items: center; gap: var(--space-3); flex: 1 1 16rem; min-width: 0; }
+.acct-notice-icon { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--notice); }
+.acct-notice-text { min-width: 0; margin: 0; overflow-wrap: break-word; text-wrap: pretty; }
+.acct-notice-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.acct-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border: var(--hairline) dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+}
+
+/* the page's title is the one size step above body; this title is body-sized and told apart by weight and ink */
+.acct-empty-title { margin: 0; color: var(--text-strong); font-size: var(--fs-md); font-weight: var(--fw-semibold); line-height: var(--lh-base); }
+.acct-empty-copy { max-width: 65ch; margin: 0; color: var(--text-dim); font-size: var(--fs-md); line-height: var(--lh-base); text-wrap: pretty; }
+
+@container (max-width: 719px) {
+  .acct-list-head { display: none; }
+
+  .acct-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .acct-row-act { grid-column: 2; grid-row: 1; }
+
+  /* Each cell carries the dot before it in its own padding. The line starts that padding's width to
+     the left and is clipped there, so the dot of whichever cell begins a line is cut off: a wrapped
+     line neither ends nor begins with a dot. */
+  .acct-row-meta {
+    --acct-sep: calc(2 * var(--space-2) + 0.5em);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-left: calc(var(--acct-indent, 0px) - var(--acct-sep));
+    clip-path: inset(calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) var(--acct-sep));
+    font-size: var(--fs-xs);
+  }
+
+  .acct-row-meta .acct-cell { position: relative; padding-left: var(--acct-sep); color: var(--text-dim); }
+  .acct-row-meta .acct-cell::before { content: "·"; position: absolute; left: 0; width: var(--acct-sep); text-align: center; }
+
+  .acct-row-meta .acct-cell[data-empty] { display: none; }
+  .acct-row-why { grid-column: 1 / -1; grid-row: 3; padding-left: var(--acct-indent, 0px); }
+  .acct-empty { padding: var(--space-4); }
+}
+
+/* a finger's height for the name control, taken out of the lines around them so the text keeps its rhythm */
+@media (pointer: coarse) {
+  .acct-name-btn { min-width: var(--touch-target); min-height: var(--touch-target); }
+}
+
+@media (max-width: 768px) {
+  .acct-split > .relay-pc-details { scroll-margin-top: calc(var(--dash-top-h) + var(--space-4)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acct-row.is-clickable { transition: none; }
+}
+
+/* a device whose own copy of the list is behind: said above every place, on the notice tint, as long as it lasts */
+.acct-behind { display: block; }
+.acct-behind strong { color: var(--text-strong); font-weight: var(--fw-semibold); }

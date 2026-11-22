@@ -7,7 +7,6 @@ const realFetch = globalThis.fetch;
 const icon = (path: string): FileInfo => ({ path, name: path.slice(path.lastIndexOf("/") + 1), size: 3, modified: "2026-01-01T00:00:00.000Z", mime: "image/svg+xml", kind: "image" });
 const error = (status: number, code: string) => Response.json({ error: { code, message: code } }, { status });
 
-/** Answers each request with the next response (the last one repeats) and records what was asked. */
 function serve(...responses: (Response | Error)[]): string[] {
   const asked: string[] = [];
   globalThis.fetch = (async (url: string) => {

@@ -5,11 +5,9 @@ import { markdownImagePreview } from "../lib/markdownImages.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { MarkdownImageContext, MarkdownImageOpenContext, MarkdownImageRetryContext, type ImageSize, type MarkdownImageResolver } from "./Markdown.tsx";
 
-/** The size each image decoded at, per PC, pane and source: a reopened chat holds that box while it stats and loads the image again. */
 const sizes = new Map<string, ImageSize>();
 const REMEMBERED_SIZES = 500;
 
-/** Resolve on the pane's PC; the viewer stays with ChatView when an image's row scrolls away. */
 export function ChatMarkdownImages({ paneId, cwd, connected, onOpen, children }: {
   paneId: string; cwd: string | null; connected: boolean; onOpen: (image: GalleryImage) => void; children: ReactNode;
 }) {
@@ -25,7 +23,6 @@ export function ChatMarkdownImages({ paneId, cwd, connected, onOpen, children }:
   }, [connected, cwd, paneId, fetchFileInfo]);
   const resolve = useMemo(() => {
     const key = (src: string) => `${machineId}\0${paneId}\0${src}`;
-    // The server prefers foreground_cwd over pane.cwd and returns the canonical byte path.
     const resolver: MarkdownImageResolver = (src) => markdownImagePreview(src, null,
       (path) => fetchFileInfo(path, paneId), (path, download) => fileUrl(path, paneId, download));
     resolver.size = (src) => sizes.get(key(src));

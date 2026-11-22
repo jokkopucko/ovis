@@ -12,7 +12,7 @@
  * channelBinding): a relay that answers the phone with its own key runs two handshakes, so the two
  * ends hold different bindings. Neither end chooses the digits: the phone is held to Np before it
  * sees Nc, and the PC picks Nc before it sees Np, so a relay in the middle gets matching digits on
- * the two screens once in a million tries. The browser imports this file, so it reads no environment.
+ * the two screens once in a million tries.
  */
 import { sha256 } from "@noble/hashes/sha2.js";
 import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";

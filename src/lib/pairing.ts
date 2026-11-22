@@ -8,7 +8,6 @@ import type { PairedDevice } from "../../shared/protocol.ts";
 import { fetchDevices, pairDevice, startPairing } from "./api.ts";
 import { deviceLabel } from "./phone.ts";
 
-/** One run at a time: a call while one runs joins it; one after it finished starts another. */
 export function singleFlight<T>(run: () => Promise<T>): () => Promise<T> {
   let out: Promise<T> | null = null;
   return () => out ??= run().finally(() => { out = null; });
@@ -17,7 +16,6 @@ export function singleFlight<T>(run: () => Promise<T>): () => Promise<T> {
 /** the pairing went through but no listed device is this browser (its cookie did not stick) */
 export class UnconfirmedPairing extends Error {}
 
-/** This browser paired, unless the server already lists it; the device list after it (lib/pairing.ts). */
 export const pairThisBrowser: () => Promise<PairedDevice[]> = singleFlight(async () => {
   // the server's word, not the app's access facts (they can be behind, or it paired in Settings):
   // a browser already paired gets no second device and keeps its cookie

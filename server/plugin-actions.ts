@@ -14,7 +14,6 @@ export async function pluginLogEntry(logId: string, list: (limit: number) => Pro
   return log;
 }
 
-/** The end of a failed plugin command's output that reaches the browser. */
 const PLUGIN_OUTPUT_CHARS = 2_000;
 
 /**
@@ -74,15 +73,8 @@ export function openedPluginPane(stdout: string | null | undefined): string | nu
   return opened;
 }
 
-/** The least the pane lookup after a run gets when the run ended right at the wait's deadline. */
 const PANE_LOOKUP_FLOOR_MS = 1_000;
 
-/**
- * Waits up to `waitMs` for a started run to end and says how it stands. Every herdr read gets
- * only what is left of that wait (`poll` and `paneIds` take it as their timeout): the action has
- * already started, so a read that fails or runs late answers with the last log known, `running`,
- * which the GET route reports on later, and a pane lookup that fails with no opened pane.
- */
 export async function waitForPluginAction(
   started: PluginCommandLog,
   waitMs: number,
@@ -98,17 +90,12 @@ export async function waitForPluginAction(
     try {
       log = (await poll(left)).find((entry) => entry.log_id === started.log_id) ?? log;
     } catch {
-      // the run is under way whatever the read said: answer `running` rather than an error
       break;
     }
   }
   return pluginActionResult(log, () => paneIds(Math.max(deadline - Date.now(), PANE_LOOKUP_FLOOR_MS)));
 }
 
-/**
- * What one entry of herdr's plugin command log says to the browser. `paneIds`: the panes that
- * exist now; when that lookup fails the run's answer stands, with no opened pane.
- */
 export function pluginActionResult(log: PluginCommandLog, paneIds: () => Promise<string[]>): Promise<PluginActionResult> {
   const failed = log.status === "failed";
   const said = failed ? (log.error || log.stderr || log.stdout || "").trim() : "";
@@ -121,6 +108,5 @@ export function pluginActionResult(log: PluginCommandLog, paneIds: () => Promise
   };
   const named = log.status === "succeeded" ? openedPluginPane(log.stdout) : null;
   if (named === null) return Promise.resolve(result);
-  // a pane closed again before the answer is not one to select
   return paneIds().then((ids) => ({ ...result, opened_pane_id: ids.includes(named) ? named : null }), () => result);
 }

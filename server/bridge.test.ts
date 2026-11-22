@@ -8,7 +8,6 @@ import { guardLibrary, guardPath, OwnerGuardReleaseFailed } from "./owner-guard.
 import { readProcessBirth } from "./process-owner.ts";
 
 let root = "", path = "";
-/** A well-formed birth no running process has: this platform's form, at the epoch. */
 const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
 const others: Bun.Subprocess<"pipe", "ignore", "ignore">[] = [];
 beforeEach(() => {
@@ -21,7 +20,6 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A live process other than this one, blocked on its stdin until the test ends. */
 function other() {
   const child = Bun.spawn([process.execPath, "-e", "for await (const _ of console) break;"], { stdin: "pipe", stdout: "ignore", stderr: "ignore", windowsHide: true });
   others.push(child);
@@ -55,7 +53,6 @@ describe("bridge registration", () => {
   });
 
   it("replaces a descriptor whose PID another process now holds", () => {
-    // regression (fails on main, which took any live PID for the bridge): a reused PID
     const reused = other();
     writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: earlierBirth }));
     registerBridge(4242, "new-token", { path });
@@ -64,8 +61,6 @@ describe("bridge registration", () => {
   });
 
   it("replaces a descriptor whose PID a process it may not signal now holds", () => {
-    // regression: a refused probe (EPERM) once kept the descriptor, so after a reboot that handed
-    // the old bridge's PID to another user's process, no bridge could register (main replaced it)
     const reused = other();
     const reading = readProcessBirth(reused.pid);
     if (reading.state !== "identified") throw new Error(`no birth for ${reused.pid}`);
@@ -122,7 +117,6 @@ describe("bridge registration", () => {
     const reused = other(), bridge = other();
     const reading = readProcessBirth(bridge.pid);
     if (reading.state !== "identified") throw new Error(`no birth for ${bridge.pid}`);
-    // the replacement may itself look stale: a changed sample is never replaced
     for (const replacement of [descriptor({ pid: bridge.pid, generation: "won", birth: reading.birth }), descriptor({ pid: reused.pid, generation: "other", birth: earlierBirth })]) {
       writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: earlierBirth }));
       const registration = registerBridge(4242, "new-token", { path, sampled() { writeFileSync(path, replacement); } });
@@ -164,7 +158,6 @@ describe("bridge registration", () => {
       restore();
       logged.mockRestore();
     }
-    // the guard was handed back by its close: registration works again
     registerBridge(4243, "next-token", { path }).close();
   });
 
@@ -192,7 +185,6 @@ describe("bridge registration", () => {
   });
 });
 
-// #1960: an Ovis with HOST set to another address registers this relay, since the app's tunnel reaches only the PC's loopback
 describe("loopback relay", () => {
   const stops: (() => void)[] = [];
   afterEach(() => { for (const stop of stops.splice(0)) stop(); });
@@ -229,9 +221,6 @@ describe("loopback relay", () => {
     const piece = 16 * 1024;
     const blocked = Promise.withResolvers<"blocked">();
     const sent = Promise.withResolvers<"sent">();
-    // one piece per event-loop turn, so the relay gets to read between them; a write that takes
-    // less than a piece is the server feeling the client's backpressure, and its drain goes on
-    // every byte says where it belongs, so a lost, repeated or reordered piece shows
     const payload = new Uint8Array(size);
     for (let i = 0; i < size; i++) payload[i] = (i ^ (i >>> 13)) & 0xff;
     type Writer = { data: { at: number }; write(chunk: Uint8Array): number; end(): void };
@@ -257,7 +246,6 @@ describe("loopback relay", () => {
       data(_socket, data) { received.set(data.subarray(0, size - filled), filled); filled += data.byteLength; },
       close() { done.resolve(); },
     } });
-    // a relay that buffered everything would let the server finish while nothing is read
     expect(await Promise.race([blocked.promise, sent.promise])).toBe("blocked");
     client.resume();
     await done.promise;
@@ -265,7 +253,6 @@ describe("loopback relay", () => {
     expect(Buffer.compare(received, payload)).toBe(0);
   });
 
-  /** a client sending `total` bytes through the relay to a server that reads nothing */
   async function stuckUpstream(total: number): Promise<{ client: Socket; relay: { stop(): void }; written: Promise<void>; clientClosed: Promise<void>; upstreamClosed: Promise<void> }> {
     const upstreamClosed = Promise.withResolvers<void>();
     const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {

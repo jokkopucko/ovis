@@ -16,11 +16,6 @@ export function isDagViewerPane(pane: PaneInfo): boolean {
     || pane.terminal_title === "OmO DAG" || pane.terminal_title_stripped === "OmO DAG";
 }
 
-/**
- * The panes the sidebar and the tab strip show: a DAG viewer is left out while its tab has
- * another pane (the OmO it draws, whose chat already lists the workflow), so it neither adds a
- * tab strip nor a pane to pick. It stays when it is the pane open (`keep`) or all its tab has.
- */
 export function rosterPanes<T extends PaneInfo>(panes: readonly T[], keep?: string | null): T[] {
   return panes.filter((pane) => pane.pane_id === keep || !isDagViewerPane(pane)
     || !panes.some((other) => other.tab_id === pane.tab_id && !isDagViewerPane(other)));

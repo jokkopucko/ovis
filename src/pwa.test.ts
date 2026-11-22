@@ -6,7 +6,6 @@ import { stampServiceWorker } from "../scripts/service-worker-build.ts";
 
 const publicDir = join(import.meta.dir, "..", "public");
 
-/** Runs public/sw.js against a stand-in `self` and returns its fetch listener. */
 function serviceWorkerFetch(): (request: { method: string; url: string; mode: string }) => boolean {
   const listeners = new Map<string, (event: unknown) => void>();
   const self = { location: { origin: "https://app.test" }, addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener) };
@@ -40,13 +39,11 @@ describe("installed app", () => {
 
 type WorkerRequest = { method: string; url: string; mode: string };
 
-/** The cache no build retires: typefaces and icons (FILES in sw.js). */
 const FILES = /const FILES = "([^"]+)"/.exec(readFileSync(join(publicDir, "sw.js"), "utf8"))![1]!;
 
 type Kept = { body: string; type: string | null };
 const kept = (entry: Kept): Response => new Response(entry.body, entry.type ? { headers: { "content-type": entry.type } } : undefined);
 
-/** public/sw.js (or `source`, a build of it) over a stand-in CacheStorage and a network that can be cut. */
 function serviceWorker(stored: Record<string, Record<string, string | Kept>>, source = readFileSync(join(publicDir, "sw.js"), "utf8")) {
   const origin = "https://app.test";
   const keyOf = (request: string | WorkerRequest): string => (typeof request === "string" ? request : request.url.slice(origin.length));
@@ -73,9 +70,7 @@ function serviceWorker(stored: Record<string, Record<string, string | Kept>>, so
       return undefined;
     },
   };
-  /** `ready` is awaited by every write: a test replaces it to hold the cache back. */
   const disk = { ready: Promise.resolve() as Promise<void> };
-  /** `gone`: files the server no longer has, answered as `goneAs` says (a 404, or the shell as servers before it did) */
   const network = { online: true, shell: "shell", status: 200, fetched: [] as string[], gone: new Set<string>(), goneAs: "404" as "404" | "shell" };
   const fetch = async (request: WorkerRequest) => {
     if (!network.online) throw new TypeError("Failed to fetch");
@@ -91,12 +86,10 @@ function serviceWorker(stored: Record<string, Record<string, string | Kept>>, so
   const listeners = new Map<string, (event: unknown) => void>();
   const self = { location: { origin }, clients: { claim: async () => undefined }, skipWaiting: () => undefined, addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener) };
   new Function("self", "caches", "fetch", source)(self, caches, fetch);
-  /** The answer as the page gets it, and `kept`: everything the worker asked to stay alive for. */
   const fire = (type: string, event: Record<string, unknown> = {}): { answer: Promise<Response> | undefined; kept: () => Promise<void> } => {
     let answer: Promise<Response> | undefined;
     const waits: Promise<unknown>[] = [];
     listeners.get(type)!({ ...event, respondWith: (response: Promise<Response>) => { answer = response; }, waitUntil: (work: Promise<unknown>) => { waits.push(work); } });
-    // a wait may be added while the answer is made, so the list is read again until it is still
     const kept = async (): Promise<void> => { for (let seen = -1; seen !== waits.length;) { seen = waits.length; await Promise.all(waits); } };
     return { answer, kept };
   };
@@ -110,7 +103,6 @@ function serviceWorker(stored: Record<string, Record<string, string | Kept>>, so
     // a rejected answer is what the page sees as a network error
     const response = await dispatch("fetch", { request }).catch(() => undefined);
     const body = response === undefined || response.type === "error" ? null : await response.text();
-    // an asset is kept without holding its answer back
     await new Promise((done) => setTimeout(done, 0));
     return body;
   };
@@ -123,7 +115,6 @@ function serviceWorker(stored: Record<string, Record<string, string | Kept>>, so
     update: async () => { await dispatch("install"); await dispatch("activate"); },
     navigate: (path = "/") => text({ method: "GET", url: `${origin}${path}`, mode: "navigate" }),
     get: (path: string) => text({ method: "GET", url: `${origin}${path}`, mode: "no-cors" }),
-    /** an asset request as fired, its answer apart from what the worker keeps alive for it */
     ask: (path: string) => fire("fetch", { request: { method: "GET", url: `${origin}${path}`, mode: "no-cors" } }),
   };
 }
@@ -154,7 +145,6 @@ describe("a service worker under a new cache name", () => {
     expect(worker.names()).toEqual([current, FILES]);
     expect(worker.entries(current)).toEqual(["/"]);
     expect(worker.entries(FILES)).toEqual(["/assets/PretendardVariable.subset.91-old.woff2"]);
-    // what the new shell asks for is fetched and kept as before, one file at a time
     expect(await worker.get("/assets/index-new.js")).toBe("network /assets/index-new.js");
     expect(worker.entries(current)).toEqual(["/", "/assets/index-new.js"]);
     worker.network.online = false;
@@ -171,7 +161,6 @@ describe("a service worker under a new cache name", () => {
     let written = (): void => undefined;
     worker.disk.ready = new Promise<void>((done) => { written = done; });
     const { answer, kept } = worker.fire();
-    // the answer settles while the write is still held
     expect(await (await answer)!.text()).toBe("new shell");
     expect(worker.entries(current)).toEqual([]);
     expect(worker.names()).toContain(before);
@@ -189,7 +178,6 @@ describe("a service worker under a new cache name", () => {
     worker.disk.ready = new Promise<void>((done) => { written = done; });
     const { answer, kept } = worker.fire();
     expect(await (await answer)!.text()).toBe("new shell");
-    // the page asks for a bundle only the old cache holds, before that cache is retired
     const asked = worker.ask("/assets/index-old.js");
     expect(await (await asked.answer)!.text()).toBe("old bundle");
     written();
@@ -234,7 +222,6 @@ describe("a file the server no longer has", () => {
       worker.network.goneAs = goneAs;
       await worker.get("/assets/katex-old.js");
       expect(worker.entries(current)).toEqual(["/"]);
-      // asked again, it goes to the network again: a server that has it by then is heard
       worker.network.gone.clear();
       expect(await worker.get("/assets/katex-old.js")).toBe("network /assets/katex-old.js");
       expect(worker.entries(current)).toEqual(["/", "/assets/katex-old.js"]);
@@ -261,11 +248,9 @@ describe("a service worker of a new build", () => {
     await first.get("/assets/katex-a.js");
     expect(first.names()).toEqual([`${current}-aaaaaaaaaaaa`, FILES]);
 
-    // the next build's worker over what the first one kept
     const kept = Object.fromEntries(first.names().map((name) => [name, Object.fromEntries(first.entries(name).map((key) => [key, `kept ${key}`]))]));
     const next = serviceWorker(kept, stampServiceWorker(sw, "bbbbbbbbbbbb"));
     await next.update();
-    // offline before it reached the server, the build before still starts
     next.network.online = false;
     expect(await next.navigate()).toBe("kept /");
     next.network.online = true;
@@ -285,7 +270,6 @@ describe("a service worker of a new build", () => {
     expect(worker.entries(`${current}-cccccccccccc`)).toEqual(["/"]);
   });
 
-  // the worker before answered the new shell's files before this one was installed, so only its cache has them
   const shellB = '<script type="module" crossorigin src="/assets/index-b.js"></script><link rel="stylesheet" crossorigin href="/assets/index-b.css">';
   const before = () => ({ [`${current}-aaaaaaaaaaaa`]: { "/": "shell a", "/assets/index-b.js": "b script", "/assets/index-b.css": "b style", "/assets/index-a.js": "a script" } });
 
@@ -293,7 +277,6 @@ describe("a service worker of a new build", () => {
     const worker = serviceWorker(before(), stampServiceWorker(sw, "bbbbbbbbbbbb"));
     await worker.update();
     worker.network.shell = shellB;
-    // the network is gone for everything after the page itself
     const { answer, kept } = worker.fire();
     expect(await (await answer)!.text()).toBe(shellB);
     worker.network.online = false;
@@ -317,15 +300,12 @@ describe("a service worker of a new build", () => {
     worker.network.online = false;
     await kept();
     expect(worker.names()).toContain(`${current}-aaaaaaaaaaaa`);
-    // offline, the start the worker before kept: its shell, not one whose stylesheet is nowhere
     expect(await worker.navigate()).toBe("shell a");
     expect(await worker.get("/assets/index-a.js")).toBe("a script");
     expect(await worker.get("/assets/index-b.css")).toBeNull();
-    // the next navigation that reaches the server finishes the copy and retires it
     worker.network.online = true;
     expect(await worker.navigate()).toBe(shellB);
     expect(worker.names().sort()).toEqual([`${current}-bbbbbbbbbbbb`, FILES].sort());
-    // the old page's bundle it asked for meanwhile came along, as any file the old cache answers does
     expect(worker.entries(`${current}-bbbbbbbbbbbb`).sort()).toEqual(["/", "/assets/index-a.js", "/assets/index-b.css", "/assets/index-b.js"]);
   });
 
@@ -360,8 +340,6 @@ describe("a service worker of a new build", () => {
   });
 
   it("moves the files of its build the worker before kept, and only those", async () => {
-    // the reload after the update was answered by the worker before: build b's KaTeX chunk, fetched
-    // early, sits in build a's cache with a's own bundle
     const worker = serviceWorker({ [`${current}-aaaaaaaaaaaa`]: { "/": "shell a", "/assets/katex-b.js": "b katex", "/assets/index-a.js": "a script" } },
       stampServiceWorker(sw, "bbbbbbbbbbbb", ["/assets/index-b.js", "/assets/katex-b.js"]));
     await worker.update();
@@ -370,7 +348,6 @@ describe("a service worker of a new build", () => {
     worker.disk.ready = new Promise<void>((done) => { written = done; });
     const { answer, kept } = worker.fire();
     expect(await (await answer)!.text()).toBe("new shell");
-    // an old page asks for a's bundle before that cache is retired: answered, not copied forward
     const asked = worker.ask("/assets/index-a.js");
     expect(await (await asked.answer)!.text()).toBe("a script");
     written();
@@ -378,7 +355,6 @@ describe("a service worker of a new build", () => {
     await asked.kept();
     expect(worker.names().sort()).toEqual([`${current}-bbbbbbbbbbbb`, FILES].sort());
     expect(worker.entries(`${current}-bbbbbbbbbbbb`).sort()).toEqual(["/", "/assets/katex-b.js"]);
-    // offline later, math still draws: the chunk was kept although it was not asked for again
     worker.network.online = false;
     expect(await worker.get("/assets/katex-b.js")).toBe("b katex");
     expect(await worker.get("/assets/index-a.js")).toBeNull();
@@ -389,19 +365,15 @@ describe("a service worker of a new build", () => {
     const worker = serviceWorker({ [`${current}-aaaaaaaaaaaa`]: { "/": shellA, "/assets/index-a.js": "a script", "/assets/index-a.css": "a style", "/assets/katex-a.js": "a katex" } },
       stampServiceWorker(sw, "bbbbbbbbbbbb", ["/assets/index-b.js"]));
     await worker.update();
-    // a window starts offline from build a's shell and is suspended before it asks for its script
     worker.network.online = false;
     expect(await worker.navigate()).toBe(shellA);
-    // another window reaches the server and retires build a's cache
     worker.network.online = true;
     worker.network.shell = "new shell";
     worker.network.gone = new Set(["/assets/index-a.js", "/assets/index-a.css", "/assets/katex-a.js"]);
     expect(await worker.navigate()).toBe("new shell");
     expect(worker.names().sort()).toEqual([`${current}-bbbbbbbbbbbb`, FILES].sort());
-    // the first window resumes: it boots (a later part of build a is gone, and the app offers a reload)
     expect(await worker.get("/assets/index-a.js")).toBe("a script");
     expect(await worker.get("/assets/index-a.css")).toBe("a style");
-    // the rest of build a is gone: a 404, empty
     expect(await worker.get("/assets/katex-a.js")).toBe("");
   });
 });

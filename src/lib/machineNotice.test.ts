@@ -20,10 +20,8 @@ describe("dismissed PC notices", () => {
 
   it("keeps a dismissal through a failed update and drops it once the PC connects", () => {
     const dismissed = [noticeKey(pc("a")), noticeKey(pc("b"))];
-    // an update or a retry in flight: no action is asked for, and the PC is not connected either
     expect(keepDismissed(dismissed, [pc("a", { state: "reconnecting", action_required: null }), pc("b")])).toEqual(dismissed);
     expect(keepDismissed(dismissed, [pc("a", { state: "connected", action_required: null }), pc("b")])).toEqual([noticeKey(pc("b"))]);
-    // a list that has not loaded yet says nothing about any PC
     expect(keepDismissed(dismissed, [])).toEqual(dismissed);
   });
 });

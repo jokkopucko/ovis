@@ -16,11 +16,6 @@ const WATCH_TOKEN = "w".repeat(64);
 const BRIDGE_TOKEN = "b".repeat(64);
 const claude = AGENT_CATALOG.find((entry) => entry.id === "claude")!;
 const code = async (response: Response | null) => [response!.status, ((await response!.json()) as { error: { code: string } }).error.code];
-/**
- * Time that moves only when told to. `advance(count)` waits for the code under test to start
- * `count` new sleeps since the last advance (it is then waiting), moves to the earliest pending one
- * and ends it.
- */
 type VirtualClock = ReturnType<typeof virtualClock>;
 function virtualClock() {
   let time = 0;
@@ -52,7 +47,6 @@ function virtualClock() {
 const post = (path: string, body: unknown) => new Request(`http://127.0.0.1${path}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } });
 
 describe("POST /api/agent-catalog/install and /sign-in", () => {
-  // the new tab's pane is gone by the time anyone asks, unless a test says it is still open
   const openPanes: string[] = [];
   const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ workspaces: [{ workspace_id: "w1" }], panes: openPanes.map((pane_id) => ({ pane_id })) }) as never);
   const tab = spyOn(herdr, "tabCreate").mockImplementation(async () => ({ root_pane: { pane_id: "w1:p9" }, tab: { tab_id: "w1:t9", workspace_id: "w1" } }) as never);
@@ -118,16 +112,14 @@ describe("POST /api/agent-catalog/install and /sign-in", () => {
 
   it("on Windows, gives the new tab's shell one overall deadline, not one per answer", async () => {
     const install = (clock: VirtualClock, shellWaitMs: number) => new AgentInstaller(nowhere, "windows", undefined, { shellWaitMs, clock }).handle(post("/api/agent-catalog/install", { agent: "claude" }), "/api/agent-catalog/install");
-    // herdr takes 300 ms per answer: nothing named at first, then PowerShell, which would come at 600 ms
     const slow = virtualClock();
     let answers = 0;
     info.mockImplementation(async () => { await slow.sleep(300); return (answers++ === 0 ? null : await pwsh()) as never; });
     const first = install(slow, 500);
-    await slow.advance(2); // the answer (300 ms) and the deadline (500 ms) start: the answer comes first
-    await slow.advance(1); // the pause before asking again starts, and ends at the deadline
+    await slow.advance(2);
+    await slow.advance(1);
     expect(await code(await first)).toEqual([409, "shell_unknown"]);
     expect([slow.now(), answers]).toEqual([500, 1]);
-    // one answer that would come at 800 ms is not waited for past a 300 ms deadline
     const late = virtualClock();
     info.mockImplementation(async () => { await late.sleep(800); return await pwsh(); });
     const second = install(late, 300);
@@ -169,12 +161,9 @@ describe("POST /api/agent-catalog/install and /sign-in", () => {
       expect(await code(both.find((response) => response!.status === 409)!)).toEqual([409, "install_running"]);
       front = installerRunning;
       expect(await code(await installOf(installer))).toEqual([409, "install_running"]);
-      // the installer put the agent in place before it finished: still held
       placed = true;
       expect(await code(await installOf(installer))).toEqual([409, "install_running"]);
-      // another agent is not held up
       expect((await installOf(installer, "codex"))!.status).toBe(200);
-      // the installer exited, its tab still open at the shell: released at once
       front = shell;
       expect((await installOf(installer))!.status).toBe(200);
       expect(tab).toHaveBeenCalledTimes(3);
@@ -184,15 +173,12 @@ describe("POST /api/agent-catalog/install and /sign-in", () => {
       front = shell;
       follow();
       openPanes.push("w1:p9");
-      // typed a moment ago: its installer may not be in front yet
       const waiting = new AgentInstaller(nowhere, "linux", undefined, { startWindowMs: 60_000 });
       expect((await installOf(waiting))!.status).toBe(200);
       expect(await code(await installOf(waiting))).toEqual([409, "install_running"]);
-      // a failed command that never ran a program: released once the window is over
       const over = new AgentInstaller(nowhere, "linux", undefined, { startWindowMs: 0 });
       expect((await installOf(over))!.status).toBe(200);
       expect((await installOf(over))!.status).toBe(200);
-      // the tab closed while the installer ran
       front = installerRunning;
       expect(await code(await installOf(waiting))).toEqual([409, "install_running"]);
       openPanes.length = 0;

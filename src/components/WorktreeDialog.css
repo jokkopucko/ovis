@@ -17,7 +17,6 @@
   font-size: var(--fs-sm);
 }
 
-/* open: one row per checkout of the repository, the open ones marked */
 .worktree-list {
   display: flex;
   flex-direction: column;

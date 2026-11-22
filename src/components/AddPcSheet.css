@@ -1,8 +1,3 @@
-/*
- * Add a PC (AddPcSheet.tsx): the system's modal (styles.css .modal*) with four segmented bars at its
- * head and the join's steps below the screen the shell shows for that step. Tokens only.
- */
-
 .add-pc-sheet {
   width: min(100%, var(--relay-sheet-w));
 }
@@ -15,7 +10,6 @@
   outline: none;
 }
 
-/* the head holds the bars, the step count, the title and its line */
 .add-pc-head {
   display: block;
   padding-bottom: 0;
@@ -47,14 +41,6 @@
   background: var(--status-blocked);
 }
 
-.add-pc-step-count {
-  margin: 0 0 var(--space-1);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-regular);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
-}
-
 .add-pc-sub {
   margin: var(--space-1) 0 0;
   max-width: 65ch;
@@ -71,7 +57,6 @@
   gap: var(--space-4);
 }
 
-/* the steps: a mark, the step and what it proves, a hairline between them */
 .add-pc-steps {
   margin: 0;
   padding: 0;
@@ -123,7 +108,6 @@
   font-weight: var(--fw-regular);
 }
 
-/* the mark sits on the label's first line: a ring to do, the working colour running, a tick done, a cross failed */
 .add-pc-mark {
   display: grid;
   place-items: center;
@@ -170,7 +154,6 @@
   color: var(--status-blocked);
 }
 
-/* what went wrong, in one line above the steps: the wrong number, or why the join ended */
 .add-pc-problem {
   margin: 0 0 var(--space-1);
   color: var(--status-blocked);
@@ -257,4 +240,24 @@
   .add-pc-steps li[data-step="running"] .add-pc-mark::after {
     animation: none;
   }
+}
+
+.add-pc-command {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.add-pc-other {
+  padding: 0 var(--space-4) var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.add-pc-other summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--pointer-target);
+  cursor: pointer;
+  color: var(--text);
 }

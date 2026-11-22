@@ -29,7 +29,6 @@ describe("the palette's worktree dialog", () => {
     define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
     define("window", { location: { href: "http://ovis.test/" }, history: { state: null, pushState() {}, replaceState() {}, back() {} }, matchMedia, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
     define("document", { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, activeElement: null, querySelector: () => null, querySelectorAll: () => [], addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), body: {} });
-    // the PC's agents answer at once; a worktree's creation waits until the test answers it
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => String(input).includes("worktree/create")
       ? new Promise<Response>((resolve) => { answerCreate = (body) => resolve(Response.json(body)); })
       : Response.json({ agents: [] }), { preconnect: globalThis.fetch.preconnect }));
@@ -56,7 +55,6 @@ describe("the palette's worktree dialog", () => {
     await act(async () => { branchField().props.onChange({ target: { value: "feat/for-api" } }); });
     await act(async () => { renderer!.update(dialog(repository("web"))); });
     expect(branchField().props.value).not.toBe("feat/for-api");
-    // and the first repository's draft is still its own
     await act(async () => { renderer!.update(dialog(repository("api"))); });
     expect(branchField().props.value).toBe("feat/for-api");
   });

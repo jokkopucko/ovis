@@ -10,32 +10,37 @@ import * as conversation from "../conversation.ts";
 import * as herdr from "../herdr/client.ts";
 import * as service from "../opencode-service.ts";
 import { PendingInputs } from "../pending-input.ts";
+import type { AlertTiming } from "../push.ts";
 import { connectionData, type Client } from "./connections.ts";
 
-// herdr's status events come from the test, as the collector would hand them over
-type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
+type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
 export const originalCollector = collector.startStatusCollector;
-mock.module("../collector.ts", () => ({
-  ...collector,
-  startStatusCollector: (seen: Handlers, deps: { snapshot: typeof collectorSnapshot }) => {
-    collectorSnapshot = deps.snapshot;
-    handlers = seen;
-    return { ready: Promise.resolve(), structureReady: Promise.resolve(), focusReady: Promise.resolve(), trackPane() {}, stop() {} };
-  },
-}));
+/**
+ * The hubs here take a collector that only hands them its handlers. It is put in place for each hub and taken away as
+ * soon as the hub is built: this module is loaded once per process, so a fake put in place at load and taken away at the
+ * end of the first file that loaded it left a later file in the same bun test run to start real collectors that retried
+ * herdr for ever.
+ */
+function fakeCollector(): void {
+  mock.module("../collector.ts", () => ({
+    ...collector,
+    startStatusCollector: (seen: Handlers, deps: { snapshot: typeof collectorSnapshot }) => {
+      collectorSnapshot = deps.snapshot;
+      handlers = seen;
+      return { ready: Promise.resolve(), structureReady: Promise.resolve(), focusReady: Promise.resolve(), trackPane() {}, refresh() {}, stop() {} };
+    },
+  }));
+}
+const realCollector = (): void => { mock.module("../collector.ts", () => ({ ...collector, startStatusCollector: originalCollector })); };
 const { createStatusHub } = await import("./status.ts");
 
 export const root = mkdtempSync(join(tmpdir(), "herdr-status-hub-"));
-afterAll(() => {
-  mock.module("../collector.ts", () => ({ ...collector, startStatusCollector: originalCollector }));
-  rmSync(root, { recursive: true, force: true });
-});
+afterAll(() => { rmSync(root, { recursive: true, force: true }); });
 const stubs: { mockRestore(): void }[] = [];
 afterEach(() => { for (const stub of stubs.splice(0)) stub.mockRestore(); });
 
-// an OpenCode parent session whose one child runs, and a resting Claude session with a background subagent its prompt started
 export const at = Date.now() - 10_000;
 const store = join(root, "opencode.db");
 {
@@ -63,11 +68,7 @@ export const opencode = (session: string | null) => ({ ...base, agent: "opencode
 export const claude = { ...base, agent: "claude", agent_session: { agent: "claude", source: "hook", kind: "id", value: CLAUDE } };
 
 let hubs = 0;
-/**
- * The status hub with herdr, OpenCode's service and the Claude lookup stood in for; what a browser and web push are sent.
- * `herdrIdentity`: what the stood-in herdr's socket reads as (server/finishes.ts), when a test needs one.
- */
-export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null) {
+export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null, alertTiming?: Partial<AlertTiming>) {
   let panes: unknown[] = [];
   let gate: Promise<void> | null = null;
   let reading: (() => void) | undefined;
@@ -81,18 +82,24 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
     spyOn(service, "readOpenCodeService").mockReturnValue(null),
     spyOn(conversation, "claudePaneSession").mockResolvedValue({ path, startedAt: null, pid: null } as never),
     spyOn(conversation, "claudePanePid").mockResolvedValue(null as never),
+    spyOn(conversation, "stoppedAgentJob").mockResolvedValue(false),
   );
   const frames: { type: string; agent_status?: string; background_tasks?: number; background_wait?: boolean }[] = [];
   const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };
+  /** the connections whose page is in use (visible and focused): none until a test adds the client */
+  const present = new Set<Client>();
+  let cardTick: () => Promise<void> = () => Promise.resolve();
   const pending = queued ?? new PendingInputs<Owner, Lease>(() => {});
-  /** panes whose held messages were turned away, and why */
   const held: { paneId: string; code: string }[] = [];
-  const status = createStatusHub({
-    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}) },
+  fakeCollector();
+  // put back at once: the hub takes its collector as it is built, and this module's afterEach runs only in the first file
+  // that loads it
+  const status = (() => { try { return createStatusHub({
+    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}), cardTimer: (tick) => { cardTick = tick; return () => {}; }, ...(alertTiming ? { alertTiming } : {}) },
     devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ revision: 0, settings: {}, muted_panes: [] }), subscribe: () => () => {} } as never,
-    clients: new Set([client]), present: new Set(), pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
+    clients: new Set([client]), present, pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,
-  });
+  }); } finally { realCollector(); } })();
   const alerts: string[] = [];
   const poll = status.opencodeAgents.poll.bind(status.opencodeAgents);
   stubs.push(spyOn(status.opencodeAgents, "poll").mockImplementation((only) => { const read = poll(only); polls.push(read); return read; }));
@@ -101,14 +108,11 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   const ended: string[] = [];
   stubs.push(spyOn(status.push, "onEnded").mockImplementation(async (paneId: string) => { ended.push(paneId); }));
   return {
-    alerts, pending, status, held,
-    /** "terminal ended" alerts sent: push's and the pane-exited frames clients alert from */
+    alerts, pending, status, held, client, present,
+    tickCards: () => cardTick(),
     ended: () => ({ push: [...ended], frames: frames.filter((seen) => seen.type === "pane-exited").length }),
-    /** herdr's panes from now on, as a snapshot or a pane lookup reads them */
-    herdrSays: (pane: unknown) => { panes = [pane]; },
-    /** a snapshot, both trackers reading it (Claude's lookup awaited) */
+    herdrSays: (...shown: unknown[]) => { panes = shown; },
     snapshot: async () => { const snapshot = await status.clientSnapshot(); await status.claudeAgents.refresh(panes as HerdrPane[]); return snapshot; },
-    /** a snapshot whose read begins now and is answered when `open` is called */
     heldSnapshot: async () => {
       const opened = Promise.withResolvers<void>();
       const started = Promise.withResolvers<void>();
@@ -120,14 +124,11 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
       reading = undefined;
       return async () => { opened.resolve(); await read; };
     },
-    /** the pane's last status frame */
     last: () => {
       const frame = frames.filter((seen) => seen.type === "pane-status").at(-1);
       return { status: frame?.agent_status, tasks: frame?.background_tasks ?? 0, bg: frame?.background_wait === true };
     },
-    /** the Claude tracker's poll, as its timer runs it */
     poll: () => status.claudeAgents.poll(),
-    /** the lookups and reads a status event set off */
     settle: async () => { await Promise.all(lookups); await Promise.all(polls); },
   };
 }
@@ -135,7 +136,6 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
 export const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 const ts = (ms: number) => new Date(at + ms).toISOString();
 let fixtures = 0;
-/** Each turn regression has its own transcript, parent session and streaming child. */
 export async function workingClaude<Owner = unknown, Lease = unknown>(queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void) {
   const id = `33333333-3333-4333-8333-${String(++fixtures).padStart(12, "0")}`;
   const path = join(root, `${id}.jsonl`);

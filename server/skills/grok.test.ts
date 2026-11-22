@@ -308,7 +308,6 @@ describe("grok skills", () => {
     expect(rows.map(({ name }) => name)).toContain("user-command");
     expect(rows.map(({ name }) => name)).toContain("user:duplicate");
     expect(rows.map(({ name }) => name)).toContain("local:duplicate");
-    // the user and local skills override the bundled copy: it is not offered
     expect(rows.map(({ name }) => name).filter((name) => name.endsWith("duplicate"))).toEqual(["local:duplicate", "user:duplicate"]);
     expect(rows.map(({ name }) => name)).toContain("synced-user");
   });
@@ -371,7 +370,6 @@ describe("Grok skill identity", () => {
     mkdirSync(join(real, "aliased"), { recursive: true });
     writeFileSync(join(real, "aliased", "SKILL.md"), "---\nname: aliased\ndescription: Aliased skill\n---\n");
     mkdirSync(join(home, ".grok"), { recursive: true });
-    // ~/.grok/skills, the first user root grok reads, is the link
     symlinkSync(real, join(home, ".grok", "skills"), "dir");
     const rows = paneCommands("grok", null, home).filter(({ name }) => name === "aliased");
     expect(rows).toHaveLength(1);

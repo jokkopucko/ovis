@@ -1,0 +1,39 @@
+name: Terminal client
+# hc-tui builds Ghostty's terminal library with Zig 0.16, which hc-tui's own script installs.
+on:
+  pull_request:
+    paths:
+      - 'crates/ovis-tui/**'
+      - 'scripts/plugin-tui.ts'
+      - '.github/workflows/ovis-tui.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ovis-tui-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crates/ovis-tui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: hc-tui at the pinned commit, with our patches
+        run: ./prepare.sh
+      - name: Zig 0.16 and Ghostty's packages
+        run: |
+          upstream/tools/install-zig.sh "$RUNNER_TEMP/zig"
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+          upstream/tools/fetch-zig-deps.sh "$RUNNER_TEMP/zig/zig"
+      - name: Rust toolchain
+        run: rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - name: The patches' own tests
+        working-directory: crates/ovis-tui/upstream
+        run: cargo test --locked -p hc-tui

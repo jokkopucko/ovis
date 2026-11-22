@@ -32,15 +32,38 @@ export function hermesCtrlCTooSoon(lastCtrlCAt: number | null, now: number): boo
   return lastCtrlCAt !== null && now - lastCtrlCAt < HERMES_CTRL_C_WINDOW_MS;
 }
 
-/** The key Chat's Stop sends: Escape for every agent but Hermes, one Ctrl+C or nothing for Hermes. */
+/**
+ * Grok's cancel is Ctrl+C, which its own key row names while a turn runs (`Shift+Tab:mode  │  Ctrl+c:cancel  │ …`,
+ * Grok 1.0.77); Escape is its scrollback key, and an idle Grok's key row has no cancel. Only the screen's last
+ * written row is read, so a quoted hint above it never counts.
+ */
+export function grokCancellable(rows: readonly string[]): boolean {
+  const last = [...rows].reverse().find((row) => row.trim() !== "");
+  return last !== undefined && /(?:^|│)\s*Ctrl\+c:cancel\s*(?:│|$)/.test(last.trim());
+}
+
+/**
+ * Agents whose interrupt is Escape pressed twice: one press only arms it ("esc again to interrupt" in Kilo 7.8,
+ * "esc twice to interrupt" in Devin 3000.12), or does nothing (maki), and Devin's single Escape moves the running
+ * command to a background shell instead. Measured in the agent lab, 2026-11-12.
+ */
+const DOUBLE_ESCAPE_AGENTS: ReadonlySet<string> = new Set(["devin", "kilo", "maki"]);
+
+/** The gap Chat's Stop leaves between the two Escapes, well inside the window each of those agents gives the second. */
+export const DOUBLE_ESCAPE_GAP_MS = 150;
+
+export type StopKey = "\u001b" | "\u001b\u001b" | "\u0003" | null;
+
 export function stopKey(
   agent: string | null | undefined,
   rows: () => readonly string[],
   sentThisTurn: boolean,
   lastCtrlCAt: number | null,
   now: number,
-): "\u001b" | "\u0003" | null {
-  if (agent !== "hermes") return "\u001b";
-  if (sentThisTurn || hermesCtrlCTooSoon(lastCtrlCAt, now)) return null;
-  return hermesInterruptible(rows()) ? "\u0003" : null;
+): StopKey {
+  if (agent === "hermes" || agent === "grok") {
+    if (sentThisTurn || hermesCtrlCTooSoon(lastCtrlCAt, now)) return null;
+    return (agent === "hermes" ? hermesInterruptible(rows()) : grokCancellable(rows())) ? "\u0003" : null;
+  }
+  return agent && DOUBLE_ESCAPE_AGENTS.has(agent) ? "\u001b\u001b" : "\u001b";
 }

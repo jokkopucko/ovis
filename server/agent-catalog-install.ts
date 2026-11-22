@@ -26,14 +26,10 @@ async function openTab(label: string, home: string): Promise<{ paneId: string; t
   return { paneId: created.root_pane.pane_id, tabId: created.tab.tab_id, workspaceId: created.tab.workspace_id };
 }
 
-/** How long, in all, a new Windows tab's shell has to come in front before nothing is typed there. */
 const SHELL_WAIT_MS = 10_000;
-/** How long a typed install command has to show a program running in its tab before it counts as ended. */
 const INSTALL_START_MS = 120_000;
-/** The longest one install holds its agent, whatever its tab shows. */
 const INSTALL_CAP_MS = 30 * 60_000;
 
-/** Time as the install routes read it; tests drive their own. A sleep whose signal aborts never ends. */
 export interface InstallClock { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> }
 const realClock: InstallClock = {
   now: () => Date.now(),
@@ -44,7 +40,6 @@ const realClock: InstallClock = {
 };
 
 const TIMED_OUT = Symbol("timed out");
-/** `work`'s answer, or TIMED_OUT when it has not come within `ms`; a rejection before then is passed on. */
 async function within<T>(work: Promise<T>, ms: number, clock: InstallClock): Promise<T | typeof TIMED_OUT> {
   const settled = new AbortController();
   try {
@@ -76,7 +71,6 @@ async function shellOf(paneId: string, platform: CatalogPlatform, waitMs: number
   }
 }
 
-/** Closes a tab this route opened and could not finish starting; a close that fails leaves the first error to report. */
 async function closeUnstarted(tabId: string): Promise<void> {
   await tabClose(tabId).catch(() => undefined);
 }
@@ -86,10 +80,6 @@ const shellUnknown = () => conflictResponse("shell_unknown", "Ovis could not tel
 /** The fields each route takes; any other field is refused, so a request cannot carry a command or a platform. */
 const FIELDS: Record<string, readonly string[]> = { [INSTALL_PATH]: ["agent", "alternative"], [SIGN_IN_PATH]: ["agent"] };
 
-/**
- * An install this PC has started: its tab's pane once it has one, when its command was typed (null
- * while its own request still starts it), and whether a program was seen running in its tab since.
- */
 type Running = { paneId: string | null; typedAt: number | null; seenRunning: boolean };
 
 /** Types `text` into the pane's shell and runs it: a newline on POSIX, the Enter key on Windows (see shell-agent.ts). */
@@ -114,10 +104,6 @@ export class AgentInstaller {
     return this.options.clock ?? realClock;
   }
 
-  /**
-   * Types into a tab just opened: `work` returns the response, or null when nothing may be typed
-   * there. The tab is closed when nothing was typed, and when `work` fails.
-   */
   async #inNewTab(tabId: string, work: () => Promise<Response | null>, refused: () => Response): Promise<Response> {
     let response: Response | null;
     try {
@@ -153,7 +139,6 @@ export class AgentInstaller {
     }
   }
 
-  /** by agent id: the install of that agent started on this PC, one at a time */
   readonly #running = new Map<string, Running>();
 
   /**
@@ -187,7 +172,6 @@ export class AgentInstaller {
     if (age >= (this.options.capMs ?? INSTALL_CAP_MS)) return false;
     if (!(await sessionSnapshot()).panes.some((pane) => pane.pane_id === paneId)) return false;
     const program = await this.#programRunning(paneId, platform);
-    // not readable: held, and the cap still ends it
     if (program !== false) {
       if (program) running.seenRunning = true;
       return true;

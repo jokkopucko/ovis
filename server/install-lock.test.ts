@@ -106,9 +106,7 @@ describe("POSIX install lock", () => {
 
 /**
  * The Windows mirror, run through `pwsh` wherever it exists (the GitHub Linux runner has it) so the
- * scripts are exercised rather than only spelled out. The lock's owner is this server, so a lock
- * whose owner token matches is this server's own leftover and is reclaimed at once; a peer's lock
- * waits for the install's longest life, as on POSIX.
+ * scripts are exercised rather than only spelled out.
  */
 const pwsh = Bun.which("pwsh");
 const psq = (value: string) => `'${value.replaceAll("'", "''")}'`;

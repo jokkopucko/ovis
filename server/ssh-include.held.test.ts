@@ -9,14 +9,12 @@ import { includeTestOnly } from "./ssh-include.ts";
 
 // a wildcard Include listed through the held folder's descriptor (getdents64) and its matches opened through it (openat), with glibc
 const [getdents, openAt] = [glibcGetdents(), glibcOpenAt()];
-/** glibc's calls, which a Linux test host must load */
 const calls = (): { getdents: Getdents; openAt: OpenAt } => {
   if (getdents === null || openAt === null) throw new Error("glibc's getdents64/openat did not load");
   return { getdents, openAt };
 };
 const linux = process.platform === "linux";
 
-/** the rows of a config in `dir`'s ssh folder (or `dir` itself) with `stand` standing in for glibc's calls */
 async function rowsWith(stand: { getdents?: Getdents; openAt?: OpenAt | null }, dir: string, ssh = dir): Promise<(string | undefined)[][]> {
   Object.assign(includeTestOnly, stand);
   try {
@@ -27,7 +25,6 @@ const box = (files: Record<string, string>) => sshDir({ ...files, config: "Inclu
 const fromFile = [["box", "other.tail.ts.net"], ["box", "box.tail.ts.net"]];
 const claimed = [["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]];
 const unread = [["box", undefined], ...claimed];
-/** getdents64 that runs `then` once the folder is listed (its end answered) */
 const afterListing = (then: () => void): Getdents => (fd, buffer, length) => {
   const got = calls().getdents(fd, buffer, length);
   if (Number(got) === 0) then();
@@ -59,7 +56,6 @@ it.skipIf(!linux)("leaves an Include unread when any open of a file it listed fa
     const dir = box({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n" });
     const file = join(dir, "conf.d", "x.conf");
     fail(dir, file);
-    // gone between the listing and the open
     const opening: OpenAt = (at, rest, flags) => { if (kind === "gone") unlinkSync(file); return calls().openAt(at, rest, flags); };
     expect([kind, await rowsWith({ openAt: opening }, dir)]).toEqual([kind, unread]);
   }

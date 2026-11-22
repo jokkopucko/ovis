@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { observeCopilotForeground } from "./copilot-foreground-prototype.ts";
 import * as processOwner from "../server/process-owner.ts";
-import { forgetCopilotForeground, readCopilotForeground } from "../server/copilot-foreground.ts";
+import { COPILOT_RPC_TIMEOUT_MS, forgetCopilotForeground, readCopilotForeground } from "../server/copilot-foreground.ts";
 
 const first = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const second = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -163,15 +163,32 @@ linux("never reuses a binding after a transport gap or explicit reader cleanup",
   } finally { await test.close(); }
 });
 
+// The fake Copilot is another process: on a starved runner its answer can come after the product's
+// 2 s RPC deadline, and the product then rightly says rpc_timeout. Unless the fault under test is that
+// stall, a timeout only means the fixture was late, so observe again (the timeout closed the
+// connection, so each attempt starts afresh) a bounded number of times. Only an rpc_timeout is asked
+// again, so no answer on the way can be a foreground ID, and the last answer must be the fault's own.
+// One attempt can wait on three of the product's 2 s deadlines in turn: the connection with its
+// `connect` RPC, then each of the two `session.getForeground` requests a read makes.
+const attempts = 3;
+const attemptBudget = 3 * COPILOT_RPC_TIMEOUT_MS;
+const fixtureStart = 5_000;
 for (const mode of ["switch", "event", "event-after-final", "malformed", "wrong-id", "empty", "oversize", "truncated", "close", "version", "stall"]) {
   linux(`rejects ${mode} instead of returning a stale foreground ID`, async () => {
     const test = await fixture(mode);
     const diagnostic = mode === "switch" || mode === "event" || mode === "event-after-final" ? "foreground_changed"
       : mode === "empty" ? "no_foreground" : mode === "version" ? "unsupported_protocol"
       : mode === "stall" ? "rpc_timeout" : mode === "close" || mode === "truncated" ? "rpc_failed" : "malformed_rpc";
-    try { expect(await observeCopilotForeground(test.pid)).toEqual({ state: "unavailable", diagnostic }); }
+    try {
+      let result = await observeCopilotForeground(test.pid);
+      for (let attempt = 1; attempt < attempts && diagnostic !== "rpc_timeout"
+        && result.state === "unavailable" && result.diagnostic === "rpc_timeout"; attempt++) {
+        result = await observeCopilotForeground(test.pid);
+      }
+      expect(result).toEqual({ state: "unavailable", diagnostic });
+    }
     finally { await test.close(); }
-  });
+  }, attempts * attemptBudget + fixtureStart);
 }
 
 for (const [mode, flags, diagnostic] of [

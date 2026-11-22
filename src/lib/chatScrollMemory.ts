@@ -1,21 +1,12 @@
-/**
- * Where a reader left one pane's chat: the turn at the top of the view and how far below the
- * view's top edge it started, or `atEnd` while the reader followed the end. Kept in memory, one
- * entry per `paneStorageId(machineId, paneId)`, and in the tab's session storage too, so a reload
- * opens the chat where the reader was (a position names its history, so a conversation replaced
- * since lands at the end as before).
- */
 export interface ChatPosition {
   readonly historyId: string | null;
   readonly turn: string;
-  /** the turn's top minus the view's top, in CSS pixels (negative: it started above the view) */
   readonly offset: number;
   readonly atEnd: boolean;
 }
 
 const LIMIT = 100;
 const STORAGE_KEY = "ovis:chat-positions";
-/** a scroll remembers on every event: the store is written once this long after the last, and as the page leaves */
 const SAVE_AFTER_MS = 250;
 const positions = new Map<string, ChatPosition>();
 let loaded = false;
@@ -23,28 +14,18 @@ let saveTimer: number | null = null;
 
 import { searchPattern } from "../../shared/conversation-search.ts";
 
-/** A turn's identity that survives a remount, the one a conversation search names its matches by. */
 export { conversationTurnAnchor as chatTurnAnchor } from "../../shared/conversation-search.ts";
 
-/** Node.TEXT_NODE, which a page without a DOM (a test) does not define */
 const TEXT_NODE = 3;
 
-/** The DOM a match is looked for in: a DOM Node, or a test's tree of the same shape. */
 export interface DrawnNode<N> { readonly nodeType: number; readonly nodeName: string; readonly nodeValue: string | null; readonly childNodes: ArrayLike<N> }
 export interface DrawnSpan<N> { readonly start: N; readonly startOffset: number; readonly end: N; readonly endOffset: number }
 
-// elements whose end parts the text the search reads as a line break does
 const LINE_ENDS = new Set(["BR", "P", "DIV", "LI", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "TR"]);
 
-/**
- * Where a search's matched words are drawn in `root`: the first place its pattern (searchPattern: the
- * words in order, any whitespace between them, case ignored) finds them in the drawn text, also when
- * formatting splits them over text nodes (bold, code, a link) or a line break parts them. Null: not drawn there.
- */
 export function drawnMatch<N extends DrawnNode<N>>(root: N, words: string): DrawnSpan<N> | null {
   const pattern = searchPattern(words);
   if (pattern === null) return null;
-  // each text node's place in the joined text; a line break is a "\n" no node holds
   const nodes: { node: N; at: number }[] = [];
   let text = "";
   const walk = (node: N): void => {
@@ -55,7 +36,6 @@ export function drawnMatch<N extends DrawnNode<N>>(root: N, words: string): Draw
   walk(root);
   const found = pattern.exec(text);
   if (found === null) return null;
-  // the match begins and ends on a word, so both ends fall in a text node
   const holding = (index: number): { node: N; at: number } => {
     let held = nodes[0]!;
     for (const item of nodes) if (item.at <= index) held = item;
@@ -75,7 +55,6 @@ function isPosition(value: unknown): value is ChatPosition {
   return (historyId === null || typeof historyId === "string") && typeof turn === "string" && typeof offset === "number" && Number.isFinite(offset) && typeof atEnd === "boolean";
 }
 
-/** The positions the tab stored, read once before anything is remembered: what this page remembers since comes after them. */
 function load(): void {
   if (loaded) return;
   loaded = true;
@@ -85,12 +64,12 @@ function load(): void {
     for (const entry of value.slice(-LIMIT)) {
       if (Array.isArray(entry) && typeof entry[0] === "string" && isPosition(entry[1])) positions.set(entry[0], { historyId: entry[1].historyId, turn: entry[1].turn, offset: entry[1].offset, atEnd: entry[1].atEnd });
     }
-  } catch { /* unreadable: this page's own memory is all there is */ }
+  } catch {}
 }
 
 function save(): void {
-  if (saveTimer !== null) { window.clearTimeout(saveTimer); saveTimer = null; }
-  try { storage()?.setItem(STORAGE_KEY, JSON.stringify([...positions])); } catch { /* storage refused: this page's memory keeps it */ }
+  if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; }
+  try { storage()?.setItem(STORAGE_KEY, JSON.stringify([...positions])); } catch {}
 }
 
 function scheduleSave(): void {
@@ -98,7 +77,6 @@ function scheduleSave(): void {
   saveTimer = window.setTimeout(save, SAVE_AFTER_MS);
 }
 
-// a reload leaves at once: what the last scroll remembered is written on the way out
 if (typeof window !== "undefined") window.addEventListener("pagehide", () => { if (saveTimer !== null) save(); });
 
 export function rememberChatPosition(storageId: string, position: ChatPosition): void {
@@ -133,11 +111,6 @@ export function forgetChatPositions(): void {
   save();
 }
 
-/**
- * The row to put back at the top of the view, or null to land at the end: the reader followed
- * the end, the conversation was replaced since (another history), or the turn is not among the
- * rows loaded now (an earlier page the new mount has not read).
- */
 export function chatRestoreIndex(position: ChatPosition | undefined, historyId: string | null, anchors: readonly string[]): number | null {
   if (position === undefined || position.atEnd || position.historyId !== historyId) return null;
   const index = anchors.indexOf(position.turn);

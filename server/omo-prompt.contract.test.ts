@@ -6,10 +6,10 @@ import { createServer } from "./index.ts";
 import { herdrRpc } from "./herdr/client.ts";
 
 /**
- * Answers to omo's form of several questions, against the real herdr server. The pane runs a
+ * The pane runs a
  * small form drawn as omo 5.1 draws its ask_user_question overlay, reported as `pi` (herdr's name
  * for an omo pane waiting on the user): arrows move the cursor, Enter picks an option, the last answer
- * opens the review, and Enter there submits. Every answer it takes is logged.
+ * opens the review, and Enter there submits.
  */
 const root = mkdtempSync(join(tmpdir(), "ovis-omo-prompt-"));
 let server: { port: number; stop: () => void };
@@ -120,11 +120,9 @@ describe("answers to omo's form of several questions", () => {
     expect(prompt!.options.map((option) => option.label)).toEqual(["설정", "사이드바"]);
     expect((await answer(prompt!.id, 1)).status).toBe(200);
 
-    // the pane's viewport scrolled up into its history, a whole screen: the form is out of view
     const { pane: { scroll } } = await herdrRpc<{ pane: { scroll: { offset_from_bottom: number; viewport_rows: number } } }>("pane.scroll", { pane_id: pane, offset_from_bottom: 60 });
     expect(scroll.offset_from_bottom).toBeGreaterThanOrEqual(scroll.viewport_rows);
 
-    // the answer's 200 comes once the next question shows: read at once, it is that one
     const second = await card();
     expect(second).toMatchObject({ title: "Question 2 of 2", steps: [{ label: "표시 위치", answered: true, current: false }, { label: "월 한도", answered: false, current: true }] });
     expect((await answer(second.id, 0)).status).toBe(200);
@@ -132,7 +130,6 @@ describe("answers to omo's form of several questions", () => {
     const review = await card();
     expect(review.title).toBe("Review your answers");
     expect(review.options.map((option) => option.label)).toEqual(["Submit", "표시 위치: 사이드바", "월 한도: 한도 없음", "Comment (optional; unanswered questions are reported)"]);
-    // an answer to the question just answered is stale
     expect((await answer(second.id, 1)).status).toBe(409);
     expect((await answer(review.id, 0)).status).toBe(200);
     for (let i = 0; i < 40 && !logged().includes("submitted"); i++) await Bun.sleep(50);

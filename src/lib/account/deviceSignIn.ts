@@ -25,19 +25,15 @@ export const GITHUB_DEVICE_PAGE = "https://github.com/login/device";
 /** Each provider's own device page: the only address the page links to for typing the code. */
 export const DEVICE_PAGES: Readonly<Record<DeviceProvider, string>> = { github: GITHUB_DEVICE_PAGE, google: "https://www.google.com/device" };
 
-/** Where a device sign-in's code is typed: a provider's device page, or the account service's own link page. */
 export type DeviceSignInProvider = DeviceProvider | "ovis";
 
 export interface DeviceSignIn {
-  /** where the code is typed: the link page, or that provider's own device page */
   readonly provider: DeviceSignInProvider;
-  /** the code the person types at GitHub */
   readonly userCode: string;
   /** the provider's device page, or the service's link page, and never another address */
   readonly verificationUri: string;
   /** the link page with this code filled in, for a QR code; null for a provider's page, or a link carrying another code */
   readonly verificationUriComplete: string | null;
-  /** when the code runs out, in ms since the epoch */
   readonly expiresAt: number;
   /** Polls until GitHub answers; the session is kept only if `signal` was not aborted by then. */
   finish(signal: AbortSignal): Promise<AccountSession>;
@@ -48,10 +44,8 @@ export interface DeviceSignInOptions {
   readonly store: AccountStore;
   readonly fetch?: Fetch;
   readonly now?: () => number;
-  /** waits between polls; aborting `signal` ends the wait */
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly lock?: AccountLock;
-  /** GitHub unless named */
   readonly provider?: DeviceSignInProvider;
   /** what this device is, for the link page's confirmation (docs/account.md, "Who is asking"); a provider's own device page takes none */
   readonly requester?: { readonly label: string; readonly os: AccountOs | null };
@@ -90,7 +84,6 @@ function retryAfterMs(response: Response, fallback: number): number {
   return Number.isFinite(header) && header > 0 ? Math.max(header * 1000, fallback) : fallback;
 }
 
-/** The link page start's `label` and `os`, each left out when there is nothing to say. */
 function requesterFields(requester: DeviceSignInOptions["requester"]): { label?: string; os?: AccountOs } {
   if (requester === undefined) return {};
   const label = accountLabel(requester.label);
@@ -112,7 +105,6 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   });
   const told = provider === "ovis" ? requesterFields(options.requester) : {};
   let response = await start(told);
-  // an account service from before "Who is asking" takes the challenge alone: start again without the name, once
   if (response.status === 400 && Object.keys(told).length > 0 && (await failure(response.clone())).code === "invalid_request") response = await start({});
   if (!response.ok) throw await failure(response);
   const started: unknown = await response.json();
@@ -161,7 +153,6 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
             redirect: "manual", signal,
           });
         } catch (error) {
-          // offline for a moment: the code is still good, so the next poll tries again
           if (error instanceof TypeError) continue;
           throw error;
         }
@@ -198,8 +189,6 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
 }
 
 /**
- * The link page's sign-in, or `fallback`'s own device flow when the link page cannot start one: busy
- * (429, its global attempt budget can be spent by others), missing (404), down (5xx) or unreachable.
  * An answer the client does not take (another page, no S256 binding, a redirect) is a failure, not a
  * reason to fall back, so a bad answer cannot push the sign-in off the link page.
  */

@@ -1,16 +1,5 @@
-/**
- * Camera maths shared by the timeline and the checks: the one easing, keyframed camera paths,
- * the matrix3d that places a window or phone on the stage, and how much it magnifies.
- *
- * An object's camera: `k` output px per CSS px of the recorded viewport, the content point
- * (fx, fy) in CSS px that lands on the frame point (ax, ay), and a rotation about that point
- * (rotateX then rotateY, perspective d px). Zooming about a fixed content point with `at`
- * moving is what makes pushes and pull-backs feel like one move.
- */
-
 export interface Cam { k: number; fx: number; fy: number; ax: number; ay: number; rx: number; ry: number; d: number }
 
-/** cubic-bezier(0.2, 0, 0, 1) */
 export function ease(x: number): number {
   if (x <= 0) return 0;
   if (x >= 1) return 1;
@@ -20,7 +9,6 @@ export function ease(x: number): number {
   for (let i = 0; i < 48; i++) { const m = (lo + hi) / 2; if (X(m) < x) lo = m; else hi = m; }
   return Y((lo + hi) / 2);
 }
-/** symmetric ease for slow drifts that should not lurch (sine in-out) */
 export const drift = (x: number): number => (x <= 0 ? 0 : x >= 1 ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * x));
 export const clamp = (v: number, a = 0, b = 1): number => Math.min(b, Math.max(a, v));
 export const lerp = (a: number, b: number, s: number): number => a + (b - a) * s;
@@ -37,7 +25,6 @@ export function mixCam(a: Cam, b: Cam, s: number): Cam {
 
 export type Key = { t: number; cam: Partial<Cam>; curve?: (x: number) => number };
 
-/** A camera path through keyframes: each segment eases (cubic-bezier(0.2,0,0,1) unless `curve`) into its end key. */
 export function path(keys: Key[]): (t: number) => Cam {
   const full: { t: number; cam: Cam; curve: (x: number) => number }[] = [];
   let prev = CAM0;
@@ -64,13 +51,11 @@ export type Kind = "window" | "phone";
 /** Chrome unit: the window's 38 px bar at a 1500 px wide window; the phone's 10 px bezel at 1 px per CSS px. */
 export const unit = (kind: Kind, k: number): number => (kind === "window" ? k / 1.172 : k);
 
-/** Local px (the object's own box) of a content point in CSS px. */
 export function local(kind: Kind, k: number, x: number, y: number): [number, number] {
   const u = unit(kind, k);
   return kind === "window" ? [x * k, 38 * u + y * k] : [10 * u + x * k, 10 * u + y * k];
 }
 
-/** Size of the object's box in local px. */
 export function box(kind: Kind, vp: { w: number; h: number }, k: number): { w: number; h: number } {
   const u = unit(kind, k);
   return kind === "window" ? { w: vp.w * k, h: vp.h * k + 38 * u } : { w: vp.w * k + 20 * u, h: vp.h * k + 20 * u };
@@ -90,13 +75,9 @@ export function place(kind: Kind, cam: Cam): Placed {
   return { m, project };
 }
 
-/**
- * The most a source pixel is magnified anywhere the screen is in frame: the largest singular value
- * of the local Jacobian (output px per source px), sampled on a grid over the recorded viewport.
- */
 export function magnification(kind: Kind, cam: Cam, vp: { w: number; h: number }, dpr: number, frame = { w: 1920, h: 1080 }): number {
   const { project } = place(kind, cam);
-  const step = 1 / dpr; // one source px in CSS px
+  const step = 1 / dpr;
   let max = 0;
   for (let i = 0; i <= 12; i++) for (let j = 0; j <= 12; j++) {
     const x = (vp.w * i) / 12, y = (vp.h * j) / 12;

@@ -33,7 +33,6 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
   const codexHome = join(root, "codex");
   const path = join(codexHome, "sessions", "rollout.jsonl");
   mkdirSync(join(codexHome, "sessions"), { recursive: true });
-  // long enough for the pane's screen to tell its conversation: herdr's report alone does not
   const answer = (index: number) => `Fictional answer ${index}: the history stays readable while each herdr call takes its time.`;
   writeFileSync(path, [
     { type: "session_meta", payload: { id: "00000000-0000-4000-8000-000000000001", cwd: "/synthetic/work" } },
@@ -48,7 +47,6 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
   const sockets = new Set<Socket>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let slow = false;
-  // Only the external daemon is a stand-in. The HTTP handler, RPC client and transcript reader run unchanged.
   const daemon = createSocketServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -60,12 +58,9 @@ it("keeps chat history readable while valid sequential herdr calls outlast HTTP 
       const { id, method } = JSON.parse(line);
       buffer = "";
       const { params } = JSON.parse(line) as { params?: { lines?: number } };
-      // A lost daemon reply must still reach the caller as the RPC's bounded error. The chat's own
-      // read of the pane's last 400 lines is answered: its newest answer shows there.
       if (method === "pane.read" && params?.lines !== 400) return;
       const result = method === "session.snapshot" ? { snapshot: { panes: [pane], agents: [], workspaces: [], tabs: [], layouts: [] } }
         : method === "agent.get" ? { agent: pane }
-        // a Codex runs in the pane: a screen with none proves no conversation
         : method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] } }
         : method === "pane.read" ? { read: { text: `• ${answer(119)}\n\n› ` } } : {};
       const reply = () => { if (!socket.destroyed) socket.write(JSON.stringify({ id, result }) + "\n"); };

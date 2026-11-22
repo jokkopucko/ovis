@@ -1,4 +1,3 @@
-/** Grok's native update log, projected onto active history before the shared pager reads it. */
 import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
@@ -96,7 +95,6 @@ function apply(index: Index, event: GrokEvent | null, start: number, end: number
     else if (u && ["agent_message_chunk", "tool_call"].includes(String(u.sessionUpdate))) current.activity = "working";
     // Background tool updates after completion must not reopen a finished turn.
     // A retained prompt ends before a rewind marker, not at the following replacement.
-    // Only physically adjacent records extend its segment.
     if (current.end === start || current.start === start) current.end = end;
     else if (u && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "turn_completed"].includes(String(u.sessionUpdate))) throw new GrokUnavailable();
     if (u && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "turn_completed"].includes(String(u.sessionUpdate))) current.answered = true;
@@ -111,8 +109,8 @@ export interface GrokProjection {
   revision: string;
 }
 
-/** Scan complete records once in bounded chunks. An unfinished catch-up is unavailable,
- * never a partially validated history. The next poll continues the same scan. Size,
+/** An unfinished catch-up is unavailable,
+ * never a partially validated history. Size,
  * identity and change all come from the caller's one stat, so an append between two
  * stats cannot reset a finished scan. */
 export function grokProjection(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): GrokProjection {
@@ -205,7 +203,6 @@ export function parseGrokTranscript(text: string, path?: string, wholeCall?: str
   let assistant: ConversationTurn | undefined;
   let prompt: number | undefined;
   const calls = new Map<string, { fields: RecordValue; part: Tool; diffs: Map<string, RecordValue> }>();
-  // after every chunk's text, so a later chunk still extends the prompt's text part
   const promptSkills = new Map<ConversationTurn, SkillActivity>();
   const appendText = (turn: ConversationTurn, value: unknown) => {
     if (typeof value !== "string" || !value) return;
@@ -303,12 +300,11 @@ export function grokToolOutput(path: string, ref: string): string | null {
         const bytes = Buffer.alloc(length);
         if (readSync(fd, bytes, 0, length, call.owner.start) !== length) return null;
         const turns = parseGrokTranscript(bytes.toString("utf8"), path, id);
-        // Tool order follows first tool_call records, including calls with no output yet.
         const at = [...call.owner.calls].indexOf(id);
         return turns.flatMap((turn) => turn.parts).filter((part): part is Tool => part.kind === "tool")[at]?.output ?? null;
       } finally { closeSync(fd); }
     }
-  } catch { /* changed, incomplete or unavailable history */ }
+  } catch { }
   return null;
 }
 
@@ -337,10 +333,8 @@ function updatePictures(u: RecordValue): { mediaType: string; data: string }[] {
 
 const digestOf = (data: string): string => createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
 
-/** How much of the update log the image lookup reads at a time, the event loop running between windows. */
 const IMAGE_WINDOW = 1024 * 1024;
 
-/** The lines in [start, end) of the file open at `fd`, each with its byte offset, read a window at a time. */
 async function* segmentLines(fd: number, start: number, end: number): AsyncGenerator<{ line: string; at: number }> {
   const window = Buffer.alloc(IMAGE_WINDOW);
   let pieces: Buffer[] = [];
@@ -371,7 +365,7 @@ async function* segmentLines(fd: number, start: number, end: number): AsyncGener
  * The picture `ref` names in the Grok update log `path`, read only from the prompts its active
  * history keeps (grokProjection: a prompt rewound away serves nothing, also when it is rewound while
  * the lookup reads), and only when its bytes are a raster within MAX_IMAGE_BYTES that hash to the
- * digest the ref names. The log is read a window at a time. Null for anything else.
+ * digest the ref names. Null for anything else.
  */
 export async function grokImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const digest = GROK_IMAGE_REF.exec(ref)?.[1];
@@ -404,6 +398,6 @@ export async function grokImage(path: string, ref: string): Promise<{ mediaType:
         }
       }
     } finally { closeSync(fd); }
-  } catch { /* changed, incomplete or unavailable history */ }
+  } catch { }
   return null;
 }

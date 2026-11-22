@@ -44,6 +44,16 @@
 
         </activity>
 
+        <!-- Add over SSH (OvisSshPlugin): not exported, only the app opens it. Its work runs on a thread that
+             waits on its dialogs and returns its result to this instance, so a rotation or a theme or language
+             change must not recreate it -->
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".SshSetupActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

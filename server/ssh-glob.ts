@@ -3,20 +3,14 @@
  * bounded by the pattern and the text: a match that would take more is left unknown (null), never guessed.
  */
 
-/** steps a pattern part holding a `?` may take on top of a few per character of pattern and text */
 const MIN_STEPS = 10_000;
 const STEPS_PER_CHAR = 4;
 
-/** whether `part` (`?` standing for any one character) matches `text` at `at` */
 const fitsAt = (part: string, text: string, at: number): boolean => {
   for (let index = 0; index < part.length; index++) if (part[index] !== "?" && part[index] !== text[at + index]) return false;
   return true;
 };
 
-/**
- * Where `part` first matches `text` from `from` on, ending by `end`, or -1: one pass (Knuth-Morris-Pratt) for a part
- * without `?`, else tried at each place while `budget` lasts, and null once it runs out
- */
 function findPart(part: string, text: string, from: number, end: number, budget: { steps: number }): number | null {
   if (part.includes("?")) {
     for (let at = from; at + part.length <= end; at++) {

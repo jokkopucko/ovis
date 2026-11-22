@@ -50,7 +50,6 @@ describe("read finishes shared by the browsers of a server", () => {
     expect(await send({ ...finish("a", 1), presented: "held" })).toBe(200);
     expect(await send({ ...finish("a", 1), presented: "new" })).toBe(200);
     expect(await send(finish("a", 1))).toBe(200);
-    // a word this server does not know is no presentation: an older server ignores the field, so it does too
     expect(await send({ ...finish("a", 1), presented: "later" })).toBe(200);
     expect(await send({ ...finish("a", 2), presented: "new" })).toBe(200);
     ended.add("local/e1");
@@ -61,8 +60,12 @@ describe("read finishes shared by the browsers of a server", () => {
   });
 
   it("drops the oldest records past the limit", () => {
-    const store = new SeenStore(root());
-    for (let pane = 0; pane <= MAX_SEEN; pane++) store.record(finish(`p${pane}`, 1));
+    // a full store in one write: every record() is a durable write of the whole file, and 500 of them
+    // took a minute on a loaded runner's disk
+    const dir = root();
+    writeFileSync(join(dir, "seen.json"), `${JSON.stringify(Array.from({ length: MAX_SEEN }, (_, pane) => finish(`p${pane}`, 1)))}\n`);
+    const store = new SeenStore(dir);
+    store.record(finish(`p${MAX_SEEN}`, 1));
     store.record(finish("p1", 2));
     const panes = store.list().map((kept) => kept.pane);
     expect(panes).toHaveLength(MAX_SEEN);
@@ -82,18 +85,14 @@ describe("read finishes shared by the browsers of a server", () => {
     const store = new SeenStore(dir, (pc, epoch) => ended.has(`${pc}/${epoch}`));
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
-    // GET and the events stream's first `seen` frame both read list()
     expect(store.list()).toEqual([remote, finish("b", 1)]);
     expect(await (await handleSeenRequest(new Request("http://x/api/seen"), store)).json()).toEqual({ finishes: [remote, finish("b", 1)] });
-    // a finish of the run that ended is answered as sent and neither kept nor told
     expect(await (await post(store, JSON.stringify({ ...old, id: 5 }))).json()).toEqual({ ...old, id: 5 });
     expect(told).toEqual([]);
     expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([old, remote, finish("b", 1)]);
-    // the next change writes the file without it
     store.record(finish("c", 1));
     expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([remote, finish("b", 1), finish("c", 1)]);
     expect(told).toEqual([finish("c", 1)]);
-    // a PC's run that ended is left behind as well
     ended.add("remote/r0");
     expect(store.list()).toEqual([finish("b", 1), finish("c", 1)]);
   });
@@ -105,7 +104,6 @@ describe("read finishes shared by the browsers of a server", () => {
       panes: [{ pane_id: "p1", agent: "codex", agent_status: "done", focused: false, revision: 1, tab_id: "t1", terminal_id: "term", workspace_id: "w", finish_id: 1 }],
     });
     let current = roster("A");
-    // this server's Finishes (server/finishes.ts): it names the run before any read does
     let finishEpoch = "A";
     const manager = new MachineManager(join(dir, "machines"), { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => current,
       { bootId: "boot", localFinishEpoch: () => finishEpoch });
@@ -115,9 +113,7 @@ describe("read finishes shared by the browsers of a server", () => {
       });
     });
     const run = (epoch: string, pane: string): SeenFinish => ({ pc: "local", epoch, pane, id: 1 });
-    // a record this server's previous process kept: its run is over
     writeFileSync(join(dir, "seen.json"), JSON.stringify([run("previous-process", "p9")]));
-    // wired as the server wires it (index.ts)
     const store = new SeenStore(dir, (pc, epoch) => manager.finishEnded(pc, epoch));
     const saved = () => JSON.parse(readFileSync(join(dir, "seen.json"), "utf8")) as SeenFinish[];
     const told: string[] = [];
@@ -127,18 +123,15 @@ describe("read finishes shared by the browsers of a server", () => {
       expect(store.list()).toEqual([]);
       expect((await post(store, JSON.stringify(run("A", "p1")))).status).toBe(200);
       expect(saved()).toEqual([run("A", "p1")]);
-      // herdr restarts: the next read names the new run, B, which a browser reads
       finishEpoch = "B";
       current = roster("B");
       const replaced = shown("B");
       void manager.refreshLocal();
       await replaced;
       expect((await post(store, JSON.stringify(run("B", "p1")))).status).toBe(200);
-      // a status the old run sent arrives after that read: neither kept nor told to browsers
       manager.localMessage({ type: "pane-status", pane_id: "p1", agent_status: "done", finish_id: 2, finish_epoch: "A" });
       expect(manager.list()[0]?.snapshot?.finish_epoch).toBe("B");
       expect(told).toEqual([]);
-      // B's records stay, a new one is saved, and A's left the file with that write
       const answered = await post(store, JSON.stringify(run("B", "p2")));
       expect([answered.status, await answered.json()]).toEqual([200, run("B", "p2")]);
       expect(saved()).toEqual([run("B", "p1"), run("B", "p2")]);
@@ -220,13 +213,11 @@ describe("a damaged read-finish file", () => {
     const first = Buffer.from('[{"pc":"local","epoch":"e1","pane":"a","id":4}');
     writeFileSync(file(dir), first);
     const store = new SeenStore(dir);
-    // reading changes nothing on disk
     expect(await (await handleSeenRequest(new Request("http://x/api/seen"), store)).json()).toEqual({ finishes: [] });
     expect(readFileSync(file(dir))).toEqual(first);
     expect(files(dir)).toEqual(["seen.json"]);
     expect(logged.mock.calls.flat().join("\n")).toContain("not JSON");
     expect(logged.mock.calls.flat().join("\n")).not.toContain('"pane"');
-    // the file changed to other damaged bytes since the start: those are the ones kept
     const current = Buffer.from("{not json");
     writeFileSync(file(dir), current);
     expect((await post(store, JSON.stringify(finish("a", 1)))).status).toBe(200);
@@ -236,7 +227,6 @@ describe("a damaged read-finish file", () => {
     store.record(finish("b", 2));
     expect(readFileSync(bad(dir))).toEqual(current);
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
-    // damaged again: one generation, the latest
     const again = Buffer.from("]]");
     writeFileSync(file(dir), again);
     new SeenStore(dir).record(finish("c", 3));
@@ -263,7 +253,6 @@ describe("a damaged read-finish file", () => {
   it("preserves wrong-shaped documents privately: rows that are not finishes", () => {
     const logged = quiet();
     const dir = root();
-    // the valid row is used; the whole file is kept before the write drops the other
     const bytes = Buffer.from(JSON.stringify([finish("a", 2), { pc: "local", epoch: "e1", pane: "b", id: 0 }]));
     writeFileSync(file(dir), bytes, { mode: 0o644 });
     const store = new SeenStore(dir);
@@ -284,14 +273,12 @@ describe("a damaged read-finish file", () => {
     const store = new SeenStore(dir);
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
-    // repaired by hand while the server runs
     writeFileSync(file(dir), JSON.stringify([finish("b", 2)]));
     expect(store.record(finish("a", 1))).toEqual(finish("a", 1));
     expect(store.list()).toEqual([finish("b", 2), finish("a", 1)]);
     expect(told).toEqual([finish("a", 1)]);
     expect(files(dir)).toEqual(["seen.json"]);
     expect(new SeenStore(dir).list()).toEqual([finish("b", 2), finish("a", 1)]);
-    // an older finish for a repaired pane changes nothing
     expect(store.record(finish("b", 1))).toEqual(finish("b", 2));
     expect(told).toHaveLength(1);
   });
@@ -299,7 +286,6 @@ describe("a damaged read-finish file", () => {
   it("refuses to write over a file it cannot read", async () => {
     quiet();
     const dir = root();
-    // a directory where the file should be: reading it fails, and it is not an absent file
     mkdirSync(file(dir));
     writeFileSync(join(file(dir), "keep"), "kept");
     const store = new SeenStore(dir);
@@ -318,7 +304,6 @@ describe("a damaged read-finish file", () => {
     const dir = root();
     const bytes = Buffer.from('{"not":"a list"}');
     writeFileSync(file(dir), bytes);
-    // the older generation cannot be replaced: a directory with something in it
     mkdirSync(bad(dir));
     writeFileSync(join(bad(dir), "older"), "older");
     const store = new SeenStore(dir);
@@ -334,7 +319,6 @@ describe("a damaged read-finish file", () => {
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
     expect(store.list()).toEqual([]);
     expect(told).toEqual([]);
-    // once it can be kept, the same finish goes through
     rmSync(bad(dir), { recursive: true });
     expect((await post(store, JSON.stringify(finish("a", 1)))).status).toBe(200);
     expect(readFileSync(bad(dir))).toEqual(bytes);
@@ -361,7 +345,6 @@ describe("a damaged read-finish file", () => {
     expect(files(dir).filter((name) => name.endsWith(".bad"))).toEqual(["seen.json.bad"]);
     expect(store.list()).toEqual([]);
     expect(told).toEqual([]);
-    // the retry finds no file to keep aside and leaves the recovery bytes where they are
     expect((await post(store, JSON.stringify(finish("a", 1)))).status).toBe(200);
     expect(readFileSync(bad(dir))).toEqual(bytes);
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
@@ -391,7 +374,6 @@ describe("a damaged read-finish file", () => {
     const store = new SeenStore(dir);
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
-    // repaired by hand, then the replacement fails
     writeFileSync(file(dir), JSON.stringify([finish("r", 3)]));
     const rename = fs.renameSync;
     const spy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
@@ -403,7 +385,6 @@ describe("a damaged read-finish file", () => {
     expect(store.list()).toEqual([]);
     expect(told).toEqual([]);
     expect(files(dir).some((name) => name.endsWith(".bad"))).toBe(false);
-    // damaged again before the retry: the retry keeps these bytes
     const changed = Buffer.from("{damaged before the retry");
     writeFileSync(file(dir), changed);
     expect(store.record(finish("a", 1))).toEqual(finish("a", 1));

@@ -10,14 +10,11 @@ export const STEPS: ReadonlyArray<{ step: UpdateStep; label: string }> = [
 ];
 
 export interface UpdateProgressView {
-  /** "Step 2 of 5" */
   step: string;
   label: string;
-  /** how far through its steps the install is: a step counts as half done while it runs */
   percent: number;
 }
 
-/** What an app install is doing, in words; null when none runs or the server names no step. */
 export function describeUpdate(status: Pick<UpdateStatus, "phase" | "step"> | null | undefined): UpdateProgressView | null {
   if (!status?.step || (status.phase !== "building" && status.phase !== "restarting")) return null;
   const index = UPDATE_STEPS.indexOf(status.step);

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError, herdrRpc } from "./herdr/client.ts";
 
-// A stand-in herdr on a Unix socket: it records what was written and answers each line.
 let dir = "";
 let listener: ReturnType<typeof Bun.listen> | null = null;
 afterEach(() => {

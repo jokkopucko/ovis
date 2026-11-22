@@ -371,7 +371,6 @@
   min-width: 0;
 }
 
-/* the host keeps its own width: a relay's name is short, and a pill that may clip measures as cut inside the collapsed route list */
 .relay-map-host {
   flex: none;
   width: max-content;
@@ -552,7 +551,6 @@
     overflow-wrap: anywhere;
   }
 
-  /* a custom relay's host wider than the phone wraps inside the route instead of running off the dashboard */
   .relay-map-host {
     flex: 0 1 auto;
     width: auto;

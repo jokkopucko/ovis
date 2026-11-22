@@ -1,0 +1,50 @@
+
+
+  ✦ dsh-TUI  v0.20.0
+  ████   █████  █████  ████    ████  █████  █████  █   █
+  █   █  █      █      █   █  █      █      █      █  █
+  █   █  ████   ████   ████    ███   ████   ████   ███
+  █   █  █      █      █          █  █      █      █  █
+  ████   █████  █████  █      ████   █████  █████  █   █
+
+  █   █    ███    ████    █   █   █████    ████    ████
+  █   █   █   █   █   █   ██  █   █       █       █
+  █████   █████   ████    █ █ █   ████     ███     ███
+  █   █   █   █   █  █    █  ██   █           █       █
+  █   █   █   █   █   █   █   █   █████   ████    ████
+  dsh-deepseek-flash · High effort
+  /home/jimmy/.cache/ovis-tmp/dshq
+  Tip: ```mermaid fences in replies are drawn as character diagrams; toggle in /settings · /tips mo…
+
+    Explore the uncharted!
+
+  ❯ Use the ask_user_question tool exactly once to ask me: Which headless approach should I
+    build? Options: "Device + WebDriverAgent (Recommended)" with description "Uses iphone172
+    and the MacBook; no App Attest workaround, no ToS risk, durable." and "Dev API + Firebase
+    token" with description "No hardware, but depends on an unprotected staging API.". Do
+    nothing else.
+
+  ● ⏵ Asking which headless approach to build
+
+
+
+  🌘 Quick question · 54s · ↑ 11k · ↓ 10 tokens
+
+    ───────────────────────────────────▾  📋 Question 1/1   ────────────────────────────────────
+
+    ◈ Choose Approach
+    Which headless approach should I build?
+
+     ○ Device + WebDriverAgent (Recommended)
+       Uses iphone172 and the MacBook; no App Attest workaround, no ToS risk, durable.
+     ○ Dev API + Firebase token
+       No hardware, but depends on an unprotected staging API.
+
+    ❯✎ Custom answer：
+
+    Type answer · Ctrl+V paste · Enter submit · ↑ back to options · Esc cancel · Ctrl+K to fold
+    / click the header
+                                                                                    11k/1.0M 1.1%
+   dsh-deepseek-flash · high · cache 97.5% · ≈ unpriced 11.2k tok · dshq      ctx 1.1% (11k/1.0m)
+   esc to interrupt
+

@@ -25,32 +25,18 @@ const NODE_ICONS: Record<OmoRunNode["state"], ComponentType<LucideProps>> = {
 /**
  * The status line's one chip for what the agent works through besides its answer: the plan it
  * keeps (Claude Code's task list, Codex's checklist: `plan`, read again while open) and its
- * background tasks. Shown while there is a plan, or as below for the tasks; one list holds both.
- *
- * The background tasks: opens what OmO's background tasks are and how far they got.
- * Shown on every OmO pane (quiet while nothing runs: what ended in the last day can still be read,
- * after a reload too), and on any pane while a task runs. The list is for what runs now: what
- * ended is one line that says how many ended and how many went wrong, and opens on request.
- * The server keeps the newest ten ended tasks and five ended workflows of the last day, so the
- * line counts those, and says "recently", not "in the last day".
- * A Claude Code or OpenCode pane's tasks are its subagents (`subagents`). Most such panes have
- * none, so it asks when the pane is shown (and when its count changes), and appears only when
- * there are or were some.
+ * background tasks. A Claude Code or OpenCode pane's tasks are its subagents (`subagents`).
  */
 export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = null }: { paneId: string; count: number; omo: boolean; subagents?: boolean; plan?: PlanSummary | null }) {
   const t = useT();
   const { fetchPaneOmoActivity, fetchPanePlan } = useMachineApi();
   const machineId = useMachineId();
   const [open, setOpen] = useState(false);
-  // the running task whose detail is open over the list (BackgroundAgentDetail): its sheet takes
-  // the list's Back, Escape and outside-press while it is up, and the list stays under it
   const [detail, setDetail] = useState<OmoTask | null>(null);
   const detailUp = useRef(false);
   detailUp.current = detail !== null;
   const closeDetail = useCallback(() => setDetail(null), []);
-  // a phone's Back closes the list, as it closes the other dialogs there (the plan used to be a sheet)
   usePhoneSheetBack(() => setOpen(false), open && detail === null);
-  // the list closed, or the pane or PC changed under it: a detail left open would be another task's
   useEffect(() => { if (!open) setDetail(null); }, [open]);
   useEffect(() => { setDetail(null); }, [paneId, machineId]);
   const [seen, setSeen] = useState(count > 0);
@@ -68,15 +54,12 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     };
     ask(3);
     return () => { alive = false; clearTimeout(timer); };
-    // asked when the pane is shown and again when its count changes
   }, [subagents, paneId, count]);
   const [tasks, setTasks] = useState<OmoTask[] | null>(null);
   const [runs, setRuns] = useState<OmoRun[]>([]);
-  // running ones that count but are not listed (an OpenCode pane lists the newest thousand)
   const [moreRunning, setMoreRunning] = useState(0);
   const [failed, setFailed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  /** the PC's clock minus this browser's: task times are on the PC's */
   const [offset, setOffset] = useState(0);
   const [showEnded, setShowEnded] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
@@ -84,10 +67,8 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();
   const endedId = useId();
-  // closed, the list forgets what was opened: it opens on what runs now every time
   useEffect(() => { if (!open) setShowEnded(false); }, [open]);
 
-  // the tasks part shows once a task ran or runs here, or on any OmO pane
   const tasksShown = count > 0 || seen || omo;
   useEffect(() => {
     if (!open || !tasksShown) return;
@@ -100,7 +81,6 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
         const received = Date.now();
         setTasks(next.tasks); setRuns(next.runs); setMoreRunning(next.moreRunning); setFailed(false); setOffset(clockOffsetMs(next.serverTime, received)); setNow(received);
       } catch {
-        // the clock stops with the list: a running task's time is no longer known to run on
         if (alive) setFailed(true);
       }
       if (!alive) return;
@@ -110,7 +90,6 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     return () => { alive = false; clearTimeout(timer); };
   }, [open, tasksShown, paneId, fetchPaneOmoActivity]);
 
-  // the plan's steps, read while the list is open: undefined not read yet, null none kept now
   const [steps, setSteps] = useState<PlanStep[] | null | undefined>(undefined);
   const [planFailed, setPlanFailed] = useState(false);
   const planShown = plan !== null;
@@ -136,18 +115,14 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
 
   useEffect(() => {
     if (!open) return;
-    // a press or a key while a task's detail is up is the detail's (it is drawn outside the list)
     const outside = (event: PointerEvent): void => { if (!detailUp.current && !root.current?.contains(event.target as Node)) setOpen(false); };
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || detailUp.current) return;
-      // the list unmounts with whatever inside it held the focus: hand it back to the toggle
       if (root.current?.contains(document.activeElement)) toggle.current?.focus();
       setOpen(false);
     };
-    // The list shares its place above the card with the slash and @ menus: once the focus has gone
-    // somewhere else (Shift+Tab back to the message box), it closes, or it would cover them.
-    // No relatedTarget is a press on a row of the list, or a browser that does not focus a pressed
-    // button: that is not leaving, and a press outside is `outside`'s
+    // no relatedTarget: a press on a row, or a browser that does not focus a pressed button (Safari,
+    // Firefox on macOS)
     const left = (event: FocusEvent): void => { if (!detailUp.current && event.relatedTarget instanceof Node && !node?.contains(event.relatedTarget)) setOpen(false); };
     const node = root.current;
     window.addEventListener("pointerdown", outside);
@@ -156,13 +131,9 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     return () => { window.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", escape); node?.removeEventListener("focusout", left); };
   }, [open]);
 
-  // The list opens upward from the composer, whose height CSS cannot know (text, quick replies,
-  // attachments): the room above it, up to the top of the pane, is measured and bounds the list,
-  // so on a short screen the list scrolls inside that room and never runs under the app header.
   useLayoutEffect(() => {
     const list = menu.current;
     const anchor = list?.offsetParent;
-    // the list is anchored to the input card, inside the composer: the room is the pane's, above the card
     const composer = anchor?.closest(".composer") ?? null;
     const frame = (composer ?? anchor)?.parentElement;
     if (!open || !list || !anchor || !frame) return;
@@ -171,8 +142,6 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     const observer = new ResizeObserver(measure);
     observer.observe(anchor);
     observer.observe(frame);
-    // a note or a hint under the card, a quick-reply row above it: the card moves and neither it
-    // nor the pane changes size, the composer does
     if (composer) observer.observe(composer);
     return () => observer.disconnect();
   }, [open]);
@@ -196,7 +165,6 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
       <span className="bg-task-title">{task.title}<span className="sr-only"> ({words[task.status]})</span></span>
       {(meta.length > 0 || (task.status !== "running" && task.status !== "completed")) && <span className="bg-task-meta">{[task.status !== "running" && task.status !== "completed" ? words[task.status] : null, meta || null].filter((item) => item !== null).join(" · ")}</span>}
     </span>;
-    // a running task opens its detail: what a Claude subagent is doing, or why this PC cannot say
     if (task.status === "running") {
       return <li key={task.id} className={`bg-task is-${task.status} is-openable`}>
         <button type="button" className="bg-task-open" aria-haspopup="dialog" aria-expanded={detail?.id === task.id} onClick={(event) => { event.currentTarget.focus(); setDetail(task); }}>
@@ -245,14 +213,10 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
   const endedRuns = runs.filter((run) => !runGoing(run));
   const summary = endedSummary(tasks ?? [], runs);
 
-  // a plan cleared or a PC gone while the list is open: nothing is left to list, so the control goes
   useEffect(() => { if (open && !planShown && !tasksShown) setOpen(false); }, [open, planShown, tasksShown]);
   if (!planShown && !tasksShown) return null;
   const tasksLabel = count === 0 ? t("Background tasks") : t(count === 1 ? "{n} background task" : "{n} background tasks", { n: count });
   const planLabel = plan ? t("Plan: {done} of {total} done", { done: plan.done, total: plan.total }) : null;
-  // the step in progress is drawn after the figures, cut to the room the chip gives it (BackgroundTasks.css),
-  // and whole in the button's name and title, before the tasks. No step in progress (between steps, or all
-  // done): the figures alone
   const current = plan?.current ? plan.current : null;
   const name = [planLabel, current, tasksShown ? tasksLabel : null].filter((part) => part !== null).join(" · ");
   const busy = count > 0 || (plan !== null && plan.done < plan.total);
@@ -270,7 +234,6 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
       </span>
     </li>;
   };
-  // a phone's status line has one row: there the words give way to the icons and the numbers
   return <span className="bg-tasks" ref={root}>
     <button type="button" ref={toggle} className={`bg-tasks-toggle${busy ? "" : " is-idle"}`} aria-label={name} title={name} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
       {plan && <><ListChecks aria-hidden="true" /><span className="bg-tasks-label">{t("Plan")}</span><span className="bg-tasks-plan" aria-hidden="true">{plan.done}/{plan.total}</span>{current && <span className="bg-tasks-current" aria-hidden="true">{current}</span>}</>}
@@ -291,7 +254,6 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
       {failed && tasks === null && <p className="bg-tasks-note">{t("Couldn't load the background tasks")}</p>}
       {failed && tasks !== null && <p className="bg-tasks-note" role="status">{t("Couldn't refresh: this is the list as it last read")}</p>}
       {tasks !== null && tasks.length === 0 && runs.length === 0 && <p className="bg-tasks-note">{t("No background tasks to show yet")}</p>}
-      {/* said only of a fresh read that agrees with the pushed count: a stale list must not deny a task that just started */}
       {tasks !== null && !failed && count === 0 && running.length === 0 && goingRuns.length === 0 && summary.ended > 0 && <p className="bg-tasks-note">{t("Nothing running right now")}</p>}
       {goingRuns.length > 0 && <><div className="menu-heading">{t("Workflows")}</div><ul className="bg-task-list">{goingRuns.map(runView)}</ul></>}
       {running.length > 0 && <><div className="menu-heading">{t("Running")}</div><ul className="bg-task-list">{running.map(row)}</ul></>}

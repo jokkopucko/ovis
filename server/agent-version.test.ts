@@ -20,7 +20,6 @@ function temp(): string {
   return root;
 }
 
-/** A reader over the real file that counts every byte it hands out. */
 function counting(): ByteReader & { bytes: number } {
   const reader = {
     bytes: 0,
@@ -66,7 +65,6 @@ describe("storeAgentVersion", () => {
     const reader = counting();
     expect(storeAgentVersion("codex", { path }, reader)).toBe("0.162.1");
     expect(reader.bytes).toBeLessThanOrEqual(WINDOW);
-    // a long first line of another record type names no version, nor does a version past the window
     writeFileSync(path, `${JSON.stringify({ type: "turn_context", payload: { cli_version: "0.162.1", text: "x".repeat(WINDOW) } })}\n`);
     expect(storeAgentVersion("codex", { path })).toBeNull();
     writeFileSync(path, `${JSON.stringify({ type: "session_meta", payload: { text: "x".repeat(WINDOW), cli_version: "0.162.1" } })}\n`);
@@ -82,7 +80,6 @@ describe("storeAgentVersion", () => {
     expect(storeAgentVersion("claude", { path: recent }, reader)).toBe("2.1.301");
     expect(reader.bytes).toBeGreaterThan(0);
     expect(reader.bytes).toBeLessThanOrEqual(WINDOW);
-    // a version only at the start of a 10 MB transcript is past the window: not read, not guessed
     const old = join(dir, "old.jsonl");
     writeFileSync(old, `${JSON.stringify({ type: "user", version: "2.0.1" })}\n${filler(TEN_MB)}`);
     const again = counting();
@@ -114,7 +111,6 @@ describe("storeAgentVersion", () => {
     writeFileSync(wrong, `${JSON.stringify({ type: "user", version: 2 })}\n`);
     expect(storeAgentVersion("claude", { path: wrong })).toBeNull();
     expect(storeAgentVersion("claude", { path: join(dir, "absent.jsonl") })).toBeNull();
-    // a store that fails to read for any other reason leaves the commands unverified, never unlisted
     expect(storeAgentVersion("claude", { path: dir })).toBeNull();
     expect(storeAgentVersion("codex", { path: dir })).toBeNull();
     const failing: ByteReader = { size: () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); }, read: () => new Uint8Array() };

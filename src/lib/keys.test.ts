@@ -209,12 +209,10 @@ describe("ctrlEnterSequence", () => {
 
 describe("mirroredCtrlEnterKey", () => {
   it("sends a mirrored pane's Ctrl+Enter as herdr's key, which herdr encodes in the program's own mode (#924)", () => {
-    // regression (fails on main): a mirror never shows the browser the program's modifyOtherKeys
     expect(mirroredCtrlEnterKey(true, 0)).toBe("ctrl+enter");
   });
 
   it("leaves an attached pane's Ctrl+Enter to xterm and to what its stream asked for", () => {
-    // control: unchanged on an attached pane, with or without modifyOtherKeys
     expect(mirroredCtrlEnterKey(false, 0)).toBeNull();
     expect(mirroredCtrlEnterKey(false, 2)).toBeNull();
   });

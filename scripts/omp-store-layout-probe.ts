@@ -33,10 +33,8 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "omp-store-layout-")));
 const closed = "http://127.0.0.1:9";
 
 interface Case { name: string; args: string[]; env?: Record<string, string>; mkdirs?: string[] }
-/** What one case did, every temporary path as $CASE: the native truth server/omp.test.ts holds ompStoreLayout to. */
 interface FixtureCase {
   name: string; args: string[]; env: Record<string, string>; mkdirs: string[];
-  /** null when omp wrote no absolute session path */
   observed: { sessions: string | null; depth: 1 | 2 | null; terminalSessions: string | null; cwd: string | null };
 }
 interface Observed {
@@ -44,11 +42,9 @@ interface Observed {
   breadcrumb: string | null; sessionPath: string | null;
   layout: { sessions: string; terminalSessions: string; depth: 1 | 2 } | null; held: string | null;
   fixture: FixtureCase;
-  /** null when the case is proved: the supported resolution found omp's own session, or the unsupported one gave nothing */
   proof: string | null;
 }
 
-/** Every file under a `terminal-sessions` directory below `dir`. */
 function breadcrumbs(dir: string, depth = 0, found: string[] = []): string[] {
   if (depth > 9) return found;
   let entries: import("node:fs").Dirent[] = [];
@@ -77,7 +73,6 @@ async function observe(spec: Case, index: number): Promise<Observed> {
   let output = "";
   let settled!: () => void;
   const ready = new Promise<void>((resolve) => { settled = resolve; });
-  // subscribed before the spawn: every chunk of omp's output rechecks for its breadcrumb
   const child = Bun.spawn([omp!, ...spec.args.map(fill)], {
     cwd: project, env,
     terminal: { cols: 120, rows: 40, data(_terminal, data) { output += new TextDecoder().decode(data); if (breadcrumbs(caseRoot).length > 0) settled(); } },

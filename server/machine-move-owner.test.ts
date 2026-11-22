@@ -12,12 +12,10 @@ import { PortalService } from "./portal.ts";
 // Another PC's move is the owner's, from any device the owner signed in or paired: this PC itself, the
 // token, the owner's Tailscale login, a paired device that drives, or a relay device that drives (the
 // owner's phone, another of the owner's PCs). Never an open LAN visitor, a Portal visitor, or a device
-// that only watches. The PC behind the proxy is offline here, so the owner's requests end at
-// "disconnected", and nobody else's gets that far.
+// that only watches.
 afterAll(unitHerdrOnly());
 const root = mkdtempSync(join(tmpdir(), "ovis-move-owner-"));
 const TOKEN = "fictional-owner-token";
-// tokenless and ungated: this PC itself, the owner's Tailscale login, and an open LAN window
 const open = createServer({ port: 0, hostname: "0.0.0.0", stateDir: join(root, "open"), token: "", tailscaleOwner: "owner@example.com", machines: false, sidecar: false });
 // with a token and paired devices, which close the open LAN
 const portal = new PortalService({ stateDir: join(root, "secured") });
@@ -90,7 +88,6 @@ it("each kind of access is the one it names", async () => {
 it("lets the owner from this PC, the token, a Tailscale login, a paired or a relay device that drives move another PC or every PC; never an open LAN visitor, a Portal visitor or a device that watches", async () => {
   for (const kind of OWNERS) {
     for (const [path, method] of ROUTES) {
-      // as far as the PC, which is offline here; move-all answers for it
       const expected = path === "runtime/move-all" ? [202, null] : [503, "machine_offline"];
       expect([kind, path, method, ...await ask(kind, path, method, update, bodyFor(path, method))]).toEqual([kind, path, method, ...expected]);
     }

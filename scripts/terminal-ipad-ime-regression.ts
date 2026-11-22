@@ -4,6 +4,8 @@ import { EventEmitter, once } from "node:events";
 import { mkdirSync } from "node:fs";
 import type { Browser } from "playwright-core";
 import { shownRows } from "./shown-rows.ts";
+import { openLens } from "./header-lens.ts";
+import { IME_INITIAL_ATTACH_TIMEOUT, resetImeInput, selectImePane, waitForImeTerminal } from "./terminal-ime-ready.ts";
 
 /**
  * iPadOS 27 Safari with a Magic Keyboard sends each jamo as a printable keydown (its own keyCode,
@@ -15,12 +17,10 @@ import { shownRows } from "./shown-rows.ts";
  * whose WKWebView reports no "Safari" in its user agent: there each jamo reached the pane on its own.
  */
 export async function checkIpadIme(browser: Browser, origin: string, pane: string, otherPane: string): Promise<void> {
-  // one context for both iPad platforms: the page, not the context, carries the platform it reports
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
     viewport: { width: 1100, height: 700 },
   });
-  // an iPhone's user agent: the terminal also keeps a space in its field there (#862)
   const iphone = await browser.newContext({
     userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1",
     viewport: { width: 1100, height: 700 },
@@ -42,20 +42,13 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       localStorage.setItem(`ovis:view:${pane}`, "terminal");
     }, { pane, platform: platform === "iPhone app" ? "iPhone" : platform });
     const sent: Array<{ pane_id: string; text: string }> = [];
-    // key frames (a key-bar chord), with how many input frames came before each
     const keyed: Array<{ pane_id: string; keys: string[]; after: number }> = [];
     const signals = new EventEmitter();
     const signal = (name: string) => once(signals, name, { signal: AbortSignal.timeout(10_000) });
-    // output for the page as if the pane wrote it: input here never reaches the pane to echo
     let toPage = (_data: string): void => {};
     await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
       const server = socket.connectToServer();
       toPage = (data) => socket.send(JSON.stringify({ type: "pty-data", pane_id: pane, data }));
-      server.onMessage((raw) => {
-        const frame = JSON.parse(String(raw));
-        if (frame.type === "input-ready" && frame.ready !== false) signals.emit("ready");
-        socket.send(raw);
-      });
       socket.onMessage((raw) => {
         const frame = JSON.parse(String(raw));
         if (frame.type === "input") { sent.push(frame); signals.emit(`input:${frame.text}`); }
@@ -63,17 +56,13 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         else server.send(raw);
       });
     });
-    const input = page.locator(".xterm-helper-textarea:visible");
+    const input = page.locator(".pane-frame.is-current .xterm-helper-textarea");
     const reset = async () => {
-      const ready = signal("ready");
-      await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
-      await ready;
-      await input.focus();
+      await resetImeInput(page, pane);
       assert.equal(await input.inputValue(), " ", "touch devices keep the Backspace repeat space");
       sent.length = 0;
       keyed.length = 0;
     };
-    // the pane and the exact bytes a named assertion saw, JSON-escaped
     const report = (label: string, owner = pane) => console.log(`  ok ${platform}: ${label}: pane ${owner} bytes ${JSON.stringify(sent.map((frame) => frame.text).join(""))}${keyed.length ? ` keys ${JSON.stringify(keyed)}` : ""}`);
     // iOS dictation replaces its hypothesis in place: insertReplacementText over the previous one,
     // no key and no composition events.
@@ -169,6 +158,8 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       assert(sent.every((frame) => frame.pane_id === pane), "input stays with its pane");
     };
     try {
+      await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`, { waitUntil: "domcontentloaded" });
+      await waitForImeTerminal(page, pane, IME_INITIAL_ATTACH_TIMEOUT);
       await reset();
       await key("ㅎ", [["insert", "ㅎ"]], true);
       await check("ㅎ", "the first Hangul jamo after caret 0 is sent instead of the kept space");
@@ -225,8 +216,6 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       await fresh("ㄱ"); await replace("ㅡ", "그"); await replace("ㄹ", "글");
       await input.press("Space");
       await check("abc한글 ", "English then iPad Hangul commits each syllable once, in order");
-      // the syllable being typed is drawn at the size its row gives the committed ones
-      // (terminalGlyphs enlarges a two-cell glyph that leaves its cells half empty)
       toPage("\r\n한 ");
       await page.waitForFunction((shown) => [...document.querySelector(shown)?.querySelectorAll("span") ?? []].some((span) => span.textContent?.includes("한")), shownRows());
       await fresh("ㄱ"); await replace("ㅡ", "그");
@@ -244,9 +233,10 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       assert.equal(sizes.pending, "그", "a syllable is pending");
       assert(Math.abs(Number.parseFloat(sizes.view) - Number.parseFloat(sizes.row)) < 0.01,
         `the pending syllable is drawn at its row's size: ${sizes.view} against ${sizes.row} (platform ${platform})`);
+      // Finish the measured preedit and drain its frames before the next case clears the capture.
+      await check("abc한글 \x07그", "the measured syllable commits once");
 
       await reset();
-      // 망 then ㅏ: the final ㅇ moves on and the editor puts back two syllables at once
       await fresh("ㅁ"); await replace("ㅏ", "마"); await replace("ㅇ", "망"); await replace("ㅏ", "마아");
       await input.press("Space");
       await check("마아 ", "a two-syllable replacement commits both");
@@ -277,7 +267,7 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         await page.waitForFunction((shown) => [...document.querySelector(shown)?.querySelectorAll("span") ?? []].some((span) => span.textContent?.includes("Caret replay passed")), shownRows());
         for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
           await page.setViewportSize(viewport);
-          await page.locator('.view-switch button[title^="Live terminal"]').click();
+          await openLens(page, "terminal");
           await page.waitForFunction(() => {
             const terminal = document.querySelector(".terminal-host");
             return terminal && terminal.getBoundingClientRect().width > Math.min(innerWidth - 40, 600);
@@ -287,7 +277,6 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         await page.setViewportSize({ width: 1100, height: 700 });
       }
 
-      // Dictation: the hypotheses stay in the field, and the corrected phrase is sent once.
       const hypotheses = ["thi", "this", "this is", "this is a test", "This is a test."];
       await reset();
       assert.equal(await dictate(hypotheses), "This is a test.", "the field ends on the corrected phrase");
@@ -307,17 +296,14 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         await check(text, `a whole string committed as one key is sent whole, once: ${label}`);
         report(`a whole string committed as one key is sent whole, once: ${label}`);
       }
-      // with no insertion of that string, the keypress's own character goes, as it always did
       for (const [label, inserted] of [["no insertion", null], ["another insertion", "hey "]] as const) {
         await reset();
-        // sent by the keyup (or the insertion) itself, not left for a later key to flush
         const sentAlone = signal("input:h");
         await insertWhole("hey", 72, inserted);
         await sentAlone;
         await check("h", `a whole-string key with ${label} sends its keypress's character`);
         report(`a whole-string key with ${label} sends its keypress's character`);
       }
-      // typing goes on as before after it: a letter, then a Hangul syllable composed in the editor
       await reset();
       await insertWhole("hello world", 72);
       await input.press("x");
@@ -325,7 +311,6 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       await input.press("Space");
       await check("hello worldx하 ", "typing after a whole-string key");
       report("typing after a whole-string key");
-      // a syllable still being typed goes first, then the whole string, each once
       await reset();
       await fresh("ㅎ"); await replace("ㅏ", "하");
       await insertWhole("hello", 72);
@@ -342,22 +327,23 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         report(`SwiftKey repeats a word without duplication: ${label}`);
       }
 
-      // The key bar's Ctrl, tapped once, is held for the next key, and turns a typed letter or a
-      // key-bar key into a chord; the chord lets go of it. A syllable still being typed is text: it goes first, never as the chord, and the
-      // next syllable starts clean (no c, no DEL).
-      const ctrl = page.locator('.key-bar .key[data-key="Control"]');
+      const ctrl = page.locator('.key-bar .key[data-key="Control"]:enabled');
+      const armed = ctrl.and(page.locator('[aria-pressed="true"]'));
       await reset(); await fresh("ㅎ"); await replace("ㅏ", "하");
-      await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.key-bar .key[data-key="Control"]')?.disabled === false);
       await ctrl.evaluate((node: HTMLElement) => node.click());
-      let chord = signal("keys");
+      await armed.waitFor({ state: "attached", timeout: 10_000 });
+      const chord = signal("keys");
       await input.press("c");
       await chord.catch((error) => { throw new Error(`no key frame for the held Ctrl and c (platform ${platform}): input ${JSON.stringify(sent)}`, { cause: error }); });
       await page.waitForFunction(() => document.querySelector('.key-bar .key[data-key="Control"]')?.getAttribute("aria-pressed") === "false");
       await fresh("ㄱ"); await replace("ㅡ", "그");
       await ctrl.evaluate((node: HTMLElement) => node.click());
-      chord = signal("keys");
-      await page.locator('.key-bar .key[data-key="Escape"]').evaluate((node: HTMLElement) => node.click());
-      await chord.catch((error) => { throw new Error(`no key frame for the held Ctrl and the key bar's Esc (platform ${platform}): input ${JSON.stringify(sent)}`, { cause: error }); });
+      await armed.waitFor({ state: "attached", timeout: 10_000 });
+      await Promise.all([
+        signal("keys"),
+        page.locator('.key-bar .key[data-key="Escape"]:enabled')
+          .evaluate((node: HTMLElement) => node.click(), undefined, { timeout: 10_000 }),
+      ]).catch((error) => { throw new Error(`no key frame for the held Ctrl and the key bar's Esc (platform ${platform}): input ${JSON.stringify(sent)}`, { cause: error }); });
       await page.waitForFunction(() => document.querySelector('.key-bar .key[data-key="Control"]')?.getAttribute("aria-pressed") === "false");
       await fresh("ㅎ");
       await check("하그ㅎ", "refused context cannot seed the next accepted rewrite: a held Ctrl chord");
@@ -365,12 +351,8 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
         `each chord follows its syllable, as one key frame: ${JSON.stringify(keyed)}`);
       report("refused context cannot seed the next accepted rewrite: held Ctrl chord");
 
-      // A pane switch during a pending dictation phrase: neither pane receives it.
       await reset(); await dictate(hypotheses.slice(0, 3));
-      const away = signal("ready");
-      await page.locator(`.pane-select[title^="${otherPane} —"]`).first().evaluate((node: HTMLElement) => node.click());
-      await page.waitForFunction((pane) => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.pane_id === pane, otherPane);
-      await away;
+      await selectImePane(page, otherPane);
       const ended = signal("input:\x07");
       await input.focus();
       await input.press("x");
@@ -379,12 +361,10 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       assert.equal(sent.map((frame) => frame.text).join(""), "x\x07", "refused context cannot seed the next accepted rewrite: a pane switch mid-dictation");
       assert(sent.every((frame) => frame.pane_id === otherPane), `input goes to the pane switched to: ${JSON.stringify(sent)}`);
       report("refused context cannot seed the next accepted rewrite: pane switched mid-dictation", otherPane);
+      await selectImePane(page, pane);
 
       await reset(); await fresh("ㅎ"); await replace("ㅏ", "하");
-      const switched = signal("ready");
-      await page.locator(`.pane-select[title^="${otherPane} —"]`).first().evaluate((node: HTMLElement) => node.click());
-      await page.waitForFunction((pane) => JSON.parse(localStorage.getItem("ovis:selection")!).pane_id === pane, otherPane);
-      await switched;
+      await selectImePane(page, otherPane);
       const received = signal("input:\x07");
       await input.press("Control+g");
       await received;

@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 
-/// Ends a request at its redirect: the redirect's own response is the answer.
 private final class NoRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -18,14 +17,10 @@ private final class InstallerRedirects: NSObject, URLSessionTaskDelegate {
 struct Status: Equatable {
     var running: Bool
     var origin: URL?
-    /// The HTTPS address Tailscale serves the app at, which the phone opens.
     var phoneURL: URL?
-    /// "missing", "stopped" or "running", as /api/access reports Tailscale.
     var tailscale: String?
-    /// The launcher's pid, from `plugin.ts status`'s "(pid 1)".
     var pid: Int32?
 
-    /// `plugin.ts status`'s first line: "running http://127.0.0.1:7317 (pid 1)" or "down …".
     static func parse(_ line: String) -> Status {
         let words = line.split(separator: " ")
         var status = Status(running: words.first == "running", origin: words.count > 1 ? serverOrigin(String(words[1])) : nil)
@@ -33,7 +28,6 @@ struct Status: Equatable {
         return status
     }
 
-    /// The address in `plugin.ts status`'s line, when it is a web address.
     static func serverOrigin(_ text: String) -> URL? {
         guard let url = URL(string: text), isWeb(url), url.host?.isEmpty == false else { return nil }
         return url
@@ -67,31 +61,19 @@ final class Model: ObservableObject {
     @Published var phase: Phase = .checking
     @Published var log: [String] = []
     @Published var status: Status?
-    /// The Ovis page the main window shows: the running server's address, nil while it is not running.
     @Published private(set) var webOrigin: URL?
-    /// Bumped to load the page again: View > Reload, or the server answering again after it was gone.
     @Published private(set) var reloads = 0
-    /// An Install from this app is done: the phone's QR code opens next to the page.
     @Published var phoneSetupRequested = false
-    /// The main window's page, for Open in Browser.
     weak var page: WebPageController?
-    /// Unsent drafts read from the page the window left (another port is another origin, with storage of
-    /// its own), for the next page to take up. Kept until a page has loaded with them.
     private(set) var carriedDrafts: [String: String] = [:]
-    /// The page did not load: it loads again once the server answers. A page that did load reconnects
-    /// by itself, as it does in a browser, and keeps what the user had open in it.
     private var pageFailedToLoad = false
-    /// Bumped as Install, Restart, Make the phone address or Remove starts: a check that began before it
-    /// must not put its result over theirs.
     private var work = 0
     private var pluginRoot: String?
     enum Action { case install, restart, phone, remove }
-    /// What Try again repeats: the action that failed, not the whole install.
     private var retryAction = Action.install
 
     var logText: String { log.joined(separator: "\n") }
 
-    /// Install, Restart or Remove is under way, and waits for the server itself.
     var busy: Bool {
         if case .working = phase { return true }
         return false
@@ -123,24 +105,18 @@ final class Model: ObservableObject {
             carriedDrafts.merge(drafts) { $1 }
         }
         if origin != webOrigin {
-            // a page at a new address loads by itself
             webOrigin = origin
             pageFailedToLoad = false
         }
         phase = .installed
     }
 
-    /// Keeps the main window on a live page for as long as the app runs. A running page reconnects by
-    /// itself to a server that comes back, and tells the user itself when the server it meets was
-    /// updated; a page that did not load, or whose code never started, loads again once the server
-    /// answers. Every fifth miss (about 15 s) reads the status again: the server may be on another port
-    /// now, or stopped, and then the window shows Start. A server started outside the app (a terminal,
-    /// herdr's own start) is picked up the same way.
+    /// Every fifth miss (about 15 s) reads the status again: the server may be on another port
+    /// now, or stopped, and then the window shows Start.
     func monitor() async {
         var misses = 0
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            // Install, Restart and Remove wait for the server themselves, and a failure stays on screen
             guard phase == .installed || phase == .notInstalled else {
                 misses = 0
                 continue
@@ -175,7 +151,6 @@ final class Model: ObservableObject {
         pageFailedToLoad = false
     }
 
-    /// These carried drafts are in the new page's storage now; any other stays for the next try.
     func draftsCarried(_ keys: Set<String>) {
         carriedDrafts = carriedDrafts.filter { !keys.contains($0.key) }
     }
@@ -253,8 +228,6 @@ final class Model: ObservableObject {
                 return
             }
         } else if !(await LaunchAgent.start()) {
-            // herdr installed from a terminal has no login item to start, and Start makes none: herdr runs
-            // for this login only, as `herdr` in a terminal would
             do {
                 try await LaunchAgent.startOnce()
             } catch {
@@ -265,8 +238,7 @@ final class Model: ObservableObject {
         await waitUntilRunning()
     }
 
-    /// The installer's phone step: `tailscale serve` for this app, when Tailscale runs here. Run, as
-    /// install.sh runs it, from the release that runs now: the plugin's own checkout stays at the first one.
+    /// Run, as install.sh runs it, from the release that runs now: the plugin's own checkout stays at the first one.
     func makePhoneAddress() async {
         guard let root = pluginRoot else { return }
         work += 1
@@ -274,7 +246,7 @@ final class Model: ObservableObject {
         log = []
         phase = .working(L("Making the phone address…", "휴대폰 주소를 만드는 중…"))
         // the code the server runs now, read from its processes: herdr's checkout stays at the version first
-        // installed, and an update runs its release from the state dir. The pid is read now, not kept from before
+        // installed, and an update runs its release from the state dir.
         var code = root
         if let pid = await readStatus(root: root).pid, let running = await Self.runningCode(launcher: pid, root: root) { code = running }
         let script = "\(code)/scripts/plugin.ts"
@@ -291,8 +263,7 @@ final class Model: ObservableObject {
         await refresh()
     }
 
-    /// Takes the Ovis server off this Mac, as the guide's Uninstall does. herdr, Bun and Node stay, and
-    /// herdr keeps running: stopping it would end every agent in it.
+    /// herdr, Bun and Node stay, and herdr keeps running: stopping it would end every agent in it.
     func uninstall() async {
         work += 1
         retryAction = .remove
@@ -300,8 +271,6 @@ final class Model: ObservableObject {
         phase = .working(L("Removing…", "제거하는 중…"))
         let phoneURL = status?.phoneURL
         let appPort = status?.origin.map { $0.port ?? ($0.scheme == "https" ? 443 : 80) }
-        // looked up again, so Try again goes on from where a failed try stopped; a lookup that failed is
-        // not a plugin that is gone
         let lookup = await lookupPlugin()
         if case .failed = lookup {
             fail(L("herdr did not list its plugins, so nothing was removed.", "herdr가 플러그인 목록을 알려 주지 않아 아무것도 제거하지 않았습니다."))
@@ -323,7 +292,6 @@ final class Model: ObservableObject {
         if let tailscale = Paths.tailscale {
             var ports = phoneURL.map { [$0.port ?? 443] } ?? []
             if ports.isEmpty, let appPort {
-                // a server that was down told no phone address: what Tailscale itself serves for its port does
                 let serve = await run(tailscale, ["serve", "status", "--json"], keepStderr: false, timeout: 10)
                 guard serve.status == 0 else {
                     await LaunchAgent.remove()
@@ -347,10 +315,6 @@ final class Model: ObservableObject {
         await refresh()
     }
 
-    /// The directory of the code the server runs. `plugin.ts status`'s pid is the launcher, `bun <root>/server/managed.ts`
-    /// of this checkout; it runs a supervisor, which runs the bridge, `bun server/index.ts`, in the code dir of the
-    /// active release or of the checkout (server/supervisor.ts). The bridge's dir is the answer even when the
-    /// supervisor is an older one the launcher fell back to.
     static func runningCode(launcher: Int32, root: String) async -> String? {
         guard let args = processArguments(launcher), isLauncher(args, root: root) else { return nil }
         for supervisor in await children(of: launcher) {
@@ -430,7 +394,6 @@ final class Model: ObservableObject {
     enum PluginLookup: Equatable {
         case found(id: String, root: String)
         case none
-        /// herdr did not answer, or not with a list: whether the plugin is there is not known
         case failed
     }
 
@@ -448,7 +411,6 @@ final class Model: ObservableObject {
         return .none
     }
 
-    /// The HTTPS ports `tailscale serve status --json` serves the app's port on, as `server/tailscale.ts` reads them.
     nonisolated static func servedHTTPSPorts(_ json: Data, appPort: Int) -> [Int] {
         guard let serve = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else { return [] }
         let tcp = serve["TCP"] as? [String: Any] ?? [:]
@@ -481,10 +443,8 @@ final class Model: ObservableObject {
         phase = .failed(message)
     }
 
-    /// Called on the pipe's thread for each line a child prints; the log is appended on the main thread, in order.
     private nonisolated var appendLine: @Sendable (String) -> Void {
         { [weak self] line in
-            // a QR code drawn in block characters means nothing in a log
             guard !line.isEmpty, line.contains(where: { !"█▀▄ ".contains($0) }) else { return }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.log.append(line) }
@@ -502,7 +462,6 @@ final class Model: ObservableObject {
         return nil
     }
 
-    /// `plugin.ts status` knows the port the plugin settled on: "running http://127.0.0.1:7317 (pid 1)" or "down …".
     private func readStatus(root: String) async -> Status {
         let result = await run(Paths.bun, ["\(root)/scripts/plugin.ts", "status"], keepStderr: false, timeout: 10)
         var status = Status.parse(String(result.output.split(separator: "\n").first ?? ""))
@@ -539,8 +498,6 @@ final class Model: ObservableObject {
         return result.output.contains("\"running\":true")
     }
 
-    /// herdr starts the app from its startup hook; give it up to two minutes, checking every two seconds,
-    /// then show where it stopped instead of the spinner or the Install button.
     private func waitUntilRunning() async {
         let deadline = Date().addingTimeInterval(120)
         while Date() < deadline {
@@ -550,7 +507,6 @@ final class Model: ObservableObject {
             }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
-        // herdr's own output from the login item: what it printed while it started, or failed to
         let logTail = (try? String(contentsOfFile: Paths.serverLog, encoding: .utf8))?
             .split(separator: "\n").suffix(10).joined(separator: "\n")
         if await findPlugin() == nil {
@@ -564,7 +520,6 @@ final class Model: ObservableObject {
     }
 }
 
-/// `herdr server` as a login item of this user, so herdr, and the app with it, is up without a terminal.
 enum LaunchAgent {
     private static var domain: String { "gui/\(getuid())" }
     private static var service: String { "\(domain)/\(Ovis.agentLabel)" }
@@ -629,8 +584,6 @@ enum LaunchAgent {
         guard result.status == 0 else { throw NSError(domain: "Ovis", code: Int(result.status), userInfo: [NSLocalizedDescriptionKey: result.output]) }
     }
 
-    /// Starts herdr when it is not running; a running herdr is left as it is. False when launchd has
-    /// no such agent (herdr set up from a terminal, or the plist removed).
     @discardableResult
     static func start() async -> Bool {
         await run("/bin/launchctl", ["kickstart", service]).status == 0

@@ -1,14 +1,6 @@
 /**
- * A chat picture over the whole screen, fitted to it, the message's other pictures a step away.
- * The wheel or a pinch zooms at the pointer, a drag pans, a double-click toggles fit and the
- * picture's own pixels, and the bar and the keys (+ - 0, arrows) do the same; at fit, Left and
- * Right step through the gallery. Copy puts the picture on the clipboard as PNG and Download
- * saves it under its name (in the iOS app and a home-screen app, through the share sheet; in the
- * Android app, to Downloads).
- * Escape, the close button, a phone's Back and a swipe down that starts on the bar or the caption
- * leave (the stage takes every stroke for panning), and the focus returns to the thumbnail that
- * opened it while it is still drawn. ChatView holds the viewer, not the chat row, so a row
- * scrolled out of the render window does not close it. The zoom arithmetic is MermaidLightbox's.
+ * ChatView holds the viewer, not the chat row, so a row scrolled out of the render window does not
+ * close it.
  */
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
@@ -39,7 +31,6 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const [view, setView] = useState<View>(FIT);
   const latest = useRef(view);
   latest.current = view;
-  // the fitted picture's size over its natural size, so the bar says the zoom in its own pixels
   const [fit, setFit] = useState(1);
   const [failed, setFailed] = useState<string | null>(null);
   const [copied, setCopied] = useState<"done" | "failed" | null>(null);
@@ -84,12 +75,10 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const save = (): void => {
     if (ready === null || busy.current) return;
     if (ready.file === null) {
-      // the read failed: say so, and read again for the next tap
       setSaveFailed(true);
       prepare();
       return;
     }
-    // a result for a picture the viewer has stepped away from says nothing under the next one
     busy.current = true;
     void (route === "app" ? saveInApp(ready.file) : shareFile(ready.file)).then((result) => {
       busy.current = false;
@@ -184,7 +173,6 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
       const other = [...held.entries()].find(([id]) => id !== event.pointerId)![1];
       const was = Math.hypot(before.x - other.x, before.y - other.y);
       const now = Math.hypot(after.x - other.x, after.y - other.y);
-      // the pinch zooms about the midpoint and carries it along as it moves
       const mid = { x: (after.x + other.x) / 2 - box.left, y: (after.y + other.y) / 2 - box.top };
       const shift = { x: (after.x - before.x) / 2, y: (after.y - before.y) / 2 };
       if (was > 0) setView((v) => { const z = zoomAt(v, now / was, mid.x, mid.y); return { ...z, x: z.x + shift.x, y: z.y + shift.y }; });

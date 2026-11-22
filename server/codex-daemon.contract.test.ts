@@ -66,7 +66,6 @@ beforeAll(async () => {
   if (!linux) return;
   daemon(homes.pane, "pane", () => paneSkills as unknown[]);
   daemon(homes.server, "server", () => [skill("from-server-home")]);
-  // the home a server with no codexHome option falls back to: not the pane's
   process.env["CODEX_HOME"] = homes.server;
   mkdirSync(join(root, "bin"));
   mkdirSync(join(root, "work", ".codex", "skills", "scanned-one"), { recursive: true });
@@ -98,12 +97,10 @@ it.skipIf(process.platform !== "linux")("lists the skills of the daemon under th
 
 it.skipIf(process.platform !== "linux")("drops the scanned skills when the pane's daemon answers that none is enabled, and keeps them without an answer", async () => {
   const skills = async () => (await commands(paneId)).filter((row) => row.source === "skill").map((row) => [row.name, row.provenance?.transport]);
-  // a malformed answer is no answer: the scanned project skill stays
   paneSkills = "not a list";
   server.stop();
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state-2") });
   expect(await skills()).toContainEqual(["scanned-one", "scan"]);
-  // every skill disabled is an answer: none
   paneSkills = [skill("off", false)];
   server.stop();
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state-3") });

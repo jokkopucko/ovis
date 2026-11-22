@@ -17,7 +17,6 @@ describe("tab labels from the first message", () => {
     expect(shortTabLabel("\n  \n  Fix   the\tlogin  \nand more")).toBe("Fix the login");
     expect(shortTabLabel("Fix the login redirect after the session expires")).toBe("Fix the login redirect…");
     expect(shortTabLabel("  \n ")).toBeNull();
-    // a slash command, a path or a code fence names nothing: the next line does, or none
     expect(shortTabLabel("/review\nCheck the parser")).toBe("Check the parser");
     expect(shortTabLabel("~/dev/api/main.ts\n```ts\nconst x = 1")).toBe("const x = 1");
     expect(shortTabLabel("/compact")).toBeNull();
@@ -31,16 +30,11 @@ describe("tab labels from the first message", () => {
     expect(shortTabLabel(`/review ${upload} the footer`)).toBeNull();
     expect(shortTabLabel(`${upload}\nCheck the footer`)).toBe("Check the footer");
     expect(shortTabLabel(upload)).toBeNull();
-    // a file named in the message, not attached, says something
     expect(shortTabLabel("Fix @src/app.ts")).toBe("Fix @src/app.ts");
-    // an upload's name in the words after another mention is the user's, not the path's
     expect(shortTabLabel("@/tmp/a.png Why paste-20261104-101500-0a1b2c3d.png")).toBe("Why paste-20261104-10150\u2026");
     expect(shortTabLabel("@/tmp/a.png Please inspect /tmp/paste-20261104-101500-0a1b2c3d.png first")).toBe("Please inspect\u2026");
-    // nor in a relative path shaped like an upload's (#2682)
     expect(shortTabLabel("@/tmp/a.png Please review docs/paste-20261104-101500-0a1b2c3d.png for me")).toBe("Please review\u2026");
-    // a folder whose name holds " @" or " ~" is still the upload's path
     for (const folder of ["Company @ Work", "Company ~ Work"]) expect(shortTabLabel(`@/Users/me/${folder}/.ovis/paste-20261104-101500-0a1b2c3d.png Fix footer`)).toBe("Fix footer");
-    // an OVIS_PASTE_DIR with spaces too, and the words before another mention stay
     for (const upload of ["@/My Uploads/paste-20261104-101500-0a1b2c3d.png", "@C:\\My Uploads\\paste-20261104-101500-0a1b2c3d.png", "@/Users/me/John.Doe Files/paste-20261104-101500-0a1b2c3d.png", "@/tmp/v1.2 build/paste-20261104-101500-0a1b2c3d.png"]) expect(shortTabLabel(`${upload} Fix footer`)).toBe("Fix footer");
     expect(shortTabLabel("@/tmp/a.png check @other docs/.ovis/paste-20261104-101500-0a1b2c3d.png now")).toBe("check @other\u2026");
   });
@@ -49,11 +43,8 @@ describe("tab labels from the first message", () => {
     const message = "@/tmp/shots.png backup/paste-20261104-101500-0a1b2c3d.png Fix footer";
     expect(shortTabLabel(message, "/tmp/shots.png backup")).toBe("Fix footer");
     expect(shortTabLabel("@C:\\Shots\\v2.webp old\\paste-20261104-101500-0a1b2c3d.png Fix footer", "C:\\Shots\\v2.webp old")).toBe("Fix footer");
-    // only that folder: the words after another mention stay the user's (#2682)
     expect(shortTabLabel("@/tmp/a.png Please review docs/paste-20261104-101500-0a1b2c3d.png for me", "/tmp/shots.png backup")).toBe("Please review\u2026");
-    // the folder as its server wrote it: another case is another folder
     expect(shortTabLabel("@/tmp/a.png Please review docs/paste-20261104-101500-0a1b2c3d.png now", "/tmp/A.png Please review docs")).toBe("Please review\u2026");
-    // the label a message teaches the PC that named the folder, and only that PC
     setPasteFolder("local", "/tmp/shots.png backup");
     try {
       learnTabLabel("local", "w1:p1", message);
@@ -96,7 +87,6 @@ describe("tab labels from the first message", () => {
     learnTabLabel("local", "w1:p1", "Old session");
     settleTabLabels(before);
     expect(currentTabLabels()).toEqual({ "w1:p1|term_a": "Old session" });
-    // herdr restarted: w1:p1 is back, on another terminal. The old label was seen, so it leaves
     settleTabLabels(after);
     expect(currentTabLabels()).toEqual({});
     expect(autoTabLabel({ label: "1", number: 1 }, after[0]!.snapshot!.panes, "local", { "w1:p1|term_a": "Old session" })).toBeNull();
@@ -106,15 +96,12 @@ describe("tab labels from the first message", () => {
   });
 
   it("drops a label only after seeing its pane and then a connected PC without it", () => {
-    // another browser shared it before this page's roster has the pane: it stays
     setTabLabels({ "w1:p9|term_z": "Just shared", "w1:p2|term_b": "Here" });
     settleTabLabels([pc("local", [{ pane_id: "w1:p2", terminal_id: "term_b" }])]);
     expect(currentTabLabels()).toEqual({ "w1:p9|term_z": "Just shared", "w1:p2|term_b": "Here" });
-    // the roster catches up, then the pane closes
     settleTabLabels([pc("local", [{ pane_id: "w1:p2", terminal_id: "term_b" }, { pane_id: "w1:p9", terminal_id: "term_z" }])]);
     settleTabLabels([pc("local", [{ pane_id: "w1:p2", terminal_id: "term_b" }])]);
     expect(currentTabLabels()).toEqual({ "w1:p2|term_b": "Here" });
-    // a PC that is away drops none
     settleTabLabels([pc("local", [], "disconnected")]);
     expect(currentTabLabels()).toEqual({ "w1:p2|term_b": "Here" });
   });
@@ -125,11 +112,9 @@ describe("tab labels from the first message", () => {
     settleTabLabels(open);
     settleTabLabels([pc("local", [])]);
     expect(currentTabLabels()).toEqual({});
-    // the answer to the save that carried it lands after the pane closed
     setTabLabels({ "w1:p1|term_a": "Closing soon" });
     settleTabLabels([pc("local", [])]);
     expect(currentTabLabels()).toEqual({});
-    // after a reload, an old label of a reused pane id was never seen here: it stays, unseen, and the new terminal learns its own
     setTabLabels({ "w1:p2|term_old": "Old" });
     learnTabLabel("local", "w1:p2", "New");
     settleTabLabels([pc("local", [{ pane_id: "w1:p2", terminal_id: "term_new" }])]);
@@ -175,13 +160,10 @@ describe("tab labels from the first message", () => {
     learnFromConversation("local", "w7:p1", { source: "codex-transcript", cursor: "c:4", turns: [user("A later message")] });
     learnFromConversation("local", "w7:p1", { source: "codex-transcript", cursor: null, turns: [user("The first one")] });
     settleTabLabels(panes);
-    // shown here, shared nowhere: reading a pane writes nothing
     expect(shownTabLabels()).toEqual({ "w7:p1|term_q": "The first one" });
     expect(currentTabLabels()).toEqual({});
-    // the user's send shares the label the transcript gave, not the text sent
     learnFromSend("local", "w7:p1", "codex", "Typed in Chat");
     expect(currentTabLabels()).toEqual({ "w7:p1|term_q": "The first one" });
-    // a pane with no transcript: the send itself names it, shared
     learnFromConversation("local", "w7:p2", { source: "scrollback", turns: [] });
     learnFromSend("local", "w7:p2", "codex", "Sent to a shell agent");
     settleTabLabels(panes);

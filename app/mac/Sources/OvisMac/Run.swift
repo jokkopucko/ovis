@@ -2,7 +2,6 @@ import Foundation
 
 enum Ovis {
     static let pluginID = "devswha.ovis"
-    /// Releases 0.4.13 and older install, run and update under this id, and install.sh keeps them there.
     static let legacyPluginID = "devswha.herdr-web-ui"
     static let agentLabel = "sh.ovis.herdr-server"
     static let installScript = URL(string: "https://ovis.sh/install.sh")!
@@ -19,9 +18,6 @@ enum Ovis {
 
 enum Paths {
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
-    /// The first herdr and Bun on `path`: install.sh puts them in ~/.local/bin and ~/.bun/bin, but keeps
-    /// one it finds already (Homebrew's), so the app looks where the installer looked. Asked each time:
-    /// an install can add one.
     static var herdr: String { which("herdr") ?? "\(home)/.local/bin/herdr" }
     static var bun: String { which("bun") ?? "\(home)/.bun/bin/bun" }
     static let launchAgent = "\(home)/Library/LaunchAgents/\(Ovis.agentLabel).plist"
@@ -86,7 +82,6 @@ final class LineCollector: @unchecked Sendable {
     }
 }
 
-/// Runs a program to its end with the PATH above. stdin is empty, so nothing it runs can wait for an answer.
 /// With a timeout, a program still running after it is terminated (killed 5 s later if it ignores that), so a
 /// hung check cannot hold the window.
 func run(_ executable: String, _ arguments: [String], env extra: [String: String] = [:], keepStderr: Bool = true, timeout: TimeInterval? = nil, onLine: (@Sendable (String) -> Void)? = nil) async -> RunResult {

@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { createServer } from "./index.ts";
+import { FILE_POLICY } from "./file-view.ts";
 import { forgetPiModels } from "./pi-models.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 
-// Real herdr metadata + HTTP + native files, all under an owned workspace/store.
 const root = mkdtempSync(join(tmpdir(), "ovis-pi-contract-"));
 const sessionDir = join(root, ".pi", "agent", "sessions");
 const slug = join(sessionDir, `--${root.replaceAll("/", "-")}--`);
@@ -110,7 +110,6 @@ it.skipIf(process.platform !== "linux")("serves a fresh Pi session in its pane-o
 
   mkdirSync(dirname(fresh), { recursive: true });
   writeFileSync(fresh, turns("Synthetic new profile session", "First response in the profile session"));
-  // the window comes from the profile's own catalog, not from the one the bridge's env names
   writeFileSync(join(profileDir, "models.json"), JSON.stringify({ providers: { test: { models: [{ id: "pi-contract-model", contextWindow: 400_000 }] } } }));
   const bridgeDir = join(root, "bridge-agent-dir");
   mkdirSync(bridgeDir, { recursive: true });
@@ -135,7 +134,6 @@ it("serves a pi pane's native transcript over HTTP", async () => {
   expect(first.source).toBe("pi-transcript");  expect(first.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
   expect(first.turns[0]!.parts).toEqual([{ kind: "text", text: "Check chat" }]);
   // the figure pi's own footer shows: input + output + both cache tiers
-  // the figure pi's own footer shows: input + output + both cache tiers
   expect(first.metadata).toEqual({ model: "pi-contract-model", reasoning_effort: null, context: { used: 35, window: null }, provider: "test" });
 });
 
@@ -154,7 +152,6 @@ it("offers a tool's own picture over the image endpoint", async () => {
       content: [{ type: "text", text: "read 1 image" }, { type: "image", mimeType: "image/png", data: PNG.toString("base64") }],
     } },
   ]));
-  // the tests after this one read the session this file first held, so put it back
   try {
     const conversation = await read();
     const tool = conversation.turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
@@ -162,8 +159,8 @@ it("offers a tool's own picture over the image endpoint", async () => {
     const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/conversation/image?pane_id=${encodeURIComponent(paneId)}&ref=${encodeURIComponent("pi:call-1:0")}`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("content-security-policy")).toBe(FILE_POLICY);
     expect(Buffer.from(await response.arrayBuffer()).equals(PNG)).toBe(true);
-    // a ref naming no image, and one that is no pi ref at all
       const miss = await fetch(`http://127.0.0.1:${server.port}/api/pane/conversation/image?pane_id=${encodeURIComponent(paneId)}&ref=${encodeURIComponent("pi:call-9:0")}`);
       expect(miss.status).toBe(404);
   } finally {
@@ -181,15 +178,11 @@ it("resolves pi's context window from the agent dir pi reads its models from", a
   const previous = process.env["PI_CODING_AGENT_DIR"];
   process.env["PI_CODING_AGENT_DIR"] = agentDir;
   try {
-    // no pi process is identified here (the stand-in is not pi), and the session store is shared
-    // (PI_CODING_AGENT_SESSION_DIR), not the one inside that agent dir: its catalogs are no pane's
     writeFileSync(transcript, turns("Check chat twice", "Answer two"));
     expect((await read()).metadata?.context).toEqual({ used: 35, window: null });
-    // the store inside the bridge's own agent dir: the session was written by that profile
     const owner = dirname(sessionDir);
     writeFileSync(join(owner, "models.json"), JSON.stringify({ providers: { test: { models: [{ id: "pi-contract-model", contextWindow: 200_000 }] } } }));
     process.env["PI_CODING_AGENT_DIR"] = owner;
-    // the window is read as the metadata is rebuilt, so a new answer carries it
     writeFileSync(transcript, turns("Check chat three times", "Answer three"));
     const withWindow = await read();
     expect(withWindow.metadata?.context).toEqual({ used: 35, window: 200_000 });
@@ -197,7 +190,6 @@ it("resolves pi's context window from the agent dir pi reads its models from", a
   } finally {
     if (previous === undefined) delete process.env["PI_CODING_AGENT_DIR"]; else process.env["PI_CODING_AGENT_DIR"] = previous;
     forgetPiModels();
-    // the tests after this one read the session this file first held
     writeFileSync(transcript, turns("Check chat", "Answer one"));
   }
 });
@@ -212,12 +204,11 @@ it("follows the pane to a new session file when /new or /resume replaces it", as
   expect(after.history_id).not.toBe(before.history_id);
   expect(after.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
   expect(after.turns[0]!.parts).toEqual([{ kind: "text", text: "New topic" }]);
-  // the previous conversation is gone: it lived in the abandoned file
   expect(JSON.stringify(after.turns)).not.toContain("Check chat");
 });
 
 it("shows the branch /tree leaves the leaf on, and invalidates the pages held before it", async () => {
-  await reportSession(transcript); // /resume back to the session this pane began on
+  await reportSession(transcript);
   const before = await read();
   expect(JSON.stringify(before.turns)).toContain("Answer one");
   // pi writes the new answer beside the old one, parented to the prompt, and moves the leaf
@@ -230,7 +221,7 @@ it("shows the branch /tree leaves the leaf on, and invalidates the pages held be
   writeFileSync(transcript, branched.join("\n") + "\n");
   const after = await read();
   expect(after.source).toBe("pi-transcript");
-  expect(after.history_id).not.toBe(before.history_id); // same file, same size class: the tree moved
+  expect(after.history_id).not.toBe(before.history_id);
   expect(JSON.stringify(after.turns)).toContain("the retried answer");
   expect(JSON.stringify(after.turns)).not.toContain("Answer one");
 });
@@ -262,7 +253,6 @@ it("counts the turns a /tree left behind, over HTTP", async () => {
   ]));
   expect((await read()).abandoned?.summary).toBe("Tried the first question; it failed.");
 
-  // a session no /tree touched answers zero, not absent: the client shows nothing at 0
   writeFileSync(transcript, turns("Check chat", "Answer one"));
   expect((await read()).abandoned).toEqual({ count: 0, branches: 0, summary: null });
 });
@@ -292,9 +282,8 @@ it("answers a session pi has not written yet as an empty conversation, then foll
   expect(written.source).toBe("pi-transcript");
   expect(written.history_id).not.toBe("unwritten:fresh");
   expect(written.turns[0]!.parts).toEqual([{ kind: "text", text: "First prompt" }]);
-  // a transcript read and then removed is missing, not a conversation not begun
   rmSync(fresh);
-  expect(await read(target)).toEqual({ source: "scrollback", turns: [] });
+  expect(await read(target)).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
 });
 
 it("distinguishes unwritten sessions with the same filename in different folders", async () => {
@@ -311,12 +300,49 @@ it("distinguishes unwritten sessions with the same filename in different folders
   writeFileSync(fresh, turns("Fresh prompt", "Fresh answer"));
   expect((await read(target)).turns[0]!.parts).toEqual([{ kind: "text", text: "Fresh prompt" }]);
   rmSync(fresh);
-  expect(await read(target)).toEqual({ source: "scrollback", turns: [] });
-  // Another spelling of the same directory must not make a removed transcript unwritten again.
+  expect(await read(target)).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
   const alias = join(sessionDir, "alias-project");
   symlinkSync(other, alias, "dir");
   await reportSession(join(alias, "shared-name.jsonl"), target);
-  expect(await read(target)).toEqual({ source: "scrollback", turns: [] });
+  expect(await read(target)).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
+});
+
+it.skipIf(process.platform !== "linux")("serves the chat of a pane herdr labels gentle-shell from the pi it runs (#4198)", async () => {
+  // gentle-shell runs its bundled pi with a home of its own and reports to herdr under its own name
+  const home = join(root, ".gentle-shell", "agent");
+  const file = join(home, "sessions", `--${root.replaceAll("/", "-")}--`, "2026-11-17T14-06-52-131Z_01a1e9d4-fce1-73a2-82b6-11a1ac60faa8.jsonl");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, turns("Gentle prompt", "Gentle answer"));
+  const cli = join(root, "gentle-shell", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+  mkdirSync(dirname(cli), { recursive: true });
+  writeFileSync(cli, "setInterval(() => {}, 1 << 30);\n");
+  const created = await workspaceCreate({ cwd: root, label: "ovis-test-pi-gentle-shell" });
+  workspaces.push(created.workspace.workspace_id);
+  const target = created.root_pane.pane_id;
+  await herdrRpc("pane.send_text", { pane_id: target, text: `PI_CODING_AGENT_DIR='${home}' exec node '${cli}'\n` });
+  let pid: number | undefined;
+  for (const deadline = Date.now() + 10_000; pid === undefined;) {
+    const info = await herdrRpc("pane.process_info", { pane_id: target });
+    pid = info.process_info?.foreground_processes?.find((entry) => entry.argv?.[1] === cli)?.pid;
+    if (Date.now() > deadline) throw new Error("gentle-shell's pi fixture did not start");
+    if (pid === undefined) await Bun.sleep(50);
+  }
+  await herdrRpc("pane.report_agent", { pane_id: target, source: "gentle-shell", agent: "gentle-shell", state: "idle", seq: nextSeq() });
+  await herdrRpc("pane.report_agent_session", { pane_id: target, source: "gentle-shell", agent: "gentle-shell", seq: nextSeq(), agent_session_path: file, session_start_source: "startup" });
+  const labelled = (await sessionSnapshot()).panes.find((pane) => pane.pane_id === target);
+  expect([labelled?.agent, labelled?.agent_session ?? null]).toEqual(["gentle-shell", null]);
+
+  // herdr keeps no session for that source: only the web UI's extension, in gentle-shell's home, names it
+  expect(await read(target)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+  mkdirSync(join(home, "herdr-web-ui-ask"), { mode: 0o700 });
+  const extension = Bun.serve({ unix: join(home, "herdr-web-ui-ask", `${pid}.sock`), fetch: () => Response.json({ version: 1, flows: [], openCalls: [], pid, sessionFile: file }) });
+  try {
+    const chat = await read(target);
+    expect(chat.source).toBe("pi-transcript");
+    expect(chat.turns).toMatchObject([{ role: "user", parts: [{ kind: "text", text: "Gentle prompt" }] }, { role: "assistant", parts: [{ kind: "text", text: "Gentle answer" }] }]);
+  } finally {
+    await extension.stop(true);
+  }
 });
 
 it("falls back to the scrollback when the reported path leaves the store", async () => {
@@ -325,5 +351,5 @@ it("falls back to the scrollback when the reported path leaves the store", async
   await reportSession(outside);
   const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`);
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ source: "scrollback", turns: [] });
+  expect(await response.json()).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
 });

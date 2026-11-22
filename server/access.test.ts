@@ -47,6 +47,24 @@ describe("decideAccess", () => {
     expect(via({ loopback: false, gated: true })).toBe("refused:pairing_required");
   });
 
+  it("regression: a loopback request whose Host is a rebound name is never open", () => {
+    for (const host of ["rebind.example", "rebind.example:7317", `${NODE}.rebind.example`, "100.64.0.8", "[fd7a::1]:7317"]) {
+      expect(via({ loopback: true, forwarded: true, host })).toBe("refused:pairing_required");
+      expect(via({ loopback: true, forwarded: true, host, dnsName: NODE, tailnetIp: IP })).toBe("refused:pairing_required");
+    }
+    for (const host of ["127.0.0.1:7317", "localhost:7317", "[::1]:7317", NODE, `${IP}:7317`]) {
+      expect(via({ loopback: true, forwarded: true, host, dnsName: NODE, tailnetIp: IP })).toBe("open");
+    }
+    expect(via({ loopback: false, forwarded: true, host: "pc.lan:7317" })).toBe("open");
+  });
+
+  it("regression: a Tailscale login stated under a rebound name lets nobody in", () => {
+    const login = { forwarded: true, tailscaleLogin: "me@example.com", owner: "me@example.com", dnsName: NODE, tailnetIp: IP } as const;
+    for (const host of ["rebind.example", "rebind.example:7317", `${NODE}.rebind.example`]) expect(via({ ...login, host })).toBe("refused:pairing_required");
+    // control: tailscale serve keeps the device's Host, this PC's tailnet name or address
+    for (const host of [NODE, `${NODE}:443`, IP, `${IP}:7317`, "127.0.0.1:7317"]) expect(via({ ...login, host })).toBe("tailscale");
+  });
+
   it("never treats a Funnel request as open", () => {
     expect(via({ loopback: true, forwarded: true, funnel: true })).toBe("refused:pairing_required");
     expect(via({ loopback: true, forwarded: true, funnel: true, device })).toBe("device");
@@ -163,7 +181,6 @@ describe("decideAccess", () => {
 });
 
 describe("Portal's sign-in", () => {
-  // what a request through the running Portal looks like: the identity it states, and its proof
   const HOST = "herdr-test-0123.relay.example";
   const WALLET = "0x52908400098527886E0F7030069857D2E4169EE7";
   const through = (portal: Partial<NonNullable<AccessInput["portal"]>> = {}, over: Partial<AccessInput> = {}): Partial<AccessInput> => ({
@@ -239,7 +256,6 @@ describe("lanExposed", () => {
 
   it("names the one state a warning belongs to: bound past this PC, no token, nothing paired", () => {
     expect(lanExposed(open)).toBe(true);
-    // wildcard, LAN, other IPv6 and DNS binds still warn, even on a PC with Tailscale
     for (const hostname of ["::", "[::]", "192.168.0.10", "fd7a::1", "my-pc.local", "127.devbox.example", "localhost.example", "100.63.255.255", "100.128.0.0", "fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff", "fd7a:115c:a1e1::", "100.64.0.999", "100.64.0.2.example"]) {
       expect(isLoopbackBind(hostname)).toBe(false);
       expect(warned({ hostname })).toBe(true);
@@ -285,7 +301,6 @@ describe("bindScope", () => {
 });
 
 describe("observedIngress", () => {
-  // a request from this PC's own browser, with Tailscale running here and nothing forwarded
   type Request = Parameters<typeof observedIngress>[0];
   const local: Request = { peerKnown: true, loopback: true, forwarded: false, forwardingHeaders: false, funnel: false, tailscaleLogin: null, forwardedFor: null, owner: "owner@example.com", tagged: false, serveOnly: false };
   const ingress = (over: Partial<Request>) => observedIngress({ ...local, ...over });
@@ -294,7 +309,6 @@ describe("observedIngress", () => {
 
   it("calls an unforwarded request direct, from this PC or from the network", () => {
     expect(ingress({})).toBe("direct");
-    // a LAN client addresses the server by its LAN name; that Host alone is no forwarding
     expect(ingress({ loopback: false, forwarded: true })).toBe("direct");
   });
 

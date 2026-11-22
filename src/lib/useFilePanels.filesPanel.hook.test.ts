@@ -48,7 +48,6 @@ it("keeps Files open beside the pane under a file that docks in its place", asyn
 
   await act(async () => { panels.viewFile("src/app.ts"); });
 
-  // the file takes the panel's place; closing it shows Files again
   expect(panels.fileDocked).toBe(true);
   expect(panels.filesOpen).toBe(true);
 });
@@ -75,7 +74,6 @@ it("closes Files beside the pane when the window narrows under a web page that c
   await act(async () => { expect(panels.openWebPage("http://localhost:3000/report", false, "local")).toBe(true); });
   expect(panels.filesCovered).toBe(true);
 
-  // narrower than the dock: the page turns popup, and Files would come back as a dialog under it
   wide = false;
   await act(async () => { renderer!.update(createElement(Probe)); });
 
@@ -95,7 +93,6 @@ it("closes Files beside the pane when the window narrows under a popup file", as
   await act(async () => { panels.viewFile("src/app.ts"); });
   expect(panels.fileDocked).toBe(false);
 
-  // a dialog mounted now would take the focus from the popup above it
   wide = false;
   await act(async () => { renderer!.update(createElement(Probe)); });
 

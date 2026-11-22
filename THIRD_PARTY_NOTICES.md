@@ -43,6 +43,18 @@ computer and its branch. Its sizes and layout were adapted; no code was copied. 
 Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>), copyright the Herdr
 app's authors.
 
+## Herdr app agents list
+
+The Agents list's state headings that fold, and the time each row says its agent has been in its
+state (`src/components/AgentSidebar.tsx`, `src/lib/agentStateSince.ts`), follow the Herdr app's
+agents mod, <https://github.com/herdrdev/herdr-app> (`defaults/mods/agents/main.js`, commit
+`93b097f`): a section header in its state's colour that folds its rows and says their count, a
+time in the form `<1m`, `5m`, `2h`, `3d` counted from the state change the app saw and kept across
+restarts, done and idle counted as one state, and the time of an agent gone for thirty days
+forgotten. The behaviour was written anew for this app; no code was copied. Licensed under the
+Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>), copyright the Herdr
+app's authors.
+
 ## Agent of Empires request correlation
 
 `server/request-log.ts` adapts the request-completion boundary and client correlation-ID
@@ -51,6 +63,14 @@ validation approach from
 `src/server/router.rs` and `src/server/access.rs`, under MIT, Copyright (c) 2026 Nathan Brake.
 The MIT license text below applies. Ovis uses independent server IDs,
 bounded private storage and absent-only response defaults.
+
+## orca accessibility snapshot
+
+`app/electron/src/browserAxTree.ts` adapts the accessibility-tree walk (its role sets and the
+outline it makes) from [stablyai/orca](https://github.com/stablyai/orca),
+`src/main/browser/cdp/snapshots/snapshot-ax-tree-walk.ts`, at revision
+`0854480f88dbc495dc7c2b95dc35844916e4b296`, under MIT, Copyright (c) 2026 Lovecast Inc. The MIT
+license text below applies.
 
 ## Agent of Empires IME rewrite sequences
 
@@ -80,7 +100,7 @@ None of them is in this repository.
 - [herdr-core](https://github.com/herdrdev/herdr-core) 0.1.17 (`hc`), under Apache-2.0, from
   `releases.herdr.dev`. Its `LICENSE` and `THIRD-PARTY-NOTICES` ship beside it, in the app's
   `resources/ovis/licenses/herdr-core/`.
-- [Bun](https://github.com/oven-sh/bun) 1.4.2, under MIT. Its `LICENSE.md` ships beside it, in
+- [Bun](https://github.com/oven-sh/bun) 1.4.4, under MIT. Its `LICENSE.md` ships beside it, in
   `resources/ovis/licenses/bun/`. Bun statically links JavaScriptCore and WebKit (LGPL-2) and the
   other libraries that file lists; the sources of the WebKit it links are at
   [oven-sh/WebKit](https://github.com/oven-sh/WebKit).
@@ -95,6 +115,17 @@ graceful-fs and semver (ISC), and sax (Blue Oak Model License 1.0.0). Their lice
 their copyright notices, ship in the app as `out/THIRD_PARTY_LICENSES.txt`, which
 `app/electron/scripts/build.ts` writes from the packages the bundle took in.
 
+## hc-tui
+
+The terminal client (`crates/ovis-tui`) builds on [hc-tui](https://github.com/followcat/hc-tui) at
+revision `a37bddb98627c51838939c92e4a574fde8482974` (v0.1.6), under Apache-2.0, Copyright 2026
+followcat. Its sources are not in this repository: `crates/ovis-tui/prepare.sh` fetches that
+revision, and `crates/ovis-tui/patches/` holds our changes to it, which quote lines of its files.
+Its `NOTICE` names material it derives from herdr, herdr-app and herdr-core (Apache-2.0) and
+Ghostty's libghostty-vt (MIT, Mitchell Hashimoto and contributors), which it links. The Apache-2.0
+text below applies. A build of `ovis-tui` that is distributed ships hc-tui's `LICENSE` and
+`NOTICE` beside it, as `crates/ovis-tui/README.md` says.
+
 ## oh-my-pi figure tokens
 
 `src/lib/svgFigure.ts` adapts the figure token vocabulary and the token and root-tag resolution of
@@ -103,6 +134,14 @@ their copyright notices, ship in the app as `out/THIRD_PARTY_LICENSES.txt`, whic
 Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The MIT license text
 below applies. Mapping the tokens onto Ovis's theme roles and drawing the figure as an image are
 Ovis's own.
+
+## oh-my-pi theme dim colors
+
+`server/omp-input.ts` lists the `dim` colors of oh-my-pi's built-in themes (`OMP_DIM_TRUECOLOR`,
+`OMP_DIM_256`), taken from [`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi)
+`packages/tui/src/theme/defaults.json`, `dark.json` and `light.json` (omp 18.18), under MIT,
+Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil
+Labs, Inc. The MIT license text below applies. Reading the screen with them is Ovis's own.
 
 ## Theme palettes
 
@@ -1532,7 +1571,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## libghostty-vt
 
-`src/lib/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
+`shared/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
 commit e95bed6, built for wasm32 by `scripts/ghostty-vt/build.sh` with the small change in
 `scripts/ghostty-vt/kitty-on-wasm.patch` (Kitty graphics on, file media off). It draws every terminal, under the
 MIT License below. The module links two
@@ -1871,6 +1910,57 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## markdown-it
+
+The file viewer's Markdown Preview is read by [markdown-it](https://github.com/markdown-it/markdown-it)
+14.3.3, which `dist/` carries with the packages it imports. They are under the MIT license below,
+with these copyright notices:
+
+- `markdown-it` 14.3.3: `Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin.`
+- `linkify-it` 5.0.2: `Copyright (c) 2015 Vitaly Puzrin.`
+- `mdurl` 2.1.0: `Copyright (c) 2015 Vitaly Puzrin, Alex Kocharin.` and
+  `Copyright Joyent, Inc. and other Node contributors. All rights reserved.`
+- `uc.micro` 2.1.0 and `punycode.js` 2.3.1: `Copyright Mathias Bynens <https://mathiasbynens.be/>`
+
+```
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+```
+
+It also carries `entities` 4.5.0, under the BSD 2-Clause license:
+
+```
+Copyright (c) Felix Böhm
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+THIS IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## Mermaid
 

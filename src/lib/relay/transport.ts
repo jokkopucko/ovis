@@ -4,8 +4,9 @@ import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
-import { openRelayChannel, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
-import { DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
+import { openRelayChannel, RelayNewSessionsRefusedError, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
+import { AccountOpenUnsupportedError, DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
+import { openRefusalOf } from "../account/openPc.ts";
 import type { RelayChannel, RelayChannelOptions, RelayServerInfo, RelaySocket } from "./channel.ts";
 import { indexedDeviceStore, ServerIdentityChangedError } from "./device.ts";
 import { relayResourceUrl, serveRelayResources } from "./resources.ts";
@@ -13,30 +14,22 @@ import { relayResourceUrl, serveRelayResources } from "./resources.ts";
 export interface RelayTransportOptions extends RelayChannelOptions {
   readonly openChannel?: typeof openRelayChannel;
   readonly clock?: MuxClock;
-  /** A reconnect the PC refused for good (`isFatalRelayError`): the transport has closed itself, and the shell shows why. */
   readonly onFatal?: (error: Error) => void;
   /**
    * Opens a socket to one of the PC's direct carriers (`ws://<private IPv4>:<port>`, docs/relay.md "Direct on the
-   * same network"): the native apps' plugin, as a page on https cannot. Without it the PC is reached through the
-   * relay only.
+   * same network"): the native apps' plugin, as a page on https cannot.
    */
   readonly directSocket?: (url: string) => RelaySocket;
-  /** Whether `directSocket` also opens the PC's Tailscale address (100.64.0.0/10), read at each connect: then the PC names that one too. */
   readonly directTailnet?: () => boolean;
 }
 
-/** How long a connection tries the PC's direct carriers. */
 export const DIRECT_BUDGET_MS = 1_500;
-/** How long the direct carriers have alone before the relay is opened too, and the first channel up is kept (happy eyeballs). */
 export const DIRECT_HEAD_START_MS = 300;
 /** Direct carriers tried at once: the apps' plugins open at most two sockets (OvisDirectPlugin MAX_SOCKETS). */
 export const DIRECT_SOCKETS = 2;
-/** A probe of the direct carriers at most this often while the relay carries the channel, unless the network changed. */
 const DIRECT_PROBE_EVERY_MS = 5 * 60_000;
-/** A switch to a direct carrier waits for no request to be under way, checking this often, this many times. */
 const DIRECT_IDLE_CHECK_MS = 5_000;
 const DIRECT_IDLE_CHECKS = 12;
-/** A switch also waits until no WebSocket sent anything for this long: someone may be typing into a terminal. */
 const SOCKET_QUIET_MS = 3_000;
 
 
@@ -46,7 +39,6 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
   return { promise, resolve };
 }
 
-/** `inner`, telling `closed` once its close event came, before whoever listens to it. */
 function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
   let listener: RelaySocket["onclose"] = null;
   inner.onclose = (event) => { closed(); listener?.(event); };
@@ -61,9 +53,11 @@ function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
 }
 
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
-export function isFatalRelayError(error: unknown): error is Error {
-  if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
-  return error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed"
+export function isFatalRelayError(error: unknown, accountOpensAll = false): error is Error {
+  if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError || error instanceof AccountOpenUnsupportedError) return true;
+  // the relay takes no new device for this PC while its account is past its limits: only a later try can differ
+  if (error instanceof RelayNewSessionsRefusedError) return true;
+  return error instanceof MuxProtocolError && ((accountOpensAll && openRefusalOf(error) !== null) || error.code === "auth_revoked" || error.code === "auth_failed"
     || error.code === "unsupported_version" || error.code === "unsupported_extension" || error.code === "unsupported_transport");
 }
 
@@ -80,10 +74,8 @@ const HTTP_QUEUE_TIMEOUT_MS = 30_000;
 /** The mux queues at most 4 MiB of outgoing payload across streams: a socket holds no more than that waiting to reach it. */
 const WS_SEND_QUEUE_LIMIT = 4 * 1024 * 1024;
 
-/** Messages a socket holds waiting for the mux, however small: each holds a copy and a callback. */
 const WS_SEND_QUEUE_MESSAGES = 16_384;
 
-/** UTF-8 length counted without encoding, so an oversized string is refused before it is copied. */
 function utf8Length(text: string): number {
   let bytes = 0;
   for (let index = 0; index < text.length; index++) {
@@ -96,7 +88,6 @@ function utf8Length(text: string): number {
   return bytes;
 }
 
-/** A body's size, or for a form the least its encoding can take, when it is known without reading it. */
 function knownSize(body: BodyInit | null | undefined): number | undefined {
   if (typeof body === "string") return utf8Length(body);
   if (body instanceof Blob) return body.size;
@@ -149,7 +140,6 @@ function eventProperties(target: EventTarget, names: readonly string[]): void {
  */
 export const RECONNECT_PC_ANSWER_MS = 25_000;
 
-/** Establish once before boot installs it. A reconnect replaces only the carrier, never streams. */
 export async function openRelayTransport(offer: RelayOffer, options: RelayTransportOptions = {}): Promise<RelayTransport> {
   const transport = new RelayTransport(offer, options);
   try { await transport.connect(); return transport; }
@@ -161,7 +151,6 @@ export class RelayTransport implements Transport {
   private channel: RelayChannel | undefined;
   private known: RelayServerInfo | undefined;
   private generation = 0;
-  /** The relay the latest connection went through: the offer's, or the global one it falls back to. */
   private relay: string;
   private opening: Promise<void> | undefined;
   private stopped = false;
@@ -169,37 +158,24 @@ export class RelayTransport implements Transport {
   private cancelRetry: (() => void) | undefined;
   private readonly abort = new AbortController();
   private readonly waitingHttp = new Set<{ run: () => boolean; fail: (error: unknown) => void }>();
-  /** renews waiting for a carrier: each settles on the first one whose attempt started after it was asked */
   private readonly renewing = new Set<{ after: number; up: () => void }>();
-  /** the PC's direct carriers its latest AUTH_OK named; read from the saved pairing before the first one */
   private directCarriers: readonly string[] | undefined;
-  /** HTTP requests whose stream is open: a switch to a direct carrier waits until there are none */
   private openHttp = 0;
-  /** when one of this transport's WebSockets last sent, on its clock */
   private socketSentAt = -Infinity;
-  /** a planned switch came back on the relay: the next probe waits this many times longer */
   private probeBackoff = 1;
   /** requests whose body is still being read before they open (Firefox buffers it) */
   private preparingHttp = 0;
-  /** a probe or a wait to switch is under way, and when the latest probe began */
   private upgrading = false;
   private probedAt = -Infinity;
-  /** a network change came while a probe ran: probe again once it ends */
   private reprobe = false;
-  /** the next periodic probe while the relay carries the channel */
   private cancelProbe: (() => void) | undefined;
-  /** ends the probe or idle wait under way when its channel goes */
   private upgradeAbort: AbortController | undefined;
-  /** the relay channel is being closed to reconnect on a direct carrier, not lost */
   private switching: RelayChannel | undefined;
-  /** the next connection follows a probe that proved a direct carrier: it gives the direct carriers their whole budget before the relay */
   private switchingDirect = false;
   private readonly stopResources: () => void;
   private readonly wake = (): void => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-    // a carrier left closing while nothing used it is ended now, and its onClose reconnects
     if (!this.stopped && this.channel && !this.channel.carrierOpen) { this.channel.close(); return; }
-    // back on a network: the PC may be on this one now
     if (!this.stopped && this.channel && this.channel.direct === undefined) { this.probedAt = -Infinity; this.reprobe = this.upgrading; this.upgrade(this.channel); }
     if (this.stopped || this.channel || this.opening) return;
     this.cancelRetry?.();
@@ -231,7 +207,6 @@ export class RelayTransport implements Transport {
     const offer = generation === 1 ? this.offer : savedOffer;
     const options: RelayChannelOptions = {
       ...this.options, signal: this.abort.signal,
-      // a reconnect runs behind the app, not on a waiting screen: it waits at the relay nearly as long as the relay holds it
       ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
@@ -241,10 +216,7 @@ export class RelayTransport implements Transport {
         this.channel = undefined;
         this.routeChanged();
         this.failWaitingHttp(new TypeError("Relay carrier is disconnected"));
-        // a switch to a direct carrier is no lost carrier: nobody is told of it
         if (!switching) this.options.onClose?.(error);
-        // closed on purpose to come back on a direct carrier: at once, with no pause; one that lands on the relay
-        // again makes the next switch wait longer (a carrier that answers a probe but cannot carry a session)
         if (switching) this.switchingDirect = true;
         if (switching) void this.connect().then(() => {
           if (this.channel && this.channel.direct === undefined) this.probeBackoff = Math.min(this.probeBackoff * 2, 12);
@@ -277,13 +249,6 @@ export class RelayTransport implements Transport {
     }
   }
 
-  /**
-   * The channel this connection goes on. Without the app's direct socket, or while pairing with a code, through the
-   * relay. Otherwise the PC's direct carriers first; when none is up within DIRECT_HEAD_START_MS, the relay is opened
-   * too and the first channel admitted is kept: the other attempt is ended, and a channel it still admits is closed
-   * without anyone being told of it. A refusal that cannot change (`isFatalRelayError`) on either ends both; any other
-   * failure of one waits for the other.
-   */
   private race(generation: number, offer: RelayOffer, options: RelayChannelOptions): Promise<{ channel: RelayChannel; relay: string }> {
     const viaRelay = (signal: AbortSignal, onClose = options.onClose) => openRelayChannelWithFallback(offer,
       { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay);
@@ -292,7 +257,6 @@ export class RelayTransport implements Transport {
     const proven = this.switchingDirect;
     const headStartMs = proven ? undefined : DIRECT_HEAD_START_MS;
     this.switchingDirect = false;
-    // only the channel kept may report its loss: one closed for losing the race is no lost carrier
     let winner: "direct" | "relay" | undefined;
     const lost = (side: "direct" | "relay") => (error: Error): void => { if (winner === side) options.onClose?.(error); };
     const directEnd = new AbortController();
@@ -324,7 +288,7 @@ export class RelayTransport implements Transport {
         relayStarted = true;
         viaRelay(AbortSignal.any([this.abort.signal, relayEnd.signal]), lost("relay")).then((result) => win("relay", result), (error: unknown) => {
           relayFailure = { error };
-          if (directDone || isFatalRelayError(error)) fail(error);
+          if (directDone || isFatalRelayError(error, this.options.accountOpensAll)) fail(error);
         });
       };
       if (headStartMs !== undefined) cancelHeadStart = (this.options.clock ?? clock).setTimeout(startRelay, headStartMs);
@@ -337,17 +301,12 @@ export class RelayTransport implements Transport {
     });
   }
 
-  /**
-   * The channel on one of the PC's direct carriers, DIRECT_SOCKETS at a time within DIRECT_BUDGET_MS; undefined when
-   * none answered (off this network, or the PC names none) or `ended` fired (the relay won), and the relay is used.
-   * Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay.
-   */
+  /** Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay. */
   private async openDirect(offer: RelayOffer, options: RelayChannelOptions, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
     const socket = this.options.directSocket;
     if (!socket) return undefined;
     if (this.directCarriers === undefined) {
       const saved = (await (this.options.store ?? indexedDeviceStore).get(offer.server_id).catch(() => undefined))?.direct ?? [];
-      // a relay channel that won meanwhile may have brought the PC's newer list
       this.directCarriers ??= saved;
     }
     const carriers = [...new Set(this.directCarriers)];
@@ -355,14 +314,12 @@ export class RelayTransport implements Transport {
     // at most DIRECT_SOCKETS at once (the apps' plugins open no more), in two lanes: the PC's Tailscale carriers and
     // its LAN ones. With both, each lane has one socket, so a silent LAN address never keeps the Tailscale one out of
     // the race, and the Tailscale one keeps its whole budget (away from home it is the slow one); a lane alone has both.
-    // In a lane, a silent carrier takes only its round's share, so the ones queued behind it still get a turn.
     const lanes = [carriers.filter((carrier) => isTailnetCarrier(carrier)), carriers.filter((carrier) => !isTailnetCarrier(carrier))]
       .map((queue) => ({ queue, running: 0 }));
     const ends = performance.now() + DIRECT_BUDGET_MS;
     let kept: string | undefined;
     let settled = false;
     const attempts = new Map<string, AbortController>();
-    // the admitted channel keeps its signal for good (closing the transport ends it): only the others are ended
     const endOthers = (than?: string): void => { for (const [carrier, attempt] of attempts) if (carrier !== than) attempt.abort(); };
     const offerTailnet = this.options.directTailnet?.() === true;
     return new Promise((resolve, reject) => {
@@ -375,13 +332,11 @@ export class RelayTransport implements Transport {
           const left = ends - performance.now();
           if (!lane || left <= 0) return;
           const direct = lane.queue.shift()!;
-          // the carrier a probe just proved (first in the list) keeps the whole budget: the switch it earned does not race the relay
           const rounds = proven && direct === carriers[0] ? 1 : Math.ceil((lane.queue.length + lane.running + 1) / slots());
           lane.running++;
           const attempt = new AbortController();
           attempts.set(direct, attempt);
           const timer = setTimeout(() => attempt.abort(), left / rounds);
-          // closing the transport ends an admitted channel too; the budget only an attempt under way
           const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
           const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
           // the plugin counts a socket until its close is done (iOS: up to 5 s after asking): the lane's place frees only then
@@ -395,11 +350,11 @@ export class RelayTransport implements Transport {
             endOthers(direct);
             resolve(channel);
           }, (error: unknown) => {
-            // only a refusal by the PC itself, after Noise proved it is the PC, is final
-            if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { settled = true; endOthers(); reject(error); }
+            // only a refusal by the PC itself, after Noise proved it is the PC, is final: the relay's own refusal of a
+            // new device is no word of a direct carrier's
+            if (!settled && (this.stopped || (isFatalRelayError(error, this.options.accountOpensAll) && !(error instanceof DirectCarrierUnusableError) && !(error instanceof RelayNewSessionsRefusedError)))) { settled = true; endOthers(); reject(error); }
           }).finally(async () => {
             clearTimeout(timer);
-            // a close that never comes holds the place no longer than the budget
             if (opened && !settled) await Promise.race([freed.promise, new Promise<void>((done) => setTimeout(done, Math.max(0, ends - performance.now())))]);
             lane.running--;
             next();
@@ -424,7 +379,6 @@ export class RelayTransport implements Transport {
     if (!socket || carriers.length === 0 || this.upgrading) return;
     const wait = this.probedAt + DIRECT_PROBE_EVERY_MS * this.probeBackoff - timers.now();
     if (wait > 0) {
-      // probed a moment ago (before a reconnect, say): the next probe still comes, when its time is up
       if (!this.cancelProbe) this.cancelProbe = timers.setTimeout(() => { this.cancelProbe = undefined; if (this.channel === channel) this.upgrade(channel); }, wait);
       return;
     }
@@ -442,7 +396,6 @@ export class RelayTransport implements Transport {
         if (!current()) return;
         if (await probeDirect(this.offer, direct, socket, DIRECT_BUDGET_MS, ending.signal)) {
           proven = true;
-          // the reconnect tries the carrier that just proved to be the PC first
           this.directCarriers = [direct, ...carriers.filter((other) => other !== direct)];
           break;
         }
@@ -465,13 +418,11 @@ export class RelayTransport implements Transport {
       this.upgrading = false;
       if (this.upgradeAbort === ending) this.upgradeAbort = undefined;
       if (!current()) return;
-      // still on the relay: try again after a network change that came meanwhile, else in a while
       if (this.reprobe) { this.probedAt = -Infinity; this.upgrade(channel); return; }
       this.cancelProbe = timers.setTimeout(() => { this.cancelProbe = undefined; this.upgrade(channel); }, DIRECT_PROBE_EVERY_MS * this.probeBackoff);
     });
   }
 
-  /** Ends the probe, idle wait and periodic probe of the channel that is going. */
   private endUpgrade(): void {
     this.upgradeAbort?.abort();
     this.upgradeAbort = undefined;
@@ -479,15 +430,15 @@ export class RelayTransport implements Transport {
     this.cancelProbe = undefined;
   }
 
-  /** What the PC said of itself on the latest admission: a reconnect after its update names the new version. */
   get server(): RelayServerInfo | undefined { return this.known; }
 
-  /** How the channel up now reaches the PC: through the relay, or on one of its direct carriers. */
+  /** The PC's row this session signed in, or was admitted, as: the one its channel saved. Undefined while none is open. */
+  get deviceId(): string | null | undefined { return this.channel?.device.device_id; }
+
   get route(): "relay" | "direct" | undefined { return this.channel ? this.channel.direct === undefined ? "relay" : "direct" : undefined; }
 
   private readonly routeListeners = new Set<() => void>();
 
-  /** Called whenever `route` may have changed (a channel came up or went); returns the unsubscribe. */
   onRouteChange(listener: () => void): () => void {
     this.routeListeners.add(listener);
     return () => { this.routeListeners.delete(listener); };
@@ -507,10 +458,9 @@ export class RelayTransport implements Transport {
     return up;
   }
 
-  /** A reconnect that failed: tried again later, unless no later attempt could succeed. */
   private failed(error: unknown): void {
     if (this.stopped) return;
-    if (!isFatalRelayError(error)) {
+    if (!isFatalRelayError(error, this.options.accountOpensAll)) {
       // an attempt the relay held for an absent PC was a wait, not a hammering: no growing pause
       // between such waits, so a PC back from a restart is reached within a second
       // (a hidden page keeps the growing pause: showing it again reconnects at once, through wake)
@@ -532,16 +482,12 @@ export class RelayTransport implements Transport {
   }
 
   /**
-   * Whether `channel`, the carrier a socket opened on, is still this transport's and still open. One found closing with no close event yet (closed
-   * under the page while the relay has not answered) is ended now: its streams fail and a new one
-   * connects, rather than the app reading itself live until the browser gives up on the close.
+   * One found closing with no close event yet (closed under the page while the relay has not answered) is ended now:
+   * its streams fail and a new one connects, rather than the app reading itself live until the browser gives up on the close.
    */
   private carrierUp(channel: RelayChannel | undefined): boolean {
-    // not open on a carrier yet: the stream's own events decide
     if (!channel) return true;
-    // a carrier that was ended or replaced never reads as up again, whatever its successor does
     if (this.channel === channel && channel.carrierOpen) return true;
-    // ended outside the caller, which may be a render reading the socket's state
     if (this.channel === channel) queueMicrotask(() => { if (this.channel === channel) channel.close(); });
     return false;
   }
@@ -623,7 +569,6 @@ export class RelayTransport implements Transport {
       return new Promise<Response>((resolve, reject) => {
         const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
         request.signal.addEventListener("abort", aborted, { once: true });
-        // an event stream stays open for good and is reopened after any reconnect: it does not hold a switch back
         const counted = !(init !== undefined && eventStreams.has(init));
         if (counted) this.openHttp++;
         stream.onDispose = (error) => {
@@ -633,7 +578,6 @@ export class RelayTransport implements Transport {
         };
         stream.onHeaders = ({ status, headers }) => {
           if (status < 200) return;
-          // Keep the body streaming; a failed carrier also errors an already returned body.
           const reader = stream.body.getReader();
           const body = stream.noBody ? null : new ReadableStream<Uint8Array>({
             async pull(controller) {
@@ -666,7 +610,6 @@ export class RelayTransport implements Transport {
   }
 
   openSocket(url: string): RelayWebSocket {
-    // the carrier the stream opened on: the socket is live only while that one is
     let opened: RelayChannel | undefined;
     return new RelayWebSocket(() => {
       const stream = this.mux().openWs({ target: target(url), headers: [], protocols: [] });
@@ -821,10 +764,8 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
   }
 }
 
-/** SSE's line and unfinished-event storage are jointly bounded, including ignored fields. */
 export const SSE_BUFFER_LIMIT = 1024 * 1024;
 
-/** The requests of a RelayEventSource: reopened after any reconnect, so they never hold a switch to a direct carrier back. */
 const eventStreams = new WeakSet<RequestInit>();
 
 export class RelayEventSource extends EventTarget implements EventSourceLike {

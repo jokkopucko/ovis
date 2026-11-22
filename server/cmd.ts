@@ -64,7 +64,7 @@ export async function cmdTranscriptPath(
  * cached catalog. On `main` pi-models only consults models.json, which never
  * names commandcode's models, so cmd resolves its own window here.
  */
-let cmdCatalogCache: { path: string; mtimeMs: number; windows: Map<string, number> } | null = null;
+let cmdCatalogCache: { path: string; version: string; windows: Map<string, number> } | null = null;
 
 const MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 
@@ -80,9 +80,13 @@ function readCatalog(path: string): string | null {
 }
 
 export function cmdContextWindow(model: string, catalogPath = cmdModelCatalogPath()): number | null {
-  let mtimeMs: number;
-  try { mtimeMs = statSync(catalogPath).mtimeMs; } catch { return null; }
-  if (cmdCatalogCache === null || cmdCatalogCache.path !== catalogPath || cmdCatalogCache.mtimeMs !== mtimeMs) {
+  // the version the chat's live cache checks too (catalogVersion), so both see the same edits
+  let version: string;
+  try {
+    const stat = statSync(catalogPath);
+    version = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+  } catch { return null; }
+  if (cmdCatalogCache === null || cmdCatalogCache.path !== catalogPath || cmdCatalogCache.version !== version) {
     const text = readCatalog(catalogPath);
     if (text === null) return null;
     let parsed: unknown;
@@ -101,7 +105,7 @@ export function cmdContextWindow(model: string, catalogPath = cmdModelCatalogPat
         }
       }
     }
-    cmdCatalogCache = { path: catalogPath, mtimeMs, windows };
+    cmdCatalogCache = { path: catalogPath, version, windows };
   }
   return cmdCatalogCache.windows.get(model) ?? null;
 }

@@ -39,21 +39,15 @@ const routeShown = () => renderer!.root.findByProps({ className: "conn-route" })
 const draw = (ingress: ObservedIngress | null) => createElement(SettingsProvider, null, createElement(ConnectionRouteMark, { portal: false, ingress }));
 
 it("keeps the server's word on the route through a failed health read, which clears it", async () => {
-  // Given a page the server saw come through Funnel.
   await act(async () => { renderer = create(draw("funnel")); });
   expect(routeShown()).toBe("direct");
-  // When a health read fails and the facts are gone.
   await act(async () => { renderer!.update(draw(null)); });
-  // Then the mark still says what the server said, not what the name alone suggests.
   expect(routeShown()).toBe("direct");
 });
 
 it.each([["direct", "relay-direct"], ["relay", "relay"]] as const)("in the hosted shell, says the relay transport's %s route as %s", async (route, shown) => {
-  // Given the hosted shell, whose relay transport reached the PC that way.
   Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: { ...document, querySelector: (selector: string) => selector.includes("ovis-shell") ? { getAttribute: () => "relay" } : null } });
   setTransport({ ...nativeTransport, route } as Transport);
-  // When the mark is drawn.
   await act(async () => { renderer = create(draw(null)); });
-  // Then it names that route.
   expect(routeShown()).toBe(shown);
 });

@@ -1,10 +1,4 @@
 /**
- * The terminal peek (DESIGN.md, the terminal-command handoff): a command that runs in the terminal,
- * sent from Chat, shows the pane's own terminal over the chat's transcript. The chat stays mounted
- * under it, so its place and its reads go on; the composer stays too, inert. It is this browser's
- * state only: the pane's saved lens and the address keep saying Chat, nothing is attached anew (the
- * grid under the chat is the attached one), and herdr's focus never moves.
- *
  * The chat comes back by hand (Back to Chat, the header's Chat, Mod+Shift+J, a phone's Back), and
  * on its own after a command its agent is known to close in a way the chat can see:
  * - Claude Code records a `local_command` answer when one of its panels closes ("Settings dialog
@@ -23,28 +17,16 @@ import type { PaneView } from "./actions.ts";
 import type { InputRowState } from "./inputRow.ts";
 import type { SplitSlot } from "./split.ts";
 
-/** What PaneTerminal asks App to show; App adds where (its slot, the PC and the pane). */
 export interface PeekRequest {
-  /** the command as the head names it, its trigger included (`/usage`) */
   command: string;
-  /** the text that was sent, which finds the send's own outcome; null: opened by hand */
   text: string | null;
-  /** the outcome ids the chat had read when the text left; null: none read yet, or opened by hand */
   knownOutcomeIds: readonly string[] | null;
-  /** the chat comes back by itself once the agent records, or its screen shows, that the command's screen closed */
   auto: boolean;
-  /** the agent whose input row brings the chat back (SCREEN_AUTO_RETURN); null: Claude's record, or by hand */
   watch: string | null;
-  /**
-   * the agent's empty input row was on screen as the text left, or as the peek opened by hand: its
-   * recognizer (lib/inputRow.ts) reads this screen, so the screen's return can be watched, and a
-   * screen still open when the peek ends by hand can be told
-   */
   inputRowSeen: boolean;
 }
 
 export interface TerminalPeek extends PeekRequest {
-  /** the split half it opened in: the other half never shows it */
   slot: SplitSlot;
   machineId: string;
   paneId: string;
@@ -69,16 +51,10 @@ export const CLAUDE_AUTO_RETURN: ReadonlySet<string> = new Set([
   "resume", "powerup", "fast",
 ]);
 
-/** The peek a pane shows: App's one peek, when it is this half's, this PC's and this pane's. */
 export function peekFor(peek: TerminalPeek | null, slot: SplitSlot, machineId: string, paneId: string | null): TerminalPeek | null {
   return peek !== null && peek.slot === slot && peek.machineId === machineId && peek.paneId === paneId ? peek : null;
 }
 
-/**
- * What the lens and the peek leave mounted and covered: the chat (its transcript, composer, queue
- * and prompt dock) is mounted whenever the lens is Chat, and covers the grid only while no peek
- * shows it. Everything that sizes, focuses or types into the grid follows `gridCovered`.
- */
 export function paneLensFlags(view: PaneView, peek: TerminalPeek | null): { chatMounted: boolean; gridCovered: boolean } {
   const chatMounted = view === "chat";
   return { chatMounted, gridCovered: chatMounted && peek === null };
@@ -93,13 +69,9 @@ export function autoReturnArmed(agent: string | null, text: string, command: str
   return agent === "claude" && /^\S+$/u.test(text.trim()) && CLAUDE_AUTO_RETURN.has(command.toLocaleLowerCase());
 }
 
-/** How an agent's screen says one of its commands' screens has closed (lib/inputRow.ts). */
 export interface ScreenReturn {
-  /** the commands, sent bare, whose screen hides the input row and draws it back empty at its close */
   bare: ReadonlySet<string>;
-  /** the commands whose recording covered a form with arguments too */
   withArguments: ReadonlySet<string>;
-  /** what an open screen does to the row: the frame that shows it arms the return */
   arm: ReadonlySet<InputRowState>;
 }
 
@@ -167,7 +139,6 @@ export const SCREEN_AUTO_RETURN: Readonly<Record<string, ScreenReturn>> = {
   },
 };
 
-/** Whether `agent`'s screen brings the chat back after `text`, which invokes `command` (its name, no trigger). */
 export function screenReturnArmed(agent: string | null, text: string, command: string): boolean {
   const known = agent === null ? undefined : SCREEN_AUTO_RETURN[agent];
   if (known === undefined || !Object.hasOwn(SCREEN_AUTO_RETURN, agent!)) return false;
@@ -175,7 +146,6 @@ export function screenReturnArmed(agent: string | null, text: string, command: s
   return /^\S+$/u.test(text.trim()) ? known.bare.has(name) : known.withArguments.has(name);
 }
 
-/** Where a watched peek stands after a frame: still waiting (armed or not), back, or left to the reader. */
 export type WatchStep = { step: "wait"; armed: boolean } | { step: "return" } | { step: "manual" };
 
 /**
@@ -183,7 +153,7 @@ export type WatchStep = { step: "wait"; armed: boolean } | { step: "return" } | 
  * set arms it, and the first ready frame after that brings the chat back. A ready frame before it
  * (the row still drawn as the command leaves, Hermes' moment before its screen) and a draft (the
  * command echoed in the row) never arm; a draft after it (a screen that closed onto text) leaves
- * the return to the reader. A blank frame says nothing.
+ * the return to the reader.
  */
 export function watchReturn(agent: string, armed: boolean, state: InputRowState): WatchStep {
   const known = Object.hasOwn(SCREEN_AUTO_RETURN, agent) ? SCREEN_AUTO_RETURN[agent] : undefined;
@@ -196,11 +166,8 @@ export function watchReturn(agent: string, armed: boolean, state: InputRowState)
 }
 
 /**
- * The send's own outcome: the newest one with the sent text that the chat had not read when the
- * text left (the bridge lists them oldest first). An older identical send was read already and is
- * passed over; so is one sent just before that no read had listed yet, whose earlier close notice
- * would otherwise end this peek at once. A later identical send (another device's) is taken
- * instead, which only leaves the return to the reader. None listed yet is null.
+ * An older identical send was read already and is passed over; so is one sent just before that no
+ * read had listed yet, whose earlier close notice would otherwise end this peek at once.
  */
 export function sentOutcome(peek: PeekRequest, outcomes: readonly CommandOutcome[]): CommandOutcome | null {
   if (peek.text === null || peek.knownOutcomeIds === null) return null;
@@ -226,11 +193,8 @@ export function commandScreenClosed(peek: PeekRequest, agent: string | null, sen
     && turn.parts.some((part) => part.kind === "notice" && part.source === "local-command"));
 }
 
-/** What keeps the chat from coming back by itself: the return is then left to the reader. */
 export interface ReturnBlockers {
-  /** terminal input held for review (typed while the pane could not take it) */
   heldDraft: boolean;
-  /** the terminal's find bar is open */
   findOpen: boolean;
   /** an IME composition is under way in the grid or in its input line (the return would unmount the line) */
   composing: boolean;

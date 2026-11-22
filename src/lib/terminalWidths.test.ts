@@ -4,10 +4,8 @@ import { join } from "node:path";
 import { patchedTerminal } from "../../scripts/build-xterm.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 
-// the patch narrows a cell a selector joins (U+FE0E)
 const Terminal = await patchedTerminal(join(import.meta.dir, "../.."));
 
-/** Where the cursor stands after `text`, as xterm counts it with herdr's widths. */
 async function columnsAfter(text: string): Promise<number> {
   const term = new Terminal({ allowProposedApi: true, cols: 40, rows: 2 });
   matchHerdrWidths(term);
@@ -66,7 +64,6 @@ describe("matchHerdrWidths", () => {
     const term = new Terminal({ allowProposedApi: true, cols: 40, rows: 2 });
     matchHerdrWidths(term);
     await new Promise<void>((resolve) => term.write("A⚽", resolve));
-    // the selector may come in a later write
     await new Promise<void>((resolve) => term.write("\ufe0eX", resolve));
     const line = term.buffer.active.getLine(0);
     expect([0, 1, 2].map((x) => [line?.getCell(x)?.getChars(), line?.getCell(x)?.getWidth()])).toEqual([["A", 1], ["⚽\ufe0e", 1], ["X", 1]]);
@@ -83,7 +80,6 @@ describe("matchHerdrWidths", () => {
     term.dispose();
   });
 
-  // the wide character before it keeps its two cells
   for (const [before, cols, after, wideAt] of [["abcde", 6, "abcdeX", null], ["abc漢", 6, "abc漢X", 3], ["한한", 5, "한한X", 2]] as const) {
     it(`keeps what came before an emoji that autowrap off dropped at the last column: ${before}`, async () => {
       const term = new Terminal({ allowProposedApi: true, cols, rows: 2 });

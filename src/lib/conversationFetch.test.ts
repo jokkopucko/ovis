@@ -15,11 +15,9 @@ afterEach(() => {
   globals.window = realWindow;
   restoreClock?.();
   restoreClock = undefined;
-  // the roster the event a test raised scheduled: this PC's panes are known again, and none is named
   observePaneSessions([{ id: "local", snapshot: { panes: [] } }], paneSessionEvents());
 });
 
-/** The roster naming each pane's session (herdr's agent_session), read after every PC event so far. */
 function named(machine: string, sessions: Record<string, string | null>): void {
   observePaneSessions([{ id: machine, snapshot: { panes: Object.entries(sessions).map(([pane_id, value]) => ({ pane_id, agent: "claude", agent_session: value === null ? null : { agent: "claude", kind: "id", source: "herdr:claude", value } })) } }], paneSessionEvents());
 }
@@ -99,7 +97,6 @@ describe("conversation polling", () => {
     const changed = await fetchPaneConversation("w1:p1");
     expect(changed).not.toBe(first);
     expect((changed as unknown as { v: string }).v).toBe("\"v2\"");
-    // an older page is asked for once: it never sends or keeps an ETag
     await fetchPaneConversation("w1:p1", "local", { before: "c:10" });
     await fetchPaneConversation("w1:p1", "local", { before: "c:10" });
     expect(sent).toEqual([null, "\"v1\"", "\"v1\"", null, null]);
@@ -116,7 +113,6 @@ describe("conversation polling", () => {
       await fetchPaneConversation("clock-read");
       settleWaitingSends(key, [], Date.now(), true);
       expect(waitingBaseline(key, 1_000)?.pcFloor).toBe(Date.parse(time));
-      // ten minutes on, the unchanged transcript answers 304 with the PC's clock now
       time = "2026-11-05T10:10:00.000Z";
       monotonic.mockReturnValue(601_000);
       await fetchPaneConversation("clock-read");
@@ -134,7 +130,6 @@ describe("conversation polling", () => {
     }) as typeof fetch;
     const polled = await fetchPaneConversation("w9:p1");
     for (let page = 0; page < 40; page++) await fetchPaneConversation("w9:p1", "local", { before: `c:${page}` });
-    // other panes polled in between: the one polled again stays the most recent
     for (let pane = 0; pane < 20; pane++) {
       await fetchPaneConversation(`w8:p${pane}`);
       expect(await fetchPaneConversation("w9:p1")).toBe(polled);
@@ -144,9 +139,6 @@ describe("conversation polling", () => {
 
   it("gives up the oldest answers when they outgrow the byte budget, not only when there are too many", async () => {
     const asked = new Map<string, string | null>();
-    // one answer just under its own maximum (the body carries the filler twice, as a turn and as a
-    // field): enough of them outgrow the cache's byte budget while the count cap is still far away,
-    // so only the budget can evict
     const filler = "x".repeat(CONVERSATION_ANSWER_MAX_BYTES / 2 - 64 * 1024);
     const panes = Math.ceil(CONVERSATION_ANSWERS_BYTES / CONVERSATION_ANSWER_MAX_BYTES) + 1;
     expect(panes).toBeLessThan(CONVERSATION_ANSWERS_KEPT);
@@ -158,7 +150,6 @@ describe("conversation polling", () => {
     }) as typeof fetch;
     for (let pane = 0; pane < panes; pane++) await fetchPaneConversation(`big:p${pane}`);
     asked.clear();
-    // the newest panes are still cached, the ones the budget pushed out are not
     await fetchPaneConversation(`big:p${panes - 1}`);
     expect([...asked.values()]).toEqual([`"${panes}"`]);
     asked.clear();
@@ -167,7 +158,6 @@ describe("conversation polling", () => {
   });
 
   it("keeps the open pane's page at the size it was read, not the size a pin was taken at", async () => {
-    // one answer just under its own maximum: only the byte budget can evict
     const filler = "x".repeat(CONVERSATION_ANSWER_MAX_BYTES / 2 - 64 * 1024);
     const panes = Math.ceil(CONVERSATION_ANSWERS_BYTES / CONVERSATION_ANSWER_MAX_BYTES) + 1;
     let reads = 0;
@@ -175,25 +165,19 @@ describe("conversation polling", () => {
       reads += 1;
       return new Response(JSON.stringify({ source: "claude-transcript", turns: [{ text: filler }], cursor: null, filler }), { status: 200, headers: { etag: `"${reads}"` } });
     }) as typeof fetch;
-    // the chat's open pane reads its newest page at the page size the setting names
     pinPaneConversation("open:p1");
     const open = await fetchPaneConversation("open:p1", "local", { prompts: 10 });
-    // the control: the same read on a pane the chat does not have open
     const control = await fetchPaneConversation("control:p1", "local", { prompts: 10 });
     expect(peekPaneConversation("control:p1", "local", 10)).toBe(control);
     for (let pane = 0; pane < panes; pane++) await fetchPaneConversation(`big:p${pane}`);
-    // pinned by pane: the answer the open pane actually holds survives the budget
     expect(peekPaneConversation("open:p1", "local", 10)).toBe(open);
-    // the control is gone
     expect(peekPaneConversation("control:p1", "local", 10)).toBeUndefined();
     unpinPaneConversation("open:p1");
   });
 });
 
 describe("conversation read started by a press", () => {
-  // herdr reports each pane's session: only then is a press read started and taken
   beforeEach(() => named("local", Object.fromEntries(["press:p1", "press:p2", "press:held", "press:again", "press:p3", "press:p4", "press:late", "press:failed"].map((pane) => [pane, "a"]))));
-  /** every request the chat makes: its query and whether it revalidates */
   function answering(): { url: string; etag: string | null }[] {
     const sent: { url: string; etag: string | null }[] = [];
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
@@ -207,11 +191,9 @@ describe("conversation read started by a press", () => {
     const sent = answering();
     prefetchPaneConversation("press:p1", "local", 10);
     expect(sent).toHaveLength(1);
-    // ChatView's mount read: no answer shown yet, a new presentation
     const mounted = await fetchPaneConversation("press:p1", "local", { prompts: 10, fresh: true });
     expect(sent).toHaveLength(1);
     expect(peekPaneConversation("press:p1", "local", 10)).toBe(mounted);
-    // taken once: the next read asks the server
     await fetchPaneConversation("press:p1", "local", { prompts: 10, history_id: mounted.history_id });
     expect(sent).toHaveLength(2);
   });
@@ -231,7 +213,6 @@ describe("conversation read started by a press", () => {
     for (let turn = 0; turn < 50 && peekPaneConversation(paneId, "local", 10) === before; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  /** ChatView's mount: the cached answer draws before paint, then the mount read names its history. */
   async function mount(paneId: string): Promise<{ drawn: ConversationResponse | undefined; read: ConversationResponse }> {
     const drawn = peekPaneConversation(paneId, "local", 10);
     return { drawn, read: await fetchPaneConversation(paneId, "local", { prompts: 10, history_id: drawn?.history_id, fresh: true }) };
@@ -268,14 +249,12 @@ describe("conversation read started by a press", () => {
       if (status === 200) return Response.json({ source: "claude-transcript", history_id: "history-a", cursor: null, turns: [] }, { headers: { etag: '"a"' } });
       const response = Response.json({ error: { code: "conversation_read_pending", message: "retry" } }, { status });
       const body = response.json.bind(response);
-      // the press read has its error once this body is read; the rest of its failure is promise turns
       response.json = async () => { try { return await body(); } finally { failed(); } };
       return response;
     }) as typeof fetch;
     prefetchPaneConversation("press:failed", "local", 10);
     await failure;
     await new Promise((resolve) => setImmediate(resolve));
-    // the bridge is back before the chat mounts, within PRESS_READ_MS of the press
     status = 200;
     const mounted = await fetchPaneConversation("press:failed", "local", { prompts: 10, fresh: true });
     expect(mounted.history_id).toBe("history-a");
@@ -323,7 +302,6 @@ describe("conversation read started by a press", () => {
       prefetchPaneConversation(pane, "local", 10);
       await heldPast(pane);
     }
-    // herdr moves one pane to session B between the press read's answer and the click
     histories.set("press:switched", "session-b");
     roster("b");
     const same = await mount("press:same");
@@ -362,12 +340,10 @@ describe("conversation read started by a press", () => {
     }) as typeof fetch;
     observePaneSessions([{ id: "gap-pc", snapshot: { panes: [{ pane_id: "press:gap", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "a" } }] } }]);
     prefetchPaneConversation("press:gap", "gap-pc", 10);
-    // herdr moves the pane to B: the PC's event comes, the roster naming B is still on its way
     history = "session-b";
     paneSessionsMoving("gap-pc");
     first.resolve();
     for (let turn = 0; turn < 50 && sent.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
-    // the chat the click opens, before the roster: A's answer is neither drawn nor taken
     expect(peekPaneConversation("press:gap", "gap-pc", 10)?.history_id).not.toBe("session-a");
     const mounted = await fetchPaneConversation("press:gap", "gap-pc", { prompts: 10, fresh: true });
     expect(mounted.history_id).toBe("session-b");
@@ -383,7 +359,6 @@ describe("conversation read started by a press", () => {
     named("local", { "press:unnamed": null });
     prefetchPaneConversation("press:unnamed", "local", 10);
     for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
-    // the agent goes to session B; the roster still names no session
     history = "session-b";
     named("local", { "press:unnamed": null });
     const { read } = await mount("press:unnamed");
@@ -402,14 +377,12 @@ describe("conversation read started by a press", () => {
     roster("a", paneSessionEvents());
     prefetchPaneConversation("press:stale", "local", 10);
     await heldPast("press:stale");
-    // a roster read is out when herdr moves the pane to B and its PC says so; that read answers after the event
     const polled = paneSessionEvents();
     history = "session-b";
     paneSessionsMoving("local");
     roster("a", polled);
     expect(peekPaneConversation("press:stale", "local", 10)).toBeUndefined();
     expect((await mount("press:stale")).read.history_id).toBe("session-b");
-    // the refetch the event scheduled names B: the pane's session is known again, and B's pages are kept
     roster("b", paneSessionEvents());
     const read = await fetchPaneConversation("press:stale", "local", { prompts: 10 });
     expect(peekPaneConversation("press:stale", "local", 10)).toBe(read);
@@ -426,7 +399,6 @@ describe("conversation read started by a press", () => {
     const clock = spyOn(performance, "now").mockImplementation(() => now);
     restoreClock = () => { clock.mockRestore(); };
     prefetchPaneConversation("press:late", "local", 10);
-    // the chat mounts after the press read is too old to take, and asks again
     now = PRESS_READ_MS;
     const mounted = fetchPaneConversation("press:late", "local", { prompts: 10, fresh: true });
     for (let turn = 0; turn < 50 && answers.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -467,10 +439,8 @@ describe("conversation peek", () => {
       return Response.json(body, { headers: { etag: `"${from}-${turns}"` } });
     }) as typeof fetch;
     await fetchPaneConversation("peek:held", "local", { prompts: 10 });
-    // the newest page moved: the chat holds its start and reads from it from now on
     turns = 6;
     const held = await fetchPaneConversation("peek:held", "local", { from: "h:2", history_id: "h", prompts: 10 });
-    // a chat opened again draws what the open one last showed
     expect(peekPaneConversation("peek:held", "local", 10)).toBe(held);
   });
 
@@ -482,7 +452,6 @@ describe("conversation peek", () => {
       await held.promise;
       return Response.json({ source: "claude-transcript", history_id: "session-a", cursor: from, turns: [] }, { headers: { etag: '"session-a-held"' } });
     }) as typeof fetch;
-    // the chat on session A held its start and unmounted with that read in flight; the pane went to B
     const late = fetchPaneConversation("peek:late-held", "local", { from: "session-a:40", history_id: "session-a", prompts: 10 });
     const plain = await fetchPaneConversation("peek:late-held", "local", { prompts: 10 });
     held.resolve();
@@ -506,7 +475,6 @@ describe("conversation peek", () => {
     session = "b";
     roster("b");
     first.resolve();
-    // the caller gets the session the pane is on, never the one it left while the read was out
     const answer = await read;
     expect(answer.history_id).toBe("session-b");
     expect(reads).toBe(2);
@@ -539,7 +507,6 @@ describe("conversation peek", () => {
     let reads = 0;
     globalThis.fetch = (async (_url: string) => {
       reads += 1;
-      // every answer comes after another event from its PC
       paneSessionsMoving("busy-pc");
       return Response.json({ source: "claude-transcript", history_id: "h", cursor: null, turns: [] }, { headers: { etag: '"h"' } });
     }) as typeof fetch;
@@ -611,17 +578,14 @@ it("counts a compressed answer by its parsed body, not the bytes on the wire", (
 });
 
 it("counts a body's JSON in bytes, so a CJK page cannot slip under the per-answer cap", () => {
-  // the oracle is an encoder, not this module's own counter
   const cjk = { turns: [{ text: "字".repeat(1000) }] } as unknown as Parameters<typeof conversationAnswerBytes>[0];
   const json = JSON.stringify(cjk);
   expect(conversationAnswerBytes(cjk, null, "gzip")).toBe(new TextEncoder().encode(json).length);
-  // the code-unit length this used to report is a third of it
   expect(conversationAnswerBytes(cjk, null, "gzip")).toBeGreaterThan(json.length * 2);
   const emoji = { turns: [{ text: "🙂".repeat(100) }] } as unknown as Parameters<typeof conversationAnswerBytes>[0];
   expect(conversationAnswerBytes(emoji, null, "gzip")).toBe(new TextEncoder().encode(JSON.stringify(emoji)).length);
 });
 
-/** The browser timer the refresher uses, advanced without sleeping or a DOM. */
 function refreshClock(): { advance(ms: number): void; pending(): number } {
   let now = 0;
   let next = 1;
@@ -652,7 +616,6 @@ async function settleRefresh(): Promise<void> {
   for (let step = 0; step < 20; step++) await Promise.resolve();
 }
 
-/** A chat on a bridge that pushes its pane's transcript changes. */
 function pushedRefresh(): ConversationRefresh {
   const refresh = new ConversationRefresh();
   refresh.setPushes(true);
@@ -740,7 +703,6 @@ describe("conversation invalidation refresh", () => {
     expect(starts).toEqual([0, 1000, 2000, 3000, 4000, 5000, 6000]);
     expect(answers.at(-1)?.turns[0]?.parts[0]).toEqual({ kind: "text", text: "output-53" });
     expect(maxActive).toBe(1);
-    // A push after idle is not delayed until the periodic backstop.
     clock.advance(2500);
     output = "after-idle";
     refresh.invalidate();
@@ -765,7 +727,6 @@ describe("conversation invalidation refresh", () => {
     expect(starts).toEqual([0, 500]);
     clock.advance(500);
     expect(starts).toEqual([0, 500]);
-    // The explicit read also establishes the next push deadline.
     refresh.invalidate();
     clock.advance(499);
     expect(starts).toEqual([0, 500]);
@@ -802,13 +763,11 @@ describe("conversation invalidation refresh", () => {
     refreshClock();
     const refresh = pushedRefresh();
     const signals: AbortSignal[] = [];
-    // the first read went out on a connection that died silently: only an abort ends it
     refresh.setRead(async (signal) => {
       signals.push(signal);
       if (signals.length === 1) await new Promise<void>((done) => signal.addEventListener("abort", () => done(), { once: true }));
     });
     refresh.refresh();
-    // the reply's push waits behind it
     refresh.invalidate();
     expect(signals).toHaveLength(1);
     refresh.restart();
@@ -816,7 +775,6 @@ describe("conversation invalidation refresh", () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]!.aborted).toBe(true);
     expect(signals[1]!.aborted).toBe(false);
-    // with no read in flight, a reconnect reads once
     refresh.restart();
     await settleRefresh();
     expect(signals).toHaveLength(3);
@@ -910,11 +868,9 @@ describe("conversation invalidation refresh", () => {
     gap.resolve();
     await settleRefresh();
     expect(reads).toEqual(["latest", "gap", "older"]);
-    // the older page is still loading: the pushed newest read keeps its own 1 s deadline
     clock.advance(900);
     await settleRefresh();
     expect(reads).toEqual(["latest", "gap", "older", "latest"]);
-    // and an explicit refresh (a clear, a send) does not wait for it either
     refresh.refresh();
     await settleRefresh();
     expect(reads).toEqual(["latest", "gap", "older", "latest", "latest"]);
@@ -1074,7 +1030,6 @@ describe("conversation invalidation refresh", () => {
     clock.advance(1);
     await settleRefresh();
     expect(reads).toBe(2);
-    // the bridge starts pushing: the waiting poll becomes the 10s backstop from now
     clock.advance(1000);
     refresh.setPushes(true);
     clock.advance(9999);
@@ -1082,7 +1037,6 @@ describe("conversation invalidation refresh", () => {
     clock.advance(1);
     await settleRefresh();
     expect(reads).toBe(3);
-    // the tab lets go of its pane: no pushes, so the 2s poll is back without waiting out 10s
     refresh.setPushes(false);
     clock.advance(2000);
     await settleRefresh();
@@ -1111,7 +1065,6 @@ describe("conversation invalidation refresh", () => {
     expect(answered).toBe(false);
     reads[1]!.resolve();
     await asked;
-    // a read a reconnect gives up answers through the read that replaces it
     answered = false;
     const replaced = refresh.refreshed().then(() => { answered = true; });
     await settleRefresh();
@@ -1121,7 +1074,6 @@ describe("conversation invalidation refresh", () => {
     expect(answered).toBe(false);
     reads[3]!.resolve();
     await replaced;
-    // a screen that goes answers what it was asked for: nothing waits on a read that never comes
     const stopped = refresh.refreshed();
     refresh.stop();
     await stopped;
@@ -1195,7 +1147,7 @@ describe("screen cancellation across press and session reads", () => {
     const screen = new AbortController();
     const adopted = fetchPaneConversation(pane, "local", { prompts: 10, signal: screen.signal });
     const newer = await fetchPaneConversation(pane, "local", { prompts: 10 });
-    expect(calls).toBe(2); // the press was taken once, not shared by the later caller
+    expect(calls).toBe(2);
     screen.abort();
     await expect(adopted).rejects.toMatchObject({ name: "AbortError" });
     expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);

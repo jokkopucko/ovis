@@ -1,13 +1,5 @@
 name: Desktop app
-# Builds Ovis for the desktop (app/electron) on Linux x64 and arm64, macOS arm64 and x64, and Windows
-# x64: its unit tests, its type check, then an AppImage and deb, a dmg and zip, or an NSIS installer,
-# kept as the run's artifacts. A pull
-# request touching the app runs it, and so can anyone by hand for any branch; nothing is published.
-# With a release tag (Release calls it after publishing, or run it by hand from main for an existing
-# release), it builds that tag to update itself from the feed below and attaches the installers,
-# their blockmaps and the feed files (latest-linux.yml, latest-linux-arm64.yml, latest-mac.yml,
-# latest.yml for Windows) to
-# that release. The feed is the latest release's assets, so an installed app sees a version once it
+# The feed is the latest release's assets, so an installed app sees a version once it
 # is GitHub's latest (docs/development.md#releasing).
 on:
   pull_request:
@@ -89,17 +81,23 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+          package-manager-cache: false
       - name: Install the client's packages
         run: bun install --frozen-lockfile
       - name: Install the app's packages
         working-directory: app/electron
         run: bun install --frozen-lockfile
-      # pull requests run the app's tests; a release build of a tag main already tested only builds,
-      # so a flaky test cannot hold back the release (and Ovis.dmg and Ovis.exe, which wait for it)
+      # the built-in browser's tests run a real Electron without a display (Linux only): its binary, which
+      # electron-builder fetches on its own later, is not there after bun install
+      - name: Electron for the built-in browser tests
+        if: inputs.tag == '' && startsWith(matrix.target, 'linux-')
+        working-directory: app/electron
+        run: node node_modules/electron/install.js
       - name: Unit tests
         if: inputs.tag == ''
         working-directory: app/electron
@@ -151,7 +149,6 @@ jobs:
       - name: Build ${{ matrix.target }}
         working-directory: app/electron
         env:
-          # a release build checks the tag against package.json and updates itself from the feed
           OVIS_RELEASE_TAG: ${{ inputs.tag }}
           OVIS_UPDATE_FEED: ${{ inputs.tag != '' && env.UPDATE_FEED || '' }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.sign.outputs.on == 'true' && 'true' || 'false' }}
@@ -207,7 +204,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -223,7 +220,6 @@ jobs:
           bun app/electron/scripts/build.ts merge-feed "$out/latest-mac.yml" \
             "$RUNNER_TEMP/builds/ovis-desktop-darwin-arm64/latest-mac.yml" \
             "$RUNNER_TEMP/builds/ovis-desktop-darwin-x64/latest-mac.yml"
-          # every name a download page links and every feed, so a release never gets part of the app
           for name in latest-linux.yml latest-linux-arm64.yml latest-mac.yml latest.yml \
             Ovis-linux-x64.deb Ovis-linux-arm64.deb Ovis-linux-x64.AppImage Ovis-linux-arm64.AppImage \
             Ovis-mac-arm64.dmg Ovis-mac-x64.dmg Ovis-mac-arm64.zip Ovis-mac-x64.zip \

@@ -10,6 +10,7 @@ import { KO } from "../src/lib/i18n.ko.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // Update consent on the unmodified app over the demo's fixture transport: Settings' Update and
 // restart and the header's Update send the revision of the offer they were drawn with, a release
@@ -26,7 +27,6 @@ const app = mkdtempSync(join(tmpdir(), "herdr-revision-update-demo-"));
 const repo = join(import.meta.dir, "..");
 const A = "a1".repeat(20), B = "b2".repeat(20);
 const LONG = "f".repeat(64);
-// the running version is this build's, so no line says the tab runs another one
 const RUNNING = (JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string }).version;
 const MOVED = "A newer release was published after you chose this update, so nothing was installed. Check again to review it.";
 const RESTART = "Restart Ovis on this PC to update from here: the server running now cannot install exactly the release shown.";
@@ -44,30 +44,21 @@ const notesFor = (revision: string, version: string, count = 1): UpdateNotes => 
 });
 
 interface Post { tab: string; path: string; body: unknown; status: number; code: string | null }
-/**
- * The server, as this script plays it: one status (what a supervisor last told), the notes of its
- * offer, and the bridge's rules for an install. A tab can be held on the status it last read, as
- * a tab whose next poll has not come yet is.
- */
 class Fixture {
   status: UpdateStatus = offer();
   notes: UpdateNotes = notesFor(A, "9.9.9");
-  /** what a held tab keeps reading */
   held = new Map<string, UpdateStatus>();
   posts: Post[] = [];
   /** `watch`: a device paired to watch only, which the server refuses every mutation (server/index.ts) */
   role: "drive" | "watch" = "drive";
-  /** the status cannot be fetched at all, as with the server out of reach */
   unreachable = false;
   private waiters: Array<{ path: string; resolve: (post: Post) => void }> = [];
   private reads: Array<() => void> = [];
 
-  /** Resolves once a tab has been answered (or failed) its next status read: asked for before the load. */
   nextRead(): Promise<void> {
     return new Promise((resolve) => this.reads.push(resolve));
   }
 
-  /** Resolves with the next POST to `path`: asked for before the press that sends it. */
   next(path: string): Promise<Post> {
     return new Promise((resolve) => this.waiters.push({ path, resolve }));
   }
@@ -76,7 +67,6 @@ class Fixture {
     if (method === "GET") {
       if (path === "/api/updates") {
         for (const resolve of this.reads.splice(0)) resolve();
-        // status 0: the page's fetch rejects, as a network failure does
         return this.unreachable ? { status: 0, body: null } : { status: 200, body: this.held.get(tab) ?? this.status };
       }
       if (path === "/api/updates/notes") return { status: 200, body: this.notes };
@@ -87,7 +77,6 @@ class Fixture {
     try { parsed = body === null ? null : JSON.parse(body); } catch { parsed = body; }
     const refuse = (status: number, code: string) => ({ status, body: { error: { code, message: `fixture ${code}` } } });
     let reply: { status: number; body: unknown };
-    // as the server answers a watching device, before any update route is reached: nothing changes
     if (this.role === "watch") reply = { status: 403, body: { error: { code: "read_only", message: "this device can only watch" } } };
     else if (path === "/api/updates/check") {
       reply = { status: 202, body: { accepted: true } };
@@ -100,7 +89,6 @@ class Fixture {
       else if (expected !== this.status.latest_revision) reply = refuse(409, "update_offer_changed");
       else {
         reply = { status: 202, body: { accepted: true } };
-        // as the updater does: an install starts with a check, which reports nothing available yet
         this.status = { ...this.status, phase: "checking", available: false };
       }
     }
@@ -112,7 +100,6 @@ class Fixture {
   }
 }
 
-/** Layered over the demo's fetch: the update endpoints are this script's. */
 const UPDATE_FETCH = `<script>(() => {
   const demo = window.fetch.bind(window);
   window.fetch = async (input, init) => {
@@ -164,7 +151,6 @@ const fits = async (page: Page, what: string) => assert.deepEqual(await page.eva
   }
   return found;
 }), [], `${what}: nothing overflows sideways`);
-/** Where the browser broke each line of a text: what a Korean reader sees split. */
 const lines = (page: Page, selector: string, text: string) => page.evaluate(({ selector, text }) => {
   const node = [...document.querySelectorAll(`${selector}, ${selector} *`)].find((each) => each.textContent?.includes(text) && ![...each.children].some((child) => child.textContent?.includes(text)));
   if (!node) return null;
@@ -184,17 +170,14 @@ const lines = (page: Page, selector: string, text: string) => page.evaluate(({ s
   return rows.sort((a, b) => a.top - b.top).map((row) => row.words.join(" "));
 }, { selector, text });
 const settingsOpen = async (page: Page, language: "en" | "ko") => {
-  // the shortcut is the app's once it has drawn: after a load or a reload, wait for it
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(page, label(language, "About"), label(language, "Back to settings"));
   await page.locator(".settings-updates").scrollIntoViewIfNeeded();
 };
 
-/** Two animation frames: whatever the last answer set has been committed and painted. */
 const frames = (page: Page) => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
-/** The functional checks, on a phone in English. */
 async function behaviour(browser: Browser, url: string): Promise<Record<string, unknown>> {
   const fixture = new Fixture();
   const receipts: Record<string, unknown> = { offered_revision: A, moved_revision: B };
@@ -207,8 +190,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     await page.locator(".conn-live").waitFor({ state: "attached" });
     const line = page.locator(".update-notice");
 
-    // the offer closed from the keyboard hands the focus to the header's More, never to the page (G-102); the
-    // closed offer is then forgotten so the line comes back for the rest
     await line.getByText("Ovis v9.9.9 is available.", { exact: true }).waitFor();
     await line.filter({ hasText: "Ovis v9.9.9 is available." }).getByRole("button", { name: "Dismiss", exact: true }).focus();
     await page.keyboard.press("Enter");
@@ -219,7 +200,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     await page.locator(".conn-live").waitFor({ state: "attached" });
     console.log("PASS the offer closes from the keyboard and the focus goes to the header's More");
 
-    // happy: the header's Update names A, and the install's steps are shown as they are told
     await line.getByText("Ovis v9.9.9 is available.", { exact: true }).waitFor();
     await line.getByRole("button", { name: "What's new", exact: true }).waitFor();
     const statusReceipts: Array<{ surface: string; phase: string; shown: string }> = [];
@@ -239,7 +219,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     await deliver("header", page, { phase: "idle", step: null, current_revision: A, available: false }, "App updated. Save unsent drafts before reloading.");
     console.log("PASS the header's Update posts the offered revision and follows the install to its end");
 
-    // happy: Settings' Update and restart names A too
     fixture.status = offer();
     await page.reload();
     await settingsOpen(page, "en");
@@ -258,8 +237,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     receipts["accepted"] = { header: header.body, settings: fromSettings.body, status_receipts: statusReceipts };
     console.log("PASS Update and restart posts the offered revision and follows the install to its end");
 
-    // failure: a tab still showing A while the server offers B. Its Update posts A, which is
-    // refused; it says so, asks for a check, and only the tab that shows B installs B
     fixture.status = offer();
     fixture.notes = notesFor(A, "9.9.9");
     await page.goto(url);
@@ -291,8 +268,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     await other.close();
     console.log("PASS a tab showing an old offer posts its own revision, is refused, and checks before installing");
 
-    // failure: the release moves after the install was accepted: Settings and the line say so, and
-    // nothing installs until a check shows the new offer
     fixture.status = offer();
     fixture.notes = notesFor(A, "9.9.9");
     await page.goto(url);
@@ -318,7 +293,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     receipts["moved_after_accept"] = { shown: MOVED, install_disabled_until_check: true, installs_after_move: 0 };
     console.log("PASS a release that moved after the install was accepted is shown, and installs nothing until it is checked");
 
-    // failure: an older supervisor: no install is sent, and both places ask for a restart
     fixture.status = offer(A, "9.9.9", { revision_bound_install: undefined });
     fixture.notes = notesFor(A, "9.9.9");
     const posted = fixture.posts.length;
@@ -335,10 +309,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     receipts["old_supervisor"] = { capability: false, header: RESTART, settings_install_disabled: true, posts: fixture.posts.length - posted };
     console.log("PASS under an older supervisor no install is sent, and both places ask for a restart");
 
-    // failure, then recovery: the tab last read a server that installs by revision, which then
-    // restarted under an older supervisor. Its Update is refused for want of the capability, and
-    // the line asks for a restart. Once the server reports the capability again (restarted under a
-    // supervisor that has it), the refusal is over and the offer installs from here again
     fixture.status = offer();
     fixture.notes = notesFor(A, "9.9.9");
     await page.goto(url);
@@ -388,7 +358,6 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
 
 interface Shot { file: string; width: number; height: number; theme: string; language: string; state: string; sha256?: string; capturedAt?: string }
 
-/** The capture matrix: every state of both surfaces, phone and desktop, light and dark, and Korean. */
 async function captures(browser: Browser, url: string, dir: string): Promise<void> {
   mkdirSync(dir, { recursive: true });
   const shots: Shot[] = [];
@@ -401,14 +370,12 @@ async function captures(browser: Browser, url: string, dir: string): Promise<voi
     { state: "moved-offer", status: () => offer(B, "9.9.10", { phase: "error", error_code: "update_offer_changed", error: "A different release is on offer than the one asked for, so nothing was installed. Review it, then update again." }), notes: () => notesFor(B, "9.9.10") },
     { state: "restart-required", status: () => offer(A, "9.9.9", { revision_bound_install: undefined }) },
     { state: "retry", status: () => offer(A, "9.9.9", { phase: "error", error: "bun run build failed: fixture" }) },
-    // a 64-hex revision and an unbroken path in the error: the updater offers only plain vX.Y.Z tags, so the version stays one
     { state: "long", status: () => offer(LONG, "9.9.9", { phase: "error", error: longError }), notes: () => notesFor(LONG, "9.9.9") },
     { state: "notes-end", status: () => offer(), notes: () => notesFor(A, "9.9.9", 8) },
     { state: "hover", status: () => offer(), only: 1440 },
     { state: "focus-visible", status: () => offer() },
     { state: "pressed", status: () => offer() },
     { state: "disabled", status: () => offer(A, "9.9.9", { phase: "checking", available: false }) },
-    // nothing to install: the controls must offer none
     { state: "unmanaged", status: () => ({ ...offer(), managed: false, available: false, latest_revision: null, latest_version: null, revision_bound_install: undefined }) },
     { state: "up-to-date", status: () => offer(A, "9.9.9", { available: false, latest_revision: null, latest_version: null }) },
     { state: "unreachable", status: () => offer() },
@@ -439,7 +406,6 @@ async function captures(browser: Browser, url: string, dir: string): Promise<voi
           let target: ReturnType<Page["locator"]> | null = null;
           if (surface === "header") {
             if (state === "checking" || state === "disabled") {
-              // the line shows a check only once Update was pressed: pressed here, and the answer held
               fixture.status = offer();
               await line.getByRole("button", { name: t("Update"), exact: true }).waitFor();
               if (state === "disabled") continue;
@@ -453,7 +419,6 @@ async function captures(browser: Browser, url: string, dir: string): Promise<voi
             else if (state === "retry") await line.getByRole("button", { name: t("Try again"), exact: true }).waitFor();
             else if (state === "notes-end" || state === "long") continue;
             else if (state === "unmanaged" || state === "up-to-date" || state === "unreachable") {
-              // the status was answered (or failed) and drawn: the line must then be absent
               await read;
               await frames(page);
               assert.equal(await line.count(), 0, `${state}: the header offers no update`);
@@ -491,7 +456,6 @@ async function captures(browser: Browser, url: string, dir: string): Promise<voi
             }
             target = section.getByRole("button", { name: t("Update and restart"), exact: true });
             if (state === "unmanaged" || state === "unreachable") {
-              // no update is managed here, or none could be read: no control is drawn at all
               assert.equal(await target.count(), 0, `${state}: Settings offers no install`);
               assert.equal(await section.getByRole("button", { name: t("Check for updates"), exact: true }).count(), 0, `${state}: Settings offers no check`);
               target = null;
@@ -569,18 +533,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${UPDATE_FETCH}${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   console.log(`fixture server pid=${process.pid} port=${server.port}`);
   const port = server.port;
   const url = `http://127.0.0.1:${port}/herdr-web-ui/demo/app/`;

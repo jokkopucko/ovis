@@ -11,10 +11,8 @@ declare global {
     chatQa: {
       refresh: () => void;
       page: (direction: -1 | 1) => void;
-      /** the chat's height, and its width (a split pane's) when given */
       resize: (height: number, width?: number) => void;
       machine: (machine: string) => void;
-      /** the agent's status: a working one's follow glides */
       status: (status: "working" | "idle") => void;
     };
   }
@@ -38,7 +36,6 @@ function Fixture() {
     <MachineContext.Provider value={machine}>
       <Profiler id="chat" onRender={() => window.dispatchEvent(new Event("chat-qa-commit"))}>
         <OpenFileContext.Provider value={() => {}}>
-          {/* the metadata of each answer the chat shows: a script can tell an applied answer from one only fetched */}
           <ChatView key={machine} paneId="same-pane" refreshKey={refresh} connected ended={false} agent={null} agentStatus={status} pageScroll={pageScroll}
             onMetadata={(_pane, metadata) => window.dispatchEvent(new CustomEvent("chat-qa-answer", { detail: metadata }))} />
         </OpenFileContext.Provider>

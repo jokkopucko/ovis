@@ -3,7 +3,6 @@ import Combine
 import SwiftUI
 import WebKit
 
-/// The Ovis page in the main window, under a cover while it loads or while the server does not answer.
 struct WebPage: View {
     @StateObject private var page: WebPageController
 
@@ -43,7 +42,6 @@ private struct WebViewHost: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-/// Typing goes to the page from the start, as it does in a browser tab.
 final class OvisWebView: WKWebView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -51,7 +49,6 @@ final class OvisWebView: WKWebView {
     }
 }
 
-/// One Ovis page: the main window's, or a window the page opened (window.open, a target="_blank" link).
 /// The Ovis server's own pages stay in the app; any other address goes to the default browser.
 @MainActor
 final class WebPageController: NSObject, ObservableObject {
@@ -65,30 +62,18 @@ final class WebPageController: NSObject, ObservableObject {
     let webView: WKWebView
     private let origin: URL
     private weak var model: Model?
-    /// A window the page opened, rather than the main window's page.
     private let isPopup: Bool
-    /// A popup's own window, made once its first Ovis page is committed.
     private var window: NSWindow?
-    /// The popup's window was closed. A minimized or hidden one is not visible either, and is still open.
     private var closed = false
-    /// Every popup, until its window closes or, for one that never got a window, until it is done: they
-    /// outlive the page that opened them, which a restart or a new address replaces.
     private static var popups: [WebPageController] = []
-    /// Download destinations handed out and not finished yet, so two downloads of one name get two files.
     private static var reserved: Set<String> = []
     private var destinations: [ObjectIdentifier: URL] = [:]
     private var reloads: AnyCancellable?
-    /// The drafts of the page this one replaced are written into its storage as it loads, under this token.
     private var carryToken: String?
-    /// A window the page opened was still open on this address when the carry began.
     private var carryShared = false
-    /// What each carried key held in this origin before the carry began, as the carry posted it: a retry
-    /// after a mark that did not fit in the page's storage gets them back from here.
     private var carryBefore: [String: Any]?
 
-    /// What the user typed and has not sent, as the page keeps it in its origin's storage: the chat's
-    /// draft and its send on its way, the terminal's held input and input line, held and pending
-    /// messages. Nothing here is sent by itself; it waits in the page for the user's Send or Discard.
+    /// Nothing here is sent by itself; it waits in the page for the user's Send or Discard.
     /// A chat send on its way keeps its lease, as across a reload: until it runs out (2 minutes) the new
     /// page does not offer that text again, which the old server may have taken.
     static let draftPrefixes = ["ovis:composer-draft:", "ovis:composer-sending:", "ovis:terminal-draft:", "ovis:terminal-line:", "ovis:queue:", "ovis:pending:"]
@@ -109,7 +94,6 @@ final class WebPageController: NSObject, ObservableObject {
         reloads = model.$reloads.dropFirst().sink { [weak self] _ in self?.reload() }
         // drafts go only to this Mac's own server, as they came only from it
         if Self.isLoopback(origin) {
-            // a window the page opened outlives it: one still open on this address keeps using its storage
             let shared = Self.popups.contains { !$0.closed && $0.webView.url.map(self.isOvis) == true }
             let token = UUID().uuidString
             if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: false, before: nil) {
@@ -119,6 +103,12 @@ final class WebPageController: NSObject, ObservableObject {
                 carryShared = shared
             }
         }
+        // Settings → Browser for links (LinkBrowsers.swift); a popup shares this configuration, and with it the bridge
+        let controller = webView.configuration.userContentController
+        controller.addUserScript(LinkBrowsers.script)
+        controller.addScriptMessageHandler(LinkBrowsersHandler(isOvis: { [weak self] in self?.isOvis($0) ?? false },
+                                                               openDefault: { [weak self] in self?.openElsewhere($0) }),
+                                           contentWorld: .page, name: "ovisBrowsers")
         webView.load(URLRequest(url: origin))
     }
 
@@ -141,8 +131,6 @@ final class WebPageController: NSObject, ObservableObject {
         return "Version/\(version) Safari/605.1.15 OvisMac/\(app)"
     }()
 
-    /// After the server was gone: a page whose code never started (its HTML loaded, its scripts did not)
-    /// has nothing that reconnects, so it loads again. A running page keeps what is open in it.
     func reloadIfNotStarted() {
         webView.evaluateJavaScript("document.getElementById('root')?.childElementCount ?? 0") { [weak self] result, _ in
             if (result as? Int ?? 0) == 0 { self?.reload() }
@@ -172,13 +160,9 @@ final class WebPageController: NSObject, ObservableObject {
         return drafts
     }
 
-    /// The carry itself, `Resources/carry-drafts.js`: what replaces what, and what a second run leaves.
     private static let carrySource = Bundle.main.url(forResource: "carry-drafts", withExtension: "js")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
 
-    /// Writes the carried drafts before the page's own code reads its storage (`carry-drafts.js`). The
-    /// page it came from keeps its copy. `loaded`: the page has loaded since, so the user may have typed.
-    /// `before`: the baselines the carry posted, for a run whose mark never made it into the page's storage.
     private static func carryScript(_ drafts: [String: String], shared: Bool, token: String, loaded: Bool, before: [String: Any]?) -> WKUserScript? {
         guard !drafts.isEmpty, let carrySource, let data = try? JSONSerialization.data(withJSONObject: drafts),
               let json = String(data: data, encoding: .utf8) else { return nil }
@@ -188,7 +172,6 @@ final class WebPageController: NSObject, ObservableObject {
         return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
-    /// The carry's first baselines win: a later run (in a window the page opened) may already see typing.
     fileprivate func keepBaselines(_ before: [String: Any], token: String) {
         guard token == carryToken, carryBefore == nil else { return }
         carryBefore = before
@@ -202,7 +185,6 @@ final class WebPageController: NSObject, ObservableObject {
             || host.range(of: #"^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$"#, options: .regularExpression) != nil
     }
 
-    /// Loads the page again where it is, or from the start when it is not on an Ovis page.
     func reload() {
         if state != .shown { state = .loading }
         let current = webView.url.flatMap { isOvis($0) ? $0 : nil }
@@ -226,7 +208,7 @@ final class WebPageController: NSObject, ObservableObject {
         return scheme?.lowercased() == "https" ? 443 : 80
     }
 
-    /// Another site or a mail link opens where the system opens it. Another app's link (a site in a web
+    /// Another app's link (a site in a web
     /// panel can make any) asks first, as Safari does. A file (one dropped where the page takes none,
     /// which would replace the page) and the page's own data stay where they are.
     private func openElsewhere(_ url: URL) {
@@ -259,7 +241,6 @@ final class WebPageController: NSObject, ObservableObject {
         // WebKit's "frame load interrupted" (102) and "plug-in handled load" (204)
         if error.domain == "WebKitErrorDomain" && (error.code == 102 || error.code == 204) { return }
         guard !isPopup else {
-            // a new tab that could not load has no window to show its error in
             if window == nil { closePopup() }
             return
         }
@@ -284,7 +265,6 @@ final class WebPageController: NSObject, ObservableObject {
     private func closePopup() {
         DispatchQueue.main.async { [self] in
             if let window, !closed {
-                // its windowWillClose comes back here
                 window.close()
             } else if destinations.isEmpty {
                 Self.popups.removeAll { $0 === self }
@@ -321,7 +301,6 @@ extension WebPageController: WKNavigationDelegate {
         }
         decisionHandler(.cancel)
         openElsewhere(url)
-        // window.open() then an address elsewhere (a sign-in page): the browser has it, the popup is not needed
         if isPopup && window == nil { closePopup() }
     }
 
@@ -350,8 +329,6 @@ extension WebPageController: WKNavigationDelegate {
         download.delegate = self
     }
 
-    /// A popup's window opens once an Ovis page is really coming: a new tab that turns into a download
-    /// leaves no empty window behind.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if isPopup, let url = webView.url, isOvis(url) { showWindow() }
     }
@@ -360,9 +337,6 @@ extension WebPageController: WKNavigationDelegate {
         state = .shown
         if let window, let title = webView.title, !title.isEmpty { window.title = title }
         if !isPopup { model?.pageLoaded() }
-        // the carried drafts that are in this origin's storage now are done; the rest stay for a reload or
-        // the next page, and the old origin keeps its copy meanwhile. A reload runs the carry again, now
-        // knowing the page has loaded: a carry that never got to start then only fills empty keys.
         if let token = carryToken {
             let shared = carryShared
             let before = carryBefore
@@ -375,6 +349,8 @@ extension WebPageController: WKNavigationDelegate {
                 model.draftsCarried(Set(keys))
                 let controller = self.webView.configuration.userContentController
                 controller.removeAllUserScripts()
+                // the carry's script is the one replaced; Browser for links' bridge stays for every later load
+                controller.addUserScript(LinkBrowsers.script)
                 if let script = Self.carryScript(model.carriedDrafts, shared: shared, token: token, loaded: true, before: before) {
                     controller.addUserScript(script)
                 } else {
@@ -408,7 +384,6 @@ extension WebPageController: WKUIDelegate {
         // one by script, and it would stay hidden
         let source = navigationAction.sourceFrame
         guard let model, source.isMainFrame, isOvis(source.securityOrigin) else { return nil }
-        // an empty one waits for the address the page gives it
         let popup = WebPageController(origin: origin, model: model, popupConfiguration: configuration)
         Self.popups.append(popup)
         return popup.webView
@@ -440,7 +415,6 @@ extension WebPageController: WKUIDelegate {
 }
 
 extension WebPageController: WKDownloadDelegate {
-    /// Into Downloads, as a browser saves, under a free name.
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
         let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         let name = (suggestedFilename as NSString).lastPathComponent
@@ -470,12 +444,10 @@ extension WebPageController: WKDownloadDelegate {
         _ = ended(download)
         // a redirect handed to the browser cancels the download: nothing went wrong
         if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
-        // a popup whose window was closed shows it in the main window
         guard let window = (closed ? nil : webView.window) ?? model?.page?.webView.window else { return }
         NSAlert(error: error).beginSheetModal(for: window)
     }
 
-    /// Lets go of a download's file name, and of a popup that only existed for the download.
     private func ended(_ download: WKDownload) -> URL? {
         let file = destinations.removeValue(forKey: ObjectIdentifier(download))
         if let file { Self.reserved.remove(file.path) }
@@ -483,7 +455,6 @@ extension WebPageController: WKDownloadDelegate {
         return file
     }
 
-    /// "name.ext", then "name 2.ext", "name 3.ext"…
     static func freeName(_ name: String, in folder: URL) -> URL {
         let base = (name as NSString).deletingPathExtension
         let ext = (name as NSString).pathExtension
@@ -499,7 +470,6 @@ extension WebPageController: WKDownloadDelegate {
 
 extension WebPageController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        // a download still running keeps its popup until it ends
         closed = true
         closePopup()
     }

@@ -1,32 +1,13 @@
 /**
- * Raw footage for the brand film and the site: stills and screen recordings of the REAL client,
- * running on the browser demo's fixtures (_site/demo/app/, site/demo/transport.ts), at 2x.
- *
  * - The built site is served under /herdr-web-ui/ by a small Bun.serve, like GitHub Pages does.
- * - The app page itself is recorded (demo/app/), not the framed demo/index.html: no demo banner.
  * - Chrome gets the brand fonts (Pretendard Variable, JetBrains Mono) as local fonts through its own
  *   fontconfig, downloaded once to _film/fonts: the app names them first but ships no webfont, and a
  *   local font is there before xterm measures its cells.
  * - Recordings use hand.ts (CDP screencast frames with paint times, cue log of the hand; the README's
  *   scripts/readme-media/record.ts with a device scale, a clock-driven glide, place and press). Each one is kept raw (JPEG frames, frames.json, cues.json, marks) and turned into a
  *   constant 60 fps MP4 by holding every frame until the next one was painted.
- * - A few takes change what the fixtures say, never how the app behaves, through a wrapper around the
- *   transport's fetch (see `mods`): `todo` pins a todo list to the Claude chat, `real` drops the
- *   fixture's own copy of the message typed in R1 and turns the demo's "nothing ran" reply into the
- *   answer Claude gave in the fixture, `stream` (R10) shows the turn in progress step by step (Read, Edit,
- *   Edit, Bash, each with its TodoWrite plan update) while the demo's answer is held, and `story` sets the
- *   Claude chat to the moment of the film a take belongs to (opening / before / after / next), so no shot
- *   contradicts another. Takes set after S8 also answer the Codex card before they record (never on camera).
- *   INDEX.md says which takes use them.
- * - filmHold (every page; holds nothing until armed): a setTimeout with an armed delay waits for
- *   `__herdrFilm.release()`. 4500 ms = the demo's end of the Claude turn (R11-R13 keep it running),
- *   2400 ms = the demo's chat answer (R10 holds it until the plan reaches 3/3). The app uses neither delay.
  * - Scale: FILM_SCALE (default 2) sets R10/R11's device scale factor. 3x was tried and the screencast
  *   painted ~13 fps (the brief asks for 40), so every take is 2x (crop limit: >= 960 CSS px of width).
- * - R5 keeps the pointer off the terminal: the recorded screen turns on mouse reporting (?1003h) and the
- *   pretend shell would echo the reports as text; the take fails if any reach the terminal.
- *
- * - Scroll shots are also rendered frame-stepped (S takes): posed and screenshotted 60 times a second.
  * - Chrome runs with --hide-scrollbars: no scrollbar shows in any shot.
  *
  *   bun run build:site && bun scripts/film/capture.ts [stills] [rec] [stepped] [R1 R1b … S1 … | still names]
@@ -51,18 +32,14 @@ const FPS = 60;
 
 const DESKTOP = { width: 1440, height: 900 };
 const VIDEO_DESKTOP = { width: 1280, height: 800 };
-/** the hero loop's take (R11): tall enough that the Claude chat fits with its first block open (see its note) */
 const LOOP_DESKTOP = { width: 1280, height: 1064 };
 const PHONE = { width: 390, height: 844 };
 const PANE = panes as Record<"api" | "web" | "flaky" | "omp" | "cli" | "hermes" | "shell", string>;
 const MESSAGE = "Nice. Now add a metric for replayed requests.";
-/** device scale factor of the R10/R11 takes (FILM_SCALE=3 for 3x; 2x unless the screencast keeps up) */
 const FILM_SCALE = Number(process.env["FILM_SCALE"] ?? 2);
 
 const args = process.argv.slice(2);
 const want = (group: string, name: string) => args.length === 0 || args.includes(group) || args.includes(name);
-
-// ---- the site, the fonts, the browser ----------------------------------------------------------
 
 if (!existsSync(join(SITE, "demo/app/index.html"))) {
   const built = Bun.spawnSync(["bun", "run", "build:site"], { cwd: REPO, stdout: "inherit", stderr: "inherit" });
@@ -123,23 +100,17 @@ async function browserAt(scale: number): Promise<Browser> {
   return browser;
 }
 
-// ---- opening the app ---------------------------------------------------------------------------
-
 interface Open {
   pane: keyof typeof PANE;
   phone?: boolean;
   viewport?: { width: number; height: number };
   theme?: "dark" | "light";
   language?: "en" | "ko";
-  /** fixture changes: see the header */
   mods?: { todo?: boolean; real?: boolean; worked?: boolean; stream?: boolean; story?: "opening" | "before" | "after" | "after-plain" | "next" };
   /** ms after the app is up before the caller takes over; the Claude turn ends 4.5 s after load */
   settle?: number;
-  /** device scale factor (default 2) */
   scale?: number;
-  /** timer delays held from the start (see filmHold); 4500 keeps the Claude turn running */
   hold?: number[];
-  /** Settings > terminal font size (px) */
   terminalFont?: number;
 }
 
@@ -171,16 +142,11 @@ function filmHold(initial: number[]): void {
   };
 }
 
-/**
- * Runs in the page before the demo transport: when the transport installs its fetch, it gets
- * wrapped, and the Claude chat's answers are edited on their way to the app.
- */
 function fetchMods(options: { api: string; message: string; todo: boolean; real: boolean; worked: boolean; stream: boolean; story: string }): void {
   const native = window.fetch;
   let inner: typeof fetch | null = null;
   const tool = (name: string, summary: string, input: unknown, output: string) => ({ kind: "tool", name, summary, input: JSON.stringify(input, null, 2), output });
   const textOf = (turn: any): string => turn.parts?.find((part: any) => part.kind === "text")?.text ?? "";
-  // the plan of the streamed turn (stream): one TodoWrite per step, the whole list each time
   const PLAN = [
     ["Add the replay counter to src/metrics.ts", "Adding the replay counter"],
     ["Count a replay where a stored response is returned", "Counting replays"],
@@ -189,7 +155,6 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
   const plan = (statuses: string[]) => tool("TodoWrite", "", { todos: PLAN.map(([content, activeForm], i) => ({ content, status: statuses[i], activeForm })) }, "Todos have been modified successfully.");
   const INTRO = "Adding a `payments_idempotent_replays_total` counter next to the existing request metrics.";
   const DONE_TEXT = "Added `payments_idempotent_replays_total`, incremented where a stored response is replayed, and exposed with the other counters on `/metrics`. 6 tests pass.";
-  // every step R10's turn streamed, plan updates included: the turn as it lands at the end of that take
   const streamed = () => [
     { kind: "text", text: INTRO },
     plan(["in_progress", "pending", "pending"]),
@@ -204,14 +169,6 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
   ];
   const todos = (items: [string, string, string][]) => tool("TodoWrite", "", { todos: items.map(([content, status, activeForm]) => ({ content, status, activeForm })) }, "Todos have been modified successfully.");
   const later = (iso: string, seconds: number) => new Date(Date.parse(iso) + seconds * 1000).toISOString();
-  /**
-   * story: the Claude chat as it stands at one point of the film, so every shot agrees with the one
-   * before it (the fixture itself sits between two of them: the metric turn already asked and running).
-   * - opening: the first task still running (no end, its Bash and answer not written yet), its plan pinned;
-   * - before: the first task done, nothing asked since (the chat R10 types into);
-   * - after: the metric turn asked and done exactly as R10 recorded it ("Worked for 9s");
-   * - next: after, plus the next thing asked and running.
-   */
   const story = (all: any[], stage: string): any[] => {
     const u1 = all.findIndex((turn) => turn.role === "user");
     const a1 = all[u1 + 1];
@@ -233,9 +190,6 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
     const answered = { role: "assistant", ts: nice.ts, end_ts: later(nice.ts, 9), parts: streamed() };
     const after = [...done, nice, answered];
     if (stage === "after") return after;
-    // the same turn without its plan updates (same header: a TodoWrite is not an edit), so no plan bar
-    // is pinned: on a phone scroll the bar's uncovered strip and the "jump to latest" button over it
-    // (app layout, reported) would sit on every frame
     if (stage === "after-plain") return [...done, nice, { ...answered, parts: answered.parts.filter((part: any) => part.name !== "TodoWrite") }];
     const asked = { role: "user", ts: later(nice.ts, 40), parts: [{ kind: "text", text: "Document the Idempotency-Key header in docs/api.md." }] };
     const working = { role: "assistant", ts: later(nice.ts, 42), parts: [
@@ -253,24 +207,18 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
   };
   const edit = (body: any, api: boolean): void => {
     let turns: any[] = body.turns ?? [];
-    // replaces the chat wholesale on every poll: the demo's own end of the running turn never shows
     if (options.story && api) turns = story(turns, options.story);
     if (options.real && api) {
-      // the fixture already holds this exchange; the take types it anew
       const first = turns.findIndex((turn) => turn.role === "user" && textOf(turn) === options.message);
       if (first >= 0) turns = turns.filter((turn, index) => index !== first && !(index === first + 1 && turn.role === "assistant"));
       for (const turn of turns) {
         if (turn.role !== "assistant" || !textOf(turn).startsWith("This is the demo")) continue;
-        // worked from the moment the message was sent
         const asked = turns[turns.indexOf(turn) - 1];
         if (asked?.ts) turn.ts = asked.ts;
-        // with stream: every step the turn streamed, plan updates included, so nothing jumps as it lands
         turn.parts = options.stream ? streamed() : streamed().filter((part: any) => part.name !== "TodoWrite");
       }
     }
     if (options.stream && api) {
-      // the answer is held (filmHold 2400): the turn in progress, revealed step by step as the
-      // seconds since sending pass, so each step lands on the chat's own 2 s poll
       const last = turns[turns.length - 1];
       if (last?.role === "user" && textOf(last) === options.message && last.ts) {
         const since = (Date.now() - Date.parse(last.ts)) / 1000;
@@ -296,7 +244,6 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
       }
     }
     if (options.worked) {
-      // an answer the demo writes in one go has ts === end_ts: "Worked for 0s"; it took the demo's 2.6 s
       for (const turn of turns) if (turn.role === "assistant" && turn.ts && turn.ts === turn.end_ts) turn.ts = new Date(Date.parse(turn.end_ts) - 2600).toISOString();
     }
     body.turns = turns;
@@ -327,7 +274,6 @@ async function open(options: Open): Promise<{ context: BrowserContext; page: Pag
   page.on("pageerror", (error) => console.warn(`  page error: ${error.message}`));
   const settings = { theme: options.theme ?? "dark", language: options.language ?? "en", ...(options.terminalFont ? { terminalFontSize: options.terminalFont } : {}) };
   await page.addInitScript((value) => { try { localStorage.setItem("ovis:settings", value); } catch { /* no storage */ } }, JSON.stringify(settings));
-  // the hook goes in whenever a take may arm it; it holds nothing until armed
   await page.addInitScript(filmHold, options.hold ?? []);
   if (options.mods?.todo || options.mods?.real || options.mods?.worked || options.mods?.stream || options.mods?.story) {
     await page.addInitScript(fetchMods, { api: PANE.api, message: MESSAGE, todo: options.mods.todo ?? false, real: options.mods.real ?? false, worked: options.mods.worked ?? false, stream: options.mods.stream ?? false, story: options.mods.story ?? "" });
@@ -342,7 +288,6 @@ async function open(options: Open): Promise<{ context: BrowserContext; page: Pag
   return { context, page, loadedAt };
 }
 
-/** the scrollable element around the chat */
 async function chatScroller(page: Page): Promise<string> {
   return page.evaluate(() => {
     const start = document.querySelector(".chat-transcript") ?? document.querySelector(".chat-view");
@@ -353,7 +298,6 @@ async function chatScroller(page: Page): Promise<string> {
       node = node.parentElement;
     }
     if (!node || node === document.body) {
-      // the transcript's children may scroll instead
       node = [...document.querySelectorAll(".chat-view *")].find((el) => /(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 4) ?? null;
     }
     if (!node) return "";
@@ -362,13 +306,11 @@ async function chatScroller(page: Page): Promise<string> {
   });
 }
 
-/** eased scroll of the chat, painted every frame (a hand on a trackpad, minus the jitter) */
 async function easedScroll(page: Page, selector: string, to: number | "bottom", ms: number): Promise<void> {
   const trace = await page.evaluate(async ({ selector, to, ms }) => {
     const log: string[] = [];
     const el = document.querySelector(selector)!;
     const from = el.scrollTop;
-    // fixed at the start: a turn that settles its height mid-way must not pull the scroll back
     const target = to === "bottom" ? el.scrollHeight - el.clientHeight : to;
     let last = from;
     const ease = (s: number) => (s < 0.5 ? 4 * s * s * s : 1 - (-2 * s + 2) ** 3 / 2);
@@ -390,7 +332,6 @@ async function easedScroll(page: Page, selector: string, to: number | "bottom", 
   if (process.env["FILM_DEBUG"]) console.log(trace.filter((_, i) => i % 10 === 0).join("\n"));
 }
 
-/** human typing: 12–18 characters a second, a beat longer after a word or a sentence */
 async function typeHuman(page: Page, text: string, marks?: Marks, pace = 1): Promise<void> {
   let seed = 7;
   const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -404,8 +345,6 @@ async function typeHuman(page: Page, text: string, marks?: Marks, pace = 1): Pro
   }
   marks?.add("typing ends");
 }
-
-// ---- stills ------------------------------------------------------------------------------------
 
 interface Entry { file: string; kind: "still" | "recording"; shows: string; resolution: string; duration?: number; marks?: { label: string; t: number }[]; notes?: string }
 const manifestPath = join(OUT, "manifest.json");
@@ -422,7 +361,6 @@ async function still(name: string, shows: string, options: Open, then?: (page: P
   const viewport = page.viewportSize()!;
   if (own !== "shot") await page.screenshot({ path: join(OUT, "stills", `${name}.png`) });
   await context.close();
-  // the PNG's own size (a clipped shot is smaller than the window)
   const png = readFileSync(join(OUT, "stills", `${name}.png`));
   const [w, h] = [png.readUInt32BE(16), png.readUInt32BE(20)];
   const resolution = w === viewport.width * 2 && h === viewport.height * 2 ? `${w}x${h} (${viewport.width}x${viewport.height} @2x)` : `${w}x${h} (@2x clip)`;
@@ -486,8 +424,6 @@ async function stills(): Promise<void> {
   await still("16-phone-chat-light", "Phone: Claude chat, light theme", { pane: "api", phone: true, theme: "light" });
 }
 
-// ---- recordings --------------------------------------------------------------------------------
-
 class Marks {
   readonly list: { label: string; at: number }[] = [];
   add(label: string): void { this.list.push({ label, at: Date.now() / 1000 }); }
@@ -507,7 +443,6 @@ async function record(name: string, take: Take): Promise<void> {
   await Bun.sleep(700);
   await take.run(page, hand, marks);
   const recording = await hand.end();
-  // a take may check the page it leaves (and say what it saw)
   const checked = await take.check?.(page);
   if (checked) console.log(`  ${name}: ${checked}`);
   await context.close();
@@ -523,7 +458,6 @@ async function writeRecording(name: string, recording: Recording, marks: Marks, 
   mkdirSync(join(dir, "frames"), { recursive: true });
   const frames = [...recording.frames].sort((a, b) => a.t - b.t);
   if (frames.length === 0) throw new Error(`${name}: no frames`);
-  // the lead-in: from the first painted frame (the page is settled before recording starts)
   const t0 = frames[0]!.t;
   const end = recording.end;
   const files: { file: string; t: number }[] = [];
@@ -538,7 +472,6 @@ async function writeRecording(name: string, recording: Recording, marks: Marks, 
   const markList = marks.list.map((mark) => ({ label: mark.label, t: rel(mark.at) }));
   writeFileSync(join(dir, "marks.json"), JSON.stringify(markList, null, 1));
 
-  // constant 60 fps: every frame held until the next one was painted
   const lines = ["ffconcat version 1.0"];
   files.forEach((frame, index) => {
     const next = index + 1 < files.length ? files[index + 1]!.t : rel(end);
@@ -569,28 +502,22 @@ function run(cmd: string[]): string {
   return result.stdout.toString();
 }
 
-/** waits until `predicate` holds in the page, polling each 50 ms, then marks it */
 async function until(page: Page, marks: Marks, label: string, predicate: string | (() => boolean), timeout = 8000): Promise<void> {
   await page.waitForFunction(predicate, undefined, { polling: 50, timeout }).catch(() => console.warn(`  never: ${label}`));
   marks.add(label);
 }
 
-// ---- staging a take before it records (never on camera) ----
-
-/** Answers the Codex card (Yes) from its chat and waits for the push to land: the film has done that by S8. */
 async function answerCodex(page: Page): Promise<void> {
   await page.waitForSelector(".prompt-card-options button", { timeout: 10_000 });
   await page.locator(".prompt-card-options button").first().click();
   await page.waitForFunction(() => /Pushed/.test([...document.querySelectorAll(".chat-turn-agent")].map((el) => el.textContent ?? "").join("")), undefined, { polling: 100, timeout: 10_000 });
 }
 
-/** Opens another pane from the sidebar and lets its chat settle. */
 async function selectPane(page: Page, key: keyof typeof PANE): Promise<void> {
   await page.locator(row(key)).first().click();
   await Bun.sleep(1800);
 }
 
-/** Folds a work block ("first" or "last") if it is open. */
 async function fold(page: Page, which: "first" | "last"): Promise<void> {
   await page.evaluate((which) => {
     const heads = [...document.querySelectorAll<HTMLElement>(".work-block-head")];
@@ -600,7 +527,6 @@ async function fold(page: Page, which: "first" | "last"): Promise<void> {
   await Bun.sleep(400);
 }
 
-/** Keeps the chat at its end (where it opens), for takes that must not show the "jump to latest" button. */
 async function chatToEnd(page: Page): Promise<void> {
   const scroller = await chatScroller(page);
   if (scroller) await page.evaluate(({ scroller }) => { const el = document.querySelector(scroller)!; el.scrollTop = el.scrollHeight; }, { scroller });
@@ -619,7 +545,6 @@ async function markPulse(page: Page, marks: Marks): Promise<number> {
   return dots.find((dot) => /working|dot/.test(dot.what))?.ms ?? dots[0]?.ms ?? 0;
 }
 
-/** Waits until the dots' next trough (all pulse dots of a page mounted together share a phase). */
 async function toTrough(page: Page): Promise<void> {
   const ms = await page.evaluate(() => {
     const a: any = document.getAnimations().find((x: any) => x.animationName === "pulse");
@@ -644,7 +569,6 @@ async function sendTake(page: Page, hand: Hand, marks: Marks): Promise<void> {
   await Bun.sleep(1500);
 }
 
-/** An untouched take: pulse phases marked, then `seconds` with nothing done. */
 function stillTake(seconds: number): Take["run"] {
   return async (page, _hand, marks) => {
     const start = Date.now() - 700;
@@ -699,7 +623,6 @@ const TAKES: Record<string, Take> = {
       await at(2.4);
       await hand.press();
       marks.add("expanded");
-      // reading: the pointer drifts beside the rows, then back to the header
       await at(3.0);
       await hand.moveTo(head.x + 150, head.y + 120, 1100);
       await at(5.3);
@@ -765,7 +688,6 @@ const TAKES: Record<string, Take> = {
       await Bun.sleep(900);
       await hand.click(row("shell"));
       marks.add("shell pane opened (replay starts)");
-      // off the row (its hover actions clear) and never over the terminal
       await hand.moveTo(160, 590, 800);
       await until(page, marks, "tests pass line", `/4 pass/.test(document.querySelector(${JSON.stringify(shownRows())})?.textContent ?? "")`, 8000);
       await Bun.sleep(3000);
@@ -964,7 +886,6 @@ const TAKES: Record<string, Take> = {
   },
 };
 
-
 /**
  * Walks the whole chat once so every turn has been laid out (content-visibility keeps the real
  * heights afterwards) and no turn changes size under a scroll; notes where the bottom is when
@@ -986,8 +907,6 @@ async function primeScroller(page: Page): Promise<void> {
   }, { scroller });
 }
 const primedBottom = async (page: Page) => Number(await page.getAttribute("[data-film-scroller]", "data-film-bottom"));
-
-// ---- stepped takes -----------------------------------------------------------------------------
 
 /**
  * Motion the screencast cannot paint at 60 fps (it delivers 25–45 fps at 2x): the page is posed
@@ -1066,8 +985,6 @@ const STEPPED: Record<string, Stepped> = {
   },
 };
 
-// ---- INDEX.md ----------------------------------------------------------------------------------
-
 function writeIndex(): void {
   const lines = [
     "# Raw footage",
@@ -1126,8 +1043,6 @@ function writeIndex(): void {
   }
   writeFileSync(join(OUT, "INDEX.md"), lines.join("\n"));
 }
-
-// ---- run ---------------------------------------------------------------------------------------
 
 try {
   if (args.length === 0 || args.includes("stills") || args.some((a) => /^\d\d/.test(a))) {

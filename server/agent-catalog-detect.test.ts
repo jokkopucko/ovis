@@ -13,7 +13,6 @@ const entry = (id: string): AgentCatalogEntry => AGENT_CATALOG.find((candidate) 
 describe.skipIf(process.platform === "win32")("AgentDetector", () => {
   let bin: string;
   let runs: string;
-  /** a home with no installer folders: the detector never looks in the real one here */
   let emptyHome: string;
   const stub = (name: string, body: string) => {
     writeFileSync(join(bin, name), `#!/bin/sh\necho ${name} >> '${runs}'\n${body}\n`);
@@ -42,7 +41,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     expect(await detector.state(entry("claude"), "linux")).toEqual({ installed: true, binary: "claude", on_path: true, version: "2.1.311", version_error: null, meets_min_version: true });
     expect(await detector.state(entry("claude"), "linux")).toMatchObject({ version: "2.1.311" });
     expect(runsOf("claude")).toBe(1);
-    // an update replaces the file: the next read asks it again
     stub("claude", "echo '2.1.320 (Claude Code, updated)'");
     expect(await detector.state(entry("claude"), "linux")).toMatchObject({ version: "2.1.320" });
     expect(runsOf("claude")).toBe(2);
@@ -54,7 +52,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     utimesSync(target, 1_700_000_000, 1_700_000_000);
     const detector = new AgentDetector({ home: emptyHome, locate });
     expect(await detector.state(entry("copilot"), "linux")).toMatchObject({ version: "0.10.0" });
-    // an updater writes the new file beside the old one and renames it over: same size, mtime copied
     const before = statSync(target);
     const next = join(bin, "copilot.next");
     writeFileSync(next, readFileSync(target, "utf8").replace("0.10.0", "0.20.0"));
@@ -97,7 +94,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     // Hermes answers its version flag in 2.3 to 6.7 s on a busy PC, past the 5 s default
     expect(entry("hermes").detect.version_timeout_ms).toBeGreaterThan(7_000);
     const limits: Record<string, number> = {};
-    // nothing is run: the limit each probe is given is all this reads
     const run = async (executable: string, _args: readonly string[], timeoutMs: number): Promise<never> => {
       limits[basename(executable)] = timeoutMs;
       throw new Error("not run here");
@@ -113,7 +109,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     // a wrapper whose target is gone, as a removed nvm Node leaves one: the shell's error names the
     // missing path, Node's version and all, and exits 127
     stub("opencode", `exec '${join(bin, "missing", "node", "v22.17.1", "bin", "opencode")}' "$@"`);
-    // a flag that prints its version only on stderr, and succeeds
     stub("pi", "echo 'pi 1.2.3' >&2");
     const detector = new AgentDetector({ home: emptyHome, locate });
     expect(await detector.state(entry("opencode"), "linux")).toEqual({ installed: true, binary: "opencode", on_path: true, version: null, version_error: "failed", meets_min_version: null });
@@ -135,11 +130,9 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
   });
 
   it("kills a version flag that hangs, and asks again only after a while", async () => {
-    // gjc: an agent with no limit of its own, so the detector's 300 ms applies
     stub("gjc", "exec sleep 10");
     let now = 1_000;
     const detector = new AgentDetector({ home: emptyHome, locate, timeoutMs: 300, now: () => now });
-    // the 10 s sleep is ended at the detector's 300 ms limit: the answer says it timed out
     expect(await detector.state(entry("gjc"), "linux")).toEqual({ installed: true, binary: "gjc", on_path: true, version: null, version_error: "timeout", meets_min_version: null });
     await detector.state(entry("gjc"), "linux");
     expect(runsOf("gjc")).toBe(1);
@@ -167,7 +160,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     now += LOGIN_PATH_KEPT_MS;
     await locateWithLogin("grok");
     expect(probes).toBe(2);
-    // the service PATH alone, as tests and Windows run it
     expect(await catalogLocator({ probe: null, servicePath: () => "/usr/bin/nonexistent" })("claude")).toBeNull();
     expect(await catalogLocator({ probe: null, servicePath: () => bin })("claude")).toBe(join(bin, "claude"));
     const detector = new AgentDetector({ home: emptyHome, locate: locateWithLogin });
@@ -206,12 +198,10 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
       const detector = new AgentDetector({ locate: nowhere, home });
       const pi = { ...entry("pi"), detect: { ...entry("pi").detect, install_dirs: { linux: ["~/.pi/agent/bin"] } } };
       expect(await detector.state(pi, "linux")).toEqual({ installed: true, binary: "pi", on_path: false, version: "1.4.0", version_error: null, meets_min_version: null });
-      // another platform's folders are never looked in
       expect(await detector.state(pi, "macos")).toMatchObject({ installed: false });
       const windows = new AgentDetector({ locate: nowhere, home, env: { LOCALAPPDATA: home } });
       const viaVariable = { ...pi, detect: { ...pi.detect, install_dirs: { linux: ["%LOCALAPPDATA%/.pi/agent/bin"] } } };
       expect(await windows.state(viaVariable, "linux")).toMatchObject({ installed: true, on_path: false });
-      // a variable the environment does not have names no folder
       expect(await new AgentDetector({ locate: nowhere, home, env: {} }).state(viaVariable, "linux")).toMatchObject({ installed: false });
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -226,14 +216,12 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
         expect(await catalogLocator({ probe: null, servicePath: () => path })("claude")).toBeNull();
         expect(await catalogLocator({ probe: async () => ({ path }), servicePath: () => "/nonexistent" })("claude")).toBeNull();
       }
-      // an absolute entry still counts
       expect(await catalogLocator({ probe: null, servicePath: () => `.:${bin}` })("claude")).toBe(join(bin, "claude"));
     } finally {
       process.chdir(cwd);
     }
   });
 
-  /** Whether `pid` has ended: no such process, or one that only waits to be reaped. */
   const gone = async (pid: number): Promise<boolean> => {
     const state = (await new Response(Bun.spawn(["ps", "-o", "stat=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" }).stdout).text()).trim();
     return state === "" || state.startsWith("Z");
@@ -249,7 +237,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     const pidFile = join(bin, "holder.pid");
     stub("holder", `sleep 30 &\necho $! > '${pidFile}'\nsleep 30`);
     const run = await runVersion(join(bin, "holder"), ["--version"], 300);
-    // ended by the 300 ms limit, not by the flag (it sleeps 30 s): timed out, with no exit code of its own
     expect([run.timedOut, run.exitCode]).toEqual([true, null]);
     expect(await ends(Number(readFileSync(pidFile, "utf8").trim()))).toBe(true);
   });
@@ -259,7 +246,6 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     stub("leaver", `sleep 30 &\necho $! > '${pidFile}'\necho 'leaver 1.2.3'\nexit 0`);
     // a 3 s limit, under the test's own 5 s: a run kept until the limit fails on its answer, not the test timeout
     const run = await runVersion(join(bin, "leaver"), ["--version"], 3_000);
-    // answered by the flag's own exit, not by the limit, though its child still held the output
     expect([run.timedOut, run.exitCode]).toEqual([false, 0]);
     expect(run.stdout).toContain("leaver 1.2.3");
     expect(await ends(Number(readFileSync(pidFile, "utf8").trim()))).toBe(true);

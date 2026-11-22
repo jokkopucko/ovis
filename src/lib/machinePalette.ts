@@ -21,7 +21,6 @@ export function availableTarget(machines: readonly Machine[], target: RecentPane
   return machine && pane ? { ...target, machine, pane } : null;
 }
 
-/** Score all connected PCs together; a retained offline snapshot is never a navigation target. */
 export function rankMachinePanes(query: string, machines: readonly Machine[], filter: PaletteStatusFilter, branches: MachineBranches, t: Translate): MachinePane[] {
   const ranked = machines.flatMap((machine) => {
     const snapshot = machine.snapshot;
@@ -30,7 +29,6 @@ export function rankMachinePanes(query: string, machines: readonly Machine[], fi
       { tabs: snapshot.tabs, branches: branches.get(machine.id), machineName: machine.name, t })
       .map(({ pane, score }) => ({ machineId: machine.id, paneId: pane.pane_id, machine, pane, score }));
   });
-  // Stable ties keep PC and session order, independent of overlapping workspace/pane IDs.
   return ranked.sort((a, b) => b.score - a.score);
 }
 
@@ -52,7 +50,6 @@ export function groupMachinePanes(panes: readonly MachinePane[], machines: reado
   const order = new Map<string, number>();
   for (const machine of machines) {
     for (const workspace of machine.snapshot?.workspaces ?? []) order.set(workspaceKey(machine.id, workspace.workspace_id), order.size);
-    // Unknown workspaces still stay with their owning PC, after its known workspaces.
     for (const group of list) if (group.machine.id === machine.id && !order.has(group.id)) order.set(group.id, order.size);
   }
   return list.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
@@ -67,7 +64,6 @@ export function recentTargets(panes: readonly MachinePane[], recent: readonly Re
   return recent.flatMap((target) => { const pane = byId.get(targetKey(target)); return pane && targetKey(target) !== selectedKey ? [pane] : []; }).slice(0, limit);
 }
 
-/** Existing per-PC histories migrate only when no global record exists. Corrupt/blocked storage is harmless. */
 export function loadRecentTargets(read: (key: string) => string | null, machineIds: readonly string[]): RecentPane[] {
   try {
     const stored = read(RECENT_KEY);

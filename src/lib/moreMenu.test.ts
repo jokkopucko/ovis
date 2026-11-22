@@ -12,7 +12,6 @@ describe("the open More group's items", () => {
     expect(openGroupItems(null, true, find, pane)).toEqual([]);
   });
 
-  // a window widened while Find… was open: More lists those items itself there, so the group closes
   it("has none once the screen is wider than a phone's", () => {
     expect(openGroupItems("find", false, find, pane)).toEqual([]);
     expect(openGroupItems("pane", false, find, pane)).toEqual([]);

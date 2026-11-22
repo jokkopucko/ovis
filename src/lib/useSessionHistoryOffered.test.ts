@@ -15,16 +15,13 @@ describe("sharedSessionHistoryProbe", () => {
     let asked = 0;
     const ask = async () => { asked++; return true; };
     expect(await sharedSessionHistoryProbe("pc-away", ask)).toBe(true);
-    // still connected: the one probe stands
     forgetSessionHistoryProbesOfPcsAway([{ id: "pc-away", state: "connected" }]);
     expect(await sharedSessionHistoryProbe("pc-away", ask)).toBe(true);
     expect(asked).toBe(1);
-    // the PC drops while no pane or menu of it is mounted, then comes back: a fresh probe
     forgetSessionHistoryProbesOfPcsAway([{ id: "pc-away", state: "disconnected" }]);
     forgetSessionHistoryProbesOfPcsAway([{ id: "pc-away", state: "connected" }]);
     expect(await sharedSessionHistoryProbe("pc-away", ask)).toBe(true);
     expect(asked).toBe(2);
-    // a PC removed from the list is forgotten too
     forgetSessionHistoryProbesOfPcsAway([]);
     expect(await sharedSessionHistoryProbe("pc-away", ask)).toBe(true);
     expect(asked).toBe(3);
@@ -34,11 +31,9 @@ describe("sharedSessionHistoryProbe", () => {
     let asked = 0;
     const ask = async () => { asked++; return true; };
     expect(await sharedSessionHistoryProbe("pc-pane", ask)).toBe(true);
-    // a pane's socket drops and comes back while the PC stays connected: the PC list says connected throughout
     for (let n = 0; n < 3; n++) forgetSessionHistoryProbesOfPcsAway([{ id: "pc-pane", state: "connected" }]);
     expect(await sharedSessionHistoryProbe("pc-pane", ask)).toBe(true);
     expect(asked).toBe(1);
-    // the PC itself reconnecting is asked again
     forgetSessionHistoryProbesOfPcsAway([{ id: "pc-pane", state: "reconnecting" }]);
     forgetSessionHistoryProbesOfPcsAway([{ id: "pc-pane", state: "connected" }]);
     expect(await sharedSessionHistoryProbe("pc-pane", ask)).toBe(true);

@@ -17,7 +17,6 @@ export async function checkComposerReconnect(browser: Browser, origin: string, p
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    // the socket the page has now, and whether a new one is let through to the server yet
     let live: WebSocketRoute | null = null;
     let admit = true;
     await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
@@ -30,13 +29,11 @@ export async function checkComposerReconnect(browser: Browser, origin: string, p
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await composer.tap();
     await composer.fill("dictated ");
-    // off to the keyboard's app and back: the socket dropped, and the next one is slow
     admit = false;
     await live!.close();
     await page.waitForFunction(() => document.querySelector(".conn-live") === null);
     assert.equal(await composer.isDisabled(), false, "the message box stays editable while reconnecting");
     assert.equal(await composer.evaluate((el) => el === document.activeElement), true, "and keeps its focus");
-    // with a draft the placeholder is gone: the one word is in the card, whole, on a phone too
     const hint = page.locator(".composer-status-hint");
     assert.match(await hint.innerText(), /Reconnecting…/);
     assert.equal(await hint.getAttribute("title"), "Reconnecting…");
@@ -49,7 +46,6 @@ export async function checkComposerReconnect(browser: Browser, origin: string, p
     assert.equal(await page.getByRole("button", { name: "Queue message", exact: true }).count(), 0, "nothing offers to queue while not connected");
     await page.keyboard.insertText("while reconnecting");
     assert.equal(await composer.inputValue(), "dictated while reconnecting");
-    // nothing is sent until the socket is back (a phone's send key: Return breaks the line, Mod+Enter sends)
     await page.keyboard.press("ControlOrMeta+Enter");
     assert.equal(await composer.inputValue(), "dictated while reconnecting", "the send key sends nothing while offline");
     admit = true;

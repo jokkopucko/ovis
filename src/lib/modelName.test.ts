@@ -27,13 +27,9 @@ describe("modelLabel", () => {
 
   test("shows an id it cannot name for certain exactly as received", () => {
     for (const id of [
-      // a dated snapshot: the date is not dropped
       "claude-haiku-4-5-20251001", "claude-opus-5-5[1m]", "claude-opus-5-5-fast",
-      // the older order of family and version, and a family the vendor does not list
       "claude-3-5-sonnet-20241022", "claude-3", "claude-nova-5",
-      // tier and product words
       "gpt-5.6-sol-max", "gpt-5.6-Sol", "gpt-5.6-solo", "gpt-sol", "gpt-5.6-sol-codex-preview-2026-10", "gpt-4.1-mini", "gpt-transcribe",
-      // another provider's route, another vendor, and ids that only look close
       "bedrock/claude-opus-5-5", "openrouter/anthropic/claude-opus-5-5", "openai/gpt-5.6", "anthropic/x",
       "qwen-3-8-flash", "grok-4.7", "glm-5.3-air", "Claude-Opus-5-5", " claude-opus-5-5", "codex-test-model", "<synthetic>", "",
     ]) expect(modelLabel(id)).toEqual({ text: id, named: false });
@@ -53,15 +49,10 @@ describe("modelLabel", () => {
 
   test("shows every other shape that is not the vendor's canonical form as received", () => {
     for (const id of [
-      // an empty part
       "claude-opus-", "claude-opus--5", "claude--5-5", "claude-opus-5--5", "gpt-", "gpt-.6", "gpt--sol", "glm-", "glm-.3", "anthropic/", "/claude-opus-5-5",
-      // a part too long, or too many parts
       "claude-opus-555", "claude-opus-5-555", "claude-opus-5-5-5", "gpt-555", "gpt-5.666", "gpt-5.6.1", "glm-555", "glm-5.333", "glm-5.3.1",
-      // a trailing or a wrong separator
       "claude-opus-5-5-", "claude-opus-5-", "claude-opus-5.5", "claude_opus_5_5", "gpt-5.", "gpt-5.6-", "gpt-5.6-sol-", "gpt-5-6", "gpt5.6", "glm-5.", "glm-5.3-", "glm-5-3",
-      // uppercase anywhere
       "CLAUDE-opus-5-5", "claude-Opus-5-5", "claude-OPUS-5-5", "Anthropic/claude-opus-5-5", "GPT-5.6", "Gpt-5.6", "gpt-5.6-SOL", "GLM-5.3", "Glm-5.3",
-      // whitespace before, inside or after, and digits that are not ASCII
       "claude-opus-5-5 ", "claude-opus-5-5\n", "\nclaude-opus-5-5", "claude-opus -5-5", "claude-opus-5\t-5", "gpt-5.6 ", "gpt-5.6\n", " gpt-5.6", "gpt- 5.6", "glm-5.3\n", "glm-5.3\u00a0",
       "claude-opus-\uff15-\uff15", "gpt-\u0665.\u0666",
     ]) expect(modelLabel(id)).toEqual({ text: id, named: false });

@@ -25,19 +25,15 @@ import {
 
 export type VoiceState = "idle" | "starting" | "recording" | "transcribing";
 export type VoiceEngine = "server" | "browser";
-/** why the last dictation failed, short enough to key a translated message on */
 export type VoiceError = "insecure" | "permission" | "no_mic" | "speech_unavailable" | "not_configured" | "provider_auth" | "provider" | "network" | "too_large" | "no_speech";
 /** why the mic button is off: the setting, no https, or neither a server key nor browser speech */
 export type VoiceUnavailable = "disabled" | "insecure" | "not_configured" | "unsupported";
-/** `take` numbers each press-to-text run, so a late answer never lands on another run's words */
 export interface VoiceText { text: string; phase: "raw" | "polished"; take: number }
 
-/** a press held this long is push-to-talk (release finishes); a shorter tap toggles */
 export const HOLD_MS = 300;
 /** after a finish the mic stays open this long, so the next dictation starts at once */
 export const WARM_MIC_MS = 30_000;
 const SILENT_AFTER_MS = 3000;
-/** below this RMS the input is a muted or wrong device, not a quiet room */
 const SILENT_RMS = 0.003;
 const METER_INTERVAL_MS = 250;
 /** a muted track can deliver exact zeros forever: the recorder running this long counts as ready */
@@ -76,16 +72,13 @@ export function smoothLevel(previous: number, target: number, dtMs: number): num
 export const SPEECH_PREROLL_MS = 350;
 /** quiet this long closes the gate; with the pre-roll ~350 ms of quiet stays after the last word */
 export const SPEECH_HANG_MS = 700;
-/** below this RMS nothing is speech, whatever the room's noise floor */
 const SPEECH_MIN_RMS = 0.006;
-/** speech is this many times louder than the quietest level heard so far */
 const SPEECH_OVER_FLOOR = 3;
 
 export interface SpeechGate {
   readonly open: boolean;
   readonly everOpened: boolean;
   readonly lastLoudAt: number;
-  /** one meter reading; "open" or "close" when the recorder should resume or pause */
   step(rms: number, now: number): "open" | "close" | null;
 }
 
@@ -120,10 +113,6 @@ export function levelFromRms(rms: number): number {
   return Math.min(1, Math.max(0, (20 * Math.log10(rms) + 60) / 50));
 }
 
-/**
- * Seven bar heights in [BAR_MIN, 1]. The outer bars carry less of the level, and an idle
- * breath (in unison, so the centre never falls below the edges) keeps them moving in silence.
- */
 export function barScales(level: number, timeMs: number): number[] {
   const amount = Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : 0;
   const breath = 0.5 + 0.5 * Math.sin(timeMs / 600);
@@ -174,11 +163,6 @@ export async function* readVoiceEvents(body: ReadableStream<Uint8Array>): AsyncG
   }
 }
 
-/**
- * `text` in place of the selection, with one space against a neighbouring non-space character
- * so dictation never glues onto a word. start/end cover the inserted text alone, for
- * replaceIfUnchanged when the polished version arrives.
- */
 export function insertAtCaret(value: string, selectionStart: number, selectionEnd: number, text: string): { value: string; start: number; end: number } {
   const from = Math.max(0, Math.min(selectionStart, selectionEnd, value.length));
   const to = Math.min(value.length, Math.max(selectionStart, selectionEnd, from));
@@ -192,16 +176,13 @@ export function insertAtCaret(value: string, selectionStart: number, selectionEn
   return { value: before + lead + spoken + trail + after, start, end: start + spoken.length };
 }
 
-/** Swaps the raw dictation for its polished form, unless the user has edited that span since (null). */
 export function replaceIfUnchanged(value: string, range: { start: number; end: number }, expected: string, replacement: string): { value: string; end: number } | null {
   if (range.start < 0 || range.end > value.length || value.slice(range.start, range.end) !== expected) return null;
   return { value: value.slice(0, range.start) + replacement + value.slice(range.end), end: range.start + replacement.length };
 }
 
-/** Where a take's raw words sit in the box, until its polished form replaces them. */
 export interface InsertedSpan { start: number; end: number; text: string }
 
-/** spans past an edit move with it; one the edit overlapped is forgotten, so its polish is dropped */
 function shiftSpans(spans: Map<number, InsertedSpan>, from: number, to: number, delta: number): void {
   for (const [take, span] of spans) {
     if (span.start >= to) { span.start += delta; span.end += delta; }
@@ -211,16 +192,8 @@ function shiftSpans(spans: Map<number, InsertedSpan>, from: number, to: number, 
 
 const SPANS_KEPT = 8;
 
-/** The takes' spans, with the box text they were measured against (what the last dictation left there). */
 export type DictationSpans = Map<number, InsertedSpan> & { box?: string };
 
-/**
- * One VoiceText applied to the box: raw text goes in at the selection and its span is kept under
- * its take; a polished text replaces only its own take's span, and only while the user has not
- * edited it. Null: nothing to change. `spans` is updated in place.
- * `"too_long"`: the text would push the box past `maxLength`; nothing changes, so a box's limit
- * never cuts the user's own words after the caret.
- */
 export function applyDictation(value: string, selection: { start: number; end: number }, spans: DictationSpans, result: VoiceText, maxLength = Infinity): { value: string; caret: number } | "too_long" | null {
   // the box no longer holds what the last dictation left: the user edited it, and the stored
   // offsets may now sit on other words that happen to read the same
@@ -238,26 +211,15 @@ export function applyDictation(value: string, selection: { start: number; end: n
   }
   const span = spans.get(result.take);
   spans.delete(result.take);
-  // a selection is the user's next edit under way and writing the box would collapse it; an
-  // unchanged polish has nothing to write at all
   if (!span || selection.start !== selection.end || result.text === span.text) return null;
   const next = replaceIfUnchanged(value, span, span.text, result.text);
-  // a polish that no longer fits leaves the raw words, which already did
   if (!next || next.value.length > maxLength) return null;
   shiftSpans(spans, span.start, span.end, next.value.length - value.length);
-  // the caret follows the swap only if it was in or after the replaced span
   const caret = selection.start >= span.end ? selection.start + next.end - span.end : selection.start > span.start ? next.end : selection.start;
   spans.box = next.value;
   return { value: next.value, caret };
 }
 
-/**
- * The BCP 47 tag dictation listens for (SpeechRecognition.lang). A chosen one wins. Auto keeps
- * the UI language's locale, except while the UI language follows the browser and the browser's
- * first language is one the UI is not translated into: then that language, so its speaker is
- * not heard as English. Auto accepts two-letter primary subtags supported by both engines,
- * so its displayed language never promises a browser-only choice. A UI language chosen by hand is the speaker's.
- */
 export function dictationLocale(setting: DictationLanguage, uiSetting: LanguageSetting, uiLanguage: Language, browserLanguages: readonly string[]): string {
   if (setting !== "auto") return setting;
   const browser = browserLanguages[0]?.trim();
@@ -265,25 +227,21 @@ export function dictationLocale(setting: DictationLanguage, uiSetting: LanguageS
   return LOCALE_TAGS[uiLanguage];
 }
 
-/** The transcribe route's language: the tag's ISO 639-1 subtag, or the UI language for a tag without one. */
 export function transcribeLanguage(locale: string, uiLanguage: Language): string {
   const primary = locale.split("-")[0]!.toLowerCase();
   return /^[a-z]{2}$/.test(primary) ? primary : uiLanguage;
 }
 
-/** What the transcribe route accepts: trimmed, at most VOICE_KEYWORDS_MAX, none longer than VOICE_KEYWORD_MAX_CHARS, no blanks or repeats. */
 export function voiceKeywords(words: readonly string[]): string[] {
   const kept = new Set<string>();
   for (const word of words) {
     if (kept.size >= VOICE_KEYWORDS_MAX) break;
-    // an overlong term is dropped, as the server does: half a path would steer the transcript wrong
     const keyword = word.trim();
     if (keyword !== "" && keyword.length <= VOICE_KEYWORD_MAX_CHARS) kept.add(keyword);
   }
   return [...kept];
 }
 
-/** The server's error-envelope or stream error code as the hook's reason. */
 export function voiceErrorFromCode(code: string | null): VoiceError {
   if (code === "voice_not_configured") return "not_configured";
   if (code === "audio_too_large") return "too_large";
@@ -291,12 +249,10 @@ export function voiceErrorFromCode(code: string | null): VoiceError {
   return "provider";
 }
 
-/** getUserMedia's DOMException name as the hook's reason. */
 export function micErrorReason(name: string): VoiceError {
   return name === "NotAllowedError" || name === "SecurityError" ? "permission" : "no_mic";
 }
 
-/** SpeechRecognition's error string; null for the ones that only mean "nothing was said". */
 export function speechErrorReason(error: string): VoiceError | null {
   if (error === "no-speech" || error === "aborted") return null;
   if (error === "not-allowed") return "permission";
@@ -338,14 +294,12 @@ function recorderMime(): { mimeType: string; extension: string } | null {
 
 const tidy = (text: string): string => text.replace(/\s+/g, " ").trim();
 
-// one GET /api/voice per page, shared by every mic button; the settings UI fires VOICE_CONFIG_EVENT after a save
 let statusRequest: Promise<VoiceStatus | null> | null = null;
 const statusListeners = new Set<(status: VoiceStatus | null) => void>();
 let statusEventBound = false;
 
 function loadVoiceStatus(refresh = false): Promise<VoiceStatus | null> {
   if (statusRequest && !refresh) return statusRequest;
-  // a failed check counts as "no key" for now and is asked again by the next button that mounts
   const request: Promise<VoiceStatus | null> = fetchVoiceStatus().catch(() => null);
   statusRequest = request;
   void request.then((status) => {
@@ -376,22 +330,17 @@ export interface VoiceInputOptions {
   mode: VoiceMode;
   enabled: boolean;
   polish: boolean;
-  /** terms that may be spoken (commands, file names, the agent), asked for when a clip is sent */
   keywords?: () => string[];
   onText: (result: VoiceText) => void;
-  /** the transcript so far, for a live preview; superseded by onText */
   onPartial?: (text: string) => void;
 }
 
 export interface VoiceInput {
-  /** false while GET /api/voice is pending too, with unavailableReason null */
   available: boolean;
   unavailableReason: VoiceUnavailable | null;
   engine: VoiceEngine | null;
   state: VoiceState;
-  /** whole seconds since audio started flowing, in ms */
   elapsedMs: number;
-  /** recording, but ~nothing heard for 3 s: a muted or wrong microphone (server engine only) */
   silent: boolean;
   error: VoiceError | null;
   press(): void;
@@ -410,25 +359,20 @@ interface EngineIO {
   setError(error: VoiceError | null): void;
   options(): VoiceInputOptions;
   engine(): VoiceEngine | null;
-  /** the dictation locale (dictationLocale) and the UI language it falls back to */
   language(): { locale: string; ui: Language };
   recorder(): { mimeType: string; extension: string } | null;
   speech(): SpeechRecognitionCtor | null;
 }
 
-/** One press-to-text run while it records; it becomes "pending" work once finished. */
 interface Take {
   id: number;
   engine: VoiceEngine;
-  /** nothing more is delivered from it */
   discard: boolean;
   /** cancelled or the tab hid: a mic still opening for it closes instead of staying warm */
   releaseMic: boolean;
-  /** a finished browser take's entry in `pending`, removed when recognition ends */
   closing: AbortController | null;
   recorder: MediaRecorder | null;
   recorderAt: number | null;
-  /** null: the recorder takes the raw microphone and keeps every second */
   gate: SpeechGate | null;
   chunks: Blob[];
   heard: boolean;
@@ -437,19 +381,16 @@ interface Take {
   finalText: string;
 }
 
-/** The imperative half of useVoiceInput: mic, recorder, meter loop, uploads. Outlives renders. */
 export function createVoiceEngine(io: EngineIO) {
   let phase: VoiceState = "idle";
   let take: Take | null = null;
   let lastTakeId = 0;
   let pressedAt: number | null = null;
-  /** finished takes still transcribing; cancel aborts them */
   const pending = new Set<AbortController>();
   let stream: MediaStream | null = null;
   let warmTimer: ReturnType<typeof setTimeout> | null = null;
   let audio: {
     context: AudioContext; analyser: AnalyserNode; samples: Float32Array<ArrayBuffer>; source: MediaStreamAudioSourceNode | null; stream: MediaStream | null;
-    /** the microphone SPEECH_PREROLL_MS late, for the gated recorder; null where WebAudio cannot make a stream */
     delayed: MediaStreamAudioDestinationNode | null; delay: DelayNode | null;
   } | null = null;
   let bars: HTMLElement | null = null;
@@ -598,7 +539,6 @@ export function createVoiceEngine(io: EngineIO) {
           else { stream = opened; keepWarm(); }
           return;
         }
-        // an overlapping earlier start may have opened one meanwhile; keep a single stream
         if (stream) opened.getTracks().forEach((track) => track.stop());
         else stream = opened;
       }
@@ -611,7 +551,6 @@ export function createVoiceEngine(io: EngineIO) {
         if (audio.delay) audio.source.connect(audio.delay);
         audio.stream = stream;
       }
-      // gated: the recorder takes the delayed copy and starts paused until the first word
       const delayed = audio?.stream === stream ? audio.delayed?.stream ?? null : null;
       let recorder: MediaRecorder;
       try {
@@ -704,7 +643,6 @@ export function createVoiceEngine(io: EngineIO) {
       let partial = "";
       for await (const event of readVoiceEvents(response.body)) {
         if (signal.aborted) return;
-        // an earlier take still answering must not overwrite the preview of the one being spoken
         if (event.type === "delta") { partial += event.text; if (id === lastTakeId) io.options().onPartial?.(tidy(partial)); }
         else if (event.type === "error") io.setError(voiceErrorFromCode(event.code));
         else if (event.text.trim() !== "") io.options().onText({ text: event.text.trim(), phase: event.type === "done" ? "raw" : "polished", take: id });
@@ -736,7 +674,6 @@ export function createVoiceEngine(io: EngineIO) {
     if (!current) return;
     take = null;
     if (phase === "starting") {
-      // nothing safe to keep was said yet; the stream (if it opened) stays warm
       discardTake(current);
       current.releaseMic = release;
       if (release || document.hidden) releaseStream(); else keepWarm();
@@ -759,7 +696,6 @@ export function createVoiceEngine(io: EngineIO) {
     const stopped = (): void => {
       if (release || document.hidden) releaseStream(); else keepWarm();
       if (gate && !gate.everOpened) {
-        // nothing above the room's noise was heard: no upload, nothing billed
         io.setError("no_speech");
         pending.delete(controller);
         settle();
@@ -789,8 +725,6 @@ export function createVoiceEngine(io: EngineIO) {
 
   function press(): void {
     if (phase === "starting" || phase === "recording") { finishTake(false); return; }
-    // an earlier take is still being transcribed: a second one answering first would put its
-    // words in front of the first's
     if (pending.size > 0) return;
     const engine = io.engine();
     if (engine === null) return;
@@ -804,7 +738,6 @@ export function createVoiceEngine(io: EngineIO) {
     const current: Take = { id: ++lastTakeId, engine, discard: false, releaseMic: false, closing: null, recorder: null, recorderAt: null, gate: null, chunks: [], heard: false, startedAt: null, recognition: null, finalText: "" };
     take = current;
     pressedAt = performance.now();
-    // the pill shows on this very frame; the mic catches up
     setPhase("starting");
     if (engine === "server" && mime) {
       if (!navigator.mediaDevices?.getUserMedia) { take = null; io.setError("insecure"); setPhase("idle"); return; }
@@ -900,7 +833,6 @@ export function useVoiceInput(options: VoiceInputOptions): VoiceInput {
     return () => { document.removeEventListener("visibilitychange", onVisibility); voice.cancel(); };
   }, [voice]);
 
-  // switching engines or turning the setting off mid-dictation drops it
   useEffect(() => () => voice.cancel(), [voice, engine]);
 
   useEffect(() => {

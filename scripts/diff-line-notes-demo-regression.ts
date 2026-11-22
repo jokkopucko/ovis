@@ -1,16 +1,4 @@
-/**
- * A note on one line of a file's diff (#1603) on the unmodified app over the demo's fixture transport
- * (Files → Changes → src/money.ts). With a mouse the + beside a hovered row begins a note; with the
- * keys the arrow keys pick a line in the focused diff and Enter begins one, Escape closing it while
- * empty; on a touch screen a tap picks the line and the bar's Add a note (a full touch target) begins
- * one. Saved, it waits with the reply comments in the diff's own pane, one chip over the input card
- * once the viewer is closed, and goes first in the next message as a quote (where the line is, the
- * comparison as captured, the line fenced) with `agent_only`. A note that would take the message past
- * the composer's limit is refused with a message and nothing changes, and a pane with no agent offers
- * none and says why. At 1280 with a mouse and keys and at 390 on a touch screen, dark and light,
- * Korean on the phone. With UI_EVIDENCE_DIR set, each state is captured in the Codex palette as
- * `diff-line-notes-<shape>-<theme>[-ko]-<state>.png`. Nothing leaves this loopback-only app.
- */
+/** Nothing leaves this loopback-only app. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +29,6 @@ async function shot(page: Page, name: string, state: string): Promise<void> {
   await page.screenshot({ path: join(evidence, `diff-line-notes-${name}-${state}.png`), animations: "disabled" });
 }
 
-/** Files → Changes → a file's diff, from the header on a computer or More on a phone, its rows drawn. */
 async function openDiff(page: Page, phone: boolean, path: string): Promise<void> {
   if (phone) {
     await page.locator(".header-more-button").tap();
@@ -55,7 +42,6 @@ async function openDiff(page: Page, phone: boolean, path: string): Promise<void>
   await page.waitForFunction(() => (document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
 }
 
-/** Closing the viewer returns to the Files list: it closes too, so the pane's composer is in reach. */
 async function closeFiles(page: Page): Promise<void> {
   await page.locator(".repo-diff-viewer").waitFor({ state: "detached" });
   const files = page.getByRole("dialog", { name: /^(Files|파일)$/ });
@@ -66,7 +52,6 @@ async function closeFiles(page: Page): Promise<void> {
   await page.waitForFunction(() => ![...document.body.children].some((node) => node instanceof HTMLElement && node.inert && node.getAttribute("aria-hidden") === "true"));
 }
 
-/** The middle of a drawn row, in the page's coordinates. */
 async function rowPoint(page: Page, selector: string): Promise<{ x: number; y: number }> {
   return page.evaluate((selector) => {
     const row = document.querySelector(".repo-diff diffs-container")!.shadowRoot!.querySelector<HTMLElement>(selector)!;
@@ -86,12 +71,11 @@ async function hoverRow(page: Page, selector: string): Promise<void> {
     try {
       await page.locator(".repo-diff-line-note-plus").waitFor({ state: "visible", timeout: 1_000 });
       return;
-    } catch { /* drawn again under the pointer: move once more */ }
+    } catch {}
   }
   throw new Error(`no + beside ${selector}`);
 }
 
-/** Hovers a row and presses its + at the pointer, again if the rows were drawn again under it; with `opens`, until the editor opens. */
 async function pressPlus(page: Page, selector: string, opens: boolean): Promise<void> {
   for (let attempt = 0; attempt < 10; attempt++) {
     await hoverRow(page, selector);
@@ -102,24 +86,20 @@ async function pressPlus(page: Page, selector: string, opens: boolean): Promise<
     try {
       await page.locator(".repo-diff-line-note-form").waitFor({ timeout: 1_000 });
       return;
-    } catch { /* the + went with a redraw before the press: hover again */ }
+    } catch {}
   }
   throw new Error(`the + beside ${selector} never opened the editor`);
 }
 
-/** The parts of a note's quote an agent reads (lib/diffLineNotes.ts): its JSON-named path, side, line and kind, and the fenced text. */
 function noteParts(quote: string): { path: string; machine: string; repository: string; side: string | undefined; kind: string | undefined; line: number; text: string } {
   const lines = quote.split("\n");
   const open = lines.findIndex((line) => /^`{3,}$/.test(line));
   const close = open < 0 ? -1 : lines.indexOf(lines[open]!, open + 1);
   if (close !== lines.length - 1) throw new Error(`no fence closes the quote: ${quote}`);
-  // the names are the JSON strings before the fence, in order: path, PC, repository
   const strings = /"(?:[^"\\]|\\.)*"/g;
   const names = [...lines.slice(0, open).join("\n").matchAll(strings)].map((match) => JSON.parse(match[0]) as string);
-  // the first line's values once its name is taken out: the side, the kind and the one-based line
   const head = lines[0]!.replace(strings, "");
   const fenced = lines.slice(open + 1, close).join("\n");
-  // a whitespace-only line goes as a JSON string
   let text = fenced;
   if (/^".*"$/.test(fenced)) { const parsed = JSON.parse(fenced) as string; if (/^[\s\u0085]*$/.test(parsed)) text = parsed; }
   return {
@@ -160,7 +140,6 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     assert.equal(await place(page), "Pick a line to add a note.", `${name}: the bar says how to pick a line`);
     await shot(page, name, "rest");
 
-    // the mouse: hovering the removed row shows its +, which begins a note on that line at once
     await hoverRow(page, '[data-line="4"][data-line-type="change-deletion"]');
     const plus = page.locator(".repo-diff-line-note-plus");
     assert.equal(await plus.getAttribute("aria-label"), "Add a note on this line", `${name}: the + names its action`);
@@ -182,9 +161,7 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     assert.deepEqual(pick(noteParts(notes[0]!.quote)), { path: "src/money.ts", side: "old", line: 4, kind: "removed", text: "  return amount * 100;" }, `${name}: the quote holds the place and the fenced line`);
     await shot(page, name, "added");
 
-    // the keys: the focused diff picks lines with the arrows, Enter begins a note, Escape closes it while empty
     await page.locator(".repo-diff-body").focus();
-    // the + picked the removed line: the next logical line is the first added after it
     await page.keyboard.press("ArrowDown");
     await page.locator(".repo-diff-line-place", { hasText: words.added }).waitFor();
     assert.deepEqual(await ringed(page), ["change-addition 5"], `${name}: ArrowDown walks from the picked line`);
@@ -202,7 +179,6 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     await form.waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("repo-diff-body") === true), true, `${name}: Escape gives the focus back to the diff`);
     await page.locator(".repo-diff-viewer").waitFor();
-    // a typed note is never lost to Escape, nor to another line's +
     await page.keyboard.press("Enter");
     await field.fill("draft");
     await page.keyboard.press("Escape");
@@ -212,7 +188,6 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     assert.equal(await form.locator(".repo-diff-line-note-place span").first().innerText(), words.added, `${name}: and its line`);
     await form.getByRole("button", { name: "Cancel", exact: true }).click();
 
-    // a line clicked while Find is open is the one the note goes on, not Find's match
     await page.keyboard.press("ControlOrMeta+f");
     await page.locator(".repo-diff-find input").fill("amount");
     await page.locator(".repo-diff-line-place", { hasText: "Unchanged line 4" }).waitFor();
@@ -220,7 +195,6 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     await page.mouse.click(six.x, six.y);
     await page.locator(".repo-diff-line-place", { hasText: "Added line 6" }).waitFor();
     assert.deepEqual(await ringed(page), ["change-addition 6"], `${name}: the clicked line is ringed, not the match`);
-    // a drag that selects code picks no line
     const seven = await rowPoint(page, '[data-line="7"][data-line-type="change-addition"]');
     await page.mouse.move(seven.x - 60, seven.y);
     await page.mouse.down();
@@ -240,7 +214,6 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     assert.equal(await chip.innerText(), "1 comment", `${name}: one chip counts the note`);
     await shot(page, name, "chip");
 
-    // a note past the composer's limit: refused with a message, the draft and the waiting note unchanged
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     const long = "x".repeat(COMPOSER_LIMIT - 400);
     await composer.fill(long);
@@ -262,7 +235,6 @@ async function desktop(browser: Browser, origin: string, theme: "dark" | "light"
     await composer.press("Enter");
     await page.waitForFunction((count) => (window as unknown as { noteLab: { submits: Submit[] } }).noteLab.submits.length > count, before, WAIT);
     const message = (await submits(page)).at(-1)!;
-    // the note first, as quote lines, then its comment, then the typed text
     const [carried, typed] = message.text.split("\n\n");
     const quoted = carried!.split("\n");
     assert.equal(quoted.at(-1), "Keep the rounding of negative amounts.", `${name}: the note's comment follows its quote`);
@@ -319,7 +291,6 @@ async function phone(browser: Browser, origin: string, theme: "dark" | "light", 
   }
 }
 
-/** A pane with no agent takes no note: the bar says why, and its Add a note and the hovered + stay off. */
 async function noAgent(browser: Browser, origin: string): Promise<void> {
   const { context, page, errors } = await setup(browser, origin, false, "dark", "en", panes.shell);
   try {
@@ -344,7 +315,6 @@ let browser: Browser | undefined;
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  // every submit frame the client sends is recorded (window.noteLab); everything else is the demo's
   const lab = `<script>(() => {
     const lab = window.noteLab = { submits: [] };
     const DemoSocket = window.WebSocket;

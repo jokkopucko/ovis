@@ -1,0 +1,40 @@
+you> Run the shell command: ls -la
+
+⠏ bash> List directory contents                                                                              16:34:03
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+╭ Permission Required ────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                     │
+│  tool  bash                                                                                                         │
+│  scope ls -la                                                                                                       │
+│  allow ls *                                                                                                         │
+│  folder not trusted, project answers last for this session only                                                     │
+│  use D to save a deny that outlives this session                                                                    │
+│                                                                                                                     │
+│  y Allow  a Project (this session)       A Always (all projects, saved)  s Session                                  │
+│  n Deny   d Deny project (this session)  D Deny-always (all, saved)                                                 │
+│                                                                                                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⠇ [BUILD]../scratch/lab-maki  anthropic/claude-haiku-5-5 [minimal]  11.2k/1.0m (1%) $0.001

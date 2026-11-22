@@ -1,5 +1,3 @@
-/* The selection's actions (Quote, then Comment) and the comment form float over the transcript (ChatView's frame body): they take no
-   room, so a selection in progress never moves the text under it (#1922). */
 .reply-comment-layer {
   position: absolute;
   inset: 0;
@@ -45,7 +43,6 @@
   color: var(--text-strong);
 }
 
-/* Comment is the second action: an icon after a divider, dimmer than Quote (alone under a secret prompt) */
 .reply-comment-offer {
   justify-content: center;
   min-width: var(--control-h);
@@ -82,7 +79,6 @@
   pointer-events: none;
 }
 
-/* the pill stands in the upper half: the note goes to the foot, above the jump control's room */
 .reply-comment-layer > .selection-note.is-below {
   top: auto;
   bottom: calc(var(--composer-over, 0px) + var(--touch-target) + 2 * var(--space-2));
@@ -156,7 +152,7 @@
   font-size: var(--fs-input);
 }
 
-.reply-comment-field:focus {
+.reply-comment-field:focus:not(:focus-visible) {
   border-color: var(--accent);
   outline: none;
 }
@@ -172,7 +168,6 @@
   gap: var(--space-2);
 }
 
-/* The waiting comments: one chip on the row over the input card, its list opening upwards. */
 .composer-quick.reply-comments {
   position: relative;
   overflow: visible;

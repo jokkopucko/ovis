@@ -1,9 +1,9 @@
 import { useEffect, useRef, type RefObject } from "react";
-import { terminalTheme, type Palette, type ResolvedTheme } from "./settings.ts";
+import type { TerminalColors } from "./themes.ts";
 import { type FontSettled, loadFontStack, measurableFontStack, monoFaceArrived, openingFontStack, terminalFontStack } from "./fontFamily.ts";
 import { modalOpen } from "./focus.ts";
 import { addServedFonts } from "./userFonts.ts";
-import { inUse } from "./paneTerminalShared.ts";
+import { inUse, keepsCoreGrid, takeKeptCoreGrid } from "./paneTerminalShared.ts";
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import type { HerdrSocket } from "./ws.ts";
@@ -20,6 +20,7 @@ export interface TerminalRefitsDeps {
   chatView: boolean;
   chatViewRef: RefObject<boolean>;
   coarseRef: RefObject<boolean>;
+  covered: boolean;
   findOpenRef: RefObject<boolean>;
   fitRef: RefObject<FitAddon | null>;
   fittedRef: RefObject<() => void>;
@@ -30,7 +31,7 @@ export interface TerminalRefitsDeps {
   narrowFont: boolean;
   narrowFontFitted: RefObject<boolean>;
   observeRef: RefObject<boolean>;
-  palette: Palette;
+  colors: TerminalColors;
   paneRef: RefObject<string | null>;
   peekRef: RefObject<TerminalPeek | null>;
   sharedGridRef: RefObject<{ cols: number; rows: number } | null>;
@@ -40,17 +41,18 @@ export interface TerminalRefitsDeps {
   termRef: RefObject<Terminal | null>;
   terminalFontFamily: string;
   terminalFontSize: number;
-  theme: ResolvedTheme;
 }
 
 export function useTerminalRefits(deps: TerminalRefitsDeps): void {
-  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, palette, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize, theme } = deps;
-  // the theme follows the settings without a remount
+  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
+  // a fit that sizes no pty (out of use, or not this page's to size: covered, a following split) leaves a kept herdr-core
+  // pty drawn in its grid
+  const keptUndriven = (): boolean => keepsCoreGrid(socketRef.current, paneRef.current) && !(inUse() && sizesPty());
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = terminalTheme(theme, palette);
-  }, [theme, palette]);
+    term.options.theme = { ...colors };
+  }, [colors]);
 
   // the font follows too, and a font change moves the grid. xterm measures the cell (and the DOM
   // renderer its glyph widths) when fontFamily or fontSize changes, and setting the same value
@@ -61,10 +63,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     const term = termRef.current;
     if (!term) return;
     let superseded = false;
-    // a face can arrive while two fingers pinch: the pinch keeps its live size, and the pty is sized
-    // once, when they lift (useTerminalMount.ts, finishPinch)
     const apply = (): void => {
-      // a newer font, or an unmounted terminal, took over while the faces loaded
       if (superseded || termRef.current !== term) return;
       const pinching = pinchingRef.current;
       const size = pinching ? baseFontRef.current : terminalFontSize;
@@ -76,26 +75,19 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
       term.options.fontSize = size;
       term.options.fontFamily = family;
       fitLineHeight(term);
-      if (observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(true)) return;
+      if (observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(true) || keptUndriven()) return;
       try {
         fitRef.current?.fit();
         fittedRef.current();
       } catch {
         return;
       }
-      // a chosen font loads after every attach: out of use (a reload behind another app), only
-      // this grid fits, and the refit takes the pane once the user is here
       const pane = paneRef.current;
       if (!pinching && pane && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows, true);
     };
-    // the built-in stack too: its first text font is the bundled face, which the terminal opened without until it loaded.
-    // A face slower than the load's timeout is set when it arrives, however late. A family this PC serves from its
-    // fonts/ folder is on the page first (lib/userFonts.ts), so the cell is measured from it
     void addServedFonts(terminalFontFamily).then(() => loadFontStack(fontFamily, terminalFontSize)).then(() => {
-      // a newer font's effect settles the first font once its own faces are in
       if (superseded) return;
       apply();
-      // the first fit and the pty's first size waited for this font (usePaneAttach.ts)
       fontSettledRef.current.settle();
       if (openingFontStack(fontFamily) !== fontFamily) void monoFaceArrived(terminalFontSize).then(apply);
     });
@@ -107,7 +99,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     if (narrowFontFitted.current === narrowFont) return;
     narrowFontFitted.current = narrowFont;
     const term = termRef.current;
-    if (!term || observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(false)) return;
+    if (!term || observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(false) || keptUndriven()) return;
     try {
       fitRef.current?.fit();
       fittedRef.current();
@@ -123,43 +115,51 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
   useEffect(() => {
     if (chatView) {
       const pane = paneRef.current;
-      // a grid this tab drove goes back to a terminal still showing on another device (#472)
       if (pane) socketRef.current?.releaseSize(pane);
-      // the grid another device left the pty at while this one showed the terminal
       const shared = sharedGridRef.current;
       const hidden = termRef.current;
       if (shared && hidden && !observeRef.current && (hidden.cols !== shared.cols || hidden.rows !== shared.rows)) hidden.resize(shared.cols, shared.rows);
       return;
     }
-    if (observeRef.current || fixedGridRef.current) return;
-    // the composer's keyboard may still be up as the terminal lens appears: its grid waits for it to go
-    if (keyboardHoldsRef.current(true)) return;
+    // Into the terminal from the chat: the history this browser keeps (a herdr-core server's terminal-history) shows
+    // its newest rows, once per switch, unless a selection is being made in it. herdr's own view is shared with its
+    // other clients (its TUI, other browsers): a lens switch here is no reason to move theirs, so that view stays
+    // where it is and the way to the bottom shows over it (components/TerminalViewportTools.tsx)
+    const landAtBottom = (): void => {
+      const shown = termRef.current;
+      if (shown && !shown.hasSelection()) shown.scrollToBottom();
+    };
+    if (observeRef.current || fixedGridRef.current || keptUndriven()) { landAtBottom(); return; }
+    if (keyboardHoldsRef.current(true)) { landAtBottom(); return; }
     const term = termRef.current;
     try {
       fitRef.current?.fit();
       fittedRef.current();
     } catch {
+      landAtBottom();
       return;
     }
-    // this runs on every load too, right after the attach: out of use (a reload behind another
-    // app), only this grid fits, and the refit takes the pane once the user is here
+    landAtBottom();
     const pane = paneRef.current;
     if (pane && term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows, true);
-    // a peek opened from what the reader just sent or pressed: its keys (Escape above all) go to the agent
-    // keys typed ahead for a new tab hold the keyboard until its hand-over gives it to the terminal (lib/typeAhead.ts)
     if (activeRef.current && (!autoSelected || peekRef.current !== null) && !coarseRef.current && !modalOpen() && !findOpenRef.current && !typeAheadFocused()) term?.focus();
   }, [chatView]);
 
-  // hidden behind another pane of its split, the pane keeps the size the pty has; shown again, it
-  // fits this screen and takes the pty, as a lens switch back to the terminal does
+  const heldWhileHidden = useRef(false);
   const wasShown = useRef(shown);
   useEffect(() => {
     if (wasShown.current === shown) return;
     wasShown.current = shown;
+    if (shown && !covered) heldWhileHidden.current = false;
     const pane = paneRef.current;
     if (!pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
-    if (!shown) { socketRef.current?.keepSize(pane); return; }
-    if (keyboardHoldsRef.current(true)) return;
+    if (!shown) {
+      socketRef.current?.keepSize(pane);
+      const hidden = termRef.current;
+      if (hidden && takeKeptCoreGrid(hidden, socketRef.current, pane, sharedGridRef.current)) followCursorRef.current();
+      return;
+    }
+    if (keyboardHoldsRef.current(true) || keptUndriven()) return;
     const term = termRef.current;
     try {
       fitRef.current?.fit();
@@ -170,8 +170,40 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows, true);
   }, [shown]);
 
-  // the split's other half took this tab's grid: this half lets the pty go and draws it at that grid;
-  // made the active half, it fits its own screen and takes the pty, as a pane shown again does
+  const wasCovered = useRef(covered);
+  const heldAtCover = useRef(false);
+  useEffect(() => {
+    if (wasCovered.current === covered) return;
+    wasCovered.current = covered;
+    const pane = paneRef.current;
+    if (covered) {
+      heldAtCover.current = heldWhileHidden.current || (pane !== null && socketRef.current?.holdsSize(pane) === true);
+      heldWhileHidden.current = false;
+      return;
+    }
+    const held = heldAtCover.current;
+    heldAtCover.current = false;
+    if (!shown) { heldWhileHidden.current = held; return; }
+    if (!held || !pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
+    if (keyboardHoldsRef.current(true) || keptUndriven()) return;
+    const term = termRef.current;
+    try {
+      fitRef.current?.fit();
+      fittedRef.current();
+    } catch {
+      return;
+    }
+    if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);
+  }, [covered]);
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!covered || socket === null) return;
+    return socket.onBeforeReplay(() => {
+      const pane = paneRef.current;
+      if (pane !== null && socket.holdsSize(pane)) socket.keepSize(pane, false);
+    });
+  }, [covered]);
+
   const wasFollowing = useRef(follow);
   useEffect(() => {
     if (wasFollowing.current === follow) return;
@@ -179,7 +211,6 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     const pane = paneRef.current;
     const term = termRef.current;
     if (!pane || !term || observeRef.current || fixedGridRef.current) {
-      // a mirror's grid stays herdr's, a watched one the pty's: the half made active, or following, only folds it again or not
       if (fixedGridRef.current || observeRef.current) followCursorRef.current();
       return;
     }
@@ -191,7 +222,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
       return;
     }
     followCursorRef.current();
-    if (chatViewRef.current || keyboardHoldsRef.current(true)) return;
+    if (chatViewRef.current || keyboardHoldsRef.current(true) || keptUndriven()) return;
     try {
       fitRef.current?.fit();
       fittedRef.current();

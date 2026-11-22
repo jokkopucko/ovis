@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
 import { createSubmitText, InputDraftError } from "./composer.ts";
 
-// The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;

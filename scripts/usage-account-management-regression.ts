@@ -169,7 +169,6 @@ for await (const code of console) {
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.equal(await rows.evaluateAll((rows) => rows.every((row) => row.scrollWidth <= row.clientWidth)), true);
       await capture("6-after-restart");
-      // the removed account waits under Removed from Ovis, and Restore lists it again
       const removedWork = removedRows.filter({ hasText: "work@example.test" });
       await removedWork.getByRole("button", { name: /^Restore .*work@example\.test$/ }).click();
       await work.waitFor();

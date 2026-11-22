@@ -4,18 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A render error never blanks the app. The lane's demo build has its test hooks on, so
-// `?crash=<region>` makes that region throw while it renders (src/lib/crashProbe.ts):
-// - root: the whole page is AppCrash, with Reload app (which reloads) and Copy details;
-// - sidebar, pane: that region shows its notice and the rest of the app keeps working;
-// - settings: the dialog shows its notice, holds the focus, sits over a file preview, and Escape,
-//   Close or the system Back button returns to the app.
-// The root and a pane slot are seen again on a phone, where copying can be refused: Copy details
-// then opens the details with the text selected.
 // On the unmodified app over the demo's fixture transport: no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-render-crash-demo-"));
 
@@ -36,21 +30,18 @@ async function open(browser: Browser, search: string, { phone = false, clipboard
   return { page, close: () => context.close() };
 }
 
-/** The sidebar row click, without moving the focus the way a real click would. */
 const select = async (page: Page, paneId: string): Promise<void> => {
   const row = page.locator(`.pane-select[title^="${paneId} —"]`).first();
   await row.waitFor({ state: "attached" });
   await row.evaluate((node: HTMLElement) => node.click());
 };
 
-/** Asks `region` to throw from its next render on, as `?crash=` does on load. */
 const startCrashing = (page: Page, region: string): Promise<void> => page.evaluate((name) => {
   const url = new URL(window.location.href);
   url.searchParams.set("crash", name);
   window.history.replaceState(window.history.state, "", url);
 }, region);
 
-/** Drops `crash` from the address, as the page would be without the hook, so Try again can succeed. */
 const stopCrashing = (page: Page): Promise<void> => page.evaluate(() => {
   const url = new URL(window.location.href);
   url.searchParams.delete("crash");
@@ -62,22 +53,13 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, `<script src="./demo-transport.js"></script>${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   port = server.port ?? 0;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const pane = `?pane=${encodeURIComponent(panes.omp)}&view=terminal`;
 
-      // without the hook asked for, nothing throws: the probe is inert
       {
         const { page, close } = await open(browser, pane);
         const errors: string[] = [];
@@ -90,7 +72,6 @@ try {
         await close();
       }
 
-      // the root: AppCrash, its Reload app reloads the page, Copy details puts the error on the clipboard
       {
         const { page, close } = await open(browser, `${pane}&crash=root`);
         await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -111,7 +92,6 @@ try {
         await close();
       }
 
-      // the sidebar: its notice, the pane still drawn; Try again draws the sidebar once it can
       {
         const { page, close } = await open(browser, `${pane}&crash=sidebar`);
         const notice = page.locator("#workspace-drawer").getByRole("alert").filter({ hasText: "The sidebar can't be shown." });
@@ -125,7 +105,6 @@ try {
         await close();
       }
 
-      // a pane slot: its notice, the sidebar still drawn
       {
         const { page, close } = await open(browser, `${pane}&crash=pane`);
         const notice = page.locator(".pane-slot").getByRole("alert").filter({ hasText: "This pane can't be shown." });
@@ -138,8 +117,6 @@ try {
         await close();
       }
 
-      // a pane slot that throws once its terminal was live: the header stops saying live, as no
-      // terminal is attached there any more
       {
         const { page, close } = await open(browser, pane);
         await page.locator(".conn-live").waitFor({ state: "attached" });
@@ -151,8 +128,6 @@ try {
         await close();
       }
 
-      // Settings: its notice in the dialog, which holds the focus as Settings does; Escape and
-      // Close both return to a working app
       {
         const { page, close } = await open(browser, `${pane}&settings=appearance&crash=settings`);
         const dialog = page.getByRole("dialog", { name: "Settings" });
@@ -180,8 +155,6 @@ try {
         await close();
       }
 
-      // Settings opened by its shortcut over a file preview: its notice is drawn over the preview,
-      // as Settings is, so Close is the control under the pointer
       {
         const { page, close } = await open(browser, `${pane}&file=README.md&crash=settings`);
         await page.locator("aside.file-panel .file-viewer").waitFor();
@@ -199,8 +172,6 @@ try {
         await close();
       }
 
-      // the system Back button closes the notice and stays in the app, as it closes Settings: the
-      // dialog threw before it put an entry in the history, on a desktop and on a phone
       for (const phone of [false, true]) {
         const { page, close } = await open(browser, pane, { phone });
         await page.locator(".pane-frame.is-current").waitFor();
@@ -215,8 +186,6 @@ try {
         await close();
       }
 
-      // on a phone, Settings throws once a page was opened from its list: one Back closes the
-      // notice, not two
       {
         const { page, close } = await open(browser, `${pane}&settings=appearance`, { phone: true });
         const dialog = page.getByRole("dialog", { name: "Settings" });
@@ -242,7 +211,6 @@ try {
         await close();
       }
 
-      // the root on a phone that refuses copying: Copy details opens the details, text selected
       {
         const { page, close } = await open(browser, `${pane}&crash=root`, { phone: true, clipboardRefused: true });
         const crash = page.locator(".app-crash");
@@ -258,7 +226,6 @@ try {
         await close();
       }
 
-      // a pane slot on a phone: its notice, and the workspace list still opens
       {
         const { page, close } = await open(browser, `${pane}&crash=pane`, { phone: true });
         const notice = page.locator(".pane-slot").getByRole("alert").filter({ hasText: "This pane can't be shown." });
@@ -266,7 +233,11 @@ try {
         assert.equal(await page.locator(".app-crash").count(), 0, "the page is not blanked");
         await page.getByRole("button", { name: "Open workspace list", exact: true }).tap();
         await page.locator("#workspace-drawer.is-open .sidebar-shell").waitFor();
-        await page.getByRole("button", { name: "Close workspace list", exact: true }).tap();
+        await page.waitForFunction((key) => typeof history.state?.[key] === "string", SHEET_HISTORY_KEY, { timeout: 5_000 });
+        await page.touchscreen.tap(page.viewportSize()!.width - 8, page.viewportSize()!.height / 2);
+        await page.locator("#workspace-drawer.is-open").waitFor({ state: "detached" });
+        // The drawer's Back lands after it closes and can restore the crash flag from the entry underneath.
+        await page.waitForFunction((key) => history.state?.[key] === undefined, SHEET_HISTORY_KEY, { timeout: 5_000 });
         await stopCrashing(page);
         await notice.getByRole("button", { name: "Try again", exact: true }).tap();
         await page.locator(".pane-frame.is-current").waitFor();

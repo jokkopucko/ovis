@@ -1,7 +1,8 @@
 # Contributing
 
-Thanks for helping. Bugs and ideas go in an [issue](https://github.com/devswha/ovis/issues/new/choose);
-security problems never do: see [SECURITY.md](SECURITY.md). For a larger change, open an issue first so
+Thanks for helping. Questions and chat go to the [Ovis Discord](https://ovis.sh/discord). Bugs and
+ideas go in an [issue](https://github.com/devswha/ovis/issues/new/choose); security problems never
+do: see [SECURITY.md](SECURITY.md). For a larger change, open an issue first so
 the approach can be agreed before you build it. Small fixes can go straight to a PR.
 
 **Features.** Open a [feature request](https://github.com/devswha/ovis/issues/new?template=feature_request.yml)
@@ -16,10 +17,9 @@ Everything a PR is checked against is in this repository: this file, the
 [review rules](.github/REVIEW.md), the [development guide](docs/development.md),
 [DESIGN.md](DESIGN.md) and the `AGENTS.md` files ([root](AGENTS.md), [server](server/AGENTS.md),
 [src](src/AGENTS.md)), which hold the invariants that people and coding agents both follow.
-Contributions are licensed under the repository's [MIT license](LICENSE). Say in the PR when code is
-adapted from another project, with its license. Before your first PR is merged, sign the
-[Contributor License Agreement](CLA.md): the CLA Assistant bot asks on the PR, and you sign once by
-commenting the sentence it gives.
+Contributions are accepted under the repository's [MIT license](LICENSE): opening a PR licenses
+your changes under it, and there is nothing else to sign. Say in the PR when code is adapted from
+another project, with its license.
 
 ## Set up
 
@@ -27,13 +27,15 @@ commenting the sentence it gives.
 - Bun 1.4 or newer, and herdr 0.9.0 or newer for the integration tests. Terminals in a checkout run on
   the Rust PTY host (`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml`, or
   `bun scripts/pty-sidecar.ts install` on a release tag); Node 18 or newer is the fallback, and the PTY
-  tests run on both. CI runs Bun 1.4.2, Node 22 and herdr 0.9.3, all pinned in
+  tests run on both. CI runs Bun 1.4.4, Node 22 and herdr 0.9.3, all pinned in
   [.github/actions/setup-ci/action.yml](.github/actions/setup-ci/action.yml).
 
 ```bash
+git clone https://github.com/devswha/ovis.git
+cd ovis
 bun install
 bun run server   # API + WebSocket on :7317
-bun run dev      # Vite on :5173, proxies /api and /ws
+bun run dev      # Vite on :5173, proxies /api and /ws; run it in a second terminal
 ```
 
 Neither command updates itself; only `bun run start` and the plugin run the updater.
@@ -132,7 +134,9 @@ the context does not make it clear. The dialog that makes a workspace is
   closed.
 - **UI:** component CSS uses the tokens in `src/styles.css` (see [DESIGN.md](DESIGN.md)).
 - **Themes:** besides the app's own Amber, Charcoal, Codex, Catppuccin and Black, a theme is added only when
-  herdr ships it as a built-in; a PR with any other theme is closed. Each theme is a complete block
+  herdr ships it as a built-in; a PR with any other theme is closed. Any other theme is a
+  [theme file](docs/themes.md) its users import, published from its author's own repository. Each
+  built-in theme is a complete block
   in `src/styles.css`, the one place its colors are written. Start from
   `bun scripts/herdr-theme-proposal.ts`, write the block by hand, and record every role whose value
   differs from the raw herdr mapping (`mapTheme`) in `scripts/herdr-theme-overrides.ts` with its dE

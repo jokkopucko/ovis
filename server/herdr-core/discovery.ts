@@ -7,13 +7,13 @@
  * uses herdr's TUI. So a candidate is only ever asked `--version`, and the core counts as running
  * when its socket file is there: nothing connects to it.
  */
-import { lstatSync, readFileSync, readlinkSync, statSync, type Stats } from "node:fs";
-import { userInfo } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrCoreFacts } from "../../shared/machines.ts";
-import { readHerdrConfig } from "../herdr-sidebar.ts";
 import { loginPathProbe, loginShell } from "../shell-agent.ts";
 import { userHome } from "../user-home.ts";
+import { coreSocket, plainSession } from "./core-socket.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -22,6 +22,8 @@ export interface FoundHc {
   bin: string;
   /** what its `--version` says after `hc ` */
   version: string;
+  /** the app's own hc (OVIS_HC_BIN with OVIS_HC_BIN_BUNDLED) that did not answer, when this one runs in its place */
+  insteadOf?: string;
 }
 
 export interface FindHcOptions {
@@ -32,8 +34,10 @@ export interface FindHcOptions {
   loginShellPath?: () => Promise<string | null>;
   /** where hc gets installed; the default is usualHcDirs */
   usualDirs?: readonly string[];
-  /** how long one --version may take; PROBE_TIMEOUT_MS unset */
+  /** how long one --version may take; PROBE_TIMEOUT_MS unset. The app's own hc gets BUNDLED_PROBE_TIMEOUT_MS */
   timeoutMs?: number;
+  /** asks one candidate `--version`; the default is hcVersion */
+  version?: (bin: string, env: Env, timeoutMs: number) => Promise<string | null>;
   /** getfacl's path, or null when it is not installed; the default looks in /usr/bin and /bin */
   getfacl?: string | null;
   /** told each candidate the trust check refuses, and why */
@@ -41,23 +45,28 @@ export interface FindHcOptions {
 }
 
 /** a slow or interactive shell profile, or a hanging binary, must not hold the server up */
-const PROBE_TIMEOUT_MS = 3_000;
+export const PROBE_TIMEOUT_MS = 3_000;
+/** the hc the desktop app ships may be slow to answer its first --version (a fresh copy, a busy start) */
+export const BUNDLED_PROBE_TIMEOUT_MS = 10_000;
 /** how long output is still read after the probe exits: what it left behind holding stdout is not waited on */
 const EXIT_GRACE_MS = 500;
 /** a version line, and a PATH, are short: anything longer is not what was asked for */
 const PROBE_OUTPUT_LIMIT = 64 * 1024;
 
 /**
- * The first herdr-core found, or null. Where it looks, in order: OVIS_HC_BIN; the usual install
+ * The first herdr-core found, or null. OVIS_HC_BIN, when set, is the only place looked; else, in order: the usual install
  * places; this process's PATH; then the user's login shell's PATH (a server started by herdr's
- * plugin or a service may not carry it). In each folder `herdr-core` comes before `hc`, the name
+ * plugin or a service may not carry it). The desktop app's own hc comes with OVIS_HC_BIN_BUNDLED=1
+ * beside it: that one is given BUNDLED_PROBE_TIMEOUT_MS, and when it does not answer the usual
+ * places are looked in after all, and what is found says so (`insteadOf`). In each folder `herdr-core` comes before `hc`, the name
  * the core's installer gives it, and a candidate counts only when `--version` exits 0 and says
  * `hc …`: some window managers ship an unrelated `hc`.
  *
  * Asking `--version` runs the candidate as this user, so on Linux and macOS only one that no
  * other account can have put or changed there is run (ownedByUser); an OVIS_HC_BIN path is the
- * user's own choice and is run as named. Windows has no mode bits to read: there the usual places
- * (under the user's profile) coming before the PATH is the only protection.
+ * user's own choice and is run as named. Windows has no mode bits to read: there only an hc inside
+ * the user's profile is run (insideProfile), since any account may write a folder made at the top
+ * of a drive (C:\tools), and such folders sit on many a PATH.
  */
 export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | null> {
   const env = options.env ?? process.env;
@@ -81,7 +90,9 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
     ...env,
     PATH: [...new Set(checkedDirs(dirsOn(env["PATH"])))].join(delimiter) || checkedDirs(SYSTEM_PATH).join(delimiter) || "/nonexistent",
   };
-  const pick = async (candidates: string[], named = false): Promise<FoundHc | null> => {
+  // Windows' trust boundary: the profile as the OS gives it, never a HOME the environment sets
+  const profile = options.home ?? (env["USERPROFILE"] || homedir());
+  const pick = async (candidates: string[], named = false, timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS): Promise<FoundHc | null> => {
     for (const candidate of candidates) {
       // absolute: a terminal attach runs it from another folder (server/core/terminal-process.ts),
       // and what is run is what was checked, whatever folder the server is in
@@ -89,27 +100,58 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
       if (seen.has(bin)) continue;
       seen.add(bin);
       if (!isFile(bin)) continue;
-      const refused = named || harmless === null ? null : trustRefusal(bin, harmless, false, acl);
+      const refused = named ? null : harmless === null ? insideProfile(bin, profile) : trustRefusal(bin, harmless, false, acl);
       if (refused !== null) {
         options.onRefused?.(bin, refused);
         continue;
       }
-      const version = await hcVersion(bin, probing(), options.timeoutMs ?? PROBE_TIMEOUT_MS);
+      const version = await (options.version ?? hcVersion)(bin, probing(), timeoutMs);
       if (version !== null) return { bin, version };
     }
     return null;
   };
   // a bare name is looked up on the PATH, as a shell would run it, and checked like anything found
-  // there: one refused leaves the next PATH folder to look in (Windows checks nothing, so its first)
+  // there: one refused leaves the next PATH folder to look in
   const configured = env["OVIS_HC_BIN"];
   const bare = configured !== undefined && !/[\\/]/.test(configured);
   const named = !configured ? [] : !bare ? [configured]
-    : harmless === null ? [Bun.which(configured, { PATH: env["PATH"] ?? "" }) ?? configured]
-    : dirsOn(env["PATH"]).map((dir) => join(dir, configured));
-  return await pick(named, !bare)
-    ?? await pick((options.usualDirs ?? usualHcDirs(home, platform, env)).flatMap(names))
+    : dirsOn(env["PATH"]).map((dir) => join(dir, platform === "win32" && !/\.[^.]+$/.test(configured) ? `${configured}.exe` : configured));
+  // a set OVIS_HC_BIN is the only hc: one that fails is reported, never swapped for another, which
+  // could be one the user set it to avoid (a wrapper that keeps Ovis's environment out, say). The
+  // app's own hc is the app's choice, not the user's: one that fails leaves the usual places
+  const bundled = !!configured && env["OVIS_HC_BIN_BUNDLED"] === "1";
+  if (configured && !bundled) return await pick(named, !bare);
+  if (bundled) {
+    const own = await pick(named, !bare, BUNDLED_PROBE_TIMEOUT_MS);
+    if (own !== null) return own;
+    const other = await usual();
+    return other === null ? null : { ...other, insteadOf: bare ? configured : resolve(configured) };
+  }
+  return await usual();
+
+  async function usual(): Promise<FoundHc | null> {
+    return await pick((options.usualDirs ?? usualHcDirs(home, platform, env)).flatMap(names))
     ?? await pick(dirsOn(env["PATH"]).flatMap(names))
-    ?? await pick(dirsOn(await (options.loginShellPath ?? (() => loginShellPath(env, platform)))() ?? "").flatMap(names));
+      ?? await pick(dirsOn(await (options.loginShellPath ?? (() => loginShellPath(env, platform)))() ?? "").flatMap(names));
+  }
+}
+
+/**
+ * Windows: null when `bin` is inside the user's profile, which only they, SYSTEM and administrators
+ * may write, both as written (what is stored and run later) and with links and junctions followed;
+ * else why not. Elsewhere on a drive, a folder made at its top inherits Modify for every signed-in
+ * account, so a junction there could be pointed elsewhere after the check.
+ */
+function insideProfile(bin: string, home: string): string | null {
+  const inside = (from: string, to: string) => {
+    const rel = relative(from, to);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  };
+  try {
+    return inside(resolve(home), resolve(bin)) && inside(realpathSync(home), realpathSync(bin)) ? null : `${bin} is outside your profile folder, where another account may have put it`;
+  } catch (error) {
+    return `${bin} could not be checked (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
+  }
 }
 
 /** the PATH a probe gets when no PATH folder passes the check */
@@ -297,6 +339,7 @@ export function aclReader(options: { platform?: NodeJS.Platform; getfacl?: strin
     }
     if (getfacl === undefined) getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
     if (getfacl === null) {
+      // `ls -ld` marks a path that has an ACL with a `+` after its mode
       const listing = read(["/bin/ls", "-ld", "--", path]);
       return listing === null || /^\S{10}\+/.test(listing);
     }
@@ -430,66 +473,6 @@ async function probe(argv: string[], env: Env, timeoutMs: number): Promise<strin
   }
 }
 
-export interface CoreSocketOptions {
-  env?: Env;
-  home?: string;
-  platform?: NodeJS.Platform;
-  /** `/run/user/<uid>` when that folder exists, else null: hc's runtime dir without XDG_RUNTIME_DIR */
-  userRuntimeDir?: string | null;
-}
-
-export interface CoreSocket {
-  session: string;
-  path: string;
-  /** the socket file is there; it is never connected to, so a core that died may leave one */
-  running: boolean;
-}
-
-/**
- * Where the core of this environment listens, as hc works it out (herdr-core paths.rs): HC_SOCKET,
- * else `socket` in its config.toml, else `<session>.sock` in herdr-core under the runtime dir
- * (XDG_RUNTIME_DIR, else /run/user/<uid>), else beside the state in
- * `$XDG_STATE_HOME/herdr-core/<session>/` (macOS). The session is HC_SESSION, else `default`.
- */
-export function coreSocket(options: CoreSocketOptions = {}): CoreSocket {
-  const env = options.env ?? process.env;
-  const platform = options.platform ?? process.platform;
-  const home = options.home ?? userHome(env, platform);
-  const session = env["HC_SESSION"]?.trim() || "default";
-  const config = join(env["XDG_CONFIG_HOME"] || join(home, ".config"), "herdr-core", "config.toml");
-  const state = join(env["XDG_STATE_HOME"] || join(home, ".local", "state"), "herdr-core", session);
-  const path = env["HC_SOCKET"] || configuredSocket(config) || defaultSocket();
-  return { session, path, running: exists(path) };
-
-  function defaultSocket(): string {
-    if (platform === "win32") return `\\\\.\\pipe\\herdr-core-${(env["USERNAME"] ?? "").replace(/[^A-Za-z0-9]/g, "")}-${session}.sock`;
-    const run = runtimeDir(env, options);
-    return run === null ? join(state, `${session}.sock`) : join(run, "herdr-core", `${session}.sock`);
-  }
-}
-
-function runtimeDir(env: Env, options: CoreSocketOptions): string | null {
-  if (env["XDG_RUNTIME_DIR"]) return env["XDG_RUNTIME_DIR"];
-  if (options.userRuntimeDir !== undefined) return options.userRuntimeDir;
-  const uid = process.getuid?.();
-  if (uid === undefined) return null;
-  const dir = `/run/user/${uid}`;
-  try { return statSync(dir).isDirectory() ? dir : null; } catch { return null; }
-}
-
-/** `socket` in hc's config.toml, when it sets one */
-function configuredSocket(config: string): string | null {
-  // read as herdr's own config is: a regular file of a config's size, never a FIFO a health poll would block on
-  const parsed = readHerdrConfig(config);
-  const socket = parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>)["socket"] : undefined;
-  return typeof socket === "string" && socket !== "" ? socket : null;
-}
-
-/** hc's Windows pipe answers a stat with EBUSY while each of its instances is taken (live-seen with a core running): it is there */
-function exists(path: string): boolean {
-  try { statSync(path); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EBUSY"; }
-}
-
 /** how long one look for hc stands: it runs a login shell and each candidate's --version */
 const FIND_TTL_MS = 5 * 60_000;
 let found: { at: number; hc: FoundHc | null } | null = null;
@@ -523,9 +506,5 @@ export function herdrCoreFacts(): HerdrCoreFacts | undefined {
   if (found === null) return undefined;
   const socket = coreSocket();
   // hc takes only a plain folder name for a session; anything else is not told, so no path can be
-  return { version: found.hc?.version ?? null, session: plainSession(socket.session), running: socket.running };
-}
-
-export function plainSession(session: string): string | null {
-  return /^[A-Za-z0-9_.-]{1,64}$/.test(session) && session !== "." && session !== ".." ? session : null;
+  return { version: found.hc?.version ?? null, session: plainSession(socket.session), running: socket.running, ...(found.hc?.insteadOf ? { bundled_unused: true } : {}) };
 }

@@ -1,9 +1,4 @@
 #!/bin/bash
-# The .deb's prerm. Ovis starts its own herdr-core server (HC_SESSION=ovis) from a copy in the
-# user's data folder, and that server outlives the app on purpose. Once the package is gone nothing
-# can reach it any more, so removing the package stops it, for the user who removed it (sudo or
-# pkexec say who). Never on an upgrade: the next version takes the same server over. Best effort:
-# whatever happens here, the removal goes on.
 
 [ "$1" = remove ] || exit 0
 

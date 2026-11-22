@@ -2,11 +2,10 @@ import { describe, expect, it } from "bun:test";
 
 import type { ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
 import { type Language, translate } from "./i18n.ts";
-import { approvalScope, polledPrompt, promptWords, screenWordsToShow } from "./promptText.ts";
+import { approvalScope, optionName, polledPrompt, promptWords, screenWordsToShow } from "./promptText.ts";
 
 const inLanguage = (language: Language) => (key: string, vars?: Record<string, string | number>) => translate(language, key, vars);
 
-/** Claude Code's /goal card as the bridge hands it over: its title and Close are the bridge's, the goal and its status Claude's */
 const goal: InteractivePrompt = {
   id: "g", agent: "claude", kind: "menu", title: "Goal active", question: "the file hello.txt exists", body: "running 25s · 0 tokens",
   options: [{ label: "Close", description: null }], multi_select: false, custom_option_index: null,
@@ -84,7 +83,6 @@ describe("a prompt card's words", () => {
   it("caps a translated body as the bridge caps the English one", () => {
     const long: InteractivePrompt = { ...goal, body: "x".repeat(12_000), own_text: { body: { key: "Comment: {comment}", vars: { comment: "x".repeat(20_000) } } } };
     expect(promptWords(long, inLanguage("ko")).body).toHaveLength(12_000);
-    // the cap lands between the two halves of an emoji: the emoji goes whole, never half of it
     const prefix = translate("ko", "Comment: {comment}", { comment: "" }).length;
     const split: InteractivePrompt = { ...long, own_text: { body: { key: "Comment: {comment}", vars: { comment: `${"x".repeat(11_999 - prefix)}\u{1F600}` } } } };
     const body = promptWords(split, inLanguage("ko")).body!;
@@ -96,6 +94,12 @@ describe("a prompt card's words", () => {
     const { own_text: _, ...older } = goal;
     const words = promptWords(older, inLanguage("ko"));
     expect([words.title, words.label(0)]).toEqual(["Goal active", "Close"]);
+  });
+
+  it("strips both leading and trailing (Recommended) tags from plain option labels", () => {
+    expect(optionName(goal, "(Recommended) Bun test")).toEqual({ text: "Bun test", recommended: true, words: "Bun test" });
+    expect(optionName(goal, "Bun test (Recommended)")).toEqual({ text: "Bun test", recommended: true, words: "Bun test" });
+    expect(optionName(goal, "Vitest")).toEqual({ text: "Vitest", recommended: false, words: "Vitest" });
   });
 });
 
@@ -129,7 +133,6 @@ describe("Claude's words read off the screen over its question (#2088)", () => {
   });
 
   it("shows them while the same question asked in an earlier, interrupted turn still waits there", () => {
-    // the call left waiting by an interrupt; the new turn has nothing in the session file yet
     expect(screenWordsToShow(asked, [asking, call("pending"), asking])).toBe("There are two ways to fix it.");
   });
 

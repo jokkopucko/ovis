@@ -9,7 +9,7 @@ import type { Terminal } from "@xterm/xterm";
  */
 
 /** The ink of the terminal's Hangul, Ovis Hangul Mono (D2Coding's outlines): 0.78em above the baseline to 0.133em below. */
-const HANGUL_INK_EM = 0.913;
+export const HANGUL_INK_EM = 0.913;
 /** The gap left between two Korean rows: 4.6px at 13px, Menlo's 16.5px row on a 2x screen. */
 const HANGUL_GAP_EM = 0.35;
 /** xterm counts a row in whole device pixels: a factor a hair above the quotient keeps its floor on the wanted pixel. */

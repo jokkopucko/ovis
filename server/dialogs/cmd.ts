@@ -35,15 +35,12 @@ function parseCmdQuestion(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = cmdFooterStart(lines);
   if (hintIndex < 0) return null;
-  // the dialog block: the rows directly above the footer, and their wrapped continuation lines.
-  // The blank line between the last row and the footer is skipped; anything else ends the block.
   let blockStart = hintIndex;
   while (blockStart > 0 && lines[blockStart - 1]!.trim() === "") blockStart -= 1;
   while (blockStart > 0) {
     const prev = lines[blockStart - 1]!;
     if (isDivider(prev) || prev.trim() === "") break;
     if (/^\s*[❯›>]?\s*\d+\.\s+/.test(prev)) { blockStart -= 1; continue; }
-    // a wrapped continuation of the row above (indented, not numbered)
     if (/^\s+\S/.test(prev) && !/^\s*[❯›>]?\s*\d+\.\s+/.test(prev)) { blockStart -= 1; continue; }
     break;
   }
@@ -60,7 +57,6 @@ function parseCmdQuestion(screen: string): ParsedPrompt | null {
     rows.push(row);
   }
   if (rows.length < 2) return null;
-  // the rows are numbered from 1, in order: anything else is another program's list
   if (!rows.every((row, index) => row.number === index + 1)) return null;
   // the cursor must be marked on exactly one row: without it the chat cannot tell which option
   // an answer would land on, and Command Code may mark the cursor by colour alone
@@ -69,9 +65,7 @@ function parseCmdQuestion(screen: string): ParsedPrompt | null {
   if (rows[0]?.label !== "Yes" || !/^No(?:,|$)/.test(rows.at(-1)?.label ?? "")) return null;
   const selectedIndex = rows.findIndex((row) => row.selected);
   const firstRowIndex = lines.findIndex((line, index) => index >= blockStart && /^\s*[❯›>]?\s*1\.\s+/.test(line));
-  // the heading: the first line of the dialog above the question (e.g. "Create File")
   let title: CardWords = own("Permission request");
-  // where the dialog's text starts: just below the title, else below whatever ended the search
   let titleIndex = -1;
   if (firstRowIndex >= 0) {
     let index = firstRowIndex - 1;
@@ -88,7 +82,6 @@ function parseCmdQuestion(screen: string): ParsedPrompt | null {
     }
     titleIndex = index;
   }
-  // the question: the line asking for approval, the last one above the rows
   let question = title;
   if (firstRowIndex >= 0) {
     for (let index = firstRowIndex - 1; index >= 0; index -= 1) {

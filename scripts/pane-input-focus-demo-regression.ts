@@ -1,4 +1,3 @@
-/** Keyboard-only input focus on the real client against fictional demo panes. */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +6,7 @@ import { chromium } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import panes from "../site/demo/fixtures/panes.json";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-input-focus-demo-"));
 try {
@@ -14,17 +14,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true });
     try {
@@ -46,7 +36,6 @@ try {
           await page.locator(".composer-text").first().waitFor();
           await page.keyboard.press("Meta+Shift+Digit2");
           await page.waitForFunction(previous => document.querySelector(".pane-frame.is-current")?.getAttribute("data-layout-pane") !== previous, panes.api);
-          // selecting a pane still focuses chat on a desktop and leaves a touch screen alone
           const wanted = !touch;
           await page.waitForFunction(wanted => !!document.querySelector(".pane-frame.is-current .composer-text:focus") === wanted, wanted);
           assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), touch);

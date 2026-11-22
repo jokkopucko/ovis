@@ -1,12 +1,4 @@
 /**
- * What a new agent's launch may carry from the new workspace and tab dialogs (#774, #1311, #2232): a
- * model, an effort level, Claude Code's Ultracode, a first prompt on Codex's command line, and a first
- * message the bridge queues. The dialog (src/lib/agentLaunchMode.ts) and the bridge's create routes
- * (server/agent-launch.ts, server/workspace-routes.ts) check them by these rules, so what the dialog
- * lets through is what the bridge takes; the demo's transport checks only the first message.
- */
-
-/**
  * Claude Code's effort levels, as its `claude --help` lists them: "--effort <level>  Effort level for
  * the current session (low, medium, high, xhigh, max)" (2.1.311). Ultracode is no level: since 2.1.284
  * it is a setting of its own that keeps whichever level the session runs at (code.claude.com/docs/en/
@@ -31,6 +23,12 @@ export const CLAUDE_ULTRACODE_SETTINGS = '{"ultracode":true}';
  * levels depend on the model and client." (developers.openai.com/codex/config-reference, read 2026-10-20)
  */
 export const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+/**
+ * DeepSeek Harness's reasoning-effort levels, as its DeepSeek adapter offers them (`REASONING_EFFORTS` of
+ * @deepseek-ai/dsh-llm-deepseek 0.2.2-rc.1). dsh-tui 0.20.0 takes no effort flag: the bridge saves the level
+ * where dsh-tui's own `/effort <id>` does and leaves the flag off its command line (server/agent-launch.ts).
+ */
+export const DSH_EFFORTS = ["off", "low", "high", "max"] as const;
 
 /**
  * A model name as the CLIs take it after `--model`: one word that never reads as a flag, with an
@@ -41,13 +39,23 @@ export const MODEL_NAME = /^[A-Za-z0-9][\w.:/-]*(?:\[[A-Za-z0-9]+\])?$/;
 /** the most a first message (and a queued chat message, server/core/composer.ts pendingText) may hold */
 export const MAX_FIRST_MESSAGE_CHARS = 20_000;
 
+/**
+ * A message without the line breaks it ends in, read from its end. As a pattern (`/[\r\n]+$/`) this starts over at
+ * every line break of a run that does not end the text, which costs the run's length squared: 40,000 line breaks
+ * before one letter took 1.4 s, on the server's only thread and before any length was checked.
+ */
+export function withoutTrailingBreaks(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === "\n" || text[end - 1] === "\r")) end--;
+  return end === text.length ? text : text.slice(0, end);
+}
+
 /** terminal control characters a queued message may not carry; TAB, LF and CR are text there */
 const MESSAGE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u;
 /** every control character, TAB and line breaks included: one argument on a command line is one line */
 const ARGUMENT_CONTROLS = /[\u0000-\u001f\u007f-\u009f]/u;
 
-/** Whether `text` can go on an agent's command line as one argument. */
-export const argumentText = (text: string): boolean => !ARGUMENT_CONTROLS.test(text);
+export const hasNoControlCharacters = (text: string): boolean => !ARGUMENT_CONTROLS.test(text);
 
 /** What is wrong with a create request's `first_message`, in the API's words; null when it can be queued (or there is none). */
 export function firstMessageFault(value: unknown, agent: unknown): string | null {
@@ -59,16 +67,42 @@ export function firstMessageFault(value: unknown, agent: unknown): string | null
   return null;
 }
 
+/**
+ * The flag that adds an MCP server to an agent's launch, which only the server sets, from the browser tool chosen
+ * for that agent (shared/browser-tools.ts): a client names no MCP command. Codex's `-c mcp_servers…` is refused below. Their `mcp` subcommands, which add a server to the agent's own settings, are refused too.
+ */
+const MCP_FLAGS: Readonly<Record<string, string>> = { claude: "--mcp-config", copilot: "--additional-mcp-config" };
+/**
+ * Where an agent's own `mcp` subcommand could be read, which adds a server to its settings: Codex reads everything after
+ * `--` as its prompt, while Claude Code's and Copilot's parsers may still take a subcommand there, and a launch from the
+ * dialogs gives them nothing after it. The word as the value of a flag the dialogs send is no command.
+ */
+const MCP_COMMAND_AFTER_END: Readonly<Record<string, boolean>> = { claude: true, copilot: true, codex: false };
+/** each agent's own: Claude Code's `-c` is `--continue`, which takes no value, so a word after it may be a subcommand */
+const VALUE_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  claude: new Set(["--model", "--effort", "--permission-mode", "--settings"]),
+  codex: new Set(["--model", "-m", "--config", "-c"]),
+  copilot: new Set(["--model"]),
+};
+function runsMcpCommand(kind: string, args: readonly string[], options: readonly string[]): boolean {
+  const after = MCP_COMMAND_AFTER_END[kind];
+  if (after === undefined) return false;
+  const read = after ? args : options;
+  return read.some((arg, at) => arg === "mcp" && (at === 0 || !VALUE_FLAGS[kind]!.has(read[at - 1]!)));
+}
+
 type LaunchFlag = "model" | "effort" | "config";
 /** the flags whose values are checked, by agent: Codex's `-c`/`--config` sets `model` and `model_reasoning_effort` too */
-const LAUNCH_FLAGS: Record<"claude" | "codex", Record<string, LaunchFlag>> = {
+const LAUNCH_FLAGS: Record<"claude" | "codex" | "dsh-tui", Record<string, LaunchFlag>> = {
   claude: { "--model": "model", "--effort": "effort" },
   codex: { "--model": "model", "-m": "model", "--config": "config", "-c": "config" },
+  "dsh-tui": { "--effort": "effort" },
 };
+const LAUNCH_EFFORTS: Record<keyof typeof LAUNCH_FLAGS, readonly string[]> = { claude: CLAUDE_EFFORT_ARGS, codex: CODEX_EFFORTS, "dsh-tui": DSH_EFFORTS };
 
 /**
  * Which checked flag `arg` is, as the CLIs' parsers read it: `--flag value`, `--flag=value`, and for a
- * short flag `-f value`, `-fvalue` or `-f=value`. `value` is undefined when the next argument holds it.
+ * short flag `-f value`, `-fvalue` or `-f=value`.
  */
 function launchFlag(arg: string, flags: Record<string, LaunchFlag>): { flag: LaunchFlag; value?: string } | null {
   for (const [name, flag] of Object.entries(flags)) {
@@ -91,13 +125,17 @@ const configValue = (value: string): string => {
  * What is wrong with an agent's launch arguments, in the API's words; null when they can be passed. No
  * argument may hold a control character. Claude Code's and Codex's model and effort flags take only
  * the values the dialog offers (and Claude Code's `--effort ultracode`), in every spelling their CLIs
- * accept, and Codex's prompt after `--` follows a first message's rules. Any other flag is the agent's
- * own: Ultracode's `--settings {"ultracode":true}` passes as it is.
+ * accept, as does DeepSeek Harness's `--effort`, and Codex's prompt after `--` follows a first message's
+ * rules. Any other flag is the agent's own: Ultracode's `--settings {"ultracode":true}` passes as it is.
  */
 export function launchArgsFault(kind: string, args: readonly string[]): string | null {
-  if (!args.every(argumentText)) return "agent.args must not contain control characters (a tab or a line break included)";
-  if (kind !== "claude" && kind !== "codex") return null;
-  const efforts: readonly string[] = kind === "claude" ? CLAUDE_EFFORT_ARGS : CODEX_EFFORTS;
+  if (!args.every(hasNoControlCharacters)) return "agent.args must not contain control characters (a tab or a line break included)";
+  const options = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
+  const mcpFlag = MCP_FLAGS[kind];
+  if (mcpFlag !== undefined && options.some((arg) => arg === mcpFlag || arg.startsWith(`${mcpFlag}=`))) return `agent.args must not carry ${mcpFlag}: the PC adds the browser tool from its settings`;
+  if (runsMcpCommand(kind, args, options)) return "agent.args must not run the agent's mcp command, which writes its own settings";
+  if (kind !== "claude" && kind !== "codex" && kind !== "dsh-tui") return null;
+  const efforts = LAUNCH_EFFORTS[kind];
   for (let at = 0; at < args.length; at++) {
     const arg = args[at]!;
     if (arg === "--") {
@@ -119,10 +157,11 @@ export function launchArgsFault(kind: string, args: readonly string[]): string |
       const setting = split < 0 ? "" : configValue(value.slice(split + 1));
       if (key === "model") model = setting;
       if (key === "model_reasoning_effort") effort = setting;
+      if (/^(["']?)mcp_servers\1\s*(\.|$)/u.test(key)) return "agent.args must not set mcp_servers: the PC adds the browser tool from its settings";
     }
     if (model !== null && !MODEL_NAME.test(model)) return "agent.args --model must name one model";
     if (effort !== null && !efforts.includes(effort)) {
-      return kind === "claude" ? `agent.args --effort must be one of ${efforts.join(", ")}` : `agent.args model_reasoning_effort must be one of ${efforts.join(", ")}`;
+      return kind === "codex" ? `agent.args model_reasoning_effort must be one of ${efforts.join(", ")}` : `agent.args --effort must be one of ${efforts.join(", ")}`;
     }
   }
   return null;

@@ -2,10 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { PromptMonitor } from "./prompt-monitor.ts";
 
-// ticks are driven by hand: the interval never fires while a test runs
 const NEVER_MS = 3_600_000;
 
-/** A herdr whose panes and screens the test sets before each tick. A thrown read stands for a screen that could not be read. */
 class FakeHerdr {
   readonly panes = new Map<string, string>();
   readonly screens = new Map<string, string | null | Error>();
@@ -14,7 +12,6 @@ class FakeHerdr {
   readsUnderWay = 0;
   mostReadsAtOnce = 0;
   snapshotFails = false;
-  /** a read that waits for the test to let it answer */
   held: ReturnType<typeof Promise.withResolvers<void>> | null = null;
 
   reader() {
@@ -90,7 +87,6 @@ describe("PromptMonitor", () => {
     await monitor.tick();
     expect(changes).toHaveLength(2);
     expect(changes[1]![1]).not.toBe(changes[0]![1]);
-    // the pane resting again with the same prompt shown tells nothing new
     herdr.panes.set("p1", "idle");
     await monitor.tick();
     expect(changes).toHaveLength(2);
@@ -102,7 +98,6 @@ describe("PromptMonitor", () => {
     herdr.panes.set("p2", "done");
     monitor.watch("p1");
     monitor.watch("p2");
-    // p2 came while p1's first read was under way: the tick after it reads both
     await monitor.tick();
     await Promise.all([monitor.tick(), monitor.tick()]);
     expect(herdr.snapshots).toBe(2);
@@ -169,7 +164,6 @@ describe("PromptMonitor", () => {
   });
 });
 
-/** settles once the fake's state holds: its reads resolve on the microtask queue, so a few turns of it are enough */
 async function until(check: () => boolean): Promise<void> {
   for (let turn = 0; turn < 100 && !check(); turn++) await Promise.resolve();
   expect(check()).toBe(true);

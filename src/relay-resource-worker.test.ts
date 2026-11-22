@@ -22,9 +22,7 @@ class Channel {
   constructor() { this.port1.peer = this.port2; this.port2.peer = this.port1; }
 }
 interface Asked { target: string; headers: [string, string][]; serverId: string }
-/** Who asks: a page the worker controls (its client id), or a navigation and the page it came from. */
 type From = { client: string } | { navigation: string };
-/** The pages the worker controls, by client id: this PC's app window, and another PC's. */
 const pages: Record<string, string> = { app: origin + scope, other: `${origin}/s/${"cd".repeat(16)}/`, render: `${origin}${scope}~render` };
 function worker(shell: boolean, clients: { url: string; postMessage(data: Asked, ports: Port[]): void }[]) {
   const listeners = new Map<string, (event: unknown) => void>();
@@ -43,7 +41,6 @@ function worker(shell: boolean, clients: { url: string; postMessage(data: Asked,
   };
 }
 
-/** A window of this PC that answers every file with "file", recording what it was asked. */
 function answering(asked: Asked[]) {
   return { url: origin + scope, postMessage(data: Asked, ports: Port[]) {
     asked.push(data);
@@ -52,11 +49,9 @@ function answering(asked: Asked[]) {
 }
 
 it("refuses another site's frame or link, a typed address and another PC's page, asking no window", async () => {
-  // Given this PC's open app window, able to answer.
   const asked: Asked[] = [];
   const serve = worker(true, [answering(asked)]);
   const target = `${scope}~/api/fs/file?path=%2Fhome%2Fme%2F.ssh%2Fid_ed25519`;
-  // When the file is asked for by anything but this PC's app.
   const strangers: From[] = [
     { navigation: "https://evil.example/frame.html" }, // another site's iframe or link
     { navigation: "" }, // no referrer: a typed address, or a page that withheld it
@@ -73,10 +68,8 @@ it("refuses another site's frame or link, a typed address and another PC's page,
 });
 
 it("serves this PC's app window and its own links, framable only by the shell itself", async () => {
-  // Given this PC's open app window.
   const asked: Asked[] = [];
   const serve = worker(true, [answering(asked)]);
-  // When the app asks itself, frames the file, or opens it in a tab of its own.
   for (const from of [{ client: "app" }, { navigation: `${pages["app"]}?pane=1` }] as From[]) {
     const response = await serve(`${scope}~/api/fs/file?path=a`, {}, from);
     // Then the file comes, and no other site may frame it.

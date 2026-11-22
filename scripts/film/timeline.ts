@@ -1,10 +1,4 @@
 /**
- * The film, shot by shot (brief section 6), and the hero loop (section 7), as data: which take
- * each object shows and how output time maps to take time (anchor pairs, linear in between, so
- * a freeze is two outputs on one source time and a fitted segment is its own rate), where the
- * camera is, and the type. `frame(t)` turns it into the FrameDesc the stage page draws.
- *
- * Source times come from the takes' marks.json and cues.json (never the brief's older numbers).
  * Every take is 2x, so no framing shows fewer than 960 CSS px of a desktop take's width
  * (k <= 2.0 output px per CSS px; checked per frame, with perspective, by `magnification`).
  */
@@ -25,7 +19,6 @@ export interface Layer {
   t1: number;
   map: Anchors;
   cam: (t: number) => Cam;
-  /** alpha of the drawn cursor at out time t (0 = hidden); desktop layers only */
   cursor?: (t: number, p: { x: number; y: number }) => number;
   opacity?: (t: number) => number;
   dim?: (t: number) => number;
@@ -47,7 +40,6 @@ const R2 = take("R2-fold"), R3 = take("R3-approve"), R4 = take("R4-palette"), R5
 const R6 = take("R6-phone-approve"), R10 = take("R10-stream"), R11 = take("R11-live"), S1P = take("S1-phone-chat-scroll");
 const R12 = take("R12-opening"), R13 = take("R13-next");
 
-// ---- key source moments (seconds in each take) ----
 const R2_EXPAND = cue(R2, "down", 0).t, R2_FOLD = cue(R2, "down", 1).t;
 const R10_ENTER = mark(R10, "Enter"), R10_T1 = mark(R10, "todo 1/3"), R10_T2 = mark(R10, "todo 2/3"), R10_T3 = mark(R10, "todo 3/3");
 const R10_DONE = mark(R10, "status DONE"), R10_ANSWER = mark(R10, "answer lands");
@@ -62,18 +54,14 @@ const R5_CLICK = cue(R5, "down", 0).t;
 const R3_DONE = 6.4, R3_PUSHED = 7.433, R6_DONE = 6.683, R6_PUSHED = 8.483;
 
 const HIDE = () => 0;
-/** the pointer fades as it crosses the right edge of the recorded viewport (it leaves the window) */
 const leavesWindow = (vpW: number) => (_t: number, p: { x: number }) => clamp((vpW - p.x) / 36);
 
-/** A camera move of a whole composition: every layer scaled by s about frame point (cx, cy). */
 function grouped(cam: (t: number) => Cam, s: (t: number) => number, cx: number, cy: number): (t: number) => Cam {
   return (t) => { const c = cam(t), k = s(t); return { ...c, k: c.k * k, ax: cx + (c.ax - cx) * k, ay: cy + (c.ay - cy) * k }; };
 }
 
-// ---- the shots ----
 /** S1 starts 0.8 s before a RUN-dot trough, so the dot brightens into beats 2 and 4 (1.6, 3.2) */
 const S1_SRC = trough(R12, 1.2) - 0.8;
-/** S12 starts on a trough */
 const S12_SRC = trough(R13, 0.9);
 
 export const SHOTS: Shot[] = [
@@ -85,10 +73,8 @@ export const SHOTS: Shot[] = [
       map: [[0, S1_SRC], [7.2, S1_SRC + 7.2]],
       cursor: HIDE,
       cam: path([
-        // the chat column whole (sidebar just out of frame), from under the app's header row to under the plan
         { t: 0, cam: { k: 1.92, fx: 800, fy: 333, ax: 960, ay: 540, rx: 0, ry: 0, d: 2200 } },
         { t: 3.2, cam: { k: 1.96 }, curve: drift },
-        // the object turns as it pulls back, then settles nearly square to the lens, right of the type
         { t: 4.6, cam: { k: 0.94, fx: 640, fy: 400, ax: 1316, ay: 556, rx: 12, ry: -14 } },
         { t: 6.4, cam: { k: 0.9, ax: 1322, ay: 552, rx: 5, ry: -5 }, curve: drift },
         { t: 7.2, cam: { k: 0.895, ax: 1324 }, curve: drift },
@@ -114,18 +100,11 @@ export const SHOTS: Shot[] = [
     note: "R10, one shot: the typed tail, Enter on the beat, the turn streams in on the app's 2 s poll, plan 0/3 -> 3/3, RUN -> DONE, the answer lands; the camera rises onto the transcript's end",
     layers: [{
       id: "r10", kind: "window", take: R10.name, t0: 12.8, t1: 23.2,
-      // Enter on 13.6; the plan's landings on 17.2 / 18.8 / 20.4; DONE 21.2, the answer 22.0 (holds between landings run 1.12-1.26x)
       map: [[12.8, R10_ENTER - 0.8], [13.6, R10_ENTER], [17.2, R10_T1], [18.8, R10_T2], [20.4, R10_T3], [21.2, R10_DONE], [22.0, R10_ANSWER], [23.2, R10_ANSWER + 1.2]],
       cursor: HIDE, // the hand is on the keyboard: a resting disc would sit on the typed words
       cam: path([
-        // the chat column from the transcript's end down to the composer, the frame's bottom on the
-        // window's; one slow push. The first task's rows (still open: it is the last turn until Enter)
-        // sit top-left, under the first line's shade
         { t: 12.8, cam: { k: 1.95, fx: 792, fy: 523, ax: 972, ay: 540, rx: 0, ry: 0 } },
         { t: 20.8, cam: { k: 2.0, fx: 795, fy: 531, ax: 952 }, curve: drift },
-        // DONE: the camera eases back and up, the window's foot clears the frame's, and the line
-        // about the status row sits on the stage right under it
-        // the frame's top edge in the gutter between rows (sidebar and chat), CSS y 213
         { t: 22.0, cam: { k: 1.5, fx: 640, ax: 960, ay: (531 - 213) * 1.5 } },
         { t: 23.2, cam: { k: 1.505 }, curve: drift },
       ]),
@@ -159,8 +138,6 @@ export const SHOTS: Shot[] = [
   },
 ];
 
-// S7: the phone card matches the desktop card of S6's last frame, then the camera pulls back;
-// S8: the same phone layer carries on while the camera pulls back further and the desk comes in.
 const CARD_DESK = { x: 390, y: 393 }; // Codex card's top-left in R3, CSS px (measured: 819.5 CSS px wide)
 const CARD_PHONE = { x: 12, y: 0 };
 export const PHONE_CARD_Y = 502; // top of the phone's card in R6 at 3.1 s, CSS px (measured: 365.5 CSS px wide)
@@ -175,9 +152,7 @@ CARD_PHONE.y = PHONE_CARD_Y;
   // poll) runs 1.35x so both screens flip within 0.1 s and the Pushed lines land ~0.4 s apart
   const R6_DONE_OUT = 29.6 + (R6_DONE - R6_TAP);
   const r6map: Anchors = [[28.0, 3.1], [29.6 - (R6_TAP - 3.1), 3.1], [29.6, R6_TAP], [R6_DONE_OUT, R6_DONE], [R6_DONE_OUT + (R6_PUSHED - R6_DONE) / 1.35, R6_PUSHED], [35.2, R6_PUSHED + 35.2 - (R6_DONE_OUT + (R6_PUSHED - R6_DONE) / 1.35)]];
-  // desk: DONE 0.08 s before the phone's
   const r3off = R6_DONE_OUT - 0.08 - R3_DONE;
-  // the two-shot's slow push toward the two Pushed lines, from when the type has gone
   const push = (t: number) => 1 + 0.1 * drift(clamp((t - 33.0) / 2.2));
   const PX = 1010, PY = 700;
   SHOTS.push({
@@ -228,9 +203,7 @@ SHOTS.push(
     layers: [{
       id: "r5", kind: "window", take: R5.name, t0: 38.4, t1: 42.4,
       map: [[38.4, R5_CLICK - 0.8], [42.4, R5_CLICK + 3.2]],
-      // the hand comes back to the mouse, clicks, and leaves the picture
       cursor: (t) => clamp((t - 38.4) / 0.3) * clamp((39.9 + 0.3 - t) / 0.3),
-      // S9's camera carries on across the splice (R4 ends and R5 starts on the same gjc chat: an invisible join)
       cam: path([
         { t: 38.4, cam: { k: 1.14, fx: 640, fy: 300, ax: 960, ay: 380, rx: 0, ry: 0, d: 2200 } },
         { t: 39.4, cam: { k: 1.15 }, curve: drift },
@@ -274,9 +247,7 @@ SHOTS.push(
   },
 );
 
-// ---- type (brief section 6; the listed exit is when a line is fully gone) ----
-// `shade`: the type sits over UI, so a soft local darkening sits behind it (at ~93%, feathered)
-const L = 124; // text starts here; the amber rail sits at the 96 px safe margin
+const L = 124;
 export const TYPE: (TypeDesc & { shade?: boolean })[] = [
   { id: "t2a", role: "primary", text: "Your agents|keep working.", x: L, y: 360, align: "left", tIn: 4.0, tOut: 6.0, rail: true },
   { id: "t2b", role: "secondary", text: "Claude Code · Codex · omp ·|omo · gjc, running in herdr", x: L, y: 586, align: "left", tIn: 4.8, tOut: 6.4 },
@@ -300,7 +271,6 @@ export const TYPE: (TypeDesc & { shade?: boolean })[] = [
   { id: "t12d", role: "secondary", text: "127.0.0.1 by default. Yours only.", x: L, y: 560, align: "left", tIn: 50.4, tOut: 51.8 },
 ];
 
-// ---- building a frame ----
 function objDesc(layer: Layer, t: number, cam: Cam, extra: Partial<ObjDesc> = {}): { obj: ObjDesc; src: number; tk: Take } {
   const tk = take(layer.take);
   const src = srcTime(layer.map, t);
@@ -342,7 +312,6 @@ export function frame(t: number): FrameDesc {
     t, fade: 0, reveal: null, lamp: 1, pools: [], objs: [], scrim: { left: 0, bottom: 0 },
     type: TYPE.filter((d) => t >= d.tIn - 0.25 && t < d.tOut + 0.2), keys: null, end: null, vignette: 1,
   };
-  // cold open: black, then the lamp comes up over 1.2 s
   if (t < 1.6) { f.reveal = drift(clamp(t / 1.2)); f.lamp = drift(clamp(t / 1.2)); }
   for (const shot of SHOTS) for (const layer of shot.layers) {
     if (t < layer.t0 || t >= layer.t1) continue;
@@ -350,13 +319,11 @@ export function frame(t: number): FrameDesc {
     f.objs.push(objDesc(layer, t, cam).obj);
     if (layer.pool) f.pools.push(pool(layer, cam, layer.pool * (1 - (layer.dim?.(t) ?? 0)) * (layer.opacity?.(t) ?? 1)));
   }
-  // keycaps on the stage under the window, gone as the palette's own list settles
   if (t >= 35.2 && t < 36.3) f.keys = { t0: 35.2, labels: ["Ctrl", "Shift", "K"], press: [35.32, 35.38, 35.46], tOut: 36.3 };
   if (t >= 52) f.end = { t0: 52 };
   return f;
 }
 
-/** Per-shot report: source ranges, playback rates, and the largest magnification (output px per source px). */
 export function report(): string[] {
   const out: string[] = [];
   for (const shot of SHOTS) {
@@ -378,7 +345,6 @@ export function report(): string[] {
   for (const d of TYPE) out.push(`  ${d.tIn.toFixed(2)}-${d.tOut.toFixed(2)}  ${(d.tOut - d.tIn).toFixed(2)} s  ${d.role.padEnd(9)} ${d.text.replace(/\|/g, " ")}`);
   const ev = (label: string, layerId: string, src: number) => {
     const layer = SHOTS.flatMap((s) => s.layers).find((l) => l.id === layerId)!;
-    // invert the anchor map on its segment
     for (let i = 1; i < layer.map.length; i++) {
       const [o0, s0] = layer.map[i - 1]!, [o1, s1] = layer.map[i]!;
       if (s1 !== s0 && src >= Math.min(s0, s1) && src <= Math.max(s0, s1)) { out.push(`  ${(o0 + ((src - s0) / (s1 - s0)) * (o1 - o0)).toFixed(2)}  ${label}`); return; }
@@ -407,7 +373,6 @@ export function report(): string[] {
   return out;
 }
 
-// ---- the hero loop (brief section 7): R11 L .. L+6.4, whole window, closed camera path ----
 export const LOOP_FPS = 30;
 export const LOOP_LEN = 6.4;
 export const LOOP_L = mark(R11, "L");
@@ -432,8 +397,6 @@ export function loopFrame(t: number): FrameDesc {
   const layer: Layer = { id: "loop", kind: "window", take: R11.name, t0: 0, t1: LOOP_LEN, map: [[0, LOOP_L], [LOOP_LEN, LOOP_L + LOOP_LEN]], cam: () => cam, cursor: () => 1, pool: 1 };
   return {
     t, fade: 0, reveal: null, lamp: 1, pools: [pool(layer, cam, 1)], objs: [objDesc(layer, t, cam).obj],
-    // the page shows this window at up to ~1.3x as the hero: a lighter screen falloff and half the room's
-    // vignette keep the UI legible (the site's stage draws its own vignette around the video)
     scrim: { left: 0, bottom: 0 }, type: [], keys: null, end: null, vignette: 0.5, falloff: 0.35,
   };
 }

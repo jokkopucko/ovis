@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { disposeAfterPendingFrame } from "./terminalDispose.ts";
 
-/** Frames and tasks run only when requested by the test, in registration order. */
 function scheduler() {
   const frames: Array<() => void> = [];
   const timers: Array<() => void> = [];
@@ -35,7 +34,6 @@ describe("terminal disposal", () => {
 
   it("keeps the renderer alive for pending frame and constructor task reads", () => {
     const clock = scheduler();
-    // Model RenderService's dimensions accessor: disposal removes its renderer.
     let renderer: { dimensions: number } | undefined = { dimensions: 80 };
     const reads: number[] = [];
     const syncScrollArea = () => {

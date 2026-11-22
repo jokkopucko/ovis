@@ -59,14 +59,40 @@ describe("omp Ask under omp's status row (#1644)", () => {
 
   it("lets a status row pass only right under the panel's bottom border", () => {
     const shown = ask("single-120");
-    // later output between the panel's bottom border and the status row
     const moved = shown.replace(STATUS_ROW_RE, "\n Fixture output after the panel.$&");
     expect(moved).not.toBe(shown);
     expect(parseInteractivePrompt("omp", moved)).toBeNull();
-    // nor right under the hint with no border between them: the row alone proves nothing
     const unbordered = shown.replace(/\n\u2570\u2500+\u256f(?=\n ?(?:[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f] |\u03c0 ))/u, "");
     expect(unbordered).not.toBe(shown);
     expect(parseInteractivePrompt("omp", unbordered)).toBeNull();
+  });
+});
+
+// omp 18.14.0's Ask over two questions (multi-select, single-select) and its review, recorded at 119 columns in the isolated
+// herdr test session with a fake model provider, in the unicode and the Nerd Font symbol presets (`symbolPreset: nerd`). The
+// nerd preset draws the footer's keys and the option markers as Nerd Font icons: `󱁐 toggle · 󰌑 next` (#3282).
+const preset = (name: string) =>
+  readFileSync(new URL(`../fixtures/omp-ask-18.14.0-${name}.txt`, import.meta.url), "utf8");
+
+describe("omp Ask in the Nerd Font symbol preset (#3282)", () => {
+  it("reads each state as the unicode preset's, and answers it with the same keys", () => {
+    for (const state of ["multi", "single", "review"]) {
+      const nerd = parseInteractivePrompt("omp", preset(`nerd-${state}`));
+      const unicode = parseInteractivePrompt("omp", preset(`unicode-${state}`));
+      expect(unicode, state).not.toBeNull();
+      expect(card(preset(`nerd-${state}`)), state).toEqual(card(preset(`unicode-${state}`)));
+      const parsed = parsedByPublicPrompt.get(nerd!)!;
+      expect(promptTailIsActive(parsed, preset(`nerd-${state}`)), state).toBe(true);
+      expect(promptTailIsActive(parsed, `${preset(`nerd-${state}`).trimEnd()}\n Fixture output after the panel.\n`), state).toBe(false);
+    }
+    const multi = (name: string) => answerKeys(parseInteractivePrompt("omp", preset(name))!, { option_indices: [0, 2] });
+    expect(multi("nerd-multi")).toEqual(multi("unicode-multi"));
+    const single = (name: string) => answerKeys(parseInteractivePrompt("omp", preset(name))!, { option_index: 1 });
+    expect(single("nerd-single")).toEqual(single("unicode-single"));
+    const submit = (name: string) => answerKeys(parseInteractivePrompt("omp", preset(name))!, { option_index: 0 });
+    expect(submit("nerd-review")).toEqual(submit("unicode-review"));
+    expect(card(preset("nerd-multi"))).toMatchObject({ question: "Which synthetic targets should be checked?", multi_select: true,
+      options: [{ label: "Desktop" }, { label: "Phone" }, { label: "Tablet" }] });
   });
 });
 
@@ -77,7 +103,6 @@ const approval = (name: string) =>
   readFileSync(new URL(`../fixtures/omp-approval-${name}.txt`, import.meta.url), "utf8");
 const labels = (prompt: ReturnType<typeof parseInteractivePrompt>) => prompt?.options.map((option) => option.label);
 const steps = (prompt: ReturnType<typeof parseInteractivePrompt>, index: number) => answerKeys(prompt!, { option_index: index });
-/** the screen with the panel row that holds `match` drawn as `text` instead, at the same width */
 const redraw = (shown: string, match: string, text: string) => shown.split("\n").map((line) => {
   if (!line.includes(match)) return line;
   const drawn = `${line[0]} ${text}`;
@@ -93,7 +118,6 @@ describe("omp tool approval (#2059)", () => {
         kind: "approval", title: "Allow tool: bash", question: "Allow tool: bash", body: "Command: ls -la",
         options: [{ label: "Approve", description: null }, { label: "Deny", description: null }], multi_select: false,
       });
-      // the screen draws no choices: Approve and Deny are the bridge's words, in the user's language
       expect(prompt!.own_text?.labels, name).toEqual({ 0: { key: "Approve" }, 1: { key: "Deny" } });
       // Ctrl+Q over Ctrl+Enter, which a terminal without extended keys cannot send
       expect(steps(prompt, 0), name).toEqual([{ keys: ["ctrl+q"] }]);
@@ -150,7 +174,6 @@ describe("omp tool approval (#2059)", () => {
     for (const drawn of ["\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 Ctrl+\u23ce/Ctr\u2026", "\u2191/\u2193 choose \u00b7 \u23ce select \u00b7 \u23ce approve \u00b7 \u238b de\u2026"]) {
       expect(parseInteractivePrompt("omp", redraw(shown, hintOf(shown), drawn)), drawn).toBeNull();
     }
-    // eight detail rows may be a window on more, which only the cut part of the hint would say
     const command = shown.split("\n").find((line) => line.includes("Command: ls -la"))!;
     const tall = shown.replace(command, Array.from({ length: 8 }, () => command).join("\n"));
     expect(parseInteractivePrompt("omp", tall)).toBeNull();
@@ -226,10 +249,8 @@ describe("omp tool approval (#2059)", () => {
     ] as const) {
       expect(parseInteractivePrompt("omp", redraw(shown, hintOf(shown), drawn)), drawn).toBeNull();
     }
-    // a menu that is not omp's: no Deny last, or no row under the cursor
     expect(parseInteractivePrompt("omp", redraw(current, "\u2502   Deny ", "  Reject"))).toBeNull();
     expect(parseInteractivePrompt("omp", redraw(current, "\u2502 \u276f Approve ", "  Approve"))).toBeNull();
-    // later output under the panel, or under 18.13's composer
     for (const later of [" Fixture output after the panel.", "\u03c0 Fixture output after the panel.", "x 1s unrelated output"]) {
       expect(parseInteractivePrompt("omp", `${old.trimEnd()}\n${later}\n`), later).toBeNull();
       expect(parseInteractivePrompt("omp", `${current.trimEnd()}\n${later}\n`), later).toBeNull();
@@ -247,7 +268,6 @@ describe("omp tool approval (#2059)", () => {
       ]) {
         expect(parseInteractivePrompt("omp", redraw(shown, "\u2502 Command: ls -la ", detail)), `${name} ${detail}`).toBeNull();
       }
-      // a whole call is read, and another whole call is another card
       const other = parseInteractivePrompt("omp", redraw(shown, "\u2502 Command: ls -la ", "Command: rm -r notes"));
       expect(other?.body, name).toBe("Command: rm -r notes");
       expect(other?.id, name).not.toBe(parseInteractivePrompt("omp", shown)?.id);
@@ -257,7 +277,6 @@ describe("omp tool approval (#2059)", () => {
   it("keeps one card while omp redraws the transcript above the panel", () => {
     // 18.13's bash box ticks its elapsed time on its border while the call waits for approval
     const shown = approval("18.13.2-unicode-wide");
-    // the first bottom border is the bash box's, over the panel's
     const box = shown.split("\n").find((line) => /^\u2570\u2500+\u256f$/.test(line))!;
     const ticked = shown.replace(box, `\u2570\u2500\u2500\u2500 elapsed 3.0s ${"\u2500".repeat([...box].length - 19)}\u256f`);
     expect(ticked).not.toBe(shown);
@@ -302,7 +321,6 @@ describe("omp tool approval over each composer shape", () => {
       });
       expect(steps(prompt, 0), name).toEqual([{ keys: ["ctrl+q"] }]);
       expect(steps(prompt, 1), name).toEqual([{ keys: [KEY.down] }, { keys: [KEY.enter] }]);
-      // the narrow pane cuts the hint before the deny key: Deny is moved to, as on #2106's narrow screen
       expect(steps(prompt, 2), name).toEqual(name === "box-narrow" ? [{ keys: [KEY.down] }, { keys: [KEY.down] }, { keys: [KEY.enter] }] : [{ keys: [KEY.escape] }]);
       const parsed = parsedByPublicPrompt.get(prompt!)!;
       expect(promptTailIsActive(parsed, shown), name).toBe(true);
@@ -368,7 +386,6 @@ describe("omp tool approval over each composer shape", () => {
     // a draft turns the panel's Enter into "deny and send"; omp redraws the hint too, but the composer alone says so
     expect(parseInteractivePrompt("omp", box.replace(prompt, `\u2570\u2500 ls${prompt.slice(5)}`))).toBeNull();
     expect(parseInteractivePrompt("omp", box.replace(prompt, `\u2502  first line${" ".repeat([...prompt].length - 14)}\u2502\n${prompt}`))).toBeNull();
-    // the prompt row of every other shape, holding a draft
     for (const [name, empty, draft] of [
       ["band-minimal", /\n\u2570\u2500\n?$/u, "\n\u2570\u2500 ls\n"], ["claude", /\n\u276f\n/u, "\n\u276f ls\n"], ["rule", /\n\u276f\n/u, "\n\u276f ls\n"],
       ["borderless", /\n\u276f\n/u, "\n\u276f ls\n"], ["pi", /(\n\u2500+)\n\n(\u2500+\n)/u, "$1\n ls\n$2"], ["field", /\n\u2590( +)\u258c\n/u, "\n\u2590 ls$1\u258c\n"],
@@ -382,7 +399,6 @@ describe("omp tool approval over each composer shape", () => {
     for (const name of [...SHAPES, "band-minimal"]) {
       expect(parseInteractivePrompt("omp", `${shaped(name).trimEnd()}\n Fixture output after the composer.\n`), name).toBeNull();
     }
-    // an extension's own composer shape (or any other rows) under the panel, a box frame omp does not draw
     for (const rows of ["\u2503 \u2b22 Shape fixture\n\u2503", "\u256dcustom-extension\u256e\n\u2570\u2500   \u2500\u256f", "+not a frame\u256e\n\u2570\u2500   \u2500\u256f"]) {
       const other = box.replace(/\n\u256d.*\u256e\n\u2570\u2500 +\u2500\u256f/u, `\n${rows}`);
       expect(other, rows).not.toBe(box);
@@ -392,7 +408,6 @@ describe("omp tool approval over each composer shape", () => {
     // where output starts at the line's first character (`ls -l` there starts with the ascii gauge's `-`)
     const panel = box.trimEnd().split("\n").slice(0, -2).join("\n");
     for (const tail of ["\u276f\nThis is later command output", "fixture@host:~/repo\n\u2570\u2500", "-rw-r--r-- 1 fixture fixture 0 notes\n\u2570\u2500",
-      // a file mode, or a dash, where a statusless composer's rules would be: no rule omp draws
       "-rw-r--r--\n\u276f", "-\n\u276f\n-", "-\n\n-"]) {
       expect(parseInteractivePrompt("omp", `${panel}\n${tail}\n`), tail).toBeNull();
     }
@@ -414,12 +429,10 @@ describe("omp Ask over a status bar with a gap (#1644)", () => {
   it("shows no card once output came between the panel and the status row", () => {
     for (const shape of ["rule", "field", "rail"]) {
       const shown = gapAsk(shape);
-      // the panel's own bottom border is the last one on the screen
       const at = shown.lastIndexOf("\u256f\n\n") + 2;
       const gapped = (rows: string) => shown.slice(0, at) + rows + shown.slice(at + 1);
       expect(gapped("\n"), shape).toBe(shown);
       expect(parseInteractivePrompt("omp", gapped(" Fixture output after the panel.\n")), shape).toBeNull();
-      // two empty rows are no gap omp keeps
       expect(parseInteractivePrompt("omp", gapped("\n\n")), shape).toBeNull();
     }
   });
@@ -434,7 +447,6 @@ describe("omp /handoff", () => {
           agent: "omp", kind: "menu", question: "Generating handoff…", options: [{ label: "Cancel", description: null }],
           multi_select: false, custom_option_index: null,
         });
-        // its title and Cancel are the bridge's, as keys the client translates (#1482); the status line is omp's
         expect(prompt!.own_text).toEqual({ title: { key: "Handoff" }, labels: { 0: { key: "Cancel" } } });
         expect(answerKeys(prompt!, { option_index: 0 })).toEqual([{ keys: [KEY.escape] }]);
       }

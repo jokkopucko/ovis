@@ -5,10 +5,9 @@ import { join } from "node:path";
 
 import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState, type ScreenSnapshot } from "./inputRow.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
+import { drawsColour, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 import { SCREEN_AUTO_RETURN, watchReturn } from "./terminalPeek.ts";
 
-// Recorded screens and frames (src/lib/fixtures-input-rows/README.md; kept out of server/ so remote bundles do not carry them), fed through the real xterm
-// buffer: the adapter (readScreen) is the one the pane uses.
 const FIXTURES = join(import.meta.dir, "fixtures-input-rows");
 const CLAUDE = join(import.meta.dir, "../../server/fixtures");
 
@@ -40,7 +39,6 @@ test("logical screen lines reject a wrapped line clipped at the screen top", asy
   }
 });
 
-/** A static recording (one row per line, SGR only) as the screen shows it. */
 async function screenOf(text: string, cols: number): Promise<ScreenSnapshot> {
   const term = terminal(cols);
   const rows = text.replace(/\r/g, "").split("\n").slice(0, 40);
@@ -55,7 +53,6 @@ async function recorded(agent: string, name: string): Promise<InputRowState | nu
   return inputRowState(agent, await screenOf(readFileSync(join(FIXTURES, agent, file), "utf8"), columnsOf(file)));
 }
 
-/** A recorded frame stream replayed through the pane's frame gate, each frame cut in two as a read can cut it. */
 async function replay(agent: string, name: string): Promise<(InputRowState | null)[]> {
   const frames = readFileSync(join(FIXTURES, agent, `${name}.frames.jsonl`), "utf8").trim().split("\n")
     .map((line) => JSON.parse(line) as { cols: number; rows: number; data: string });
@@ -69,7 +66,6 @@ async function replay(agent: string, name: string): Promise<(InputRowState | nul
     for (const part of [frame.data.slice(0, cut), frame.data.slice(cut)]) {
       const stamp = gate.enqueue(part, true);
       await parse(term, part);
-      // the first half of a frame never reads: its block is still open
       if (gate.settle(stamp, true)) states.push(inputRowState(agent, readScreen(term.buffer.active, term.cols, term.rows)));
       else expect(part).toBe(frame.data.slice(0, cut));
     }
@@ -78,7 +74,6 @@ async function replay(agent: string, name: string): Promise<(InputRowState | nul
   return states;
 }
 
-/** The watched peek over a run of frames: where it stands at the end, and at which frame it came back. */
 function watch(agent: string, states: readonly (InputRowState | null)[]): { armed: boolean; returnedAt: number | null; manualAt: number | null } {
   let armed = false;
   for (const [index, state] of states.entries()) {
@@ -91,17 +86,13 @@ function watch(agent: string, states: readonly (InputRowState | null)[]): { arme
   return { armed, returnedAt: null, manualAt: null };
 }
 
-// What each recorded screen shows of the agent's input row: idle and closed are ready, every screen
-// an allow-listed command opens is not (gone, or covered where the row stays drawn under it).
 const EXPECTED: Record<string, Record<string, InputRowState>> = {
-  // the still-open guard's reported case: /btw's answer, recorded on Claude Code 2.1.308 under both renderers
   claude: {
     "btw-open-119": "gone", "btw-closed-119": "ready", "btw-open-fullscreen-119": "gone", "btw-closed-fullscreen-119": "ready",
   },
   codex: {
     "permissions-idle-120": "ready", "permissions-idle-40": "ready", "permissions-open-120": "gone", "permissions-open-40": "gone",
     "permissions-closed-120": "ready", "permissions-closed-40": "ready",
-    // picker rows that start like the composer
     "theme-open-120": "gone", "theme-open-40": "gone", "statusline-open-120": "gone", "statusline-open-40": "gone",
     // /rename's field has the empty composer's very cells: its footer tells it apart
     "rename-open-120": "gone", "rename-open-40": "gone", "rename-closed-40": "ready",
@@ -119,8 +110,13 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     "btw-open-119": "gone", "btw-open-40": "gone", "switch-open-119": "gone",
     // /plan prints and keeps the editor: never armed, it stays manual
     "plan-open-119": "ready",
+    // omp 18.14 drops the status bar's frame: the peek (18.8.7's shape) does not make it out; the draft check does
+    "draft-empty-119": "gone", "draft-typed-119": "gone", "draft-lines-119": "gone", "draft-slash-119": "gone",
   },
   pi: {
+    "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "gone",
+    // pi 1.5.2 with pi-powerline-footer 0.22.0, its status bar above the editor
+    "powerline-draft-empty-200": "ready", "powerline-draft-typed-200": "draft", "powerline-draft-multiline-200": "draft",
     "settings-idle-119": "ready", "settings-idle-40": "ready", "settings-open-119": "gone", "settings-open-40": "gone",
     "settings-closed-119": "ready", "settings-closed-40": "ready",
     "tree-open-119": "gone", "tree-open-40": "gone", "resume-open-119": "gone", "resume-open-40": "gone",
@@ -135,8 +131,10 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     // /sessions keeps the empty box for 10 to 15 s before its list draws
     "sessions-open-early-119": "ready", "sessions-open-loading10s-119": "ready", "sessions-closed-119": "ready",
     "session-delete-after-first-enter-119": "draft",
+    "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "draft",
   },
   omo: {
+    "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "gone",
     "settings-idle-119": "ready", "settings-idle-40": "ready", "settings-open-119": "gone", "settings-open-40": "gone",
     "settings-closed-119": "ready", "settings-closed-40": "ready",
     // dialogs draw a bare `>` under one rule
@@ -172,7 +170,6 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     // before the first key the welcome card and `[stable]` footer stand: not ready
     "settings-idle-119": "covered", "help-idle-40": "ready",
     "settings-open-119": "covered", "settings-open-40": "gone", "settings-closed-119": "ready", "settings-closed-40": "ready",
-    // the Agent Dashboard's own field, /history's search row
     "sessions-open-119": "gone", "sessions-open-40": "gone", "history-open-119": "gone", "history-open-40": "gone",
     "help-open-119": "covered",
     // Escape leaves `/model` in the row
@@ -191,7 +188,7 @@ describe("inputRowState on recorded screens", () => {
 
   test("every recorded screen is listed above", () => {
     const listed = Object.entries(EXPECTED).flatMap(([agent, screens]) => Object.keys(screens).map((name) => `${agent}/${name}.ansi`)).sort();
-    const files = readdirSync(FIXTURES).filter((agent) => !agent.includes(".")).flatMap((agent) =>
+    const files = readdirSync(FIXTURES).filter((agent) => readsInputRow(agent)).flatMap((agent) =>
       readdirSync(join(FIXTURES, agent)).filter((file) => file.endsWith(".ansi")).map((file) => `${agent}/${file}`)).sort();
     expect(files).toEqual(listed);
   });
@@ -200,7 +197,6 @@ describe("inputRowState on recorded screens", () => {
     const claude = readdirSync(CLAUDE).filter((file) => file.startsWith("claude-") && file.endsWith(".txt"));
     const found = Object.fromEntries(await Promise.all(claude.map(async (file) =>
       [file, inputRowState("claude", await screenOf(readFileSync(join(CLAUDE, file), "utf8"), columnsOf(file)))] as const)));
-    // the /effort dialog after `s`: closed, its result above the box
     const ready = ["claude-effort-2.1.311-set-120.txt", "claude-rewind-2.1.304-closed-40.txt", "claude-rewind-2.1.304-confirm-apple-esc-esc-120.txt", "claude-rewind-2.1.304-confirm-apple-esc-esc-40.txt"];
     expect(claude.length).toBeGreaterThan(10);
     for (const file of claude) expect([file, found[file]]).toEqual([file, ready.includes(file) ? "ready" : "gone"]);
@@ -219,7 +215,6 @@ describe("inputRowState on recorded screens", () => {
     expect(inputRowState("claude", await box("❯ still typing"))).toBe("draft");
     expect(inputRowState("claude", await box(`❯ ${pill}typed`))).toBe("draft");
     expect(inputRowState("claude", await box(grey("❯ [Pasted text #1 +12 lines]")))).toBe("draft");
-    // a cursor over a typed character has nothing grey after it
     expect(inputRowState("claude", await box("❯ \u001b[7mx\u001b[27m"))).toBe("draft");
     expect(inputRowState("claude", await box("! ls"))).toBe("draft");
     // NO_COLOR: the tip as the box's one row, on a screen without any colour, is Claude's own
@@ -227,9 +222,17 @@ describe("inputRowState on recorded screens", () => {
     expect(inputRowState("claude", await box("❯ Try this instead"))).toBe("draft");
     // a named session labels its rule
     expect(inputRowState("claude", await screenOf([`── my-session ${"─".repeat(40)}`, "❯ ", rule, "  ? for shortcuts"].join("\n"), 60))).toBe("ready");
-    // a picker's `❯ 1.` choice is no box, nor is a screen without rules
     expect(inputRowState("claude", await box("❯ 1. Yes"))).toBe("draft");
     expect(inputRowState("claude", await screenOf("  Side question\n\n  Press Space, Enter, or Escape to dismiss", 60))).toBe("gone");
+  });
+
+  test("Codex at Ultra reasoning effort marks its composer »: the same row, read the same way", async () => {
+    const ultra = (name: string): Promise<ScreenSnapshot> => screenOf(readFileSync(join(FIXTURES, "codex-0.167.0", `${name}.ansi`), "utf8"), columnsOf(`${name}.ansi`));
+    expect(inputRowState("codex", await ultra("composer-ultra-empty-100"))).toBe("ready");
+    expect(inputRowState("codex", await ultra("composer-ultra-empty-40"))).toBe("ready");
+    expect(inputRowState("codex", await ultra("composer-ultra-draft-100"))).toBe("draft");
+    const swapped = readFileSync(join(FIXTURES, "codex", "permissions-open-120.ansi"), "utf8").replace("›", "»");
+    expect(inputRowState("codex", await screenOf(swapped, 120))).toBe("gone");
   });
 
   test("a blank screen says nothing, and an agent without a recognizer is not read", async () => {
@@ -253,7 +256,6 @@ describe("FrameGate", () => {
     const first = gate.enqueue(`${OPEN}\u001b[1;1Hhalf`, true);
     expect(gate.settle(first, true)).toBe(false);
     expect(gate.current).toBe(false);
-    // the closing sequence itself cut in two
     const second = gate.enqueue(" a frame\u001b[?20", true);
     expect(gate.settle(second, true)).toBe(false);
     const third = gate.enqueue(`26l`, true);
@@ -264,22 +266,17 @@ describe("FrameGate", () => {
   test("after a resize, only a whole frame written for the new grid reads", () => {
     const gate = new FrameGate();
     expect(gate.settle(gate.enqueue(`${OPEN}idle${CLOSE}`, true), true)).toBe(true);
-    // queued before the resize, parsed after it: drawn for the old grid
     const queued = gate.enqueue(`${OPEN}old${CLOSE}`, true);
     gate.resized();
     expect(gate.current).toBe(false);
     expect(gate.settle(queued, true)).toBe(false);
-    // written before the pane's grid said it was this size
     expect(gate.settle(gate.enqueue(`${OPEN}old size${CLOSE}`, false), true)).toBe(false);
-    // the tail of a frame opened before the resize
     const opened = gate.enqueue(`${OPEN}redraw`, true);
     expect(gate.settle(opened, true)).toBe(false);
     gate.resized();
     expect(gate.settle(gate.enqueue(`rest${CLOSE}`, true), true)).toBe(false);
-    // a whole frame for the new grid; after it, any chunk at a frame's end reads
     expect(gate.settle(gate.enqueue(`${OPEN}new${CLOSE}`, true), true)).toBe(true);
     expect(gate.settle(gate.enqueue("\u001b[1;1Hmore", true), true)).toBe(true);
-    // a stream that is not current (recovering, a grid changed since) never reads
     expect(gate.settle(gate.enqueue(`${OPEN}x${CLOSE}`, true), false)).toBe(false);
   });
 
@@ -301,7 +298,6 @@ describe("FrameGate", () => {
     const gate = new FrameGate();
     expect(gate.settle(gate.enqueue(`${OPEN}idle${CLOSE}`, true), true)).toBe(true);
     expect(gate.reflowing).toBe(false);
-    // pane-geometry with a new size, then this terminal's grid follows it
     gate.reflowed();
     expect(gate.current).toBe(false);
     gate.resized();
@@ -309,16 +305,13 @@ describe("FrameGate", () => {
     expect(gate.reflowing).toBe(true);
     expect(gate.settle(gate.enqueue(`${OPEN}the agent's redraw${CLOSE}`, true), true)).toBe(true);
     expect(gate.reflowing).toBe(false);
-    // the grid this terminal drives: its own resize first, the pane's grid after
     gate.resized();
     expect(gate.settle(gate.enqueue(`${OPEN}before the pane's size${CLOSE}`, false), true)).toBe(false);
     gate.reflowed();
     expect(gate.settle(gate.enqueue(`${OPEN}old screen, reflowed${CLOSE}`, true), true)).toBe(true);
     expect(gate.reflowing).toBe(true);
-    // a chunk cut inside the next frame is not current, nor reflowing
     expect(gate.settle(gate.enqueue(`${OPEN}half`, true), true)).toBe(false);
     expect(gate.reflowing).toBe(false);
-    // a stream that starts over has no reflow of its own
     gate.reflowed();
     gate.reset();
     expect(gate.settle(gate.enqueue(`${OPEN}fresh${CLOSE}`, true), true)).toBe(true);
@@ -389,13 +382,11 @@ describe("recorded frame streams", () => {
     const reflowed = Array.from({ length: 40 }, (_, y) => old.buffer.active.getLine(old.buffer.active.baseY + y)!.translateToString(true));
     old.dispose();
     expect(inputRowState("gjc", await screenOf(reflowed.join("\n"), 40))).toBe("gone");
-    // gjc's own redraw at 40 columns: still its empty box (the recorded one after a close stands in for it)
     const redrawn = readFileSync(join(FIXTURES, "gjc", "settings-closed-40.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     const frame = (rows: readonly string[]): string => `\u001b[?2026h\u001b[2J${rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join("")}\u001b[?2026l`;
     const term = terminal(119);
     const gate = new FrameGate();
     term.onResize(() => gate.resized());
-    // as the pane takes its frames (PaneTerminal onInputRowFrame): a reflowing one changes nothing
     const states: InputRowState[] = [];
     const write = async (data: string): Promise<void> => {
       const stamp = gate.enqueue(data, true);
@@ -403,7 +394,6 @@ describe("recorded frame streams", () => {
       if (gate.settle(stamp, true) && !gate.reflowing) states.push(inputRowState("gjc", readScreen(term.buffer.active, term.cols, term.rows))!);
     };
     await write(frame(loading));
-    // pane-geometry: the pty took 40 columns, and this grid follows
     gate.reflowed();
     term.resize(40, 40);
     await write(frame(reflowed));
@@ -411,7 +401,6 @@ describe("recorded frame streams", () => {
     term.dispose();
     expect(states).toEqual(["ready", "ready"]);
     expect(watch("gjc", states)).toEqual({ armed: false, returnedAt: null, manualAt: null });
-    // read, the reflowed frame would have armed the watch and the redraw brought the chat back before the sessions opened
     expect(watch("gjc", ["ready", "gone", "ready"])).toEqual({ armed: true, returnedAt: 2, manualAt: null });
   });
 
@@ -425,8 +414,185 @@ describe("recorded frame streams", () => {
   test("omp /context at 119 columns arms on its covered editor and comes back on the closed one", async () => {
     expect(watch("omp", [await recorded("omp", "settings-idle-119"), await recorded("omp", "context-open-119"), await recorded("omp", "context-closed-119")]))
       .toEqual({ armed: true, returnedAt: 2, manualAt: null });
-    // a print form keeps the editor: never armed
     expect(watch("omp", [await recorded("omp", "settings-idle-119"), await recorded("omp", "plan-open-119"), await recorded("omp", "settings-closed-119")]))
       .toEqual({ armed: false, returnedAt: null, manualAt: null });
+  });
+});
+
+describe("the chat send's read of the same screens (shared/input-row.ts)", () => {
+  const agents = readdirSync(FIXTURES).filter((name) => !name.includes(".") && name !== "codex-0.167.0");
+  const files = agents.flatMap((agent) => readdirSync(join(FIXTURES, agent)).filter((file) => file.endsWith(".ansi")).map((file) => [agent, file] as const));
+  test.each(files)("%s %s", async (agent, file) => {
+    const text = readFileSync(join(FIXTURES, agent, file), "utf8");
+    expect(inputRowState(agent, screenFromAnsi(text))).toBe(inputRowState(agent, await screenOf(text, columnsOf(file))));
+  });
+
+  const typed = (agent: string, file: string): boolean => typedDraft(agent, screenFromAnsi(readFileSync(join(FIXTURES, file), "utf8")));
+
+  test("text typed into the box is a draft; an empty box, a placeholder and a box not made out are not", () => {
+    expect(typed("pi", "pi/draft-typed-119.ansi")).toBeTrue();
+    expect(typed("omo", "omo/draft-typed-119.ansi")).toBeTrue();
+    expect(typed("codex", "codex-0.167.0/composer-ultra-draft-100.ansi")).toBeTrue();
+    expect(typed("codex", "codex/mention-closed-120.ansi")).toBeTrue();
+    expect(typed("pi", "pi/draft-empty-119.ansi")).toBeFalse();
+    expect(typed("omo", "omo/draft-empty-119.ansi")).toBeFalse();
+    expect(typed("codex", "codex-0.167.0/composer-ultra-empty-100.ansi")).toBeFalse();
+    // their autocomplete moves the box out of its recorded place: not made out, so not refused
+    expect(typed("pi", "pi/draft-slash-119.ansi")).toBeFalse();
+    expect(typed("omo", "omo/draft-slash-119.ansi")).toBeFalse();
+  });
+
+  test("pi's editor drawn by pi-powerline-footer, its status bar above it, is read as pi's own", () => {
+    const screen = (name: string): ScreenSnapshot => screenFromAnsi(readFileSync(join(FIXTURES, `pi/powerline-${name}-200.ansi`), "utf8"));
+    // a chat message pasted over a typed `2` was sent and recorded as `2…`, so its receipt never matched
+    expect(inputRowState("pi", screen("draft-typed"))).toBe("draft");
+    expect(typedDraft("pi", screen("draft-typed"))).toBeTrue();
+    expect(typedDraft("pi", screen("draft-multiline"))).toBeTrue();
+    expect(inputRowState("pi", screen("draft-empty"))).toBe("ready");
+    expect(typedDraft("pi", screen("draft-empty"))).toBeFalse();
+    // Left moves pi's cursor onto the `2`, which its editor then draws inverse: still typed text
+    const onCursor = readFileSync(join(FIXTURES, "pi/powerline-draft-typed-200.ansi"), "utf8").replace(" 2\u001b[0m\u001b[7m\u001b[0m", " \u001b[7m2\u001b[0m");
+    expect(typedDraft("pi", screenFromAnsi(onCursor))).toBeTrue();
+    // after the first prompt the extension draws it under the editor (`powerline-last-prompt`, on by default), as
+    // its renderLastPromptLines does
+    const lastPrompt = (name: string, rows: string): ScreenSnapshot => screenFromAnsi(`${readFileSync(join(FIXTURES, `pi/powerline-${name}-200.ansi`), "utf8").replace(/\n$/, "")}\n${rows}\n`);
+    const arrow = " \u001b[38;2;102;102;102m↳\u001b[0m \u001b[38;2;102;102;102mwhat does this repo do?\u001b[0m";
+    expect(inputRowState("pi", lastPrompt("draft-typed", arrow))).toBe("draft");
+    expect(typedDraft("pi", lastPrompt("draft-typed", arrow))).toBeTrue();
+    expect(inputRowState("pi", lastPrompt("draft-empty", arrow))).toBe("ready");
+    // anything else under the editor (its autocomplete list) still fails safe
+    expect(inputRowState("pi", lastPrompt("draft-typed", `   /model  Select model\n${arrow}`))).toBe("gone");
+  });
+
+  test("pi's editor holding a line typed with leading spaces is a draft to the send, still a dialog's row to the peek", () => {
+    const indented = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8").replace("leftover draft", "  indented snippet");
+    expect(typedDraft("pi", screenFromAnsi(indented))).toBeTrue();
+    expect(inputRowState("pi", screenFromAnsi(indented))).toBe("gone");
+    const typedRow = (row: string): boolean => typedDraft("pi", screenFromAnsi(readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8").replace("leftover draft", row)));
+    expect(typedRow("> please retain this quote")).toBeTrue();
+    expect(typedRow("→ note to self")).toBeTrue();
+    expect(typedRow("> sea\r\n\u001b[38;2;167;152;215m→ Auto-compact\u001b[0m")).toBeFalse();
+    expect(typedRow("> quoted\r\n→ an arrow line")).toBeTrue();
+  });
+
+  test("a read whose escapes carry no colour or style (bold, resets) proves nothing", () => {
+    const colourless = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8").replace(/\u001b\[(?:[0-9;:]*)m/g, "\u001b[0m\u001b[1m");
+    expect(drawsColour(colourless)).toBeFalse();
+    expect(drawsColour(readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8"))).toBeTrue();
+  });
+
+  test("loads and reads a screen where the runtime has no Intl.Segmenter (Safari 14, Firefox before 125)", async () => {
+    const script = `delete Intl.Segmenter;
+      const row = await import(${JSON.stringify(join(import.meta.dir, "inputRow.ts"))});
+      const shared = await import(${JSON.stringify(join(import.meta.dir, "../../shared/input-row.ts"))});
+      console.log(typeof row.FrameGate, shared.screenFromAnsi("\\u276f typed").rows[0].text);`;
+    const child = Bun.spawn([process.execPath, "-e", script], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(await child.exited, err).toBe(0);
+    expect(out.trim()).toBe("function \u276f typed");
+  });
+
+  test.each([
+    // `/mo` typed with the command list open: read with the list inside the box (muse), the box still whole (gjc, qwen,
+    // cline), or the box out of its place (dsh-tui)
+    ["gjc", true], ["muse", true], ["qwen", true], ["cline", true], ["dsh-tui", false],
+  ])("%s, recorded in the agent lab: typed text is a draft, its empty box and placeholder are not", (agent, slash) => {
+    expect(typed(agent, `${agent}/draft-typed-119.ansi`)).toBeTrue();
+    expect(typed(agent, `${agent}/draft-empty-119.ansi`)).toBeFalse();
+    expect(typed(agent, `${agent}/draft-slash-119.ansi`)).toBe(slash);
+  });
+
+  test("a Qwen draft whose second row starts with Qwen's own mark is still its box's draft (#3769)", () => {
+    const rows = readFileSync(join(FIXTURES, "qwen/draft-typed-119.ansi"), "utf8").split("\n");
+    const at = rows.findIndex((row) => row.includes("leftover draft"));
+    rows.splice(at + 1, 0, "> quoted line\r");
+    expect(typedDraft("qwen", screenFromAnsi(rows.join("\n")))).toBeTrue();
+  });
+
+  test("a GJC draft wrapped onto a second row of its box is read whole by the draft check", () => {
+    const rows = readFileSync(join(FIXTURES, "gjc/draft-typed-119.ansi"), "utf8").split("\n");
+    const at = rows.findIndex((row) => row.includes("\u2502 \u001b") && row.includes(">"));
+    rows.splice(at + 1, 0, `\u2502   typed on the second row${" ".repeat(90)}\u2502\r`);
+    expect(typedDraft("gjc", screenFromAnsi(rows.join("\n")))).toBeTrue();
+  });
+
+  test("a GJC draft that starts with a blank line is read from its wrapped rows", () => {
+    const rows = readFileSync(join(FIXTURES, "gjc/draft-typed-119.ansi"), "utf8").replace("leftover draft", "").split("\n");
+    const at = rows.findIndex((row) => row.includes("\u2502 \u001b") && row.includes(">"));
+    rows.splice(at + 1, 0, `\u2502   typed on the second row${" ".repeat(90)}\u2502\r`);
+    expect(typedDraft("gjc", screenFromAnsi(rows.join("\n")))).toBeTrue();
+  });
+
+  test("a draft wrapped onto a second row of the box is read whole", () => {
+    const rows = readFileSync(join(FIXTURES, "muse/draft-typed-119.ansi"), "utf8").replace("leftover draft", "").split("\n");
+    const at = rows.findIndex((row) => row.includes("\u276f"));
+    rows.splice(at + 1, 0, "\u001b[38;2;204;211;219mtyped on the second row\u001b[0m\r");
+    expect(typedDraft("muse", screenFromAnsi(rows.join("\n")))).toBeTrue();
+  });
+
+  test.each([
+    // `/mo` typed: in the terminal's colour or the recorded typed colour (letta, maki, kilo), or drawn as a command (kimi, gemini)
+    ["letta", true], ["maki", true], ["kimi", false], ["gemini", false], ["kilo", true],
+  ])("%s, recorded in the agent lab: typed text is a draft, its empty box and placeholder are not", (agent, slash) => {
+    expect(typed(agent, `${agent}/draft-typed-119.ansi`)).toBeTrue();
+    expect(typed(agent, `${agent}/draft-empty-119.ansi`)).toBeFalse();
+    expect(typed(agent, `${agent}/draft-slash-119.ansi`)).toBe(slash);
+  });
+
+  test("omp 18.14's editor under its unframed status line: typed text, on one row or more, and `/mo` are a draft; its hint is not", () => {
+    expect(typed("omp", "omp/draft-typed-119.ansi")).toBeTrue();
+    expect(typed("omp", "omp/draft-lines-119.ansi")).toBeTrue();
+    expect(typed("omp", "omp/draft-slash-119.ansi")).toBeTrue();
+    expect(typed("omp", "omp/draft-empty-119.ansi")).toBeFalse();
+    // 18.8.7's framed editor reports no cells: never refused
+    expect(typed("omp", "omp/settings-idle-119.ansi")).toBeFalse();
+    const themed = readFileSync(join(FIXTURES, "omp/draft-typed-119.ansi"), "utf8").replace("\u001b[38;5;254mleftover", "\u001b[38;5;250mleftover");
+    expect(typedDraft("omp", screenFromAnsi(themed))).toBeFalse();
+  });
+
+  test("omp 18.14's draft is read past an empty first row, an indented row and an empty row between, and as typed when it is the hint's words", () => {
+    const lines = readFileSync(join(FIXTURES, "omp/draft-lines-119.ansi"), "utf8");
+    expect(typedDraft("omp", screenFromAnsi(lines.replace("leftover draft", "").replace("second line", "    indented")))).toBeTrue();
+    const rows = lines.replace("leftover draft", "").split("\n");
+    rows.splice(rows.findIndex((row) => row.includes("second line")), 0, "\r");
+    expect(typedDraft("omp", screenFromAnsi(rows.join("\n")))).toBeTrue();
+    expect(typedDraft("omp", screenFromAnsi(readFileSync(join(FIXTURES, "omp/draft-typed-119.ansi"), "utf8").replace("leftover draft", "⇧⇥ to change thinking effort")))).toBeTrue();
+  });
+
+  test("Kilo's box in a session, under its first answer, reads as on its home screen", () => {
+    expect(typed("kilo", "kilo/draft-session-typed-119.ansi")).toBeTrue();
+    expect(typed("kilo", "kilo/draft-session-empty-119.ansi")).toBeFalse();
+    expect(typed("kilo", "kilo/draft-session-slash-119.ansi")).toBeTrue();
+  });
+
+  test("a character that draws nothing (Letta pads its empty box with zero-width spaces) is no typed text", () => {
+    const rule = "\u2500".repeat(60);
+    expect(typedDraft("letta", screenFromAnsi([rule, "\u203a \u001b[7m \u001b[0m\u200b\u200b\u200b", rule].join("\n")))).toBeFalse();
+    expect(typedDraft("letta", screenFromAnsi([rule, "\u203a typed", rule].join("\n")))).toBeTrue();
+  });
+
+  test("an agent that draws typed text in a colour of its own: only that colour, as recorded, is typed", () => {
+    const muse = readFileSync(join(FIXTURES, "muse/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("muse", screenFromAnsi(muse))).toBeTrue();
+    expect(typedDraft("muse", screenFromAnsi(muse.replaceAll("38;2;204;211;219m", "38;2;120;120;120m")))).toBeFalse();
+    const cline = readFileSync(join(FIXTURES, "cline/draft-empty-119.ansi"), "utf8");
+    expect(typedDraft("cline", screenFromAnsi(cline))).toBeFalse();
+  });
+
+  test("only typed-looking cells count: the same words dim, grey or italic are no draft", () => {
+    const omo = readFileSync(join(FIXTURES, "omo/draft-typed-119.ansi"), "utf8");
+    const styled = (sgr: string) => typedDraft("omo", screenFromAnsi(omo.replace(" leftover draft", ` \u001b[${sgr}mleftover draft\u001b[0m`)));
+    expect(styled("0")).toBeTrue();
+    expect(styled("2")).toBeFalse();
+    expect(styled("3")).toBeFalse();
+    expect(styled("38;5;244")).toBeFalse();
+    expect(styled("38:2::90:90:90")).toBeFalse();
+    expect(typedDraft("claude", screenFromAnsi(["\u2500".repeat(40), "\u276f still typing", "\u2500".repeat(40)].join("\n")))).toBeFalse();
+    expect(typedDraft("letta", screenFromAnsi(omo))).toBeFalse();
+    // a Codex `›` row with no model line under it is one of the history's messages, not the composer
+    expect(typedDraft("codex", screenFromAnsi("› an earlier message"))).toBeFalse();
+    expect(typedDraft("codex", screenFromAnsi("› typed\n\n  GPT-6.1-Sol default · ~/work"))).toBeTrue();
+    // Codex's placeholder drawn undimmed (NO_COLOR) keeps its `? for shortcuts` hint, which typed text takes away
+    expect(typedDraft("codex", screenFromAnsi("› Ask Codex to do anything\n\n  GPT-6.1-Sol default · ~/work\n  ← for agents · ? for shortcuts"))).toBeFalse();
   });
 });

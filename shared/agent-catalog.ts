@@ -8,8 +8,6 @@
  * (`url_prefixes`), or its own package (`packages`). shared/agent-catalog.test.ts holds every
  * command to both lists; a command that fetches anything else, or a package of another name,
  * fails it. A platform without an official command has none, and `no_install` says why.
- *
- * Read by the server (GET /api/agent-catalog) and, later, by the browser: types and plain data only.
  */
 import type { UsageProviderId } from "./usage.ts";
 
@@ -151,24 +149,22 @@ export interface AgentCatalogResponse {
   /** null: a platform the catalog has no commands for */
   platform: CatalogPlatform | null;
   agents: AgentCatalogRow[];
+  /**
+   * why this PC's interactive shell PATH (zsh's .zshrc) could not be read: an agent only it puts on
+   * PATH reads as not installed. Absent when it was read, and from an older server.
+   */
+  path_problem?: string;
 }
 
-/** One entry as a PC on `platform` answers it, with what that PC found (server/agent-catalog-routes.ts, the demo). */
 export function catalogRow({ install, no_install, ...entry }: AgentCatalogEntry, platform: CatalogPlatform | null, state: AgentInstallState): AgentCatalogRow {
   if (platform === null) return { ...entry, install: null, no_install: "Ovis has no install commands for this operating system.", state };
   return { ...entry, install: install[platform], no_install: install[platform] === null ? no_install[platform] ?? null : null, state };
 }
 
-/**
- * Whether the agent is there and runs: found, and its version flag neither failed nor hung. One whose
- * version cannot be read still runs; one whose flag fails (a wrapper's missing target) does not, and
- * is never offered as ready.
- */
 export function agentRuns(state: AgentInstallState): boolean {
   return state.installed === true && state.version_error !== "failed" && state.version_error !== "timeout";
 }
 
-/** The catalog platform of a Node `process.platform`. */
 export function catalogPlatform(platform: string): CatalogPlatform | null {
   return platform === "darwin" ? "macos" : platform === "linux" ? "linux" : platform === "win32" ? "windows" : null;
 }
@@ -180,7 +176,6 @@ export function parseVersion(output: string): string | null {
   return VERSION.exec(output)?.[0] ?? null;
 }
 
-/** Whether `version` is `min` or later, comparing the dotted numbers; a missing part counts as 0. */
 export function meetsMinVersion(version: string, min: string): boolean {
   const have = version.split(".").map(Number);
   const need = min.split(".").map(Number);
@@ -202,7 +197,6 @@ const PACKAGE_INSTALLS: readonly (readonly [string, RegExp])[] = [
   ["uv", /\buv\s+tool\s+install\s+(\S+)/g],
   ["pipx", /\bpipx\s+install\s+(\S+)/g],
 ];
-/** An npm spec without its version: `@opencode/cli@latest` is `@opencode/cli`. */
 const npmName = (spec: string): string => spec.startsWith("@") ? `@${spec.slice(1).split("@")[0]}` : spec.split("@")[0]!;
 /**
  * Every command the catalog may hold, as "platform|command", byte for byte. A command is accepted
@@ -282,7 +276,7 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /** An allowed address: HTTPS, a host, and a path on it, so a prefix can never stand for a whole host. */
-const PREFIX = /^https:\/\/[a-z0-9.-]+\/\S+$/;
+const HTTPS_URL_WITH_PATH = /^https:\/\/[a-z0-9.-]+\/\S+$/;
 
 /**
  * Why an entry's commands are not the vendor's own, one line each; none when they are. Every command
@@ -293,7 +287,7 @@ const PREFIX = /^https:\/\/[a-z0-9.-]+\/\S+$/;
  */
 export function commandProblems(entry: AgentCatalogEntry): string[] {
   const problems: string[] = [];
-  for (const prefix of entry.url_prefixes) if (!PREFIX.test(prefix)) problems.push(`${entry.id}: ${prefix} is not an HTTPS address with a path`);
+  for (const prefix of entry.url_prefixes) if (!HTTPS_URL_WITH_PATH.test(prefix)) problems.push(`${entry.id}: ${prefix} is not an HTTPS address with a path`);
   for (const platform of CATALOG_PLATFORMS) {
     const install = entry.install[platform];
     if (install === null) continue;
@@ -341,10 +335,6 @@ const CURL_BASH: readonly InstallRequirement[] = [{ tool: "curl" }, { tool: "bas
 const CURL_SH: readonly InstallRequirement[] = [{ tool: "curl" }, { tool: "sh" }];
 const POWERSHELL: readonly InstallRequirement[] = [{ tool: "powershell" }];
 
-/**
- * Clean-PC runs of the catalog's commands, by "platform|command" with the command exactly as listed:
- * a changed command no longer carries the runs of its old text. How to run one: docs/agent-catalog.md.
- */
 export const COMMAND_TESTS: Readonly<Record<string, readonly CommandTest[]>> = {
   "windows|irm https://claude.ai/install.ps1 | iex": [
     {
@@ -1013,7 +1003,6 @@ const withTests = (platform: CatalogPlatform, method: InstallMethod): InstallMet
 const testedInstall = (platform: CatalogPlatform, install: PlatformInstall | null): PlatformInstall | null =>
   install === null ? null : { primary: withTests(platform, install.primary), alternatives: install.alternatives.map((method) => withTests(platform, method)) };
 
-/** Every agent Ovis can install, each command with its clean-PC runs (COMMAND_TESTS). */
 export const AGENT_CATALOG: readonly AgentCatalogEntry[] = CATALOG_ENTRIES.map((entry) => ({
   ...entry,
   install: { macos: testedInstall("macos", entry.install.macos), linux: testedInstall("linux", entry.install.linux), windows: testedInstall("windows", entry.install.windows) },

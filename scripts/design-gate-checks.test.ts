@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { moves, ringOwner, targetVerdict, walkFocus, type FocusDriver, type FocusStop, type Layout, type RingRead } from "./design-gate-checks.ts";
 
-/** A page whose focus starts on `start` and moves through `order` on each Tab, round and round. */
 function fakePage(start: FocusStop<string>, order: FocusStop<string>[]): FocusDriver<string> & { presses: () => number } {
   let at = -1;
   return {
@@ -14,7 +13,6 @@ const stop = (id: number): FocusStop<string> => ({ id, verdict: `control ${id}` 
 
 describe("design gate focus walk", () => {
   it("measures the initially focused control and every stop of a cycle longer than 25", async () => {
-    // a dialog: its first control focused before any Tab, then 39 more, and Tab wraps back to the first
     const controls = Array.from({ length: 40 }, (_, index) => stop(index + 1));
     const page = fakePage(controls[0]!, [...controls.slice(1), controls[0]!]);
     const walk = await walkFocus(page, 200);
@@ -37,12 +35,10 @@ describe("design gate focus walk", () => {
 });
 
 describe("design gate focus ring owner", () => {
-  // the message box draws no ring; its .composer-surface wrapper changes its box-shadow under :focus-within
   const plain: RingRead = { outline: "none 0px rgb(0, 0, 0) 0px", boxShadow: "none", border: "solid 1px rgb(200, 200, 200)" };
   const lit: RingRead = { ...plain, boxShadow: "rgb(140, 80, 0) 0px 0px 0px 2px" };
   const drawn = { outline: false, boxShadow: true, border: true };
   it("credits the first wrapper whose drawn ring changes with focus, the control's own ring first", () => {
-    // the textarea's undrawn outline (style none) changes width on blur: not a ring, so the wrapper's shadow wins
     const textarea = { focused: plain, blurred: { ...plain, outline: "none 3px rgb(0, 0, 0) 0px" }, drawn: { ...drawn, boxShadow: false } };
     expect(ringOwner(false, [textarea, { focused: plain, blurred: plain, drawn }, { focused: lit, blurred: plain, drawn }])).toEqual({ on: "ancestor", index: 2, changed: ["boxShadow"] });
     expect(ringOwner(true, [{ focused: lit, blurred: plain, drawn }])).toEqual({ on: "self" });
@@ -74,7 +70,6 @@ describe("design gate layout comparison", () => {
 });
 
 describe("design gate effective target", () => {
-  // the phone Settings gear: a 34x44 box at x=12, y=792 whose ::before reaches 10px further left
   const gear = { left: 12, top: 792, width: 34, height: 44 };
   const inside = (left: number, right: number) => (x: number, y: number): boolean => x >= left && x <= right && y >= gear.top && y <= gear.top + gear.height;
   it("passes a small box whose expander owns all five points of the 44x44 square, and names the method", () => {

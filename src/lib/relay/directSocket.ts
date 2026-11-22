@@ -27,14 +27,11 @@ export type DirectEvent =
   | { readonly type: "close"; readonly id: string; readonly code: number; readonly reason: string }
   | { readonly type: "error"; readonly id: string };
 
-/** The plugin as the adapter uses it; tests hand in a fake. */
 export interface DirectBridge {
   open(url: string): Promise<string>;
   send(id: string, frame: DirectFrame): Promise<void>;
   close(id: string, code?: number, reason?: string): Promise<void>;
-  /** Tells the plugin the page took `messages` more of the socket's messages off its queue. */
   ack(id: string, messages: number): Promise<void>;
-  /** Every event of every socket, in the order the plugin sent them. */
   listen(handler: (event: DirectEvent) => void): void;
 }
 
@@ -96,7 +93,6 @@ class DirectSocket implements RelaySocket {
   onclose: ((event: CloseEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   id: string | undefined;
-  /** sends asked for before the plugin named the socket, in order */
   private early: DirectFrame[] = [];
   private earlyBytes = 0;
   private closeAsked: { code?: number; reason?: string } | undefined;
@@ -127,7 +123,6 @@ class DirectSocket implements RelaySocket {
     if (this.id !== undefined) { this.forward(frame); return; }
     this.earlyBytes += typeof data === "string" ? encoder.encode(data).byteLength : data.byteLength;
     if (this.early.length + 1 > EARLY_SEND_MESSAGES || this.earlyBytes > EARLY_SEND_BYTES) {
-      // the plugin closes the socket once it names it (closeAsked); the page hears of it now
       this.early = [];
       this.readyState = CLOSED;
       this.closeAsked = { code: 1009, reason: "send queue full" };
@@ -149,9 +144,6 @@ class DirectSocket implements RelaySocket {
       case "message": {
         if (this.readyState === CLOSED) return;
         const data = event.kind === "text" ? event.data : base64ToArrayBuffer(event.data);
-        // taken off the plugin's queue once handled; the acks of one turn go as one call. A known limit: the
-        // ack follows onmessage, while the relay channel may still have asynchronous work queued for it, so the
-        // plugin's cap bounds what waits to reach the page, not that work.
         if (this.unacked++ === 0) queueMicrotask(() => this.flushAck());
         this.onmessage?.(new MessageEvent("message", { data }));
         return;
@@ -176,7 +168,6 @@ class DirectSocket implements RelaySocket {
 
   private forward(frame: DirectFrame): void {
     const id = this.id!;
-    // a send the plugin refuses means its socket is gone: its close event follows
     this.bridge.send(id, frame).catch((error: unknown) => console.warn("Ovis: a direct socket send failed", error));
   }
 
@@ -187,8 +178,7 @@ class DirectSocket implements RelaySocket {
 
 /**
  * A RelaySocket factory over `bridge`: it throws for an address that is not a direct carrier's, before
- * the plugin hears of it. One listener serves every socket; events of a socket the plugin named
- * before its open answered here wait for it.
+ * the plugin hears of it.
  */
 export function directSocketFactory(bridge: DirectBridge): (url: string) => RelaySocket {
   const sockets = new Map<string, DirectSocket>();
@@ -201,7 +191,6 @@ export function directSocketFactory(bridge: DirectBridge): (url: string) => Rela
       if (event.type === "close") sockets.delete(event.id);
       return;
     }
-    // only while an open is unanswered can an event be for a socket not known yet
     if (opening > 0) waiting.set(event.id, [...(waiting.get(event.id) ?? []), event]);
   });
   return (url) => {
@@ -240,12 +229,11 @@ export function directTailnetSupport(call: (plugin: string, method: string) => P
   let supported = false;
   call(DIRECT_PLUGIN, "features").then(
     (answer) => { supported = (answer as { tailnet?: unknown } | null)?.tailnet === true; },
-    () => { /* an app without `features`: home-network carriers only */ },
+    () => {},
   );
   return () => supported;
 }
 
-/** directTailnetSupport for the app's own plugin, asked when the shell starts; always false without the app. */
 export function nativeDirectTailnet(): () => boolean {
   const call = (globalThis as { Capacitor?: CapacitorEvents }).Capacitor?.nativePromise;
   if (!call) return () => false;

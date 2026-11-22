@@ -1,4 +1,3 @@
-/** Synthetic Devin SQLite -> real parser -> conversation HTTP -> real ChatView (not live pane discovery). */
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";

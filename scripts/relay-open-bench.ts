@@ -4,9 +4,6 @@
  * port 0, and HERDR_SOCKET at a path that does not exist (no herdr is touched). The relay is the real one
  * (wss://relay.ovis.sh) unless --relay names another.
  *
- * Per round: a fresh relay socket -> admitted (AUTH_OK) -> first answer to GET /api/health, with the socket's
- * open, the relay's `assigned` and the PC's first frame on the way. ABBA arms swap the PC's files:
- *
  *   bun scripts/relay-open-bench.ts --arms A,B,B,A --rounds 8 [--a-dir <tree with the A files>] [--files a,b] [--relay wss://...]
  *
  * Arm A copies each of --files from --a-dir over this tree before its PC starts, arm B restores this tree's own.
@@ -61,7 +58,6 @@ async function bench(): Promise<void> {
     // every socket comes from 127.0.0.1: a long run would pass production's per-address budget
     const relayed = startBunRelay({ port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } });
     type Pipe = { peer?: import("bun").Socket<Pipe>; queue: { at: number; data: Uint8Array }[]; timer?: ReturnType<typeof setTimeout>; early: Uint8Array[] };
-    // one ordered queue per direction, each chunk released rtt/2 after it arrived
     const forward = (from: Pipe, data: Uint8Array) => {
       from.queue.push({ at: performance.now() + EMULATE / 2, data: data.slice() });
       const drain = () => {
@@ -121,7 +117,6 @@ async function bench(): Promise<void> {
         text += new TextDecoder().decode(chunk.value);
       }
       reader.releaseLock();
-      // the files are read once the child imported them: arm B's own copy goes back at once
       restore();
       const base = `http://127.0.0.1:${/BENCH-PORT (\d+)/.exec(text)![1]}`;
       const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });

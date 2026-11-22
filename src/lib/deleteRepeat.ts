@@ -22,7 +22,7 @@ export function keyboardNeedsText(env: DeleteRepeatEnvironment): boolean {
 }
 
 /**
- * Puts the character back into an empty field, caret after it. Only an empty field is touched:
+ * Only an empty field is touched:
  * a composition's preedit and the text an IME is working on stay as they are.
  */
 export function keepDeleteRepeatText(field: Pick<HTMLTextAreaElement, "value" | "setSelectionRange">): boolean {

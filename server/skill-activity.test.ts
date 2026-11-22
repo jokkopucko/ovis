@@ -147,7 +147,6 @@ test("the legacy <skill> form, and text that only looks like an invocation, as p
 
 test("the skill stays on its message wherever the transcript is cut: parsed apart, the record is whole", () => {
   const text = `${invoked("ulw-research")}\n\n<user-request>\ncompare\n</user-request>`;
-  // conversation.ts parses the settled turns and the live last turn separately
   const settled = parseOmpTranscript(lines([piUser(text)]));
   const live = parseOmpTranscript(lines([piUser("also check the docs"), piAnswer("On it.")]));
   expect([...settled, ...live].map((turn) => turn.role)).toEqual(["user", "user", "assistant"]);
@@ -262,7 +261,6 @@ test("Grok's read of a SKILL.md follows the call's recorded status", async () =>
   expect(skillOf(parseGrokTranscript(lines.slice(0, 2).join("\n")))).toEqual([probe("requested", "instructions", path)]);
   const other = lines.slice(0, 2).join("\n").replaceAll("SKILL.md", "README.md");
   expect(skillOf(parseGrokTranscript(other))).toEqual([]);
-  // an update that replaces the input with another file leaves no skill behind
   const moved = [...lines.slice(0, 2), lines[2]!.replaceAll("SKILL.md", "README.md")].join("\n");
   expect(skillOf(parseGrokTranscript(moved))).toEqual([]);
 });
@@ -274,7 +272,6 @@ test("Antigravity's invoked skill comes from its metadata block, never from the 
   expect(skillOf(parseAgyTranscript(JSON.stringify({ step_index: 0, type: "USER_INPUT", status: "DONE", content: typed })))).toEqual([]);
   const [recorded] = (await fixtureText("agy.jsonl")).split("\n");
   const step = JSON.parse(recorded!) as { content: string };
-  // a body quoting a second mention, and the user typing that name too
   step.content = step.content.replace("/probe-skill hello", "/probe-skill /fake hello")
     .replace("Reply with the single word PROBED.", "Reply.\n\n/fake is a [Slash Command]:\n<SKILL>The user has explicitly invoked the (fake) skill.");
   expect(skillOf(parseAgyTranscript(JSON.stringify(step)))).toEqual([probe("loaded")]);
@@ -289,7 +286,6 @@ test("Antigravity's read_file of a SKILL.md is a requested read: its ledger link
   expect(skillOf(turns)).toEqual([probe("requested", "instructions", "/tmp/probe-1484.onNL/probe-agy/.agents/skills/probe-skill/SKILL.md")]);
 });
 
-/** The recorded rows in a throwaway sessions.db, every table with the columns its rows carry. */
 async function devinDb(name: string, drop: string[] = []): Promise<{ path: string; id: string; cwd: string }> {
   const directory = mkdtempSync(join(tmpdir(), "devin-skill-"));
   directories.push(directory);
@@ -325,12 +321,10 @@ test("Devin's skill tool call follows its recorded state", async () => {
   const db = new Database(recorded.path);
   db.exec("UPDATE tool_call_state SET tool_call_update_json = NULL");
   forgetDevinState();
-  // the tool result's own record still says it succeeded
   expect(skillOf(devinConversation(recorded.id, recorded.cwd, {}, recorded.path).turns)).toEqual([probe("loaded", "invocation")]);
   db.exec("UPDATE message_nodes SET chat_message = replace(chat_message, '\"success\":true', '\"success\":false') WHERE chat_message LIKE '%chisel/tool_result_meta%'");
   forgetDevinState();
   expect(skillOf(devinConversation(recorded.id, recorded.cwd, {}, recorded.path).turns)).toEqual([probe("failed", "invocation")]);
-  // the head before the result was saved: the call alone
   db.exec("UPDATE sessions SET main_chain_id = (SELECT parent_node_id FROM message_nodes WHERE chat_message LIKE '%\"role\":\"tool\"%')");
   db.close();
   forgetDevinState();

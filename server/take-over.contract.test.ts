@@ -26,7 +26,6 @@ function alive(pid: number): boolean {
 type Step = { kind: "held" | "read-race" | "real" | "failed" | "taken"; gate?: string };
 type Event = { type: string; attempt: number; pid: number; host: number; args: string[] };
 
-/** A real server/socket/sidecar with file gates at the attach CLI boundary. */
 async function fixture(steps: Step[], attachHoldMs?: number) {
   const root = mkdtempSync(join(tmpdir(), "herdr-takeover-race-"));
   const executable = join(root, "herdr.mjs");
@@ -93,7 +92,6 @@ describe("explicit take-over intent", () => {
   }, 20_000);
 
   it("drops a click when the attempt it waited on attaches and is displaced before it settles", async () => {
-    // a hold far longer than the fixture's exit: the attach is displaced before it settles, every run
     const f = await fixture([{ kind: "held" }, { kind: "taken", gate: "attach" }, { kind: "real" }], 5_000);
     await until(() => f.starts().length === 2, "ordinary retry held at its gate");
     f.send({ type: "take-over", pane_id: f.paneId });

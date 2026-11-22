@@ -7,13 +7,13 @@ import type { KeyBarItem } from "../src/lib/keyBar.ts";
 import { KEY_REPEAT_DELAY_MS, KEY_REPEAT_INTERVAL_MS } from "../src/lib/keyRepeat.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Production client over the demo's synthetic transport. The disposable app only listens on
-// loopback; no herdr session, user terminal or real input transport is opened.
+// The disposable app only listens on loopback; no herdr session, user terminal or real input
+// transport is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-key-bar-hold-repeat-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 const HOLD_MS = KEY_REPEAT_DELAY_MS + 10 * KEY_REPEAT_INTERVAL_MS;
-// These waits measure a gesture or give unwanted sends time to appear, not app readiness.
 const NO_SEND_WAIT_MS = 4 * KEY_REPEAT_INTERVAL_MS;
 const keyBarItems: KeyBarItem[] = [
   { type: "key", key: "Escape" },
@@ -47,7 +47,6 @@ async function centerOf(key: Locator): Promise<Point> {
   return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 }
 
-/** Returns the frame boundary captured on pointerup, before React handles the release click. */
 async function hold(page: Page, cdp: CDPSession, key: Locator, duration: number, during?: () => Promise<void>): Promise<number> {
   const point = await centerOf(key);
   await page.evaluate(() => { (window as unknown as Recorder).keyBarReleaseFrameCount = null; });
@@ -89,18 +88,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${record}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -130,7 +118,6 @@ try {
         assert.deepEqual(sentKeys(await framesSince(page, before)), ["left"], "a touch tap sends one Left, never two");
         console.log("PASS touch tap Left sends exactly one key");
 
-        // 2. Count individual keys, not frames: a future transport may batch several keys.
         before = (await framesOf(page)).length;
         const release = await hold(page, cdp, left, HOLD_MS);
         const repeats = leftKeys(await framesSince(page, before));
@@ -142,7 +129,6 @@ try {
         assert.equal((await framesOf(page)).length, release, "release stops all input sends");
         console.log(`PASS holding Left repeats (${repeats.length} keys) and release sends no extra click or later key`);
 
-        // 3. The pending delay sends nothing: only the release click sends the short hold's key.
         before = (await framesOf(page)).length;
         await hold(page, cdp, left, Math.floor(KEY_REPEAT_DELAY_MS / 2), async () => {
           assert.deepEqual(await framesSince(page, before), [], "a short hold sends no key while the finger is down");
@@ -174,7 +160,6 @@ try {
         assert.ok(await bar.evaluate((row) => row.scrollLeft) > scroll.left, "the native swipe scrolls the overflowing row");
         console.log("PASS horizontal swipe from Left scrolls the overflowing row and sends zero keys");
 
-        // 5. A non-repeatable key does not repeat when held beyond the repeat threshold.
         await bar.evaluate((row) => { row.scrollLeft = 0; });
         before = (await framesOf(page)).length;
         await hold(page, cdp, escape, HOLD_MS, async () => {
@@ -186,11 +171,9 @@ try {
         assert.ok(escapeKeys.length <= 1 && escapeKeys.every((key) => key === "esc"), `held Escape does not repeat: ${JSON.stringify(escapeKeys)}`);
         console.log("PASS held Escape does not repeat");
 
-        // 5b. The editing keys repeat too: a held Backspace clears a line without one tap per character.
         const backspace = bar.locator('.key[data-key="Backspace"]');
         before = (await framesOf(page)).length;
         const backspaceRelease = await hold(page, cdp, backspace, HOLD_MS);
-        // Backspace goes out as the pane's DEL byte on the input path, not as a logical key.
         const backspaceFrames = await framesSince(page, before);
         const backspaceKeys = backspaceFrames.flatMap((frame) => frame.type === "input" ? [...frame.text] : frame.keys);
         assert.ok(backspaceKeys.length >= 5, `a held Backspace repeats before release (got ${backspaceKeys.length})`);
@@ -201,8 +184,6 @@ try {
         console.log(`PASS holding Backspace repeats (${backspaceKeys.length} keys) and stops on release`);
         await bar.evaluate((row) => { row.scrollLeft = 0; });
 
-        // 6. Repeats must use the same sticky-modifier path as the existing touch click. Ctrl held for
-        // one key stays held through the whole hold and is let go when the finger lifts.
         await ctrl.tap();
         assert.equal(await ctrl.getAttribute("aria-pressed"), "true", "Ctrl is armed");
         assert.equal(await ctrl.getAttribute("data-latch"), "once", "one tap holds Ctrl for one key");
@@ -219,7 +200,6 @@ try {
         assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "lifting the finger lets go of Ctrl held for one key");
         console.log(`PASS sticky Ctrl applies to every held Left repeat (${modifiedKeys.length} Ctrl+Left keys), then lets go`);
 
-        // 6b. Two taps lock Ctrl: it carries every key until a third tap lets it go.
         await ctrl.tap();
         await ctrl.tap();
         assert.equal(await ctrl.getAttribute("data-latch"), "locked", "a second tap locks Ctrl");
@@ -234,7 +214,6 @@ try {
         assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "a third tap lets Ctrl go");
         console.log("PASS two taps lock Ctrl for every key and a third lets it go");
 
-        // 6c. A hardware key's own auto-repeat keeps Ctrl held for one key; letting the key up ends it.
         await ctrl.tap();
         await page.locator(".xterm-helper-textarea").focus();
         before = (await framesOf(page)).length;
@@ -248,7 +227,6 @@ try {
         assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "letting the hardware key up lets Ctrl go");
         console.log("PASS a hardware key's auto-repeat keeps Ctrl held for one key until the key is let up");
 
-        // 6d. A held saved combination sends its own chord and leaves a Ctrl held for one key alone.
         await ctrl.tap();
         const altRight = bar.getByRole("button", { name: "Press Alt+Right", exact: true });
         before = (await framesOf(page)).length;
@@ -262,7 +240,6 @@ try {
         await bar.evaluate((row) => { row.scrollLeft = 0; });
         console.log(`PASS a held saved combination repeats its own chord (${comboKeys.length} keys) and leaves a once-held Ctrl alone`);
 
-        // 7. Probe the cancelable contextmenu while the arrow is physically held, not after it.
         await hold(page, cdp, left, KEY_REPEAT_DELAY_MS + KEY_REPEAT_INTERVAL_MS, async () => {
           const prevented = await left.evaluate((key) => {
             const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
@@ -279,8 +256,6 @@ try {
           { value: "", wrap: "nowrap" }, "a non-iOS phone keeps xterm's helper textarea as it was");
         console.log("PASS outside iOS the helper textarea stays empty and unwrapped");
 
-        // 8b. More keys opens the second row and the arrow pad without taking the typing focus; the
-        // pad's arrows repeat as the row's did, the row leaves out what they show, and it is saved.
         const more = page.locator('.key-bar > .key[data-key="more"]');
         await helper.focus();
         assert.equal(await more.getAttribute("aria-expanded"), "false");
@@ -294,7 +269,6 @@ try {
         const rowKeys = await bar.locator("[data-key]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-key")));
         for (const key of ["Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) assert.ok(!rowKeys.includes(key), `the row leaves out ${key} the second row or the pad shows`);
         assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!).keyBarExpanded), true, "the open bar is saved for this device");
-        // the inverted T: Up over Down, Left and Right beside Down, every key inside the screen
         const padBoxes = await page.locator(".key-bar-arrow-pad .key").evaluateAll((nodes) => Object.fromEntries(nodes.map((node) => {
           const box = node.getBoundingClientRect();
           return [node.getAttribute("data-key"), { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2), right: box.right }];

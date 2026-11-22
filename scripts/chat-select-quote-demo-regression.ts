@@ -1,13 +1,4 @@
-/**
- * Quoting a selection into the composer, on the unmodified app over the demo's fixture transport: a
- * selection in one agent reply offers Quote first and Comment second; Quote puts the words in the
- * message box as a `> ` quote with a blank line after it, after what was typed, the box takes the
- * keyboard with its caret at the end, and nothing is sent. A second quote stacks under the first,
- * Comment still opens its form, and the message then goes for an agent alone. At 1280 with a mouse
- * and at 390 on a touch screen. With UI_EVIDENCE_DIR set, each state is captured in the Codex
- * palette, dark and light. All files and HTTP traffic stay in this disposable, loopback-only app;
- * no herdr session is opened.
- */
+/** All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +8,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const playwrightCore = "playwright-core";
 const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
@@ -38,7 +30,6 @@ interface Submit { text: string; agent_only?: true }
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 const submits = (page: Page): Promise<Submit[]> => page.evaluate(() => (window as unknown as { quoteLab: { submits: Submit[] } }).quoteLab.submits);
 
-/** Selects `phrase` in the last agent reply that holds it, as a reader does: a mouse drag on a desktop; on a touch screen the range the handles leave. */
 async function select(page: Page, phrase: string, mouse: boolean): Promise<void> {
   const box = await page.evaluate((words) => {
     const rows = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words));
@@ -62,7 +53,6 @@ async function select(page: Page, phrase: string, mouse: boolean): Promise<void>
     await page.mouse.move((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, { steps: 4 });
     await page.mouse.move(box.x1, box.y1, { steps: 4 });
     await page.mouse.up();
-    // the drag took the words, or the page moved under it: say which, at once
     const taken = await page.evaluate(() => getSelection()?.toString() ?? "");
     assert.ok(taken.includes(phrase), `the drag selected "${phrase}", not "${taken}"`);
   } else {
@@ -91,8 +81,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Over the demo's own transport: the pane's transcript ends in a plan to quote from, and every
-  // submit frame the client sends is recorded (window.quoteLab). Everything else is the demo's.
   const gates = `<script>(() => {
     const demo = window.fetch;
     const lab = window.quoteLab = { submits: [], answers: 0 };
@@ -123,17 +111,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -168,11 +146,9 @@ try {
           const shot = async (step: string) => { if (evidence) await page.screenshot({ path: join(evidence, `${label}-${step}.png`) }); };
           const composer = page.getByRole("textbox", { name: "Message", exact: true });
 
-          // something typed already: the quote goes after it
           await composer.fill(TYPED);
           await composer.blur();
 
-          // Quote first, labelled; Comment second
           await select(page, FIRST, !shape.mobile);
           const buttons = page.locator(".selection-offer button");
           assert.equal(await buttons.count(), 2, `${label}: two actions on the selection`);
@@ -190,7 +166,6 @@ try {
           assert.deepEqual(box, { focused: "Message", start: quoted.length, end: quoted.length }, `${label}: the message box has the keyboard, its caret at the end`);
           assert.equal(await page.evaluate(() => getSelection()?.isCollapsed ?? true), true, `${label}: quoting clears the selection`);
 
-          // a second quote stacks under the first
           await composer.blur();
           await select(page, SECOND, !shape.mobile);
           await page.locator(".selection-quote").click();
@@ -201,7 +176,6 @@ try {
           await shot("2-quoted");
           assert.equal((await submits(page)).length, sent, `${label}: quoting sends nothing`);
 
-          // Comment still opens its form, as before
           await composer.blur();
           await select(page, FIRST, !shape.mobile);
           await page.locator(".reply-comment-offer").click();
@@ -226,7 +200,6 @@ try {
           await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
           await frames(page);
 
-          // a quote past the composer's limit is refused, saying why in words, and the draft is never cut
           const full = "x".repeat(19_990);
           await composer.fill(full);
           await composer.blur();
@@ -240,8 +213,6 @@ try {
           assert.equal(await composer.inputValue(), full, `${label}: the draft stays whole`);
 
           if (shape.mobile) {
-            // a touch selection that ends a little above the composer: the offer is taller on a touch screen than its
-            // mouse size, and its first placement already counts that, so it stands above the selection, not over the composer
             await composer.fill("");
             await composer.blur();
             await select(page, FIRST, false);
@@ -276,7 +247,6 @@ try {
             }, [NEAR, gap] as const);
             await frames(page);
             assert.ok(Math.abs(placed.gap - gap) < 2, `${label}: the selection ends ${gap}px above the composer (${placed.gap})`);
-            // a tap in the reply first: the next selection is a touch's
             await page.evaluate((words) => {
               const turn = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words)).at(-1)!;
               turn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));

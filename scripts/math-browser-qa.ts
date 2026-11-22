@@ -1,4 +1,3 @@
-/** Math in the chat, end to end in Chrome: KaTeX comes with the first expression, not with the page. */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +12,6 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-math-browser-")));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 let conversation: ConversationResponse;
-// pi's record shapes, as pi-image-browser-qa.ts writes them: one question and its answer
 const write = (answer: string) => {
   const path = join(root, "session.jsonl");
   writeFileSync(path, [
@@ -38,9 +36,7 @@ try {
   await viteBuild({ configFile: join(repo, "vite.config.ts"), root, publicDir: false, logLevel: "warn", build: { outDir: output, emptyOutDir: true } });
   server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
     const path = new URL(request.url).pathname;
-    // the chat asks for the pane's slash commands (skill chips); this fixture has none
     if (path.endsWith("/pane/commands")) return Response.json({ commands: [] });
-    // each page answers the conversation itself; one asked while the browser closes reaches here
     if (path.endsWith("/pane/conversation")) return Response.json(conversation);
     return new Response(Bun.file(join(output, path === "/" ? "index.html" : path.slice(1))));
   } });
@@ -80,7 +76,6 @@ try {
   await page.waitForFunction(() => getComputedStyle(document.querySelector(".katex")!).fontFamily.includes("KaTeX_Main"));
   assert.match(await page.locator(".markdown-math .katex-mathml annotation").textContent() ?? "", /e\^\{i\\pi\}\+1=0/);
 
-  // later expressions have it at once: nothing more is fetched, and no source form shows
   const loaded = scripts.length;
   write("Again: \\(a^2+b^2=c^2\\)");
   await page.evaluate(() => window.qa.refresh());
@@ -92,7 +87,6 @@ try {
   assert.equal(await page.locator(".update-notice").count(), 0, "math that loads asks for no reload");
   assert.deepEqual(errors, []);
 
-  // offline when the first expression comes: it and every later one keep their source form, quietly
   const offline = await browser.newPage({ locale: "en-US" });
   offline.on("pageerror", (error) => errors.push(error.message));
   await offline.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
@@ -119,7 +113,6 @@ try {
   // fetch, so the recovery is the reload line (lib/lazyChunk.ts), not a retry
   assert.equal(aborted, abortedFirst, "later expressions reuse the failed load without retrying");
   assert.equal(await offline.locator(".katex").count(), 0);
-  // the recovery: the app's update line (useUpdates) offers the reload, and only a tap reloads
   const notice = offline.locator(".update-notice.is-warning");
   await notice.getByText("Part of the app could not load.").waitFor({ timeout: 5_000 });
   assert.equal(reloads, 0, "the page is not reloaded until it is asked to be");
@@ -138,7 +131,6 @@ try {
   await diagrams.goto(`http://127.0.0.1:${server.port}/`);
   await diagrams.locator(".markdown-mermaid svg").waitFor({ timeout: 15_000 });
   assert.equal(await diagrams.locator(".update-notice").count(), 0, "a diagram that loads asks for no reload");
-  // a diagram that fails only to parse is a code block, and no reason to reload
   write("```mermaid\ngraph LR\n  A[Start --> \n```");
   await diagrams.evaluate(() => window.qa.refresh());
   await diagrams.locator(".markdown-code").first().waitFor();
@@ -170,12 +162,9 @@ try {
   await unstyled.unroute(/\/katex-[^/]+\.css$/);
   const katexAfter: string[] = [];
   unstyled.on("request", (request) => { if (/\/katex-[^/]+\.(?:js|css)$/.test(new URL(request.url()).pathname)) katexAfter.push(new URL(request.url()).pathname); });
-  // more expressions than before: the ones past the first are drawn by new components, which ask for KaTeX again
   write("Later: \\(z^2\\)\n\nAnd: \\(w^2\\)\n\nAgain: \\(v^2\\)");
   await unstyled.evaluate(() => window.qa.refresh());
   await unstyled.getByText("Again:").waitFor();
-  // a retry asks for the script as the new expressions mount, before a request the page sends
-  // after them: once that one is answered, every request of the retry has been seen
   await unstyled.evaluate(() => fetch("/index.html").then((response) => response.text()));
   assert.deepEqual(katexAfter, [], "a later expression does not load KaTeX without its stylesheet");
   assert.equal(await unstyled.locator(".katex").count(), 0, "math is not drawn without its stylesheet");

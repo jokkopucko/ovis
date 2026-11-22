@@ -1,7 +1,6 @@
 import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 
-/** Presentation-only correlation; never a credential, lease, or permission to send input.
- * Its own key survives a reload without changing any existing draft/storage shape. */
+/** Presentation-only correlation; never a credential, lease, or permission to send input. */
 const KEY = "ovis:pi-receipt-resume";
 let memory: string | undefined;
 export function receiptResumeId(): string {
@@ -9,7 +8,7 @@ export function receiptResumeId(): string {
   try {
     const saved = localStorage.getItem(KEY);
     if (saved && RECEIPT_RESUME_ID.test(saved)) return memory = saved;
-  } catch { /* memory-only when browser storage is unavailable */ }
+  } catch {}
   if (typeof crypto.randomUUID === "function") memory = crypto.randomUUID();
   else {
     // Like API request IDs, this must work on plain-HTTP LAN origins too.
@@ -19,6 +18,6 @@ export function receiptResumeId(): string {
     }).join("");
     memory = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
-  try { localStorage.setItem(KEY, memory); } catch { /* reconnect within this page still works */ }
+  try { localStorage.setItem(KEY, memory); } catch {}
   return memory;
 }

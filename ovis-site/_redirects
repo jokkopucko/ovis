@@ -25,6 +25,9 @@
 /install https://github.com/devswha/ovis/blob/main/README.md#install 302
 /changelog https://github.com/devswha/ovis/blob/main/CHANGELOG.md 302
 /faq /#faq 302
+# The community Discord: one permanent invite, so every link names ovis.sh/discord and a new invite
+# changes this line only.
+/discord https://discord.gg/MkK2aSe9Ct 302
 # The beta page has Japanese and Chinese pages of its own. Cloudflare follows a rule even where a
 # file matches, so these serve them before the /ja/* and /zh/* rules below send the address home.
 /ja/beta/ /ja/beta/ 200

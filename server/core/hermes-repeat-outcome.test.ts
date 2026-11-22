@@ -29,14 +29,12 @@ const redrawn = load("status-first-redraw-120");
 
 afterEach(() => mock.restore());
 
-/** The block under the last /status echo of a read, as Chat shows it. */
 const ownBlock = (read: Read): string => {
   const lines = read.screen.split("\n");
   const echo = findLastIndex(lines, (line) => line === "⚙️  /status");
   return lines.slice(echo + 1, lines.findIndex((line, at) => at > echo && line.startsWith("Agent Running: ")) + 1).join("\n");
 };
 
-/** The composer's send and the prompt route, over a herdr that shows `shown` and reports its history row. */
 function hermesPane(paneId: string, first: Read = recorded.sends[0]!.sent) {
   let shown: Read = first;
   // rows another device has the terminal scrolled up by: herdr's detection read stays on the live screen
@@ -47,7 +45,6 @@ function hermesPane(paneId: string, first: Read = recorded.sends[0]!.sent) {
   });
   spyOn(client, "paneGet").mockImplementation(async () => pane());
   spyOn(client, "paneScrollInfo").mockImplementation(async () => pane().scroll);
-  // each send's process binding: no foreground process, without asking a herdr
   spyOn(client, "paneProcessInfo").mockResolvedValue(undefined);
   spyOn(client, "sessionSnapshot").mockImplementation(async () => ({
     panes: [pane()], layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture",
@@ -78,9 +75,7 @@ it("gives each /status sent to one Hermes pane its own result, from the block un
     pane.show(sent);
     await pane.send();
     expect(pane.delivered).toHaveBeenCalledTimes(index + 1);
-    // echoed nothing yet: whatever the earlier sends left on screen is theirs, even when it reads the same
     const waiting = await pane.outcomes();
-    // a pane shows its five newest outcomes
     expect(waiting).toHaveLength(Math.min(index + 1, 5));
     expect(waiting.at(-1)?.state).toBe("accepted");
     pane.show(after);
@@ -89,7 +84,6 @@ it("gives each /status sent to one Hermes pane its own result, from the block un
     const lines = after.screen.split("\n");
     const echo = findLastIndex(lines, (line) => line === "⚙️  /status");
     expect(shown.at(-1)?.result_text).toBe(lines.slice(echo + 1, lines.findIndex((line, at) => at > echo && line.startsWith("Agent Running: ")) + 1).join("\n"));
-    // the earlier sends keep the results they had
     expect(shown.map((outcome) => outcome.state)).toEqual(shown.map(() => "result-observed"));
   }
 });
@@ -101,7 +95,6 @@ it("does not resolve a later /status from the earlier block when nothing new pri
   await pane.send();
   pane.show(third.after);
   expect((await pane.outcomes()).at(-1)?.state).toBe("result-observed");
-  // another /status, and the pane printed nothing: still the three blocks at the same history row
   expect(fourth.sent.top).toBe(third.after.top);
   pane.show(fourth.sent);
   await pane.send();
@@ -113,7 +106,6 @@ it("does not resolve a later /status from the earlier block when nothing new pri
 
 it("owns a fresh pane's first /status, read while Hermes redrew its input area for a terminal that attached (F3 r2 D1)", async () => {
   const pane = hermesPane("hermes-first-redraw", redrawn.sends[0]!.sent);
-  // the input line alone at the bottom: neither the status bar nor the rules were drawn yet
   expect(redrawn.sends[0]!.sent.screen.trimEnd().split("\n").at(-1)).toStartWith("❯ ");
   for (const [index, { sent, after }] of redrawn.sends.entries()) {
     pane.show(sent);
@@ -130,7 +122,6 @@ it("owns its /status block while another device has the terminal scrolled up: he
   for (const { sent, after } of recorded.sends.slice(3)) {
     pane.show(sent);
     await pane.send();
-    // the history moved by one block, and a phone scrolled its terminal up by as much
     pane.show(after, 12);
     expect((await pane.outcomes()).at(-1)).toMatchObject({ state: "result-observed", result_text: ownBlock(after) });
   }
@@ -149,7 +140,6 @@ describe("a /status whose earlier /status lost its anchor", () => {
   };
   const observe = (sent: CommandSend, read: Read, nextAt?: number) =>
     (sent.outcome = commandOutcome("pane-1", sent, { now: sent.at + 500, screen: read.screen, top: read.top, readers, ...(nextAt === undefined ? {} : { nextAt }) }));
-  // the earlier send's read torn at its last line, so its tail is never found again
   const torn = (read: Read): string => read.screen.replace(/Agent Running: No(\n ☤ )/u, "Agent Run$1");
   const [, , third, fourth, fifth] = recorded.sends as [unknown, unknown, { sent: Read; after: Read }, { sent: Read; after: Read }, { sent: Read; after: Read }];
 
@@ -157,7 +147,6 @@ describe("a /status whose earlier /status lost its anchor", () => {
     const ledger = new CommandReservations();
     const lost = send(ledger, third.sent, 0, torn(third.sent));
     expect(observe(lost, third.after).state).toBe("accepted");
-    // the next send's screen shows the lost send's block complete: what echoes after it is this send's
     const next = send(ledger, fourth.sent, 1);
     expect(observe(lost, fourth.sent, next.at).state).toBe("unknown");
     expect(observe(next, fourth.after)).toMatchObject({ state: "result-observed", result_text: ownBlock(fourth.after) });
@@ -168,12 +157,10 @@ describe("a /status whose earlier /status lost its anchor", () => {
   it("keeps a later send unclaimed while the earlier send's block could still be the one it echoes", () => {
     const ledger = new CommandReservations();
     const lost = send(ledger, third.sent, 0, torn(third.sent));
-    // sent before the lost send's echo printed: one new block later cannot tell the two apart
     const next = send(ledger, third.sent, 1);
     expect(observe(next, third.after).state).toBe("accepted");
     expect(observe(next, fourth.after).state).toBe("accepted");
     expect(observe(lost, fourth.after, next.at).state).toBe("unknown");
-    // and a send whose screen kept no history row proves nothing either (no row: no place for the earlier screen)
     const rowless = new CommandReservations();
     send(rowless, third.sent, 3, torn(third.sent));
     const blind = send(rowless, { ...fourth.sent, top: undefined as unknown as number }, 4);
@@ -181,12 +168,10 @@ describe("a /status whose earlier /status lost its anchor", () => {
   });
 
   it("lets the repeats after a lost send whose scroll reads disagreed own their blocks on a screen of identical blocks (#1550)", () => {
-    // a full screen of identical /status blocks; each send's block moves the history 12 rows
     const at = (top: number): Read => ({ ...fifth.sent, top });
     const ledger = new CommandReservations();
     const known = send(ledger, at(55), 0);
     expect(observe(known, at(67)).state).toBe("result-observed");
-    // Hermes redrew its input area right before agent.prompt: the send's two scroll reads disagreed, so it kept no row
     const lost = send(ledger, { ...fifth.sent, top: undefined as unknown as number }, 1);
     expect(observe(lost, at(79)).state).toBe("accepted");
     const next = send(ledger, at(79), 2);
@@ -197,14 +182,11 @@ describe("a /status whose earlier /status lost its anchor", () => {
   it("counts every earlier send a later one may owe, not only the one whose count is known", () => {
     const ledger = new CommandReservations();
     const known = send(ledger, third.sent, 0);
-    // a send made before the known send's block printed, whose screen and row were lost: its block prints later
     const pending = send(ledger, { ...third.sent, top: undefined as unknown as number }, 1, "");
     expect(pending.resultEchoes?.["hermes-status"]).toBeNull();
     expect(observe(known, third.after)).toMatchObject({ state: "result-observed", result_text: ownBlock(third.after) });
-    // the next send's screen shows only the known send's block complete: two blocks are owed before its own
     const next = send(ledger, third.after, 2);
     expect(observe(next, third.after).state).toBe("accepted");
-    // the pending send's block prints: it is not the next send's
     expect(observe(next, fourth.after).state).toBe("accepted");
   });
 });

@@ -16,7 +16,6 @@ const password = randomBytes(18).toString("hex");
 let server: ReturnType<typeof createServer> | undefined;
 const oldSocket = process.env["HERDR_SOCKET"];
 process.env["HERDR_SOCKET"] = join(root, "local-offline.sock");
-// Exercise the same automatic bundle discovery used by an unconfigured server.
 const oldManifest = process.env["OVIS_BUNDLE_MANIFEST"];
 delete process.env["OVIS_BUNDLE_MANIFEST"];
 async function docker(args: string[], input?: string): Promise<string> {

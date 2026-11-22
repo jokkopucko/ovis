@@ -27,7 +27,6 @@ struct OvisMacApp: App {
     }
 }
 
-/// Ovis itself once its server runs; until then, or when it stops, the setup that gets it running.
 struct MainView: View {
     @EnvironmentObject private var model: Model
     @Environment(\.openWindow) private var openWindow

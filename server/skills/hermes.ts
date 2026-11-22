@@ -170,19 +170,19 @@ function skillFiles(root: string): { path: string; fields: Readonly<Record<strin
       canonical = realpathSync(directory);
       if (ancestors.has(canonical)) return;
       entries = readdirSync(directory).sort();
-    } catch { return; /* absent, unreadable or broken root */ }
+    } catch { return; }
     ancestors.add(canonical);
     const hasSkill = entries.includes("SKILL.md");
     if (hasSkill) {
       const path = join(directory, "SKILL.md");
       try {
         if (statSync(path).isFile()) result.push({ path, fields: readFrontmatter(path) ?? {} });
-      } catch { /* unreadable skill does not hide its children */ }
+      } catch {}
     }
     for (const name of entries) {
       if (SKIP_DIRS.has(name) || (hasSkill && SUPPORT_DIRS.has(name))) continue;
       const path = join(directory, name);
-      try { if (statSync(path).isDirectory()) visit(path); } catch { /* broken or unreadable child */ }
+      try { if (statSync(path).isDirectory()) visit(path); } catch {}
     }
     ancestors.delete(canonical);
   };
@@ -192,7 +192,7 @@ function skillFiles(root: string): { path: string; fields: Readonly<Record<strin
 
 function yaml(path: string): Record<string, unknown> {
   try { return plainObject(Bun.YAML.parse(readFileSync(path, "utf8"))); }
-  catch { return {}; /* optional or malformed user configuration */ }
+  catch { return {}; }
 }
 function strings(value: unknown): string[] {
   if (typeof value === "string") {
@@ -264,7 +264,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
         try {
           const body = readSkillText(skill.path).replace(/^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---(?:\s*\r?\n|$)/, "");
           description = body.split(/\r?\n/).find((line) => line.trim() && !line.trim().startsWith("#"))?.trim().slice(0, 80) ?? "";
-        } catch { continue; /* unreadable skill */ }
+        } catch { continue; }
       }
       const previous = entries.get(name) ?? [];
       previous.push({ tier: directory.tier, root: directoryPath, origin: directory.origin, path: skill.path, description: description || `Invoke the ${name} skill` });
@@ -277,7 +277,6 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
     const contenders = candidates.filter((entry) => entry.tier === topTier);
     const first = contenders[0];
     if (!first) continue;
-    // Same-tier duplicates are ambiguous, except identical copies in one root at different depths.
     if (contenders.length > 1) {
       if (!contenders.every((entry) => entry.root === first.root && readFileSync(entry.path, "utf8") === readFileSync(first.path, "utf8"))) continue;
       contenders.sort((left, right) => relative(left.root, left.path).split(/[\\/]/).length - relative(right.root, right.path).split(/[\\/]/).length);

@@ -3,12 +3,11 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { BUNDLE_PLATFORMS, BUNDLE_WORKFLOW, bundleInput, bundleProblems, check, DEPLOYED_FILE, type Get, manifestUrl, publishedProblems, releaseCheck, WORKER_SOURCES, workerFingerprint, workerProblems } from "./release-guards.ts";
+import { BUNDLE_PLATFORMS, BUNDLE_WORKFLOW, bundleInput, bunPins, bundleProblems, check, DEPLOYED_FILE, type Get, manifestUrl, publishedProblems, releaseCheck, WORKER_SOURCES, workerFingerprint, workerProblems } from "./release-guards.ts";
 import { bundleManifestSource } from "../server/remote-bundle.ts";
 import { REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
 
 const made: string[] = [];
-/** a throwaway identity, unsigned whatever the user's git config says */
 const ID = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"];
 const run = (dir: string, ...args: string[]): void => {
   const result = spawnSync("git", ["-C", dir, ...ID, ...args], { encoding: "utf8" });
@@ -35,17 +34,12 @@ describe("bundleProblems", () => {
   });
 
   it("counts what the bundle runs, not its tests, docs or fixtures", () => {
-    expect(["server/index.ts", "shared/machines.ts", "integrations/gjc.ts", "bun.lock", "patches/x.patch", "scripts/build-remote-bundle.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "integrations/pi-ask.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar/src/main.rs", "crates/pty-sidecar/Cargo.lock"].every(bundleInput)).toBe(true);
+    expect(["server/index.ts", "shared/machines.ts", "integrations/gjc.ts", "bun.lock", "patches/x.patch", "scripts/build-remote-bundle.ts", "scripts/server-artifact.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "integrations/pi-ask.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar/src/main.rs", "crates/pty-sidecar/Cargo.lock"].every(bundleInput)).toBe(true);
     expect(["server/index.test.ts", "integrations/gjc.test.ts", "scripts/install-gjc-integration.test.ts", "scripts/install-pi-integration.test.ts", "server/AGENTS.md", "server/fixtures/a.json", "src/App.tsx", "serverless.ts", "scripts/release-notes.ts", "crates/pty-sidecar/README.md"].some(bundleInput)).toBe(false);
   });
 });
 
 describe("publishedProblems", () => {
-  /**
-   * GitHub as remote PCs see it: a manifest URL answers its JSON (a string as written); an archive
-   * of `size` bytes answers a GET of its first byte the way GitHub does (206, `bytes 0-0/<size>`);
-   * a HEAD answers 200 for anything, so only a GET can tell; anything else 404.
-   */
   const github = (files: Record<string, unknown>): Get => async (url, init) => {
     if (init.method === "HEAD") return new Response(null, { status: 200 });
     if (!(url in files)) return new Response("Not Found", { status: 404 });
@@ -87,7 +81,6 @@ describe("publishedProblems", () => {
   });
 
   it("fails an archive that announces its size but never delivers its first byte", async () => {
-    /** every archive answers 206 with a positive size, and `body()` as its body */
     const broken = (body: () => ReadableStream<Uint8Array> | null): Get => async (url, init) => {
       if (url === manifestUrl(39)) return github({ [manifestUrl(39)]: manifest("39") })(url, init);
       return new Response(body(), { status: 206, headers: { "content-range": "bytes 0-0/100" } });
@@ -99,7 +92,6 @@ describe("publishedProblems", () => {
   });
 
   it("passes an archive of undeclared size once its first byte arrives, and fails one that declares zero bytes", async () => {
-    /** a host without ranges: every archive answers 200 with `headers`, streaming one byte */
     const whole = (headers: Record<string, string>): Get => async (url, init) => {
       if (url === manifestUrl(39)) return github({ [manifestUrl(39)]: manifest("39") })(url, init);
       return new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } }), { status: 200, headers });
@@ -128,7 +120,6 @@ describe("workerProblems", () => {
 });
 
 describe("check", () => {
-  /** a repository released as 1.0.0 with remote bundle 1 and a recorded Worker, then changed by `edit` */
   function released(edit: Record<string, string>): string {
     const dir = mkdtempSync(join(tmpdir(), "hwc-release-"));
     made.push(dir);
@@ -232,6 +223,15 @@ describe("check", () => {
     expect(check(dir, true).problems[0]).toContain("from 2 to 3");
   });
 
+  it("reads a bun pin for every step that installs the bundles' Bun, so the guard sees a change of it", () => {
+    const workflow = readFileSync(join(import.meta.dir, "..", BUNDLE_WORKFLOW), "utf8");
+    const steps = Object.values(Bun.YAML.parse(workflow).jobs as Record<string, { steps?: { uses?: string; with?: Record<string, unknown> }[] }>)
+      .flatMap((job) => job.steps ?? []).filter((step) => /^(oven-sh\/setup-bun@|\.\/\.github\/actions\/setup-ci$)/.test(step.uses ?? ""));
+    expect(steps.length).toBeGreaterThan(0);
+    expect(steps.filter((step) => step.with?.["bun-version"] === undefined).map((step) => step.uses)).toEqual([]);
+    expect(bunPins(workflow).split(" ")).toHaveLength(steps.length);
+  });
+
   it("fails a release that moved the bun pin the Linux bundles carry", () => {
     const pin = (version: string) => `steps:\n  - uses: oven-sh/setup-bun@v2\n    with:\n      bun-version: ${version}\n`;
     const dir = released({ [BUNDLE_WORKFLOW]: pin("1.4.2") });
@@ -243,7 +243,6 @@ describe("check", () => {
   });
 
   it("fails a release whose Worker changed without a recorded deploy, and one without patch notes", () => {
-    // shared/telemetry.ts is also a bundle input, so the Worker's own file shows this one alone
     const dir = released({ "telemetry/worker.ts": "worker with a new field" });
     releasePr(dir);
     const { problems } = check(dir, false);

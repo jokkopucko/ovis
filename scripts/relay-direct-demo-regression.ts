@@ -1,10 +1,3 @@
-/**
- * Settings → Devices and PCs → My devices on the unmodified app over the demo's fixture transport, the
- * relay on: the same Wi-Fi direct connection row says it is on and who can sign in there, its switch turns
- * it off (the row says so) and on again. At 390 and 1280, light and dark.
- *
- * UI_EVIDENCE_DIR: relay-direct-<390|1280>-<light|dark>.png.
- */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +6,7 @@ import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
@@ -28,7 +22,6 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await page.locator(".conn-live").waitFor();
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(page, "Devices and PCs");
-  // the switch waits in More settings, under what is connected
   await openSettingsFolds(page);
   const group = page.locator('[data-section="devices-more"]');
   await group.getByText("Same Wi-Fi direct connection on", { exact: true }).waitFor();
@@ -49,7 +42,6 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   console.log(`PASS relay direct ${tag}`);
 }
 
-/** `?demo_relay_pass=grace` and `=data-limit` each show their relay notice over the pane. */
 async function notices(browser: Browser, origin: string): Promise<void> {
   for (const [fixture, kind] of [["grace", "sign-in-grace"], ["data-limit", "data-limit"]] as const) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
@@ -69,17 +61,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const prefix = "/herdr-web-ui/demo/app/";
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

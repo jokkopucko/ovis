@@ -1,0 +1,28 @@
+.setup-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: var(--space-1);
+}
+
+.setup-row > .setup-row-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.sidebar-footer-action svg.setup-row-ring {
+  transform: rotate(-90deg);
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 2;
+}
+
+.setup-row-ring > .is-done {
+  stroke: var(--status-done);
+  stroke-linecap: round;
+}
+
+.setup-row-hide {
+  flex: none;
+}

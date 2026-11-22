@@ -10,7 +10,6 @@ import { bounded, deferred, TestClock } from "./test-helpers.ts";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-/** A keeper over an account service that answers the pass request with `answer` (the challenge always works). */
 async function keeper(answer: () => Response | Promise<Response>) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-pass-keeper-"));
   dirs.push(stateDir);
@@ -118,6 +117,37 @@ test("a pass that ran out with no new one is no longer reported ok", async () =>
   k.made.stop();
 });
 
+test("a pass no longer sent is still the one a relay holds the PC to, until the relay stops honoring it", async () => {
+  let answer: () => Promise<Response> = async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 });
+  const k = await keeper(() => answer());
+  k.made.start();
+  await k.made.refresh();
+  const pass = k.passes[0]!;
+  expect(k.made.honored()).toBe(pass);
+  answer = async () => new Response("down", { status: 503 });
+  // sent until 5 minutes before it runs out, honored by the relay until 5 minutes after
+  k.clock.advance(172_800_000 - 300_000 - 1);
+  expect([k.made.current(), k.made.honored()]).toEqual([pass, pass]);
+  k.clock.advance(1);
+  expect([k.made.current(), k.made.honored()]).toEqual([null, pass]);
+  k.clock.advance(600_000 - 1);
+  expect([k.made.current(), k.made.honored(), k.made.issuer()]).toEqual([null, pass, "https://account.test"]);
+  k.clock.advance(1);
+  expect([k.made.current(), k.made.honored(), k.made.issuer()]).toEqual([null, null, null]);
+  k.made.stop();
+});
+
+test("a pass the relay refused is no longer one it holds the PC to", async () => {
+  const k = await keeper(async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 }));
+  k.made.start();
+  await k.made.refresh();
+  expect(k.made.honored()).toBe(k.passes[0]!);
+  k.made.stop();
+  // dropped, so no limit it named outlives it
+  await k.made.rejected();
+  expect(k.made.honored()).toBeNull();
+});
+
 test("a refresh asked for while a request is out is asked again once it ends", async () => {
   let asked = 0;
   const entered = deferred<void>();
@@ -132,7 +162,6 @@ test("a refresh asked for while a request is out is asked again once it ends", a
   k.made.start();
   const first = k.made.refresh();
   await entered.promise;
-  // the owner names an account while the old request is out
   void k.made.refresh();
   gate.resolve();
   await first;
@@ -187,7 +216,6 @@ test("a refusal held back by the keeper's own limit never delays the ask a newly
   };
   const made = new RelayPassKeeper({ stateDir, identity: () => identity, account: () => account, service: "https://account.test", fetch, clock, onPass: () => {} });
   made.start();
-  // the global and the regional relay refuse this PC at once, before it names any account
   await made.rejected();
   await made.rejected();
   expect(made.state).toBe("no_account");
@@ -211,13 +239,11 @@ test("neither a local limit nor a queued refresh shortens the service's Retry-Af
   k.made.start();
   const first = k.made.refresh();
   await entered.promise;
-  // the account changes while the request is out: queued
   void k.made.refresh();
   gate.resolve();
   await first;
   await Promise.resolve();
   expect(asked).toBe(1);
-  // the global and the regional relay refuse within the minute
   await k.made.rejected();
   await k.made.rejected();
   expect(asked).toBe(1);

@@ -8,19 +8,12 @@
 const KiB = 1024;
 const MiB = 1024 * KiB;
 export const REMOTE_LIMITS = {
-  /** GET /api/bridge: the bridge's identity */
   bridgeIdentity: 64 * KiB,
-  /** a bridge's error answer, read only for its code */
   bridgeError: 8 * KiB,
-  /** GET /api/health: read for the boot id of the server that answers */
   health: 64 * KiB,
-  /** GET /api/updates and /api/access of a PC's own Ovis: its update status, and where it answers */
   ownUpdates: 64 * KiB,
-  /** the release's bundle manifest */
   bundleManifest: MiB,
-  /** GET /api/session: a whole session snapshot */
   sessionSnapshot: 64 * MiB,
-  /** any other answer the PC proxy holds before passing it on */
   proxy: 64 * MiB,
   /** a watching device's pane/prompt, parsed here so its hidden fields can be removed */
   watchedPrompt: MiB,
@@ -34,7 +27,6 @@ export class RemoteResponseInvalid extends Error {
   constructor() { super("The other PC's answer could not be read"); this.name = "RemoteResponseInvalid"; }
 }
 
-/** Drops an answer that will not be read, so its connection is not left holding it. */
 export async function discard(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => {});
 }
@@ -71,7 +63,6 @@ export function parseJson<T>(bytes: Uint8Array): T {
   catch { throw new RemoteResponseInvalid(); }
 }
 
-/** The answer as JSON, read through `readCapped`. */
 export async function readCappedJson<T>(response: Response, limit: number): Promise<T> {
   return parseJson<T>(await readCapped(response, limit));
 }

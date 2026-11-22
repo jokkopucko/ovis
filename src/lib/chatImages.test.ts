@@ -47,42 +47,30 @@ describe("mentioned chat images", () => {
   });
 
   it("reads no prose as a spaced path, only what an upload names", () => {
-    // after another mention with no extension, prose that ends in an image name is not a file
     for (const text of ["see @/docs for the guide, then open logo.png", "import from @/components then check screenshot.png", "@/tmp/example please refer to diagram.png in prose"]) expect(images(text)).toEqual([]);
-    // a path with spaces is read only to an upload's own name, never to an earlier image-named folder
     expect(images("@/tmp/My Folder/report.png backup/.ovis/paste-20261103-065352-8f69b25b.png").map((image) => image.name)).toEqual(["/tmp/My Folder/report.png backup/.ovis/paste-20261103-065352-8f69b25b.png"]);
-    // even where the folder's first word already looks like a whole image path
     expect(images("@/tmp/report.png backup/.ovis/paste-20261103-065352-8f69b25b.png").map((image) => image.name)).toEqual(["/tmp/report.png backup/.ovis/paste-20261103-065352-8f69b25b.png"]);
-    // other spaces stop at the next mention too, and a long line of mentions without an upload's name reads none
     expect(images("@/tmp/not-image\u00a0@/A B/.ovis/paste-20261103-065352-8f69b25b.png").map((image) => image.name)).toEqual(["/A B/.ovis/paste-20261103-065352-8f69b25b.png"]);
     expect(images("@/a b c\u00a0".repeat(10_000))).toEqual([]);
-    // a path with spaces reaches only an upload folder, never a relative path in the words after another mention (#2682)
     for (const words of ["Please review docs/", "check @other docs/.ovis/", "check @~/My Folder/.ovis/", "Please review /x/.ovis/"]) {
       expect(images(`@/tmp/a.png ${words}paste-20261103-065352-8f69b25b.png now`).map((image) => image.name)).toEqual(["/tmp/a.png"]);
     }
-    // an upload folder set by OVIS_PASTE_DIR may hold spaces too
     for (const path of ["/My Uploads/paste-20261103-065352-8f69b25b.png", "/Users/me/John.Doe Files/paste-20261103-065352-8f69b25b.png", "C:\\v1.2 build\\paste-20261103-065352-8f69b25b.png"]) {
       expect(images(`@${path} Fix footer`).map((image) => image.name)).toEqual([path]);
     }
-    // and a folder whose name holds " @" is still the upload's path
     expect(images("@/Users/me/Company @ Work/.ovis/paste-20261103-065352-8f69b25b.png Fix footer").map((image) => image.name)).toEqual(["/Users/me/Company @ Work/.ovis/paste-20261103-065352-8f69b25b.png"]);
   });
 
   it("reads an upload whole through its PC's OVIS_PASTE_DIR named like an image file (#2771)", () => {
     const path = "/tmp/shots.png backup/paste-20261104-101500-0a1b2c3d.png";
     const windows = "C:\\Shots\\v2.webp old\\paste-20261104-101500-0a1b2c3d.png";
-    // a PC that never named the folder: the upload's path stops at the image-named word, as before (#2682)
     expect(images(`@${path} Fix footer`).map((image) => image.name)).toEqual(["/tmp/shots.png"]);
     setPasteFolder("fixture pc", "/tmp/shots.png backup");
     try {
       expect(images(`@${path} Fix footer`).map((image) => image.name)).toEqual([path]);
-      // only that folder: the words after another mention stay the user's
       expect(images("@/tmp/a.png Please review docs/paste-20261103-065352-8f69b25b.png now").map((image) => image.name)).toEqual(["/tmp/a.png"]);
-      // the folder as its server wrote it: another case is another folder
       expect(images(`@${path.replace("shots", "Shots")} Fix footer`).map((image) => image.name)).toEqual(["/tmp/Shots.png"]);
-      // in the message's order among the other mentions
       expect(images(`@/a/one.png @${path} @/b/two.gif`).map((image) => image.name)).toEqual(["/a/one.png", path, "/b/two.gif"]);
-      // only that PC's
       expect(userGalleryImages("other pc", "w1:p1", [], `@${path} Fix footer`, t).map((image) => image.name)).toEqual(["/tmp/shots.png"]);
       setPasteFolder("fixture pc", "C:\\Shots\\v2.webp old");
       expect(images(`@${windows} Fix footer`).map((image) => image.name)).toEqual([windows]);

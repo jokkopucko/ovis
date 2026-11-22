@@ -8,8 +8,6 @@ import type { RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { createServer } from "./index.ts";
 import type { HcInstaller } from "./runtime-move-service.ts";
 
-// A herdr PC with no herdr-core: the move is offered with an install of it, which a stand-in installer
-// does. Nothing here reads herdr's session: a move that is not available never asks it.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-move-install-")));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const SECRET = "test-move-install-secret";
@@ -52,7 +50,6 @@ it("offers to install herdr-core where only it is missing, installs it once aske
     expect([done.status, await done.json()]).toEqual([200, { installed: true }]);
     expect(current.switch_to).toBe("herdr-core");
 
-    // herdr-core there now: nothing more to install
     expect(await refusal(await install())).toEqual([409, "unavailable"]);
     expect(installs).toBe(2);
   } finally {

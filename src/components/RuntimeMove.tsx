@@ -1,12 +1,8 @@
 /**
- * Settings → About → Terminals: the move of this PC's whole herdr session to herdr-core, all of it
- * or nothing (shared/runtime-move.ts). One row with a button, only where the server offers the move
- * (read once as About opens). Its dialog previews what every pane becomes and starts the move, then
- * follows it, reading the server every two seconds only while it is open: the wait for busy panes
- * (Cancel ends it; a shell's command can be ended there, all at once after a confirm, and an agent's
- * pane opened), the steps, and the end. A finished move switches the runtime, which the page
- * follows as Settings' own switch does; a rolled-back one names what was not put back, and Try
- * again shows the plan as it stands now.
+ * Its dialog previews what every pane becomes and starts the move, then follows it, reading the
+ * server every two seconds only while it is open: the wait for busy panes (Cancel ends it; a shell's
+ * command can be ended there, all at once after a confirm, and an agent's pane opened), the steps,
+ * and the end.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -32,12 +28,9 @@ const POLL_MS = 2000;
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
 interface Props {
-  /** the boot id of the server the page reads now (any other one after a move is the restarted server) */
   bootId: string | null;
-  /** the row stays away while the page waits for a restarted server; an open dialog stays */
   hidden: boolean;
   onServerRestarted?: () => void;
-  /** opens a pane of this PC in the app (Settings closes); absent where the dialog has no app around it */
   onOpenPane?: (machineId: string, paneId: string) => void;
 }
 
@@ -52,7 +45,6 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
 
   useEffect(() => {
     let live = true;
-    // an older server (404) or a refused read offers no move; read again for a restarted server
     void fetchMovePlan().then((next) => { if (live) setAnswer(next); }, () => { if (live) setAnswer(null); });
     return () => { live = false; };
   }, [bootId]);
@@ -60,11 +52,9 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
   if (answer === null) return null;
   const { state } = answer.status;
   const openDialog = (): void => {
-    // the bridge answering now (its boot id needs no herdr): the move's own switch restarts it
     void fetchBridgeHealth().then((health) => { from.current = health.web_ui?.boot_id ?? bootId; }, () => { from.current = bootId; });
     setOpen(true);
   };
-  // no herdr-core yet: one press installs it, then the move's plan opens as it would have
   if (!answer.available && answer.install && !open) {
     const install = async (): Promise<void> => {
       setInstalling(true);
@@ -76,7 +66,6 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
         if (next.available) openDialog();
       } catch (reason: unknown) {
         setInstallError(said(reason));
-        // an install that went in while its answer was lost: the row follows what the server offers now
         void fetchMovePlan().then(setAnswer, () => {});
       } finally {
         setInstalling(false);
@@ -91,12 +80,11 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
       </SettingsRow>
     );
   }
-  // a move that just finished is answered by a server no longer offering one: its dialog stays to follow the restart
   if (!answer.available && !open) return null;
   return (
     <>
       {!hidden && answer.available && (
-        <SettingsRow label={t("Move everything to herdr-core")} description={t("Every workspace, tab and agent reopens on herdr-core, all at once.")}>
+        <SettingsRow label={t("Move everything to herdr-core")} description={t("Every workspace, tab and agent reopens on herdr-core, all at once, after a list shows what moves. Scrollback and programs running in shells do not come along.")}>
           <button type="button" className="btn" onClick={openDialog}>{state === "waiting" ? t("Waiting…") : state === "moving" ? t("Moving…") : t("Move…")}</button>
         </SettingsRow>
       )}
@@ -125,7 +113,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: first });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // a rollback the person has read: Try again shows the plan as it stands now
   const [acknowledged, setAcknowledged] = useState(false);
   // End all and move now was pressed: the list the server offered to end, asked once more before anything is ended
   const [confirming, setConfirming] = useState<MoveStopAllOffer | null>(null);
@@ -146,7 +133,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, pending]);
-  // read again all the while the dialog is open: another browser may start or cancel the move
   useEffect(() => {
     let live = true;
     const timer = setInterval(() => {
@@ -167,7 +153,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   };
   const start = (revision: string) => act(async () => {
     try { await startMove(revision); }
-    // a refused start (the plan moved on): what the server shows now, under the refusal's words
     catch (reason: unknown) { onAnswer(await fetchMovePlan()); throw reason; }
     setAcknowledged(false);
     onStarted();

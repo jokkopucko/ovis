@@ -5,9 +5,8 @@ import { join } from "node:path";
 import { forgetTranscriptState, transcriptPage } from "./conversation.ts";
 
 // Every agent's chat keeps reading past 64 MiB of history: pages bound each read, the file's size
-// does not. Pi has its own test (pi-large-history.test.ts); this holds Claude and Codex to the same.
+// does not.
 const dir = mkdtempSync(join(tmpdir(), "large-history-agents-"));
-// the readers keep module-wide caches keyed by path: leave none behind for the files removed here
 afterAll(() => { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); });
 const pad = "x".repeat(512 * 1024);
 const TURNS = 140;

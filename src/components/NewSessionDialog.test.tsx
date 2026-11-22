@@ -16,9 +16,7 @@ describe("NewSessionDialog", () => {
     const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
     const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    // the test renderer draws no DOM: nothing is an element, so the focus trap finds nothing to hold
     Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class HTMLElement {} });
-    // the recent folders' row measures itself; nothing here is laid out
     Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: class ResizeObserver { observe() {} disconnect() {} } });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test browser", maxTouchPoints: 0 } });
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
@@ -127,10 +125,8 @@ describe("NewSessionDialog", () => {
       const value = (id: string) => renderer!.root.findByProps({ id }).props.value;
       expect([value("new-session-model"), value("new-session-effort")]).toEqual(["opus", "high"]);
       const pick = async (kind: string) => { await act(async () => { renderer!.root.findByProps({ labelledBy: "new-session-agent" }).props.onChange(kind); }); };
-      // Codex has an effort and no model set: its own model, the level set for it
       await pick("codex");
       expect([value("new-session-model"), value("new-session-effort")]).toEqual(["", "xhigh"]);
-      // every field stays the user's to change before Start
       await act(async () => { renderer!.root.findByProps({ id: "new-session-model" }).props.onChange({ target: { value: "gpt-5-codex" } }); });
       await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
       expect(bodies).toHaveLength(1);
@@ -166,12 +162,10 @@ describe("NewSessionDialog", () => {
       await act(async () => { renderer = create(view); });
       const effort = () => renderer!.root.findByProps({ id: "new-session-effort" });
       const pick = async (kind: string) => { await act(async () => { renderer!.root.findByProps({ labelledBy: "new-session-agent" }).props.onChange(kind); }); };
-      // Claude Code's setting is not Codex's
       await pick("codex");
       expect(effort().props.value).toBe("");
       await pick("claude");
       expect(effort().props.value).toBe("high");
-      // picked by the reader, though it is the level Claude Code's setting names: it goes with them
       await act(async () => { effort().props.onChange({ target: { value: "max" } }); });
       await act(async () => { effort().props.onChange({ target: { value: "high" } }); });
       await pick("codex");
@@ -190,10 +184,8 @@ describe("NewSessionDialog", () => {
       await act(async () => { renderer = create(view); });
       const value = (id: string) => renderer!.root.findByProps({ id }).props.value;
       expect([value("new-session-model"), value("new-session-effort")]).toEqual(["", ""]);
-      // the shared settings come in (or Settings, opened over the dialog, sets them)
       await act(async () => { update({ claudeLaunchModel: "opus", claudeLaunchEffort: "high" }); });
       expect([value("new-session-model"), value("new-session-effort")]).toEqual(["opus", "high"]);
-      // the reader's own model stays; the effort they left follows the setting
       await act(async () => { renderer!.root.findByProps({ id: "new-session-model" }).props.onChange({ target: { value: "sonnet" } }); });
       await act(async () => { update({ claudeLaunchModel: "haiku", claudeLaunchEffort: "max" }); });
       expect([value("new-session-model"), value("new-session-effort")]).toEqual(["sonnet", "max"]);
@@ -215,7 +207,6 @@ describe("NewSessionDialog", () => {
       expect(renderer!.root.findByProps({ id: "new-session-cwd" }).props.value).toBe("/home/u/custom-dir");
       expect(renderer!.root.findByProps({ placeholder: "custom-dir" }).props.value).toBe("AUDIT-UNSAVED-NAME");
       expect(renderer!.root.findByProps({ id: "new-session-prompt" }).props.value).toBe("First draft prompt");
-      // Explicit Cancel clears the draft
       const cancelBtn = renderer!.root.findAllByType("button").find((btn) => btn.props.children === "Cancel")!;
       await act(async () => { cancelBtn.props.onClick(); });
       await act(async () => { renderer!.update(view(false)); });
@@ -237,7 +228,6 @@ describe("NewSessionDialog", () => {
       await act(async () => { renderer!.root.findByProps({ id: "new-session-cwd" }).props.onChange({ target: { value: "/home/u/server-a-only" } }); });
       await act(async () => { renderer!.root.findByProps({ id: "new-session-prompt" }).props.onChange({ target: { value: "for server A" } }); });
       await act(async () => { renderer!.update(view(false)); });
-      // the same tab, now on another PC's scope of the hosted shell
       location.pathname = `/s/${"b".repeat(32)}/`;
       await act(async () => { renderer!.update(view(true)); });
       expect(renderer!.root.findByProps({ id: "new-session-cwd" }).props.value).toBe("/home/u");
@@ -266,6 +256,26 @@ describe("NewSessionDialog", () => {
       await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
       const alerts = renderer!.root.findAll((node) => node.type === "p" && node.props.role === "alert");
       expect(alerts.map((node) => node.children.filter((child) => typeof child === "string").join(""))).toEqual(["Directory not found"]);
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("tells the shell while its create is in flight, so a phone's Back can leave it open, and once the create has failed", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => {
+      if (String(input).includes("workspace/create")) return await new Promise<Response>((resolve) => { answer = resolve; });
+      return new Response(JSON.stringify({ agents: [] }), { headers: { "content-type": "application/json" } });
+    }, { preconnect: globalThis.fetch.preconnect }));
+    const reported: boolean[] = [];
+    const view = createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", onClose: () => undefined, onCreated: () => undefined, onPending: (pending) => { reported.push(pending); } }) });
+    try {
+      await act(async () => { renderer = create(view); });
+      await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+      expect(reported.at(-1)).toBe(true);
+      await act(async () => { answer(new Response(JSON.stringify({ error: { code: "internal", message: "herdr went away" } }), { status: 500, headers: { "content-type": "application/json" } })); });
+      expect(reported.at(-1)).toBe(false);
+      expect(renderer!.root.findAll((node) => node.type === "p" && node.props.role === "alert").length).toBe(1);
     } finally {
       fetch.mockRestore();
     }

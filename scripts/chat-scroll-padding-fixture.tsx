@@ -8,7 +8,6 @@ declare global {
   }
 }
 
-/** The chat's list settings, with a header and rows whose heights the script sets. */
 function Fixture() {
   const [heights, setHeights] = useState<number[]>(() => Array.from({ length: 40 }, (_, index) => 60.37 + (index % 7) * 13.13));
   const [header, setHeader] = useState(20);

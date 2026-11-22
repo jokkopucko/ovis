@@ -9,16 +9,37 @@ const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
 describe("the served build's revision", () => {
+  it("reads the build in the folder the supervisor started a source bridge in, as main does", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "herdr-served-cwd-"));
+    directories.push(directory);
+    const revision = "b".repeat(40);
+    const probe = `const { connectUpdater } = await import(${JSON.stringify(join(import.meta.dir, "update-api.ts"))});
+      const { mkdirSync, utimesSync, writeFileSync } = await import("node:fs");
+      const service = connectUpdater();
+      mkdirSync("dist", { recursive: true });
+      writeFileSync("dist/build.json", JSON.stringify({ revision: ${JSON.stringify(revision)} }));
+      // the file clock is coarser than Date.now(): a build written just now may carry a time before the start
+      const later = new Date(Date.now() + 60_000);
+      utimesSync("dist/build.json", later, later);
+      const read = service.servedRevision;
+      console.log(JSON.stringify(read ? await read() : "unmanaged"));
+      process.exit(0);`;
+    const env: Record<string, string | undefined> = { ...process.env, OVIS_MANAGED: "1" };
+    delete env["OVIS_ASSETS"];
+    const child = Bun.spawn([process.execPath, "-e", probe], { cwd: directory, env, stdout: "pipe", stderr: "inherit", ipc() {} });
+    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    expect(code).toBe(0);
+    expect(JSON.parse(out.trim())).toBe(revision);
+  });
+
   it("reads the commit dist/build.json names, as it is now", async () => {
     const directory = mkdtempSync(join(tmpdir(), "herdr-served-revision-"));
     directories.push(directory);
     const read = servedRevision(directory, 0);
-    // no build yet, or one older than the file
     expect(await read()).toBeNull();
     mkdirSync(join(directory, "dist"));
     writeFileSync(join(directory, "dist", "build.json"), JSON.stringify({ revision: "a".repeat(40) }));
     expect(await read()).toBe("a".repeat(40));
-    // what a plugin reinstall or a `git pull` and a build does under the running server
     writeFileSync(join(directory, "dist", "build.json"), JSON.stringify({ revision: "b".repeat(40) }));
     expect(await read()).toBe("b".repeat(40));
   });
@@ -28,7 +49,6 @@ describe("the served build's revision", () => {
     directories.push(directory);
     mkdirSync(join(directory, "dist"));
     writeFileSync(join(directory, "dist", "build.json"), JSON.stringify({ revision: "a".repeat(40) }));
-    // a pull without a build, then a restart: the build predates the server, and a restart cannot change it
     expect(await servedRevision(directory, Date.now() + 60_000)()).toBeNull();
     expect(await servedRevision(directory, 0)()).toBe("a".repeat(40));
   });
@@ -48,7 +68,6 @@ describe("the served build's revision", () => {
 const offered = "a".repeat(40), moved = "b".repeat(40);
 const offer = (patch: Partial<UpdateStatus> = {}): UpdateStatus => ({ ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true,
   latest_revision: offered, latest_version: "9.9.9", current_revision: "c".repeat(40), revision_bound_install: true, ...patch });
-/** A service that keeps every request it is handed. */
 function service(status: () => UpdateStatus): UpdateService & { requests: UpdateRequest[] } {
   const requests: UpdateRequest[] = [];
   return { requests, status, notes: noUpdateNotes, installed: noInstalledNotes, request: (request) => { requests.push(request); } };
@@ -75,13 +94,10 @@ describe("a cancel", () => {
     expect(updates.requests).toEqual([]);
     expect(await cancel()).toEqual({ status: 202, code: null });
     expect(updates.requests).toEqual([{ command: "cancel", install_id: issued }]);
-    // nothing building (restarting onto the new release, or idle): past or nothing to stop
-    // still checking what it installs: stopped before it builds
     status = offer({ phase: "checking", install_cancellable: true });
     expect(await cancel()).toEqual({ status: 202, code: null });
     updates.requests.splice(1);
     for (const phase of ["restarting", "idle"] as const) { status = offer({ phase, install_cancellable: true }); expect(await cancel()).toEqual({ status: 409, code: "update_not_cancellable" }); }
-    // an older supervisor cannot
     status = offer({ phase: "building" });
     expect(await cancel()).toEqual({ status: 409, code: "update_restart_required" });
     expect(updates.requests).toHaveLength(1);
@@ -137,7 +153,6 @@ describe("a manual install", () => {
     status = offer({ phase: "building" });
     expect(await answer(handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", updates))).toEqual({ status: 409, code: "update_busy" });
     expect(updates.requests).toHaveLength(1);
-    // a check still goes without a body
     status = offer();
     const check = new Request("http://127.0.0.1/api/updates/check", { method: "POST", headers: { "x-herdr-update": "1" } });
     expect(await answer(handleUpdateRequest(check, "/api/updates/check", updates))).toEqual({ status: 202, code: null });
@@ -186,7 +201,6 @@ describe("the update status", () => {
     const plain = await read();
     expect(plain.status).toBe(200);
     expect("port" in plain.body || "serving_url" in plain.body).toBe(false);
-    // tailscale that cannot be started: the status stands without them, and the asker falls back to /api/access
     const failed = await read(async () => { throw new Error("spawn EACCES"); });
     expect(failed.status).toBe(200);
     expect(failed.body.latest_revision).toBe(offered);

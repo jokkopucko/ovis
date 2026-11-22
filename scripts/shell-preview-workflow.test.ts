@@ -7,7 +7,6 @@ import {
   scriptProblems, secretProblems, type Step, stepList, unpackOutcomes, type Workflow,
 } from "./shell-workflow-rules.ts";
 
-/** The preview workflow at SHELL_PREVIEW_WORKFLOW (a mutated copy) or the committed one. */
 const preview = (): Workflow => parseWorkflow(process.env.SHELL_PREVIEW_WORKFLOW ?? join(root, ".github/workflows/shell-preview.yml"));
 const build = (): Job => preview().jobs["shell-build"]!;
 const deploy = (): Job => preview().jobs["shell-deploy"]!;
@@ -15,9 +14,7 @@ const find = (job: Job, predicate: (step: Step) => boolean): Step => job.steps!.
 const deployIndex = (): number => deploy().steps!.findIndex((candidate) => candidate.run?.includes("pages deploy dist-shell") === true);
 const deployStep = (): Step => deploy().steps![deployIndex()]!;
 
-/** `--flag value` of a wrangler command line. */
 const flag = (command: string, name: string): string | undefined => command.match(new RegExp(`--${name} (\\S+)`))?.[1];
-/** The production deploy in the committed release.yml: the command and the branch that is app.ovis.sh. */
 const production = (): { run: string; branch: string } => {
   const run = parseWorkflow(join(root, ".github/workflows/release.yml")).jobs["shell-deploy"]!.steps!
     .find((candidate) => candidate.run?.includes("pages deploy dist-shell") === true)!.run!;
@@ -37,14 +34,14 @@ test("no script interpolates an expression or writes $GITHUB_ENV or $GITHUB_PATH
   expect(scriptProblems(preview())).toEqual([]);
 });
 
-test("the build holds no secret and no environment, restores the cache read-only and passes the tarball's SHA-256", () => {
+test("the build holds no secret and no environment, restores no cache and passes the tarball's SHA-256", () => {
   const job = build();
   expect(job.environment).toBeUndefined();
   expect(preview().permissions).toEqual({ contents: "read" });
   expect(job.permissions).toEqual({ contents: "read" });
   expect(JSON.stringify(job)).not.toContain("secrets.");
   expect(cacheProblems(preview())).toEqual([]);
-  expect(find(job, (step) => step.uses === "./.github/actions/setup-ci").with).toEqual({ cache: "restore" });
+  expect(find(job, (step) => step.uses === "./.github/actions/setup-ci").with).toEqual({ cache: "none" });
   expect(find(job, (step) => step.uses?.startsWith("actions/checkout@") === true).with?.ref).toBe("${{ github.sha }}");
   for (const step of job.steps!) if (step.uses && !step.uses.startsWith("./")) expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
   expect(job.outputs).toEqual({ sha256: "${{ steps.pack.outputs.sha256 }}" });
@@ -136,7 +133,6 @@ test("the deploy refuses links, special files, paths outside the tarball and Pag
   expect(refused.length).toBe(12);
 }, 30_000);
 
-/** The verify step against a local server answering every request with `status` and `body`. */
 async function verify(status: number, body: string): Promise<{ code: number; requests: number; output: string }> {
   let requests = 0;
   const server = Bun.serve({ port: 0, fetch: () => { requests++; return new Response(body, { status }); } });

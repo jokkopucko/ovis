@@ -74,7 +74,6 @@ it("reads herdr's wrapper fact on macOS only, and only for the wrapper herdr sta
 it("tells a nested pane on macOS by the wrapper, or by missing process facts for a pane herdr does not label Codex", () => {
   expect(kiroNested(info, true, "darwin")).toBe(true);
   expect(kiroNested(undefined, false, "darwin")).toBe(true);
-  // herdr labels it Codex, or another platform: a plain pane, as on main
   expect(kiroNested(undefined, true, "darwin")).toBe(false);
   expect(kiroNested(undefined, false, "linux")).toBe(false);
   expect(kiroNested(info, false, "linux")).toBe(false);

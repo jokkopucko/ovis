@@ -4,8 +4,8 @@
  * sidebar draws one where the user's `[ui.sidebar.agents]` rows name it as `$name`. The web UI's
  * agent rows follow the `$name` tokens of those rows (server/herdr-sidebar.ts reads them from the
  * herdr config.toml of the PC the browser talks to, as herdr's sidebar is the client's config,
- * remote PCs included), and draw every token a pane has where the config names none. Kept apart
- * from protocol.ts so the browser can import the values.
+ * remote PCs included). Where the config names none they draw every token a pane has, save a blank
+ * or non-text value and a `role` of `background`.
  */
 
 /**
@@ -47,10 +47,6 @@ const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 const asciiLower = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
-/**
- * The token a launcher sets to file a pane under the Agents list's background agents
- * (`--token role=background`, any case, spaces around it ignored; src/lib/agentRoster.ts).
- */
 export const ROLE_TOKEN = "role";
 
 export function isBackgroundRole(value: unknown): boolean {
@@ -72,19 +68,11 @@ export function paneTokenRuleMatches(rule: PaneTokenRule, value: string): boolea
   return false;
 }
 
-/** The `$name` tokens an agent's row draws: that agent's own rows, else `rows`; null where the config names none, and the row then draws every token. */
 export function paneTokenSpecs(layout: AgentRowTokens | null, agent: string | null): PaneTokenSpec[] | null {
   return (layout && agent !== null && Object.hasOwn(layout.by_agent, agent) ? layout.by_agent[agent] : undefined) ?? layout?.rows ?? null;
 }
 
-/**
- * What a pane's tokens say on its agent row, in the order the row draws them: the tokens the
- * agent's herdr rows name, or every token (by name) where the config names none. A missing or
- * blank token says nothing, and neither does one a matching rule hides, nor, where the config names
- * none, the background tag (`role=background`). A token the rows name twice
- * is said once, at the first place whose rules leave it shown. The values are text the row writes as
- * it is, never markup.
- */
+/** The values are text the row writes as it is, never markup. */
 export function paneTokenValues(layout: AgentRowTokens | null, agent: string | null, tokens: Readonly<Record<string, unknown>> | null | undefined): string[] {
   if (!tokens) return [];
   const valueOf = (name: string): string | null => {
@@ -92,7 +80,6 @@ export function paneTokenValues(layout: AgentRowTokens | null, agent: string | n
     return typeof value === "string" && value.trim() ? value : null;
   };
   const specs = paneTokenSpecs(layout, agent);
-  // the background tag already says where the row stands: a row drawing every token leaves it out
   if (specs === null) return Object.keys(tokens).sort().flatMap((name) => name === ROLE_TOKEN && isBackgroundRole(tokens[name]) ? [] : valueOf(name)?.trim() ?? []);
   const shown: string[] = [];
   const said = new Set<string>();

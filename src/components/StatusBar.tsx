@@ -2,8 +2,7 @@
  * The pane column's bottom line from 769px, as the Herdr app's status bar (herdr-app
  * defaults/mods/workspace-status, Apache-2.0, THIRD_PARTY_NOTICES.md): where the open pane is (PC,
  * workspace, folder) and its branch on the left; a watching device's View only, the jump to the next
- * session waiting for you and the connection on the right. The header's one row keeps only the tabs
- * and their tools.
+ * session waiting for you and the connection on the right.
  */
 import type { ReactNode } from "react";
 import { CircleHelp, GitBranch, Monitor } from "lucide-react";
@@ -24,7 +23,6 @@ export interface StatusBarProps {
   watching: boolean;
   waiting: number;
   onNextWaiting: (() => void) | null;
-  /** live, reconnecting (lost after it was up), connected (back, for a moment: lib/headerConnection.ts) or lost */
   connection: "live" | "reconnecting" | "connected" | "lost";
   connectionWord: string;
 }

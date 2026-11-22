@@ -13,9 +13,8 @@ import navigation from "../fixtures/pi-ask-navigation.json";
 import system from "../fixtures/pi-ask-system-theme.json";
 import { ANSI_RE, type OmoAsk } from "./shared.ts";
 
-// A fake RPC endpoint on a unique pipe/socket. Never connects to a real Herdr session.
 async function withPane(initial: string, run: (pane: {
-  screen: string; status: string; sent: string[]; visible?: string; scroll: number; onSent?: (key: string) => void;
+  screen: string; status: string; sent: string[]; visible?: string; scroll: number; onSent?: (key: string) => void; onRead?: () => void;
   bind(questions: OmoAsk["questions"]): void;
   card(): Promise<InteractivePrompt>; read(): Promise<InteractivePrompt | null>;
   answer(id: string, choice: object, signal?: AbortSignal, options?: PromptRequestOptions): Promise<number>;
@@ -33,7 +32,7 @@ async function withPane(initial: string, run: (pane: {
     return (await response.json() as { prompt: InteractivePrompt | null }).prompt;
   };
   const pane = {
-    screen: initial, status: "blocked", sent: [] as string[], visible: undefined as string | undefined, scroll: 0, onSent: undefined as ((key: string) => void) | undefined,
+    screen: initial, status: "blocked", sent: [] as string[], visible: undefined as string | undefined, scroll: 0, onSent: undefined as ((key: string) => void) | undefined, onRead: undefined as (() => void) | undefined,
     read: readCard,
     bind: (questions: OmoAsk["questions"]) => {
       if (nativeCall) appendFileSync(session, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: `native-${nativeCall}` } }) + "\n");
@@ -63,9 +62,9 @@ async function withPane(initial: string, run: (pane: {
       const request = JSON.parse(buffer.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string; format?: string } };
       const reply = (result: unknown) => socket.end(JSON.stringify({ id: request.id, result }) + "\n");
       if (request.method === "session.snapshot") return reply({ snapshot: { panes: [{ pane_id: id, agent: "pi", agent_status: pane.status, terminal_id: id, focused: false }], layouts: [] } });
+      if (request.method === "pane.read") pane.onRead?.();
       if (request.method === "pane.read") return reply({ read: { text: request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") } });
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: pane.scroll } } });
-      // pi holds the pane's input: its key-driven cards answer only then
       if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [{ pid: 2147483646, argv: ["pi"] }] } });
       if (request.method === "agent.get") return reply({ agent: nativeCall ? { agent: "pi", agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: session } } : {} });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
@@ -132,13 +131,27 @@ test("Pi ask answer route refuses a question replaced during navigation", async 
   });
 }, 4_000);
 
-test("Pi ask answer route writes a custom answer only after focusing the inline input", async () => {
+test.each(["editor stays open", "editor closes during the look", "editor never shows the text", "editor shows the text a read late"])("Pi ask submits typed text only if the %s", async state => {
   await withPane(fixtures.single, async pane => {
     const card = await pane.card();
     let moves = 0;
-    pane.onSent = key => { if (key === "down") pane.screen = ++moves === 1 ? fixtures["single-second"] : fixtures["single-custom-empty"]; };
-    expect(await pane.answer(card.id, { custom_text: "typed answer" })).toBe(200);
-    expect(pane.sent).toEqual(["down", "down", "ctrl+u", "text:typed answer", "enter"]);
+    const shows = state !== "editor never shows the text";
+    // pi draws a paste a moment after its write: the Enter waits for it, bounded (#3999)
+    const late = state === "editor shows the text a read late";
+    let drawn: string | undefined;
+    pane.onSent = key => {
+      if (key === "down") pane.screen = ++moves === 1 ? fixtures["single-second"] : fixtures["single-custom-empty"];
+      // pi shows what is typed on the Other row (#3999: an Enter on an empty row would submit nothing)
+      if (key === "text:typed answer" && shows) pane.screen = fixtures["single-custom-empty"].replace(/(^❯ 3\.).*$/m, "$1 typed answer");
+      if (key === "text:typed answer" && late) { drawn = pane.screen; pane.screen = fixtures["single-custom-empty"]; }
+    };
+    let readsAfter = 0;
+    pane.onRead = () => { if (drawn !== undefined && ++readsAfter === 2) { pane.screen = drawn; drawn = undefined; } };
+    const closes = state === "editor closes during the look";
+    const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:typed answer") pane.screen = "> unsent draft"; };
+    const submits = state === "editor stays open" || late;
+    expect(await pane.answer(card.id, { custom_text: "typed answer" }, undefined, { beforeKey })).toBe(submits ? 200 : 409);
+    expect(pane.sent).toEqual(["down", "down", "ctrl+u", "text:typed answer", ...(submits ? ["enter"] : [])]);
   });
 });
 
@@ -160,7 +173,6 @@ test.each(["first\nsecond", "first\rsecond", "first\r\nsecond", "\nanswer", "ans
     const card = await pane.card();
     const original = pane.screen;
     let moves = 0;
-    // Allow the real custom-input focus path: rejection must be validation, not a stale cursor.
     // Any premature Enter would close the question and expose a later screen to the remaining input.
     pane.onSent = key => {
       if (key === "down") pane.screen = ++moves === 1 ? fixtures["single-second"] : fixtures["single-custom-empty"];
@@ -396,7 +408,6 @@ const closingScreen = "Question complete\nEnter to select · ↑/↓ to navigate
 test.each([fixtures.single, fixtures.multi, fixtures.review])("Pi ask successful answer does not flash fallback keys while blocked status catches up %#", async screen => {
   await withPane(screen, async pane => {
     const card = await pane.card();
-    // The widget has closed, but its hint and the preceding blocked snapshot can outlive it.
     pane.onSent = key => { if (key === "enter") pane.screen = closingScreen; };
     const choice = card.multi_select ? { option_indices: [0] } : { option_index: 0 };
     expect(await pane.answer(card.id, choice)).toBe(200);

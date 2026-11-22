@@ -49,7 +49,6 @@ export interface CreateTabRequest extends CreateWorkspaceRequest {
   workspace_id: string;
 }
 
-/** POST /api/workspace/create: the workspace herdr made and the pane the agent (if any) runs in. */
 /** POST /api/worktree/create: branch is the new checkout's branch (created from base, or HEAD, unless it exists). */
 export interface CreateWorktreeRequest {
   workspace_id: string;
@@ -127,6 +126,7 @@ export interface WorktreeInventory {
   entries: WorktreeInventoryEntry[];
 }
 
+/** POST /api/workspace/create: the workspace herdr made and the pane the agent (if any) runs in. */
 export interface WorkspaceCreated {
   workspace_id: string;
   pane_id: string;

@@ -5,10 +5,15 @@ import { useT } from "../lib/i18n.ts";
 import type { SubmitResult } from "../lib/ws.ts";
 import "./SecretInput.css";
 
-/** A DOM-only value: no drafts, queue, React state or retry copy of the secret. */
-export function SecretInput({ prompt, active = true, onSend, onCancel }: {
+/**
+ * A DOM-only value: no drafts, queue, React state or retry copy of the secret. `unchecked`: the PC types what is
+ * sent without reading its screen first (a PC not yet updated, at a prompt it does not know: HerdrSocket.typesSecret),
+ * which the field says.
+ */
+export function SecretInput({ prompt, active = true, unchecked = false, onSend, onCancel }: {
   prompt: string;
   active?: boolean;
+  unchecked?: boolean;
   onSend: (value: string) => Promise<SubmitResult> | null;
   onCancel: () => void;
 }) {
@@ -32,7 +37,7 @@ export function SecretInput({ prompt, active = true, onSend, onCancel }: {
     if (busy.current || !input.current) return;
     let value = input.current.value;
     input.current.value = "";
-    if (!validSecret(value)) { setError(t("Enter a single-line password or PIN.")); return; }
+    if (!validSecret(value, prompt)) { setError(t("Enter a single-line password or PIN.")); return; }
     busy.current = true; setPending(true); setError(null);
     const result = onSend(value);
     value = "";
@@ -49,6 +54,7 @@ export function SecretInput({ prompt, active = true, onSend, onCancel }: {
         onKeyDown={(event) => { if (event.key === "Enter" && (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) event.preventDefault(); }} />
     </label>
     <p className="secret-input-note">{t("Sent directly to this terminal. Never saved as a draft or queued.")}</p>
+    {unchecked && <p className="secret-input-note">{t("This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.")}</p>}
     <div className="secret-input-actions">
       <button type="submit" className="btn btn-primary" disabled={pending}><Send size={14} aria-hidden="true" /> {t("Send")}</button>
       <button type="button" className="btn" disabled={pending} onClick={() => { if (input.current) input.current.value = ""; onCancel(); }}>{t("Cancel")}</button>

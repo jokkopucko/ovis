@@ -1,11 +1,3 @@
-/**
- * The fonts this PC serves from its state folder's `fonts/` (shared/user-fonts.ts), added to the page
- * for the families a font field in Settings names, so a phone draws a font it does not have as the PC
- * does (#412). While no field names a font nothing is asked, and a family no served file has is left
- * to the fonts installed on the device. Each file comes through the API, so it reaches the page over
- * the relay as well, and is kept in the browser's cache storage where there is one.
- */
-
 import { USER_FONTS_PATH, type UserFont, type UserFontList } from "../../shared/user-fonts.ts";
 import { apiFetch } from "./api-request-id.ts";
 import { faceArrived } from "./fontFaces.ts";
@@ -17,7 +9,6 @@ const CACHE = "ovis-files-v1";
 const LIST_TIMEOUT_MS = 10_000;
 const FILE_TIMEOUT_MS = 120_000;
 
-/** The list, once per set of names: a family typed anew asks again, so a file added since is found. */
 const lists = new Map<string, Promise<readonly UserFont[]>>();
 const faces = new Map<string, Promise<void>>();
 
@@ -26,9 +17,7 @@ function namesIn(family: string): string[] {
 }
 
 async function fetchList(): Promise<readonly UserFont[]> {
-  // bounded: the terminal's font waits for it
   const response = await apiFetch(USER_FONTS_PATH, { signal: AbortSignal.timeout(LIST_TIMEOUT_MS) });
-  // a server from before this route serves none
   if (response.status === 404) return [];
   if (!response.ok) throw new Error(`${USER_FONTS_PATH} answered ${response.status}`);
   return ((await response.json()) as UserFontList).fonts;
@@ -49,11 +38,9 @@ async function bytesOf(font: UserFont): Promise<ArrayBuffer> {
   const bytes = await response.arrayBuffer();
   if (cache) {
     try {
-      // the file's older versions go, so a replaced font does not stay on the phone
       for (const old of await cache.keys()) if (new URL(old.url).pathname === keptPath) await cache.delete(old);
       await cache.put(keptUrl, new Response(bytes));
     } catch (error) {
-      // a full store keeps nothing, and the font is drawn all the same
       console.warn(`The font ${font.file} could not be kept for the next load`, error);
     }
   }
@@ -72,7 +59,6 @@ function addFace(font: UserFont, fonts: Pick<FontFaceSet, "add">): Promise<void>
     // a face made from bytes is loaded as it is made, and adding it fires no event the font set's watchers hear
     faceArrived();
   }).catch((error: unknown) => {
-    // asked again on the next change of a font field
     faces.delete(key);
     console.warn(`The font ${font.file} served by this PC could not be loaded`, error);
   });
@@ -80,10 +66,6 @@ function addFace(font: UserFont, fonts: Pick<FontFaceSet, "add">): Promise<void>
   return added;
 }
 
-/**
- * Resolves once the served files of the families `family` names have loaded or failed; never rejects.
- * A family no field names, a device without FontFace and a server without fonts/ add nothing.
- */
 export async function addServedFonts(family: string, fonts: Pick<FontFaceSet, "add"> | undefined = typeof document === "undefined" ? undefined : document.fonts): Promise<void> {
   const names = namesIn(family);
   if (names.length === 0 || !fonts || typeof FontFace === "undefined") return;

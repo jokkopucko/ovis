@@ -1,0 +1,30 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+
+
+
+
+
+  Select Syntax Theme
+  Move up/down to live preview themes
+
+  Type to filter themes...                           31  fn summarize(users: &[User]) -> String {
+↑                                                    32 -    let active = users.iter().filter(|u|
+  base16-eighties-dark                               32 +    let active = users.iter().filter(|u|
+  base16-mocha-dark                                  33      let names: Vec<&str> = users.iter().m
+  base16-ocean-dark                                  34 -    format!("{} active: {}", active, name
+  base16-ocean-light                                 34 +    format!("{active} active users: {}",
+  catppuccin-frappe                                  35 +        .trim()
+  catppuccin-latte                                   36  }
+  catppuccin-macchiato
+› catppuccin-mocha (current)
+↓
+  enter select · esc back

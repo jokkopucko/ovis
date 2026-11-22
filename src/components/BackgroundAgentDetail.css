@@ -1,11 +1,3 @@
-/* The detail of one running background task: a dialog (a sheet on a phone) over the task list,
-   drawn as the task's row is in the list and in the chat's ended-task card: the status glyph, the
-   title over its dim meta line, then the agent's own words. The body alone scrolls, within .modal's
-   cap, so a long transcript never grows the sheet past the screen. The sheet is as tall as that cap
-   from the start: loading, a note and the transcript fill the same frame, so the title and the
-   buttons never move as a read lands.
-   Type is at the reading floors of a sheet that is read at length (DESIGN.md): on a desktop no text
-   under --fs-md, on a phone the agent's words at --fs-xl and the rest at --fs-chat or more. */
 .bg-agent-detail {
   width: min(100%, 640px);
   height: min(100%, 720px);
@@ -53,8 +45,6 @@
   overflow-wrap: anywhere;
 }
 
-/* the title and the agent line are labels worth copying: a phone's sheet header is its swipe grip
-   and selects nothing (styles.css), but these two words do, with a long press */
 @media (pointer: coarse) {
   .bg-agent-detail-heading {
     -webkit-user-select: text;
@@ -63,7 +53,6 @@
   }
 }
 
-/* a phone's header controls keep the touch target the header gives them */
 @media (pointer: coarse) {
   .bg-agent-detail-header .icon-button {
     width: var(--touch-target);
@@ -72,8 +61,6 @@
   }
 }
 
-/* the body is the one scroll region: a tab stop of its own, so the keyboard reaches a long
-   transcript, with its ring drawn inside the edge .modal clips at */
 .bg-agent-detail-body {
   display: flex;
   flex-direction: column;
@@ -84,8 +71,6 @@
   outline-offset: calc(-1 * var(--ring-offset));
 }
 
-/* a note on the read: what was not read, what could not be, and why there is nothing; then what to do
-   about it, each sentence on a line of its own so that no clause is split from its ending */
 .bg-agent-note {
   display: flex;
   flex-direction: column;
@@ -96,7 +81,6 @@
   line-height: var(--lh-base);
 }
 
-/* a failure reads as a sentence, never as an empty transcript: the words carry it, and the blocked tint says it first */
 .bg-agent-note.is-failure {
   padding: var(--space-2) var(--space-3);
   border: var(--hairline) solid var(--status-blocked);
@@ -121,9 +105,6 @@
   color: var(--text-dim);
 }
 
-/* the agent's words as it wrote them, at the chat's reading size (they are read at length, as the
-   chat's prose is): its own line breaks kept, a long unbroken run wrapped anywhere, in a reading
-   measure of its own however wide the dialog */
 .bg-agent-text {
   max-width: 52ch;
   margin: 0;
@@ -143,7 +124,6 @@
   list-style: none;
 }
 
-/* a tool call: its name as a chip, its arguments in mono after it, wrapping as one line of text */
 .bg-agent-event.is-tool {
   display: flex;
   flex-wrap: wrap;
@@ -175,7 +155,6 @@
   overflow-wrap: anywhere;
 }
 
-/* a phone's reading floors: the agent's words at --fs-xl, every other line at --fs-chat or more */
 @media (max-width: 640px) {
   .bg-agent-detail-title,
   .bg-agent-text {

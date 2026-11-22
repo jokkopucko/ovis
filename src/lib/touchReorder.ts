@@ -1,32 +1,23 @@
 /*
- * A finger reorders the sidebar's workspaces: a long press on a row picks it up, the row then
- * follows the finger, and lifting the finger drops it where it is. The browser's own drag and
- * drop is a mouse's: on iOS a long press lifts the system's drag preview, but the drop never
- * reaches the page, so a touch screen gets this instead (the row's `draggable` is off there).
+ * On iOS a long press lifts the system's drag preview, but the drop never reaches the page, so a
+ * touch screen reorders through these touch listeners and the row's `draggable` is off there.
  *
- * A finger that moves before the press has held is a scroll or a drawer swipe and is left alone.
  * Once a row is up the stroke is the row's: its moves scroll nothing and never reach the drawer's
  * swipe (lib/edgeSwipe.ts, on the document's capture phase, which this listener on the window's
- * capture phase runs before). Near the list's top or bottom edge the list scrolls under the row.
+ * capture phase runs before).
  */
 
-/** How long a finger rests on a row before it picks the row up. */
 export const HOLD_MS = 400;
-/** Movement within this while the press holds is still a press; beyond it, a scroll. */
 export const HOLD_SLOP_PX = 8;
-/** A lifted row this close to the list's edge scrolls the list. */
 export const EDGE_ZONE_PX = 48;
-/** The fastest the list scrolls under a lifted row, in px per frame, at the very edge. */
 export const EDGE_SPEED_PX = 14;
 
 export interface RowBox { id: string; top: number; bottom: number }
 
-/** Whether a press that has moved (dx, dy) is still a press. */
 export function heldStill(dx: number, dy: number): boolean {
   return Math.abs(dx) <= HOLD_SLOP_PX && Math.abs(dy) <= HOLD_SLOP_PX;
 }
 
-/** The row at height `y`; between rows or past the ends, the nearest one. Null with no rows. */
 export function rowAt(y: number, rows: readonly RowBox[]): string | null {
   let best: { id: string; distance: number } | null = null;
   for (const row of rows) {
@@ -37,7 +28,6 @@ export function rowAt(y: number, rows: readonly RowBox[]): string | null {
   return best?.id ?? null;
 }
 
-/** How far the list scrolls this frame for a finger at `y` in a list from `top` to `bottom` (negative is up). */
 export function edgeScrollStep(y: number, top: number, bottom: number): number {
   const zone = Math.min(EDGE_ZONE_PX, (bottom - top) / 4);
   if (zone <= 0) return 0;
@@ -47,23 +37,17 @@ export function edgeScrollStep(y: number, top: number, bottom: number): number {
 }
 
 export interface TouchReorderHandlers {
-  /** whether the row may be picked up now (not while its name is being edited) */
   canLift: (id: string) => boolean;
   onLift: (id: string) => void;
-  /** the row the finger is over, the lifted one included; null when it is over none */
   onOver: (id: string | null) => void;
-  /** the finger lifted over `target`; the caller decides whether that is a move */
   onDrop: (id: string, target: string | null) => void;
-  /** the stroke ended with no drop: a second finger, the system took it, the list went away */
   onCancel: () => void;
 }
 
 const ROW = ".workspace-group[data-workspace]";
-/** where a press may pick a row up: its title, not its fold or its ⋯ */
 const HANDLE = ".workspace-select";
 const SCROLLER = ".machine-list";
 
-/** Watches the rows under `root`; returns the cleanup. */
 export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandlers): () => void {
   let press: { id: string; row: HTMLElement; x: number; y: number; timer: number } | null = null;
   let lift: {
@@ -82,7 +66,6 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     press = null;
   };
 
-  /** the rows a drop can land on, where they sit untransformed now */
   const boxes = (): RowBox[] => {
     if (lift === null) return [];
     const scrolled = lift.scroller ? lift.scroller.scrollTop - lift.startScroll : 0;
@@ -92,7 +75,6 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
       const id = row.dataset.workspace;
       const box = row.getBoundingClientRect();
       if (!id || box.height === 0) continue;
-      // the lifted row is drawn under the finger: its slot is where it was, less the transform
       rows.push(row === lift.row ? { id, top: box.top - offset, bottom: box.bottom - offset } : { id, top: box.top, bottom: box.bottom });
     }
     return rows;
@@ -149,7 +131,6 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
   const onStart = (event: TouchEvent): void => {
     clearPress();
     if (lift !== null) {
-      // a second finger: the row goes back where it was
       putDown();
       handlers.onCancel();
       return;
@@ -173,7 +154,6 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
       return;
     }
     if (lift === null) return;
-    // the stroke is the row's: no scroll, and no drawer swipe under it
     event.preventDefault();
     event.stopImmediatePropagation();
     lift.y = touch.clientY;

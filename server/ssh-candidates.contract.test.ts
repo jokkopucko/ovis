@@ -21,7 +21,6 @@ function sshDir(files: Record<string, string>): string {
   return dir;
 }
 
-/** `tailscale status --json` with this PC as user 1 and the named peers online, of the same login */
 const status = (peers: string[]): string => JSON.stringify({
   BackendState: "Running",
   Self: { DNSName: "self.tail.ts.net.", UserID: 1 },

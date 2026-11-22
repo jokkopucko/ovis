@@ -1,35 +1,22 @@
-/**
- * Whether each catalog agent is on this PC, and which version: its executable found the way
- * /api/agents finds it, then asked for its version with the catalog's own flag, under a time limit.
- * A version is kept for as long as the executable file is the same one (path, size, modification
- * time): an install or an update shows on the next read, and an unchanged executable is never asked
- * twice. Nothing here installs, updates or signs in.
- */
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { meetsMinVersion, parseVersion, type AgentCatalogEntry, type AgentInstallState, type CatalogPlatform } from "../shared/agent-catalog.ts";
-import { loginPathProbe, loginShell, shellCommandLine, type LoginPathProbe } from "./shell-agent.ts";
+import { defaultAgentPathProbe, loginShell, shellCommandLine, type LoginPathProbe } from "./shell-agent.ts";
 
-/** How long one `--version` may run before it is killed and reported as timed out. */
 export const VERSION_TIMEOUT_MS = 5_000;
-/** At most this much of what a version flag prints is read: a version is one short line. */
 const VERSION_OUTPUT_BYTES = 4096;
-/** Version flags run at once at most: a first read of the whole catalog starts one process per agent. */
 const PARALLEL_RUNS = 4;
-/** How long output is still read after the version flag's own process exited. */
 const EXIT_GRACE_MS = 200;
 /** How long a timed-out read stands before it is tried again: it may have been a slow first start (an npm shim's cold cache). */
 export const TIMEOUT_KEPT_MS = 60_000;
 
 /**
- * Where a catalog binary is on this PC, as an absolute path, or null. `searchPath`, when the locator
- * has one: the PATH it looks on, the login shell's included once read, which its version flag is
- * run with too (a script's interpreter, nvm's node, may be on that PATH only).
+ * `searchPath`, when the locator has one: the PATH it looks on, the login shell's included once read,
+ * which its version flag is run with too (a script's interpreter, nvm's node, may be on that PATH only).
  */
-export type Locate = ((binary: string) => Promise<string | null>) & { searchPath?: () => string; refresh?: () => Promise<void> };
+export type Locate = ((binary: string) => Promise<string | null>) & { searchPath?: () => string; refresh?: (interactive?: boolean) => Promise<void>; problem?: () => string | null };
 
-/** How long the login shell's PATH is kept before a lookup that misses reads it again. */
 export const LOGIN_PATH_KEPT_MS = 60_000;
 
 const isExecutableFile = (path: string): boolean => {
@@ -53,7 +40,6 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
   let kept: { path: string | null; at: number } | null = null;
   let reading: Promise<string | null> | null = null;
   const loginPath = (probe: LoginPathProbe): Promise<string | null> => {
-    // a read already out (a refresh after an install) is newer than what is kept
     if (reading !== null) return reading;
     if (kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return Promise.resolve(kept.path);
     const run: Promise<string | null> = probe(signal)
@@ -77,11 +63,10 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     const path = await loginPath(options.probe);
     return path === null ? null : find(binary, path);
   };
-  // reads the login PATH again after any read already out (it may predate an install); refreshes asked
-  // for while that one waits to start join it: one login shell for them all
   let queued: Promise<string | null> | null = null;
-  const refresh = (): Promise<void> => {
+  const refresh = (interactive = true): Promise<void> => {
     if (options.probe === null) return Promise.resolve();
+    if (interactive) options.probe.reread?.();
     if (queued !== null) return queued.then(() => undefined);
     const probe = options.probe;
     const run: Promise<string | null> = (reading ?? Promise.resolve(null))
@@ -92,18 +77,20 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     reading = run;
     return run.then(() => undefined);
   };
-  return Object.assign(locate, { searchPath: () => [servicePath(), kept?.path ?? ""].filter((part) => part !== "").join(delimiter), refresh });
+  return Object.assign(locate, { searchPath: () => [servicePath(), kept?.path ?? ""].filter((part) => part !== "").join(delimiter), refresh, problem: () => options.probe?.problem?.() ?? null });
 }
 
-/** The login-shell PATH probe of the real entrypoints: none on Windows, nor where the user has no login shell. */
+/**
+ * The login-shell PATH probe of the real entrypoints, as a pane's interactive shell sees it
+ * (agentPathProbe): none on Windows, nor where the user has no login shell.
+ */
 export function defaultLoginProbe(platform: string = process.platform): LoginPathProbe | null {
   if (platform === "win32") return null;
   const shell = loginShell();
-  return shell === null ? null : loginPathProbe({ shell });
+  return shell === null ? null : defaultAgentPathProbe(shell);
 }
 
 export interface VersionRun {
-  /** what the process printed on each stream, at most VERSION_OUTPUT_BYTES of each */
   stdout: string;
   stderr: string;
   exitCode: number | null;
@@ -138,7 +125,7 @@ function killTree(pid: number): void {
     Bun.spawn(["taskkill", "/pid", String(pid), "/T", "/F"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true });
     return;
   }
-  try { process.kill(-pid, "SIGKILL"); } catch { /* the group is gone already */ }
+  try { process.kill(-pid, "SIGKILL"); } catch {}
 }
 
 /**
@@ -178,17 +165,14 @@ export const runVersion: RunVersion = async (executable, args, timeoutMs, path, 
     signal?.removeEventListener("abort", abort);
     clearTimeout(timer);
     clearTimeout(grace);
-    // a version flag that answered may still have left a child behind: nothing it started outlives the read
     if (!timedOut && process.platform !== "win32") killTree(child.pid);
   }
 };
 
 interface Kept {
-  /** the executable file as it was when its version was read */
   fingerprint: string;
   version: string | null;
   error: AgentInstallState["version_error"];
-  /** when a timed-out read is tried again; null: kept while the file is the same */
   retryAt: number | null;
 }
 
@@ -209,9 +193,7 @@ export class AgentDetector {
   readonly #locate: Locate;
   readonly #run: RunVersion;
   readonly #timeoutMs: number;
-  /** by executable path: the version read from the file the fingerprint names */
   readonly #kept = new Map<string, Kept>();
-  /** by fingerprint: a version read in progress, shared by every caller meanwhile */
   readonly #running = new Map<string, Promise<Kept>>();
   #active = 0;
   readonly #waiting: (() => void)[] = [];
@@ -230,13 +212,11 @@ export class AgentDetector {
     this.#env = options.env ?? process.env;
   }
 
-  /** End active process groups and release queued reads without starting more version flags. */
   close(): void {
     this.#lifetime.abort();
     for (const resolve of this.#waiting.splice(0)) resolve();
   }
 
-  /** `binary` in one of the installer's folders (detect.install_dirs), as an executable file, or null. */
   #inInstallDirs(binary: string, dirs: readonly string[], platform: CatalogPlatform): string | null {
     const names = platform === "windows" ? [`${binary}.exe`, `${binary}.cmd`, binary] : [binary];
     for (const dir of dirs) {
@@ -273,7 +253,6 @@ export class AgentDetector {
         // with Node's version in the path) is never read for a version. A failure is asked again
         // after a while: a wrapper's target can be repaired while the wrapper stays the same file.
         if (run.exitCode !== 0) return { fingerprint, version: null, error: "failed", retryAt: this.#now() + TIMEOUT_KEPT_MS };
-        // the version is read from what the flag printed as its answer only, never from stderr
         const version = parseVersion(run.stdout);
         return { fingerprint, version, error: version === null ? "unreadable" : null, retryAt: null };
       } catch {
@@ -287,20 +266,20 @@ export class AgentDetector {
     return read;
   }
 
-  /** The executable `binary` would be started as on this PC: PATH first, then the installer's own folders; null where none is. */
-  /** `binary` on this server's PATH or the login shell's, as kept; no installer folder. */
   onPath(binary: string): Promise<string | null> {
     return this.#locate(binary);
   }
 
-  /** `binary` in one of its installer's folders, or null (`inInstallDirs`, for GET /api/agents). */
   inInstallFolder(binary: string, dirs: readonly string[], platform: CatalogPlatform): string | null {
     return this.#inInstallDirs(binary, dirs, platform);
   }
 
-  /** Reads the login shell's PATH again (an install may have changed it). */
-  refreshPath(): Promise<void> {
-    return this.#locate.refresh?.() ?? Promise.resolve();
+  refreshPath(interactive = true): Promise<void> {
+    return this.#locate.refresh?.(interactive) ?? Promise.resolve();
+  }
+
+  pathProblem(): string | null {
+    return this.#locate.problem?.() ?? null;
   }
 
   async executable(binary: string, dirs: readonly string[], platform: CatalogPlatform | null): Promise<string | null> {
@@ -308,9 +287,8 @@ export class AgentDetector {
   }
 
   /**
-   * Whether `entry` is on this PC: the first of its binaries found, and that one's version. Where
-   * another program has the binary's name (detect.unreliable_on), nothing is looked up or run; while
-   * a program it needs (detect.needs) is missing, it is not installed and nothing is run either.
+   * Where another program has the binary's name (detect.unreliable_on), nothing is looked up or run;
+   * while a program it needs (detect.needs) is missing, it is not installed and nothing is run either.
    */
   async state(entry: AgentCatalogEntry, platform: CatalogPlatform | null): Promise<AgentInstallState> {
     const missing: AgentInstallState = { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };

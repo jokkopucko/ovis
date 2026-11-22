@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { SlashCommand } from "../../shared/protocol.ts";
 import type { CaseRun } from "../skill-menu-case.ts";
+import { openLens } from "../header-lens.ts";
 
 export const agent = "claude";
 const builtin = (name: string, description: string, rest: Partial<SlashCommand> = {}): SlashCommand => ({ name, description, source: "builtin", ...rest });
@@ -21,7 +22,6 @@ export const turnText = "/deploy staging";
 export const chips = ["/deploy"];
 export const widths = [1280, 390, 320] as const;
 export const schemes = ["light", "dark"] as const;
-// a phone's Return breaks the line: the 390 phone sends with Send, the 320 one chose Enter sends
 export const enterSendsAt = [320] as const;
 const TERMINAL_ROWS = ["config", "cost", "doctor", "help", "resume", "status", "terminal-setup"];
 
@@ -29,12 +29,11 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
   const tag = `${scheme}-${width}`;
   const send = page.getByRole("button", { name: "Send message", exact: true });
   const returnSends = width > 480 || (enterSendsAt as readonly number[]).includes(width);
-  // the Chat lens, and a terminal command's peek over it: the chat stays mounted under the grid
   const chat = page.locator(".terminal-stack.is-chat:not(.is-peek)");
   const peek = page.locator(".terminal-stack.is-chat.is-peek");
   const hint = page.locator(".terminal-banner-command");
   const back = async (): Promise<void> => {
-    await page.getByTitle(/^Chat transcript \(.+\)$/).click();
+    await openLens(page, "chat");
     await chat.waitFor();
   };
 
@@ -42,7 +41,6 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
     await box.fill("/");
     await menu.locator(".menu-item").first().waitFor();
     assert.deepEqual(await menu.locator(".menu-heading").allTextContents(), ["Built in", "Project skills", "Terminal commands"]);
-    // the terminal group is listed last, each row with its badge; the hidden row is nowhere
     const groups = menu.locator(".composer-menu-group");
     const last = groups.nth((await groups.count()) - 1);
     assert.deepEqual(await last.locator(".menu-item-main").allTextContents(), TERMINAL_ROWS.map((name) => `/${name}`));
@@ -52,7 +50,6 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
     assert.deepEqual((await rowNames()).sort(), commands.filter((command) => command.visibility !== "agent-hidden").map(({ name }) => name).sort());
     await menuFits("terminal group");
     await rowsBrief("terminal group");
-    // the badge stands whole beside the name: neither is cut, whatever the width
     const cut = await menu.locator(".composer-menu-badge").evaluateAll((badges) => badges.filter((badge) => badge.scrollWidth > badge.clientWidth + 1).length);
     assert.equal(cut, 0, "no badge is cut");
     await menu.evaluate((node) => { node.scrollTop = node.scrollHeight; });
@@ -63,7 +60,6 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
     await clear();
     await box.fill("/conf");
     await menu.locator(".menu-item").first().waitFor();
-    // /config by its name first; /terminal-setup follows, found by its description ("Configure ")
     const listed = await rowNames();
     assert.equal(listed[0], "config");
     assert.equal(await menu.locator(".menu-item .composer-menu-badge").count(), listed.filter((name) => TERMINAL_ROWS.includes(name)).length, "a typed query keeps the badge on the rows");
@@ -105,7 +101,6 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
     assert.equal(await row.locator(".chat-outcome, .chat-bubble, .chat-outcome-preview").count(), 0);
     assert.equal(await row.getByRole("button", { name: "Open Terminal", exact: true }).count(), 1);
     await capture();
-    // the row's Open Terminal opens a peek the reader ends by hand, and sends nothing
     await row.getByRole("button", { name: "Open Terminal", exact: true }).click();
     await peek.waitFor();
     await hint.getByText("/config ran", { exact: true }).waitFor();

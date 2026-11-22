@@ -4,16 +4,11 @@ import { resolve } from "node:path";
 import { chromium } from "playwright-core";
 import type { Machine, SetupRequest } from "../shared/machines.ts";
 
-// A built client with a fictional PC and an in-memory API; no SSH and no user session.
-// A PC that waits with action_required "bridge_conflict" is not a PC that needs setup approval:
-// the sidebar and the line under the header say it is a conflict and offer Reconnect, which
-// starts a plain setup (no bridge update).
 const snapshot = { version: "0.9.3", protocol: 22, focused_workspace_id: null, focused_tab_id: null, focused_pane_id: null, workspaces: [], tabs: [], panes: [], layouts: [], agents: [] };
 const local = { id: "local", name: "QA host", kind: "local", state: "connected", enabled: true, error: null, snapshot } as Machine;
 const reason = "This PC uses a newer bridge (v99); this app requires v1. Update this app, then reconnect. The remote bridge was left running.";
 const pc: Machine = { ...local, id: "qa-remote", name: "QA remote", kind: "ssh", target: { destination: "qa.invalid" }, state: "error", error: reason, action_required: "bridge_conflict" };
 const requests: SetupRequest[] = [];
-// the roster, and the open event streams told when it changes, as server/machine-api.ts does
 let roster: Machine[] = [local, pc];
 const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const tell = (event: unknown) => { for (const stream of streams) stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)); };
@@ -30,7 +25,6 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     }), { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
   }
   if (path === `/api/machines/${pc.id}` && request.method === "DELETE") {
-    // the server tells the roster without the PC before it answers the request (server/machines.ts remove)
     roster = [local];
     tell({ type: "machines", machines: roster });
     await Bun.sleep(500); // fixed wait: the tab must see the roster before the answer, as on a real server
@@ -58,7 +52,6 @@ try {
   await notice.getByText("Bridge connection conflict", { exact: true }).waitFor({ timeout: 10_000 });
   await notice.getByText(reason, { exact: true }).waitFor();
   await page.locator(".update-notice").getByText("QA remote has a bridge connection conflict.", { exact: true }).waitFor();
-  // neither place calls it a setup that waits for approval, or offers an update that cannot help
   assert.equal(await page.getByText("Setup needed", { exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Set up…", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Update bridge", exact: true }).count(), 0);
@@ -75,8 +68,6 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: `${shots}/conflict-mobile.png` });
 
-  // Removing the PC this tab has selected opens this PC without a word: the header note is for
-  // a link or a selection of a PC removed elsewhere, not for the user's own Remove PC
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.evaluate(([key, id]) => { for (const storage of [sessionStorage, localStorage]) storage.setItem(key!, JSON.stringify({ machine_id: id, pane_id: null })); }, ["ovis:selection", pc.id]);
   await page.reload();
@@ -87,7 +78,6 @@ try {
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove PC", exact: true }).click();
   await page.locator(`section.machine-group.is-current[aria-label="PC ${local.name}"]`).waitFor();
   await page.waitForFunction(() => document.querySelector(`section.machine-group[aria-label="PC QA remote"]`) === null);
-  // the roster without the PC came in while the request was held: a note it raised is still up
   const deadline = Date.now() + 5_000;
   while (removed === 0) { if (Date.now() > deadline) throw new Error("Remove PC never sent DELETE"); await Bun.sleep(25); }
   assert.equal(await page.locator(".header-note", { hasText: "That link's PC is not set up here" }).count(), 0, "removing the selected PC here is not a link to a missing PC");

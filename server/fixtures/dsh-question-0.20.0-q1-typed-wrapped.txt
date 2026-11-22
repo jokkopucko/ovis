@@ -1,0 +1,39 @@
+
+          Explore the uncharted!
+
+  ❯ Ask me now.
+
+  ! 📋 Questionnaire answered · 1 questions
+    · Which headless approach should I build? → node --test
+                                                                                                                      ▴
+  ● Answers received.                                                                                                ━━
+                                                                                                                      ─
+  ❯ Ask me now.                                                                                                       ─
+                                                                                                                      ▾
+  ! 📋 Questionnaire answered · 1 questions
+    · Which headless approach should I build? → Use the device with WebDriverAgent first, then keep the staging API
+    as a fallback for nightly runs when the phone is offline, and log both p…
+
+  ● Answers received.
+
+  ❯ Ask me now.
+
+  🌗 Pinging the human · 43s · ↑ 10 · ↓ 0 tokens
+
+    ─────────────────────────────────────────────▾  📋 Question 1/1   ─────────────────────────────────────────────
+
+    ◈ Choose Approach
+    Which headless approach should I build?
+
+     ○ Device + WebDriverAgent (Recommended)
+       Uses iphone172 and the MacBook; no App Attest workaround, no ToS risk, durable.
+     ○ Dev API + Firebase token
+       No hardware, but depends on an unprotected staging API.
+
+    ❯✎ Custom     ：Use the device with WebDriverAgent first, then keep the staging API as a fallback for nightly
+       answer       runs when the phone is offline, and log both paths so we can compare flakiness over two weeks
+
+    Type answer · Ctrl+V paste · Enter submit · ↑ back to options · Esc cancel · Ctrl+K to fold / click the header
+                                                                                                       123/1.0M 0.0%
+   deepseek-flash · max · cache 0.0% · ≈¥0.00 idle · work                                        ctx 0.0% (123/1.0m)
+   esc to interrupt

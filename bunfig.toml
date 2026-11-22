@@ -1,3 +1,2 @@
 [test]
-# tests create their workspaces in a herdr session of their own (scripts/test-herdr.ts)
 preload = ["./scripts/test-herdr.ts"]

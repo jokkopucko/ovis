@@ -21,7 +21,6 @@ const tempRoot = (): string => {
   return root;
 };
 
-/** a write that names each text it was given by its position, and keeps them */
 const recorder = () => {
   const written: string[] = [];
   return { written, write: (json: string) => `C:\\settings\\${written.push(json)}.json` };
@@ -61,7 +60,6 @@ describe("claudeSettingsDir", () => {
     const home = "C:\\Users\\a b";
     const local = `${home}\\AppData\\Local`;
     expect(claudeSettingsDir({ LOCALAPPDATA: local, TEMP: "C:\\Temp", TMP: "C:\\Temp" }, home)).toBe(join(local, "ovis", "claude settings"));
-    // with none set, or an empty one, the profile's own
     for (const env of [{}, { LOCALAPPDATA: "" }]) expect(claudeSettingsDir(env, home)).toBe(join(home, "AppData", "Local", "ovis", "claude settings"));
   });
 
@@ -78,7 +76,6 @@ describe("settingsFile", () => {
     meanwhile(String(target));
     throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
   });
-  /** what another launch with the same text puts in place */
   const anotherLaunch = (target: string) => writeFileSync(target, ULTRACODE);
 
   it("names a file by its text and writes the same text once", () => {
@@ -89,12 +86,10 @@ describe("settingsFile", () => {
     if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     const first = statSync(path);
     expect(settingsFile(ULTRACODE, dir)).toBe(path);
-    // not written again: a rename would have put another file there
     expect(statSync(path).ino).toBe(first.ino);
     const other = settingsFile(JSON.stringify({ ultracode: false }), dir);
     expect(other).not.toBe(path);
     expect(readFileSync(other, "utf8")).toBe("{\"ultracode\":false}");
-    // no temporary file is left beside them
     expect(readdirSync(dir).sort()).toEqual([path, other].map((file) => file.slice(dir.length + 1)).sort());
   });
 
@@ -106,7 +101,6 @@ describe("settingsFile", () => {
       expect(readFileSync(path, "utf8")).toBe(ULTRACODE);
       expect(settingsFile(ULTRACODE, dir)).toBe(path);
       expect(renames).not.toHaveBeenCalled();
-      // only a file cut short renames, and a refused rename there is the caller's to fall back from
       writeFileSync(path, "{\"ultracode\":");
       expect(() => settingsFile(ULTRACODE, dir)).toThrow("EPERM");
       expect(renames).toHaveBeenCalledTimes(1);
@@ -125,7 +119,6 @@ describe("settingsFile", () => {
       expect(settingsFile(ULTRACODE, dir)).toBe(path);
       expect(renames).toHaveBeenCalledTimes(1);
       expect(readFileSync(path, "utf8")).toBe(ULTRACODE);
-      // the temporary file went
       expect(readdirSync(dir)).toEqual([basename(path)]);
     } finally {
       renames.mockRestore();
@@ -144,7 +137,6 @@ describe("settingsFile", () => {
       writeFileSync(path, "{\"ultracode\":");
       expect(settingsFile(ULTRACODE, dir)).toBe(path);
       expect(readFileSync(path, "utf8")).toBe(ULTRACODE);
-      // with no other launch, the refused rename is what the caller hears of, not the delete
       concurrent = false;
       writeFileSync(path, "{\"ultracode\":");
       expect(() => settingsFile(ULTRACODE, dir)).toThrow("EPERM");

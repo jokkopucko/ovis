@@ -1,12 +1,4 @@
 name: Windows app
-# Builds Ovis for Windows (app/windows): Ovis.exe, the unsigned direct download that
-# https://ovis.sh/Ovis.exe hands out through releases/latest, and Ovis.msix, the package for the
-# Microsoft Store. Release calls it after publishing to attach them to the release; run it by hand to
-# give an existing release its files. A pull request that touches the app builds it and keeps the
-# files as a run artifact, attached to nothing. Ovis.msix is attached only when the Store identity
-# variables are set (app/windows/README.md); without them the job attaches Ovis.exe alone.
-# A release ships what its tag holds: a tag from before app/windows gets nothing, unless a maintainer
-# names a commit on main to build it from (app_ref), which the attached files' label records.
 on:
   pull_request:
     paths:
@@ -37,7 +29,8 @@ concurrency:
 jobs:
   gate:
     if: github.event_name != 'pull_request'
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # GitHub-hosted whatever the runner variables say, and no shared cache (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Check the release
@@ -61,7 +54,6 @@ jobs:
           fi
   build:
     needs: gate
-    # a pull request skips the gate
     if: ${{ !failure() && !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 20
@@ -98,7 +90,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path app/windows/build | Out-Null
           "skip=false" >> $env:GITHUB_OUTPUT
           $built | Out-File -Encoding ascii -NoNewline app/windows/build-source.txt
-      # which screen the app shows for what a PC has (app/windows/tests): an old or moved server, a herdr too old
       - name: Test what the app shows for each PC
         if: steps.source.outputs.skip != 'true' && hashFiles('app/windows/tests/Ovis.Tests.csproj') != ''
         run: |
@@ -114,7 +105,6 @@ jobs:
           OVIS_MSIX_PUBLISHER: ${{ vars.OVIS_MSIX_PUBLISHER }}
           OVIS_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.OVIS_MSIX_PUBLISHER_DISPLAY_NAME }}
         run: |
-          # a pull request's build is the version it would ship as, so its update screen compares as a release's does
           $version = if ($env:RELEASE_TAG) { $env:RELEASE_TAG.Substring(1) } else { (Get-Content -Raw package.json | ConvertFrom-Json).version -replace '-.*$', '' }
           powershell -NoProfile -ExecutionPolicy Bypass -File app/windows/build.ps1 -Version $version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -128,9 +118,7 @@ jobs:
             app/windows/build/Ovis.msix
             app/windows/build/build-source.txt
           if-no-files-found: error
-      # The built Ovis.exe on a PC like the one the update screen was made for: a server from 0.3.45 under the old
-      # id and herdr 0.9.3 stopped, told by stand-ins for herdr and bun. It must open on Update, and the screenshot
-      # shows it. The stand-ins go in the first directory of the app's PATH (Paths.RefreshPath: Bun's own bin), and a
+      # The stand-ins go in the first directory of the app's PATH (Paths.RefreshPath: Bun's own bin), and a
       # real herdr or bun there is set aside meanwhile, so a later setup step cannot slip a real one in front of them.
       - name: Open Ovis.exe on an old server
         if: github.event_name == 'pull_request'
@@ -195,7 +183,8 @@ jobs:
   attach:
     needs: build
     if: github.event_name != 'pull_request' && needs.build.outputs.skip != 'true'
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # GitHub-hosted whatever the runner variables say (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -221,16 +210,13 @@ jobs:
           else
             echo "::notice title=Ovis.msix skipped::$RELEASE_TAG gets Ovis.exe but no Ovis.msix: set the repository variables OVIS_MSIX_NAME, OVIS_MSIX_PUBLISHER and OVIS_MSIX_PUBLISHER_DISPLAY_NAME from Partner Center (app/windows/README.md)."
           fi
-          # all or nothing: the release's files always come from one build (app/windows/release-attach.sh)
           bash app/windows/release-attach.sh attach build "${files[@]}"
-          # ovis.sh/Ovis.exe and ovis.sh/Ovis.dmg both follow releases/latest: the newest release becomes
-          # latest once it has both (the Mac app job does the same check)
           if [ "$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)" = "$RELEASE_TAG" ] &&
              [ "$(gh release view "$RELEASE_TAG" --json assets --jq '[.assets[].name] | (index("Ovis.dmg") != null and index("Ovis.exe") != null)')" = true ]; then
             gh release edit "$RELEASE_TAG" --latest
           fi
       # Also when the step above failed or the run was cancelled mid-swap: undo or finish the swap, so the release
-      # is left with one build's files. A runner that dies outright is repaired by the next run for the tag.
+      # is left with one build's files.
       - name: Leave the release with one build's files
         if: failure() || cancelled()
         env:

@@ -6,23 +6,11 @@ import { STATUS_WORD } from "../lib/status.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import "./Droplet.css";
 
-/**
- * The in-app alert (lib/droplet.ts): a pill appears and spreads into a card,
- * below the native safe area and app header, without imitating the physical camera cutout.
- * One shows at a time; a newer one folds the current one away and takes its place.
- * A tap opens the pane, a flick up or its close button puts it away, and it leaves by itself after a while.
- */
-
-/** enter: the drop falls, then spreads, then its text shows (Droplet.css runs the same clock) */
 const REVEAL_MS = 560;
-/** how long it stays once its text shows */
 export const DROPLET_HOLD_MS = 3600;
-/** exit: the text fades, the card folds back into a drop, the drop rises */
 const EXIT_MS = 820;
-/** a drag up this far, or a flick up this fast, puts it away */
 const DISMISS_DRAG_PX = -18;
-const DISMISS_VELOCITY = -0.42; // px per ms
-/** a press that moved less than this is a tap */
+const DISMISS_VELOCITY = -0.42;
 const TAP_SLOP_PX = 6;
 
 type Phase = "in" | "out";
@@ -67,7 +55,6 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
     };
   }, []);
 
-  // the phone layout's card is as wide as its text: the shape under it takes that width
   useLayoutEffect(() => {
     const element = card.current;
     if (!element) return;
@@ -111,7 +98,6 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
       phaseRef.current = "in";
       return;
     }
-    // one at a time: the newest waits for the current one to fold away
     pending.current = notice;
     leave();
   }), [leave]);
@@ -132,7 +118,7 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
     dragged.current = false;
     press.current = { id: event.pointerId, y: event.clientY, samples: [{ y: event.clientY, t: event.timeStamp }], moved: false };
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    clearHold(); // held while touched
+    clearHold();
   };
   const onPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const p = press.current;
@@ -140,7 +126,6 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
     const dy = event.clientY - p.y;
     if (Math.abs(dy) > TAP_SLOP_PX) p.moved = true;
     p.samples.push({ y: event.clientY, t: event.timeStamp });
-    // up follows the finger, down only gives a little
     setDrag(Math.max(-120, Math.min(24, dy < 0 ? dy : dy * 0.35)));
   };
   const endPress = (event: ReactPointerEvent<HTMLButtonElement>, cancelled: boolean) => {
@@ -149,7 +134,7 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
     press.current = null;
     const dy = event.clientY - p.y;
     const velocity = flickVelocity(p.samples, event.clientY, event.timeStamp);
-    if (!cancelled && !p.moved) return; // a tap: onClick opens it
+    if (!cancelled && !p.moved) return;
     dragged.current = true;
     if (!cancelled && (dy <= DISMISS_DRAG_PX || velocity <= DISMISS_VELOCITY)) {
       leave();
@@ -168,7 +153,6 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
       <svg className="droplet-defs" width="0" height="0" aria-hidden="true" focusable="false">
         <filter id="droplet-goo" x="-50%" y="-50%" width="200%" height="200%" colorInterpolationFilters="sRGB">
           <feGaussianBlur in="SourceGraphic" stdDeviation="9" result="blur" />
-          {/* alpha sharpened back into an edge: shapes that blur into each other read as one liquid */}
           <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -9" />
         </filter>
       </svg>

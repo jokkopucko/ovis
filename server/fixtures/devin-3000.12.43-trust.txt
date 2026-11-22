@@ -1,0 +1,12 @@
+devin
+user@host:~/scratch/devin$ devin
+
+ ✱ Do you trust the authors of this directory?
+   For security, devin should not be run in directories with untrusted content.
+
+ ~/scratch/devin
+
+ ❭ 1 Yes, trust
+   2 No, exit
+
+ ↑↓ select · ↵ confirm · esc cancel

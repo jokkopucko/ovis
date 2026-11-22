@@ -1,9 +1,6 @@
 /**
- * The demo's authoritative binary split tree. Recorded split paths preserve their hierarchy;
- * older fixtures with rects alone have their initial tree recovered once. Every subsequent split, resize, swap and close edits that
+ * The demo's authoritative binary split tree. Every subsequent split, resize, swap and close edits that
  * same tree; reconstructing a grid after each operation would lose its creation hierarchy.
- * Zoom changes visibility only, never this tree. Descendant minimum sizes keep every leaf
- * at least one cell wide and tall even when an ancestor shrinks.
  *
  * Measured on herdr 0.9.3 (src/layout.rs resize_focused, src/app/api/panes.rs
  * handle_pane_resize): the split resized is the nearest one in the direction named, else the
@@ -24,7 +21,6 @@ const trees = new WeakMap<PaneLayoutSnapshot, Node>();
 const start = (rect: PaneLayoutRect, direction: SplitDirection): number => (direction === "right" ? rect.x : rect.y);
 const end = (rect: PaneLayoutRect, direction: SplitDirection): number => (direction === "right" ? rect.x + rect.width : rect.y + rect.height);
 
-/** the first line across the rect, between its edges, that cuts no pane: a pane's far edge */
 function cutLine(panes: LayoutPane[], rect: PaneLayoutRect, direction: SplitDirection): number | null {
   const lines = [...new Set(panes.map((pane) => end(pane.rect, direction)))]
     .filter((line) => line > start(rect, direction) && line < end(rect, direction))
@@ -65,7 +61,6 @@ function tree(layout: PaneLayoutSnapshot): Node | null {
   return root;
 }
 
-/** the splits over the pane, root first, each with the side the pane is on */
 function pathTo(node: Node, paneId: string): { split: Split; side: "first" | "second" }[] | null {
   if (!isSplit(node)) return node.pane.pane_id === paneId ? [] : null;
   for (const side of ["first", "second"] as const) {
@@ -118,7 +113,6 @@ function render(layout: PaneLayoutSnapshot, root: Node): LayoutPane[] {
   return layout.panes.map((pane) => ({ ...pane, rect: relaid.get(pane.pane_id) ?? pane.rect }));
 }
 
-/** Replace the target leaf, retaining which split was created first. Refuse a one-cell split. */
 export function splitLayout(layout: PaneLayoutSnapshot, paneId: string, made: LayoutPane, direction: SplitDirection): boolean {
   const root = tree(layout);
   const path = root ? pathTo(root, paneId) : null;
@@ -135,7 +129,6 @@ export function splitLayout(layout: PaneLayoutSnapshot, paneId: string, made: La
   return true;
 }
 
-/** Closing a leaf promotes its sibling; it does not leave a hole in the tab. */
 export function closeLayoutPane(layout: PaneLayoutSnapshot, paneId: string): void {
   const root = tree(layout);
   if (!root) return;
@@ -165,7 +158,6 @@ export function moveLayoutPane(layout: PaneLayoutSnapshot, paneId: string, targe
   const root = tree(layout);
   const moving = layout.panes.find((pane) => pane.pane_id === paneId);
   if (!root || !moving || paneId === targetId) return false;
-  // a close edits the tree in place but gives the layout new arrays
   const saved = { root: structuredClone(root), panes: layout.panes, splits: layout.splits };
   closeLayoutPane(layout, paneId);
   if (splitLayout(layout, targetId, moving, direction)) return true;
@@ -175,7 +167,6 @@ export function moveLayoutPane(layout: PaneLayoutSnapshot, paneId: string, targe
   return false;
 }
 
-/** A swap exchanges leaf identities, not the hierarchy or split ratios. */
 export function swapLayoutPanes(layout: PaneLayoutSnapshot, paneId: string, otherId: string): void {
   const root = tree(layout);
   if (!root) return;
@@ -210,12 +201,6 @@ export function setLayoutSplitRatio(layout: PaneLayoutSnapshot, path: readonly b
 
 const OPPOSITE: Record<PaneDirection, PaneDirection> = { left: "right", right: "left", up: "down", down: "up" };
 
-/**
- * The layout's panes once `pane.resize` moved the pane's border that way by `amount` of the
- * split it belongs to, in the layout's order; null when no border of the pane can move that way
- * (a pane alone, an axis it fills, a ratio already at herdr's limit), or when the rects are not
- * a layout herdr could have made.
- */
 export function resizeLayout(layout: PaneLayoutSnapshot, paneId: string, direction: PaneDirection, amount: number): LayoutPane[] | null {
   const pane = layout.panes.find((candidate) => candidate.pane_id === paneId);
   const root = pane && tree(layout);

@@ -1,0 +1,38 @@
+.pending-keys-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.pending-keys-heading > .update-notice-dismiss {
+  flex: none;
+}
+
+.pending-keys ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pending-keys li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pending-keys li > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.pending-key-fingerprint {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-strong);
+}

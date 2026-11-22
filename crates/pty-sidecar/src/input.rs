@@ -1,11 +1,7 @@
-//! Bounds on what the parent's stdin can make the host hold: one unfinished frame, and the input
-//! the command has not read yet.
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-/// Cuts stdin into frames (lines without their newline). A frame longer than `limit` is never held:
-/// it is discarded up to its newline.
 pub struct LineSplitter {
     limit: usize,
     partial: Vec<u8>,
@@ -17,7 +13,6 @@ impl LineSplitter {
         Self { limit, partial: Vec::new(), skipping: false }
     }
 
-    /// Hands each frame `chunk` completes to `frame`, and returns how many frames it discarded.
     pub fn feed(&mut self, mut chunk: &[u8], mut frame: impl FnMut(&[u8])) -> usize {
         let mut dropped = 0;
         while let Some(end) = chunk.iter().position(|&byte| byte == b'\n') {
@@ -65,25 +60,18 @@ fn cost(capacity: usize) -> usize {
 
 struct Queued {
     frames: VecDeque<Vec<u8>>,
-    /// the cost of what is queued and being written: a frame counts until the command has taken all of it
     bytes: usize,
-    /// a frame was refused since the queue last drained to half its limit
     overflowing: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Pushed {
     Queued,
-    /// nothing to write: taken without being queued
     Empty,
-    /// it would take the queue past its limit: not taken, the first since the queue last drained to half
-    Overflowed,
-    /// not taken either, in the same overflow
-    Dropped,
+    FirstOverflow,
+    StillOverflowing,
 }
 
-/// Input waiting for the command, at most `limit` bytes counted with each frame's FRAME_COST; a frame
-/// always fits into an empty queue.
 pub struct InputQueue {
     limit: usize,
     queued: Mutex<Queued>,
@@ -99,7 +87,6 @@ impl InputQueue {
         self.queued.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Queues `data` whole, unless it is empty or would take the queue past its limit.
     pub fn push(&self, data: Vec<u8>) -> Pushed {
         if data.is_empty() {
             return Pushed::Empty;
@@ -109,7 +96,7 @@ impl InputQueue {
         if queued.bytes > 0 && queued.bytes + cost > self.limit {
             let first = !queued.overflowing;
             queued.overflowing = true;
-            return if first { Pushed::Overflowed } else { Pushed::Dropped };
+            return if first { Pushed::FirstOverflow } else { Pushed::StillOverflowing };
         }
         queued.bytes += cost;
         queued.frames.push_back(data);
@@ -127,7 +114,6 @@ impl InputQueue {
         }
     }
 
-    /// The command has taken a frame `next` gave out.
     pub fn written(&self, data: Vec<u8>) {
         let cost = cost(data.capacity());
         drop(data);
@@ -185,7 +171,7 @@ mod tests {
     fn takes_a_frame_into_an_empty_queue_whatever_its_size() {
         let queue = InputQueue::new(4);
         assert_eq!(queue.push(vec![0; 10]), Pushed::Queued);
-        assert_eq!(queue.push(vec![0; 1]), Pushed::Overflowed);
+        assert_eq!(queue.push(vec![0; 1]), Pushed::FirstOverflow);
     }
 
     #[test]
@@ -193,11 +179,10 @@ mod tests {
         let queue = InputQueue::new(2 * (3 + FRAME_COST));
         assert_eq!(queue.push(vec![1; 3]), Pushed::Queued);
         assert_eq!(queue.push(vec![2; 3]), Pushed::Queued);
-        assert_eq!(queue.push(vec![3; 1]), Pushed::Overflowed);
+        assert_eq!(queue.push(vec![3; 1]), Pushed::FirstOverflow);
         let first = queue.next();
         assert_eq!(first, vec![1; 3]);
-        // still counted while it is being written
-        assert_eq!(queue.push(vec![3; 1]), Pushed::Dropped);
+        assert_eq!(queue.push(vec![3; 1]), Pushed::StillOverflowing);
         queue.written(first);
         assert_eq!(queue.push(vec![3; 3]), Pushed::Queued);
         assert_eq!(queue.next(), vec![2; 3]);
@@ -218,7 +203,7 @@ mod tests {
         roomy.push(b'a');
         assert_eq!(queue.push(roomy), Pushed::Queued);
         assert_eq!(queue.push(vec![b'b'; 64]), Pushed::Queued);
-        assert_eq!(queue.push(vec![b'c']), Pushed::Overflowed);
+        assert_eq!(queue.push(vec![b'c']), Pushed::FirstOverflow);
     }
 
     #[test]
@@ -227,17 +212,16 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(queue.push(vec![b'a']), Pushed::Queued);
         }
-        assert_eq!(queue.push(vec![b'b']), Pushed::Overflowed);
-        assert_eq!(queue.push(vec![b'b']), Pushed::Dropped);
-        // a command reading a little at a time: room again, refused again, still one overflow
+        assert_eq!(queue.push(vec![b'b']), Pushed::FirstOverflow);
+        assert_eq!(queue.push(vec![b'b']), Pushed::StillOverflowing);
         queue.written(queue.next());
         assert_eq!(queue.push(vec![b'c']), Pushed::Queued);
-        assert_eq!(queue.push(vec![b'c']), Pushed::Dropped);
+        assert_eq!(queue.push(vec![b'c']), Pushed::StillOverflowing);
         queue.written(queue.next());
         queue.written(queue.next());
         assert_eq!(queue.push(vec![b'd']), Pushed::Queued);
         assert_eq!(queue.push(vec![b'd']), Pushed::Queued);
-        assert_eq!(queue.push(vec![b'e']), Pushed::Overflowed);
+        assert_eq!(queue.push(vec![b'e']), Pushed::FirstOverflow);
     }
 
     #[test]
@@ -251,7 +235,6 @@ mod tests {
         assert_eq!(first, vec![b'a']);
         queue.written(first);
         assert_eq!(queue.push(vec![b'b']), Pushed::Queued);
-        // an empty frame queued in between would come out first
         assert_eq!(queue.next(), vec![b'b']);
     }
 }

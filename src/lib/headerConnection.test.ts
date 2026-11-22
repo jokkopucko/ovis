@@ -3,7 +3,6 @@ import { headerConnection, NO_TRACK, stepConnection, type ConnectionFacts, type 
 
 const live: ConnectionFacts = { scope: "a:local", reportedBy: "a:local", connected: true, connectedBefore: true, outputStopped: false };
 
-/** The line after each set of facts in turn, as the header renders them. */
 function lines(sequence: ConnectionFacts[]): (string | null)[] {
   let track: ConnectionTrack = NO_TRACK;
   return sequence.map((facts) => {
@@ -31,7 +30,6 @@ describe("headerConnection", () => {
 
   it("says Connected while the scope it came back on is the one shown", () => {
     expect(headerConnection(live, { lostOn: null, recoveredOn: "a:local" })).toBe("connected");
-    // lost again: reconnecting wins over the last recovery
     expect(headerConnection({ ...live, connected: false }, { lostOn: null, recoveredOn: "a:local" })).toBe("reconnecting");
   });
 
@@ -51,7 +49,6 @@ describe("the line over time", () => {
 
   it("resets on a switch to another PC: its first connection is not a return", () => {
     const lostHere = { ...live, connected: false };
-    // the switch resets the facts before the new PC's terminal reports (useSelection.ts)
     const switched = { ...live, scope: "a:devbox", reportedBy: "a:local", connected: false, connectedBefore: false };
     const devboxUp = { ...live, scope: "a:devbox", reportedBy: "a:devbox" };
     expect(lines([live, lostHere, switched, devboxUp])).toEqual([null, "reconnecting", null, null]);
@@ -59,14 +56,12 @@ describe("the line over time", () => {
 
   it("says Connected the render the connection is back, before the effect moves the track: the crumb never flashes", () => {
     let track = stepConnection(stepConnection(NO_TRACK, live), { ...live, connected: false });
-    // the open is rendered with the track the loss left
     expect(headerConnection(live, track)).toBe("connected");
     track = stepConnection(track, live);
     expect(headerConnection(live, track)).toBe("connected");
   });
 
   it("says nothing for the other split half on one PC that never dropped", () => {
-    // half a is lost; half b, on the same PC, is made active: a's facts linger a render before b reports
     const aLost = { ...live, connected: false };
     const bActiveStale = { ...aLost, scope: "b:local" };
     const bReports = { ...live, scope: "b:local", reportedBy: "b:local" };

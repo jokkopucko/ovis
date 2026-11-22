@@ -1,10 +1,7 @@
-/* the side conversations list (OmpBtw.tsx) takes the background tasks list's look; an open topic
-   reads as a short thread under its row: each question, then its answer */
 .btw-menu {
   max-height: max(var(--row-h), min(calc(var(--row-h) * 14), calc(var(--bg-tasks-room, 100dvh) - var(--space-2) * 2)));
 }
 
-/* a task's row is one line of glyph and words; a topic's row carries its open thread under it */
 .btw-menu .bg-task {
   flex-direction: column;
   align-items: stretch;

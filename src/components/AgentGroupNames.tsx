@@ -5,11 +5,6 @@ import { useT } from "../lib/i18n.ts";
 import { MAX_AGENT_GROUP_NAME, MAX_AGENT_GROUPS, removeAgentGroup, renameAgentGroup, renameDeviceAgentGroup } from "../lib/namedAgentGroups.ts";
 import { useSettings } from "../lib/settings.ts";
 
-/**
- * Settings -> Named agent groups: the groups' names, in the Agents list's order. A name is saved
- * when its field is left, so a half-typed one never takes the group's rows; a name another group
- * has, or none, puts the field back.
- */
 export function AgentGroupNames() {
   const t = useT();
   const { settings, update } = useSettings();

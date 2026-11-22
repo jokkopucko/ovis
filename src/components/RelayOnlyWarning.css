@@ -1,0 +1,10 @@
+.relay-only-warning {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.relay-only-warning > .update-notice-dismiss {
+  align-self: start;
+}

@@ -1,14 +1,3 @@
-/**
- * Named agent groups (#2431), on the unmodified app over the demo's fixture transport: a row's
- * menu moves it into a group, which the Agents list draws under its own heading with its count;
- * the heading folds the group; New workspace offers the groups. At 390 and 1280, light and dark.
- * No live session is read.
- *
- * Settings -> Experimental -> Named agent groups is on, with the groups Agents and Tasks.
- *
- * UI_EVIDENCE_DIR: agent-groups-<390|1280>-<light|dark>.png (the grouped list),
- * agent-groups-dialog-<...>.png (New workspace's Group field) and agent-groups-setting-<...>.png.
- */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +7,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
@@ -26,6 +16,9 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   const tag = `${width} ${theme}`;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme, agentNamedGroups: true, agentGroupNames: ["Agents", "Tasks"] }));
+  // the Claude pane's row is the one moved: its turn stays at work, or on a slow runner the end the
+  // demo times 4.5s in changes the row while its menu is open
+  await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -86,14 +79,7 @@ async function main(): Promise<void> {
     await buildDemoApp(app);
     const index = join(app, "index.html");
     writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-      let file: string;
-      try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-      if (!file || file.endsWith("/")) file += "index.html";
-      if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-      const body = Bun.file(join(app, file));
-      return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-    } });
+    const server = serveDemo(app, { prefix: "/" });
     try {
       if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
       const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

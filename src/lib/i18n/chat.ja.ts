@@ -9,6 +9,13 @@
  */
 export const CHAT_JA: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravityのチャットを利用できません。ターミナルを開いて動作状況とツール呼び出しを確認してください。",
+  "Not in the conversation. If the agent showed an error, it is in the terminal.": "会話に記録されていません。エージェントがエラーを出した場合はターミナルにあります。",
+  "Not in the conversation. If {agent} showed an error, it is in the terminal.": "会話に記録されていません。{agent} がエラーを出した場合はターミナルにあります。",
+  "{agent} has not recorded a conversation Ovis can find for this pane yet. Before the first message this is normal; if it stays, use the terminal.": "{agent} はこのペインで Ovis が見つけられる会話をまだ記録していません。最初のメッセージの前なら正常です。続く場合はターミナルを使ってください。",
+  "Ovis can't read {agent} conversations yet. Use the terminal to work with it.": "Ovis はまだ {agent} の会話を読み取れません。ターミナルで操作してください。",
+  "Ovis couldn't find or read the file {agent} keeps this conversation in. Use the terminal.": "{agent} がこの会話を保存しているファイルを Ovis が見つけられないか、読み取れませんでした。ターミナルを使ってください。",
+  "{agent} chat needs herdr's {agent} integration, which is not installed on this PC. Settings → Agents shows the command that installs it; then start {agent} again in this pane.": "{agent} のチャットには herdr の {agent} 連携が必要ですが、この PC にはインストールされていません。設定 → エージェントにインストールするコマンドがあります。その後、このペインで {agent} を起動し直してください。",
+  "herdr has not said which folder this pane is in, so Ovis can't find its conversation. Use the terminal.": "herdr がこのペインのフォルダーを伝えていないため、Ovis は会話を見つけられません。ターミナルを使ってください。",
   "Chat read timed out.": "会話の読み込みがタイムアウトしました。",
   "Thinking…": "思考中…",
   "Updates paused — waiting for the agent's next activity": "更新を一時停止中 — エージェントの次の動作を待っています",
@@ -44,6 +51,7 @@ export const CHAT_JA: Record<string, string> = {
   "Couldn't load earlier messages — retry": "以前のメッセージを読み込めませんでした。再試行",
   "Earlier messages": "以前のメッセージ",
   "beginning of conversation": "会話の始まり",
+  "Show a terminal output preview": "ターミナル出力のプレビューを開く",
   "Conversation unavailable — show a terminal output preview": "会話を読み取れません。ターミナル出力のプレビューを開く",
   "No conversation yet — say something below": "まだ会話はありません。下から話しかけてください",
   "New messages": "新しいメッセージ",

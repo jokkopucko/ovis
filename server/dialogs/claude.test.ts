@@ -82,7 +82,6 @@ describe("Claude Code's /effort with Ultracode (#2232)", () => {
   });
 
   test("moves ▲ from the level it is over, and turns the switch with Tab, then s", () => {
-    // ▲ over xhigh, as the session started
     const atXhigh = parseInteractivePrompt("claude", effort("on", 60))!;
     expect(answerKeys(atXhigh, { option_index: 1 })).toEqual([{ keys: ["left"] }, { keys: ["left"] }, { text: "s" }]);
     expect(answerKeys(atXhigh, { option_index: 3 })).toEqual([{ text: "s" }]);
@@ -115,8 +114,6 @@ describe("Claude Code's /effort with Ultracode (#2232)", () => {
     expect(prompt.id).toBe(parseInteractivePrompt("claude", none)!.id);
     expect(answerKeys(prompt, { option_index: 3 })).toEqual([{ keys: ["left"] }, { text: "s" }]);
     expect(parsedByPublicPrompt.get(prompt)?.claudeUltracode).toBeNull();
-    // names a narrow pane wrapped are still not read, with no blank line under them to tell: the
-    // line of names under them is the rest of them
     const wrapped = none
       .replace(`${"─".repeat(30)}▲`, `${"─".repeat(20)}▲${"─".repeat(10)}`)
       .replace("high     xhigh      max", `high\n${" ".repeat(39)}xhigh      max`);
@@ -138,7 +135,6 @@ describe("Claude Code's /effort with Ultracode (#2232)", () => {
       expect(labels(prompt), screen).toEqual(LEVELS);
       expect(answerKeys(prompt, { option_index: 1 }), screen).toEqual([{ keys: ["left"] }, { keys: ["left"] }, { text: "s" }]);
       expect(() => answerKeys(prompt, { option_index: 5 }), screen).toThrow();
-      // the state drawn still guards a level's s
       expect(parsedByPublicPrompt.get(prompt)?.claudeUltracode, screen).toBe(drawn);
     }
   });
@@ -203,7 +199,6 @@ describe("Claude Code's bare /goal", () => {
       expect(prompt?.body).toMatch(/^running \d+s · 0 tokens$/);
       expect(prompt?.options.map((option) => option.label)).toEqual(["Close"]);
       expect(answerKeys(prompt!, { option_index: 0 })).toEqual([{ keys: ["esc"] }]);
-      // the bridge's own words go as keys the client translates (#1482); the goal and its status are Claude's
       expect(prompt?.own_text).toEqual({ title: { key: "Goal active" }, labels: { 0: { key: "Close" } } });
     });
 
@@ -226,7 +221,6 @@ describe("Claude Code's bare /goal", () => {
   });
 
   test("keeps the id an earlier bridge gave the card, so an answer to a card read before an update still lands (#1482)", () => {
-    // the id main's bridge gave this card before its words went as keys (own_text is not part of it)
     expect(parseInteractivePrompt("claude", fixture("none", 120))?.id).toBe("d4c74b031221");
   });
 
@@ -302,7 +296,6 @@ describe("Claude's question beside its fullscreen diff panel", () => {
   });
 
   test("keeps a plan's table whole when no panel is beside it", () => {
-    // a markdown table scrolled above the plan's top border: a `│` in one column on the first rows only
     const table = Array.from({ length: 8 }, (_, row) => `${`Task ${row}`.padEnd(40)}│ preserve requirement ${row}`);
     const screen = [
       ...table,
@@ -318,7 +311,6 @@ describe("Claude's question beside its fullscreen diff panel", () => {
   });
 
   test("finds the panel's edge past a table divider that stops above the question", () => {
-    // a table scrolled to the top of the session, its divider left of the panel's edge in column 99
     const lines = panel("english").split("\n");
     for (let row = 0; row < 8; row += 1) lines[row] = `${`Task ${row}`.padEnd(40)}${"\u2502 preserve requirement".padEnd(59)}\u2502`;
     const prompt = parseInteractivePrompt("claude", lines.join("\n"));
@@ -342,7 +334,6 @@ describe("Claude's question beside its fullscreen diff panel", () => {
   });
 
   test("cuts no row of a menu whose rule spans the pane", () => {
-    // a narrower rule above a full-width one, and a `✕` past it: the session's column is the pane
     const screen = [
       "Claude Code".padEnd(150) + "✕",
       "─".repeat(60),
@@ -360,7 +351,6 @@ describe("Claude's question beside its fullscreen diff panel", () => {
   });
 
   test("an answered question beside the panel is not read as open", () => {
-    // later output in the hint's place, the panel's edge still beside it
     const hint = "Enter to select · ↑/↓ to navigate · Esc to cancel";
     expect(parseInteractivePrompt("claude", panel("english").replace(hint, "● Done.".padEnd(hint.length)))).toBeNull();
   });
@@ -370,7 +360,6 @@ describe("Claude's words over its question (#2088)", () => {
   // live-captured from Claude Code 2.1.311 in a 119- and a 40-column pane while the question waited;
   // its session file had neither the words nor the call until the answer
   const asked = (width: number) => readFileSync(new URL(`../fixtures/claude-question-words-2.1.311-${width}.txt`, import.meta.url), "utf8");
-  /** the screen with the words' lines (from their `●` line down to the panel's rule) replaced by `lines` */
   const withAbove = (screen: string, lines: string[]): string => {
     const rows = screen.split("\n");
     const start = rows.findIndex((row) => row.startsWith("● The file"));
@@ -428,7 +417,6 @@ describe("Claude's words over its question (#2088)", () => {
       expect(prompt).toMatchObject({ kind: "question", title: "File", question: "Which file should I fix?" });
       expect(prompt?.screen_words).toBeUndefined();
     }
-    // the hint wrapped by a narrow pane, and a group whose bullet is drawn above Claude's own line
     expect(parseInteractivePrompt("claude", withAbove(asked(40), ["● Searched for 2 patterns, read 1 file (ctrl+o", "  to expand)", ""]))?.screen_words).toBeUndefined();
   });
 
@@ -518,7 +506,6 @@ describe("Claude Code's question tabs as the card's steps", () => {
     expect(first).toMatchObject({ title: "Device · 1 of 2", question: "Which device do you use?" });
     expect(steps(first)).toEqual([["Device", false, true, false], ["Symptoms", false, false, true], ["Submit", false, false, true]]);
     expect(first?.can_step_back).toBeUndefined();
-    // back on an answered question: its own name, not the first question still open
     const back = parseInteractivePrompt("claude", tabsPanel("first-answered"));
     expect(back).toMatchObject({ title: "Device · 1 of 2", question: "Which device do you use?" });
     expect(steps(back)).toEqual([["Device", true, true, false], ["Symptoms", false, false, true], ["Submit", false, false, true]]);
@@ -528,7 +515,6 @@ describe("Claude Code's question tabs as the card's steps", () => {
   });
 
   test("tells two tabs apart that ask the same question with the same options", () => {
-    // the same label, question and options on both tabs: only the tab shown says which is asked
     const bar = (lit: number) => "← " + [" ☐ Device ", " ☐ Device ", " ✔ Submit "]
       .map((tab, at) => at === lit ? `\u001b[38;2;0;0;0m\u001b[48;2;177;185;249m${tab}\u001b[0m` : tab).join("") + " →";
     const on = (lit: number) => tabsPanel("first").split("\n").map((line) => line.replace(ANSI_RE, "").startsWith("←") ? bar(lit) : line).join("\n");
@@ -537,13 +523,12 @@ describe("Claude Code's question tabs as the card's steps", () => {
     expect(first?.question).toBe(second?.question);
     expect(first?.steps?.[0]?.current).toBe(true);
     expect(second?.steps?.[1]?.current).toBe(true);
-    // a stale answer for one never reads as an answer for the other
     expect(first?.id).not.toBe(second?.id);
   });
 
   test("keeps the tab shown beside the diff panel drawn without its edge (#2730)", () => {
     // the 2.1.318 edgeless panel's geometry around the question: its `✕` on the top row, its note on the last,
-    // the session's rule ending at column 108; the cut must keep the colors that say which tab is shown
+    // the session's rule ending at column 108
     const bar = (lit: number) => "← " + [" ☐ Device ", " ☐ Device ", " ✔ Submit "]
       .map((tab, at) => at === lit ? `\u001b[38;2;0;0;0m\u001b[48;2;177;185;249m${tab}\u001b[0m` : tab).join("") + " →";
     const on = (lit: number) => ["Claude Code".padEnd(195) + "✕", ...tabsPanel("first").replace(/─{100,}/g, "─".repeat(108)).split("\n")
@@ -569,14 +554,10 @@ describe("Claude Code's question tabs as the card's steps", () => {
       const plain = parseInteractivePrompt("claude", tabsPanel(state).replace(ANSI_RE, ""));
       expect(plain?.steps, state).toBeUndefined();
       expect(plain?.can_step_back, state).toBeUndefined();
-      // on the first question still open, a poll whose colors could not be read is the same card;
-      // back on an answered one it is another, as the tab shown is part of the card (#2465)
       expect(colored?.id === plain?.id, state).toBe(["first", "second", "review"].includes(state));
     }
-    // two tabs on a background, or a bar the pane cut off at its edge: no tab to go from
     const twoLit = tabsPanel("first").replace("\u001b[0m ☐ Symptoms ", "\u001b[0m\u001b[48;2;177;185;249m ☐ Symptoms \u001b[0m");
     expect(parseInteractivePrompt("claude", twoLit)?.steps).toBeUndefined();
-    // no tab on a background, one in the default color among dimmed ones: a style, not the tab shown
     const plainBar = "\u001b[2m←  \u001b[22m ☐ Device \u001b[2m ☐ Symptoms  ✔ Submit  →\u001b[0m";
     const noBackground = tabsPanel("first").split("\n").map((line) => line.replace(ANSI_RE, "").startsWith("←") ? plainBar : line).join("\n");
     expect(parseInteractivePrompt("claude", noBackground)?.question).toBe("Which device do you use?");
@@ -594,7 +575,6 @@ describe("the preview Claude draws for the option under its cursor (#1212)", () 
   test("reads the box as drawn, for the option the cursor is on", () => {
     expect(shown("grid", 119)?.option_preview).toEqual({ option_index: 0, text: "+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards" });
     expect(shown("grid", 67)?.option_preview).toEqual({ option_index: 0, text: "+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards" });
-    // a long line wraps inside the box: its rows are kept as the pane draws them
     expect(shown("wide", 67)?.option_preview).toEqual({
       option_index: 1,
       text: [..."1234"].map(() => "wide wide wide wide wide wide\n wide wide wide wide wide").join("\n").replace(/ wide$/, ""),
@@ -615,28 +595,23 @@ describe("the preview Claude draws for the option under its cursor (#1212)", () 
 
   test("reads only the box beside the menu, between its edges (#3060 review)", () => {
     const screen = readFileSync(new URL("../fixtures/claude-question-preview-2.1.312-grid-67.txt", import.meta.url), "utf8");
-    // a box the user drew earlier, above the question at the same column, is no option's preview
     const box = (text: string) => [`${" ".repeat(34)}┌${"─".repeat(31)}┐`, `${" ".repeat(34)}│ ${text.padEnd(30)}│`, `${" ".repeat(34)}└${"─".repeat(31)}┘`].join("\n");
     const above = screen.replace(" ☐ Layout", `${box("PRIVATE USER TEXT")}\n ☐ Layout`);
     expect(parseInteractivePrompt("claude", above)?.option_preview).toEqual({ option_index: 0, text: "+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards" });
-    // nor is what stands right of the box's edge
     const beside = screen.replace("│ grid of cards                 │", "│ grid of cards                 │ OUTSIDE PANEL TEXT");
     expect(parseInteractivePrompt("claude", beside)?.option_preview?.text).toBe("+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards");
   });
 
   test("cuts the options at the preview box, not at a box drawn above them (#3062)", () => {
     const screen = readFileSync(new URL("../fixtures/claude-question-preview-2.1.312-grid-67.txt", import.meta.url), "utf8");
-    // a diagram in Claude's earlier answer, at another column than the preview box
     const diagram = [`${" ".repeat(20)}┌──────┐`, `${" ".repeat(20)}│ api  │`, `${" ".repeat(20)}└──────┘`].join("\n");
     const card = parseInteractivePrompt("claude", screen.replace(" ☐ Layout", `${diagram}\n ☐ Layout`));
     expect(card?.options).toEqual(shown("grid", 67)?.options);
     expect(card?.id).toBe(shown("grid", 67)?.id);
     expect(card?.option_preview).toEqual({ option_index: 0, text: "+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards" });
-    // nor at a corner in the first option's own label, left of the preview box
     const label = parseInteractivePrompt("claude", screen.replace("❯ 1. Grid                         ┌", "❯ 1. API  ┌────┐                  ┌"));
     expect(label?.options.map((option) => option.label)).toEqual(["API  ┌────┐", "Wide", "Tall"]);
     expect(label?.option_preview?.text).toBe("+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards");
-    // nor in the question above the box, at the box's column
     const asked = parseInteractivePrompt("claude", screen.replace("\nWhich layout?\n", `\nWhich layout?${" ".repeat(21)}│ keep this │\n`));
     expect(asked?.question).toContain("keep this");
   });

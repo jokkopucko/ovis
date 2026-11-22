@@ -70,7 +70,7 @@ const PI_FORMS: NonNullable<AgentCommandSource["forms"]> = {
 };
 
 
-const readJson = (path: string): unknown => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; /* absent or not JSON */ } };
+const readJson = (path: string): unknown => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; } };
 const canonical = (path: string): string => { try { return realpathSync(path); } catch { return resolve(path); } };
 
 /** PI_CODING_AGENT_DIR from the pane's own environ first, then the server's, else ~/.pi/agent. */
@@ -174,7 +174,6 @@ export const source: AgentCommandSource = {
   terminalBound: PI_TERMINAL_BOUND,
   agentHidden: PI_AGENT_HIDDEN,
   discover(ctx) {
-    // pi's packages and extension commands stay out: no file scan can know them
     const { home, cwd } = ctx;
     const agentDir = agentDirectory(home, ctx.env, ctx.serverEnv);
     const trusted = cwd !== null && cwd !== undefined && projectTrusted(agentDir, plainObject(readJson(join(agentDir, "settings.json"))), cwd);

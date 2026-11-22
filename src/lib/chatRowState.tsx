@@ -1,20 +1,15 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState, type ComponentProps, type FocusEvent } from "react";
 
-/** State belongs to a logical row, not to a virtualizer container. */
 export interface ChatRowMemory {
   readonly toggles: Map<string, boolean | null>;
   readonly outputs: Map<string, string>;
-  /** an agent turn's part index → the name of the run of work it was in when last drawn (runNames) */
   readonly runs: Map<number, string>;
-  /** the same for runs that drew no block (hidden reasoning alone): taken back once they draw again */
   readonly dormant: Map<number, string>;
-  /** the row whose head holds the keyboard's focus (useRowFocus): one object per focus, so a head that left can tell its record from a newer one */
   focused?: { readonly key: string };
 }
 
 export const ChatRowMemoryContext = createContext<ChatRowMemory | null>(null);
 
-/** The memory of the row `key`, made the first time it is asked for: before the row is drawn too. */
 export function chatRowMemory(memories: Map<string, ChatRowMemory>, key: string): ChatRowMemory {
   let memory = memories.get(key);
   if (!memory) {
@@ -34,18 +29,9 @@ export function useChatRowToggle(key: string, initial: boolean | null) {
   return [value, update] as const;
 }
 
-/**
- * Keeps the keyboard's focus on a row when the element drawing it is replaced: a todo update the
- * next one folds into a Plan row (#1601). The head records that it holds the focus; a head drawn
- * again for that row, or for a row taking its place (`from`), takes the focus back if it fell to
- * the page because the old element left. Focus the reader moved elsewhere is never taken, and a
- * head that leaves with no head taking its place in the same render ends the record: a row drawn
- * later, scrolled back or opened again, never takes the focus.
- */
 export function useRowFocus<T extends HTMLElement>(key: string, from: readonly string[] = []) {
   const memory = useContext(ChatRowMemoryContext);
   const ref = useRef<T>(null);
-  // only when drawn: a head already on the page keeps or loses the focus by the reader's hand
   useLayoutEffect(() => {
     const focused = memory?.focused;
     const head = ref.current;
@@ -74,11 +60,12 @@ export function useRowFocus<T extends HTMLElement>(key: string, from: readonly s
   return { ref, onFocus, onBlur };
 }
 
-/** Native disclosures retain their open state when their row leaves the DOM. */
-export function ChatDetails({ memoryKey, onToggle, ...props }: ComponentProps<"details"> & { memoryKey: string }) {
-  const [open, setOpen] = useChatRowToggle(memoryKey, false);
-  return <details {...props} open={open === true} onToggle={(event) => {
-    setOpen(event.currentTarget.open);
+export function ChatDetails({ memoryKey, onToggle, defaultOpen = false, ...props }: ComponentProps<"details"> & { memoryKey: string; defaultOpen?: boolean }) {
+  const [chosen, setChosen] = useChatRowToggle(memoryKey, null);
+  const open = chosen ?? defaultOpen;
+  return <details {...props} open={open} onToggle={(event) => {
+    // the toggle a render's own `open` fires (on mount, or as the default changes) is no choice of the reader's
+    if (event.currentTarget.open !== open) setChosen(event.currentTarget.open);
     onToggle?.(event);
   }} />;
 }

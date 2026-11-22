@@ -7,13 +7,9 @@ import { sameText } from "./dialogs/omo.ts";
 const CODEX_QUEUE_COUNT_RE = /^\?\s*(\d+)\s+questions?\b/;
 
 /**
- * How many questions wait in Codex's collapsed queue at the bottom of the screen, with the
- * main prompt right under it; 0 otherwise. The card (codexQueuedPrompt) and the send path
- * (codexQuestionsCollapsed) both read this count, so they cannot disagree.
- * - A message of the user's own waiting to be submitted replaces the questions' block
- *   (alt+↑ then opens nothing, checked on Codex 0.156.1): no count then.
- * - An open question (its "enter submit … skip" hint) or an approval under the queue holds the
- *   input itself: no count either.
+ * In Codex, a message of the user's own waiting to be submitted replaces the questions' block
+ * (alt+↑ then opens nothing, checked on Codex 0.156.1), and an open question (its "enter submit …
+ * skip" hint) or an approval under the queue holds the input itself.
  */
 export function queuedQuestionCount(screen: string): number {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map(cleanLine).filter(Boolean);
@@ -28,7 +24,6 @@ export function queuedQuestionCount(screen: string): number {
   return Number(lines[at]!.match(CODEX_QUEUE_COUNT_RE)![1]);
 }
 
-/** The question a pane's queue opened on, as it showed there, when that was not the card's. */
 export interface QueueFront { question: string; options: string[] }
 
 /**
@@ -37,8 +32,6 @@ export interface QueueFront { question: string; options: string[] }
  */
 function queuedPrompt(count: number, unanswered: QueuedQuestion[], front: QueueFront | null = null): ParsedPrompt | null {
   const waiting = unanswered.slice(-count);
-  // the question the queue opened on last time, when that was not the newest guess: by its
-  // title and its options, the newest such one (an older skipped one may share the title)
   const first = (front !== null ? [...unanswered].reverse().find((question) => sameText(front.question, question.title)
     && question.options.length === front.options.length && question.options.every((option, index) => sameText(front.options[index]!, option))) : undefined)
     ?? waiting[0];
@@ -53,7 +46,6 @@ function queuedPrompt(count: number, unanswered: QueuedQuestion[], front: QueueF
   });
 }
 
-/** The card for Codex's collapsed queue on this screen, from the rollout's unanswered questions. */
 export function codexQueuedPrompt(screen: string, unanswered: QueuedQuestion[], front: QueueFront | null = null): InteractivePrompt | null {
   const count = queuedQuestionCount(screen);
   const queued = count > 0 ? queuedPrompt(count, unanswered, front) : null;

@@ -1,17 +1,8 @@
 /**
- * What this PC says about its own load: CPU, memory, load average and the disks that hold the user's
- * files. It feeds the PC header in the sidebar (GET /api/system), and a remote
- * PC answers the same route through its bridge.
- *
- * Nothing runs in the background. A reading is taken when a client asks, from counters the kernel
- * keeps anyway: CPU is the change since the previous reading, so the first
- * ask waits a moment (FIRST_WINDOW_MS) to have something to compare. Asks closer together than
- * FRESH_MS share one reading, so several browsers or tabs never shorten each other's window.
- *
  * Linux is read from /proc (memory is total minus MemAvailable, so the file cache never reads as
- * "used"). Everywhere else gets what Node's `os` can say, and the fields it cannot say are null: a
- * number that was not measured is never shown as zero. macOS memory is one of those: `os` counts
- * the file cache as used there, so it is left out rather than shown high.
+ * "used"). macOS memory is read from `vm_stat` as Activity Monitor's "Memory Used" (`os` counts the
+ * file cache as used there). Everywhere else gets what Node's `os` can say, and the fields it cannot
+ * say are null: a number that was not measured is never shown as zero.
  *
  * Limits worth knowing. In a container without lxcfs, /proc and `os` describe the host, not the
  * container's cgroup limits. libuv leaves iowait, softirq and steal out of the CPU times, so a VM
@@ -25,23 +16,16 @@ import { parse as parsePath, resolve } from "node:path";
 import type { SystemDisk, SystemReport } from "../shared/system.ts";
 import { jsonResponse } from "./http.ts";
 
-/** asks inside this window get the reading already taken */
 export const FRESH_MS = 1500;
-/** how long the first reading watches the counters before it answers */
 export const FIRST_WINDOW_MS = 250;
-/** a CPU comparison point older than this is an average of a quiet spell, not "now": start again */
 export const STALE_MS = 30_000;
-/** how long the disks may take before they are left out of a reading */
 export const DISK_CAP_MS = 1500;
-/** while a disk read is stuck, the last answer stands in for this long, then the disks are left out */
 export const DISK_STALE_MS = 60_000;
-/** a filesystem smaller than this (a boot partition, a tmpfs) is not a disk that fills up */
 const MIN_DISK_BYTES = 1024 ** 3;
 const MAX_DISKS = 4;
 
 export interface CpuTimes { busy: number; total: number }
 
-/** Every read the sampler makes, so tests can stand in for the machine. */
 export interface SystemIo {
   platform: NodeJS.Platform;
   now(): number;
@@ -50,12 +34,10 @@ export interface SystemIo {
   cpuCount(): number;
   uptime(): number;
   loadavg(): [number, number, number];
-  /** total and in-use bytes, or null when this PC cannot say */
   memory(): Promise<{ total: number; used: number } | null>;
   disks(): Promise<SystemDisk[]>;
 }
 
-/** The kernel's per-core counters added up: ticks spent on work and ticks in all. */
 export function cpuTimesOf(list: ReadonlyArray<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }>): CpuTimes {
   let busy = 0;
   let total = 0;
@@ -79,9 +61,28 @@ export function parseMeminfo(text: string): { total: number; used: number } | nu
   return { total, used: Math.max(0, total - Math.min(available, total)) };
 }
 
+/**
+ * macOS memory in use from `vm_stat`, as Activity Monitor's "Memory Used": App Memory (anonymous
+ * pages less the purgeable ones) plus wired pages plus the pages the compressor occupies, in bytes.
+ * The file cache and free pages are not used memory. Null when the page size or a count is missing.
+ */
+export function parseVmStat(text: string, total: number): { total: number; used: number } | null {
+  const size = /page size of (\d+) bytes/.exec(text);
+  const pages = (name: string): number | null => {
+    const match = new RegExp(`^${name}:\\s+(\\d+)\\.?\\s*$`, "m").exec(text);
+    return match ? Number(match[1]) : null;
+  };
+  const anonymous = pages("Anonymous pages");
+  const purgeable = pages("Pages purgeable");
+  const wired = pages("Pages wired down");
+  const compressor = pages("Pages occupied by compressor");
+  if (size === null || anonymous === null || purgeable === null || wired === null || compressor === null || !(total > 0)) return null;
+  const used = (Math.max(0, anonymous - purgeable) + wired + compressor) * Number(size[1]);
+  return { total, used: Math.min(used, total) };
+}
+
 const round = (value: number, places = 1): number => Math.round(value * 10 ** places) / 10 ** places;
 
-/** One reading from two sets of counters `seconds` apart. */
 export function cpuPercent(before: CpuTimes, after: CpuTimes): number | null {
   const total = after.total - before.total;
   const busy = after.busy - before.busy;
@@ -97,7 +98,6 @@ export function diskOf(path: string, stats: { bsize: number; blocks: number; bfr
   return { path, used, total, percent: round((used / total) * 100) };
 }
 
-/** What one path says: the device it is on and df's numbers for its filesystem. */
 export type ReadPath = (path: string) => Promise<{ dev: number; numbers: { bsize: number; blocks: number; bfree: number; bavail: number } }>;
 
 const readPath: ReadPath = async (path) => {
@@ -107,12 +107,6 @@ const readPath: ReadPath = async (path) => {
 
 const diskPaths = (): string[] => [parsePath(resolve(homedir())).root || "/", homedir()];
 
-/**
- * The root, then the home folder when it is on another disk: at most MAX_DISKS, each filesystem
- * once. Two btrfs subvolumes have different device numbers but one pool, so the numbers decide too.
- * Each path is read on its own: one that does not answer (a stuck network mount under home) is left
- * out after `capMs` and not asked again until it does, while the other still shows, as read now.
- */
 export function diskReader(read: ReadPath = readPath, paths: () => string[] = diskPaths, capMs = DISK_CAP_MS): () => Promise<SystemDisk[]> {
   const pending = new Set<string>();
   const one = (path: string) => {
@@ -129,6 +123,7 @@ export function diskReader(read: ReadPath = readPath, paths: () => string[] = di
     answers.forEach((answer, i) => {
       if (answer === null || devices.has(answer.dev)) return;
       const { numbers } = answer;
+      // Two btrfs subvolumes have different device numbers but one pool, so the numbers decide too.
       const shape = `${numbers.bsize}:${numbers.blocks}:${numbers.bfree}:${numbers.bavail}`;
       if (shapes.has(shape)) return;
       const disk = diskOf(list[i]!, numbers);
@@ -154,7 +149,14 @@ export const realIo: SystemIo = {
     if (osPlatform() === "linux") {
       try { return parseMeminfo(await readFile("/proc/meminfo", "utf8")); } catch { return null; }
     }
-    // `os` counts the file cache as used on macOS, which would read as a full PC: left out there
+    // `os` counts the file cache as used on macOS, which would read as a full PC: vm_stat says what is used
+    if (osPlatform() === "darwin") {
+      try {
+        const child = Bun.spawn(["/usr/bin/vm_stat"], { stdout: "pipe", stderr: "ignore", timeout: 2000 });
+        const text = await new Response(child.stdout).text();
+        return await child.exited === 0 ? parseVmStat(text, totalmem()) : null;
+      } catch { return null; }
+    }
     if (osPlatform() !== "win32") return null;
     const total = totalmem();
     return total > 0 ? { total, used: Math.max(0, total - freemem()) } : null;
@@ -164,7 +166,6 @@ export const realIo: SystemIo = {
 
 export interface SystemSampler { read(): Promise<SystemReport> }
 
-/** `work`, or `fallback` once `ms` have passed: the work is left to finish on its own, never awaited again. */
 function within<T>(work: Promise<T>, ms: number, fallback: () => T): Promise<T> {
   return new Promise((done) => {
     // fixed wait: a deadline raced against the work, which a stuck mount may never finish
@@ -182,15 +183,14 @@ export function createSystemSampler(io: SystemIo = realIo, options: { diskCapMs?
   let diskRead: Promise<void> | null = null;
 
   /**
-   * The disks, within diskCapMs. A disk read that has not come back is not started again: each
-   * one holds a thread of the process's small pool, and a stuck mount would use them all up. Nor
-   * is it waited on again, so a read that never ends holds one handler, not one per ask. The last
-   * answer stands in until it comes back, for DISK_STALE_MS at most.
+   * A disk read that has not come back is not started again: each one holds a thread of the
+   * process's small pool, and a stuck mount would use them all up. Nor
+   * is it waited on again, so a read that never ends holds one handler, not one per ask.
    */
   function disks(): Promise<SystemDisk[]> {
     const known = (): SystemDisk[] => lastDisks !== null && io.now() - lastDisks.at <= DISK_STALE_MS ? lastDisks.list : [];
     if (diskRead !== null) return Promise.resolve(known());
-    const read = io.disks().then((list) => { lastDisks = { list, at: io.now() }; }, () => { /* left out; the last answer stands in */ })
+    const read = io.disks().then((list) => { lastDisks = { list, at: io.now() }; }, () => {})
       .finally(() => { diskRead = null; });
     diskRead = read;
     return within(read.then(known), diskCapMs, known);

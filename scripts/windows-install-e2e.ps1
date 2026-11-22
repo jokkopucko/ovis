@@ -1,19 +1,9 @@
-# The real installer on a real Windows PC: herdr's and Bun's own installers, herdr's plugin build,
-# the app's first start and, with -Update, an update from the release before the latest one.
-# scripts/windows-install.test.ps1 checks install.ps1's decisions against stand-ins; this runs them.
-#
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install-e2e.ps1 [-Installer <path|url>] [-Ref <tag|commit>] [-Update] [-Fresh]
-#
 # It replaces an installed Ovis and leaves the one it installed. A herdr server it had to
 # start is stopped again; one that was already running is left alone.
 param(
-    # install.ps1 in this checkout, or a URL to pipe into Invoke-Expression as the README says
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
-    # a release tag or a full commit; empty is the latest release (with -Update, the one before it)
     [string]$Ref = '',
-    # after installing, update to the latest release through the app's own updater
     [switch]$Update,
-    # fail unless herdr and Bun are missing, so that their installers run (a CI runner)
     [switch]$Fresh
 )
 $ErrorActionPreference = 'Stop'
@@ -55,7 +45,6 @@ function Invoke-Installer([string]$InstallRef) {
         finally { Remove-Item Env:\OVIS_REF -ErrorAction SilentlyContinue }
     } else { & $Installer -Ref $InstallRef }
 }
-# $Expected is a full commit or a release tag.
 function Assert-App([string]$Expected) {
     $health = Wait-Until { $answer = Get-Json '/api/health'; if ($answer.ok) { $answer } } 60 'the app to answer'
     $updates = Get-Json '/api/updates'
@@ -95,13 +84,11 @@ try {
     Write-Host "e2e: installing $expected with $Installer"
     Invoke-Installer $Ref
     if (-not (Test-ServerRunning)) {
-        # the installer's last line on a PC where herdr is not running: "Open a new terminal and run: herdr"
         Write-Host 'e2e: starting herdr'
         Start-Process -FilePath (Get-Command herdr).Source -ArgumentList 'server' -WindowStyle Hidden
         $startedServer = $true
         Wait-Until { Test-ServerRunning } 30 'herdr to start' | Out-Null
         Wait-Until { (Get-Json '/api/health').ok } 60 'the app to start with herdr' | Out-Null
-        # with herdr running, the installer finds the app installed and reports where it runs
         Invoke-Installer $Ref
     }
     Assert-App $expected
@@ -125,7 +112,6 @@ try {
     }
 } catch {
     Write-Host "FAIL $($_.Exception.Message)"
-    # what herdr and the app wrote, for a run on a PC nobody can log in to
     if (Test-Herdr) { herdr plugin log list | Out-String | Write-Host }
     $logs = @("$env:APPDATA\herdr\herdr-server.log") + @(Get-ChildItem "$env:APPDATA\herdr", "$env:LOCALAPPDATA\herdr" -Recurse -Filter server.log -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     foreach ($log in $logs) {

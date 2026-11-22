@@ -1,11 +1,14 @@
 /**
- * The account service API (docs/account.md, "Account service API") in memory, for tests of the PC
- * and the apps. Not a service: no provider behind sign-in, no push, no persistence. `signInAs` says who
- * the next sign-in is, `appleIdToken` stands in for Apple's, and `issueToken` skips sign-in altogether. It checks what the real service must check (record shape and signature, the
- * caller's directory, server proof with the `account` role), so tests fail where a PC or app relies
- * on something the service would refuse.
+ * Test support only: nothing in production imports it (server/conventions.test.ts).
+ * It checks what the real service must check (record shape and signature, the caller's directory,
+ * server proof with the `account` role), so tests fail where a PC or app relies on something the
+ * service would refuse.
  */
-import { ACCOUNT_RECORDS_MAX, AccountRecordError, isAccountKey, readAccountRecord, type AccountRecord } from "./account-records.ts";
+import {
+  ACCOUNT_RECORDS_MAX, AccountRecordError, isAccountKeyEncoding, isDeviceSafetyRecord, parseSafetyRecord, readAccountRecord, verifySafetyRecord,
+  type AccountRecord, type BlockRecord, type DeviceLiftRecord, type SafetyRecord,
+} from "./account-records.ts";
+import { ACCOUNT_SNAPSHOT_V, SNAPSHOT_GONE, type AccountSnapshotPage, type SnapshotFreezeLine } from "./account-snapshot.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
 import { isWssOrigin } from "./relay-offer.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
@@ -13,17 +16,16 @@ import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./
 export const CHALLENGE_TTL_MS = 60_000;
 export const MAILBOX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAILBOX_PAGE = 100;
-/** Records one account may hold for one PC at once; past it, `/v1/records` answers 429 `mailbox_full`. */
 export const MAILBOX_MAX = 1000;
 export const ACCESS_TOKEN_TTL_S = 3600;
-/** PCs one account may list; past it, a new PC answers 409 `directory_full`. */
 export const DIRECTORY_MAX = 100;
 export const LIMIT_WINDOW_MS = 10 * 60_000;
 export const ADMISSIONS_PER_WINDOW = 10;
+/** Quiet admissions one account may post in a window: a count of their own, apart from the ordinary ones. */
+export const QUIET_ADMISSIONS_PER_WINDOW = 60;
 export const ACCOUNT_REQUESTS_PER_WINDOW = 600;
 export const DEVICE_CODE_TTL_S = 900;
 export const DEVICE_POLL_S = 5;
-/** What every push ring says; which device or PC it is about, the app learns from its PCs. */
 export const ACCOUNT_RING = { pane_id: null, title: "Ovis", body: "Your Ovis account has news", tag: "ovis-account" } as const;
 
 export interface FakeRing { account: string; endpoint: string; payload: typeof ACCOUNT_RING }
@@ -31,7 +33,6 @@ export const SIGNIN_CODE_TTL_MS = 60_000;
 
 export type SignInProvider = "github" | "google" | "apple";
 const SIGN_IN_PROVIDERS: readonly string[] = ["github", "google", "apple"];
-/** The providers with a device flow, and the page each one's code is typed at. */
 const DEVICE_PAGES: Readonly<Record<string, string>> = { github: "https://github.com/login/device", google: "https://www.google.com/device" };
 export const LINK_TOKEN_TTL_S = 600;
 /** How recent a sign-in must be to add or remove a sign-in method. */
@@ -63,13 +64,34 @@ const PKCE = /^[A-Za-z0-9._~-]{43,128}$/;
 interface Session { account: string; provider: SignInProvider | "test"; family: string; expires: number }
 
 /** `public_key`: the PC's relay key (X25519, 64 hex), from which `server_id` derives; `relay`: the wss origin it is reached through. */
-export interface FakePc { server_id: string; label: string; public_key: string; relay: string; added_at: string; last_seen_at: string | null }
+export interface FakePc { server_id: string; label: string; public_key: string; relay: string; added_at: string; last_seen_at: string | null; new_until?: string | null; admitted_at?: string | null; exempt?: boolean }
+/** How long a PC added in one press stays new to the account's other devices. */
+export const PC_NEW_MS = 24 * 60 * 60_000;
+/** One-press PC adds one account may make per rolling day; past it 429 `pc_add_cap`. */
+export const PC_ADMITS_PER_DAY = 3;
 /** `key`: the waiting device's account key, which the PC matches against the comparison it is asked for. */
 export interface FakeAdmission { id: string; server_id: string; account: string; label: string; key: string; at: string; os: AccountOs | null; country: string | null; city: string | null }
 /** How long an admission reaches its PC's mailbox: the PC lets a waiting account device compare digits only within it. */
 export const ADMISSION_TTL_MS = 10 * 60_000;
 
 interface Mail { seq: number; record: AccountRecord; at: number }
+
+/** Devices one snapshot page lists. */
+export const SNAPSHOT_PAGE = 100;
+
+/** Device table P6, P21: an account's registered keys, each with a `no` that is never reused, and its durable records. */
+interface Registry {
+  next: number;
+  version: number;
+  /** Device table T58: raised when the account gains or loses a sign-in method */
+  methods_version: number;
+  devices: Map<string, { no: number; label: string; eligible: boolean; removed: boolean }>;
+  blocks: BlockRecord[];
+  lifts: DeviceLiftRecord[];
+  freezes: SnapshotFreezeLine[];
+}
+
+type SnapshotState = Omit<AccountSnapshotPage, "page" | "last" | "v">;
 
 export class FakeAccountService {
   private readonly tokens = new Map<string, Session>();
@@ -80,11 +102,23 @@ export class FakeAccountService {
   private readonly appleTokens = new Map<string, { account: string; nonce: string }>();
   private readonly signIns = new Map<SignInProvider, string>();
   private readonly deviceSignIns = new Map<string, { provider: SignInProvider; userCode: string; account: string | null; denied: boolean; interval: number; nextPoll: number; expires: number; challenge: string | null; page?: boolean; requester?: { label: string | null; os: AccountOs | null } }>();
-  /** by account: its sign-in methods, one per provider */
   private readonly identityList = new Map<string, Map<SignInProvider, { added_at: string }>>();
   private readonly linkTokens = new Map<string, { account: string; family: string; provider: SignInProvider; expires: number }>();
   /** by refresh family: when that sign-in was made (a refresh keeps it), for what needs a recent one */
   private readonly signedInAt = new Map<string, number>();
+  /** by refresh family: the sign-in's two_step_set (null: unknown, as a Google sign-in without amr) */
+  private readonly twoStep = new Map<string, boolean | null>();
+  /** what a sign-in made through the sign-in routes says of two-step sign-in; tests set it */
+  signInTwoStep: boolean | null = null;
+  /** one-press admissions by account and PC (`box`), and each account's admit times, for the daily cap */
+  private readonly pcAdmissions = new Map<string, { at: number; taken: boolean; family: string }>();
+  private readonly admitTimes = new Map<string, number[]>();
+  /** accounts that admitted or removed a PC: never empty again for the first-PC exemption */
+  private readonly usedAccounts = new Set<string>();
+  /** by refresh family: when that sign-in registered its own account device key (registerSessionKey) */
+  private readonly keyRegisteredAt = new Map<string, number>();
+  /** by key: the refresh family that registered it with registerSessionKey */
+  private readonly keyFamily = new Map<string, string>();
   private offered: { providers: SignInProvider[]; device: SignInProvider[]; device_page?: SignInProvider[] } = { providers: ["github", "google", "apple"], device: ["github", "google"] };
   private readonly pushes = new Map<string, { account: string; endpoint: string }>();
   private readonly counters = new Map<string, { start: number; count: number }>();
@@ -93,48 +127,56 @@ export class FakeAccountService {
   private readonly mailboxes = new Map<string, Mail[]>();
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
   private readonly admissionList: FakeAdmission[] = [];
+  /** quiet admissions: only an app's own sign-in posts one, and only a PC the account lists reads them */
+  private readonly quietList: FakeAdmission[] = [];
   private readonly accountLimits = new Map<string, Record<string, unknown>>();
+  private readonly subscribed = new Set<string>();
+  private readonly deletedAccounts = new Set<string>();
+  /** sign-ins made with a device code or on the link page, refreshes included: they cannot delete the account */
+  private readonly deviceFamilies = new Set<string>();
   /** Where the service sees every request come from (Cloudflare's `request.cf`); unknown unless a test says. */
   requestPlace: AccountPlace = { country: null, city: null };
-  /** False acts as an account service from before "Who is asking", whose link page start refuses `label` and `os`. */
-  linkPageTakesRequester = true;
+  linkPageAcceptsLabelAndOs = true;
+  private readonly registries = new Map<string, Registry>();
+  private readonly snapshots = new Map<string, SnapshotState>();
+  /** OVIS_ACCOUNT_OPENS_ALL at the service: off, the snapshot and safety-record routes do not exist. */
+  opensAll = false;
+  /** Newer services distinguish a listed PC's snapshot opt-out from a hidden 404. */
+  reportsStep2Off = false;
   private seq = 0;
-  /** Every request the fake answered, oldest first: `METHOD /path`. */
   readonly requests: string[] = [];
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /** A bearer token for `account`, as if its owner had just signed in. */
-  issueToken(account: string): string {
+  issueToken(account: string, { twoStep = null }: { twoStep?: boolean | null } = {}): string {
     const token = randomHex(32);
     const family = randomHex(16);
     this.tokens.set(token, { account, provider: "test", family, expires: Number.POSITIVE_INFINITY });
     this.signedInAt.set(family, this.now());
+    this.twoStep.set(family, twoStep);
     return token;
   }
 
-  /** Sets the limits `GET /v1/account/limits` answers for `account`. */
   setLimits(account: string, limits: Record<string, unknown> | null): void {
     if (limits === null) this.accountLimits.delete(account);
     else this.accountLimits.set(account, limits);
   }
 
-  /** Who the next sign-in with `provider` turns out to be; unset, `acct_<provider>`. */
   signInAs(provider: SignInProvider, account: string): void { this.signIns.set(provider, account); }
 
-  /** What `GET /v1/providers` answers: the sign-ins this service is set up for. */
-  offer(providers: SignInProvider[], device: SignInProvider[]): void { this.offered = { providers, device }; }
+  subscribe(account: string, renews = true): void { if (renews) this.subscribed.add(account); else this.subscribed.delete(account); }
 
-  /** Says the service has the link page (`device_page`), finishing `/v1/signin/ovis/device` with these sign-ins. */
+  deleted(account: string): boolean { return this.deletedAccounts.has(account); }
+
+  offerSignIns(providers: SignInProvider[], device: SignInProvider[]): void { this.offered = { providers, device }; }
+
   offerLinkPage(providers: SignInProvider[]): void { this.offered = { ...this.offered, device_page: providers }; }
 
-  /** What the PC that started the link page sign-in showing `userCode` said it is; undefined for no such sign-in. */
   linkRequester(userCode: string): { label: string | null; os: AccountOs | null } | undefined {
     for (const entry of this.deviceSignIns.values()) if (entry.page && entry.userCode === userCode) return entry.requester;
     return undefined;
   }
 
-  /** The person typed `userCode` on the link page and confirmed a sign-in with `provider`. */
   approveOnLinkPage(userCode: string, account: string, provider: SignInProvider): void {
     // one approval, as the service: an approved request's code names nothing any more
     for (const entry of this.deviceSignIns.values()) {
@@ -145,7 +187,7 @@ export class FakeAccountService {
 
   private addIdentity(account: string, provider: SignInProvider): void {
     const methods = this.identityList.get(account) ?? new Map();
-    if (!methods.has(provider)) methods.set(provider, { added_at: this.iso() });
+    if (!methods.has(provider)) { methods.set(provider, { added_at: this.iso() }); this.methodsChanged(account); }
     this.identityList.set(account, methods);
   }
 
@@ -156,7 +198,6 @@ export class FakeAccountService {
     return token;
   }
 
-  /** The person typed `userCode` at GitHub and approved (or refused) the device sign-in. */
   approveDevice(userCode: string, account: string): void {
     for (const entry of this.deviceSignIns.values()) if (entry.userCode === userCode) entry.account = account;
   }
@@ -165,16 +206,13 @@ export class FakeAccountService {
     for (const entry of this.deviceSignIns.values()) if (entry.userCode === userCode) entry.denied = true;
   }
 
-  /** Every push the fake would have sent, oldest first. */
   rings(): readonly FakeRing[] { return this.ringList; }
 
-  /** Rings every other signed-in device of `account` that subscribed. */
   private ring(account: string, family: string): void {
     for (const [owner, push] of this.pushes) if (push.account === account && owner !== family) this.ringList.push({ account, endpoint: push.endpoint, payload: ACCOUNT_RING });
   }
 
-  /** Counts one more of `key` in its 10-minute window; false past `max`. */
-  private spend(key: string, max: number): boolean {
+  private withinRateLimit(key: string, max: number): boolean {
     const now = this.now();
     const counter = this.counters.get(key);
     if (!counter || now - counter.start >= LIMIT_WINDOW_MS) { this.counters.set(key, { start: now, count: 1 }); return true; }
@@ -184,10 +222,12 @@ export class FakeAccountService {
 
   revokeToken(token: string): void { this.tokens.delete(token); }
 
-  private grant(account: string, provider: SignInProvider, family?: string) {
+  private grant(account: string, provider: SignInProvider, family?: string, device = false) {
     if (family === undefined) {
       family = randomHex(16);
       this.signedInAt.set(family, this.now());
+      this.twoStep.set(family, this.signInTwoStep);
+      if (device) this.deviceFamilies.add(family);
     }
     const access = randomHex(32);
     const refresh = randomHex(32);
@@ -279,10 +319,26 @@ export class FakeAccountService {
         if (entry.account === null) return problem(400, "authorization_pending", "Waiting for the sign-in at the provider");
         this.deviceSignIns.delete(body.device_code as string);
         this.addIdentity(entry.account, entry.provider);
-        return this.grant(entry.account, entry.provider);
+        return this.grant(entry.account, entry.provider, undefined, true);
       }
       default: return problem(400, "unsupported_grant_type", "Use authorization_code, refresh_token or apple_id_token");
     }
+  }
+
+  private erase(account: string): void {
+    for (const held of [...this.tokens.values()]) if (held.account === account) this.revokeFamily(held.family);
+    for (const [token, refresh] of this.refreshTokens) if (refresh.account === account) { this.revokedFamilies.add(refresh.family); this.refreshTokens.delete(token); }
+    for (const [provider, signsInTo] of this.signIns) if (signsInTo === account) this.signIns.delete(provider);
+    for (const [family, push] of this.pushes) if (push.account === account) this.pushes.delete(family);
+    for (const [token, link] of this.linkTokens) if (link.account === account) this.linkTokens.delete(token);
+    for (const [code, held] of this.codes) if (held.account === account) this.codes.delete(code);
+    for (const key of [...this.mailboxes.keys()]) if (key.endsWith(`\0${account}`)) this.mailboxes.delete(key);
+    for (const key of [...this.counters.keys()]) if (key.endsWith(`:${account}`)) this.counters.delete(key);
+    for (const list of [this.admissionList, this.quietList]) for (let index = list.length - 1; index >= 0; index--) if (list[index]?.account === account) list.splice(index, 1);
+    this.identityList.delete(account);
+    this.directories.delete(account);
+    this.accountLimits.delete(account);
+    this.deletedAccounts.add(account);
   }
 
   private revokeFamily(family: string): void {
@@ -290,23 +346,73 @@ export class FakeAccountService {
     for (const [token, session] of this.tokens) if (session.family === family) this.tokens.delete(token);
   }
 
+  private registry(account: string): Registry {
+    const registry = this.registries.get(account) ?? { next: 1, version: 1, methods_version: 0, devices: new Map(), blocks: [], lifts: [], freezes: [] };
+    this.registries.set(account, registry);
+    return registry;
+  }
+
+  /** Device table P18, P21: registers a key for the account (S2-19 adds the route) and returns its `no`. */
+  /** The account device key the sign-in behind `token` registers now, as POST /v1/devices would. */
+  registerSessionKey(token: string, key: string, label: string): number {
+    const session = this.tokens.get(token);
+    if (session === undefined) throw new Error("no such token");
+    this.keyRegisteredAt.set(session.family, this.now());
+    this.keyFamily.set(key, session.family);
+    return this.registerDevice(session.account, key, label);
+  }
+
+  /** Whether the account was ever used: another PC listed, a one-press admit or removal, or any device key ever, revoked ones included. */
+  private everUsed(account: string, serverId: string, family: string): boolean {
+    const others = [...(this.directories.get(account)?.keys() ?? [])].some((id) => id !== serverId);
+    // a key the admitting sign-in registered itself is no other device
+    const keys = [...(this.registries.get(account)?.devices.keys() ?? [])].filter((key) => this.keyFamily.get(key) !== family);
+    return others || this.usedAccounts.has(account) || keys.length > 0;
+  }
+
+  registerDevice(account: string, key: string, label: string, eligible = true): number {
+    const registry = this.registry(account);
+    const known = registry.devices.get(key);
+    if (known) return known.no;
+    const no = registry.next++;
+    registry.devices.set(key, { no, label, eligible, removed: false });
+    registry.version += 1;
+    return no;
+  }
+
+  /** Device table T36 (service effect): the key leaves the list and keeps its `no` in `removed`. */
+  removeDevice(account: string, key: string): void {
+    const device = this.registry(account).devices.get(key);
+    if (!device || device.removed) return;
+    device.removed = true;
+    this.registry(account).version += 1;
+  }
+
+  private methodsChanged(account: string): void {
+    const registry = this.registry(account);
+    registry.methods_version += 1;
+    registry.version += 1;
+  }
+
+  /** Makes every snapshot id handed out so far answer `snapshot_gone`. */
+  dropSnapshots(): void { this.snapshots.clear(); }
+
   pcs(account: string): FakePc[] { return [...this.directories.get(account)?.values() ?? []]; }
 
   admissions(): readonly FakeAdmission[] { return this.admissionList; }
 
-  /** What a PC would still get from `account`'s mailbox for it, for assertions; the service hiding a record is `drop`. */
+  quietAdmissions(): readonly FakeAdmission[] { return this.quietList; }
+
   mailbox(serverId: string, account: string): AccountRecord[] {
     this.expire();
     return (this.mailboxes.get(box(serverId, account)) ?? []).map(({ record }) => record);
   }
 
-  /** A misbehaving service: removes queued records it should have delivered. */
-  drop(serverId: string, account: string, predicate: (record: AccountRecord) => boolean): void {
+  dropQueuedRecords(serverId: string, account: string, predicate: (record: AccountRecord) => boolean): void {
     const key = box(serverId, account);
     this.mailboxes.set(key, (this.mailboxes.get(key) ?? []).filter(({ record }) => !predicate(record)));
   }
 
-  /** Answers like the service: pass it as the PC's or app's `fetch`. */
   readonly fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url);
@@ -322,7 +428,7 @@ export class FakeAccountService {
         const label = body.label;
         if (body.code_challenge_method !== "S256" || typeof body.code_challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code_challenge)
           || (label !== undefined && (typeof label !== "string" || label.length < 1 || label.length > 48 || /[\p{Cc}\p{Cs}]/u.test(label)))
-          || Object.keys(body).some((name) => !["code_challenge", "code_challenge_method", ...(this.linkPageTakesRequester ? ["label", "os"] : [])].includes(name))) {
+          || Object.keys(body).some((name) => !["code_challenge", "code_challenge_method", ...(this.linkPageAcceptsLabelAndOs ? ["label", "os"] : [])].includes(name))) {
           return problem(400, "invalid_request", "Start a sign-in on the link page with an S256 code_challenge, and a label of 1-48 characters if any");
         }
         const deviceCode = randomHex(32);
@@ -364,7 +470,7 @@ export class FakeAccountService {
     const session = bearer === undefined ? undefined : this.tokens.get(bearer);
     if (session === undefined || this.now() >= session.expires || this.revokedFamilies.has(session.family)) return problem(401, "unauthorized", "Sign in again");
     const account = session.account;
-    if (!this.spend(`requests:${account}`, ACCOUNT_REQUESTS_PER_WINDOW)) return problem(429, "rate_limited", "Too many requests; try again later");
+    if (!this.withinRateLimit(`requests:${account}`, ACCOUNT_REQUESTS_PER_WINDOW)) return problem(429, "rate_limited", "Too many requests; try again later");
     if (path === "/v1/signout" && request.method === "POST") {
       this.revokeFamily(session.family);
       return new Response(null, { status: 204 });
@@ -373,7 +479,6 @@ export class FakeAccountService {
       const body = await request.json() as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
       if (typeof body.endpoint !== "string" || !URL.canParse(body.endpoint) || typeof body.keys?.p256dh !== "string" || !/^[A-Za-z0-9_-]{87}$/.test(body.keys.p256dh)
         || typeof body.keys.auth !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(body.keys.auth)) return problem(400, "invalid_endpoint", "Send the subscription's endpoint and keys");
-      // one subscription per signed-in device: a new one replaces it
       this.pushes.set(session.family, { account, endpoint: body.endpoint });
       return new Response(null, { status: 204 });
     }
@@ -392,6 +497,14 @@ export class FakeAccountService {
     if ((path === "/v1/identities/link" && request.method === "POST") || (path.startsWith("/v1/identities/") && request.method === "DELETE")) {
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
     }
+    if (path === "/v1/account" && request.method === "DELETE") {
+      // a device code can be typed for someone else's PC: its sign-in must not end the account
+      if (this.deviceFamilies.has(session.family)) return problem(403, "web_sign_in_required", "Sign in on this device first");
+      if (!recent) return problem(403, "reauth_required", "Sign in again first");
+      if (this.subscribed.has(account)) return problem(409, "subscription_active", "Cancel the subscription in the billing portal first");
+      this.erase(account);
+      return new Response(null, { status: 204 });
+    }
     if (path === "/v1/identities/link" && request.method === "POST") {
       const body = await request.json() as { provider?: unknown };
       if (typeof body.provider !== "string" || !this.offered.providers.includes(body.provider as SignInProvider)) return problem(400, "invalid_provider", "Name a provider this service offers");
@@ -406,6 +519,7 @@ export class FakeAccountService {
       if (!methods?.has(removed)) return problem(404, "not_found", "The account does not sign in with it");
       if (methods.size === 1) return problem(409, "last_identity", "Add another way to sign in first");
       methods.delete(removed);
+      this.methodsChanged(account);
       if (this.signIns.get(removed) === account) this.signIns.delete(removed);
       // the sign-ins made with it end
       for (const held of [...this.tokens.values()]) if (held.account === account && held.provider === removed) this.revokeFamily(held.family);
@@ -413,7 +527,51 @@ export class FakeAccountService {
     }
     const directory = this.directories.get(account) ?? new Map<string, FakePc>();
     this.directories.set(account, directory);
-    if (path === "/v1/pcs" && request.method === "GET") return json({ pcs: [...directory.values()] });
+    if (path === "/v1/pcs" && request.method === "GET") {
+      // null while step 2 is off for the account, and once passed
+      const keyAt = this.keyRegisteredAt.get(session.family);
+      return json({ pcs: [...directory.values()].map(({ exempt, ...entry }) => ({
+        ...entry,
+        new_until: this.opensAll && entry.new_until != null && Date.parse(entry.new_until) > this.now() ? entry.new_until : null,
+        admitted_at: this.opensAll ? entry.admitted_at ?? null : null,
+        // the one admit no device was told about: shown to a device whose own key came after it
+        admitted_before_you: this.opensAll && exempt === true && keyAt !== undefined && entry.admitted_at != null && Date.parse(entry.admitted_at) < keyAt,
+      })) });
+    }
+    const admitted = /^\/v1\/pcs\/([0-9a-f]{32})\/admit$/.exec(path)?.[1];
+    if (admitted !== undefined && request.method === "POST" && this.opensAll) {
+      // C1: an app's own sign-in, made within REAUTH_MS, with two-step sign-in set (unknown is not enough)
+      if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in in the app itself");
+      if (this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) > REAUTH_MS) return problem(403, "session_not_fresh", "Sign in again on this device first");
+      // the first-PC exemption: an account never used (no other PC, no admit or removal, no device key ever) waives two-step
+      const exempt = this.twoStep.get(session.family) !== true;
+      const entry = directory.get(admitted);
+      const open = this.pcAdmissions.get(box(admitted, account));
+      // a retry of this same sign-in's own admission, still open, gets the same answer: no second exemption is granted
+      const retry = entry !== undefined && open !== undefined && !open.taken && open.family === session.family && this.now() - open.at <= ADMISSION_TTL_MS && entry.new_until != null;
+      if (exempt && !retry && this.everUsed(account, admitted, session.family)) return problem(403, "two_step_required", "Set up two-step sign-in first");
+      if (entry === undefined) return problem(400, "unknown_pc", "List PCs of this account only");
+      if (open !== undefined && !open.taken && this.now() - open.at <= ADMISSION_TTL_MS && entry.new_until != null) {
+        return json({ server_id: admitted, account, admitted_at: new Date(open.at).toISOString(), new_until: entry.new_until });
+      }
+      // C4: the account's one-press adds of the last day
+      const times = (this.admitTimes.get(account) ?? []).filter((at) => this.now() - at < PC_NEW_MS);
+      if (times.length >= PC_ADMITS_PER_DAY) {
+        const capped = problem(429, "pc_add_cap", "This account added enough PCs today");
+        capped.headers.set("retry-after", String(Math.ceil((times[0]! + PC_NEW_MS - this.now()) / 1000)));
+        return capped;
+      }
+      this.admitTimes.set(account, [...times, this.now()]);
+      // one instant for the admission, its directory entry and this answer: a retry answers the same
+      const at = this.now();
+      this.pcAdmissions.set(box(admitted, account), { at, taken: false, family: session.family });
+      this.usedAccounts.add(account);
+      entry.new_until = new Date(this.now() + PC_NEW_MS).toISOString();
+      entry.admitted_at = new Date(at).toISOString();
+      entry.exempt = exempt;
+      this.ring(account, session.family);
+      return json({ server_id: admitted, account, admitted_at: new Date(at).toISOString(), new_until: entry.new_until });
+    }
     const pc = /^\/v1\/pcs\/([0-9a-f]{32})$/.exec(path)?.[1];
     if (pc !== undefined && request.method === "PUT") {
       const body = await request.json() as { label?: unknown; public_key?: unknown; relay?: unknown };
@@ -424,13 +582,18 @@ export class FakeAccountService {
       if (typeof body.relay !== "string" || !isWssOrigin(body.relay)) return problem(400, "invalid_relay", "Give the relay's wss origin");
       const fresh = !directory.has(pc);
       if (fresh && directory.size >= DIRECTORY_MAX) return problem(409, "directory_full", "Remove a PC first");
-      const entry = { server_id: pc, label: body.label, public_key: body.public_key as string, relay: body.relay, added_at: directory.get(pc)?.added_at ?? this.iso(), last_seen_at: directory.get(pc)?.last_seen_at ?? null };
+      // a re-PUT (the nine-minute relist) keeps the PC's admission
+      const before = directory.get(pc);
+      const entry: FakePc = { server_id: pc, label: body.label, public_key: body.public_key as string, relay: body.relay, added_at: before?.added_at ?? this.iso(), last_seen_at: before?.last_seen_at ?? null,
+        ...(before?.new_until == null ? {} : { new_until: before.new_until, admitted_at: before.admitted_at ?? null, exempt: before.exempt ?? false }) };
       directory.set(pc, entry);
       if (fresh) this.ring(account, session.family);
       return json({ pc: entry });
     }
     if (pc !== undefined && request.method === "DELETE") {
       directory.delete(pc);
+      this.pcAdmissions.delete(box(pc, account));
+      this.usedAccounts.add(account);
       return new Response(null, { status: 204 });
     }
     if (path === "/v1/records" && request.method === "POST") {
@@ -451,6 +614,7 @@ export class FakeAccountService {
       }
       return json({ queued: new Set(body.server_ids).size });
     }
+    if (path === "/v1/safety-records" && request.method === "POST" && this.opensAll) return await this.safetyRecord(account, await request.json());
     if (path === "/v1/admissions" && request.method === "GET") {
       // what the approving client checks the key PC X shows it against, before it signs an add
       const admissions = this.admissionList
@@ -459,13 +623,16 @@ export class FakeAccountService {
       return json({ admissions });
     }
     if (path === "/v1/admissions" && request.method === "POST") {
-      const body = await request.json() as { server_id?: unknown; label?: unknown; key?: unknown; os?: unknown };
+      const body = await request.json() as { server_id?: unknown; label?: unknown; key?: unknown; os?: unknown; quiet?: unknown };
+      if (body.quiet !== undefined && typeof body.quiet !== "boolean") return problem(400, "invalid_request", "quiet is true or false");
       if (typeof body.server_id !== "string" || !directory.has(body.server_id) || typeof body.label !== "string") return problem(400, "unknown_pc", "List PCs of this account only");
-      if (!isAccountKey(body.key)) return problem(400, "invalid_key", "Name the waiting device's account key");
-      if (!this.spend(`admissions:${account}`, ADMISSIONS_PER_WINDOW)) return problem(429, "too_many_admissions", "Too many requests; try again later");
+      if (!isAccountKeyEncoding(body.key)) return problem(400, "invalid_key", "Name the waiting device's account key");
+      // quiet only for an app's own sign-in: one a typed device code opened gets the ordinary kind
+      const quiet = body.quiet === true && !this.deviceFamilies.has(session.family);
+      if (!this.withinRateLimit(quiet ? `quiet_admissions:${account}` : `admissions:${account}`, quiet ? QUIET_ADMISSIONS_PER_WINDOW : ADMISSIONS_PER_WINDOW)) return problem(429, "too_many_admissions", "Too many requests; try again later");
       const admission = { id: randomHex(16), server_id: body.server_id, account, label: body.label, key: body.key, at: this.iso(), os: accountOsOf(body.os), ...this.requestPlace };
-      this.admissionList.push(admission);
-      this.ring(account, session.family);
+      (quiet ? this.quietList : this.admissionList).push(admission);
+      if (!quiet) this.ring(account, session.family);
       return json({ id: admission.id });
     }
     return problem(404, "not_found", "Unknown request");
@@ -482,13 +649,31 @@ export class FakeAccountService {
       this.challenges.set(challengeId, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
       return json({ challenge_id: challengeId, frame });
     }
-    if (path === "/v1/pc/mailbox") {
+    if (path === "/v1/pc/mailbox" || (path === "/v1/pc/admission" && this.opensAll)
+      || (path === "/v1/pc/snapshot" && (this.opensAll || this.reportsStep2Off))) {
       const challenge = typeof body.challenge_id === "string" ? this.challenges.get(body.challenge_id) : undefined;
       if (typeof body.challenge_id === "string") this.challenges.delete(body.challenge_id);
       if (!challenge || challenge.server_id !== body.server_id || this.now() > challenge.expires || !verifyServerProof(body.proof, challenge.expected)) {
         return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       }
       if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
+      if (path === "/v1/pc/admission") {
+        // G1: only the named account's own admission, while that account lists the PC; any other account's is invisible
+        const open = this.pcAdmissions.get(box(challenge.server_id, body.account));
+        const entry = this.directories.get(body.account)?.get(challenge.server_id);
+        // retry-safe for 10 minutes, inclusive; it ends with the sign-in that made it
+        if (open === undefined || this.now() - open.at > ADMISSION_TTL_MS || this.revokedFamilies.has(open.family) || entry?.new_until == null) return problem(404, "no_admission", "No account added this PC in one press");
+        open.taken = true;
+        return json({ account: body.account, admitted_at: new Date(open.at).toISOString(), new_until: entry.new_until });
+      }
+      if (path === "/v1/pc/snapshot") {
+        // P6: only a PC the account lists reads the account's devices and records
+        if (!this.opensAll) return this.directories.get(body.account)?.has(challenge.server_id) === true
+          ? problem(404, "step2_off", "Step 2 is off for this account")
+          : problem(404, "not_found", "Unknown request");
+        if (this.directories.get(body.account)?.has(challenge.server_id) !== true) return problem(403, "not_listed", "This PC is not one of the account's");
+        return this.snapshotPage(challenge.server_id, body.account, body.snapshot, body.page);
+      }
       this.expire();
       const key = box(challenge.server_id, body.account);
       const queue = this.mailboxes.get(key) ?? [];
@@ -498,13 +683,100 @@ export class FakeAccountService {
       // only the account the PC says it belongs to learns that it came by
       const entry = this.directories.get(body.account)?.get(challenge.server_id);
       if (entry) entry.last_seen_at = this.iso();
-      // the account's admissions for this PC in the last ten minutes, every pull until they age out
       const admissions = this.admissionList
         .filter((a) => a.server_id === challenge.server_id && a.account === body.account && this.now() - Date.parse(a.at) < ADMISSION_TTL_MS)
         .map(({ key, label, at }) => ({ key, label, at }));
-      return json({ records: rest.slice(0, MAILBOX_PAGE).map(({ seq, record }) => ({ seq, record })), more: rest.length > MAILBOX_PAGE, admissions });
+      // the quiet ones in a field of their own, and only while the account still lists the PC
+      const quiet = entry === undefined ? [] : this.quietList
+        .filter((a) => a.server_id === challenge.server_id && a.account === body.account && this.now() - Date.parse(a.at) < ADMISSION_TTL_MS)
+        .map(({ key, label, at }) => ({ key, label, at }));
+      return json({ records: rest.slice(0, MAILBOX_PAGE).map(({ seq, record }) => ({ seq, record })), more: rest.length > MAILBOX_PAGE, admissions, quiet_admissions: quiet });
     }
     return problem(404, "not_found", "Unknown request");
+  }
+
+  /**
+   * Device table P6, G1: page 0 freezes the account's state under a new snapshot id; every later page is
+   * asked by that id and served from the same state, or answered `snapshot_gone`.
+   */
+  private snapshotPage(serverId: string, account: string, id: unknown, page: unknown): Response {
+    let state: SnapshotState | undefined;
+    if (id === undefined && (page === undefined || page === 0)) {
+      const registry = this.registry(account);
+      const entries = [...registry.devices].sort(([, a], [, b]) => a.no - b.no);
+      state = {
+        snapshot: randomHex(16), account, server_id: serverId, version: registry.version, methods_version: registry.methods_version,
+        // P16, G12: a key above a standing freeze line is not list-eligible
+        devices: entries.filter(([, d]) => !d.removed).map(([key, { no, eligible, label }]) => ({ key, no, eligible: eligible && !this.frozen(registry, no), label })),
+        removed: entries.filter(([, d]) => d.removed).map(([key, { no }]) => ({ key, no })),
+        blocks: [...registry.blocks], lifts: [...registry.lifts], freezes: [...registry.freezes],
+      };
+      this.snapshots.set(state.snapshot, state);
+    } else if (typeof id === "string") {
+      state = this.snapshots.get(id);
+      if (state === undefined || state.account !== account || state.server_id !== serverId) return problem(410, SNAPSHOT_GONE, "Start the read again");
+    }
+    if (state === undefined || !Number.isSafeInteger(page ?? 0) || (page ?? 0) as number < 0) return problem(400, "invalid_request", "Ask page 0 with no snapshot, then each page by its snapshot id");
+    const index = (page ?? 0) as number;
+    // every list is paged on its own, so no page holds more than SNAPSHOT_PAGE entries of any list
+    const lists = [state.devices, state.removed, state.blocks, state.lifts, state.freezes];
+    const pages = Math.max(1, ...lists.map((list) => Math.ceil(list.length / SNAPSHOT_PAGE)));
+    if (index >= pages) return problem(400, "invalid_request", "No such page");
+    const slice = <T>(list: readonly T[]) => list.slice(index * SNAPSHOT_PAGE, (index + 1) * SNAPSHOT_PAGE);
+    const body: AccountSnapshotPage = {
+      v: ACCOUNT_SNAPSHOT_V, snapshot: state.snapshot, account, server_id: serverId, version: state.version, methods_version: state.methods_version, page: index, last: index === pages - 1,
+      devices: slice(state.devices), removed: slice(state.removed), blocks: slice(state.blocks), lifts: slice(state.lifts), freezes: slice(state.freezes),
+    };
+    return json(body);
+  }
+
+  /**
+   * Device table P16, P21, T52 (service effect): a block commits whole (target removed, freeze line, record
+   * kept); a lift ends that block's service line. Each signer must be a registered member older than the target.
+   */
+  private frozen(registry: { freezes: readonly SnapshotFreezeLine[] }, no: number): boolean {
+    return registry.freezes.some((line) => no > line.after);
+  }
+
+  private async safetyRecord(account: string, body: { record?: unknown }): Promise<Response> {
+    let record: SafetyRecord;
+    try {
+      record = parseSafetyRecord(body.record);
+    } catch (error) {
+      if (error instanceof AccountRecordError) return problem(400, "record_invalid", error.message);
+      throw error;
+    }
+    if (!isDeviceSafetyRecord(record)) return problem(400, "record_invalid", "Send a block or a device's lift");
+    if (!await verifySafetyRecord(record)) return problem(400, "signature_invalid", "The signature does not hold");
+    if (record.account !== account) return problem(403, "account_mismatch", "The record is for another account");
+    const registry = this.registry(account);
+    const signer = registry.devices.get(record.signer);
+    if (signer && this.frozen(registry, signer.no)) return problem(403, "frozen", "A key a block freezes signs nothing");
+    if (!signer || signer.removed || signer.no !== record.signer_no) return problem(403, "signer_not_member", "The signer is not a device of this account");
+    if (record.kind === "block") {
+      const target = registry.devices.get(record.target);
+      if (!target || target.no !== record.target_no) return problem(403, "unknown_target", "The target is not where the block says");
+      if (signer.no >= target.no) return problem(403, "signer_not_older", "Only a device older than the target blocks it");
+      if (!registry.blocks.some((held) => held.id === record.id)) {
+        if (target.removed) return problem(409, "target_removed", "The target is already removed");
+        target.removed = true;
+        registry.blocks.push(record);
+        registry.freezes.push({ block: record.id, target: record.target, after: record.target_no });
+        registry.version += 1;
+      }
+      return json({ id: record.id });
+    }
+    const block = registry.blocks.find((held) => held.id === record.target);
+    if (!block) return problem(404, "not_found", "No such block");
+    if (record.signer_no >= block.target_no) return problem(403, "signer_not_older", "Only a device older than the blocked one lifts it");
+    // T52: as the service, only a list-eligible device lifts
+    if (!signer.eligible) return problem(403, "not_eligible", "This device cannot lift a block yet");
+    if (!registry.lifts.some((held) => held.id === record.id)) {
+      registry.lifts.push(record);
+      registry.freezes = registry.freezes.filter((line) => line.block !== block.id);
+      registry.version += 1;
+    }
+    return json({ id: record.id });
   }
 
   private expire(): void {

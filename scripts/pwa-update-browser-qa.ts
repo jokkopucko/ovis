@@ -1,4 +1,3 @@
-/** Real app, worker and draft state across two builds on one origin; never uses the demo transport. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
@@ -24,13 +23,11 @@ let server: ReturnType<typeof import("../server/index.ts").createServer> | undef
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 
 function entryScript(html: string): string {
-  // the module entry, not the classic theme boot script ahead of it (scripts/theme-bootstrap-build.ts)
   const entry = html.match(/<script\b(?=[^>]*\btype="module")[^>]*\bsrc="([^"]+)"/)?.[1];
   assert.ok(entry, "the real built shell has a module entry");
   return entry;
 }
 
-/** Observe real cache writes through CDP, including writes after navigation replaces the JS context. */
 function cachedBuild(cdp: CDPSession, origin: string, entry: string) {
   let stopped = false;
   let checking = false;
@@ -88,8 +85,6 @@ try {
   assert.notEqual(process.env.HERDR_TEST_LIVE, "1", "PWA QA requires an isolated herdr session");
   assert.ok(process.env.HERDR_SOCKET, "the test-herdr preload must select the test socket before any workspace is created");
   console.log(`PWA isolated socket: ${process.env.HERDR_SOCKET}`);
-  // The copied server resolves its own dist directory. No shared build output is swapped,
-  // so this scenario can run alongside the other CI browser shards.
   mkdirSync(app);
   for (const folder of ["server", "shared", "telemetry"]) {
     cpSync(join(repo, folder), join(app, folder), { recursive: true, filter: (path) => !path.endsWith(".test.ts") });
@@ -99,8 +94,6 @@ try {
   cpSync(process.env.PWA_BASELINE_DIR ? resolve(process.env.PWA_BASELINE_DIR) : current, baseline, { recursive: true });
   const newEntry = entryScript(readFileSync(join(current, "index.html"), "utf8"));
   if (!process.env.PWA_BASELINE_DIR) {
-    // CI need not download an old release. A previous shell with a distinct module entry
-    // exercises the same real worker; local release validation supplies the actual old build.
     const html = readFileSync(join(baseline, "index.html"), "utf8");
     const entry = entryScript(html);
     writeFileSync(join(baseline, "assets", "pwa-previous-entry.js"), `import "./${basename(entry)}";\n`);

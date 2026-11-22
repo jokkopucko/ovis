@@ -20,7 +20,6 @@ const rows = paneCommands("hermes", null, "/nonexistent-home");
 const readers = registry.readersFor("hermes");
 const at = Date.parse("2026-10-20T00:00:00Z");
 
-/** A Chat send on the screen read just before it, registered in the pane's ledger like noteSubmitted does. */
 function send(ledger: CommandReservations, text: string, screen: string, offset = 0): CommandSend {
   const invocations = commandInvocations("hermes", text, rows);
   const sent: CommandSend = { id: `send-${offset}`, text, at: at + offset, agent: "hermes", identity: "hermes-pane", screen, invocations, form: invocations[0]?.form ?? null };
@@ -36,7 +35,6 @@ const twice = fixture("status-twice-120").split("\n");
 const statusEchoes = twice.flatMap((line, index) => hermesEchoOf(line.trimEnd(), "/status") ? [index] : []);
 const [firstEcho, secondEcho] = statusEchoes.slice(-2) as [number, number];
 const chrome = twice.slice(hermesChromeStart(twice.map((line) => line.trimEnd())));
-/** the recorded screen cut before line `end`, with the pane's own bottom chrome under it */
 const until = (end: number, input: (line: string) => string = (line) => line) => [...twice.slice(0, end), ...chrome.map(input)].join("\n");
 const busy = (line: string) => line.replace(/^❯ /, "⠋ ");
 
@@ -56,18 +54,14 @@ describe("Hermes result outcomes", () => {
     const shown = fixture("status-120").split("\n").map((line) => line.trimEnd());
     const input = shown.findIndex((line) => line.startsWith("❯ "));
     const echo = shown.findIndex((line) => hermesEchoOf(line, "/status"));
-    // a horizontal rule in an earlier reply above the old /status echo, with text under it
     const withRule = [...shown.slice(0, echo), "────────────────────────────────", "fixture reply text", ...shown.slice(echo)];
     const ruleAt = echo;
     const inputAt = input + 2;
-    // the screen read mid-redraw: the input area's upper rule is missing
     const torn = withRule.filter((_, index) => index !== inputAt - 1);
     expect(hermesChromeStart(torn)).toBe(-1);
     expect(hermesChromeStart(withRule)).toBe(inputAt - 2);
     expect(withRule[ruleAt]).toMatch(/^─+$/);
-    // a rule not directly followed by the ❯ input line is never chrome
     expect(hermesChromeStart([...withRule.slice(0, inputAt), "something else", ...withRule.slice(inputAt + 1)])).toBe(-1);
-    // the old complete /status on screen at the send must not resolve the new send
     const sent = send(new CommandReservations(), "/status", torn.join("\n"));
     expect(observe(sent, withRule.join("\n")).state).toBe("accepted");
   });
@@ -85,7 +79,6 @@ describe("Hermes result outcomes", () => {
     expect(first.form).toEqual({ match: "bare", interaction: "dialog", dialog: "hermes-status" });
     expect(observe(first, until(secondEcho))).toMatchObject({ state: "result-observed", evidence: [{ kind: "recognized-result" }] });
     const second = send(ledger, "/status", until(secondEcho), 100);
-    // echoed, nothing printed under it yet: the first block still on screen is not this send's
     expect(observe(second, until(secondEcho + 1, busy)).state).toBe("accepted");
     expect(observe(second, twice.join("\n"))).toMatchObject({ state: "result-observed", evidence: [{ kind: "recognized-result" }] });
   });
@@ -109,17 +102,13 @@ describe("Hermes result outcomes", () => {
     const failure = observe(failed, fixture("reload-skills-failed-120"));
     expect(failure.state).toBe("result-observed");
     expect(failure.catalog_changed).toBeUndefined();
-    // a reload already on screen at the send is not this send's
     const old = send(new CommandReservations(), "/reload-skills", fixture("reload-skills-added-120"));
     expect(observe(old, fixture("reload-skills-added-120")).state).toBe("accepted");
   });
 
   it("does not resolve a Chat /status from a /status typed in the terminal after it, though its own echo alone does", () => {
-    // only the Chat send's own echo and block: it resolves
     expect(observe(send(new CommandReservations(), "/status", until(firstEcho)), until(secondEcho)).state).toBe("result-observed");
-    // a /status typed in Hermes's terminal follows: two echoes for one Chat reservation, ownership is unknown
     expect(observe(send(new CommandReservations(), "/status", until(firstEcho)), twice.join("\n")).state).toBe("accepted");
-    // the Chat echo printed nothing, the typed one did: still not the Chat send's
     const typedOnly = [...twice.slice(0, firstEcho + 1), ...twice.slice(secondEcho)].join("\n");
     expect(observe(send(new CommandReservations(), "/status", until(firstEcho)), typedOnly).state).toBe("accepted");
   });
@@ -132,12 +121,10 @@ describe("Hermes result outcomes", () => {
     const echo = findLastIndex(lines, (line) => hermesEchoOf(line, "/version"));
     const update = lines.findIndex((line, index) => index > echo && line.startsWith("Update available"));
     expect(shown.result_text).toBe(lines.slice(echo + 1, update + 1).join("\n"));
-    // the same screen, but a card commit or native event proved the send first: no screen text is attached
     const external = send(new CommandReservations(), "/version", fixture("status-120"), 1);
     const proved = commandOutcome("pane-1", external, { now: external.at + 50, screen: fixture("version-120"), readers, evidence: { kind: "dialog", at: external.at + 10 } });
     expect(proved.state).toBe("result-observed");
     expect(proved).not.toHaveProperty("result_text");
-    // bounded like the preview
     const read = fixture("help-120").split("\n").map((line) => line.trimEnd());
     const helpEcho = findLastIndex(read, (line) => hermesEchoOf(line, "/help"));
     const after = read.findIndex((line, index) => index > helpEcho && /^⚙/.test(line));
@@ -177,7 +164,6 @@ describe("Hermes result outcomes", () => {
       const owner = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;
       expect(owner.outcomes?.at(-1)).toMatchObject({ state: "result-observed", evidence: [{ kind: "recognized-result" }] });
       expect(owner.outcomes?.at(-1)?.result_text?.split("\n")[0]).toStartWith("Hermes Agent v");
-      // a result is not a waiting prompt card
       expect(owner.prompt).toBeNull();
       const watched = await (await handlePromptRequest(new Request(url), url, { readOnly: true }))?.json() as PanePromptResponse;
       expect(watched.outcomes?.at(-1)?.state).toBe("result-observed");
@@ -225,7 +211,6 @@ describe("Hermes result outcomes", () => {
     const previous = process.env.HERDR_SOCKET;
     const paneId = `hermes-gate-${Date.now()}`;
     let screen = fixture("status-120");
-    // the poll's own snapshot serves the transcript lookup (#1544); only a lookup reads the pane's processes
     let snapshots = 0;
     let processReads = 0;
     const server = createServer((socket) => {
@@ -258,15 +243,12 @@ describe("Hermes result outcomes", () => {
     };
     try {
       note("hermes-gate-send", Date.now() - 1);
-      // no result yet: the send is open, so the poll looks up the transcript
       const open = await poll();
       expect(open).toEqual({ snapshots: 1, processReads: 1, state: "accepted" });
       screen = fixture("version-120");
       expect((await poll()).state).toBe("result-observed");
-      // settled: the next poll looks the transcript up no more
       const settled = await poll();
       expect(settled).toEqual({ snapshots: 1, processReads: 0, state: "result-observed" });
-      // a send past the ten-minute window cannot change either
       screen = fixture("status-120");
       note("hermes-gate-expired", Date.now() - 11 * 60_000);
       expect(await poll()).toMatchObject({ snapshots: 1, processReads: 0 });

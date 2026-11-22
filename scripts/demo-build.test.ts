@@ -19,7 +19,6 @@ describe("buildDemoApp with the lane's build", () => {
     await buildDemoApp(app, shared);
     expect(readFileSync(join(app, "assets", "app.css"), "utf8")).toBe("css");
     expect(readFileSync(join(app, "demo-transport.js"), "utf8")).toBe("transport");
-    // each script adds its own scripts to its own index.html
     writeFileSync(join(app, "index.html"), "changed");
     expect(readFileSync(join(shared, "index.html"), "utf8")).toBe("<script type=\"module\"></script>");
   });

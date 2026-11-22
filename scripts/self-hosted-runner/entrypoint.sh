@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Container entrypoint: register one ephemeral runner, then run exactly one job.
 set -euo pipefail
 
 : "${RUNNER_URL:?RUNNER_URL is required}"

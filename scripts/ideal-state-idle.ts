@@ -10,7 +10,6 @@ declare global {
   }
 }
 
-/** IS-018: measure the idle demo's animation and danger-colour signals in the browser. */
 export async function probeIdleState(demo: Demo): Promise<{ readonly status: "PASS" | "FAIL"; readonly value: string }> {
   const { context, page } = await demo.open({ pane: panes.flaky });
   try {

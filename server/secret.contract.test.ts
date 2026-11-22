@@ -15,8 +15,7 @@ interface Leg { up: Socket<undefined> | null; held: Buffer[]; entry: ProxiedRequ
  * A unix socket in front of the test herdr, for what a mirrored pane is sent: herdr's own
  * socket cannot be asked what it received or made to refuse. One upstream connection per
  * client connection, bytes passed on as they come (a subscription stays open), each
- * request's method and params kept in order. `refuse` answers pane.send_text, and only
- * that, with a herdr error.
+ * request's method and params kept in order.
  */
 function herdrProxy(path: string, upstream: string) {
   const log: ProxiedRequest[] = [];
@@ -62,7 +61,6 @@ function herdrProxy(path: string, upstream: string) {
         leg.entry = entry;
         log.push(entry);
         // A scrolled viewport can show a previous prompt while the live screen has moved on.
-        // Override only text reads: the mirror still draws the owned pane's real ANSI screen.
         const params = request.params as { source?: string; format?: string } | undefined;
         if (control.screens && request.method === "pane.read" && params?.format === "text") {
           const text = params.source === "detection" ? control.screens.detection : control.screens.visible;
@@ -100,7 +98,7 @@ function standIn(root: string): { script: string; resultFile: string } {
   const resultFile = join(root, "result.json");
   const script = join(root, "ask.cjs");
   writeFileSync(script, `
-const { writeFileSync } = require("node:fs");
+const { renameSync, writeFileSync } = require("node:fs");
 const { createHash } = require("node:crypto");
 process.stdin.setRawMode(true); process.stdin.resume();
 let value = "";
@@ -108,7 +106,9 @@ process.stdout.write("\\x1b[2J\\x1b[HPassword:");
 process.stdin.on("data", chunk => {
   value += chunk.toString();
   if (!value.includes("\\r")) return;
-  writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({ hash: createHash("sha256").update(value).digest("hex"), length: value.length }));
+  // written aside and renamed in: the test reads the file as soon as it exists, never half written
+  writeFileSync(${JSON.stringify(resultFile + ".part")}, JSON.stringify({ hash: createHash("sha256").update(value).digest("hex"), length: value.length }));
+  renameSync(${JSON.stringify(resultFile + ".part")}, ${JSON.stringify(resultFile)});
   value = ""; process.stdout.write("\\r\\nAccepted\\r\\nReady>");
 });
 `);
@@ -116,19 +116,17 @@ process.stdin.on("data", chunk => {
 }
 
 /** One secret entered on a pane whose terminal is mirrored (a herdr that cannot attach), herdr behind the proxy. */
-async function mirroredSecret(refuse: boolean, screens?: { visible: string; detection: string }) {
+async function mirroredSecret(refuse: boolean, screens?: { visible: string; detection: string }, prompt = "Password:", value = "fixture-value", typed = false) {
   const root = mkdtempSync(join(tmpdir(), "ovis-secret-mirror-"));
   const { script, resultFile } = standIn(root);
   const herdr = herdrSocketPath();
   const proxy = herdrProxy(join(root, "herdr.sock"), herdr);
-  // the server under test reaches herdr through the proxy; this test's own calls name herdr's socket
   process.env["HERDR_SOCKET"] = join(root, "herdr.sock");
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), terminalAttach: false });
   let workspace: string | undefined;
   let socket: WebSocket | undefined;
   const seen: any[] = [];
   const sends = () => proxy.log.filter((entry) => entry.method === "pane.send_text" || entry.method === "pane.send_keys");
-  /** the sends herdr had answered when the result reached the browser */
   let answeredAtResult: string[] | undefined;
   const until = async (predicate: () => boolean | Promise<boolean>) => {
     const deadline = Date.now() + 5000;
@@ -154,9 +152,15 @@ async function mirroredSecret(refuse: boolean, screens?: { visible: string; dete
     proxy.control.refuse = refuse;
     proxy.control.screens = screens ?? null;
     const dispatchFrom = proxy.log.length;
-    socket.send(JSON.stringify({ type: "secret", id: 1, pane_id: pane, prompt: "Password:", secret: "fixture-value" }));
-    await until(() => seen.some((frame) => frame.type === "secret-result"));
-    const result = seen.find((frame) => frame.type === "secret-result");
+    if (typed) {
+      if (value) socket.send(JSON.stringify({ type: "input", pane_id: pane, text: value }));
+      socket.send(JSON.stringify({ type: "input", pane_id: pane, text: "\r" }));
+      await until(() => existsSync(resultFile));
+    } else {
+      socket.send(JSON.stringify({ type: "secret", id: 1, pane_id: pane, prompt, secret: value }));
+      await until(() => seen.some((frame) => frame.type === "secret-result"));
+    }
+    const result = typed ? { ok: true } : seen.find((frame) => frame.type === "secret-result");
     // an unawaited send would still be on its way: let the pane have it before the log is read
     if (!refuse && result.ok) await until(() => existsSync(resultFile));
     const received = existsSync(resultFile) ? JSON.parse(readFileSync(resultFile, "utf8")) : null;
@@ -195,6 +199,40 @@ it("a secret herdr refused on a mirrored pane is answered as failed, with no Ent
   expect(sends).toEqual([{ method: "pane.send_text", params: { pane_id: pane, text: "fixture-value" } }]);
   expect(received).toBeNull();
   expect(frames).not.toContain("fixture-value");
+}, 15_000);
+
+it("a secret is taken at a prompt of the wider set, which the snapshot says the server takes", async () => {
+  for (const prompt of ["Password for 'https://alice@github.com':", "Enter passphrase for /home/alice/.ssh/id:work:", "(alice@mac.local) Password:", "[sudo] alice의 암호:"]) {
+    const { result, received, sends, frames } = await mirroredSecret(false, { visible: prompt, detection: prompt }, prompt);
+    expect(result.ok).toBe(true);
+    expect(sends.map((entry) => entry.method)).toEqual(["pane.send_text", "pane.send_keys"]);
+    const expected = "fixture-value\r";
+    expect(received).toEqual({ hash: createHash("sha256").update(expected).digest("hex"), length: expected.length });
+    const features = (JSON.parse(frames) as { type: string; features?: string[] }[]).find((frame) => frame.type === "snapshot")?.features;
+    expect(features).toEqual(expect.arrayContaining(["secret-prompts-2", "secret-prompts-3"]));
+  }
+}, 60_000);
+
+it("no passphrase is entered with the Enter key alone where ssh-keygen offers it", async () => {
+  const prompt = "Enter new passphrase (empty for no passphrase):";
+  const { result, received, pane, sends } = await mirroredSecret(false, { visible: prompt, detection: prompt }, prompt, "");
+  expect(result.ok).toBe(true);
+  expect(sends).toEqual([{ method: "pane.send_keys", params: { pane_id: pane, keys: ["Enter"] } }]);
+  expect(received).toEqual({ hash: createHash("sha256").update("\r").digest("hex"), length: 1 });
+  // an empty value is no answer to a prompt that offers no such thing
+  const refused = await mirroredSecret(false, undefined, "Password:", "");
+  expect(refused.result).toMatchObject({ ok: false, code: "invalid_secret" });
+  expect(refused.sends).toEqual([]);
+}, 30_000);
+
+it("a secret typed as the page types it to an older bridge is entered on a mirrored pane: the value, then Enter in its own frame", async () => {
+  const { received, sends, pane } = await mirroredSecret(false, undefined, "Password:", "fixture-value", true);
+  const expected = "fixture-value\r";
+  expect(received).toEqual({ hash: createHash("sha256").update(expected).digest("hex"), length: expected.length });
+  expect(sends).toEqual([
+    { method: "pane.send_text", params: { pane_id: pane, text: "fixture-value" } },
+    { method: "pane.send_text", params: { pane_id: pane, text: "\r" } },
+  ]);
 }, 15_000);
 
 it("a secret shown in scrollback is refused when the live screen is no longer asking for it", async () => {

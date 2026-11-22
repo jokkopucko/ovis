@@ -5,15 +5,12 @@ import { AGENT_SVG_MARKS } from "./agentSvgMarks.ts";
 import "./AgentMark.css";
 
 /**
- * Provider marks for the agents herdr names, ported from chatmux's
- * llm-logo-provider set (same owner, same visual language). Monochrome marks
- * (codex, cursor, the fallback) ride currentColor; claude/omp/opencode/gjc/omo
- * carry their own brand fills.
+ * Provider marks for the agents herdr names, ported from chatmux's llm-logo-provider set (same owner,
+ * same visual language).
  */
 
 export interface AgentMarkProps {
   agent: string;
-  /** box size in px */
   size?: number;
   className?: string;
 }
@@ -75,7 +72,6 @@ function OmpMark({ size }: { size: number }) {
   );
 }
 
-/** gjc (Gajae Code): its mascot, a straw hat over a lobster-red visor. Ids are per instance. */
 function GjcMark({ size }: { size: number }) {
   const id = useId();
   return (
@@ -134,7 +130,6 @@ function GjcMark({ size }: { size: number }) {
   );
 }
 
-/** omo: the project's light tile with its dark mark. */
 function OmoMark({ size }: { size: number }) {
   return (
     <svg viewBox="0 0 1024 1024" width={size} height={size} role="img" aria-label="omo">
@@ -148,7 +143,6 @@ function OmoMark({ size }: { size: number }) {
   );
 }
 
-/** A mark kept as SVG markup; its ids get this instance's prefix so copies never collide. */
 function SvgMark({ agent, size }: { agent: string; size: number }) {
   const prefix = useId().replace(/[^\w-]/g, "");
   const { viewBox, body } = AGENT_SVG_MARKS[agent]!;
@@ -156,7 +150,6 @@ function SvgMark({ agent, size }: { agent: string; size: number }) {
   return <svg viewBox={viewBox} width={size} height={size} role="img" aria-label={agent} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-/** The agent nobody has drawn yet: its initial in a disc tinted by its kind (AgentMark.css), so two kinds tell apart at a glance. */
 function FallbackMark({ agent, size }: { agent: string; size: number }) {
   const initial = fallbackInitial(agent);
   return (
@@ -170,20 +163,14 @@ function FallbackMark({ agent, size }: { agent: string; size: number }) {
 }
 
 const DRAWN_MARKS = new Set(["claude", "omp", "codex", "cursor", "opencode", "gjc", "omo"]);
-/** the drawn marks with brand fills; codex and cursor ride currentColor */
 const BRAND_MARKS = new Set(["claude", "omp", "opencode", "gjc", "omo"]);
 
-/**
- * Whether `agent`'s mark carries its own brand colors (as against riding currentColor, like codex,
- * cursor and the fallback initial): Settings → Appearance → Agent logos → Mono greys only these.
- */
 export function hasBrandColors(agent: string): boolean {
   if (BRAND_MARKS.has(agent)) return true;
   const svg = AGENT_SVG_MARKS[agent];
   return svg !== undefined && /fill="#(?!fff\b|ffffff\b)/i.test(svg.body);
 }
 
-/** Whether `agent` has a mark of its own rather than the fallback's initial. */
 export function hasAgentMark(agent: string): boolean {
   return DRAWN_MARKS.has(agent) || Object.hasOwn(AGENT_SVG_MARKS, agent);
 }

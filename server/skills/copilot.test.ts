@@ -34,7 +34,6 @@ it("puts only the forms that leave a Copilot screen waiting for a key under Term
   const byName = new Map(paneCommands("copilot", null, temp()).map((command) => [command.name, command]));
   for (const name of ["model", "resume", "skills", "settings", "diff", "login"]) expect(terminalCommand(byName.get(name)!), name).toBeTrue();
   for (const name of ["usage", "context", "new", "clear", "copy", "version", "compact"]) expect(terminalCommand(byName.get(name)!), name).toBeFalse();
-  // a value given to a picker command is not the picker
   expect(byName.get("model")!.forms).toEqual([{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }]);
 });
 

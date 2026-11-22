@@ -57,7 +57,6 @@ describe("file routes", () => {
       expect(found.status).toBe(200);
       expect(await found.json()).toMatchObject({ name: "notes.txt", size: 5 });
       get.mockImplementation(async (paneId) => { throw new HerdrError("pane_not_found", `pane ${paneId} not found`); });
-      // not "no such file": the chat keeps a link for a name it could not look for (src/lib/fileNameLookup.ts)
       expect(await error(await fetch(url("/api/fs/stat?pane_id=w1:p1&path=notes.txt")))).toEqual([404, "pane_unknown"]);
       expect(await error(await fetch(url(`/api/fs/stat?pane_id=w1:p1&path=${q(join(folder, "missing.txt"))}`)))).toEqual([404, "not_found"]);
       expect((await fetch(url(`/api/fs/stat?pane_id=w1:p1&path=${q(notes)}`))).status).toBe(200);
@@ -103,18 +102,15 @@ describe("file routes", () => {
     setFilePoolOptions({ worker: new URL("./file-worker.fake.ts", import.meta.url), workers: 1, waiting: 0, deadlineMs: 500 });
     try {
       const stuck = fetch(url(`/api/fs/stat?path=${q(join(folder, "stuck"))}`));
-      // the stat waits on its thread, not on the server's: the server answers the rest
       const health = await fetch(url("/api/health?scope=bridge"));
       expect(health.status).toBe(200);
       const refused = await stuck;
       expect(refused.headers.get("retry-after")).toBe("1");
       expect(await error(refused)).toEqual([503, "file_busy"]);
-      // that thread is still in its call, so the one there is stays taken
       expect(await error(await fetch(url(`/api/fs/stat?path=${q(notes)}`)))).toEqual([503, "file_busy"]);
     } finally {
       setFilePoolOptions();
     }
-    // found and described, then held while it is opened and read: the headers wait no longer than the deadline
     const heldOpen = join(folder, "held-open");
     writeFileSync(heldOpen, "small");
     setFilePoolOptions({ worker: new URL("./file-worker.fake.ts", import.meta.url), workers: 2, waiting: 0, deadlineMs: 500 });
@@ -135,7 +131,6 @@ describe("file routes", () => {
     const whole = await fetch(url(`/api/fs/file?path=${q(big)}`));
     expect(whole.status).toBe(200);
     expect(whole.headers.get("accept-ranges")).toBe("bytes");
-    // larger than one read, from a disk that answers at once: sent with its length, as a download shows it
     expect(whole.headers.get("content-length")).toBe(String(bytes.length));
     const large = await fetch(url(`/api/fs/file?path=${q(big)}`), { headers: { range: "bytes=1000-299999" } });
     expect(large.status).toBe(206);
@@ -146,7 +141,6 @@ describe("file routes", () => {
     const part = await fetch(url(`/api/fs/file?path=${q(big)}`), { headers: { range: "bytes=100-109" } });
     expect(part.status).toBe(206);
     expect(part.headers.get("content-range")).toBe(`bytes 100-109/${bytes.length}`);
-    // a body that fits in one read keeps its length; a longer one streams without it
     expect(part.headers.get("content-length")).toBe("10");
     const small = join(folder, "small.bin");
     writeFileSync(small, bytes.subarray(0, 1000));

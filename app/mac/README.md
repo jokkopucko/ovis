@@ -42,6 +42,12 @@ cookies and drafts stay in the app's own WebKit store, apart from any browser's.
   does not fit in the new page's storage stays in the app and is written on the next try.
 - Another app's link (a site in a web panel can make one) asks before it opens that app, as Safari
   does, and only the Ovis page itself opens app windows.
+- **Browser for links** (Settings → Chat → Files, the default browser unless chosen): the page's
+  web links (`kind` link in `src/lib/externalLink.ts`) open in the app chosen there, from the apps
+  LaunchServices opens https with, or agent-browser when its program is on the Mac (headed, in a
+  session `ovis-links` of its own). The page reaches it through the `ovisBrowsers` bridge
+  (`LinkBrowsers.swift`), from the Ovis page's own main frame only, and names an app by its id. When
+  the chosen app is gone or cannot open the link, the default browser opens it.
 - The user agent ends like Safari's, then `OvisMac/<version>`: the terminal's Korean input
   (xterm.js's Hangul handling in `patches/`) goes by "Safari", and the page treats the app as
   installed (`src/lib/nativeApp.ts`).

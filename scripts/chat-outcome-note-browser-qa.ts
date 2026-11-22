@@ -1,8 +1,4 @@
-/**
- * Real ChatView for an OpenCode pane whose `@effect` send went as plain text: the outcome chip says
- * "Runs in the terminal", and under it the note names the skill that was not attached, at 1280 and 390 px, light and dark. All traffic stays on this loopback fixture server.
- * Then /compact and /clear: the new conversation shows no row of a send to the one it left.
- */
+/** All traffic stays on this loopback fixture server. */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +54,6 @@ try {
       const note = chip.locator(".chat-outcome-note");
       await note.waitFor();
       assert.equal(await note.innerText(), "Not attached, sent as plain text: @effect");
-      // inside the chat column: no sideways scroll at either width
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(overflow <= 0, `no horizontal overflow at ${width}px (${overflow}px)`);
       const box = await note.boundingBox();

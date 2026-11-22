@@ -7,7 +7,6 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_JA: Record<string, string> = {
-  "Next": "次へ",
   "Next question": "次の質問",
   "Edit queued message": "キュー内のメッセージを編集",
   "Sent to Pi · waiting for transcript": "Pi に送信済み · 会話への記録を待っています",
@@ -18,8 +17,10 @@ export const COMPOSER_JA: Record<string, string> = {
   "Update this PC to use masked input.": "伏せ字の入力欄を使うには、この PC のアプリを更新してください。",
   "Check the terminal before entering the secret again.": "再入力する前にターミナルの状態を確認してください。",
   "Sent directly to this terminal. Never saved as a draft or queued.": "このターミナルに直接送信します。下書きや送信待ちには保存しません。",
+  "This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.": "この PC のアプリは更新されていません。入力した内容は、プロンプトがまだあるか確認せずにターミナルへ送ります。",
   "Only the first {count} of {total} files were taken.": "{total} 個のファイルのうち先頭の {count} 個だけを受け取りました。",
   "Not sent: the page that started this agent left before it was ready. Send it now or discard it.": "未送信: このエージェントを起動したページが準備完了前に閉じられました。今すぐ送信するか破棄してください。",
+  "Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.": "未送信: omp の起動中にターミナルへ入力がありました。ターミナルの入力行を確認してから、このメッセージを送信してください。",
   "Not sent: the agent started for this message has ended. Review the message before sending it.": "未送信: このメッセージのために起動したエージェントは終了しました。送信する前にメッセージを確認してください。",
   "Not sent: the pane's terminal or agent session changed. Review the message before sending it again.": "未送信: ペインのターミナルまたはエージェントセッションが変わりました。再送信する前にメッセージを確認してください。",
   "Skip question": "質問をスキップ",
@@ -71,6 +72,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Remove {file}": "{file} を削除",
   "Message": "メッセージ",
   "Attach": "添付",
+  "Waiting for omp to start…": "omp の起動を待っています…",
   "Next turn": "次のターン",
   "Waits for Send now": "「今すぐ送信」で送信します",
   "Discard saved copy": "保存したコピーを破棄",
@@ -82,6 +84,8 @@ export const COMPOSER_JA: Record<string, string> = {
   "Not sent: this view only watches the pane.": "未送信: この画面はペインを閲覧するだけです。",
   "Not sent: Claude Code's input box in the terminal is not empty. Send or clear it there, then send this message.": "未送信: ターミナルの Claude Code の入力欄が空ではありません。そこで送信するか消してから、このメッセージを送ってください。",
   "Not sent: Hermes' input in the terminal is not empty. Send or clear it there, then send this message.": "未送信: ターミナルの Hermes の入力欄が空ではありません。そちらで送信するか消してから、このメッセージを送ってください。",
+  "Not sent: the agent's input box in the terminal holds text typed there. Send or clear it there, then send this message.": "未送信: ターミナルのエージェントの入力欄に入力済みの文字があります。そちらで送信するか消してから、このメッセージを送ってください。",
+  "Not sent: Claude Code's input box in the terminal holds a paste or image it folded, whose lines are not shown here, so it cannot be sent over. Send or clear it there, then send this message.": "未送信: ターミナルの Claude Code の入力欄に折りたたまれた貼り付けや画像があり、その行がここに表示されないため、その上から送れません。そちらで送信するか消してから、このメッセージを送ってください。",
   "Not sent: Claude Code's input box in the terminal already holds “{draft}”.": "未送信: ターミナルの Claude Code の入力欄にすでに「{draft}」が入力されています。",
   "Clear it and send": "消して送信",
   "Send it": "そのまま送信",
@@ -239,12 +243,12 @@ export const COMPOSER_JA: Record<string, string> = {
   "Question {n}": "質問 {n}",
   "Tab switched OpenCode's agent from {from} to {to}. Nothing more was typed. Check the terminal before sending again.": "Tab キーで OpenCode のエージェントが {from} から {to} に切り替わりました。それ以上は入力していません。再送信する前にターミナルを確認してください。",
   "OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.": "OpenCode が別のスキルを添付しました。チャットのテキストはここに残っています。再送信する前にターミナルを確認してください。",
-  // quoting a selection into the composer (lib/chatQuote.ts)
+  "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.": "Grok のキューで、先に入っている {count} 件の後ろにあります。それらが送られた後に送られます。これ以上は押していません。このコピーは確認用にここに残り、再送信されません。",
+  "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.": "Grok のキューにあります。Grok の番が来たら送られます。これ以上は押していません。このコピーは確認用にここに残り、再送信されません。",
   "Quote": "引用",
   "Quote it in your message": "メッセージに引用",
   "Selection": "選択したテキスト",
   "Too long to quote: shorten the message or the selection.": "長すぎて引用できません。メッセージか選択を短くしてください。",
-  // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "返答にコメント",
   "Add a comment": "コメントを追加",
   "1 comment waiting": "コメント1件が待機中",

@@ -63,11 +63,9 @@ test("keeps a rendered answer unbound while another conversation asked the same 
   expect(matchCodexTranscript(shown, [bold])).toBe("bold");
   expect(matchCodexTranscript(shown, [bold, linked])).toBeNull();
   expect(matchCodexTranscript(shown, [linked, bold])).toBeNull();
-  // its finish not read yet, or in another folder, the other conversation still may be the one shown
   const unfinished = conversation("linked", `${plain} Read [report](/repo/docs/report.md) for details.`, false);
   expect(matchCodexTranscript(shown, [bold, unfinished])).toBeNull();
   expect(matchCodexTranscript(shown, [bold, unfinished], new Set(), new Map(), false, new Set(["bold"]))).toBeNull();
-  // a tail read that cut the other conversation's prompt
   const cut = { path: "linked", text: unfinished.text.split("\n").slice(1).join("\n") };
   expect(matchCodexTranscript(shown, [bold, cut])).toBeNull();
 });

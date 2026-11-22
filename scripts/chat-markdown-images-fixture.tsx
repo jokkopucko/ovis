@@ -1,4 +1,3 @@
-/** Browser fixture for pane-relative images and manual lookup recovery. */
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChatMarkdownImages } from "../src/components/ChatMarkdownImages.tsx";
@@ -14,7 +13,6 @@ declare global { interface Window { imageQa: { update: (text: string) => void; r
 function Fixture() {
   const [text, setText] = useState("First answer: ![Diagram](./out/diagram.svg)");
   const [image, setImage] = useState<GalleryImage | null>(null);
-  // a new key mounts the answer again, as reopening the chat or scrolling its row back in does
   const [mount, setMount] = useState(0);
   window.imageQa = { update: setText, reopen: () => setMount((value) => value + 1) };
   return <SettingsProvider><MachineContext.Provider value="fixture-pc">

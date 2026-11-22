@@ -23,7 +23,6 @@ describe("chatMinimap", () => {
     expect(minimapSlots(10, 0)).toBe(10);
     expect(minimapSlots(10, 4)).toBe(2);
     expect(minimapSlots(3, 4)).toBe(2);
-    // no rail places ticks closer than the minimum, however short it is
     for (let rail = 1; rail <= 40; rail++) {
       for (const count of [4, 5, 10, 200]) {
         const slots = minimapSlots(count, rail);
@@ -39,7 +38,6 @@ describe("chatMinimap", () => {
       }
     }
     expect(minimapTurnSlot(1999, 151, 2000)).toBe(150);
-    // the bottom tick (and End) reaches the newest turn on a capped rail, as on a full one
     for (const [count, slots] of [[2000, 151], [200, 50], [80, 20], [7, 7]] as const) {
       expect(minimapSlotTarget(slots - 1, slots, count)).toBe(count - 1);
       expect(minimapSlotTarget(0, slots, count)).toBe(0);

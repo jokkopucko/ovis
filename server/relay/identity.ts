@@ -6,7 +6,7 @@
  * refuses to start with `identity_unreadable`, since a silent new identity would orphan every
  * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
  */
-import { chmodSync, linkSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, linkSync, readFileSync, statSync, unlinkSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
 import nacl from "tweetnacl";
 import { exportPublicKey, exportSecretKey, generateKeyPair, importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
@@ -32,6 +32,32 @@ export class RelayIdentityError extends Error {
 
 export const relayIdentityPath = (stateDir: string): string => join(stateDir, "relay", "identity.json");
 
+/** An offline lookup observes replacement and removal, but never creates a key. */
+export function savedIdentityReader(stateDir: string): () => RelayIdentity | undefined {
+  const path = relayIdentityPath(stateDir);
+  let cached: { stat: BigIntStats; identity: RelayIdentity } | undefined;
+  const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size
+    && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.mode === b.mode;
+  return () => {
+    try {
+      let before = statSync(path, { bigint: true, throwIfNoEntry: false });
+      if (before && cached && same(before, cached.stat)) return { ...cached.identity };
+      cached = undefined;
+      // Permission repair can change the stamp, as can a concurrent replacement. Return only a stable read.
+      for (let attempt = 0; before && attempt < 2; attempt++) {
+        const identity = loadExisting(path, readFileSync(path, "utf8"));
+        const after = statSync(path, { bigint: true, throwIfNoEntry: false });
+        if (after && same(before, after)) {
+          cached = { stat: after, identity };
+          return { ...identity };
+        }
+        before = after;
+      }
+      return undefined;
+    } catch { cached = undefined; return undefined; }
+  };
+}
+
 /** The saved identity, or a new one written on first use. Throws RelayIdentityError on a bad file. */
 export function loadRelayIdentity(stateDir: string): RelayIdentity {
   const path = relayIdentityPath(stateDir);
@@ -49,7 +75,7 @@ export function savedServerId(stateDir: string): string | undefined {
   try { return parseIdentity(readFileSync(relayIdentityPath(stateDir), "utf8")).server_id; } catch { return undefined; }
 }
 
-/** Makes a saved identity private again before parsing it, even if its content is corrupt. */
+/** Off Windows, makes a saved identity private again before parsing it, even if its content is corrupt. */
 function loadExisting(path: string, text: string): RelayIdentity {
   if (process.platform !== "win32") {
     try {

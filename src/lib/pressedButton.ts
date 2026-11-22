@@ -6,9 +6,7 @@
  * dragged off that place still cancels the click, as it does on one that stayed put.
  *
  * The browser's own click is cancelled when handed on: a tap's click comes from a new hit test and
- * could press whatever moved under the finger as well. A press that never makes a click (a long
- * press, a release outside the window) stops waiting at the next press or when the window loses
- * focus, so a later click there does not press it.
+ * could press whatever moved under the finger as well.
  */
 export function keepPressedButtonClick(press: { target: EventTarget | null }, previous: { current: AbortController | null }): void {
   previous.current?.abort();

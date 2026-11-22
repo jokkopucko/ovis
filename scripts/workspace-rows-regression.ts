@@ -1,4 +1,3 @@
-/** Owned, real-browser regression of the sidebar's workspace rows. Run after `bun run build`. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +5,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { Page } from "playwright-core";
 import { createServer } from "../server/index.ts";
-import { HerdrError, herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { HerdrError, herdrRpc, paneSendKeys, paneSendText, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 
@@ -23,7 +22,6 @@ declare global {
   }
 }
 
-/** Register before the action; only DOM mutations, never intervals, drive the wait. */
 async function armState(page: Page, states: readonly State[]): Promise<void> {
   await page.evaluate((conditions) => {
     window.workspaceRowsState = new Promise<boolean>((resolve) => {
@@ -79,8 +77,6 @@ try {
   const { testSocketPath } = await import("./test-herdr.ts");
   assert.equal(process.env.HERDR_SOCKET, testSocketPath(), "test-herdr must select its isolated socket");
 
-  // Given two independent workspaces at one full cwd, a third whose folder has the same
-  // basename, and a fourth alone in its folder. No agent or shell input is started.
   const sharedCwd = join(root, "left", "project");
   const otherCwd = join(root, "right", "project");
   const loneCwd = join(root, "lone");
@@ -120,7 +116,7 @@ try {
     // Browser locale alone does not override the app's remembered language.
     // Preserve a language changed through Settings across subsequent reloads.
     if (!localStorage.getItem("ovis:settings")) {
-      // Two lines: the task row (pane title over its place) is what this script reads; One line,
+      // Two lines: the workspace's name over what its pane is on is what this script reads; One line,
       // the default, is ui-regression's sidebar-rows check
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false, sidebarRows: "two" }));
       localStorage.setItem(legacyFoldKey, "1");
@@ -144,13 +140,10 @@ try {
   const screenshot = async (name: string): Promise<void> => {
     if (evidence) await page.screenshot({ path: join(evidence, `workspace-rows-${name}.png`), animations: "disabled" });
   };
-  // the workspace with two panes in one tab: one row, with both panes on the canvas
   const otherWorkspace = workspaceSelector(other.workspaceId);
 
   await navigate(() => page.goto(`${origin}/?pane=${encodeURIComponent(lone.paneId)}`), lone.paneId);
   await page.locator(paneSelector(other.paneId)).waitFor({ state: "attached" });
-  // one row per workspace, as herdr's Spaces sidebar: the split pane has no row of its own, the
-  // workspace's selector follows its current pane while its visible name stays fixed.
   assert.equal(await page.locator(otherWorkspace).count(), 1, "a workspace with two panes is one row");
   assert.equal(await page.locator(paneSelector(split.pane.pane_id)).count(), 0);
   assert.equal(await page.locator(".workspace-toggle").count(), 0, "a legacy workspace fold has nothing to fold");
@@ -169,27 +162,21 @@ try {
     assert.equal(await page.locator(paneSelector(fixture.paneId)).getAttribute("draggable"), "true",
       "the workspace row itself supports dragging");
   }
-  // A fold stored while a single pane had a heading (0.3.44) must not hide a row that has no toggle.
   const singleFoldKey = `ovis:workspace-collapsed:local:${alpha.workspaceId}`;
   await page.evaluate((key) => localStorage.setItem(key, "1"), singleFoldKey);
   await navigate(() => page.reload(), lone.paneId);
   await page.locator(paneSelector(alpha.paneId)).waitFor({ state: "visible" });
   assert.equal(await page.locator(`.workspace:has(${paneSelector(alpha.paneId)}) .workspace-toggle`).count(), 0);
   await page.evaluate((key) => localStorage.removeItem(key), singleFoldKey);
-  // A split tab renders both panes. Selecting the second pane on the canvas changes only the
-  // representative pane of the workspace row; the workspace's visible name remains its own.
   await changeState(page, [{ selector: paneSelector(other.paneId), attribute: ["aria-current", "true"] }, { selector: '.tab-strip [role="tab"]', count: 1 }],
     () => page.locator(paneSelector(other.paneId)).click(), "selecting the split workspace shows its strip");
   assert.equal(await page.locator('.tab-strip [role="tab"]').textContent(), "Tab 1", "a tab herdr named by its number reads as Tab 1");
-  // at this width the header over the pane is the pane's surface, and the strip under it is
-  // the same one, not a band of the panel's colour between header and pane
   const surfaces = await page.evaluate(() => {
     const header = document.querySelector(".app-header")!;
     const column = document.querySelector(".pane-column")!;
     return {
       headerChat: header.classList.contains("is-chat"), columnChat: column.classList.contains("is-chat"),
       header: getComputedStyle(header).backgroundColor, strip: getComputedStyle(document.querySelector(".tab-strip")!).backgroundColor,
-      // from 769px the tabs are the header's row on the panel's surface, and the open tab is a raised pill on it
       tabRow: header.classList.contains("has-tab-row"),
       openTab: getComputedStyle(document.querySelector(".tab-strip-item.is-active")!).backgroundColor,
       elevated: (() => { const probe = document.body.appendChild(document.createElement("div")); probe.style.background = "var(--bg-elevated)"; const color = getComputedStyle(probe).backgroundColor; probe.remove(); return color; })(),
@@ -214,15 +201,13 @@ try {
   assert.equal(await page.locator(otherWorkspace).count(), 1);
   assert.equal(await page.locator(`${otherWorkspace} .workspace-name`).textContent(), other.label,
     "selecting a split pane keeps the workspace label in Spaces");
-  // Both entry points act on the workspace clicked, without changing the selected pane.
   const alphaWorkspace = workspaceSelector(alpha.workspaceId);
-  // a desktop draws no row ⋯: the context-menu key opens the menu at the focused row
   await page.locator(`${alphaWorkspace} .workspace-select`).focus();
   await contextMenuKey(page);
   const workspaceMenu = page.getByRole("menu");
   await workspaceMenu.waitFor();
   const workspaceActions = await workspaceMenu.getByRole("menuitem").allTextContents();
-  assert.deepEqual(workspaceActions, ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close workspace"],
+  assert.deepEqual(workspaceActions, ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close workspace"],
     "a non-Git workspace's keyboard menu contains only native workspace actions");
   assert.equal(await page.locator(paneSelector(split.pane.pane_id)).getAttribute("aria-current"), "true",
     "opening another workspace's keyboard menu keeps the active pane");
@@ -236,10 +221,8 @@ try {
     "right-clicking another workspace keeps the active pane");
   await page.keyboard.press("Escape");
   await workspaceMenu.waitFor({ state: "detached" });
-  // Renaming a pane is still available on that pane's own menu (a mouse opens it by right-click).
   await page.locator(`[data-layout-pane=${JSON.stringify(split.pane.pane_id)}] .pane-frame-head`).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Rename pane", exact: true }).click();
-  // the dialog's title names the pane it renames: "Rename pane · <pane>"
   const paneRename = page.getByRole("dialog", { name: /^Rename pane · ./ });
   const paneName = paneRename.getByRole("textbox", { name: "Pane name", exact: true });
   await paneName.waitFor();
@@ -254,14 +237,28 @@ try {
   assert.equal((await sessionSnapshot()).panes.find((pane) => pane.pane_id === split.pane.pane_id)?.label, renamedSplit);
   assert.equal((await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === other.workspaceId)?.label, other.label,
     "renaming a pane leaves herdr's workspace name unchanged");
-  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent === title,
-    { selector: `${otherWorkspace} .workspace-name`, title: renamedSplit });
-  assert.ok((await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.includes(other.label),
-    "the task row shows its representative pane title and keeps the workspace name beneath it");
+  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent?.split(" · ")[0] === title,
+    { selector: `${otherWorkspace} .workspace-place`, title: renamedSplit });
+  assert.equal(await page.locator(`${otherWorkspace} .workspace-name`).textContent(), other.label,
+    "a two-line row leads with the workspace's name and says its pane's title first beneath it");
+  assert.ok(!(await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.split(" · ").includes(other.label),
+    "the line under the workspace's name does not say that name again");
+  // A shell at its home folder titles its terminal "~" (bash's `user@host: ~`), which names no
+  // project: the line under the workspace's name leaves it out, as it leaves out a title that is its folder.
+  const loneWorkspace = workspaceSelector(lone.workspaceId);
+  await paneSendText(lone.paneId, "printf '\\033]2;~\\007'");
+  await paneSendKeys(lone.paneId, ["Enter"]);
+  // the row's tooltip ends with the pane's own title: wait until "~" has reached this browser
+  await page.waitForFunction((selector) => document.querySelector(selector)?.getAttribute("title")?.split(" — ").includes("~") === true,
+    `${loneWorkspace} .workspace-select`);
+  assert.equal(await page.locator(`${loneWorkspace} .workspace-name`).textContent(), lone.label,
+    "a shell titled ~ leads its two-line row with the workspace name");
+  assert.equal(await page.locator(loneWorkspace).evaluate((row) => row.querySelector(".workspace-place")?.textContent?.split(" · ").includes("~") ?? false), false,
+    "the line under it does not say ~");
   for (const width of [1280, 768, 375]) {
     await page.setViewportSize({ width, height: 900 });
     if (await page.locator(".drawer-toggle").isVisible()
-      && await page.locator(".drawer-toggle").getAttribute("aria-expanded") !== "true") {
+      && await page.locator("#workspace-drawer.is-open").count() === 0) {
       await changeState(page, [{ selector: "#workspace-drawer.is-open" }],
         () => page.locator(".drawer-toggle").click(), `workspace drawer opens at ${width}`);
     }

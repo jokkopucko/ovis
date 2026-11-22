@@ -27,10 +27,8 @@ async function until(done: () => Promise<boolean>, label: string, timeout = 10_0
   while (Date.now() < deadline) { if (await done()) return; await Bun.sleep(100); }
   throw new Error(`Timed out: ${label}`);
 }
-/** the pane's screen as the user sees it, one line per row (libghostty's rows or xterm's, see shown-rows.ts) */
 const screen = (page: Page) => page.locator(shownRow()).evaluateAll((rows) => rows.map((row) => row.textContent ?? "").join("\n"));
 
-/** Where `text` sits against the terminal mount: each side's distance inside it, negative when cut off. */
 const inset = (page: Page, text: string) => page.evaluate(({ needle, drawn }) => {
   const host = document.querySelector(".pane-terminal");
   const rows = host?.querySelector(drawn);
@@ -68,7 +66,6 @@ const caretHelpers = (page: Page) => page.evaluate(() => {
   };
   return { active: composition.classList.contains("active"), textareaVisible: visible(textarea), compositionVisible: visible(composition) };
 });
-/** One finger dragged across the terminal, as real touch events (CDP), from the middle of the mount. */
 async function drag(page: Page, dx: number, dy: number): Promise<void> {
   const box = (await page.locator(".pane-terminal").boundingBox())!;
   const cdp = await page.context().newCDPSession(page);
@@ -79,7 +76,6 @@ async function drag(page: Page, dx: number, dy: number): Promise<void> {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await cdp.detach();
 }
-/** Drags until `done`, a few times at most: one drag is shorter than a wide grid. */
 async function dragUntil(page: Page, dx: number, dy: number, done: () => Promise<boolean>, label: string): Promise<void> {
   for (let tries = 0; tries < 8 && !(await done()); tries++) await drag(page, dx, dy);
   assert.equal(await done(), true, label);
@@ -112,7 +108,6 @@ try {
   assert.equal(await terminal.locator(".pill-soon").count(), 0, "no soon pill: the lens works");
   assert.equal(await page.locator(".terminal-banner-soon").count(), 0);
   await until(async () => inputReady && (await screen(page)).trim().length > 0, "the native prompt and input lane are ready");
-  // typed in the page, run by the pane's shell, read back from herdr's screen
   await page.locator(".xterm-helper-textarea").focus();
   await page.keyboard.type("echo mirror-ok-$((40+2))");
   await page.keyboard.press("Enter");
@@ -129,22 +124,18 @@ try {
   if (evidence) await page.screenshot({ path: join(evidence, "windows-mirror-desktop.png") });
   console.log("PASS the terminal lens of a PC without attach shows the pane's screen, typed input included");
 
-  // the chat lens and back: the mirror is still there, and the grid is the pane's own
   await page.getByRole("button", { name: /^Chat/ }).click();
   await terminal.click();
   await until(async () => (await screen(page)).includes("mirror-ok-42"), "the screen is back after a lens switch");
   console.log("PASS the mirrored screen survives a lens switch");
 
-  // a screen that fills the pane: a line that ends in the grid's last column, and the prompt on its last row
   await page.locator(".xterm-helper-textarea").focus();
   await page.keyboard.type("for i in $(seq 1 60); do echo hist-$i; done; printf '%*s\\n' $COLUMNS right-edge");
   await page.keyboard.press("Enter");
   await page.keyboard.type("tail-marker");
   await until(async () => /right-edge[\s\S]*tail-marker/.test(await screen(page)), "the full screen reaches the mirrored terminal");
 
-  // #230: the grid is the pane's own, wider and taller than a phone. Every cell can be reached.
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
-  // the pane menu's Original width: unchosen, a touch or narrow screen folds the wide grid and nothing pans
   await phone.addInitScript(() => localStorage.setItem("ovis:mirror-wrap", JSON.stringify(false)));
   const small = await phone.newPage();
   small.on("pageerror", (error) => errors.push(error.message));
@@ -187,7 +178,6 @@ try {
   await input.detach();
   await phone.close();
 
-  // a small desktop window: the wheel pans, and a scrollbar is there
   const narrow = await browser.newContext({ viewport: { width: 700, height: 420 } });
   await narrow.addInitScript(() => localStorage.setItem("ovis:mirror-wrap", JSON.stringify(false)));
   const windowed = await narrow.newPage();
@@ -257,7 +247,6 @@ try {
   await until(async () => (await screen(observer)).includes("right-edge"), "the observer gets the operator's screen");
   await until(async () => (await scrollOf(observer)).adopted, "the observer's mount pans");
   if (evidence) await observer.screenshot({ path: join(evidence, "observe-phone.png") });
-  // the cursor's row (the operator's prompt) is what the view opens on
   await until(() => observer.locator(".xterm-cursor").first().evaluate((cursor) => {
     const host = document.querySelector(".pane-terminal")!.getBoundingClientRect();
     const at = cursor.getBoundingClientRect();

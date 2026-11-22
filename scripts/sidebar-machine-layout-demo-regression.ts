@@ -1,9 +1,4 @@
-/**
- * Purpose: verify the Manage PC row menu (a popover on a desktop, a sheet on a phone), its items, Rename… in the
- * header and Remove PC… in the confirm dialog at narrow and wide widths, in a real browser.
- * Tags: sidebar, machines, responsive, accessibility, browser, regression.
- * Usage: bun scripts/sidebar-machine-layout-demo-regression.ts [--geometry-only]
- */
+/** Usage: bun scripts/sidebar-machine-layout-demo-regression.ts [--geometry-only] */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +6,7 @@ import { join } from "node:path";
 import { chromium, type Locator, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 import { prepareMachineControlsDemo } from "./sidebar-machine-controls-fixture.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-machine-layout-"));
 const evidenceDir = process.env.UI_EVIDENCE_DIR;
@@ -50,7 +46,6 @@ const scenarios: Scenario[] = [
   { name: "en-landscape-844x390-dark", language: "en", theme: "dark", density: "comfortable", viewport: { width: 844, height: 390 }, touch: true, desktopSidebar: true },
 ];
 
-// a PC's group by its name; while its name is a field, by the field
 const machineGroup = (page: Page, name: string): Locator => page.locator(".machine-group").filter({ has: page.locator(".machine-name", { hasText: name }) });
 const renamingGroup = (page: Page): Locator => page.locator(".machine-group").filter({ has: page.locator(".machine-rename-input") });
 const surface = (page: Page): Locator => page.locator(".row-menu, .row-sheet");
@@ -64,7 +59,6 @@ const getHook = (page: Page, expression: string) => page.evaluate((key) => {
   }
   return value;
 }, expression);
-// another tab's view of the fixture PC: waits until it is gone (null), or holds every given field
 const observedPc = (page: Page, observer: number, want: { name?: string; enabled?: boolean } | null) => page.waitForFunction(([index, fields]) => {
   const hooks = (window as unknown as { machineControlsFixture: { observerRoster(index: number): Array<{ id: string; name: string; enabled: boolean }> | null } }).machineControlsFixture;
   const roster = hooks.observerRoster(index as number);
@@ -80,16 +74,13 @@ async function press(locator: Locator, scenario: Scenario): Promise<void> {
   else await locator.click();
 }
 
-/** Opens the PC's Manage PC menu from its sliders button and checks the button says so. */
 async function openMenu(page: Page, group: Locator, scenario: Scenario): Promise<Locator> {
   if (!scenario.touch) await group.locator(".machine-header").hover();
   const manage = group.locator(".machine-manage");
-  // the button names the surface it opens: a sheet (a dialog) up to 640px, a popover menu above that (lib/sheets.ts)
   assert.equal(await manage.getAttribute("aria-haspopup"), scenario.viewport.width <= 640 ? "dialog" : "menu", `${scenario.name} the manage button says what it opens`);
   assert.equal(await manage.getAttribute("aria-expanded"), "false", `${scenario.name} the manage button is closed before the press`);
   await press(manage, scenario);
   await surface(page).waitFor({ state: "visible" });
-  // a phone's sheet slides up from under the screen: measured once it is in place
   await surface(page).evaluate(async (menu) => { await Promise.all(menu.getAnimations({ subtree: true }).map((animation) => animation.finished)); });
   assert.equal(await manage.getAttribute("aria-expanded"), "true", `${scenario.name} the manage button says its menu is open`);
   return manage;
@@ -106,7 +97,6 @@ async function itemLabels(page: Page): Promise<string[]> {
   return (await items(page).allInnerTexts()).map((text) => text.trim());
 }
 
-/** The open menu fits the screen, says which PC it is for, and keeps every label whole; a sheet's items are touch-sized. */
 async function menuGeometry(page: Page, manage: Locator, scenario: Scenario): Promise<void> {
   const metrics = await page.evaluate(() => {
     const menu = document.querySelector(".row-menu, .row-sheet")!;
@@ -143,12 +133,48 @@ async function menuGeometry(page: Page, manage: Locator, scenario: Scenario): Pr
   }
 }
 
+const OFF_ERROR = "ssh: connect to host a-long-fixture-hostname.tail1234.ts.net port 22: Connection refused";
+
+// a PC it keeps failing to reach: Switched off with why, whole and beside or under Check again, which asks once
+async function offRow(page: Page, group: Locator, scenario: Scenario): Promise<void> {
+  const setRemote = (patch: Record<string, unknown>) => page.evaluate((fields) => (window as unknown as { machineControlsFixture: { setRemote(patch: unknown): void } }).machineControlsFixture.setRemote(fields), patch);
+  await setRemote({ state: "reconnecting", error: OFF_ERROR });
+  const row = group.locator(".machine-off");
+  await row.waitFor({ state: "visible" });
+  const button = row.locator(".machine-recheck");
+  const fit = await row.evaluate((element) => {
+    const box = (node: Element | null) => { const rect = node!.getBoundingClientRect(); return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }; };
+    const detail = element.querySelector<HTMLElement>(".machine-state-detail")!;
+    const list = document.querySelector<HTMLElement>(".machine-list")!;
+    return { row: box(element), words: box(element.querySelector(".machine-state")), button: box(element.querySelector(".machine-recheck")), sidebar: box(document.querySelector(".sidebar")), whole: detail.clientHeight > 0 && detail.scrollHeight <= detail.clientHeight + 1 && detail.getBoundingClientRect().right <= element.getBoundingClientRect().right + 1, list: { clientWidth: list.clientWidth, scrollWidth: list.scrollWidth } };
+  });
+  const apart = fit.button.left >= fit.words.right - 1 || fit.button.top >= fit.words.bottom - 1;
+  assert.ok(apart, `${scenario.name} Check again lies beside or under the words, not over them: ${JSON.stringify(fit)}`);
+  assert.ok(fit.button.left >= fit.sidebar.left - 1 && fit.button.right <= fit.sidebar.right + 1 && fit.words.right <= fit.sidebar.right + 1, `${scenario.name} the off row fits the sidebar: ${JSON.stringify(fit)}`);
+  assert.ok(fit.list.scrollWidth <= fit.list.clientWidth + 1, `${scenario.name} the off row does not widen the PC list: ${JSON.stringify(fit)}`);
+  assert.ok(fit.whole, `${scenario.name} why the PC is off is shown whole: ${JSON.stringify(fit)}`);
+  // a 240 px sidebar has no room beside the words: Check again goes under them
+  if (scenario.desktopSidebar && (scenario.sidebarWidth ?? 240) === 240) assert.ok(fit.button.top >= fit.words.bottom - 1, `${scenario.name} Check again wraps under the words in a narrow sidebar: ${JSON.stringify(fit)}`);
+  if (scenario.screenshots && evidenceDir) await page.screenshot({ path: join(evidenceDir, `sidebar-machine-layout-${scenario.name}-off.png`) });
+  const reads = await getHook(page, "calls.sessionReads") as number;
+  await press(button, scenario);
+  await page.waitForFunction((count) => (window as unknown as { machineControlsFixture: { calls: { sessionReads: number } } }).machineControlsFixture.calls.sessionReads === count, reads + 1);
+  assert.equal(await button.getAttribute("aria-disabled"), "true", `${scenario.name} Check again is held after a press`);
+  // Playwright waits for an aria-disabled button to be enabled, which would press it after the hold: the click is sent now
+  await button.dispatchEvent("click");
+  assert.equal(await getHook(page, "calls.sessionReads"), reads + 1, `${scenario.name} a second press while held asks nothing`);
+  await button.focus();
+  await setRemote({ state: "connected", error: null });
+  await row.waitFor({ state: "detached" });
+  assert.equal(await group.locator(".machine-title").evaluate((title) => document.activeElement === title), true, `${scenario.name} the PC answering hands the focus from Check again to the PC's name`);
+  await setRemote({ state: "disconnected", error: null });
+}
+
 async function capture(page: Page, scenario: Scenario, state: "menu" | "renaming"): Promise<void> {
   if (!evidenceDir || !scenario.screenshots) return;
   await page.screenshot({ path: join(evidenceDir, `sidebar-machine-layout-${scenario.name}-${state}.png`) });
 }
 
-/** Rename… swaps the name for a field in the header: a 100-character name stays inside the sidebar, and Escape keeps the old name. */
 async function renameGeometry(page: Page, manage: Locator, scenario: Scenario): Promise<void> {
   const before = (await getHook(page, "calls.mutations") as unknown[]).length;
   await press(item(page, RENAME_LABEL[scenario.language]!), scenario);
@@ -168,13 +194,11 @@ async function renameGeometry(page: Page, manage: Locator, scenario: Scenario): 
   assert.ok(fit.list.scrollWidth <= fit.list.clientWidth + 1, `${scenario.name} a 100-character name does not widen the PC list: ${JSON.stringify(fit)}`);
   assert.ok(fit.field.left >= fit.sidebar.left - 1 && fit.field.right <= fit.sidebar.right + 1, `${scenario.name} the name's field fits the sidebar: ${JSON.stringify(fit)}`);
   await capture(page, scenario, "renaming");
-  // a press in the field places the caret: the name's own fold (a press on the name) stays out of it
   await press(input, scenario);
   assert.equal(await renamingGroup(page).evaluate((group) => group.classList.contains("is-folded")), false, `${scenario.name} a press in the name's field does not fold the PC`);
   assert.equal(await input.evaluate((element) => document.activeElement === element), true, `${scenario.name} the field keeps the focus after a press in it`);
   await page.keyboard.press("Escape");
   await input.waitFor({ state: "detached" });
-  // the field keeps its own Escape: a phone's drawer stays out (lib/useSidebarLayout.ts)
   assert.equal(await manage.evaluate((button) => document.activeElement === button), true, `${scenario.name} Escape in the field gives the focus back to the manage button`);
   if (!scenario.desktopSidebar) assert.equal(await page.locator(".sidebar.is-open").isVisible(), true, `${scenario.name} Escape in the field leaves the drawer out`);
   assert.equal((await getHook(page, "calls.mutations") as unknown[]).length, before, `${scenario.name} Escape sends no rename`);
@@ -239,7 +263,7 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
     await menuGeometry(page, manage, scenario);
     await capture(page, scenario, "menu");
     await renameGeometry(page, manage, scenario);
-    // Remove PC…'s confirm keeps its own Escape: a phone's drawer stays out under it (lib/useSidebarLayout.ts)
+    await offRow(page, remoteGroup, scenario);
     if (!scenario.desktopSidebar) {
       const removeManage = await openMenu(page, remoteGroup, scenario);
       await press(item(page, REMOVE_LABEL[scenario.language]!), scenario);
@@ -256,7 +280,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
       const observer = await page.evaluate(() => (window as unknown as { machineControlsFixture: { observe(): number } }).machineControlsFixture.observe());
       await observedPc(page, observer, {});
 
-      // Disconnect and Connect run at once and close the menu
       await openMenu(page, remoteGroup, scenario);
       await item(page, "Disconnect").click();
       await surface(page).waitFor({ state: "detached" });
@@ -265,7 +288,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
       assert.deepEqual(await itemLabels(page), ["Rename…", "Connect", "Reconnect / setup", "Update bridge…", "Hide on this device", "Remove PC…"], "a disabled PC offers Connect in Disconnect's place");
       assert.equal(await item(page, "Reconnect / setup").getAttribute("aria-disabled"), "true", "setup waits while the PC is disabled");
 
-      // Rename…: Enter saves, and the focus is back on the manage button
       await item(page, "Rename…").click();
       const renamed = "Renamed fixture PC";
       const input = renamingGroup(page).locator(".machine-rename-input");
@@ -275,7 +297,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
       await renamedGroup.waitFor();
       await observedPc(page, observer, { name: renamed });
       assert.equal(await renamedGroup.locator(".machine-manage").evaluate((button) => document.activeElement === button), true, "Enter gives the focus back to the manage button");
-      // a click away keeps the old name
       const sent = (await getHook(page, "calls.mutations") as unknown[]).length;
       await openMenu(page, renamedGroup, scenario);
       await item(page, "Rename…").click();
@@ -288,7 +309,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
       await item(page, "Connect").click();
       await observedPc(page, observer, { enabled: true });
 
-      // Remove PC… asks in the dialog a workspace's Close asks in; Escape answers no
       const renamedManage = await openMenu(page, renamedGroup, scenario);
       await item(page, "Remove PC…").click();
       const dialog = page.locator(".confirm-dialog");
@@ -327,8 +347,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
       assert.equal(await getHook(page, "calls.deleteCount"), 1, "only the successful DELETE counts");
       await observedPc(page, observer, null);
 
-      // Hide on this device is Settings' Show in sidebar turned off: the PC leaves, and the focus goes to the list's
-      // first row rather than falling to the page (the list has no head to take it)
       await openMenu(page, managed, scenario);
       await item(page, "Hide on this device").click();
       await managed.waitFor({ state: "detached" });
@@ -351,15 +369,7 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
   await prepareMachineControlsDemo(app);
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app, { prefix: "/" });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const url = `http://127.0.0.1:${server.port}/`;
   for (const scenario of geometryOnly ? [scenarios[0]!] : scenarios) await withScenario(browser, url, scenario, scenario.name === "en-desktop-240-dark");

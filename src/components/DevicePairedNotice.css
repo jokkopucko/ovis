@@ -1,5 +1,3 @@
-/* the pairing line shares .update-notice's layout with the update, telemetry and exposure notices
-   (src/components/UpdateControls.css): the glyph is its cue, the words its warning, no colour of its own */
 .update-notice.is-paired > svg {
   flex: 0 0 auto;
   width: var(--icon-size);
@@ -7,7 +5,6 @@
   color: var(--accent);
 }
 
-/* its two controls stay together: at the end of the line, or as one row under the words on a phone */
 .device-paired-actions {
   display: flex;
   flex: 0 0 auto;
@@ -16,11 +13,22 @@
   margin-inline-start: auto;
 }
 
-/* a relay pairing's digits, to compare with the phone's screen: monospace, never broken between groups */
 .relay-pairing-digits {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-caps);
   white-space: nowrap;
   color: var(--text-strong);
+}
+
+.device-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.device-notice-text > .settings-hint {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
 }

@@ -49,7 +49,6 @@ it("promotes explicit opens but leaves polling order unchanged without repeated 
 it("puts a folder only seen in a pane behind the ones kept, until a workspace is started there", () => {
   const { store } = fixture();
   store.remember("local", ["/projects/alpha"], true);
-  // a shell that wandered: its pane's folder is seen, and no workspace was started there
   expect(store.remember("local", ["/tmp", "/projects/alpha/node_modules/left-pad"])).toEqual(["/projects/alpha", "/tmp", "/projects/alpha/node_modules/left-pad"]);
   expect(store.remember("local", ["/projects/beta"])).toEqual(["/projects/alpha", "/tmp", "/projects/alpha/node_modules/left-pad", "/projects/beta"]);
   expect(store.remember("local", ["/projects/beta"], true)).toEqual(["/projects/beta", "/projects/alpha", "/tmp", "/projects/alpha/node_modules/left-pad"]);

@@ -19,7 +19,6 @@ const ci = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/ci.yml"), "
 const steps = workflow.jobs.title!.steps;
 const step = steps.find((candidate) => candidate.name === "Check the pull request title")!;
 
-/** Runs the workflow step's own script, as `shell: node {0}` does, against one event payload. */
 function check(eventName: string, payload?: unknown, raw?: string) {
   const dir = mkdtempSync(join(tmpdir(), "pr-title-"));
   try {

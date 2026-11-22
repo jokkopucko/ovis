@@ -16,7 +16,6 @@ export type PassMode = "off" | "grace" | "enforce";
 
 export interface PassPolicy {
   readonly mode: PassMode;
-  /** when `grace` turns into `enforce` (ms), or null */
   readonly enforceAt: number | null;
   readonly keys: ReadonlyMap<string, CryptoKey>;
   readonly revoked: ReadonlySet<string>;
@@ -35,12 +34,10 @@ export interface PassSettings {
 
 export const PASS_OFF: PassPolicy = { mode: "off", enforceAt: null, keys: new Map(), revoked: new Set() };
 
-/** The mode at `now` (ms). */
 export function passMode(policy: PassPolicy, now: number): PassMode {
   return policy.mode === "grace" && policy.enforceAt !== null && now >= policy.enforceAt ? "enforce" : policy.mode;
 }
 
-/** An ISO 8601 UTC instant (`2027-01-01T00:00:00Z`, seconds and milliseconds optional) in ms, or undefined for anything else, an impossible day included. */
 function isoUtc(text: string): number | undefined {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$/.test(text)) return undefined;
   const at = Date.parse(text);
@@ -86,7 +83,6 @@ export function passMayHold(policy: PassPolicy, pass: string | null, serverId: s
   return policy.keys.has(kid) && sid === serverId && iat <= seconds + RELAY_PASS_SKEW_S && exp - iat <= RELAY_PASS_LIFETIME_S && exp + RELAY_PASS_SKEW_S > seconds;
 }
 
-/** Checks the pass a PC socket of `serverId` came with, at `now` (ms). */
 export async function checkPass(policy: PassPolicy, pass: string | null | undefined, serverId: string, now: number): Promise<PassResult> {
   if (policy.revoked.has(serverId)) return pass ? { state: "invalid", reason: "relay pass invalid" } : { state: "missing", reason: RELAY_PASS_REQUIRED };
   const check = await checkRelayPass(pass, policy.keys, serverId, Math.floor(now / 1000));
@@ -94,7 +90,11 @@ export async function checkPass(policy: PassPolicy, pass: string | null | undefi
   return { state: check.reason === RELAY_PASS_REQUIRED ? "missing" : check.reason === "relay pass expired" ? "expired" : "invalid", reason: check.reason };
 }
 
-/** The `relay_pass` field the relay adds to a PC's `sync` and a client's `assigned` outside `off`. */
-export function passNotice(policy: PassPolicy, state: PassState): { state: PassState; enforce_at: string | null } {
-  return { state, enforce_at: policy.enforceAt === null ? null : new Date(policy.enforceAt).toISOString() };
+/**
+ * The `relay_pass` field the relay adds to a PC's `sync` and a client's `assigned` outside `off`. `mode` is the one
+ * configured: with `enforce_at` it tells a PC whether passes are enforced now (`enforce`, or `grace` past
+ * `enforce_at`), which decides whether it names a new device (README.md, "New sessions").
+ */
+export function passNotice(policy: PassPolicy, state: PassState): { state: PassState; enforce_at: string | null; mode: "grace" | "enforce" } {
+  return { state, enforce_at: policy.enforceAt === null ? null : new Date(policy.enforceAt).toISOString(), mode: policy.mode === "enforce" ? "enforce" : "grace" };
 }

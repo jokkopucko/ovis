@@ -70,41 +70,39 @@ async function until<T>(deadline: number, read: () => Promise<T>, accept: (value
   throw new Error(`Timed out waiting for ${label}${last instanceof Error ? `: ${last.message}` : ""}`);
 }
 
+/** The stand-in's pid in each pane, as pane() found it in the foreground: one loaded read of process_info may list nothing */
+const standInPids = new Map<string, number>();
+
 async function pane(screen = "", cwd = home): Promise<string> {
   const created = await workspaceCreate({ cwd: home, label: "ovis-test-gjc-native-binding" }, socketPath);
   workspaces.push(created.workspace.workspace_id);
   const paneId = created.root_pane.pane_id;
   const command = `GJC_TEST_CWD=${shellQuote(cwd)} GJC_TEST_SCREEN=${shellQuote(screen)} ${shellQuote(process.execPath)} ${shellQuote(script)}\n`;
   await herdrRpc("pane.send_text", { pane_id: paneId, text: command }, socketPath);
-  await until(
+  const found = await until(
     Date.now() + 10_000,
     async () => {
       const info = await herdrRpc<{ process_info?: { foreground_processes?: { pid?: unknown; argv?: unknown }[] } }>(
         "pane.process_info", { pane_id: paneId }, socketPath,
       );
-      return (info.process_info?.foreground_processes ?? []).some((candidate) => {
+      return (info.process_info?.foreground_processes ?? []).find((candidate) => {
         const argv = Array.isArray(candidate.argv) ? candidate.argv.map(String) : [];
         return argv.includes(script) && isGjcProcess(argv);
-      });
+      })?.pid;
     },
-    Boolean,
+    (pid) => typeof pid === "number",
     "the isolated GJC stand-in in its pane",
   );
+  standInPids.set(paneId, found as number);
   return paneId;
 }
 
 async function gjcProcess(paneId: string): Promise<{ pid: number; processStartedAt: number }> {
-  const info = await herdrRpc<{ process_info?: { foreground_processes?: { pid?: unknown; argv?: unknown }[] } }>(
-    "pane.process_info", { pane_id: paneId }, socketPath,
-  );
-  const process = (info.process_info?.foreground_processes ?? []).find((candidate) => {
-    const argv = Array.isArray(candidate.argv) ? candidate.argv.map(String) : [];
-    return argv.includes(script) && isGjcProcess(argv);
-  });
-  if (typeof process?.pid !== "number") throw new Error("pane.process_info did not expose the isolated GJC process");
-  const startedAt = processStartedAt(process.pid);
+  const pid = standInPids.get(paneId);
+  if (pid === undefined) throw new Error("pane() did not find the isolated GJC process");
+  const startedAt = processStartedAt(pid);
   if (startedAt === null) throw new Error("Could not read the isolated GJC process birth time");
-  return { pid: process.pid, processStartedAt: startedAt };
+  return { pid, processStartedAt: startedAt };
 }
 
 async function setAgent(paneId: string, agent: string): Promise<void> {

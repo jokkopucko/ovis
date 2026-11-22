@@ -1,4 +1,3 @@
-/** Admitted version observations and the PC's supervised update lifecycle. */
 import { MIN_SERVER_VERSION, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { UpdateStatus } from "../../../shared/update.ts";
 import { fetchUpdateStatus, requestUpdate } from "../api.ts";
@@ -13,7 +12,6 @@ import { indexedDeviceStore, observedVersionOf, type ObservedVersion, type Relay
 export type { ObservedVersion } from "./device.ts";
 
 const UPDATE_MS = 15 * 60_000;
-/** How often the shell reads the PC's update status while it installs. */
 const UPDATE_POLL_MS = 1000;
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -40,11 +38,9 @@ function tabMemory(): ReloadMemory | null {
 /** Where older shells kept the observed versions; web storage holds no relay data now (scripts/relay-e2e-regression.ts). */
 const LEGACY_VERSION_KEY = "ovis-relay-versions";
 
-/** Each saved PC's last admitted version, mirrored from its record so the views read it without waiting. */
 let observed: ReadonlyMap<string, ObservedVersion> = new Map();
 export function observedVersions(): ReadonlyMap<string, ObservedVersion> { return observed; }
 
-/** Reads and deletes the record an older shell left in web storage. */
 function takeLegacyVersions(): ReadonlyMap<string, ObservedVersion> {
   const entries = new Map<string, ObservedVersion>();
   for (const storage of [() => localStorage, () => sessionStorage]) {
@@ -58,7 +54,7 @@ function takeLegacyVersions(): ReadonlyMap<string, ObservedVersion> {
         if (Array.isArray(item) && typeof item[0] === "string" && /^[0-9a-f]{32}$/.test(item[0]) && typeof item[1] === "object" && item[1] !== null
           && typeof item[1].version === "string" && typeof item[1].outdated === "boolean") entries.set(item[0], { version: item[1].version, outdated: item[1].outdated });
       }
-    } catch { /* unavailable or damaged web storage holds nothing to move */ }
+    } catch {}
   }
   return entries;
 }
@@ -67,7 +63,6 @@ class UnsavedPcError extends Error {
   constructor(readonly serverId: string) { super(`PC ${serverId} is not saved in this browser`); }
 }
 
-/** Writes the version into the PC's saved record; a PC this browser does not keep has no record to hold it. */
 async function keepVersion(store: RelayDeviceStore, serverId: string, version: ObservedVersion): Promise<void> {
   try {
     await store.update(serverId, (current) => {
@@ -81,7 +76,6 @@ async function keepVersion(store: RelayDeviceStore, serverId: string, version: O
   }
 }
 
-/** Loads the saved PCs' versions (once per page, before the shell first draws), moving an older shell's web-storage record in. */
 export async function loadObservedVersions(store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
   const legacy = takeLegacyVersions();
   const devices = await store.list().catch((error: unknown) => {
@@ -100,7 +94,6 @@ export async function loadObservedVersions(store: RelayDeviceStore = indexedDevi
   observed = next;
 }
 
-/** Forget discards this PC's pairing and the version kept with it together. */
 export async function forgetSavedPc(serverId: string, store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
   await store.remove(serverId);
   const versions = new Map(observed);
@@ -113,10 +106,11 @@ export function createUpdateFlow(shellVersion: string, view: {
   readonly accepted: (opened: RelayTransport, attempt: Attempt) => void;
   readonly failed: (error: unknown, attempt: Attempt) => Promise<void>;
   readonly reload: () => Promise<void>;
+  /** The attempt goes on in this page even on a newer PC: the newer shell is loaded at a later admission instead. */
+  readonly holdsReload?: (attempt: Attempt) => boolean;
 }, store: RelayDeviceStore = indexedDeviceStore) {
   let outdated: { opened: RelayTransport; attempt: Attempt; name: string | null; version: string } | null = null;
   let updating = false;
-  /** Bumped by every admission and every cancel: an admission resumes only while it is still the latest. */
   let generation = 0;
   const { show, failed, reload } = view;
   const admit = async (opened: RelayTransport, attempt: Attempt): Promise<void> => {
@@ -131,10 +125,9 @@ export function createUpdateFlow(shellVersion: string, view: {
     const version = { version: server.version, outdated: skew === "pc-outdated" };
     observed = new Map(observed).set(attempt.offer.server_id, version);
     await keepVersion(store, attempt.offer.server_id, version);
-    // a cancel or a newer admission while the version was saved owns the screen and the transport now
     if (generation !== mine) return;
     const memory = tabMemory();
-    if (skew === "server-newer" && memory !== null && reloadOnce(memory, shellVersion, server.version)) { opened.close(); await reload(); return; }
+    if (skew === "server-newer" && memory !== null && view.holdsReload?.(attempt) !== true && reloadOnce(memory, shellVersion, server.version)) { opened.close(); await reload(); return; }
     if (skew !== "pc-outdated") { outdated = null; view.accepted(opened, attempt); return; }
     setTransport(opened);
     outdated = { opened, attempt, name: attempt.offer.name ?? null, version: server.version };
@@ -145,7 +138,6 @@ export function createUpdateFlow(shellVersion: string, view: {
     show({ kind: "outdated", name: on.name, serverVersion: on.version, minVersion: MIN_SERVER_VERSION, update });
   };
 
-  /** The Update button only for an install the PC's supervisor manages (server/update-api.ts); the steps by hand otherwise. */
   const offerUpdate = async (on: NonNullable<typeof outdated>): Promise<void> => {
     showUpdate(on, { phase: "reading" });
     let status: UpdateStatus | null = null;
@@ -153,7 +145,6 @@ export function createUpdateFlow(shellVersion: string, view: {
     showUpdate(on, status?.managed === true ? { phase: "offer" } : { phase: "manual" });
   };
 
-  /** The status once a check or install the PC runs has settled, or the deadline passed. */
   const settled = async (on: NonNullable<typeof outdated>, deadline: number): Promise<UpdateStatus | null> => {
     for (;;) {
       if (outdated !== on) return null;
@@ -164,11 +155,6 @@ export function createUpdateFlow(shellVersion: string, view: {
     }
   };
 
-  /**
-   * Installs the release on offer on the PC (POST /api/updates/install, as Settings → Updates does),
-   * then follows GET /api/updates until the restarted server answers through the relay: the
-   * transport reconnects by itself, and its WELCOME names the new version.
-   */
   const runUpdate = async (on: NonNullable<typeof outdated>): Promise<void> => {
     const deadline = Date.now() + UPDATE_MS;
     showUpdate(on, { phase: "installing", step: null });
@@ -190,7 +176,6 @@ export function createUpdateFlow(shellVersion: string, view: {
       if (on.opened.server !== undefined && on.opened.server.version !== on.version) break;
       let now: UpdateStatus;
       try { now = await fetchUpdateStatus(); } catch {
-        // the server is restarting: the relay carrier dropped, and the transport is reconnecting
         showUpdate(on, { phase: "restarting" });
         continue;
       }

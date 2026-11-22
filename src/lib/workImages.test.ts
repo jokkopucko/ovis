@@ -27,7 +27,6 @@ describe("workImages", () => {
 });
 
 describe("cachedImageRef", () => {
-  // one ref of each kind server/pane-routes.ts serves, in the shapes their stores make
   const claude = "6f1c2a9e-4b7d-4e2a-9c1f-0a2b3c4d5e6f:3:1";
   const codex = `codex-${"ab".repeat(32)}`;
   const opencode = "opencode:msg_01HZY8K2:0";
@@ -70,7 +69,6 @@ describe("previewPlace", () => {
 
   it("takes the roomier side and stays in a viewport too short for either", () => {
     const short = { width: 1000, height: 300 };
-    // 140px above, 120px below: above wins, cut to the top edge rather than off it
     expect(previewPlace(thumb(156), size, short)).toEqual({ left: 360, top: 8 });
     expect(previewPlace(thumb(110), size, short).top).toBe(92);
   });

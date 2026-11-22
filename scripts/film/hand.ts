@@ -1,12 +1,6 @@
 /**
  * The film's recorder: every frame Chrome paints (CDP screencast) with its paint time, plus a log
  * of what the "hand" did (pointer moves, clicks, taps) for the compositor to draw the cursor.
- * Same Recording shape as scripts/readme-media/record.ts (which stays the README's own), with what
- * the film takes need on top of it:
- * - `scale`: the browser's device scale factor (the screencast's px per CSS px), not a fixed 2;
- * - a clock-driven glide: a slow mouse.move on a busy page cannot stretch it past `ms`;
- * - `place` (the pointer set down at once, e.g. parked outside the viewport before `begin`) and
- *   `press` (a click where the pointer already is, so a take can glide first and click on its beat).
  */
 import type { CDPSession, Page } from "playwright-core";
 
@@ -51,7 +45,6 @@ export class Hand {
     return { frames: this.frames, cues: this.cues, start: this.start, end: now(), width: this.width, height: this.height };
   }
 
-  /** Puts the pointer at (x, y) at once, no glide. */
   async place(x: number, y: number): Promise<void> {
     this.x = x;
     this.y = y;
@@ -59,7 +52,6 @@ export class Hand {
     if (this.cdp) this.cues.push({ t: now(), kind: "move", x, y });
   }
 
-  /** The pointer glides to (x, y) on an eased path, as a hand would, in `ms` of wall time. */
   async moveTo(x: number, y: number, ms = 650): Promise<void> {
     const [fromX, fromY] = [this.x, this.y];
     const t0 = performance.now();
@@ -87,7 +79,6 @@ export class Hand {
     await this.press();
   }
 
-  /** A click where the pointer already is. */
   async press(): Promise<void> {
     this.cues.push({ t: now(), kind: "down", x: this.x, y: this.y });
     await this.page.mouse.down();

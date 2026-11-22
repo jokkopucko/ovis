@@ -1,5 +1,3 @@
-/* the chat lies under every dialog, so the picture takes the modal layer itself; the page behind
-   is hidden, as it is behind a diagram (MermaidLightbox.css) */
 .image-lightbox-scrim {
   padding: 0;
   background: var(--bg);
@@ -27,7 +25,6 @@
   box-shadow: var(--shadow-pop);
 }
 
-/* clear of a notch or a rounded corner: the page is laid out with viewport-fit=cover */
 .image-lightbox-bar {
   top: calc(var(--space-3) + env(safe-area-inset-top, 0px));
   right: calc(var(--space-3) + env(safe-area-inset-right, 0px));
@@ -46,7 +43,6 @@
   color: var(--status-done);
 }
 
-/* the stage never scrolls: the picture moves inside it, and the page behind stays put */
 .image-lightbox-stage {
   position: absolute;
   inset: 0;
@@ -58,8 +54,6 @@
 
 .image-lightbox-stage.is-dragging { cursor: grabbing; }
 
-/* the canvas is the stage's own box, so a zoom about a stage point is exact; the picture sits
-   fitted at its centre, clear of the bars */
 .image-lightbox-canvas {
   position: absolute;
   inset: 0;
@@ -95,7 +89,6 @@
   height: var(--space-6);
 }
 
-/* the caption and the gallery's steps, centred on the bottom edge, above a phone's home bar */
 .image-lightbox-foot {
   bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
   left: calc(var(--space-3) + env(safe-area-inset-left, 0px));

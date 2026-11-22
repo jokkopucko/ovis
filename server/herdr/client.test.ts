@@ -15,11 +15,6 @@ import {
   workspaceCreate,
 } from "./client.ts";
 
-/**
- * Exercised against the REAL running herdr server: this client exists to speak a
- * live socket protocol, so a mocked socket would prove nothing about it.
- * Only the polling regression creates/writes a pane, in its own workspace.
- */
 
 describe("ping", () => {
   it("reaches the live herdr server and reports its protocol", async () => {
@@ -136,7 +131,6 @@ describe("paneRead", () => {
     const error = caught as HerdrError;
     expect(typeof error.code).toBe("string");
     expect(error.code.length).toBeGreaterThan(0);
-    // a timeout would mean the client hung rather than parsed the server's refusal
     expect(error.code).not.toBe("timeout");
   });
 });
@@ -187,5 +181,41 @@ describe("subscribeEvents", () => {
       }, "/nonexistent/ovis-test.sock");
     });
     expect(await closed).toBe("connect_failed");
+  });
+});
+
+describe("a failed herdr call", () => {
+  function standIn(answer: (client: { write(text: string): void; end(): void }, id: string) => void) {
+    const root = mkdtempSync(join(tmpdir(), "herdr-failed-call-"));
+    const socket = join(root, "herdr.sock");
+    const listener = Bun.listen({ unix: socket, socket: { data(client, chunk) { answer(client, (JSON.parse(chunk.toString().split("\n")[0]!) as { id: string }).id); } } });
+    return { socket, close: () => { listener.stop(true); rmSync(root, { recursive: true, force: true }); } };
+  }
+  const cases: [string, ((client: { write(text: string): void; end(): void }, id: string) => void) | null, boolean][] = [
+    ["no herdr listening", null, false],
+    ["garbage", (client) => { client.write("not json\n"); }, false],
+    ["an error of herdr's own", (client, id) => { client.write(`${JSON.stringify({ id, error: { code: "boom", message: "herdr's own words" } })}\n`); }, true],
+    ["the connection closed before an answer", (client) => { client.end(); }, false],
+    ["no answer within the timeout", () => {}, false],
+  ];
+  it.each(cases)("is marked as a failed call when herdr gives %s, and as a reply's only for herdr's own error", async (_, answer, reply) => {
+    const herdr = answer === null ? null : standIn(answer);
+    const socket = herdr?.socket ?? join(mkdtempSync(join(tmpdir(), "herdr-failed-call-")), "herdr.sock");
+    try {
+      const error = await herdrRpc("ping", {}, socket, 50).then(() => null, (thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(HerdrError);
+      expect([(error as HerdrError).failedCall, (error as HerdrError).fromReply]).toEqual([true, reply]);
+    } finally { herdr?.close(); }
+  });
+
+  it("is not a refusal the bridge words itself", () => {
+    const refusal = new HerdrError("read_only", "this device can only watch");
+    expect([refusal.failedCall, refusal.fromReply]).toEqual([undefined, false]);
+    expect(Object.keys(refusal)).toEqual(["code", "name"]);
+  });
+
+  it("carries the outcome the bridge knows as no field of its own", () => {
+    const told = new HerdrError("pane_not_moved", "the client's words", false, true, "the bridge's outcome");
+    expect([told.outcome, Object.keys(told), JSON.stringify(told)]).toEqual(["the bridge's outcome", ["code", "name"], JSON.stringify(new HerdrError("pane_not_moved", "the client's words"))]);
   });
 });

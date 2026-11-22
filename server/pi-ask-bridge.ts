@@ -88,7 +88,6 @@ function sameFile(left: string, right: string): boolean {
   try { return realpathSync(left) === realpathSync(right); } catch { return false; }
 }
 
-/** pi-ask's reply, or null when it is not known whether pi took the answer. */
 async function submit(socket: string, request: PiAskSubmitRequest, signal: AbortSignal): Promise<PiAskSubmitReply | null> {
   try {
     const response = await fetch("http://localhost/v1/submit", {
@@ -118,10 +117,12 @@ async function foregroundPids(paneId: string): Promise<number[]> {
  * tool call. "active": a form pi-ask reported open, or an ask_user call still open on pi's live
  * branch (a pi-ask that sends no started event still has its call there). "inactive": the
  * extension answered with neither, from pi's live state (a /tree move that writes nothing leaves
- * the session file behind it). "absent": no extension serves the pane's pi, or pi could not say
- * which calls are open: the session file decides. "unknown" (the pane's processes
- * unreadable, a socket that is not this user's alone, a read that failed or answers for another
- * pid) is never room for keys. Every candidate socket is asked: more than one is no reason to stop.
+ * the session file behind it), also when it does not say which calls are open. "absent": no
+ * bridge directory, or none holds a socket for a pid in front: no extension serves the pane's pi.
+ * "unknown" (with a bridge directory: the pane's processes unreadable, a socket that is not this
+ * user's alone, a read that failed or answers for another pid, other pids in front after the
+ * reads) is never room for keys. Active wins, then unknown, then inactive. Every candidate socket
+ * is asked: more than one is no reason to stop.
  */
 export type PiAskActivity = "active" | "inactive" | "absent" | "unknown";
 export async function piAskActivity(paneId: string, signal?: AbortSignal): Promise<PiAskActivity> {
@@ -130,7 +131,6 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
   const directories = agentDirs.map((agentDir) => join(agentDir, PI_ASK_BRIDGE_DIRECTORY)).filter((directory) => existsSync(directory));
   if (directories.length === 0) return "absent";
   if (pids === null) return "unknown";
-  // the strongest answer wins: active, then unknown, then inactive; absent only when no socket answered
   let unknown = false;
   let answered = false;
   for (const directory of directories) {
@@ -151,10 +151,6 @@ export async function piAskActivity(paneId: string, signal?: AbortSignal): Promi
   return answered ? "inactive" : "absent";
 }
 
-/**
- * The pane's pi-ask forms, as the pane's pi tells the extension. `transcript`: the pane's session
- * file and the agent directory of its pi process (piTranscriptPath).
- */
 export async function bindPiAsk(
   paneId: string,
   transcript: { path: string; agentDir: string | null },
@@ -162,7 +158,6 @@ export async function bindPiAsk(
 ): Promise<BoundPiAskFlow | null> {
   if (process.platform === "win32" || transcript.agentDir === null) return null;
   const directory = join(transcript.agentDir, PI_ASK_BRIDGE_DIRECTORY);
-  // without the extension, nothing more is asked of herdr
   if (!existsSync(directory)) return null;
   const sockets = [...new Set(await foregroundPids(paneId))].map((pid) => ({ pid, socket: join(directory, `${pid}.sock`) })).filter(({ socket }) => ownSocket(socket));
   if (sockets.length !== 1) return null;
@@ -189,7 +184,6 @@ function answerMap(from?: Record<string, PiAskRemoteAnswer>): Record<string, PiA
   return Object.assign(Object.create(null) as Record<string, PiAskRemoteAnswer>, from);
 }
 
-/** Each pane's answers to the steps before the one the card asks. */
 const drafts = new Map<string, Draft>();
 
 export function piAskUserPrompt(paneId: string, transcript: string, bound: BoundPiAskFlow): ParsedPrompt {
@@ -205,7 +199,6 @@ export function piAskUserPrompt(paneId: string, transcript: string, bound: Bound
   const stepIndex = Math.min(draft.stepIndex, flow.questions.length - 1);
   const question = flow.questions[stepIndex]!;
   const options: PromptDraft["options"] = question.options.map((option) => ({
-    // the card shows a menu's own "(Recommended)" as a tag (PromptCard labelOf)
     label: option.recommended === true ? `${option.label} (Recommended)` : option.label,
     description: [option.description, option.preview].filter((text) => !!text).join("\n") || null,
   }));
@@ -274,10 +267,6 @@ function stepAnswer(question: PiAskQuestion, indices: unknown, text: unknown): P
   return customText ? { values, customText } : { values };
 }
 
-/**
- * Answers the card's step: earlier steps are kept, the last one sends every answer to pi-ask.
- * `answered`: pi-ask took the answers and closed its form.
- */
 export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body: PromptAnswer, signal: AbortSignal): Promise<{ response: Response; answered: boolean }> {
   const form = parsed.piAskUser!;
   const done = (response: Response, answered = false) => ({ response, answered });
@@ -295,7 +284,6 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
     if (!reachable) return done(invalid("Invalid question to navigate to."));
     if (body.draft !== undefined) {
       if (typeof body.draft !== "object" || body.draft === null || !Array.isArray(body.draft.option_indices) || typeof body.draft.custom_text !== "string") return done(invalid("Invalid draft."));
-      // the card keeps a typed answer over a single question's saved pick
       const indices = question.type !== "multi" && body.draft.custom_text.trim() ? [] : body.draft.option_indices;
       const edits = stepAnswer(question, indices, body.draft.custom_text);
       if (typeof edits === "string") return done(invalid(edits));
@@ -314,7 +302,6 @@ export async function answerPiAskUser(paneId: string, parsed: ParsedPrompt, body
       ? "A valid option index is required."
       : stepAnswer(question, [body.option_index], undefined);
   } else {
-    // a typed answer alone (the composer, or an older card's Send) keeps the checks the card shows as saved
     const saved = question.type === "multi" && body.option_indices === undefined
       ? ((Object.hasOwn(draft.answers, question.id) ? draft.answers[question.id]!.values : undefined) ?? []).map((value) => question.options.findIndex((option) => option.value === value)).filter((index) => index >= 0)
       : body.option_indices;

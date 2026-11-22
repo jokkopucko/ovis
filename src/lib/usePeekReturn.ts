@@ -7,11 +7,6 @@ import { returnBlocked, watchReturn, type PeekRequest, type TerminalPeek } from 
 import type { Translate } from "./i18n.ts";
 import type { StillOpen } from "./paneTerminalShared.ts";
 
-/**
- * The agents whose recognizer (src/lib/inputRow.ts) reads a missing or covered row at rest as a screen
- * over it. Others answer `gone` for layouts they only do not know (pi's extra footer rows), which is
- * no proof that a message would be lost, so no screen is inferred for them outside a peek.
- */
 const SCREEN_OVER_ROW: ReadonlySet<string> = new Set(["claude", "codex"]);
 
 export interface PeekReturnDeps {
@@ -48,12 +43,8 @@ export interface PeekReturnDeps {
 
 export function usePeekReturn(deps: PeekReturnDeps) {
   const { activeRef, agent, agentRef, agentStatus, chatMounted, coarseRef, compositionCommitPendingRef, composingRef, draftHeldForRef, ended, findOpenRef, frameGateRef, inputRowNow, lineComposingRef, onEndPeekRef, onOpenTerminal, onPeekRef, paneId, paneRef, peek, peekRef, presented, receiptRowRef, stackRef, termRef, terminalId, t, heldRef, unsupportedRef } = deps;
-  // a peek whose screen closed while held input, the find bar or a composition (in the grid, or in
-  // the input line the return would unmount) was in the way: it is left to the reader, and the head
-  // stops saying the chat may come back
   const [manualPeek, setManualPeek] = useState<TerminalPeek | null>(null);
   const autoPeek = peek !== null && peek.auto && manualPeek !== peek ? peek : null;
-  // the peek that came back by itself (the agent's record, or its screen): no screen is left open
   const autoEndedRef = useRef<TerminalPeek | null>(null);
   const onCommandScreenClosed = useCallback((closed: TerminalPeek) => {
     if (peekRef.current !== closed) return;
@@ -63,20 +54,16 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     autoEndedRef.current = closed;
     onEndPeekRef.current?.(closed);
   }, []);
-  // The agent ended or the tab was put away: the chat is back for when it shows again.
   useEffect(() => { if (peek !== null && (ended || !presented)) onEndPeekRef.current?.(peek); }, [peek, ended, presented]);
   // A watched peek (lib/terminalPeek.ts watchReturn): armed by a frame whose input row an open screen
   // hid or covered, back on the first frame that draws the row again, empty. Read off whole frames
-  // only (onInputRowFrame), never on a timer, and nothing is typed. A draft after it arms, another
-  // agent in the pane, or a blocker (held input, the find bar, a composition) leaves it to the reader.
+  // only (onInputRowFrame), never on a timer, and nothing is typed.
   const watchRef = useRef<{ peek: TerminalPeek; agent: string; armed: boolean } | null>(null);
-  // the last peek's watch, kept past its end: whether its screen was seen open before the reader left
   const lastWatchRef = useRef<{ peek: TerminalPeek; agent: string; armed: boolean } | null>(null);
   const watchFrame = useCallback((state: InputRowState) => {
     const watch = watchRef.current;
     if (watch === null) return;
     if (peekRef.current !== watch.peek) { watchRef.current = null; return; }
-    // another agent in the pane: its screen is not the one watched, and the head stops promising
     if (agentRef.current !== watch.agent) { watchRef.current = null; setManualPeek(watch.peek); return; }
     const next = watchReturn(watch.agent, watch.armed, state);
     if (next.step === "wait") { watch.armed = next.armed; return; }
@@ -84,8 +71,6 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     if (next.step === "manual") setManualPeek(watch.peek);
     else onCommandScreenClosed(watch.peek);
   }, [onCommandScreenClosed]);
-  // the watch starts with the peek, from the screen as it stands (the command's screen may have
-  // opened before its receipt came), and goes with it
   useLayoutEffect(() => {
     if (peek === null || peek.watch === null || manualPeek === peek) { watchRef.current = null; return; }
     if (watchRef.current?.peek === peek) return;
@@ -99,15 +84,10 @@ export function usePeekReturn(deps: PeekReturnDeps) {
   }, [peek, manualPeek, inputRowNow, watchFrame]);
   // A peek ended by hand while the command's screen is still open in the terminal (Claude's /btw
   // answer, a picker left up): the next message would be typed into that screen and do nothing, so
-  // the composer says so, holds Send behind Send anyway, and offers the terminal again. Only where
-  // the agent's recognizer read the empty row as the peek began; it goes on the first whole frame
-  // showing the row back, and with another pane, agent, terminal or session. Nothing is typed to
-  // close anything. `named`: the screen is the sent command's (a peek opened by hand names none:
-  // the reader may have opened another there); `command` also heads the peek Show terminal opens.
+  // the composer says so, holds Send behind Send anyway, and offers the terminal again. Nothing is
+  // typed to close anything.
   const [stillOpen, setStillOpenState] = useState<StillOpen | null>(null);
   const stillOpenRef = useRef(stillOpen);
-  // a guard was raised for the screen over the row now, by any path: a dismissal holds until a frame
-  // draws the row again (or a turn), so the same screen never raises another (noteRow)
   const screenHeldRef = useRef(false);
   const setStillOpen = useCallback((next: StillOpen | null) => {
     stillOpenRef.current = next;
@@ -116,25 +96,16 @@ export function usePeekReturn(deps: PeekReturnDeps) {
   }, []);
   // A watched command whose screen had not opened when its peek was ended by hand (gjc's /sessions
   // keeps its empty box for seconds while it loads): no notice yet, and the first frame that shows
-  // its screen (the agent's arm set) turns it into one. It goes with another peek, pane, agent,
-  // terminal or session, and once the agent works on a turn.
+  // its screen (the agent's arm set) turns it into one.
   const pendingOpenRef = useRef<StillOpen | null>(null);
-  // A peek ended by hand while the screen read nothing (a cut frame, or a blank one): the next whole
-  // frame decides, the row back clearing it and anything else making the notice; no frame, no notice
   const undecidedOpenRef = useRef<StillOpen | null>(null);
-  // the history the pane's chat read last: a new one (/new, /resume, a clear) is another session
   const chatHistoryRef = useRef<{ pane: string; history: string | undefined } | null>(null);
-  // the still-open note the composer shows, whose Send anyway is one send past the guard (composerSend)
   const stillOpenNotedRef = useRef(false);
-  // The pane's agent drew its empty row on a whole frame: its recognizer reads this screen. A screen
-  // the agent opens over the row outside a peek ended by hand (Codex's transcript search, Claude's
-  // /config, a peek's screen the terminal lens kept) would take the next message just the same, so it
-  // gets the same unnamed notice: only with the chat up, no peek, no guard already, the agent at rest
-  // and the row read before on this pane (an unknown variant never gets the notice) (#1552). Only for
-  // the agents whose recognizer reads a missing row as a screen over it (SCREEN_OVER_ROW), and once
-  // per screen (screenHeldRef).
+  // A screen the agent opens over the row outside a peek ended by hand (Codex's transcript search,
+  // Claude's /config, a peek's screen the terminal lens kept) would take the next message just the same,
+  // so it gets the same unnamed notice: only with the chat up, no peek, no guard already, the agent at
+  // rest and the row read before on this pane (an unknown variant never gets the notice) (#1552).
   const rowSeenRef = useRef<{ pane: string; agent: string } | null>(null);
-  // the guard noteRow raised, which a turn of the agent drops
   const inferredRef = useRef<StillOpen | null>(null);
   const chatMountedRef = useRef(chatMounted); chatMountedRef.current = chatMounted;
   const agentStatusRef = useRef(agentStatus); agentStatusRef.current = agentStatus;
@@ -152,14 +123,10 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     inferredRef.current = open;
     setStillOpen(open);
   }, [setStillOpen]);
-  // a whole frame of the pane's stream was parsed (the write callback): the watch and the guard read it
   const onInputRowFrame = useCallback(() => {
     const pending = pendingOpenRef.current;
     const undecided = undecidedOpenRef.current;
     const watching = watchRef.current !== null || stillOpenRef.current !== null || pending !== null || undecided !== null;
-    // otherwise a frame is read only for noteRow, with the agent at rest: while the chat is up, until
-    // the pane's empty row has been seen, or while a screen's guard holds (its end is a row drawn again,
-    // seen even under the Terminal lens)
     const seen = rowSeenRef.current;
     const known = seen !== null && seen.pane === paneRef.current && seen.agent === agentRef.current;
     if (!watching && (agentStatusRef.current === "working" || (known && !chatMountedRef.current && !screenHeldRef.current))) return;
@@ -174,7 +141,6 @@ export function usePeekReturn(deps: PeekReturnDeps) {
       if (state !== "ready" && undecided.pane === paneRef.current && undecided.agent === agentRef.current) setStillOpen(undecided);
     }
     if (state === "ready" && stillOpenRef.current !== null) setStillOpen(null);
-    // the command's screen opened after its peek ended: now it would take the next message
     if (pending !== null) {
       const step = pending.pane === paneRef.current && pending.agent === agentRef.current ? watchReturn(pending.agent, false, state) : null;
       if (step === null) pendingOpenRef.current = null;
@@ -184,7 +150,6 @@ export function usePeekReturn(deps: PeekReturnDeps) {
   }, [inputRowNow, watchFrame, setStillOpen, noteRow]);
   const onInputRowFrameRef = useRef(onInputRowFrame); onInputRowFrameRef.current = onInputRowFrame;
   useLayoutEffect(() => { setStillOpen(null); pendingOpenRef.current = null; undecidedOpenRef.current = null; stillOpenNotedRef.current = false; rowSeenRef.current = null; screenHeldRef.current = false; inferredRef.current = null; }, [paneId, terminalId, setStillOpen]);
-  // back to the chat by its lens, not a peek: the screen as it stands decides
   useEffect(() => {
     if (!chatMounted || peekRef.current !== null || frameGateRef.current.reflowing) return;
     const state = inputRowNow();
@@ -195,26 +160,20 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     if (pendingOpenRef.current !== null && pendingOpenRef.current.agent !== agent) pendingOpenRef.current = null;
     if (undecidedOpenRef.current !== null && undecidedOpenRef.current.agent !== agent) undecidedOpenRef.current = null;
   }, [agent, setStillOpen]);
-  // a turn began: whatever the command was loading, the agent has moved on
   useEffect(() => {
     if (agentStatus !== "working") return;
     pendingOpenRef.current = null; undecidedOpenRef.current = null;
-    // a screen the guard inferred from frames: the agent took input, so it is no longer read as open
     if (inferredRef.current !== null && stillOpenRef.current === inferredRef.current) setStillOpen(null);
     inferredRef.current = null;
-    // a turn ends the screen's episode, unless a guard of the peek's still stands for it
     if (stillOpenRef.current === null) screenHeldRef.current = false;
   }, [agentStatus, setStillOpen]);
-  // what the composer and the queue say when the screen would take a send
   const stillOpenNote = useCallback((open: StillOpen): string => open.named
     ? t("Not sent: {command} is still open in the terminal.", { command: open.command })
     : t("Not sent: a screen is still open in the terminal."), [t]);
-  // the terminal again, for the screen still open there: a peek the reader ends by hand
   const showStillOpen = useCallback(() => {
     const open = stillOpenRef.current;
     const show = onPeekRef.current;
     if (open === null) return;
-    // a screen no command of the chat's opened: the terminal itself, where the reader closes it
     if (show === undefined || heldRef.current || unsupportedRef.current || open.command === "") { onOpenTerminal?.(); return; }
     show({ command: open.command, text: null, knownOutcomeIds: null, auto: false, watch: null, inputRowSeen: true });
   }, [onOpenTerminal]);
@@ -227,18 +186,15 @@ export function usePeekReturn(deps: PeekReturnDeps) {
   useLayoutEffect(() => {
     const was = shownPeekRef.current;
     shownPeekRef.current = peek;
-    // another peek: what the last one left pending is its own again
     if (peek !== null) { pendingOpenRef.current = null; undecidedOpenRef.current = null; }
     if (was === null || peek !== null) return;
     if (!chatMounted) {
       if (activeRef.current && was.paneId === paneRef.current && !coarseRef.current && !modalOpen() && !findOpenRef.current) termRef.current?.focus();
       return;
     }
-    // ended by hand on the same pane, over a screen its recognizer knows: is the screen still open?
     if (was !== autoEndedRef.current && was.inputRowSeen && was.paneId === paneRef.current && agentRef.current !== null) {
       const state = inputRowNow();
       const history = chatHistoryRef.current?.pane === was.paneId ? chatHistoryRef.current.history : undefined;
-      // a peek opened by hand names no command, unless it showed a screen the guard still names (no row seen back since)
       const kept = stillOpenRef.current?.pane === was.paneId ? stillOpenRef.current : null;
       const open: StillOpen = { pane: was.paneId, agent: agentRef.current, command: was.text === null && kept !== null ? kept.command : was.command,
         named: was.text !== null || kept?.named === true, history };

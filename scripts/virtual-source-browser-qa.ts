@@ -1,12 +1,4 @@
 /**
- * The virtualized source viewer (VirtualSource) in the built app, against a file server that
- * answers ranges as the real one does: bounded rows for a file of 120 000+ lines at the top, the
- * middle and the end; a far line marked and in view with wrap off and on, across a File text size
- * change while wrapped and across a resize;
- * native selection and a real copy that keep blank and trailing lines and leave the gutter out;
- * the whole source copied from the text; truthful byte and line cuts and the colors notice; the
- * highlight, wrap and theme settings; close and reopen; and a remote PC's file.
- *
  * The browser is Playwright's headless shell, whose clipboard is its own: a real Cmd+C here never
  * touches the clipboard of the PC running the check.
  */
@@ -21,7 +13,6 @@ import { formatBytes } from "../src/lib/bridgeProgress.ts";
 import { SOURCE_PREVIEW_LINES, TEXT_PREVIEW_BYTES } from "../src/lib/filePreviewText.ts";
 import { VIRTUAL_HIGHLIGHT_LINES, VIRTUAL_SOURCE_LINES } from "../src/lib/sourcePreview.ts";
 
-/** Numbered TypeScript lines, a blank one every tenth and a long one every 250th; the text ends with a blank line and its newline. */
 function numberedSource(lines: number, longLines: boolean): string {
   const out: string[] = [];
   for (let line = 1; line <= lines; line++) {
@@ -58,7 +49,6 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 const requests: string[] = [];
 
-/** Browser-side readers of the virtualizer's shadow DOM, serialized into each `evaluate`. */
 const shadowRows = () => Array.from(document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll<HTMLElement>("[data-line]") ?? []);
 const scrollRoot = () => document.querySelector<HTMLElement>(".virtual-source-scroll");
 const rowInView = (row: Element) => {
@@ -89,7 +79,6 @@ async function mounted(page: Page): Promise<Mounted> {
     return { rows: rows.length, first: Math.min(...lines), last: Math.max(...lines), inView: rows.filter(inView).length, nodes: document.querySelector("diffs-container")!.shadowRoot!.querySelectorAll("*").length };
   }, [shadowRows.toString(), rowInView.toString(), scrollRoot.toString()] as const);
 }
-/** The selection a native pre/code of `text` gives: what the browser's serializer makes of the same lines. */
 async function nativeSelection(page: Page, text: string): Promise<string> {
   return page.evaluate((text) => {
     const pre = document.createElement("pre");
@@ -108,7 +97,6 @@ async function nativeSelection(page: Page, text: string): Promise<string> {
     return result;
   }, text);
 }
-/** Selects source rows `from`..`to` inside the shadow root, from `startOffset` into the first to `endOffset` into the last (whole rows by default). */
 async function selectRows(page: Page, from: number, to: number, startOffset?: number, endOffset?: number): Promise<string> {
   return page.evaluate(([from, to, startOffset, endOffset]) => {
     const shadow = document.querySelector("diffs-container")!.shadowRoot!;
@@ -161,7 +149,6 @@ async function scrollRootTo(page: Page, where: "middle" | "end"): Promise<void> 
     root.scrollTop = where === "end" ? root.scrollHeight : Math.floor(root.scrollHeight / 2);
   }, where);
 }
-/** The state a failed wait is reported with: where the line's row is, if mounted, and what is. */
 async function viewState(page: Page, line: number): Promise<string> {
   return page.evaluate((line) => {
     const shadow = document.querySelector("diffs-container")?.shadowRoot ?? null;
@@ -185,7 +172,6 @@ async function settled(page: Page, line: number, step: string): Promise<void> {
   } catch (error) {
     throw new Error(`${step}: line ${line} did not come into view: ${await viewState(page, line)}`, { cause: error });
   }
-  // two frames later it is still there: no pass of the reveal scrolls it away again
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   assert.equal(await page.evaluate((line) => {
     const row = document.querySelector("diffs-container")!.shadowRoot!.querySelector(`[data-line="${line}"]`);
@@ -268,7 +254,6 @@ try {
     page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
     await page.goto(origin);
 
-    // 120 000+ lines: a window of rows at the top, the middle and the end, never the file
     await open(page, "/src/big.ts");
     await waitRows(page);
     const top = await mounted(page);
@@ -290,7 +275,6 @@ try {
     assert.ok(end.rows > 0 && end.rows < 500 && end.inView > 0, `${label}: bounded rows at the end: ${JSON.stringify(end)}`);
     assert.equal(end.last, BIG_LINES + 1, `${label}: the last row is the empty line after the final newline`);
     await shot(page, `end-${width}-${theme}`);
-    // the rows take the app's tokens, inside the shadow root
     const colors = await page.evaluate(() => {
       const probe = document.createElement("span");
       document.body.append(probe);
@@ -307,7 +291,6 @@ try {
     assert.deepEqual(errors, [], `${label}: no errors while opening the big source`);
     console.log(`PASS ${label}: 120 000+ lines as a bounded window of rows at the top, the middle and the end (rows ${top.rows}/${middle.rows}/${end.rows})`);
 
-    // a far line: marked, brought to the middle of the view, kept there across wrap and a resize
     await open(page, `/src/big.ts:${FAR_LINE}`);
     await waitRows(page);
     await settled(page, FAR_LINE, `${label} reveal`);
@@ -320,8 +303,6 @@ try {
     await settled(page, FAR_LINE, `${label} wrap on`);
     assert.ok((await mounted(page)).rows < 500, `${label}: wrapped rows stay bounded`);
     await shot(page, `far-wrap-${width}-${theme}`);
-    // File text size changed while wrapped (#2978): the file mounts again at the new row height and the
-    // wrapped rows re-measure for a few frames after it; the marked line comes back to the view each way
     for (const fileFontSize of [24, null]) {
       const lineHeight = (): Promise<number> => page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight));
       const was = await lineHeight();
@@ -342,7 +323,6 @@ try {
     assert.deepEqual(errors, [], `${label}: no errors around the far line`);
     console.log(`PASS ${label}: line ${FAR_LINE} marked and in view, with wrap off and on, across a File text size change while wrapped, after a resize to ${other.width}px and back`);
 
-    // reopened: the rows come back, with a colored source this time
     await open(page, `/src/big.ts:${FAR_LINE}`);
     await waitRows(page);
     await settled(page, FAR_LINE, `${label} reopened`);
@@ -362,7 +342,6 @@ try {
     await context.close();
   }
 
-  // native selection and a real copy, in the desktop context with the owned clipboard
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
@@ -376,17 +355,14 @@ try {
     await open(page, path);
     await waitRows(page);
     if (colored) await page.waitForFunction(() => document.querySelector("diffs-container")!.shadowRoot!.querySelectorAll("[data-line] span[style*='--herdr-code-token']").length > 0, undefined, { timeout: 20_000 });
-    // rows 25..35 hold the blank line 30: an exact copy keeps it, and no gutter digit
     const interior = lines.slice(24, 35).join("\n");
     const whole = await selectAndCopy(page, 25, 35);
     assert.equal(whole.selected, interior, `${path}: a selection over an interior blank line is the source's text`);
     assert.equal(whole.copied, interior, `${path}: a real copy of it is exact`);
-    // a partial selection keeps its exact ends
     const partial = `${lines[25]!.slice(3)}\n${lines[26]!}\n${lines[27]!.slice(0, 5)}`;
     const part = await selectAndCopy(page, 26, 28, 3, 5);
     assert.equal(part.selected, partial, `${path}: a partial selection is exact`);
     assert.equal(part.copied, partial, `${path}: a real copy of a partial selection is exact`);
-    // blank lines at the start and the end of a selection serialize as a native pre/code does
     const edges = lines.slice(29, 41).join("\n");
     assert.equal(await selectRows(page, 30, 41), await nativeSelection(page, edges), `${path}: blank first and last lines read as a native pre/code`);
     // the trailing blank line and the empty line after the final newline: the source's own tail,
@@ -398,21 +374,18 @@ try {
     const end = await selectAndCopy(page, lines.length - 3, lines.length);
     assert.equal(end.selected, tail, `${path}: a selection to the end keeps the trailing blank line and the final newline`);
     assert.equal(end.copied, tail, `${path}: a real copy of the tail is the source's tail`);
-    // a blank row is an empty span given a line break (plain rows) or a bare newline (colored rows)
     const heights = await page.evaluate(() => [...document.querySelector("diffs-container")!.shadowRoot!.querySelectorAll<HTMLElement>("[data-line]")].map((row) => ({ line: Number(row.dataset["line"]), empty: row.textContent === "" || row.textContent === "\n", height: row.getBoundingClientRect().height })));
     const base = heights.find((row) => !row.empty)!.height;
     assert.ok(heights.some((row) => row.empty) && heights.filter((row) => row.empty).every((row) => row.height === base), `${path}: blank rows keep the row height ${base}: ${JSON.stringify(heights.filter((row) => row.empty).slice(0, 4))}`);
     await close(page);
     console.log(`PASS ${path}: native selection and a real copy keep blank, partial and trailing lines, without the gutter`);
   }
-  // the whole source is copied from the text, not from the rows on screen
   await open(page, "/src/mid.ts");
   await waitRows(page);
   await page.getByRole("button", { name: "Copy file", exact: true }).click();
   await page.getByRole("button", { name: "File copied", exact: true }).waitFor();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), files["/src/mid.ts"], "Copy file copies the whole source");
   await close(page);
-  // with no clipboard, Copy shows the source as one selected text box
   await open(page, "/src/mid.ts");
   await waitRows(page);
   await page.evaluate(() => {
@@ -428,17 +401,14 @@ try {
   assert.deepEqual(errors, [], "no errors around selection and copy");
   console.log("PASS Copy file copies the whole source; without a clipboard it selects the source in a readonly box");
 
-  // cuts and notices
   await open(page, "/src/lines.txt");
   await waitRows(page);
   assert.equal(await noticeTitle(page), `Showing the first ${SOURCE_PREVIEW_LINES.toLocaleString("en-US")} lines of this file. Download it to read the rest.`, "a file past the line cap says so");
   assert.equal(await page.getByRole("button", { name: "Copy file", exact: true }).count(), 0, "a cut file has no Copy");
   await scrollRootTo(page, "end");
   await page.waitForFunction((last) => document.querySelector("diffs-container")!.shadowRoot!.querySelector(`[data-line="${last}"]`) !== null, SOURCE_PREVIEW_LINES);
-  // the cut prefix ends on its last complete line: no row for the line after its final newline
   assert.equal((await mounted(page)).last, SOURCE_PREVIEW_LINES, "the rows end at the cap, without an artificial row after it");
   await close(page);
-  // the line at the cap is shown and marked; the one just past it is unseen, so it is explained, not marked
   await open(page, `/src/lines.txt:${SOURCE_PREVIEW_LINES}`);
   await waitRows(page);
   await settled(page, SOURCE_PREVIEW_LINES, "the line at the cap");
@@ -456,7 +426,6 @@ try {
   assert.equal(await noticeTitle(page), "Showing the first 8 MB of 9 MB.", "a file past the byte budget says so");
   assert.equal(await page.locator(".file-viewer-meta .file-viewer-notice span").first().innerText(), "8 MB of 9 MB", "the header's size is the part shown");
   assert.equal(await page.getByRole("button", { name: "Copy file", exact: true }).count(), 0, "a cut file has no Copy");
-  // the complete lines within the first 8 MiB (ASCII, so bytes are characters): the reader cuts after the last newline
   const lastComplete = files["/src/huge.log"]!.slice(0, 8 * 1024 * 1024).split("\n").length - 1;
   await scrollRootTo(page, "end");
   await page.waitForFunction((last) => document.querySelector("diffs-container")!.shadowRoot!.querySelector(`[data-line="${last}"]`) !== null, lastComplete);
@@ -471,7 +440,6 @@ try {
   assert.deepEqual(errors, [], "no errors around the cuts");
   console.log("PASS a file past the line cap and one past the byte budget say so truthfully and end on their last complete line, the cap is marked and the line past it explained; a small source is unchanged");
 
-  // settings: theme
   await open(page, "/src/mid.ts");
   await waitRows(page);
   await page.waitForFunction(() => document.querySelector("diffs-container")!.shadowRoot!.querySelectorAll("[data-line] span[style*='--herdr-code-token']").length > 0, undefined, { timeout: 20_000 });
@@ -493,7 +461,6 @@ try {
   await page.evaluate(() => window.virtualQA.settings({ theme: "dark" }));
   console.log("PASS Settings: the theme reaches the rows");
 
-  // Markdown keeps its Preview budget; its source is virtualized past the line limit
   await open(page, "/docs/long.md");
   await page.locator(".file-viewer-markdown .markdown-h1").first().waitFor();
   assert.equal(await noticeTitle(page), `Showing the first 256 KB of ${formatBytes(bodies.get("/docs/long.md")!.byteLength)}.`, "a Markdown file past the Preview's budget keeps it");
@@ -510,7 +477,6 @@ try {
   await close(page);
   console.log("PASS Markdown keeps the Preview's budget, and its source is virtualized and colored");
 
-  // a remote PC's file reads through its bridge
   requests.length = 0;
   await open(page, "/src/mid.ts", "remote-fixture");
   await waitRows(page);

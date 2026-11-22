@@ -15,8 +15,8 @@ import { holdsQuoteLine } from "./replyComments.ts";
 export function useUnsentRecovery({ selectedMachineId, selectedPaneId, setView, pickView }: {
   selectedMachineId: string;
   selectedPaneId: string | null;
-  setView: (next: PaneView) => void;
-  pickView: (machineId: string, paneId: string, next: PaneView) => void;
+  setView: (next: PaneView, source: null) => void;
+  pickView: (machineId: string, paneId: string, next: PaneView, source: null) => void;
 }) {
   const [unsentFor, setUnsentFor] = useState<{ machineId: string; pane: HerdrPane } | null>(null);
   // `agentOnly`: the record was a draft for an agent alone (#511); text with a `> ` quote line is too
@@ -26,8 +26,8 @@ export function useUnsentRecovery({ selectedMachineId, selectedPaneId, setView, 
     const key = `ovis:composer-draft:${paneStorageId(machineId, pane.pane_id)}`;
     if (agentOnly || holdsQuoteLine(text)) composerDrafts.markAgentOnly(key);
     composerDrafts.set(key, (current) => current.trim() === "" ? text : `${current}\n\n${text}`);
-    if (machineId === selectedMachineId && pane.pane_id === selectedPaneId) setView("chat");
-    else pickView(machineId, pane.pane_id, "chat");
+    if (machineId === selectedMachineId && pane.pane_id === selectedPaneId) setView("chat", null);
+    else pickView(machineId, pane.pane_id, "chat", null);
     return paneLifetimes.stored(machineId) && !composerDrafts.isUnsaved(key);
   }, [unsentFor, selectedMachineId, selectedPaneId, setView, pickView]);
   return { unsentFor, openUnsent: setUnsentFor, closeUnsent: useCallback(() => setUnsentFor(null), []), recover };

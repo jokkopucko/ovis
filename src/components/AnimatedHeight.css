@@ -1,10 +1,7 @@
-/* a box that follows its content's measured height (AnimatedHeight.tsx): the height is set in
-   px and transitioned; at rest the content shows whole, however it overhangs */
 .animated-height {
   transition: height var(--dur-base) var(--ease-out);
 }
 
-/* Content inside an open work block resizes once, not once per transition frame. */
 .animated-height.is-static {
   transition: none;
 }
@@ -14,9 +11,6 @@
   display: flow-root;
 }
 
-/* on the move, what lies past the box's edge is clipped: an opening is revealed and a fold
-   covered from the bottom. The clip is cut exactly top and bottom and let out at the sides, so a
-   row's hover plate and focus ring, which overhang the block (ChatView.css), stay whole */
 .animated-height.is-moving {
   clip-path: inset(0 calc(-1 * var(--space-2)));
 }

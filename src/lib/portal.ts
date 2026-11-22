@@ -3,19 +3,13 @@ import type { PortalAuth, PortalStatus } from "../../shared/protocol.ts";
 import { fetchPortal, requestPortal } from "./api.ts";
 import { usePageVisible } from "./visibility.ts";
 
-/** the address comes or goes with these, so they are followed closely */
 const SETTLING: ReadonlySet<PortalStatus["phase"]> = new Set(["starting", "recovering", "stopping"]);
 
-/**
- * Portal's public address, which the server opens with the `portal` on its PC (server/portal.ts).
- * Asked while Settings → Phone & devices is open.
- */
 export function usePortal() {
   const [status, setStatus] = useState<PortalStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [refresh, setRefresh] = useState(0);
-  // the component's own lifetime, not the poll's: a page hidden while the request is on its way must still get the answer
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -44,7 +38,6 @@ export function usePortal() {
     try {
       await requestPortal(action, relay, auth);
       if (mounted.current) {
-        // the server is already on it: the controls follow at once, not at the next answer
         setStatus((previous) => previous ? { ...previous, phase: action === "start" ? "starting" : "stopping", error: null, ...(action === "stop" ? { url: null } : { auth: auth ?? previous.auth }) } : previous);
         setRefresh((value) => value + 1);
       }

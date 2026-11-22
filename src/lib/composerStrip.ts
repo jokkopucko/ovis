@@ -1,13 +1,6 @@
-/**
- * The slim strip tucked under the input card (Composer.tsx): the pane's working folder and its
- * branch, as t3code's composer names its checkout and branch in a strip under the composer. Each
- * part is drawn only when the caller passes it (the composer takes them as optional props); a
- * blank string counts as absent, and with no part there is no strip at all. Settings can turn it off.
- */
 import { folderName } from "./paneName.ts";
 
 export interface ComposerStrip {
-  /** the working folder's last name, as the greeting names it, or a linked worktree's repository; `path` keeps the whole path */
   folder: string | null;
   path: string | null;
   branch: string | null;
@@ -26,7 +19,6 @@ export function composerStrip(input: { cwd?: string | null | undefined; branch?:
   return { folder: repo ?? (path === null ? null : folderName(path)), path, branch };
 }
 
-/** The repository a workspace is a linked worktree of, by herdr's name for it; null for any other workspace. */
 export function worktreeRepoName(workspace: { worktree?: { is_linked_worktree: boolean; repo_name: string } | null } | undefined): string | null {
   return workspace?.worktree?.is_linked_worktree === true ? workspace.worktree.repo_name : null;
 }

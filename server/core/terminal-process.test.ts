@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import * as herdr from "../herdr/client.ts";
-import { attachScreenStarted, createSpawnAttachment, type PaneAttachment, screenGrid } from "./terminal-process.ts";
+import { ATTACH_LEAVE, attachScreenStarted, createSpawnAttachment, type PaneAttachment, screenGrid } from "./terminal-process.ts";
 
 // herdr 0.9.5 `terminal attach`, captured through the Rust PTY host with its two startup queries
 // taken out (AttachStartupProbes): the setup, then a screen or a refusal's teardown and line
@@ -19,24 +19,19 @@ describe("attachScreenStarted", () => {
       const output = SETUP + TEARDOWN + line;
       for (let end = 0; end <= output.length; end++) expect([end, attachScreenStarted(output.slice(0, end))]).toEqual([end, false]);
     }
-    // a teardown with control sequences or a line break 0.9.5 does not write still waits
     const other = `${SETUP}\x1b[>4;0m\x1b[<u${TEARDOWN}\r\n${REFUSALS[0]}`;
     for (let end = 0; end <= other.length; end++) expect([end, attachScreenStarted(other.slice(0, end))]).toEqual([end, false]);
-    // the words of a takeover's diagnostic without herdr's prefix
     expect(attachScreenStarted("terminal attach taken over\r\n")).toBe(false);
   });
   it("takes a screen only from its first printable text, never from an escape alone", () => {
     expect(attachScreenStarted(SETUP)).toBe(false);
-    // the OSC (its hyperlink reset), the clear and the colours come first: none of them is the screen yet
     const first = SETUP.length + SCREEN.indexOf("bash");
     for (let end = 0; end <= first; end++) expect([end, attachScreenStarted((SETUP + SCREEN).slice(0, end))]).toEqual([end, false]);
-    // an OSC title, a cursor save or an escape cut short, before a refusal (#2255 review)
     for (const lead of ["\x1b]", "\x1b]0;title", "\x1b]0;title\x07", "\x1b7", "\x1b8\x1b(B", "\x1b[", "\x1b[?10"]) {
       expect([lead, attachScreenStarted(SETUP + lead)]).toEqual([lead, false]);
       expect([lead, attachScreenStarted(SETUP + lead + REFUSALS[0])]).toEqual([lead, false]);
     }
     for (let end = first + 1; end <= SETUP.length + SCREEN.length; end++) expect([end, attachScreenStarted((SETUP + SCREEN).slice(0, end))]).toEqual([end, true]);
-    // a screen whose first text is not a refusal's start
     expect(attachScreenStarted(`${SETUP}pane text: has a read in progress; retry\r\n`)).toBe(true);
   });
 });
@@ -48,18 +43,15 @@ function wholeScreen(cols: number, rows: number, first = false): string {
   return `\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\${first ? "\x1b[2J" : ""}\x1b[1;1H\x1b[0;39;49m${"bash-5.3$ ".padEnd(cols)}${rest}\x1b[0m\x1b[1;11H\x1b[?25h\x1b[?2026l\x1b[1;11H\x1b[?25h`;
 }
 
-/** the body of one of herdr's updates: what is between its markers */
 const body = (update: string): string => update.slice(update.indexOf("\x1b[?2026h") + 8, update.indexOf("\x1b[?2026l"));
 
 describe("screenGrid", () => {
   it("reads the grid a whole screen was drawn at", () => {
     expect(screenGrid(body(wholeScreen(80, 24, true)))).toEqual({ cols: 80, rows: 24 });
     expect(screenGrid(body(wholeScreen(91, 27)))).toEqual({ cols: 91, rows: 27 });
-    // the cursor herdr places before the update ends at column 1 (a command running on the next line): one more row move, no text
     expect(screenGrid(body(wholeScreen(91, 27).replaceAll("\x1b[1;11H", "\x1b[2;1H")))).toEqual({ cols: 91, rows: 27 });
   });
   it("takes no update that does not draw every row, or whose plain rows differ in width, for a screen", () => {
-    // an update of a few rows, as a program printing between screens gives
     expect(screenGrid("\x1b[3;1Hline\x1b[4;1H\x1b[K")).toBeNull();
     expect(screenGrid(`\x1b[1;1H${"a".repeat(80)}\x1b[2;1Hshort`)).toBeNull();
   });
@@ -69,8 +61,14 @@ describe("screenGrid", () => {
     let rest = "";
     for (let row = 2; row <= 24; row++) rest += `\x1b[${row};1H${" ".repeat(91)}`;
     expect(screenGrid(`\x1b[1;1H${marks}${rest}`)).toEqual({ cols: 91, rows: 24 });
-    // a screen with no plain row says nothing of its width
     expect(screenGrid(`\x1b[1;1H${marks}`)).toBeNull();
+  });
+});
+
+describe("ATTACH_LEAVE", () => {
+  it("holds herdr's detach chord back only behind the chord's first key, however the viewer's terminal wrote it", () => {
+    for (const first of ["\x02", "ls\x02", "\x1b[98;5u", "\x1b[98;5:3u", "\x1b[98:66;5u", "\x1b[27;5;98~"]) expect([first, ATTACH_LEAVE.notAfter.test(first)]).toEqual([first, true]);
+    for (const other of ["a", "\x02a", "\x02\r", "\x1b[<64;10;5M", "\x1b[97;5u", "\x1b[27;5;13~", "\x1b[98;5u\r"]) expect([other, ATTACH_LEAVE.notAfter.test(other)]).toEqual([other, false]);
   });
 });
 
@@ -83,7 +81,6 @@ describe("spawnAttachment", () => {
       looked.resolve();
       return { panes: [{ pane_id: "B", terminal_id: "t1" }], layouts: [] };
     }) as unknown as typeof herdr.sessionSnapshot);
-    // the mirror's first read never ends: the test watches the attachment's creation only
     spyOn(herdr, "paneRead").mockImplementation((() => new Promise(() => {})) as unknown as typeof herdr.paneRead);
     const attachments = new Map<string, PaneAttachment>();
     const retiring = new Map<string, Promise<void>>();
@@ -94,7 +91,6 @@ describe("spawnAttachment", () => {
       holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
     });
     const spawning = spawnAttachment("B", 80, 24, false);
-    // the move lands after the entry check: the old ID's process still holds herdr's slot
     const exited = Promise.withResolvers<void>();
     retiring.set("B", exited.promise);
     mode.resolve(false);

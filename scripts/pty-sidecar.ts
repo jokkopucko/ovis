@@ -23,17 +23,14 @@ const root = resolve(import.meta.dir, "..");
 const CRATE = "crates/pty-sidecar";
 export const NAME = "ovis-pty-sidecar";
 export const MANIFEST = `${NAME}.json`;
-/** where `install` puts the host, and where server/pty/host.ts looks first */
 export const INSTALLED = join(root, "bin", NAME);
 const RELEASES = "https://github.com/devswha/ovis/releases/download";
 
-/** Each release asset and the Rust targets it is built from. */
 export const ASSETS: Record<string, string[]> = {
   "linux-x64": ["x86_64-unknown-linux-musl"],
   "linux-arm64": ["aarch64-unknown-linux-musl"],
   "darwin-universal": ["aarch64-apple-darwin", "x86_64-apple-darwin"],
 };
-/** The asset each platform (`process.platform-process.arch`) runs. */
 export const PLATFORM_ASSET: Record<string, string> = {
   "linux-x64": "linux-x64",
   "linux-arm64": "linux-arm64",
@@ -43,7 +40,6 @@ export const PLATFORM_ASSET: Record<string, string> = {
 
 export interface Manifest {
   version: string;
-  /** git tree id of crates/pty-sidecar the assets were built from */
   crate: string;
   assets: Record<string, { file: string; sha256: string }>;
 }
@@ -71,7 +67,6 @@ export function crateTree(cwd = root): { tree: string } | { error: string } {
   return { tree: tree.stdout.toString().trim() };
 }
 
-/** Whether `path` is the Rust PTY host and runs on this PC: with no arguments it prints its usage and exits 2. */
 export function runsHere(path: string): boolean {
   try {
     const result = Bun.spawnSync([path], { stdin: "ignore", stdout: "ignore", stderr: "pipe", timeout: 5000, killSignal: "SIGKILL" });
@@ -81,7 +76,6 @@ export function runsHere(path: string): boolean {
   }
 }
 
-/** What an executable is for: `elf-<cpu>`, or `macho-<cpu>` for every Mach-O slice. */
 export function architectures(path: string): string[] {
   const bytes = readFileSync(path);
   if (bytes.length < 64) return ["unknown"];
@@ -92,7 +86,6 @@ export function architectures(path: string): string[] {
   return ["unknown"];
 }
 
-/** What `architectures` says of a working build for these Rust targets. */
 export const expectedArchitectures = (targets: string[]): string[] =>
   targets.map((target) => `${target.includes("-apple-") ? "macho" : "elf"}-${target.split("-")[0]}`).sort();
 
@@ -173,8 +166,7 @@ function verifiedFor(target: string, crate: string): boolean {
 }
 
 /**
- * What `install` did, in one line; `ok` false when this checkout has no Rust host from a release.
- * It never throws. When it fails, a host already in place stays only when it is the one verified
+ * When it fails, a host already in place stays only when it is the one verified
  * for these very sources; any other is removed, so the server never runs a host it would not install.
  */
 export async function install(options: { releases?: string; target?: string; platform?: string } = {}): Promise<{ ok: boolean; message: string }> {
@@ -188,7 +180,6 @@ export async function install(options: { releases?: string; target?: string; pla
       const releases = (options.releases ?? RELEASES).replace(/\/$/, "");
       const version = packageVersion();
       result = await attempt(sources.tree, target, options, { base: `${releases}/v${version}`, name: `release v${version}`, version });
-      // sources no release was built from: the host the beta workflow built from these very sources
       if (!result.ok && result.elsewhere) {
         const built = await attempt(sources.tree, target, options,
           { base: `${releases}/${TREE_RELEASE}${sources.tree}`, name: `prerelease ${TREE_RELEASE}${sources.tree.slice(0, 12)}` });
@@ -210,13 +201,11 @@ export async function install(options: { releases?: string; target?: string; pla
   return result;
 }
 
-/** The prerelease the beta workflow attaches a host built from one crate tree to: `pty-sidecar-<tree>`. */
 export const TREE_RELEASE = "pty-sidecar-";
 
 /**
  * One place a host may come from: a release (`version`: its manifest must be that version's) or the
  * prerelease of a crate tree (any version: the crate check is what ties it to these sources).
- * `elsewhere` on a failure: this place has no host for these sources, so another may be tried.
  */
 async function attempt(crate: string, target: string, options: { platform?: string }, source: { base: string; name: string; version?: string }): Promise<{ ok: boolean; message: string; elsewhere?: boolean }> {
   const platform = options.platform ?? `${process.platform}-${process.arch}`;

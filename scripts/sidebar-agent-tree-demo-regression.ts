@@ -6,11 +6,9 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings > Appearance > Agents under workspaces (#773) on the demo roster: checkout-api with its
-// worktrees, a second agent beside the shell in checkout-api's second tab, and cli-tools with its
-// worktrees moved to a second PC (build-box), so the tree has a PC > workspace > agent shape with
-// worktrees in it. Only this disposable demo fixture is rewritten; no live session is read.
+// Only this disposable demo fixture is rewritten; no live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-agent-tree-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const REVIEW = "w1C:p2";
@@ -58,7 +56,6 @@ const patch = `(() => {
 })();`;
 
 const group = (page: Page, machine: string) => page.locator(`.machine-group[aria-label="PC ${machine}"]`);
-/** each workspace a PC draws and the agents listed under it, as [workspace, ...agent panes] */
 const tree = (page: Page, machine: string) => group(page, machine).evaluate((section) =>
   [...section.querySelectorAll<HTMLElement>(".workspace-group[data-workspace]")].map((row) =>
     [row.dataset.workspace!, ...[...row.querySelectorAll<HTMLElement>(":scope > .workspace-agents > .workspace-agent")].map((agent) => agent.dataset.agentPane!)]));
@@ -69,15 +66,7 @@ try {
   writeFileSync(join(app, "sidebar-agent-tree.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-agent-tree.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -97,12 +86,10 @@ try {
             await group(page, "build-box").locator(".workspace-group").first().waitFor();
           };
 
-          // never chosen: the PCs list draws its workspaces alone, as today
           await open();
           assert.equal(await page.locator(".workspace-agents").count(), 0, "off by default, no agent hangs under a workspace");
           assert.deepEqual(await tree(page, "workstation"), [["w1C"], ["w1D"], ["w1H"]]);
 
-          // turned on for this device
           await page.evaluate(() => localStorage.setItem("ovis:sidebar-agent-tree", "true"));
           await open();
           await agent(page, "workstation", panes.api).waitFor();
@@ -111,9 +98,7 @@ try {
           assert.equal(await group(page, "workstation").locator(`.workspace-agents[aria-label="Agents in checkout-api"] > li`).count(), 2, "the list names its workspace, and a screen reader counts its rows");
           assert.equal((await agent(page, "workstation", REVIEW).locator(".workspace-agent-place").textContent())?.trim(), "release", "the tab's name where the workspace has several");
           assert.equal(await agent(page, "workstation", panes.web).locator("[data-status]").getAttribute("data-status"), "blocked", "the agent's state in the trailing cell");
-          // the Agents list stays where it was, with the same agents
           assert.ok(await page.locator(`.agent-list .agent-item[data-pane="${panes.api}"]`).count() > 0, "the Agents list is still there");
-          // every row one line, inside the sidebar, nothing cut sideways
           const fit = await page.evaluate(() => {
             const list = document.querySelector<HTMLElement>(".machine-list")!;
             const box = list.getBoundingClientRect();
@@ -125,7 +110,6 @@ try {
           assert.ok(fit.inside, "the rows stay inside the list");
           assert.deepEqual(fit.heights, [fit.header], "an agent row is a one-line workspace row's height");
 
-          // opening an agent from the tree selects its pane, and its row takes the fill from its workspace's
           await agent(page, "workstation", panes.web).locator("button").click();
           if (phone) await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
           await page.waitForFunction((pane) => document.querySelector(`.workspace-agent[data-agent-pane="${pane}"]`)?.classList.contains("is-selected"), panes.web);
@@ -137,21 +121,35 @@ try {
           assert.equal(fills.current, "true");
           assert.notEqual(fills.row, "rgba(0, 0, 0, 0)", "the agent's row is filled");
           assert.equal(fills.header, "rgba(0, 0, 0, 0)", "its workspace's row is not filled twice");
+
+          const checkout = group(page, "workstation").locator('.workspace-group[data-workspace="w1C"] > .workspace-header .workspace-select');
+          const where = await page.evaluate(() => sessionStorage.getItem("ovis:selection"));
+          if (phone) await checkout.tap(); else await checkout.click();
+          await page.waitForFunction(() => document.querySelector('.workspace-group[data-workspace="w1C"] > .workspace-agents') === null);
+          assert.deepEqual((await tree(page, "workstation"))[0], ["w1C"], "the agents are put away");
+          assert.equal(await checkout.getAttribute("aria-expanded"), "false");
+          assert.equal((await group(page, "workstation").locator('.workspace-group[data-workspace="w1C"] .workspace-fold-count').textContent())?.trim(), "+3", "the row counts what it put away: its two agents and the worktree not selected, one fold for both");
+          assert.equal(await page.evaluate(() => sessionStorage.getItem("ovis:selection")), where, "folding opened nothing");
+          if (phone) assert.equal(await page.locator('button[aria-controls="workspace-drawer"]').getAttribute("aria-expanded"), "true", "the drawer stays open");
+          if (evidence) await page.locator(".sidebar-shell").screenshot({ path: join(evidence, `agent-tree-folded-${phone ? "390" : "1280"}-${theme}.png`) });
+          await open();
+          assert.deepEqual((await tree(page, "workstation"))[0], ["w1C"], "the fold is kept on this device");
+          await checkout.focus();
+          await page.keyboard.press("ArrowRight");
+          await agent(page, "workstation", panes.api).waitFor();
+          assert.equal(await checkout.getAttribute("aria-expanded"), "true", "Right unfolds");
           if (evidence) {
             mkdirSync(evidence, { recursive: true });
             await page.locator(".sidebar-shell").screenshot({ path: join(evidence, `agent-tree-${phone ? "390" : "1280"}-${theme}.png`) });
           }
-          // the narrowest sidebar (SIDEBAR_MIN_WIDTH): every title keeps some width, and the counts never reach the state cell
           if (!phone) {
             await page.evaluate(() => { localStorage.setItem("ovis:sidebar-width", "240"); localStorage.setItem("ovis:sidebar-context", "true"); });
             await open();
             await agent(page, "workstation", panes.flaky).locator(".context-count").waitFor();
-            // 240 px less the hairline at its edge
             assert.ok(Math.abs((await page.locator(".sidebar-shell").boundingBox())!.width - 240) <= 1, "the sidebar at its narrowest");
             const narrow = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".workspace-agent-select")].map((row) => {
               const title = row.querySelector(".workspace-agent-title")!.getBoundingClientRect();
               const state = row.querySelector(".sidebar-pane-meta")!.getBoundingClientRect();
-              // a count cut by the row is clipped at its group's edge: what shows of it ends there
               const group = row.querySelector(".workspace-agent-badges")?.getBoundingClientRect();
               const counts = [...row.querySelectorAll(".background-count, .plan-count, .context-count")].map((count) => Math.min(count.getBoundingClientRect().right, group?.right ?? Infinity));
               return { pane: row.parentElement!.dataset.agentPane!, title: title.width, counts: counts.length, clear: counts.every((right) => right <= state.left + 0.5) && title.right <= state.left + 0.5 };
@@ -165,7 +163,7 @@ try {
             await page.evaluate(() => { localStorage.removeItem("ovis:sidebar-width"); localStorage.removeItem("ovis:sidebar-context"); });
           }
           assert.deepEqual(errors, []);
-          console.log(`PASS ${label}: off by default; on, each PC lists its workspaces and their agents, opens one in place and keeps the Agents list`);
+          console.log(`PASS ${label}: off by default; on, each PC lists its workspaces and their agents, opens one in place, folds a row's agents from the row and keeps the Agents list`);
         } finally { await context.close(); }
       }
     } finally { await browser.close(); }

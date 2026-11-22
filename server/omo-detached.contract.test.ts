@@ -8,7 +8,6 @@ import { createServer } from "./index.ts";
 import * as native from "./omo.ts";
 import { UsageService } from "./usage.ts";
 
-/** Subscribe before appending: the server's own poll, not a test delay, delivers the transition. */
 function frame(socket: WebSocket, accepts: (value: ServerMessage) => boolean): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
     const seen: ServerMessage[] = [];
@@ -29,7 +28,6 @@ function frame(socket: WebSocket, accepts: (value: ServerMessage) => boolean): P
 }
 
 it("serves BG for detached eval work and DONE after its notification turn stops", async () => {
-  // Given an isolated pane and synthetic session; only native process discovery is substituted.
   const root = mkdtempSync(join(tmpdir(), "herdr-omo-detached-"));
   const created = await workspaceCreate({ cwd: root, label: "Detached eval fixture" });
   const paneId = created.root_pane.pane_id;
@@ -51,13 +49,11 @@ it("serves BG for detached eval work and DONE after its notification turn stops"
     await frame(socket, (value) => value.type === "snapshot");
     await server.statusReady;
     const background = frame(socket, (value) => status(value) && value.type === "pane-status" && value.background_wait === true);
-    // When eval detaches and its assistant ends the turn.
     appendFileSync(path, record({ type: "message", message: { role: "toolResult", toolName: "eval", content: [
       { type: "text", text: "Eval cell fixture-cell detached and is running in the js kernel (0 other live cells)." },
     ] } }) + message("assistant", "stop"));
     const bgFrame = await background;
     const bgSnapshot = await snapshot();
-    // Then both the live frame and HTTP snapshot hold the finish at BG.
     expect(bgFrame).toMatchObject({ agent_status: "done", background_tasks: 1, background_wait: true });
     expect(bgSnapshot).toMatchObject({ agent: "omo", agent_status: "done", background_tasks: 1, background_wait: true });
 

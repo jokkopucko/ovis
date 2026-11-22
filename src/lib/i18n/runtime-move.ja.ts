@@ -5,7 +5,6 @@
  */
 export const RUNTIME_MOVE_JA: Record<string, string> = {
   "Move everything to herdr-core": "herdr-core にすべて移す",
-  "Every workspace, tab and agent reopens on herdr-core, all at once.": "すべてのワークスペース・タブ・エージェントを一度に herdr-core で開き直します。",
   "Install herdr-core and move everything": "herdr-core をインストールしてすべて移す",
   "Installs herdr-core {version} into ~/.local/bin, then shows what moves before anything does.": "herdr-core {version} を ~/.local/bin にインストールし、何が移るかを先に表示します。",
   "Install and move…": "インストールして移す…",
@@ -24,6 +23,7 @@ export const RUNTIME_MOVE_JA: Record<string, string> = {
   "A command is running": "コマンド実行中",
   "{command} running": "{command} 実行中",
   "Scrollback and programs running in shells do not come along. herdr itself stays as it is.": "過去の出力（スクロールバック）とシェルで動いていたプログラムは移りません。herdr 自体はそのまま残ります。",
+  "Each pane opens a new shell from your login profile: variables set by hand in a pane stay behind.": "各ペインはログインプロファイルから新しいシェルで開きます。ペインで手動で設定した変数は移りません。",
   "Move everything": "すべて移す",
   "Move everything once all work is done": "作業がすべて終わったら一度に移す",
 
@@ -67,4 +67,5 @@ export const RUNTIME_MOVE_JA: Record<string, string> = {
   "Running on herdr-core.": "herdr-coreで動いています。",
   "The server was switching its runtime.": "サーバーがランタイムを切り替え中でした。",
   "An agent did not reopen its conversation on herdr-core.": "エージェントがherdr-coreで同じ会話を再開できませんでした。",
+  "Every workspace, tab and agent reopens on herdr-core, all at once, after a list shows what moves. Scrollback and programs running in shells do not come along.": "すべてのワークスペース、タブ、エージェントを herdr-core で一度に開き直し、その前に、移るものを一覧で確認できます。過去の出力（スクロールバック）とシェルで実行中のプログラムは引き継がれません。",
 };

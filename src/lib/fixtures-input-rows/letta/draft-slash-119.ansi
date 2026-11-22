@@ -1,0 +1,32 @@
+/home/tester0/.dori-sa/agent-lab/run --qa letta
+[0m[1m[38;5;2mtester0@host000-ThinkStation-P620[0m:[0m[1m[38;5;4m~/.cache/ovis-tmp/chat-draft-guard/scratch3[0m$ /home/tester0/.dori-sa/agent-lab/run --q
+a letta
+
+ [0m[1m  [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m     [0m[1m  [0m  [0m[1mLetta Code[0m[38;5;8m v0.34.23[0m
+ [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m[1m      [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m  [0m[38;5;8mdeepseek-v4.1-flash · Local[0m
+ [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m[1m  [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m[1m  [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m  [0m[38;5;8m/home/tester0/.cache/ovis-tmp/chat-draft-guard/scratch3[0m
+ [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m[1m      [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m [0m
+ [0m[1m  [0m[1m[48;2;114;114;229m [0m[1m[48;2;140;140;249m     [0m[1m  [0m
+
+[0m[2m•[0m [0m[2mCreating a new agent[0m
+[0m[2m [0m [0m[2m→ [0m[38;2;140;140;249m/rename[0m[2m    name your agent[0m
+[0m[2m [0m [0m[2m→ [0m[38;2;140;140;249m/init[0m[2m      initialize your agent's memory[0m
+[0m[2m [0m [0m[2m→ [0m[38;2;140;140;249m/login[0m[2m     sign in with Letta[0m
+[0m[2m [0m [0m[2m→ [0m[38;2;140;140;249m/agents[0m[2m    list all agents[0m
+[0m[2m [0m [0m[2m→ [0m[38;2;140;140;249m/resume[0m[2m    resume a previous conversation[0m
+
+[0m[2m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;222;225;228m›[0m /mo[0m[7m [0m
+[0m[2m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[1m[38;2;140;140;249m  /model         Switch model[0m
+  /memory        [0m[2mView your agent's memory[0m
+  /mods          [0m[2mRun mod learning targets[0m
+  /memory-rep... [0m[2mPush this agent's memory repo to an additional git remote[0m
+  /creating-mods [0m[2mCreates and edits trusted local Letta Code mods, including tools, slash commands, local-only model ...[0m
+  /generating... [0m[2mGenerates and reviews mod learning env JSON files for Letta Code local mods. Use when asked to teac...[0m
+  /maintainin... [0m[2mMaintains an agent's core memory, the editable part of its system prompt. Use to modify the agent's...[0m
+  /maintainin... [0m[2mMaintains deferred memory, which stores accumulated knowledge, analysis, and observations made by t...[0m
+
+  [0m[1m[38;2;140;140;249mLetta Code (type /pin to give your agent a real name!)[0m[1m[2m · deepseek-v4.1-flash[0m
+  [0m[2magent-local-00000000-0000-0000-0000-000000000000 · default conversation[0m
+  [0m[2mLetta Code v0.34.23 · /feedback · discord.gg/letta[0m

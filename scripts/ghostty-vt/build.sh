@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuilds src/lib/ghostty/ghostty-vt.wasm: libghostty-vt from ghostty (MIT) at a pinned commit, with
+# Rebuilds shared/ghostty/ghostty-vt.wasm: libghostty-vt from ghostty (MIT) at a pinned commit, with
 # kitty-on-wasm.patch, which turns the Kitty graphics protocol on for wasm32-freestanding (upstream
 # leaves it off there: no file medium and no PNG decoder). The patch refuses the file, temporary
 # file and shared memory media, which have no meaning in a browser, and links ghostty's bundled
@@ -21,5 +21,5 @@ git -C "$work/ghostty" fetch -q --depth 1 https://github.com/ghostty-org/ghostty
 git -C "$work/ghostty" checkout -q FETCH_HEAD
 git -C "$work/ghostty" apply "$here/kitty-on-wasm.patch"
 (cd "$work/ghostty" && "$zig" build -Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall --prefix "$work/out")
-cp "$work/out/bin/ghostty-vt.wasm" "$repo/src/lib/ghostty/ghostty-vt.wasm"
-sha256sum "$repo/src/lib/ghostty/ghostty-vt.wasm"
+cp "$work/out/bin/ghostty-vt.wasm" "$repo/shared/ghostty/ghostty-vt.wasm"
+sha256sum "$repo/shared/ghostty/ghostty-vt.wasm"

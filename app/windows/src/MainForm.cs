@@ -33,7 +33,7 @@ namespace Ovis
             {
                 Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             }
-            catch (ArgumentException) { } // no icon in a build without one
+            catch (ArgumentException) { }
 
             var root = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = Padding.Empty };
             root.Controls.Add(Header());
@@ -86,7 +86,6 @@ namespace Ovis
         private void Render()
         {
             SuspendLayout();
-            // Enter presses Install only on the screen that shows it
             AcceptButton = null;
             // a cleared control keeps its window handle until disposed: each Check again would leak them
             var replaced = body.Controls.Cast<Control>().Where(control => control != logBox).ToList();
@@ -142,7 +141,6 @@ namespace Ovis
             AcceptButton = install;
         }
 
-        /// <summary>Install and Update both need Git for Windows: while it is missing, getting it is the step shown.</summary>
         private bool GitStep()
         {
             if (!model.GitMissing) return false;
@@ -198,7 +196,7 @@ namespace Ovis
             if (running) Phone(status);
             var buttons = new System.Collections.Generic.List<Button>();
             if (running && status.Origin != null) buttons.Add(Primary(Lang.L("Open in browser", "브라우저에서 열기"), () => Open(status.Origin)));
-            buttons.Add(Button(running ? Lang.L("Restart", "다시 시작") : Lang.L("Start", "시작"), () => model.Restart()));
+            buttons.Add(running ? Button(Lang.L("Restart", "다시 시작"), () => model.Restart()) : Button(Lang.L("Start", "시작"), () => model.Start()));
             buttons.Add(Button(Lang.L("Remove…", "제거…"), ConfirmRemove));
             body.Controls.Add(Buttons(buttons.ToArray()));
         }

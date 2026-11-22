@@ -12,39 +12,26 @@ import { contentKey, keepEmptyRows, SCROLL_CONFIG, SHADOW_CSS, SOURCE_THEME } fr
 import "./RepoDiff.css";
 
 export interface RepoDiffProps {
-  /** git's patch for one file, from its `diff --git` line on, whole */
   patch: string;
   style: DiffStyle;
-  /** one unchanged line around each change instead of the three git printed; the rest counts in the separators */
   folded: boolean;
   wrap: boolean;
   theme: "dark" | "light";
-  /** colored in the pool's worker; false draws plain rows, still windowed by the pool's manager (the setting off, or too long, which the host says) */
   colored: boolean;
-  /** the active find match: its row is marked and its text highlighted, and it is brought to the middle of the view (the match itself, when its row is taller than the view) */
   active?: DiffMark | null;
-  /** the active match is on a line the folded context leaves out: the host shows the context whole */
   onUnfold?: () => void;
-  /**
-   * A row was pointed at (#1603): `open` from the + a hovered row shows, which begins a note at once;
-   * otherwise a click or tap on the row, which only picks its line. The row by its side and number.
-   */
   onLine?: (side: "deletions" | "additions", lineNumber: number, open: boolean) => void;
-  /** why no note can be begun (the hovered + then says so, disabled), or null */
   noteBlocked?: string | null;
 }
 
-/** A logical line of the patch (an unchanged line is anchored to the new side) and the columns of a match in it. */
 export interface DiffMark {
   side: DiffSide;
   line: number;
   start: number;
   end: number;
-  /** ringed where it is, never scrolled to: a line just clicked or tapped is in view already */
   quiet?: boolean;
 }
 
-/** The CSS highlight the active match's text is painted with (styled in the shadow CSS below). */
 const FIND_HIGHLIGHT = "repo-diff-find";
 
 // as VirtualSource's reveal: a row is re-read after each render a scroll causes, since rows past the
@@ -66,7 +53,6 @@ function markRow(shadow: ShadowRoot, mark: DiffMark): HTMLElement | null {
     : `[data-line="${mark.line}"]:not([data-line-type="change-deletion"])`);
 }
 
-/** The range of columns `start`..`end` of a row's text, across the token spans it is drawn in. */
 function textRange(row: HTMLElement, start: number, end: number): Range | null {
   const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
@@ -81,10 +67,6 @@ function textRange(row: HTMLElement, start: number, end: number): Range | null {
   return null;
 }
 
-/**
- * Brings a match's columns into view in its row's horizontal scroller (unwrapped rows; in split, its
- * side's column), centred beside the sticky line numbers; a match already in view stays put.
- */
 function revealColumns(row: HTMLElement, mark: DiffMark): void {
   const scroller = row.closest<HTMLElement>("[data-code]");
   if (scroller === null || scroller.scrollWidth <= scroller.clientWidth + 1) return;
@@ -135,11 +117,9 @@ function parseFile(text: string): FileDiffMetadata | null {
 }
 
 /**
- * One file's diff as a window of rows from the package's virtualizer, unified or split, with the
- * old and new line numbers in its gutters and the unchanged lines between hunks counted in its
- * separators. The parsed diff keeps its identity while the patch and the fold are unchanged, as
- * the virtualizer renders by identity, and its host fills the scroll root so it has a box before
- * the first anchor pass (the contracts VirtualSource measured).
+ * The parsed diff keeps its identity while the patch and the fold are unchanged, as the virtualizer
+ * renders by identity, and its host fills the scroll root so it has a box before the first anchor
+ * pass (the contracts VirtualSource measured).
  */
 export default function RepoDiff({ patch, style, folded, wrap, theme, colored, active = null, onUnfold, onLine, noteBlocked = null }: RepoDiffProps) {
   const t = useT();
@@ -164,16 +144,14 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
 
   const text = useMemo(() => (folded ? trimPatchContext(patch, FOLDED_CONTEXT_LINES) : patch), [patch, folded]);
   const fileDiff = useMemo(() => parseFile(text), [text]);
-  // the logical lines the folded rows still hold; a match on another one unfolds the context before it is revealed
   const foldedLines = useMemo(() => folded ? new Set(diffFindLines(text).map((line) => `${line.side}:${line.line}`)) : null, [folded, text]);
   const hiddenByFold = useRef(false);
   hiddenByFold.current = active !== null && foldedLines !== null && !foldedLines.has(`${active.side}:${active.line}`);
-  // only a newly active match unfolds: folding again while one is active is the user's choice and stays
   useEffect(() => { if (hiddenByFold.current) onUnfold?.(); }, [active?.side, active?.line, active?.start, active?.end, onUnfold]);
   /**
    * Rings the active match's row (in split, only its side's: the package's selected line spans
    * both columns) and paints its text, when the row is mounted; the highlight is the page's one
-   * find highlight. Runs after every render, which may have recycled the rows.
+   * find highlight.
    */
   const paint = useCallback((): void => {
     const mark = activeRef.current;
@@ -187,7 +165,6 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     else CSS.highlights.set(FIND_HIGHLIGHT, new Highlight(range));
   }, []);
 
-  /** Scrolls the virtualizer's root; false when the scroll was clamped and nothing moved. */
   const scrollTo = useCallback((top: number): boolean => {
     const virtualizer = virtualizerRef.current;
     const root = virtualizer?.getRoot();
@@ -198,11 +175,6 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     return root.scrollTop !== before;
   }, []);
 
-  /**
-   * One pass of the pending reveal, as VirtualSource's: a mounted row within a pixel of the middle
-   * ends it (a row taller than the view, by the match's own lines), one further off is scrolled there, and an unmounted one to the package's estimate of
-   * its place on its side. The render a scroll causes runs the next pass; a pass count bounds it.
-   */
   const settle = useCallback((): void => {
     const pending = reveal.current;
     const file = fileRef.current;
@@ -210,7 +182,6 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     const shadow = containerRef.current?.shadowRoot ?? null;
     if (pending === null || file === null || !(root instanceof HTMLElement) || shadow === null) return;
     const row = markRow(shadow, pending.mark);
-    // across first: a mounted row's text may lie past the scroller's right edge, also in a diff too short to scroll down
     if (row !== null) revealColumns(row, pending.mark);
     // the file's height arrives with its first rows: until then there is nothing to scroll, and the next render settles
     if (root.scrollHeight <= root.clientHeight + 1) return;
@@ -218,7 +189,6 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     let target: number;
     if (row !== null) {
       const box = row.getBoundingClientRect();
-      // a wrapped row taller than the view: its middle may not hold the match, so the match's own lines are centred
       const rect = box.height > view.height ? textRange(row, pending.mark.start, pending.mark.end)?.getBoundingClientRect() ?? box : box;
       const delta = rect.top - view.top - (view.height - rect.height) / 2;
       if (Math.abs(delta) <= 1) { reveal.current = null; return; }
@@ -256,7 +226,6 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     return () => { for (const type of ["wheel", "touchstart", "pointerdown", "keydown"] as const) root.removeEventListener(type, onInput); };
   }, [fileDiff]);
 
-  // the active match is brought into view when it changes, and again after a layout, wrap, theme or fold change re-lays the rows
   const { side: activeSide, line: activeLine, start: activeStart, end: activeEnd } = active ?? { side: null, line: null, start: null, end: null };
   useEffect(() => {
     paint();
@@ -284,7 +253,6 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     onPostRender,
   }), [style, wrap, theme, colored, onPostRender, noting]);
   const noteLabel = noteBlocked ?? t("Add a note on this line");
-  // the + stands beside the hovered row's number: a pointer's shortcut, so it takes no tab stop (keys pick a line in the viewer)
   const renderGutterUtility = useCallback((hovered: () => { lineNumber: number; side: "deletions" | "additions" } | undefined) => <button type="button" className="repo-diff-line-note-plus" tabIndex={-1}
     aria-label={noteLabel} title={noteLabel} aria-disabled={noteBlocked !== null}
     onClick={() => { const row = hovered(); if (row !== undefined) onLineRef.current?.(row.side, row.lineNumber, noteBlocked === null); }}>

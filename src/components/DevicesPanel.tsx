@@ -26,28 +26,16 @@ const POLL_MS = 3000;
 /** a device seen this recently is not called offline, whatever its sessions: it may be in by its cookie */
 const SEEN_LATELY_MS = 2 * 60_000;
 const seenLately = (at: string | null): boolean => at !== null && Date.now() - Date.parse(at) < SEEN_LATELY_MS;
-/** how often the open list is read again, for the round trips the PC measured since */
 const REFRESH_MS = 30_000;
 
 export interface DevicesPanelProps {
-  /** a device appeared while a code was out: the code did its work, and the dialog showing it can go */
   onDevicePaired?: () => void;
-  /** how this browser got in */
   auth: HealthAuth | null;
-  /** after this browser paired itself: the health check tells the rest of the app */
   onPaired?: () => void;
-  /** after every device was revoked, this browser's own pairing included: the app asks the server where it stands */
   onRevokedAll?: () => void;
-  /** what each row is (a phone, a browser), shown beside its name; null where that is not known */
   kindOf?: (label: string) => string | null;
-  /** an action for this device's own row (Use the relay); without such a row, a row of its own */
   currentAction?: ReactNode;
-  /**
-   * More settings' place for what is not the list itself (how this browser got in, what pairing means,
-   * revoking every device): drawn there, kept here with the list it acts on. Without one, under the list.
-   */
   more?: HTMLElement | null;
-  /** the end of this PC's own row, where Check now sits beside the PC that asks every device again; without one, above the list */
   checkSlot?: HTMLElement | null;
 }
 
@@ -72,32 +60,24 @@ export function offersAccountRemove(devices: readonly PairedDevice[], row: Paire
     && devices.some((d) => d.account === account && d.account_key === key && d.role === "drive");
 }
 
-/** Settings → Devices and PCs → My devices: the paired phones and browsers; Connect a device above it pairs one more. */
 export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kindOf, currentAction = null, more = null, checkSlot = null }: DevicesPanelProps) {
   const t = useT();
   const [devices, setDevices] = useState<PairedDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** the pending code the Connect a phone dialog or the relay started: while it lasts, the list is read again to catch the device it lets in */
   const [code, setCode] = useState<PairingCode | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
-  /** the question before every device goes; its answer, once they are gone */
   const [confirmingAll, setConfirmingAll] = useState(false);
   const [revokedAll, setRevokedAll] = useState(false);
   const [justPaired, setJustPaired] = useState<string | null>(null);
   const [pairingSelf, setPairingSelf] = useState(false);
   const known = useRef(new Set<string>());
-  /** whether the list was read once: from then on, every device not in `known` is one that just paired */
   const loaded = useRef(false);
-  /** bumped when every device goes: a read started before that answers for a list that no longer exists */
   const generation = useRef(0);
   const pairingSelfLock = useRef(false);
-  /** reads in the order they started: one answering after a newer one has landed answers for an older list */
   const reads = useRef({ started: 0, landed: 0 });
-  /** reads on their way, whatever their answer: the periodic refresh starts none over them */
   const inFlight = useRef(0);
 
-  /** `quiet`: a read the page did not ask for, which leaves the warning on screen and, should it fail, the list as it was */
   const load = useCallback(async ({ quiet = false, check = false } = {}) => {
     const started = generation.current;
     const read = ++reads.current.started;
@@ -109,7 +89,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
       reads.current.landed = read;
       setDevices(list);
       if (!quiet) setError(null);
-      // a device that appeared while a code was out just paired with it
       const fresh = list.filter((d) => !known.current.has(d.id));
       if (loaded.current && fresh.length > 0) {
         for (const d of fresh) { setJustPaired(d.label); setCode(null); setRevokedAll(false); }
@@ -138,14 +117,12 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     try { await load({ check: true }); } finally { setChecking(false); }
   };
 
-  // this client's pairing joined the account behind the app (relay/shell.tsx): the list read before that lists it as no member yet
   useEffect(() => {
     const onChanged = () => void load({ quiet: true });
     window.addEventListener(DEVICES_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(DEVICES_CHANGED_EVENT, onChanged);
   }, [load]);
 
-  // a code started anywhere on this page (the dialog's pairing code, the relay's New code): the server keeps one pending code
   useEffect(() => {
     const onCode = (event: Event) => {
       setJustPaired(null);
@@ -156,7 +133,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     return () => window.removeEventListener(PAIRING_CODE_EVENT, onCode);
   }, []);
 
-  // while a code is out: watch for the device it lets in, until it expires
   useEffect(() => {
     if (code === null) return;
     const tick = () => {
@@ -175,7 +151,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     setPairingSelf(true);
     setError(null);
     try {
-      // one at a time with the setup guide's (lib/pairing.ts)
       const list = await pairThisBrowser();
       setDevices(list);
       known.current = new Set(list.map((device) => device.id));
@@ -270,7 +245,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
   /** so does a visitor Portal's own sign-in let in: the server refuses it every change here */
   const guest = auth?.via === "portal";
 
-  // what is not the list itself: how this browser got in, what pairing means, and revoking every device (More settings)
   const elsewhere = (
     <div className="devices-more">
       {auth?.via !== undefined && auth.via !== "open" && <p className="settings-description">{t(VIA[auth.via])}</p>}
@@ -286,14 +260,12 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
           <SettingsRow label={t("Revoke every device")} description={t(watching
             ? "Every paired device, this one included, would lose its pairing access at once. A device that only watches cannot do it: use the PC or a device that can drive."
             : "Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected.")}>
-            {/* a watching device reads why and has no button: a dead control would only be a fainter one */}
             {!watching && <button type="button" className="btn" onClick={() => setConfirmingAll(true)}>{t("Revoke all")}</button>}
           </SettingsRow>
         </div>
       )}
     </div>
   );
-  // Check now asks the devices paired through the relay again: at the end of this PC's own row, else above the list
   const check = devices !== null && devices.some((d) => d.via_relay) && !watching && !guest
     ? <button type="button" className="btn" onClick={() => void checkNow()} disabled={checking}>{checking ? t("Checking…") : t("Check now")}</button>
     : null;
@@ -325,6 +297,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                       : d.via_relay && !watching && !guest && !seenLately(d.last_seen_at)
                         ? <ConnectionLine state={{ kind: "offline", text: t("Offline · last seen {when}", { when: lastSeen(d.last_seen_at) }) }} reason={t("The app is closed, or its network is off.")} />
                         : <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>}
+                    {d.not_me_waiting && <span className="settings-description" role="status">{t("Not me is waiting. Revoke this device to stop its access now.")}</span>}
                   </div>
                   {d.current && currentAction}
                   {!guest && (
@@ -335,7 +308,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                           {disconnecting === d.id ? t("Disconnect everywhere?") : t("Disconnect from all PCs")}
                         </button>
                       )}
-                      {/* one element across both steps, so focus stays on it when it asks to confirm */}
                       <button type="button" className={confirming === d.id ? "btn btn-danger" : "icon-button"} aria-label={confirming === d.id ? undefined : t("Revoke {name}", { name: d.label })} onClick={() => void revoke(d.id)}>
                         <Trash2 aria-hidden="true" />{confirming === d.id && t("Revoke?")}
                       </button>
@@ -355,7 +327,6 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
           {currentAction}
         </div>
       )}
-      {/* an open gate is a warning about this page itself: it stays beside the list, with its fix */}
       {auth?.via === "open" && <>
         <p className="settings-hint devices-open">{t(VIA.open)}</p>
         <p className="settings-hint">{t("Pairing a device turns on the app's own sign-in, on top of any proxy sign-in: other browsers then need pairing or the access token. If your proxy already signs people in, set OVIS_TOKEN and have the proxy send it instead.")}</p>

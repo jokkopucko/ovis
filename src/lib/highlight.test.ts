@@ -16,7 +16,6 @@ import {
 } from "./highlight.ts";
 
 const text = (lines: Lines) => lines.map((line) => line.map((token) => token.text).join(""));
-/** `code` highlighted as a view does: normalized first. */
 const highlight = (code: string, language: string) => highlightNow(normalizeCode(code), language);
 
 describe("languageForFence", () => {
@@ -169,7 +168,6 @@ describe("SYNC_HIGHLIGHT_LIMIT", () => {
   ])("keeps %s of %j well under a frame's budget", (language, unit) => {
     const code = unit.repeat(Math.ceil(SYNC_HIGHLIGHT_LIMIT / unit.length)).slice(0, SYNC_HIGHLIGHT_LIMIT);
     highlightRuns(code, language);
-    // the fastest of a few runs: a garbage collection or a busy runner delays one run, never all
     const runs = Array.from({ length: 5 }, () => {
       const start = performance.now();
       highlightRuns(code, language);

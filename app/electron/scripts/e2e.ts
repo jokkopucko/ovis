@@ -2,18 +2,6 @@
  * End-to-end checks of a built desktop app, on a PC without herdr: everything runs in a fresh
  * temporary HOME with its own hc session, user data folder and PATH, so the PC's own herdr, hc
  * core and Ovis state are never touched.
- *
- *   bun scripts/e2e.ts dist/Ovis-<version>-<arch>.AppImage     Linux (on an Xvfb display of its own)
- *   bun scripts/e2e.ts dist/mac-arm64/Ovis.app                  macOS (needs a logged-in desktop session)
- *   bun scripts/e2e.ts --update                                 Linux: packages two versions from stage/ and out/
- *                                                               and updates the older one from a local feed
- *
- * Options: --out <dir> (screenshots and results.json; default a new temporary folder, kept), --keep (leave
- * the temporary HOME behind). Exit code 0 when every check passed.
- *
- * The app's main process is driven through its Node inspector (`--inspect-brk`): before the app's
- * own code runs, the tray's menu and `shell.openExternal` are wrapped so the checks can press the
- * tray's items and see what would open in the browser. Everything else is the app as built.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,6 +9,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { UPDATE_CHECK_INTERVAL_MS } from "../src/updates.ts";
 
 type Check = { name: string; ok: boolean; detail: string; known?: string };
 
@@ -32,14 +21,14 @@ const option = (name: string) => {
   return index >= 0 ? argv[index + 1] : undefined;
 };
 const updateMode = flag("--update");
+const fromTray = flag("--from-tray");
 const keep = flag("--keep");
 const appArg = argv.find((arg, index) => !arg.startsWith("--") && argv[index - 1] !== "--out");
-if (!updateMode && !appArg) throw new Error("Usage: bun scripts/e2e.ts <Ovis AppImage or Ovis.app> | --update [--out dir] [--keep]");
+if (!updateMode && !appArg) throw new Error("Usage: bun scripts/e2e.ts <Ovis AppImage or Ovis.app> | --update [--from-tray] [--out dir] [--keep]");
 if (updateMode && process.platform !== "linux") throw new Error("--update runs on Linux only (a macOS update needs a signed app)");
 
 // macOS's own temporary folder is too deep for hc's socket path (at most 103 bytes there)
 const root = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "ovis-e2e-"));
-// outside the root, which the run removes
 const out = resolve(option("--out") ?? mkdtempSync(join(tmpdir(), "ovis-e2e-out-")));
 mkdirSync(out, { recursive: true });
 /** in the environment of every process the run starts, and inherited by theirs: what cleanup ends, and the inspector proves */
@@ -55,7 +44,6 @@ function check(name: string, ok: boolean, detail = ""): boolean {
   return ok;
 }
 
-/** a check that fails for a filed bug: told, and left out of the exit code until the bug is fixed */
 function knownBug(name: string, ok: boolean, issue: string, detail = ""): void {
   checks.push({ name, ok, detail, known: issue });
   console.log(`${ok ? "PASS" : "KNOWN"} ${name}${ok ? "" : ` (${issue})`}${detail ? `  (${detail})` : ""}`);
@@ -65,14 +53,12 @@ function log(message: string): void {
   console.log(`      ${message}`);
 }
 
-/** `promise`, or a rejection once `ms` have gone by */
 function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)}s`)), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/** waits for `probe` to give a value other than null/false, at most `timeoutMs` (a probe that hangs counts against it) */
 async function until<T>(what: string, probe: () => Promise<T | null | false> | T | null | false, timeoutMs = 60_000, everyMs = 250): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let last: unknown = null;
@@ -114,13 +100,10 @@ function sha(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-// The isolated PC: a HOME, PATH and runtime folders of its own, and on Linux a display.
-
 const home = join(root, "home");
 const fakeBin = join(root, "bin");
 for (const dir of [home, fakeBin, join(root, "run"), join(root, "tmp"), join(root, "work")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 const systemPath = process.platform === "darwin" ? "/usr/bin:/bin:/usr/sbin:/sbin" : "/usr/bin:/bin";
-// a stand-in coding agent: a program called `claude` that stays up like one
 writeFileSync(join(fakeBin, "claude"), "#!/bin/sh\necho 'fake claude for the desktop e2e'\nwhile :; do sleep 3600; done\n");
 chmodSync(join(fakeBin, "claude"), 0o755);
 const PATH = `${fakeBin}:${systemPath}`;
@@ -128,6 +111,14 @@ const PATH = `${fakeBin}:${systemPath}`;
 for (const profile of [".profile", ".bash_profile", ".zprofile", ".zshrc", ".bashrc"]) writeFileSync(join(home, profile), `export PATH="${fakeBin}:$PATH"\n`);
 for (const program of ["herdr", "hc", "herdr-core"]) {
   check(`no ${program} on the app's PATH`, Bun.which(program, { PATH }) === null, Bun.which(program, { PATH }) ?? "");
+}
+// Linux: a browser of the run's own, for Settings → Browser for links: it writes down the one argument it is given
+const linkBrowserOutput = join(root, "link-browser-opened.txt");
+if (process.platform === "linux") {
+  writeFileSync(join(fakeBin, "e2e-browser"), `#!/bin/sh\nprintf '%s|%s' "$#" "$1" > '${linkBrowserOutput}'\n`);
+  chmodSync(join(fakeBin, "e2e-browser"), 0o755);
+  mkdirSync(join(home, ".local", "share", "applications"), { recursive: true });
+  writeFileSync(join(home, ".local", "share", "applications", "e2e-browser.desktop"), `[Desktop Entry]\nType=Application\nName=E2E Browser\nExec=${join(fakeBin, "e2e-browser")} %u\nMimeType=x-scheme-handler/https;\n`);
 }
 
 /** Linux: a display of the run's own, never the caller's (its X cookie stays in the caller's HOME) */
@@ -166,8 +157,6 @@ function appEnv(extra: Record<string, string> = {}): Record<string, string> {
     ...extra,
   };
 }
-
-// The app, driven through its main process's inspector.
 
 class Inspector {
   private next = 1;
@@ -214,7 +203,6 @@ class Inspector {
     this.listeners.push(listener);
   }
 
-  /** an expression in the main process, awaited; `e2e` holds what the hook set up */
   async eval<T = unknown>(expression: string): Promise<T> {
     const result = await this.send("Runtime.evaluate", { expression: `(async () => { const e2e = globalThis.__ovisE2e; return (${expression}); })()`, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
@@ -226,15 +214,20 @@ class Inspector {
   }
 }
 
-/** run before the app's own code: the tray's menu and the browser opener, made visible to the checks */
 const HOOK = `(() => {
   const electron = require("electron");
-  const e2e = globalThis.__ovisE2e = { electron, trayMenu: null, opened: [], loads: [] };
+  const e2e = globalThis.__ovisE2e = { electron, fs: require("fs"), trayMenu: null, opened: [], loads: [], notifications: [], updateChecks: [] };
   electron.app.on("web-contents-created", (_event, contents) => contents.on("did-finish-load", () => e2e.loads.push(contents.getURL())));
   const setContextMenu = electron.Tray.prototype.setContextMenu;
   electron.Tray.prototype.setContextMenu = function (menu) { e2e.trayMenu = menu; return setContextMenu.call(this, menu); };
   electron.shell.openExternal = async (url) => { e2e.opened.push(url); };
-  e2e.window = () => electron.BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getParentWindow() === null) ?? null;
+  // kept instead of handed to the desktop, which the run has none of, and told it was shown
+  electron.Notification.prototype.show = function () { e2e.notifications.push(this); this.emit("show"); };
+  e2e.notified = () => e2e.notifications.map((notification) => ({ title: notification.title, body: notification.body }));
+  // the hourly update check, scheduled as the app does and also kept here to be run at once
+  const setTimer = globalThis.setInterval;
+  globalThis.setInterval = function (run, ms, ...rest) { if (ms === ${UPDATE_CHECK_INTERVAL_MS}) e2e.updateChecks.push(run); return setTimer.call(this, run, ms, ...rest); };
+  e2e.window = () => electron.BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getParentWindow() === null && w.isFocusable()) ?? null;
   e2e.tray = () => (e2e.trayMenu ? e2e.trayMenu.items.map((item) => item.type === "separator" ? "-" : item.label + (item.enabled ? "" : " (off)")) : null);
   e2e.press = (label) => { const item = e2e.trayMenu?.items.find((entry) => entry.label === label); if (!item) throw new Error("no tray item " + label); if (!item.enabled) throw new Error("tray item " + label + " is off"); item.click(); return true; };
   return true;
@@ -254,7 +247,6 @@ function command(app: string): string {
 /** Electron's own user data folder in the run's HOME, as an app started without --user-data-dir uses */
 const defaultUserData = () => process.platform === "darwin" ? join(home, "Library", "Application Support", "Ovis") : join(home, ".config", "Ovis");
 
-/** `userData` null: the app's default folder, as a user (or an update's relaunch) starts it */
 async function launch(app: string, userData: string | null, options: { env?: Record<string, string>; args?: string[]; label: string }): Promise<App> {
   const port = await freePort();
   const output = Bun.file(join(out, `${options.label}.log`)).writer();
@@ -293,7 +285,6 @@ async function screenshot(app: App, name: string): Promise<void> {
 type Saved = { port: number | null; server: { pid: number; bun: string; started: string | null } | null };
 const saved = (app: Pick<App, "userData">): Saved => JSON.parse(readFileSync(join(app.userData, "desktop.json"), "utf8")) as Saved;
 
-/** the window shows the server's page, loaded and drawn; resolves to the server's address */
 async function ovisLoaded(app: App, timeoutMs = 120_000): Promise<string> {
   return until("Ovis to load in the window", async () => {
     const state = await app.inspector.eval<{ url: string; loading: boolean; drawn: number } | null>(`(async () => {
@@ -308,17 +299,18 @@ async function ovisLoaded(app: App, timeoutMs = 120_000): Promise<string> {
   }, timeoutMs);
 }
 
-/** the text the window shows */
 function pageText(app: App): Promise<string> {
   return app.inspector.eval<string>("e2e.window()?.webContents.executeJavaScript('document.body.innerText') ?? ''");
 }
 
-/** presses the first button in the page whose text starts with `label`; false when there is none */
 function pressButton(app: App, label: string): Promise<boolean> {
   return app.inspector.eval<boolean>(`e2e.window().webContents.executeJavaScript(${JSON.stringify(`(() => { const button = [...document.querySelectorAll("button")].find((b) => b.innerText.trim().startsWith(${JSON.stringify(label)})); button?.click(); return !!button; })()`)})`);
 }
 
-/** the page's sidebar shows both workspaces this run made */
+function hasButton(app: App, label: string): Promise<boolean> {
+  return app.inspector.eval<boolean>(`e2e.window().webContents.executeJavaScript(${JSON.stringify(`[...document.querySelectorAll("button")].some((b) => b.innerText.trim().startsWith(${JSON.stringify(label)}))`)})`);
+}
+
 function listsBoth(app: App): Promise<boolean> {
   return until("the roster drawn", async () => { const text = await pageText(app); return (text.includes("e2e terminal") && text.includes("e2e agent")) || null; }, 30_000).catch(() => false);
 }
@@ -343,7 +335,6 @@ async function quit(app: App, how: "quit" | "tray"): Promise<boolean> {
   return exited(app.proc, 30_000);
 }
 
-/** a terminal as the app's hc tells it: its state and the program in front */
 /** the stand-in agent in front: Linux names a script's process after it, macOS after its interpreter */
 const runsClaude = (info: { foreground?: { name: string; argv?: string[] } | null } | null) => info?.foreground?.name === "claude" || (info?.foreground?.argv ?? []).some((arg) => arg.endsWith("/claude"));
 
@@ -352,20 +343,16 @@ async function terminalInfo(userData: string, id: string): Promise<{ state: stri
   return got.code === 0 ? JSON.parse(got.text) : null;
 }
 
-/** hc run with the app's own copy and session, as a terminal on this PC would */
 async function hc(userData: string, ...args: string[]): Promise<{ code: number; text: string }> {
   const proc = Bun.spawn([join(userData, "bin", "herdr-core"), ...args], { env: appEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const text = await new Response(proc.stdout).text() + await new Response(proc.stderr).text();
   return { code: await proc.exited, text };
 }
 
-// The scenarios.
-
 async function lifecycle(app: string): Promise<void> {
   const userData = join(root, "user-data");
   const marker = `E2E_MARK_${process.pid}`;
 
-  // 1. first launch on a PC with nothing installed: the connection screen, then Ovis
   let first = await launch(app, userData, { label: "1-first-launch" });
   const connect = await until("the first page", () => first.inspector.eval<string | null>("e2e.loads[0] ?? null"), 30_000).catch(() => "");
   check("first launch shows the connection screen first", connect.startsWith("file:") && connect.endsWith("connect.html"), connect);
@@ -392,7 +379,6 @@ async function lifecycle(app: string): Promise<void> {
   await pressButton(first, "I've used Ovis before");
   check("the core runs from a copy in the user data folder", existsSync(join(userData, "bin", "herdr-core")));
 
-  // 2. a terminal and an agent pane in the app's own core
   const terminal = await api<{ pane_id: string }>(origin, "/api/workspace/create", { label: "e2e terminal", cwd: join(root, "work") });
   await until("the terminal's shell", () => api(origin, "/api/pane/input", { pane_id: terminal.pane_id, text: `echo ${marker}\r` }).then(() => true), 30_000);
   const echoed = await until("the marker on the terminal's screen", async () => {
@@ -412,14 +398,12 @@ async function lifecycle(app: string): Promise<void> {
   check("the window lists the terminal and the agent", await listsBoth(first));
   await screenshot(first, "3-terminal-and-agent");
 
-  // 3. quit: the server stops, the terminals keep running
   const serverPid = saved(first).server?.pid ?? -1;
   check("quit ends the app", await quit(first, "quit"));
   check("quit stops the server", !alive(serverPid) && saved(first).server === null, `pid ${serverPid}`);
   const [term, agentTerm] = await Promise.all([terminalInfo(userData, terminal.pane_id), terminalInfo(userData, agent.pane_id)]);
   check("the terminals keep running after quit", term?.state === "live" && agentTerm?.state === "live" && runsClaude(agentTerm), `${term?.state} / ${agentTerm?.state} ${agentTerm?.foreground?.name ?? ""}`);
 
-  // 4. relaunch finds them, on the same address
   let second = await launch(app, userData, { label: "2-relaunch" });
   const origin2 = await ovisLoaded(second);
   check("relaunch keeps the address (and the page's storage)", origin2 === origin, `${origin} -> ${origin2}`);
@@ -430,12 +414,12 @@ async function lifecycle(app: string): Promise<void> {
   check("after relaunch the window lists the terminal and the agent", await listsBoth(second));
   await screenshot(second, "4-after-relaunch");
 
-  // 5. the tray
   const items = await until("the tray menu", () => second.inspector.eval<string[] | null>("e2e.tray()"), 10_000);
   check("the tray menu has its items", ["Open Ovis", "Open in Browser", "Restart Ovis Server", "Quit Ovis"].every((label) => items.includes(label)), items.join(" / "));
   await second.inspector.eval(`e2e.press("Open in Browser")`);
   const opened = await second.inspector.eval<string[]>("e2e.opened");
   check("tray: Open in Browser opens the server's address", opened.some((url) => url.startsWith(origin2)), opened.join(", "));
+  if (process.platform === "linux") await linkBrowser(second);
   await second.inspector.eval("e2e.window().close()");
   const hidden = await until("the window to hide", async () => (await second.inspector.eval<boolean>("e2e.window()?.isVisible() ?? false")) ? null : true, 5_000).catch(() => false);
   check("closing the window keeps Ovis in the tray", hidden === true && alive(second.mainPid) && saved(second).server !== null);
@@ -453,7 +437,6 @@ async function lifecycle(app: string): Promise<void> {
   check("tray: Quit Ovis ends the app", await quit(second, "tray"));
   check("tray: Quit Ovis stops the server", !alive(server2) && saved(second).server === null);
 
-  // 6. killed outright: the next start ends the server left behind
   const third = await launch(app, userData, { label: "3-before-kill" });
   await ovisLoaded(third);
   const orphan = saved(third).server?.pid ?? -1;
@@ -473,7 +456,23 @@ async function lifecycle(app: string): Promise<void> {
   await quit(fourth, "quit");
 }
 
-// Update: two builds of the same stage, the older one updated from a local https feed.
+/** Settings → Browser for links, through the page's own bridge: the run's browser is listed, chosen, and given a link as one argument */
+async function linkBrowser(app: App): Promise<void> {
+  const inPage = <T>(script: string) => app.inspector.eval<T>(`e2e.window().webContents.executeJavaScript(${JSON.stringify(script)})`);
+  const listed = await inPage<{ browsers: { id: string; name: string }[]; chosen: string | null } | null>("window.ovisBrowsers.list()");
+  const id = "desktop:e2e-browser.desktop";
+  check("Browser for links lists the browsers, the system default chosen", listed?.chosen === null && listed.browsers.some((browser) => browser.id === id && browser.name === "E2E Browser"), JSON.stringify(listed));
+  const refused = await inPage<boolean>("window.ovisBrowsers.choose('/bin/sh').then(() => false, () => true)");
+  check("Browser for links refuses a browser it did not find", refused);
+  await inPage(`window.ovisBrowsers.choose(${JSON.stringify(id)})`);
+  const link = "https://example.com/a b?q=\"x\"&y='z' $(id)";
+  const before = (await app.inspector.eval<string[]>("e2e.opened")).length;
+  await inPage(`window.ovisBrowsers.open(${JSON.stringify(link)})`);
+  const got = await until("the run's browser to open the link", () => existsSync(linkBrowserOutput) ? readFileSync(linkBrowserOutput, "utf8") : null, 15_000).catch(() => "");
+  check("Browser for links opens a web link in the chosen browser, as one argument", got === `1|${new URL(link).href}`, got);
+  check("Browser for links leaves the system browser out of it", (await app.inspector.eval<string[]>("e2e.opened")).length === before);
+  await inPage("window.ovisBrowsers.choose(null)");
+}
 
 async function packageVersion(version: string, output: string, feed?: string): Promise<void> {
   const args = [join(here, "node_modules", ".bin", "electron-builder"), "--linux", `--${process.arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`, `-c.directories.output=${output}`];
@@ -518,7 +517,25 @@ async function update(): Promise<void> {
     mkdirSync(join(root, "Applications"));
     copyFileSync(join(builds, "old", oldImage), installed);
     chmodSync(installed, 0o755);
-    // the app's default folder, as a user runs it: the relaunch after the update must find the same one
+
+    // in a folder that cannot be written the AppImage cannot replace itself: it says its updates are off, and asks its feed for nothing
+    if (process.getuid?.() === 0) {
+      log("run as root, who can write everywhere: the AppImage in a folder that cannot be written is not checked");
+    } else {
+      const fixedData = join(root, "user-data-fixed");
+      chmodSync(join(root, "Applications"), 0o555);
+      try {
+        const fixed = await launch(installed, fixedData, { label: "5a-update-unwritable", env: { OVIS_UPDATES: "1", OVIS_UPDATE_URL: `https://127.0.0.1:${feed.port}/` }, args: ["--ignore-certificate-errors"] });
+        await ovisLoaded(fixed);
+        const said = await until("the app's word on its updates", () => readFileSync(join(fixedData, "logs", "ovis.log"), "utf8").split("\n").find((line) => line.startsWith("Updates")) ?? null, 30_000).catch(() => "");
+        check("an AppImage in a folder that cannot be written does not update itself", /^Updates are off: the AppImage is in a folder that cannot be written/.test(said) && requests.length === 0, `${said}; feed asked ${requests.length} times`);
+        await quit(fixed, "quit");
+        await within(hc(fixedData, "server", "stop"), 30_000, "hc server stop").catch(() => {});
+      } finally {
+        chmodSync(join(root, "Applications"), 0o755);
+      }
+    }
+
     const app = await launch(installed, null, {
       label: "5-update",
       env: { OVIS_UPDATES: "1", OVIS_UPDATE_URL: `https://127.0.0.1:${feed.port}/` },
@@ -532,16 +549,96 @@ async function update(): Promise<void> {
     }, 180_000).catch(() => null);
     check("the update downloads and the tray offers Restart to Update", items !== null, `feed asked for: ${[...new Set(requests)].join(", ")}`);
     if (!items) return;
+
+    const ready = "Ovis 0.0.2 is ready";
+    const notifies = await app.inspector.eval<boolean>("e2e.electron.Notification.isSupported()");
+    if (notifies) {
+      const notified = await until("the update's notification", async () => {
+        const shown = await app.inspector.eval<{ title: string; body: string }[]>("e2e.notified()");
+        return shown.length > 0 ? shown : null;
+      }, 10_000).catch(() => []);
+      check("the update is announced with one notification", notified.length === 1 && notified[0]!.title === ready && notified[0]!.body === "Restart to update.", JSON.stringify(notified));
+      await app.inspector.eval("e2e.window().close()");
+      await until("the window to hide", async () => (await app.inspector.eval<boolean>("e2e.window()?.isVisible() ?? false")) ? null : true, 5_000).catch(() => null);
+      await app.inspector.eval("(e2e.notifications[0]?.emit('click'), true)");
+      const shown = await until("the window to show", () => app.inspector.eval<boolean>("e2e.window()?.isVisible() ?? false"), 5_000).catch(() => false);
+      check("the notification's click opens the window", shown === true);
+      if (shown !== true) await app.inspector.eval("(e2e.window()?.show(), true)");
+    } else {
+      log("this PC shows no notifications (no libnotify): the update's notification is not checked");
+    }
+
+    await pressButton(app, "I've used Ovis before");
+    const lined = async () => { const text = await pageText(app); return text.includes(`${ready}.`) && await hasButton(app, "Restart to Update"); };
+    const line = await until("the update's line in the window", async () => (await lined()) || null, 30_000).catch(() => false);
+    check("the window says the update is ready, with Restart to Update", line === true);
     await screenshot(app, "7-update-ready");
-    const server = saved(app).server?.pid ?? -1;
-    await app.inspector.eval(`e2e.press("Restart to Update")`).catch(() => {});
+    const notices = (): { notified: string | null; closed: string | null } => {
+      try { return JSON.parse(readFileSync(join(app.userData, "update-notice.json"), "utf8")); } catch { return { notified: null, closed: null }; }
+    };
+    const inLine = (find: string) => `[...document.querySelectorAll(".update-notice")].find((line) => line.innerText.includes(${JSON.stringify(ready)}))?.querySelector(${JSON.stringify(find)})?.click()`;
+    if (fromTray) {
+      await app.inspector.eval(`e2e.window().webContents.executeJavaScript(${JSON.stringify(inLine(".update-notice-dismiss"))})`);
+      const gone = await until("the line to close", async () => (await lined()) ? null : true, 10_000).catch(() => false);
+      check("the line closes for this version, and the tray keeps Restart to Update", gone === true && notices().closed === "0.0.2" && (await app.inspector.eval<string[] | null>("e2e.tray()"))?.includes("Restart to Update") === true, JSON.stringify(notices()));
+    }
+
+    const feedAsked = () => requests.filter((name) => name === "latest-linux.yml").length;
+    const downloadsLogged = () => readFileSync(join(app.userData, "logs", "ovis.log"), "utf8").split("\n").filter((line) => line.startsWith("Update 0.0.2 is downloaded")).length;
+    const notifiedCount = async () => (await app.inspector.eval<unknown[]>("e2e.notified()")).length;
+    const before = { asked: feedAsked(), downloads: downloadsLogged(), notified: await notifiedCount() };
+    const hourly = await app.inspector.eval<number>("(e2e.updateChecks.forEach((run) => run()), e2e.updateChecks.length)");
+    const askedAgain = await until("the feed asked again", () => feedAsked() > before.asked || null, 30_000).catch(() => false);
+    // electron-updater answers a download of the version it holds from its file at once: a second download would be logged within these seconds
+    const again = await until("the held version downloaded or announced again", async () => downloadsLogged() > before.downloads || await notifiedCount() > before.notified || null, 10_000).catch(() => false);
+    check("a later check asks the feed and leaves the version already held alone", hourly === 1 && before.downloads === 1 && askedAgain === true && again === false,
+      `hourly checks ${hourly}, feed asked ${before.asked} -> ${feedAsked()}, downloads logged ${before.downloads} -> ${downloadsLogged()}, notifications ${before.notified} -> ${await notifiedCount()}`);
+
+    const stopped = saved(app).server?.pid;
+    // never a pid that is not the server's: kill(-1) would end every process of the user
+    if (stopped === undefined || stopped <= 0) {
+      check("the server runs before it is stopped for the connection screen", false, "no server recorded");
+      return;
+    }
+    process.kill(stopped, "SIGKILL");
+    const offered = await until("the connection screen's update line", async () => {
+      const text = await pageText(app);
+      return (text.includes("Ovis stopped") && text.includes(ready) && await hasButton(app, "Restart to Update")) || null;
+    }, 30_000).catch(() => false);
+    check("the connection screen offers the update when the server has stopped", offered === true);
+    await screenshot(app, "8-update-ready-connection-screen");
+    await pressButton(app, "Try again");
+    await ovisLoaded(app);
+    let server = await until("a new server", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== stopped ? pid : null; }, 60_000).catch(() => -1);
+    if (notifies) check("one notification so far, recorded for its version", (await app.inspector.eval<unknown[]>("e2e.notified()")).length === 1 && notices().notified === "0.0.2", JSON.stringify(notices()));
+
+    const heldFile = join(home, ".cache", "ovis-desktop-updater", "pending", newImage);
+    const offers = async () => (await app.inspector.eval<string[] | null>("e2e.tray()"))?.includes("Restart to Update") === true;
+    const lost = existsSync(heldFile) && await app.inspector.eval<boolean>(`(e2e.press("Restart to Update"), e2e.fs.rmSync(${JSON.stringify(heldFile)}), true)`).catch(() => false);
+    const resumed = await until("Ovis started again", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== server ? pid : null; }, 60_000).catch(() => -1);
+    await ovisLoaded(app).catch(() => null);
+    check("an update gone by the time the server has stopped starts Ovis again as it was, without the offer", lost === true && resumed !== -1 && !alive(server) && alive(app.mainPid) && !(await offers()),
+      `server ${server} -> ${resumed}, tray: ${(await app.inspector.eval<string[] | null>("e2e.tray()"))?.join(" / ")}`);
+    if (resumed !== -1) server = resumed;
+    await app.inspector.eval("(e2e.updateChecks.forEach((run) => run()), true)");
+    const back = await until("Restart to Update in the tray again", async () => (await offers()) || null, 120_000).catch(() => false);
+    check("the next check downloads it again, and announces nothing twice", back === true && existsSync(heldFile) && (!notifies || await notifiedCount() === 1), `notifications ${await notifiedCount()}`);
+
+    if (fromTray) {
+      await until("the page's sidebar", async () => (await pageText(app)).includes("New workspace") || null, 30_000).catch(() => null);
+      check("the closed line stays closed after the page loads again", !(await lined()));
+      await app.inspector.eval(`e2e.press("Restart to Update")`).catch(() => {});
+    } else {
+      const again = await until("the update's line again", async () => (await lined()) || null, 30_000).catch(() => false);
+      check("the line is back after the page loads again", again === true);
+      await app.inspector.eval(`(e2e.window().webContents.executeJavaScript(${JSON.stringify(inLine(".btn-primary"))}), true)`).catch(() => {});
+    }
     app.inspector.close();
     check("Restart to Update quits the old build", await exited(app.proc, 60_000));
     check("Restart to Update stops the old server", !alive(server));
     const want = sha(join(feedDir, newImage));
     const replaced = await until("the new AppImage in place", () => readdirSync(join(root, "Applications")).find((name) => name.endsWith(".AppImage") && sha(join(root, "Applications", name)) === want) ?? null, 30_000).catch(() => null);
     check("the AppImage on disk is the new version", replaced !== null && readdirSync(join(root, "Applications")).length === 1, readdirSync(join(root, "Applications")).join(", "));
-    // the app comes back up by itself, from the new file, with the same data (its saved port) and a new server
     const port = saved(app).port;
     const relaunched = await until("the updated app to serve Ovis", async () => {
       const now = saved(app).server;
@@ -573,7 +670,6 @@ let cleaned = false;
 async function cleanUp(): Promise<void> {
   if (cleaned) return;
   cleaned = true;
-  // the app's own core (and the one an updated app started), then every process this run started
   for (const userData of [join(root, "user-data"), defaultUserData()]) {
     if (existsSync(join(userData, "bin", "herdr-core"))) await within(hc(userData, "server", "stop"), 30_000, "hc server stop").catch(() => {});
   }
@@ -581,7 +677,7 @@ async function cleanUp(): Promise<void> {
   const sweep = async () => {
     const pids = (await runProcesses()).filter((pid) => pid !== process.pid);
     for (const pid of pids) {
-      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      try { process.kill(pid, "SIGKILL"); } catch { }
     }
     return pids.length === 0;
   };

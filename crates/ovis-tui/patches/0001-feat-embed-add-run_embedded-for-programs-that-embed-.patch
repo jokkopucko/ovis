@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ovis-tui <ovis-tui@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 23:59:37 +0900
+Subject: [PATCH 1/7] feat(embed): add run_embedded for programs that embed the
+ client
+
+A program that embeds the client calls cli::run_embedded with an Embed of its settings; cli::run is run_embedded with the defaults, so a plain run is unchanged. The settings come with the changes that use them.
+---
+ crates/hc-tui/src/cli.rs   | 11 +++++++++++
+ crates/hc-tui/src/embed.rs |  6 ++++++
+ crates/hc-tui/src/lib.rs   |  2 ++
+ 3 files changed, 19 insertions(+)
+ create mode 100644 crates/hc-tui/src/embed.rs
+
+diff --git a/crates/hc-tui/src/cli.rs b/crates/hc-tui/src/cli.rs
+index d3cce80..2321977 100644
+--- a/crates/hc-tui/src/cli.rs
++++ b/crates/hc-tui/src/cli.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): run_embedded.
+ //! Command-line front end: `--session`, `--remote`, `--help`,
+ //! `--version`, then the current-thread application over the resolved
+ //! endpoint. Help and version answer before anything connects.
+@@ -175,6 +176,16 @@ fn shared_attach(
+ /// until detach. Errors are user-facing strings — a failure leaves the
+ /// terminal restored by the caller's guard.
+ pub async fn run(endpoint: &Endpoint, env: &Env) -> Result<(), String> {
++    run_embedded(endpoint, env, crate::embed::Embed::default()).await
++}
++
++/// [`run`] for a program that embeds this client: the same run, under
++/// `embed`'s policies.
++pub async fn run_embedded(
++    endpoint: &Endpoint,
++    env: &Env,
++    embed: crate::embed::Embed,
++) -> Result<(), String> {
+     // The user's herdr config drives prefix + keybindings, read-only.
+     let config_path = crate::config::config_path();
+     let loaded = crate::config::load(&config_path);
+diff --git a/crates/hc-tui/src/embed.rs b/crates/hc-tui/src/embed.rs
+new file mode 100644
+index 0000000..f9e9762
+--- /dev/null
++++ b/crates/hc-tui/src/embed.rs
+@@ -0,0 +1,6 @@
++// Added by Ovis (https://github.com/devswha/ovis) for programs that embed this client.
++//! What an embedding program asks of one run of the client.
++
++/// Passed to [`crate::cli::run_embedded`]. The default is a plain run.
++#[derive(Debug, Default)]
++pub struct Embed {}
+diff --git a/crates/hc-tui/src/lib.rs b/crates/hc-tui/src/lib.rs
+index 9beb8e6..3c84d1a 100644
+--- a/crates/hc-tui/src/lib.rs
++++ b/crates/hc-tui/src/lib.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): the embed module.
+ //! `hc-tui`: a terminal client with shared layout for `herdr-core` (`hc`).
+ //!
+ //! The binary parses `--session`/`--remote`, resolves the endpoint and
+@@ -16,6 +17,7 @@ pub(crate) mod copy_buffer;
+ pub mod copy_mode;
+ pub(crate) mod copy_window;
+ pub mod core_start;
++pub mod embed;
+ pub mod host;
+ pub mod input;
+ pub mod project;

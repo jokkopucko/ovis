@@ -11,9 +11,10 @@ nor Google can read a push.
 | File | Does |
 |---|---|
 | `OvisPushPlugin` | the `OvisPush` Capacitor plugin the client calls: `checkPermissions()`, `requestPermissions()`, `subscribe()`, `getSubscription()`, `unsubscribe()` |
-| `OvisMessagingService` | receives FCM data messages, decrypts the `ovis` field, shows the notification (the fallback line "herdr needs you" when it cannot) |
+| `OvisMessagingService` | receives FCM data messages, decrypts the `ovis` field, shows the notification (the fallback line "herdr needs you" when it cannot); a pane's alert taps through to that pane on the PC whose endpoint it came to (`MainActivity.openAlert`) |
 | `WebPushDecrypt`, `PushKeys` | RFC 8291 / RFC 8188 (`aes128gcm`) decryption and the phone's P-256 keys, tested against RFC 8291's own example |
-| `PushStore` | the keys and each PC's relay endpoint, in the app's private preferences |
+| `PushStore` | the keys, each PC's relay endpoint and the alert proof, in the app's private preferences |
+| `AlertProof` | tells this app's own alert taps from another app's intent (`MainActivity` is exported): only the app's own PendingIntents carry the proof `PushStore` keeps |
 | `OvisPushInitializer` | a startup provider that registers the plugin with the app's `BridgeActivity` |
 
 The module is wired in from `app/android/settings.gradle`, which adds it to `:app`, and its

@@ -17,8 +17,6 @@
   overflow-anchor: none;
 }
 
-/* the view's padding, drawn inside the transcript: --chat-edge (ChatView.css) keeps the page's
-   spacing where the transcript's own follows the chat's text size */
 .chat-transcript.chat-transcript-virtual {
   width: min(calc(100% - 2 * var(--chat-edge)), var(--chat-w));
   display: block;

@@ -28,7 +28,6 @@ function lanHost(host: string): boolean {
   return host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".home.arpa");
 }
 
-/** The route, or null in the phone app's bundled demo, which reaches no PC at all. */
 export function connectionRoute(page: { relay: boolean; portal: boolean; ingress: ObservedIngress | null; protocol: string; hostname: string }): ConnectionRoute | null {
   if (page.protocol === "capacitor:") return null;
   if (page.relay) return "relay";

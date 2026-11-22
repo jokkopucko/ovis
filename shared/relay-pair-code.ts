@@ -1,9 +1,4 @@
 /**
- * Pairing with a typed code (docs/relay.md, "Pairing with a typed code"): the PC shows eight
- * characters, the device being paired types them, and the PC hands that device the same pairing
- * offer its QR code carries (shared/relay-offer.ts) over the relay, encrypted under a key only the
- * two ends that know the code can derive.
- *
  * The code is Crockford base32. Its first NAMEPLATE_CHARS characters are a public rendezvous name
  * (the relay sees them and pairs the two sockets by them, relay/pair-room.ts); the rest is the
  * password, which never leaves either end. The password keys CPace (draft-irtf-cfrg-cpace-21,
@@ -16,8 +11,7 @@
  *   PC -> device   M3 { box }                 the offer, ChaCha20-Poly1305 under HKDF(ISK, "offer")
  *
  * The PC checks `confirm` before it sends anything that depends on the password, so a wrong guess
- * costs the guesser one live try (server/relay/pair-code.ts counts them). The browser imports this
- * file, so it reads no environment.
+ * costs the guesser one live try (server/relay/pair-code.ts counts them).
  */
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { ristretto255, ristretto255_hasher } from "@noble/curves/ed25519.js";
@@ -36,25 +30,17 @@ export const NAMEPLATE_CHARS = 3;
 export const NAMEPLATE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{3}$/;
 /** Wrong codes before the PC spends it. */
 export const PAIR_CODE_TRIES = 3;
-/** The largest frame either end sends or takes on the rendezvous. */
 export const PAIR_CODE_MAX_FRAME = 4096;
 
 /** the relay's attempt id that scopes each frame on the rendezvous (relay/pair-room.ts) */
 export const PAIR_ATTEMPT_BYTES = 16;
 
-/** the rendezvous's close codes (relay/pair-room.ts) */
 export const PAIR_CLOSE = {
-  /** no PC shows this code */
   NO_HOST: 4404,
-  /** another PC holds this nameplate */
   TAKEN: 4409,
-  /** another guest is trying, the room took its fill of guests, or they came too fast */
   BUSY: 1013,
-  /** the host ended this attempt */
   DROPPED: 1000,
-  /** the host is gone */
   HOST_GONE: 1001,
-  /** the guest's or host's time ran out, or it was idle */
   EXPIRED: 1001,
   POLICY: 1008,
   TOO_BIG: 1009,
@@ -78,7 +64,7 @@ const ZERO_NONCE = new Uint8Array(12);
 const GROUP_ORDER = ristretto255.Point.Fn.ORDER;
 
 /**
- * The code a person typed, as its eight canonical characters, or null. Case, spaces and dashes do
+ * Case, spaces and dashes do
  * not matter, and O, I and L read as 0, 1 and 1 (Crockford's decoding), so a code read aloud or
  * copied by eye still works.
  */
@@ -90,12 +76,10 @@ export function normalizePairCode(input: string): string | null {
   return text;
 }
 
-/** The code as a person reads it: two groups of five. */
 export function formatPairCode(code: string): string {
   return `${code.slice(0, 5)}-${code.slice(5)}`;
 }
 
-/** A fresh code; rejection sampling keeps every character uniform. */
 export function randomPairCode(random: (bytes: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n))): string {
   let code = "";
   while (code.length < PAIR_CODE_CHARS) {
@@ -158,7 +142,6 @@ export function scalarFromLittleEndian(bytes: Uint8Array): bigint {
   return value;
 }
 
-/** G.scalar_mult: encode(y * g) */
 export function scalarMult(scalar: bigint, point: RistrettoPoint): Uint8Array {
   return point.multiply(scalar % GROUP_ORDER).toBytes();
 }
@@ -193,7 +176,6 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 export class PairCodeProtocolError extends Error {}
-/** The device knew the code, but the PC's six-digit code it was bound to is gone: a new code is needed. */
 export class PairCodeExpiredError extends Error {}
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -209,7 +191,6 @@ function fromBase64Url(text: unknown, length?: number): Uint8Array {
   return bytes;
 }
 
-/** a frame a WebSocket can send as it is */
 function encodeMessage(message: Record<string, unknown>): Uint8Array<ArrayBuffer> {
   return new Uint8Array(utf8ToBytes(JSON.stringify(message)));
 }

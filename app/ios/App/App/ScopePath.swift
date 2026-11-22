@@ -1,8 +1,5 @@
 import Foundation
 
-/// The path checks a relay PC's scope rests on (PCStore.belongs), with Foundation only so a test can
-/// compile them without the app: `swiftc ScopePath.swift <test>.swift`. The Android twin is
-/// PCStore.cleanPath in app/android.
 enum ScopePath {
     /// `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else nil: no
     /// `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which

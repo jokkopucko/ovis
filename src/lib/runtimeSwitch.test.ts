@@ -1,13 +1,11 @@
 import { expect, it } from "bun:test";
 import { awaitRestart, followRestart, restartState } from "./runtimeSwitch.ts";
 
-/** a clock and a queue the test advances by hand: no real timer runs */
 type Answer = { id: string; accepted: boolean } | null | Error | "never";
 const up = (id: string) => ({ id, accepted: true });
 function manual(answers: Answer[]) {
   let time = 0;
   const queued: { run: () => void; ms: number }[] = [];
-  // an ask's bound runs only when nothing else is left: the asks that answer never need it
   const bounds: { run: () => void; ms: number }[] = [];
   const outcome = { back: 0, lost: 0, asked: 0 };
   const settle = () => new Promise<void>((resolve) => { setImmediate(resolve); });
@@ -77,7 +75,6 @@ it("keeps the switch's state for the page, past whatever shows it, until the ser
 });
 
 it("waits out a new bridge its launcher has not taken yet: a start still being checked may be rolled back", async () => {
-  // a herdr-core start still in its check, then the bridge the rollback started, which the launcher took
   const { options, outcome, tick } = manual([{ id: "candidate", accepted: false }, { id: "candidate", accepted: false }, up("restored")]);
   followRestart({ ...options, from: "old", waitMs: 90_000 });
   while (await tick());

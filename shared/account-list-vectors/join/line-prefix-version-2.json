@@ -1,0 +1,16 @@
+{
+  "name": "line-prefix-version-2",
+  "keys": {
+    "TEST-ONLY-invite": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgv_qk-P19j4PiGaxCwvzJmXbP_lizEMy3DLdblD3fEbShRANCAARJu9cFWH7uB1rKOnzO27_fhY6N-tqPnM0ho8szc6QZouKWzWALfTKBADjU14M6ac8tg4OB4E0CnTcfzle39P6W",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESbvXBVh-7gdayjp8ztu_34WOjfraj5zNIaPLM3OkGaLils1gC30ygQA41NeDOmnPLYODgeBNAp03H85Xt_T-lg"
+    }
+  },
+  "line": "ovis-join:2:eyJ2IjoxLCJzZXJ2aWNlIjoiaHR0cHM6Ly9hY2NvdW50cy5vdmlzLnRlc3QiLCJsaXN0IjoiMGY0ODRlOTIyNmFkMjkwYWFhYzZkZWE5MjQ0YWNlZDRlMmI3Yjk3Mjk3ZWNkOGQ1MmQ0MzdhNTdjMzNlNTM4MyIsInNlY3JldCI6Ik1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ3ZfcWstUDE5ajRQaUdheEN3dnpKbVhiUF9saXpFTXkzRExkYmxEM2ZFYlNoUkFOQ0FBUkp1OWNGV0g3dUIxcktPbnpPMjdfZmhZNk4tdHFQbk0waG84c3pjNlFab3VLV3pXQUxmVEtCQURqVTE0TTZhYzh0ZzRPQjRFMENuVGNmemxlMzlQNlcifQ",
+  "expect": {
+    "stops": {
+      "code": "line_malformed",
+      "reason": "prefix"
+    }
+  }
+}

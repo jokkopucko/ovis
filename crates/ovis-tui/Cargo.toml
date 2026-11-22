@@ -1,0 +1,28 @@
+[workspace]
+exclude = ["upstream"]
+
+[package]
+name = "ovis-tui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "herdr-core's terminals as herdr shows them (hc-tui's sidebar, tabs and splits), for Ovis users"
+
+[[bin]]
+name = "ovis-tui"
+path = "src/main.rs"
+
+[dependencies]
+hc-proto = { path = "upstream/crates/hc-proto" }
+hc-tui = { path = "upstream/crates/hc-tui" }
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+hc-vt = { path = "upstream/crates/hc-vt" }
+libc = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

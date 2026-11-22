@@ -4,7 +4,7 @@
  * session directory it opens (`pid=<pid>`, and `host=<host>` on recent builds) and never deletes
  * it; a session the TUI switches away from ends its log with `session.end`.
  */
-import { closeSync, type Dir, fstatSync, opendirSync, openSync, readSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, type Dir, fstatSync, opendirSync, openSync, readSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
@@ -40,7 +40,6 @@ export function parseMuseLock(text: string): { pid: number; host: string | null 
   return pid === undefined ? null : { pid: Number(pid), host: /^host=(.+)$/m.exec(text)?.[1] ?? null };
 }
 
-/** Up to `bytes` of a file, from its start or, with `fromEnd`, from its end; null when it cannot be read. */
 function readPart(path: string, bytes: number, fromEnd = false): string | null {
   let fd: number;
   try { fd = openSync(path, "r"); } catch { return null; }
@@ -67,10 +66,8 @@ export function museSessionLive(path: string): boolean {
 /** Host names compared by their first label, as `mini` and `mini.local` name one PC. */
 const sameHost = (a: string, b: string): boolean => a.split(".")[0]!.toLowerCase() === b.split(".")[0]!.toLowerCase();
 
-/** Past this many sessions the store is not scanned and Chat uses Terminal, as in grok-store.ts. */
 const MAX_SESSIONS = 4096;
 
-/** The names in `dir` that match, or null for a folder of more than MAX_SESSIONS entries, which is not listed further. */
 function names(dir: string, pattern: RegExp): string[] | null {
   let handle: Dir;
   try { handle = opendirSync(dir); } catch { return []; }
@@ -80,11 +77,10 @@ function names(dir: string, pattern: RegExp): string[] | null {
       if (count > MAX_SESSIONS) return null;
       if (pattern.test(entry.name)) found.push(entry.name);
     }
-  } catch { /* what was listed stands */ } finally { handle.closeSync(); }
+  } catch {} finally { handle.closeSync(); }
   return found;
 }
 
-/** A Muse process of the pane, with an upper bound of its start time. */
 export interface MuseOwner { pid: number; startedAt: number }
 
 /** Until when a scan that bound nothing stands, by store and pids: the monitor resolves such a pane every 2 s. */
@@ -101,7 +97,7 @@ function remember<T>(map: Map<string, T>, key: string, value: T): void {
  * The log in `dir` when its lock names one of `owners` (with this host, when it names one), the
  * lock was written since that process started and the log has not ended; else null. A
  * lock left by an earlier process that had the same pid is older than this one; a session the
- * process switched away from has ended. The lock is read only when it is new enough for one owner.
+ * process switched away from has ended.
  */
 function heldLog(dir: string, owners: readonly MuseOwner[], host: string): string | null {
   const lock = join(dir, ".session.lock");
@@ -115,17 +111,17 @@ function heldLog(dir: string, owners: readonly MuseOwner[], host: string): strin
     held = fresh.some((owner) => owner.pid === named.pid);
   } catch { return null; }
   const log = join(dir, "session.jsonl");
-  return held && museSessionLive(log) ? log : null;
+  if (!held) return null;
+  if (museSessionLive(log)) return log;
+  try { accessSync(log, constants.R_OK); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new MuseLogUnreadable(); }
+  return null;
 }
 
-/**
- * The log of the one session the pane's Muse processes hold open (heldLog). Every resolve scans
- * the store, so that two live sessions always leave none, whatever was bound before. Null unless
- * the scan leaves exactly one session, or when the store holds more than MAX_SESSIONS.
- * A scan that binds nothing is not repeated for MISS_MS, so a pane whose Muse has written no log
- * yet costs one scan per monitor interval. It is kept by pids only, as each reading of a start
- * time differs: a new process that takes a pid back within MISS_MS waits that long to bind.
- */
+/** The session log this pane's Muse holds is there, and cannot be read (its mode, its owner). */
+export class MuseLogUnreadable extends Error {
+  constructor() { super("Muse session log is unreadable"); this.name = "MuseLogUnreadable"; }
+}
+
 export function museSessionFor(data: string, owners: MuseOwner[], host = hostname(), now = Date.now()): string | null {
   const scan = `${owners.map((owner) => owner.pid).sort((a, b) => a - b).join(",")}\0${data}`;
   if ((missed.get(scan) ?? 0) > now) return null;
@@ -138,7 +134,6 @@ export function museSessionFor(data: string, owners: MuseOwner[], host = hostnam
   return found;
 }
 
-/** The one session in the store that heldLog finds for `owners`, or null for none, several or a store too large to read. */
 function scanStore(data: string, owners: readonly MuseOwner[], host: string): string | null {
   // sessions/YYYY/MM/DD/<id>
   let dirs = [join(data, "sessions")];
@@ -162,9 +157,7 @@ function scanStore(data: string, owners: readonly MuseOwner[], host: string): st
 }
 
 /**
- * The session log a Muse pane shows, or null when its Muse processes hold no single session.
  * A `muse` launcher that stays alive beside its `muse-bin-…` child holds no lock of its own.
- * `known`: herdr's `pane.process_info` the caller already read for this pane.
  */
 export async function resolveMuseSession(pane: HerdrPane, data = defaultMuseData(), known?: ProcessInfo | null): Promise<string | null> {
   try {
@@ -173,5 +166,8 @@ export async function resolveMuseSession(pane: HerdrPane, data = defaultMuseData
     const owners = (await Promise.all(pids.map(async (pid) => ({ pid, startedAt: await processStartUpperBoundAsync(pid) }))))
       .filter((owner): owner is MuseOwner => owner.startedAt !== null);
     return owners.length === 0 ? null : museSessionFor(data, owners);
-  } catch { return null; }
+  } catch (error) {
+    if (error instanceof MuseLogUnreadable) throw error;
+    return null;
+  }
 }

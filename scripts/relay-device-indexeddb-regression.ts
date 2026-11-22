@@ -1,4 +1,3 @@
-/** The production device store's source guard, against Chromium's real IndexedDB transactions. */
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";

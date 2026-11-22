@@ -7,7 +7,6 @@ import { OpenFileContext } from "../src/lib/filePaths.ts";
 
 declare global {
   interface Window {
-    /** opens Search conversation over the chat, as the palette and the pane's menu do */
     searchQa: { open: () => void };
   }
 }

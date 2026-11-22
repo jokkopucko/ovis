@@ -15,7 +15,6 @@ concurrency:
 jobs:
   snapshot:
     name: Snapshot stars and traffic
-    # GitHub-hosted: it needs gh, Bun and openssl only, none of the self-hosted runner's herdr tooling
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -37,7 +36,7 @@ jobs:
       - if: steps.secrets.outputs.ready == 'true'
         uses: ./.github/actions/setup-ci
         with:
-          cache: restore
+          cache: none
       - if: steps.secrets.outputs.ready == 'true'
         name: Take the snapshot
         env:

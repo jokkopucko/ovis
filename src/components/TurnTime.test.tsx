@@ -7,14 +7,12 @@ import { currentLocale } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { TurnTime } from "./TurnTime.tsx";
 
-// The memoized Turn around a TurnTime does not re-render at midnight; the day must come from the store.
 const MemoTurn = memo(function MemoTurn({ ts }: { ts: string }) {
   return createElement("div", null, createElement(TurnTime, { ts }));
 });
 
 describe("TurnTime", () => {
   test("reads today from the day store, not the wall clock: 'today 23:59' turns into yesterday after midnight", () => {
-    // years away from the real clock, so a label formatted against Date.now() would show a date
     let now = new Date(2020, 1, 3, 23, 59, 30).getTime();
     const clock: DayClock = { now: () => now, setTimer: () => 1, clearTimer: () => {} };
     const store = createDayStore(clock);

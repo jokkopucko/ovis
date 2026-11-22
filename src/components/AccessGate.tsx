@@ -8,10 +8,10 @@ import type { AccessRefusal } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
+import { StrictUnlockAsk } from "./StrictModePanel.tsx";
 
 
 export interface AccessGateProps {
-  /** why the server refused this browser, when it said */
   reason: AccessRefusal | null;
   /** the unconsumed address code to display; automatic submission must claim it first */
   initialCode: string;
@@ -23,6 +23,8 @@ export interface AccessGateProps {
   onPaired?: () => void;
   /** Fires once the server set a cookie: the shell can mount, and every later fetch and the WebSocket carry it. */
   onUnlocked: () => void;
+  /** the server says this request is this PC's own window (/api/health auth.own_window) */
+  ownWindow?: boolean;
 }
 
 /**
@@ -32,7 +34,25 @@ export interface AccessGateProps {
  * token stays as the other way. Nothing is stored here: the server answers with an
  * HttpOnly cookie either way.
  */
-export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked }: AccessGateProps) {
+export function AccessGate(props: AccessGateProps) {
+  // a locked PC pairs nobody: its own window may only ask to turn strict mode off; any other window sees one line.
+  // Chosen before the pairing form mounts, so a pairing QR's code is never claimed or sent (T47, N4)
+  return props.reason === "locked" ? <LockedGate ownWindow={props.ownWindow === true} /> : <PairingGate {...props} />;
+}
+
+function LockedGate({ ownWindow }: { ownWindow: boolean }) {
+  const t = useT();
+  return (
+    <main className="access-gate-screen">
+      <div className="access-gate" data-testid="strict-gate">
+        <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
+        {ownWindow ? <StrictUnlockAsk /> : <p className="access-gate-copy">{t("This PC is in strict mode.")}</p>}
+      </div>
+    </main>
+  );
+}
+
+function PairingGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked }: AccessGateProps) {
   const t = useT();
   const codeRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
@@ -58,7 +78,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     }
   };
 
-  // a scanned QR code brings the code along: no typing on the phone
   useEffect(() => {
     if (!scanned.current) return;
     scanned.current = false;
@@ -96,7 +115,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     <main className="access-gate-screen">
       <div className="access-gate" data-testid="token-gate">
         <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
-        {/* the title names the task on this screen, not the app (G-140); the mark above carries the brand */}
         <h1 id="access-gate-title" className="access-gate-title">
           {t(reason === "token_required" ? "Unlock" : "Pair this device")}
         </h1>
@@ -153,7 +171,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
         {error !== null && (
           <p id="access-gate-error" className="access-gate-error" role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>
         )}
-        {/* in the iOS app (app/) this page is all there is: the way back to its list of PCs */}
         {inNativeApp() && (
           <p className="access-gate-copy"><button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button></p>
         )}

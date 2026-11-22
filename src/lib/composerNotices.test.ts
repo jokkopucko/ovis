@@ -41,7 +41,6 @@ it("never dismisses an activity: it holds the user's input", () => {
   const after = dismissNotice(NO_DISMISSALS, draft);
   expect(after).toBe(NO_DISMISSALS);
   expect(arrangeNotices([draft], after)).toEqual([draft]);
-  // even a stale dismissal of the same id and revision cannot hide it
   const forced = new Map([[draft.id, draft.revision]]);
   expect(arrangeNotices([draft, held], forced)).toEqual([held, draft]);
 });

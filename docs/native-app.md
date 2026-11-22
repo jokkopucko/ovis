@@ -7,7 +7,8 @@ Status: Phase 1 step 2 built for iOS (checked in a simulator) and Android (check
 (FCM), and deployed at `push.ovis.sh` on 2026-10-24, where its APNs and FCM credentials passed
 their authentication tests. Steps 4 and 5, the client's push through the app and the iOS
 Notification Service Extension, are built, 2026-10-24 (see [Push in the app](#push-in-the-app));
-a push received on a real device is still to be checked. iOS 1.0 (build 2) is in App Review.
+a push received on a real device is still to be checked. iOS 1.0 (build 8) is on the App Store
+since 2026-11-15 (<https://apps.apple.com/app/id6824664162>), and Android 1.0.1 (8) on Google Play.
 
 Ovis ships as a store app for iOS first, Android later. The goal is reach: the app is
 found in the App Store and installs in one tap, where the web app needs "Add to Home Screen". It
@@ -96,7 +97,7 @@ relay's FCM credentials are a service account key of the app's Firebase project,
 5. Notification Service Extension that decrypts. Built 2026-10-24 (`OvisNotifications`), see
    [Push in the app](#push-in-the-app).
 6. App Store listing, privacy answers, review notes pointing at the demo mode. Version 1.0
-   (build 2) was submitted for review on 2026-10-24, to be released by hand once approved.
+   (build 8) was submitted for review on 2026-11-08 and released on the App Store on 2026-11-15.
 
 ## Phase 2 and later
 
@@ -175,8 +176,12 @@ To repeat it:
 
 What is there:
 
-- `app/web`: the app's own pages. `index.html` is the connect screen: an address field, Scan QR
-  code, the PCs opened before, and Try the demo. `error.html` is shown when a PC cannot be
+- `app/web`: the app's own pages. `index.html` opens on the account's sign-in (the buttons the
+  account service names at `/v1/providers`; a press opens the hosted app on that sign-in,
+  `#sign-in=<provider>`), with Start without signing in below it. That and a build with
+  `OVIS_APP_ACCOUNT=0` lead to Add a PC: Scan a QR code, Enter an address (Tailscale or Wi-Fi),
+  SSH (only in an app that announces the `OvisSsh` plugin), and the PCs opened before. The address `demo` opens the bundled demo, which has no button
+  of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
   reason, Try again and Change PC. Both are in English and Korean: an element's
   `data-ko` attribute holds its Korean text, put in when the phone's first language is Korean
@@ -185,6 +190,16 @@ What is there:
   to every page, the client included.
 - A PC joins the list of PCs only once a page of it has loaded, so an address that never
   answered, or answered with an HTTP error, is not kept.
+- On Android an address typed, scanned or picked from the list is first asked whether it is Ovis
+  (`PCStore.check`, through the `check` option of `HerdrShell.open`): its
+  `/api/health?scope=bridge`, which every Ovis since 0.1 answers with `ok` and `auth`, or the
+  hosted app's `<meta name="ovis-shell">` on that answer or on its page. It is "not Ovis" only when
+  its page loads while its `/api/health` answers 200 or 404 with something else. A redirect (a
+  sign-in in front of the PC) and an answer that does not tell (401, 403 or 429 from a proxy or WAF,
+  502 from `tailscale serve` while Ovis is stopped) are left to the WebView, as before. For up to 20 seconds the connect screen says what it
+  opens, with Cancel; an address that is not Ovis, refuses, is not found or does not answer stays
+  on the connect screen with why (`openFailure()` in `shell.js`). A relay link and the account's
+  front page open without it. The iOS app opens at once, as before.
 - A PC paired over the Ovis relay opens from its pairing link, scanned or pasted:
   `https://app.ovis.sh/s/<server_id>/#offer=...` (`relayLink()` in `shell.js`). Only the hosted
   shell's origin may carry an offer: one on any other origin is refused on the connect screen,
@@ -219,9 +234,16 @@ What is there:
   PC's whole host stay in the app and shows `error.html` when the first load fails. Until the
   PC answers, a native cover says which PC is opening and offers Change PC; when a PC
   sends no answer within 20 seconds, the cover itself says so, with Try again and Change PC, and
-  for a Tailscale address that Tailscale may be off on the phone (WebKit alone waits a minute or
+  for a Tailscale address that Tailscale may be off on the phone, or for a public server that it
+  may be down or out of the phone's reach (WebKit alone waits a minute or
   more, which is what a phone with Tailscale off sees for a `.ts.net` address, and while that
-  connection hangs it did not paint the error page either). When a Tailscale address fails to
+  connection hangs it did not paint the error page either). A PC that answered is never cut off
+  (`OpeningWatch`): the cover stays until the client is up (its root no longer holds index.html's
+  loading spinner), with a bar filled from the web view's `estimatedProgress` (it never goes back
+  and stops at 95 %); after 5 s it says the connection is slow, with Try again. iOS has no count
+  of the bytes received, and `estimatedProgress` holds still while one large file arrives (about
+  40 % through the client's script at 10 KB/s), so iOS never claims a stall as Android does, and a
+  TLS handshake still under way at 20 s counts as no answer. When a Tailscale address fails to
   load, `error.html` (on Android too) adds the same note. A redirect of the address being opened
   to another origin is handled as on Android (see [The Android app](#the-android-app)), where
   Capacitor would send another host to Safari, except a sign-in in front of the PC: on iOS one
@@ -334,7 +356,18 @@ one more browser's and is unchanged.
   plugin the app lacks would never settle.
 - Turning alerts on asks for notifications (the phone's own prompt), then subscribes, and the PC
   sends its confirmation push, as in a browser. The app shows an alert that arrives while it is
-  open too. Tapping one opens the app, not yet the pane as a browser's does.
+  open too. On Android, tapping a pane's alert opens the PC that sent it on that pane's chat, as a
+  browser's does: the PC names the endpoint it pushed to and its relay ID inside the encrypted alert
+  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink`). A tap for the
+  PC already open selects the pane in its page without reloading the page (over a reader or a file
+  page, or before that page is up, the alert's address opens instead). An alert for another
+  saved PC opens that PC, as switching PC does, without asking: unsent text the open page kept in
+  memory alone (the panes of a PC whose server names no herdr lifetime) is not lost but waits in
+  Recover unsent text for that PC and pane, never sent. An alert too long to carry the endpoint and relay
+  ID is sent without them, and its tap just opens the app, as does an alert from an older PC or
+  from one the phone no longer keeps. A tap for the open PC only brings the app forward when that
+  PC's page is from an Ovis older than this hand-over and is served over plain http, where a page
+  has no service worker. On iOS a tap still only opens the app.
 - The plugin is `app/ios/App/App/OvisPushPlugin.swift` on iOS and
   [`app/android/ovis-push`](../app/android/ovis-push/README.md) on Android, with the same calls:
   `checkPermissions()` and `requestPermissions()` (`{ notifications }`, Capacitor's permission
@@ -375,11 +408,63 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
 - `MainActivity` builds Capacitor's config at runtime when a PC is chosen. It sets
   `setServerUrl` to the PC's bare origin (a pairing link's path and query come in through
   `setStartPath`) and `setErrorPath("error.html")`. It sets no `allowNavigation`: Capacitor turns
-  each entry into another origin for its bridge, and the PC's own links stay in the WebView anyway.
+  each entry into another origin for its bridge, and the PC's own pages stay in the WebView anyway.
+  A main-frame link to any other origin (scheme, host and port; the default port counts as none)
+  opens in the phone's browser, even on the PC's own host: Capacitor compares scheme and host only,
+  so another server on that host (a dev server's port) would otherwise replace Ovis in the WebView
+  (`PCStore.sameOrigin`). A sign-in's steps and the redirects of the first load are judged before it.
   Opening or leaving a PC starts the activity again, so the next page is a first load and the
-  old WebView goes with the old activity.
+  old WebView goes with the old activity. Just before, the page shown hears `ovis-page-leaving`
+  (waited for up to a second): the client leaves the pane state it keeps in memory alone (for a PC
+  whose server names no herdr lifetime, or typed before that PC's herdr was proven) in storage, and
+  that PC's next page takes it once and puts
+  its text in Recover unsent text, never back into a pane: nothing proves the herdr it comes back to
+  is the one it was typed under, and a replaced herdr gives the same pane IDs to other programs
+  (`src/lib/paneLifetime.ts`, `carry`). Held input older than a day is dropped, as it is from an
+  open page. A terminal line that looks like a key and a secret prompt's input are never written
+  down (#2532), and unsaved edits in the file editor are not carried, so they still go with the
+  page, as does an edit that storage refused. A page served directly by a PC on an Ovis release
+  before this one has no hand-over listener, so what it held in memory alone is not carried: on any
+  release, an edit its storage refused, and from 0.4.19 also text typed while that PC's herdr was not
+  proven (before its first snapshot, or for a PC, such as a remote one on an older bridge, that names
+  no herdr lifetime); its stored drafts stay in storage, as before.
+- Until the PC's page shows, a native cover over the WebView says which PC is opening and offers
+  Change PC, as on iOS. When the PC's page has not answered after 20 seconds (`PCStore.ANSWER_SECONDS`,
+  counted from Open on the connect screen when it checked the address first, with at least 5 s left
+  for the page) the app stops the load and shows `error.html`, which says the PC did not answer:
+  for a home network or tailnet address, that such an address does not open over mobile data or
+  another Wi-Fi; for a public server, that it may be down or out of the phone's reach. Chromium
+  alone waits about two minutes. Bytes still arriving before that answer (a slow TLS handshake)
+  put the limit off until 5 s pass with none, for at most 60 s, so a server that completes its
+  handshake and never responds still gets the error page ("accepted the connection but sent no
+  page"). A PC whose page has answered is never cut off (`OpeningWatch`, from the WebView's
+  committed response and the app's received bytes, `TrafficStats`): after 5 s the cover says the
+  connection is slow and how much has arrived, and after 20 s with nothing more it offers Keep
+  waiting and Try again. Once the PC has answered, the cover stays until the client is up (its
+  root no longer holds index.html's loading spinner; a page with no root, such as a sign-in, lifts
+  it when shown) and shows a bar: filled by the bytes received against the sizes of the page and
+  the files it starts with (a HEAD of each from the page, so with the page's own encoding and
+  cookies), indeterminate when any of them gives no Content-Length; it never goes back and stops at
+  95 % until the client is up. The page's files are content-hashed and cached a year, so once an
+  open has finished a second one fetches only index.html (1.6 s at 10 KB/s, against 126 s for the
+  first); a new release names new files, and each PC's origin keeps its own copy. On a 10 KB/s link the first paint needs
+  about 90 KB and a usable client about 1.1 MB (measured on main, 2026-11-14). The first page
+  of a PC saved by its origin is checked once more (`PCStore.check`, with the WebView's cookies):
+  one that answers but not as Ovis is not kept and gives way to `error.html`, which has Change PC,
+  so a PC saved before that check (or one whose port another server took) never traps the app.
 - `onPause` flushes WebView cookies. Without it, a pairing made a moment before the app was
   swiped away was lost: the next start asked for pairing again.
+- Back goes to the page first. The page keeps a history entry for everything open over it (a
+  sheet, a dialog, a menu, the workspace list: `src/lib/sheetHistory.ts`) and for each pane it
+  moved to, so `MainActivity` keeps an `OnBackPressedCallback` on while the WebView's history has
+  an entry of the same place behind the page shown (the PC's pages, or the app's own before a PC
+  is chosen: `PCStore.pageTakesBack`, told again on every `doUpdateVisitedHistory`), and its Back
+  is `goBack()`: the page closes what is open, or shows the pane before, and the demo goes back to
+  the connect screen. With no such entry (the first page with nothing open, a sign-in in front of
+  the PC, `error.html`) the callback is off and Back is the system's: it leaves the app, with
+  Android's own predictive-back animation, and no second press is asked for. Before this every
+  Back left the app, whatever was open. The iOS app has no Back: the edge swipe is the page's (it
+  opens the workspace list), and WKWebView's back-forward swipe stays off.
 - `HerdrShellPlugin` and `PCStore` (SharedPreferences) mirror the iOS plugin and store. As on
   iOS, a pairing link stays in memory until a PC page loads.
 - Capacitor injects its bridge only into the PC's origin, so `error.html`, served from the app
@@ -514,6 +599,129 @@ were read through the WebView's DevTools socket (`webview_devtools_remote_<pid>`
 Still open on Android:
 
 - QR scanning and IME were not tried in the emulator; a physical phone should check them.
+
+### PCs over SSH
+
+The Android app can add a PC the person already reaches over SSH: **SSH** under **Add a PC** on
+the connect screen. The phone talks to the PC's sshd itself (ConnectBot's `sshlib`, BSD-3-Clause), with no Ovis
+relay, no account and no port open but SSH. A user guide is [ssh-from-phone.md](ssh-from-phone.md);
+the iOS plan is [ios-ssh-plan.md](ios-ssh-plan.md). Nothing in `server/` or `shared/` changes: the PC
+runs the Ovis it already has.
+
+How a page gets there (`app/android/app/src/main/java/sh/ovis/app/Ssh*.java`, `OvisSshPlugin`):
+
+- Each SSH PC is saved under a loopback origin of its own on the phone,
+  `http://127.0.0.<n>:47317` (`SshPcs.freeOrigin`, n from 2, never one a removed PC had until all
+  253 were handed out; Remove also deletes that origin's web storage), so its cookies, storage, drafts
+  and service worker stay apart from every other PC's and stay put across restarts. `SshTunnel` listens
+  there; each connection the WebView makes becomes an SSH direct-tcpip channel to the PC's own Ovis
+  on its 127.0.0.1. That Ovis sees a request from its own loopback with no proxy headers and lets it
+  in as its own PC's (`server/access.ts`, `local`): no token is typed or kept.
+- The PC's Ovis is found as the PC flow finds it (`server/remote-host.ts`): the live bridge
+  descriptors in `~/.config/herdr-web-ui/bridges/`, herdr's default session first, never a
+  bridge-only server another PC's Ovis started (`managed_remote`). One installed but stopped is
+  started through its launcher (the herdr plugin, `ovis.service`, the launchd agent); a plugin whose
+  herdr is not running gets a headless `herdr server`, as `server/pc-install.ts` does.
+- Other apps on the phone can reach its loopback too, so the first request on each connection must
+  carry the tunnel's gate cookie (`ovis_ssh_gate`, 256 random bits, new each time the tunnel
+  starts, HttpOnly, SameSite=Strict, on that origin only), which the app hands `CookieManager` only
+  once the tunnel holds the address; anything else gets 403 and nothing reaches the PC, and the gate is
+  taken out of the request before it goes on. An address another app took first is never opened: the
+  connect screen says so instead (`OvisSshPlugin.listen`, `ssh-port`), as the page that would answer
+  there would be that app's, with the app's bridge. Capacitor makes the WebView's cookies the process's
+  `CookieHandler`, which its native HTTP plugin would carry to any address a page with the bridge
+  asks for; `MainActivity` unsets it, as nothing in the app uses it. `OvisSsh` answers the app's own
+  pages only, never a PC's.
+- Lifetime (`SshTunnel`, each rule checked in `SshTunnelTest` with the clock, the SSH side and the
+  closer injected): the SSH connection is made when a request needs it, once for a whole burst, outside
+  the tunnel's lock, and again after it ended (the app in the background, a network change, which
+  `SshTunnels` watches and answers by dropping every connection), asking nothing. A request is passed on
+  once, with `Connection: close` (a WebSocket's upgrade excepted), so the WebView never re-sends it on a
+  reused connection, and one the PC side ends before answering gets 503 rather than silence: what was
+  typed stays a draft in the page. A failure answers the page's burst at once for 2 s (by the monotonic
+  clock), then is tried again; looking the PC's Ovis up again happens one request at a time, and its
+  failure drops the connection into that window. A stop (the host key changed, the key refused, a key
+  the phone can no longer open) is never tried again until the PC is set up again. Coming back to the
+  app pings a connection that exists and makes a new one before the page asks; a PC with none is not
+  signed in to. A link is closed off the caller's thread, as sshlib's close can wait on a dead network,
+  and a link closed meanwhile (sshlib's IllegalStateException) is a failure, never a crash.
+- No foreground service. Without one the connection ends some time after the app leaves the screen
+  and is made again on return, which takes about a second on a LAN; a foreground service would keep
+  it at the cost of a permanent notification and Play's `specialUse` declaration with a video, for
+  nothing the person sees.
+
+Keys and host keys (`SshPcs`, `SshVault`, `SshKeys`, `SshHostKeys`; `SshPcsTest`, `SshKeysTest`,
+`SshHostKeysTest`):
+
+- The phone's own ed25519 key is made on first use. Its seed is sealed with AES-GCM under a
+  256-bit key that lives in the Android Keystore and never leaves it (`SshVault`); only the public
+  line leaves the app (`ssh-ed25519 … ovis-phone:<model>`). Android's Keystore cannot hold an
+  ed25519 key on every phone, hence a sealed software key. A seed the phone can no longer open
+  (`key-lost`) is never replaced quietly: setting the PC up again makes a new one.
+- A pasted private key and its passphrase are sealed the same way. Pasting one sits under
+  **Advanced** on the setup screen: a private key on the clipboard passes other apps, so the first
+  choices are the phone's own key (its public line copied or shared) and the password once. The app reads OpenSSH keys
+  (bcrypt-encrypted or not) and PEM keys (`RSA`/`EC PRIVATE KEY`, encrypted or not); ed25519, RSA
+  and ECDSA; it refuses DSA, and says how to convert PKCS#8 (`ssh-keygen -p -f key`) and PuTTY
+  keys. A paste is read before anything goes to the network, so a wrong passphrase is told at once.
+- A password is used once, to add the phone's key to `~/.ssh/authorized_keys` there; the key is
+  then proven by signing in with it, and the password is never stored. Keyboard-interactive gets the
+  password only for a single password prompt, never for a one-time code.
+- Host keys: nothing is sent to a host whose key the person has not confirmed (its SHA-256
+  fingerprint, as `ssh-keygen -lf` prints it). A saved key is pinned with its algorithm; any other
+  key, or a saved key that cannot be read, fails closed with no way past it but **Forget host key**
+  under Manage, after which opening the PC shows the new fingerprint to confirm.
+- Backups stay off (`allowBackup="false"`), so none of it reaches a Google backup either.
+
+Manage (`app/web/connect.js`): an SSH PC in Your PCs has Manage instead of Forget: rename, show
+the phone's key line again (with Copy and Share), set up again (another way to sign in, another key, the
+phone's key registered again; the PC keeps its origin), forget its host key, and remove it, which can
+also take the phone's key out of the PC's `authorized_keys`: only the lines whose key field is that
+key, the file's mode kept, and only when no other saved PC may sign in to the same account with it
+(the same user on the same host name or behind the same host key).
+
+Errors: the setup screen says each failure in words with what to do (`SshWords`, strings in
+`res/values/ssh_strings.xml` and `values-ko`). For an SSH PC that is open, the tunnel's failure
+goes to `error.html` with its kind (`ssh-<kind>` in `PCStore.failureKind`) and the one command that
+fixes it on the PC (`PCStore.failureCommand`, shown to copy): the host key changed, the key refused,
+the PC out of reach, Ovis not installed (the install command) or not started (its launcher's
+command). The tunnel's 503 carries `X-Ovis-Ssh: <kind>`, so `MainActivity` keeps that reason rather
+than the bare status, and a stop while the page is up takes the page to `error.html` too.
+
+First install from the phone: where the account has no Ovis, the setup screen offers to install it.
+The PC flow's remote bundle (`scripts/build-remote-bundle.ts`) cannot serve the phone: it starts a
+bridge-only server, whose token only the PC that installed it has, with no app of its own to open.
+The phone drives the PC flow's other path instead, the official installer as one SSH command
+(`SshLink.INSTALLER_RUN`, the same command shape as `installerRun` in `server/pc-install.ts`, with
+its checks for curl, git, tar and unzip, a writable home and 1 GB free), then starts Ovis and opens it.
+Measured on the bare fixture (`up-bare.sh`: Ubuntu 24.04 with SSH, curl, git, tar and unzip, no herdr
+and no Ovis), driven by `SshFixtureTest.installsOvisWhereThereIsNone` from the emulator: release v0.5.3
+ships no compiled server, so the installer installs from source: herdr, Bun and the herdr plugin's
+checkout, built there. It downloaded 361 MB, left 916 MB in the home folder (the plugin checkout 750 MB,
+Bun's cache 474 MB of it) and took 31.5 s from the tap to Ovis answering on this PC's link; a home
+connection at 50 Mbit/s needs about a minute more for the download. A release with the compiled server
+needs far less. The installer's from-source path needs `unzip`, which the PC flow's checks
+(`server/pc-install.ts`) do not look for either: a machine without it fails there after herdr is
+installed, while the phone's own check says so first.
+
+Tests: the JVM tests above run with `./gradlew :app:testDebugUnitTest`.
+`scripts/fixtures/phone-ssh/emulator-run.sh [--bare]` is the emulator run: it starts the disposable
+fixture (sshd, herdr, Ovis and a stand-in agent in Docker), authorizes the test-only keys, starts an
+emulator when none runs, and runs the instrumented `SshFixtureTest` (the real Keystore, every key
+format signing in, the host-key rule, the password-once registration and its removal, the tunnel's
+gate and stop) and `SshSetupFlowTest` (the setup screen with a pasted, passphrase-protected key);
+`--bare` adds the first install on a fixture with neither herdr nor Ovis.
+
+Size: the debug APK is 55,906,488 bytes (53.3 MB). The SSH library (sshlib, Tink, the Kyber KEM) adds 1.03 MB to the
+release APK (measured for the prototype: 47,906,469 bytes against 46,874,305, minify off as before); the
+app's own SSH classes are 138 KB of bytecode.
+
+Not tried yet: a real phone (only the emulator, Android 15 with Google APIs), a real Wi-Fi to mobile data switch, push alerts
+from an SSH PC (they come from the PC's own Ovis, so they should work, unchecked), a PC whose Ovis
+has `OVIS_TOKEN` set (its sign-in page shows), a named herdr session, Windows, jump hosts and
+`~/.ssh/config` aliases. The PC's Ovis menu names an SSH PC "local", as Ovis sees itself; and an
+sshd session cut by a dropped network stays on the PC until its TCP keepalive (or `ClientAlive`)
+ends it.
 
 ## Through the Ovis relay
 

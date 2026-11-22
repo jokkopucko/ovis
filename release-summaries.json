@@ -1,4 +1,530 @@
 {
+  "0.5.9": {
+    "en": {
+      "new": [
+        "Sign in once and your account's PCs open from any of your devices.",
+        "A device new to a PC usually waits through a 10-second check.",
+        "Your older devices get a notice, with Not me to shut a new one out.",
+        "PCs that are not in an account work as before.",
+        "To turn it off on a PC, set OVIS_ACCOUNT_OPENS_ALL=0 and restart."
+      ],
+      "improved": [
+        "Adding a PC on the relay tab is a few buttons, not paragraphs.",
+        "Settings shows your account as one line, with Manage account."
+      ],
+      "fixed": [
+        "app.ovis.sh no longer gets stuck on an error after an update.",
+        "A PC opened from app.ovis.sh shows Sign out in Settings again.",
+        "Add this PC again on a PC already in your account keeps it there."
+      ]
+    },
+    "ko": {
+      "new": [
+        "로그인 한 번이면 계정의 PC를 내 어느 기기에서든 열 수 있어요.",
+        "PC에 처음 들어오는 기기는 보통 10초 확인을 거쳐요.",
+        "먼저 쓰던 기기에 알림이 오고, '내가 아니에요'로 막을 수 있어요.",
+        "계정에 없는 PC는 예전처럼 동작해요.",
+        "끄려면 PC에 OVIS_ACCOUNT_OPENS_ALL=0을 설정하고 다시 시작하세요."
+      ],
+      "improved": [
+        "릴레이 탭에서 PC 추가가 긴 설명 대신 버튼 몇 개로 끝나요.",
+        "설정에서 계정이 한 줄로 보이고, 나머지는 '계정 관리'에 있어요."
+      ],
+      "fixed": [
+        "app.ovis.sh가 업데이트 뒤 오류 화면에 멈춰 있지 않아요.",
+        "app.ovis.sh에서 연 PC의 설정에 다시 로그아웃이 보여요.",
+        "이미 계정에 있는 PC에서 다시 추가해도 계정에서 빠지지 않아요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "一度サインインすれば、アカウントの PC をどの端末からでも開けます。",
+        "PC に初めて来る端末は、ふつう 10 秒の確認を経ます。",
+        "先に使っていた端末に通知が届き、「自分ではない」で締め出せます。",
+        "アカウントに入っていない PC はこれまでどおり動きます。",
+        "オフにするには PC で OVIS_ACCOUNT_OPENS_ALL=0 にして再起動します。"
+      ],
+      "improved": [
+        "リレータブでの PC 追加が、長い説明ではなくボタン数個になりました。",
+        "設定のアカウントは 1 行になり、残りは「アカウント管理」にあります。"
+      ],
+      "fixed": [
+        "app.ovis.sh が更新後にエラー画面で止まらなくなりました。",
+        "app.ovis.sh から開いた PC の設定に、サインアウトがまた表示されます。",
+        "アカウントにある PC でもう一度追加しても、アカウントから外れません。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "登录一次，就能在你的任何设备上打开账户里的电脑。",
+        "首次访问电脑的设备，通常需要经过 10 秒确认。",
+        "你之前的设备会收到通知，可用“不是我”将其拒之门外。",
+        "不在账户中的电脑照旧工作。",
+        "要关闭此功能，在电脑上设置 OVIS_ACCOUNT_OPENS_ALL=0 并重启。"
+      ],
+      "improved": [
+        "在中继标签页添加电脑，只需几个按钮，不再是大段说明。",
+        "设置中的账号显示为一行，其余内容在“管理账号”里。"
+      ],
+      "fixed": [
+        "app.ovis.sh 更新后不再卡在错误页面。",
+        "从 app.ovis.sh 打开的电脑，设置里又能看到“退出登录”了。",
+        "已在账号中的电脑再次添加，也不会被移出账号。"
+      ]
+    }
+  },
+  "0.5.8": {
+    "en": {
+      "new": [
+        "Desktop apps can open web links in a browser you pick.",
+        "Agents can get a browser tool, picked per agent in Settings.",
+        "Set OVIS_ACCOUNT_OPENS_ALL=1 on a PC to open it by signing in once."
+      ],
+      "improved": [
+        "app.ovis.sh and the phone apps open your last PC, not the overview.",
+        "Signing in on the PC's own page goes straight to your provider.",
+        "A PC with one Ovis, added over Tailscale or SSH, skips the list.",
+        "Pairing a phone now starts on the Ovis relay.",
+        "Settings' Account section is compact: one row, icon sign-in chips."
+      ],
+      "fixed": [
+        "Sign-in at app.ovis.sh offers Google and Apple, not GitHub alone.",
+        "A PC waiting to be added says how to finish with one device."
+      ]
+    },
+    "ko": {
+      "new": [
+        "데스크톱 앱에서 웹 링크를 고른 브라우저로 열 수 있어요.",
+        "설정에서 에이전트마다 브라우저 도구를 붙일 수 있어요.",
+        "PC에 OVIS_ACCOUNT_OPENS_ALL=1을 설정하면 로그인 한 번으로 그 PC가 열려요."
+      ],
+      "improved": [
+        "app.ovis.sh와 휴대폰 앱이 개요 대신 마지막으로 쓴 PC를 열어요.",
+        "PC 자체 화면에서 로그인하면 바로 로그인 서비스로 넘어가요.",
+        "Ovis가 하나인 PC는 Tailscale·SSH로 추가할 때 목록 없이 바로 연결돼요.",
+        "휴대폰 연결이 이제 Ovis 릴레이에서 시작해요.",
+        "설정의 계정 섹션이 한 줄과 아이콘 로그인 버튼으로 간결해졌어요."
+      ],
+      "fixed": [
+        "app.ovis.sh 로그인에 GitHub뿐 아니라 Google과 Apple도 있어요.",
+        "추가를 기다리는 PC가 기기 하나로 끝내는 방법을 알려 줘요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "デスクトップアプリで、Web リンクを選んだブラウザで開けます。",
+        "設定でエージェントごとにブラウザツールを付けられます。",
+        "PC で OVIS_ACCOUNT_OPENS_ALL=1 にすると、一度のサインインでその PC が開きます。"
+      ],
+      "improved": [
+        "app.ovis.sh とスマホアプリは概要ではなく最後に使った PC を開きます。",
+        "PC 自身の画面でのサインインは、そのままプロバイダへ進みます。",
+        "Ovis が 1 つの PC は、Tailscale や SSH で追加すると一覧なしでつながります。",
+        "スマホの接続は Ovis リレーから始まるようになりました。",
+        "設定のアカウント欄が 1 行とアイコンのサインインボタンにまとまりました。"
+      ],
+      "fixed": [
+        "app.ovis.sh のサインインに GitHub だけでなく Google と Apple も。",
+        "追加待ちの PC が、端末 1 台で終える方法を案内します。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "桌面应用可以用你选择的浏览器打开网页链接。",
+        "可在设置中为每个代理添加浏览器工具。",
+        "在电脑上设置 OVIS_ACCOUNT_OPENS_ALL=1，登录一次即可打开这台电脑。"
+      ],
+      "improved": [
+        "app.ovis.sh 和手机应用打开你上次使用的电脑，而不是概览。",
+        "在电脑自己的页面登录会直接跳到登录服务。",
+        "只有一个 Ovis 的电脑，通过 Tailscale 或 SSH 添加时无需列表直接连接。",
+        "手机配对现在从 Ovis 中继开始。",
+        "设置中的账户部分更紧凑：一行信息加图标登录按钮。"
+      ],
+      "fixed": [
+        "app.ovis.sh 登录除了 GitHub，还提供 Google 和 Apple。",
+        "等待添加的电脑会说明如何只用一台设备完成。"
+      ]
+    }
+  },
+  "0.5.7": {
+    "en": {
+      "improved": [
+        "Groundwork for account device safety, still switched off for now."
+      ]
+    },
+    "ko": {
+      "improved": [
+        "계정 기기 보호를 위한 기반 작업이에요. 기능은 아직 꺼져 있어요."
+      ]
+    },
+    "ja": {
+      "improved": [
+        "アカウント端末の保護に向けた下準備です。機能はまだオフです。"
+      ]
+    },
+    "zh": {
+      "improved": [
+        "为账户设备安全做的基础工作，相关功能目前仍关闭。"
+      ]
+    }
+  },
+  "0.5.6": {
+    "en": {
+      "new": [
+        "Add another PC's Ovis by its https address and the code it shows.",
+        "Your account's PCs that are not in this app yet show in the sidebar."
+      ],
+      "improved": [
+        "The phone apps and app.ovis.sh open on the Ovis account sign-in.",
+        "Add a connection has three tabs: Ovis relay, Tailscale and Direct.",
+        "One approval on a device you use joins a new device to your PCs.",
+        "The hosted app opens straight into the PC you used last.",
+        "Usage counts tell visits through the Ovis relay and Portal apart."
+      ],
+      "fixed": [
+        "A PC that is off says so, with Check again to try it at once.",
+        "Keys typed while offline wait until you send or discard them.",
+        "Signing in on Android no longer hangs after the browser returns.",
+        "An alert is called off when its pane closes before it goes out.",
+        "Chat keeps following new messages as the list settles."
+      ]
+    },
+    "ko": {
+      "new": [
+        "다른 PC의 Ovis를 https 주소와 그 PC에 뜬 코드로 추가할 수 있어요.",
+        "계정에 있지만 이 앱에 아직 없는 PC가 사이드바에 보여요."
+      ],
+      "improved": [
+        "휴대폰 앱과 app.ovis.sh가 Ovis 계정 로그인 화면으로 열려요.",
+        "연결 추가에 Ovis 릴레이, Tailscale, 직접 연결 세 탭이 생겼어요.",
+        "쓰던 기기에서 한 번 승인하면 새 기기가 내 PC들에 연결돼요.",
+        "호스팅 앱이 마지막으로 연 PC로 바로 열려요.",
+        "사용량 집계가 Ovis 릴레이와 Portal을 통한 방문을 구분해요."
+      ],
+      "fixed": [
+        "꺼진 PC는 꺼졌다고 표시되고, 다시 확인으로 바로 재시도할 수 있어요.",
+        "오프라인일 때 입력한 키는 보내거나 버릴 때까지 기다려요.",
+        "Android에서 로그인 후 브라우저에서 돌아와도 멈추지 않아요.",
+        "알림이 나가기 전에 창이 닫히면 그 알림은 취소돼요.",
+        "목록이 자리를 잡는 동안에도 채팅이 새 메시지를 계속 따라가요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "別の PC の Ovis を https アドレスと表示されたコードで追加できます。",
+        "アカウントにあってこのアプリにまだない PC がサイドバーに出ます。"
+      ],
+      "improved": [
+        "スマホアプリと app.ovis.sh は Ovis アカウントのサインインで開きます。",
+        "接続の追加に Ovis リレー、Tailscale、直接の 3 つのタブができました。",
+        "使用中の端末で一度承認すると、新しい端末がすべての PC につながります。",
+        "ホスト版アプリは最後に開いた PC で直接開きます。",
+        "利用状況の集計で Ovis リレーと Portal 経由のアクセスを区別します。"
+      ],
+      "fixed": [
+        "電源が切れた PC はそう表示され、再確認ですぐに試せます。",
+        "オフライン中に入力したキーは、送信か破棄するまで待機します。",
+        "Android でブラウザから戻ったあとサインインが止まらなくなりました。",
+        "通知を送る前にペインが閉じると、その通知は取り消されます。",
+        "一覧が落ち着くまでの間も、チャットが新しいメッセージを追います。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "可以用另一台电脑 Ovis 的 https 地址和它显示的代码添加它。",
+        "账户中尚未加入此应用的电脑会显示在侧边栏。"
+      ],
+      "improved": [
+        "手机应用和 app.ovis.sh 会打开 Ovis 账户登录页。",
+        "添加连接有三个标签页：Ovis 中继、Tailscale 和直接连接。",
+        "在正在使用的设备上批准一次，新设备就能连接你的所有电脑。",
+        "托管应用会直接打开上次使用的电脑。",
+        "用量统计会区分通过 Ovis 中继和 Portal 的访问。"
+      ],
+      "fixed": [
+        "关机的电脑会如实显示，并可用“重新检查”立即重试。",
+        "离线时输入的按键会等你发送或丢弃。",
+        "在 Android 上从浏览器返回后，登录不再卡住。",
+        "通知发出前其窗格已关闭时，该通知会被取消。",
+        "列表调整时，聊天仍会跟随新消息。"
+      ]
+    }
+  },
+  "0.5.5": {
+    "en": {
+      "new": [
+        "Links can open a chat or terminal in the desktop app.",
+        "You can collapse the agents listed under a workspace.",
+        "New tabs and workspaces let you set DeepSeek's effort level.",
+        "The setup guide lets you choose a theme."
+      ],
+      "improved": [
+        "The setup guide walks you through connecting your phone.",
+        "A flick scrolls terminal history farther on a phone or tablet.",
+        "Two-line workspace rows put the workspace name first.",
+        "The usage notice explains anonymous button counts."
+      ],
+      "fixed": [
+        "Android alerts open the chat on the PC that sent them.",
+        "Android keeps unsent text when you switch PCs.",
+        "A PC's first device joins the account the PC is set up for.",
+        "The relay QR code appears once this PC is added to your account.",
+        "Terminal arrow keys respond right away on herdr-core."
+      ]
+    },
+    "ko": {
+      "new": [
+        "링크로 데스크톱 앱의 채팅이나 터미널을 열 수 있어요.",
+        "워크스페이스 아래의 에이전트 목록을 접을 수 있어요.",
+        "새 탭이나 워크스페이스에서 DeepSeek의 사고 수준을 고를 수 있어요.",
+        "설치 안내에서 테마를 고를 수 있어요."
+      ],
+      "improved": [
+        "설치 안내에서 휴대폰을 연결하는 방법을 단계별로 알려 줘요.",
+        "휴대폰이나 태블릿에서 빠르게 밀면 터미널 기록이 더 멀리 스크롤돼요.",
+        "두 줄 보기에서는 워크스페이스 이름이 맨 위에 표시돼요.",
+        "사용량 안내에 버튼 사용 횟수를 익명으로 집계한다고 나와요."
+      ],
+      "fixed": [
+        "Android 알림을 누르면 알림을 보낸 PC의 해당 채팅이 열려요.",
+        "Android에서 PC를 바꿔도 보내지 않은 글이 남아요.",
+        "PC의 첫 기기는 그 PC를 설정할 때 사용한 계정에 연결돼요.",
+        "이 PC를 내 계정에 추가하면 릴레이 QR 코드가 표시돼요.",
+        "herdr-core에서는 터미널의 방향키가 바로 반응해요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "リンクからデスクトップアプリのチャットやターミナルを開けます。",
+        "ワークスペースの下に並ぶエージェントを折りたためます。",
+        "新しいタブやワークスペースで DeepSeek の思考レベルを選べます。",
+        "セットアップガイドでテーマを選べます。"
+      ],
+      "improved": [
+        "セットアップガイドでスマホの接続手順がわかります。",
+        "スマホやタブレットでフリックすると端末の履歴を遠くまでスクロールできます。",
+        "2 行表示ではワークスペース名が先に出ます。",
+        "利用状況のお知らせで、ボタンの利用回数を匿名で集計することを説明します。"
+      ],
+      "fixed": [
+        "Android の通知をタップすると、送信元の PC で該当のチャットが開きます。",
+        "Android で PC を切り替えても、未送信の文章が残ります。",
+        "PC の最初の端末は、その PC の設定に使ったアカウントに登録されます。",
+        "この PC をアカウントに追加すると、リレーの QR コードが出ます。",
+        "herdr-core のターミナルで矢印キーがすぐに反応します。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "可以通过链接在桌面应用中打开聊天或终端。",
+        "可以折叠工作区下的智能体列表。",
+        "新建标签页或工作区时可以选择 DeepSeek 的推理强度。",
+        "可以在设置向导中选择主题。"
+      ],
+      "improved": [
+        "设置向导会逐步说明怎样连接手机。",
+        "在手机或平板上快速滑动，可以滚动更远的终端历史。",
+        "两行显示时，工作区名称排在第一行。",
+        "用量通知说明了如何匿名统计按钮使用次数。"
+      ],
+      "fixed": [
+        "点按 Android 通知会打开来源电脑上的对应聊天。",
+        "在 Android 上切换电脑时，未发送的文字会保留。",
+        "电脑的第一台设备会加入设置这台电脑时所用的账户。",
+        "将这台电脑添加到账户后，就会显示中继二维码。",
+        "herdr-core 终端中的方向键会立即响应。"
+      ]
+    }
+  },
+  "0.5.4": {
+    "en": {
+      "new": [
+        "An agent inbox lists every agent, the ones that need you first.",
+        "Settings explains each setting where you look: hover, focus or tap.",
+        "Plan limits show Claude accounts used through Oh My Pi or Gajae Code.",
+        "Antigravity's questions show as cards you can answer in Chat.",
+        "Close pane and Close tab can be bound to keys in Settings."
+      ],
+      "improved": [
+        "Installers and remote PCs run one verified, compiled server.",
+        "On a phone, the tabs are a row under the header again.",
+        "On a phone, the + for a new workspace is on each PC's row.",
+        "The Android app is on Google Play and the iPhone app on the App Store.",
+        "Every agent row shows how long its agent has been in its state."
+      ],
+      "fixed": [
+        "Ovis asks to pair when this PC opens it by a name other than localhost",
+        "Files from another PC open with this server's own protections",
+        "A chat message no longer joins text already typed in an agent's box.",
+        "Codex and Claude Code errors show under the message in Chat.",
+        "On a phone, Back closes what is open before it leaves the page."
+      ]
+    },
+    "ko": {
+      "new": [
+        "에이전트 인박스가 모든 에이전트를, 나를 기다리는 것부터 보여 줘요.",
+        "설정의 각 항목이 무엇을 하는지 마우스·포커스·탭으로 바로 알려 줘요.",
+        "Oh My Pi나 Gajae Code로만 쓰는 Claude 계정의 사용 한도도 보여요.",
+        "Antigravity의 질문이 채팅에서 답할 수 있는 카드로 보여요.",
+        "패널 닫기와 탭 닫기를 설정에서 단축키로 지정할 수 있어요."
+      ],
+      "improved": [
+        "설치기와 원격 PC가 검증된 하나의 컴파일된 서버로 돌아가요.",
+        "휴대폰에서 탭이 다시 헤더 아래 한 줄로 보여요.",
+        "휴대폰에서 새 워크스페이스 + 가 각 PC 줄에 있어요.",
+        "Android 앱이 Google Play에, iPhone 앱이 App Store에 나왔어요.",
+        "에이전트 줄마다 지금 상태로 얼마나 있었는지 보여요."
+      ],
+      "fixed": [
+        "이 PC에서 localhost가 아닌 이름으로 열면 먼저 페어링을 요청해요.",
+        "다른 PC의 파일이 이 서버의 보호 설정으로 열려요.",
+        "채팅 메시지가 에이전트 입력창에 이미 쓴 글에 붙어 가지 않아요.",
+        "Codex와 Claude Code의 오류가 채팅의 메시지 아래에 보여요.",
+        "휴대폰에서 뒤로 가기가 열린 것을 먼저 닫고 나서 페이지를 떠나요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "エージェントの受信箱が、対応待ちのものから全エージェントを並べます。",
+        "設定の各項目の説明が、ホバー・フォーカス・タップでその場に出ます。",
+        "Oh My Pi や Gajae Code だけで使う Claude アカウントの上限も出ます。",
+        "Antigravity の質問が、チャットで答えられるカードで出ます。",
+        "ペインを閉じる・タブを閉じるに設定でキーを割り当てられます。"
+      ],
+      "improved": [
+        "インストーラーとリモート PC が、検証済みの 1 つのコンパイル済みサーバーで動きます。",
+        "スマホで、タブが再びヘッダーの下に 1 列で並びます。",
+        "スマホで、新しいワークスペースの + が各 PC の行にあります。",
+        "Android アプリは Google Play、iPhone アプリは App Store で公開されました。",
+        "各エージェントの行に、今の状態がどれだけ続いているかが出ます。"
+      ],
+      "fixed": [
+        "このPCで localhost 以外の名前で開くと、先にペアリングを求めます。",
+        "別のPCのファイルが、このサーバー自身の保護設定で開きます。",
+        "チャットのメッセージが、エージェントの入力欄の書きかけに付かなくなりました。",
+        "Codex と Claude Code のエラーが、チャットのメッセージの下に出ます。",
+        "スマホで、戻るは開いているものを閉じてからページを離れます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "智能体收件箱列出所有智能体，需要你的排在最前。",
+        "设置中的每一项在悬停、聚焦或轻点时说明它的作用。",
+        "仅通过 Oh My Pi 或 Gajae Code 使用的 Claude 账户也显示用量限制。",
+        "Antigravity 的提问显示为可在聊天中回答的卡片。",
+        "关闭窗格和关闭标签页可在设置中绑定快捷键。"
+      ],
+      "improved": [
+        "安装程序和远程 PC 运行一个经过验证的编译版服务器。",
+        "在手机上，标签页重新显示为页眉下的一行。",
+        "在手机上，新建工作区的 + 位于每台 PC 的行上。",
+        "Android 应用已上架 Google Play，iPhone 应用已上架 App Store。",
+        "每个智能体行都会显示它处于当前状态的时长。"
+      ],
+      "fixed": [
+        "在本机用 localhost 以外的名称打开时，会先要求配对。",
+        "来自其他电脑的文件会按本服务器自己的保护设置打开。",
+        "聊天消息不再接在智能体输入框里已输入的文字后面。",
+        "Codex 和 Claude Code 的错误显示在聊天消息下方。",
+        "在手机上，返回会先关闭打开的内容再离开页面。"
+      ]
+    }
+  },
+  "0.5.3": {
+    "en": {
+      "new": [
+        "Delete account erases your Ovis account, in the apps or app.ovis.sh.",
+        "The relay tab lists your account's other PCs to connect or add.",
+        "Settings → Appearance imports a theme from a Base16 color file.",
+        "GJC and omp suggest your next prompt as grey text in Chat.",
+        "An ovis command adds this PC to your account from its terminal."
+      ],
+      "improved": [
+        "A split pane has a Close button in its top-right corner.",
+        "The desktop app tells you as soon as an update is ready.",
+        "The PC's CPU, memory and disk show in the status bar by default.",
+        "On a phone, the header is calmer, with one Chat/Terminal button.",
+        "An HTML page in the file viewer runs scripts only when you ask."
+      ],
+      "fixed": [
+        "herdr-core terminals keep your login shell's sign-ins and colour.",
+        "Korean and other input-method typing keeps up in the terminal again.",
+        "A chat message is no longer typed into one of Codex's own screens.",
+        "Ctrl+Backspace in the terminal deletes the word before the cursor.",
+        "A Claude subagent's report shows in its task card in Chat again."
+      ]
+    },
+    "ko": {
+      "new": [
+        "계정 삭제로 앱이나 app.ovis.sh에서 Ovis 계정을 지울 수 있어요.",
+        "릴레이 탭에 내 계정의 다른 PC가 보이고, 바로 연결하거나 추가해요.",
+        "설정 → 모양에서 Base16 색상 파일로 테마를 가져올 수 있어요.",
+        "GJC와 omp가 제안하는 다음 프롬프트가 채팅 입력창에 회색 글자로 보여요.",
+        "ovis 명령으로 터미널에서 이 PC를 내 계정에 추가할 수 있어요."
+      ],
+      "improved": [
+        "분할된 패널의 오른쪽 위에 닫기 버튼이 생겼어요.",
+        "데스크톱 앱이 업데이트가 준비되는 대로 알려 줘요.",
+        "PC의 CPU, 메모리, 디스크 사용량이 기본으로 상태 표시줄에 보여요.",
+        "휴대폰 헤더가 단순해지고, 채팅/터미널은 버튼 하나로 전환해요.",
+        "파일 뷰어의 HTML 페이지는 원할 때만 스크립트를 실행해요."
+      ],
+      "fixed": [
+        "herdr-core 터미널이 로그인 셸의 로그인 정보와 색을 그대로 써요.",
+        "한국어처럼 입력기로 빠르게 입력해도 터미널이 다시 잘 따라와요.",
+        "채팅 메시지가 Codex 자체 화면에 잘못 입력되지 않아요.",
+        "터미널에서 Ctrl+Backspace가 커서 앞의 단어를 지워요.",
+        "Claude 서브에이전트의 보고가 다시 채팅의 작업 카드에 보여요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "アカウントを削除 で、アプリや app.ovis.sh から Ovis アカウントを消せます。",
+        "リレーのタブに自分のアカウントの他の PC が並び、接続や追加ができます。",
+        "設定 → 外観 で、Base16 の色ファイルからテーマを取り込めます。",
+        "GJC と omp が提案する次のプロンプトが、チャットの入力欄に灰色で出ます。",
+        "ovis コマンドで、ターミナルからこの PC をアカウントに追加できます。"
+      ],
+      "improved": [
+        "分割したペインの右上に閉じるボタンが付きました。",
+        "デスクトップアプリは、更新の準備ができるとすぐに知らせます。",
+        "PC の CPU、メモリ、ディスクが既定でステータスバーに出ます。",
+        "スマホのヘッダーがすっきりし、チャット/ターミナルは 1 つのボタンで切り替えます。",
+        "ファイルビューアの HTML ページは、頼んだときだけスクリプトを実行します。"
+      ],
+      "fixed": [
+        "herdr-core のターミナルが、ログインシェルのサインインと色を保ちます。",
+        "日本語などを入力メソッドで速く打っても、ターミナルが再び追いつきます。",
+        "チャットのメッセージが Codex 自身の画面に入力されなくなりました。",
+        "ターミナルで Ctrl+Backspace がカーソルの前の単語を消します。",
+        "Claude のサブエージェントの報告が、再びチャットのタスクカードに出ます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "可在应用或 app.ovis.sh 中用“删除账户”删除你的 Ovis 账户。",
+        "中继标签页列出你账户中的其他电脑，可直接连接或添加。",
+        "设置 → 外观可从 Base16 颜色文件导入主题。",
+        "GJC 和 omp 建议的下一条提示会以灰字显示在聊天输入框中。",
+        "用 ovis 命令可在终端里把这台电脑加入你的账户。"
+      ],
+      "improved": [
+        "分屏面板的右上角新增了关闭按钮。",
+        "桌面应用会在更新准备好时立即通知你。",
+        "电脑的 CPU、内存和磁盘默认显示在状态栏中。",
+        "手机标题栏更简洁，聊天/终端改为一个按钮切换。",
+        "文件查看器中的 HTML 页面只在你要求时才运行脚本。"
+      ],
+      "fixed": [
+        "herdr-core 终端会保留登录 shell 的登录凭据和颜色。",
+        "用输入法快速输入中文等文字时，终端又能跟上了。",
+        "聊天消息不再被输入到 Codex 自己的界面中。",
+        "在终端中按 Ctrl+Backspace 会删除光标前的单词。",
+        "Claude 子代理的报告再次显示在聊天的任务卡片中。"
+      ]
+    }
+  },
   "0.5.2": {
     "en": {
       "new": [

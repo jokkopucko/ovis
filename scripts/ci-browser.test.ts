@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serialBrowserScripts } from "./ci-browser-parallel.ts";
 
-// Exercise the whole lane without installing Chromium, building, or opening a browser.
 const stub = `
 bun() {
   case "$1" in
@@ -45,7 +44,6 @@ const inheritedEnv = () => Object.fromEntries(
   ["HOME", "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"].flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []),
 );
 
-/** Ends `pid` and every process under it, read from the process table before any is ended. */
 async function endTree(pid: number): Promise<void> {
   if (process.platform === "win32") {
     await Bun.spawn(["taskkill", "/pid", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" }).exited;
@@ -63,7 +61,7 @@ async function endTree(pid: number): Promise<void> {
     tree.push(next);
     pending.push(...(children.get(next) ?? []));
   }
-  for (const member of tree) try { process.kill(member, "SIGKILL"); } catch { /* already gone */ }
+  for (const member of tree) try { process.kill(member, "SIGKILL"); } catch {}
 }
 
 async function lane(fail = "", kept = false, ci = "") {
@@ -74,7 +72,6 @@ async function lane(fail = "", kept = false, ci = "") {
       env: { ...inheritedEnv(), BROWSER_PARALLEL: "", CI: ci, CHECK_DIR: kept ? dir : "", UI_EVIDENCE_DIR: "", FAIL_SCRIPT: fail, TMPDIR: dir },
       stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
-    // read as it comes, so what the lane printed is there even when the guard stops reading
     const readers = [child.stdout.getReader(), child.stderr.getReader()];
     const printed = ["", ""];
     const drained = Promise.all(readers.map(async (reader, index) => {
@@ -141,6 +138,9 @@ describe("browser lane", () => {
     expect(rows(text)).toEqual([
       { script: "scripts/demo-build.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/ui-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/ui-terminal-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/ui-ime-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/ui-access-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/ui-contexts-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/ui-contexts-layout-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/machine-events-browser-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -180,7 +180,7 @@ describe("browser lane", () => {
     for (const script of ["sticky-modifiers-regression.ts", "file-viewer-regression.ts"]) {
       expect(text).toMatch(new RegExp(`^\\[[^\\]]+\\] STEP=scripts/${script} EVIDENCE=.+/browser-evidence$`, "m"));
     }
-    for (const script of ["ui-regression.ts", "ui-contexts-regression.ts", "ui-contexts-layout-regression.ts", "key-bar-customization-demo-regression.ts"]) {
+    for (const script of ["ui-regression.ts", "ui-terminal-regression.ts", "ui-ime-regression.ts", "ui-access-regression.ts", "ui-contexts-regression.ts", "ui-contexts-layout-regression.ts", "key-bar-customization-demo-regression.ts"]) {
       expect(text).toMatch(new RegExp(`^\\[[^\\]]+\\] STEP=scripts/${script} EVIDENCE=$`, "m"));
     }
   }, LANE_TEST_MS);
@@ -194,28 +194,22 @@ describe("browser lane", () => {
   }, LANE_TEST_MS);
 });
 
-// Browser scripts that CI does not run: they are run by hand. A new browser script belongs in
-// scripts/ci-browser.sh, or here when CI cannot run it.
 const MANUAL_BROWSER_SCRIPTS = [
+  "scripts/pc-add-guidance-regression.ts", // requires UI_EVIDENCE_DIR; run for the localized PC-add captures
   "scripts/android-ime-regression.ts", // an Android emulator over ADB (docs/terminal-input.md)
-  "scripts/chat-browser-qa.ts", // docs/development.md
-  "scripts/font-swap-demo-regression.ts", // docs/development.md
-  "scripts/keyboard-viewport-demo-regression.ts", // docs/development.md
-  "scripts/machines-browser-qa.ts", // an SSH_TEST_KEEP=1 fixture (docs/remote-pcs.md)
-  "scripts/output-browser-qa.ts", // docs/terminal-flow-control.md
-  "scripts/skill-activity-browser-qa.ts", // docs/chat-skill-activity.md
+  "scripts/chat-browser-qa.ts",
+  "scripts/font-swap-demo-regression.ts",
+  "scripts/keyboard-viewport-demo-regression.ts",
+  "scripts/machines-browser-qa.ts",
+  "scripts/output-browser-qa.ts",
+  "scripts/skill-activity-browser-qa.ts",
+  "scripts/terminal-arrows-core-regression.ts", // a real hc (OVIS_TEST_HC_BIN), which no browser lane installs
   "scripts/terminal-file-links-regression.ts",
   "scripts/update-browser-qa.ts", // a private Git remote and install (docs/app-updates.md)
   "scripts/windows-lens-browser-qa.ts",
   "scripts/windows-terminal-browser-qa.ts", // native Windows: .github/workflows/windows-terminal-qa.yml
 ];
 
-/**
- * Every script the lane runs, plus every script those import (`from "./x.ts"`, `import("./x.ts")`)
- * or spawn (`spawn([..., join(import.meta.dir, "x.ts")`), transitively. A path built anywhere else
- * (a Bun.build entry, say) is not a run. A spawn counts only from a file that runs as a script: an
- * imported helper's spawn usually sits under `import.meta.main`.
- */
 function laneReach(lane: string[]): Set<string> {
   const reached = new Set<string>();
   const ran = new Set<string>();
@@ -223,7 +217,6 @@ function laneReach(lane: string[]): Set<string> {
   for (let next = pending.pop(); next; next = pending.pop()) {
     const { script, runs } = next;
     const path = join(import.meta.dir, "..", script);
-    // A name with no file behind it (terminal-dispose-fixture.ts is an in-memory Bun.build entry) has nothing to read.
     if ((runs ? ran : reached).has(script) || !existsSync(path)) continue;
     reached.add(script);
     if (runs) ran.add(script);

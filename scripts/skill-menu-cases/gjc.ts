@@ -35,7 +35,6 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     await box.fill("/");
     await menu.locator(".menu-item").first().waitFor();
     assert.deepEqual((await rowNames()).sort(), commands.map((command) => command.name).sort());
-    // tree runs only in the terminal: it is listed, in the Terminal commands group
     assert.ok((await rowNames()).includes("tree"));
     await menuFits("slash");
     await rowsBrief("slash");

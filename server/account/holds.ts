@@ -5,7 +5,7 @@
  * lifts neither, and a file that will not parse holds every add back until it is restored.
  */
 import { readFileSync, rmSync } from "node:fs";
-import { isAccountKey } from "../../shared/account-records.ts";
+import { isAccountKeyEncoding } from "../../shared/account-records.ts";
 import { writePrivateState } from "../private-state.ts";
 
 /** Keys held at most; past them every add is held back, as a full list could be missing the one that matters. */
@@ -35,7 +35,7 @@ export class AccountHolds {
     if (held === null) problems.push(`${options.heldPath} cannot be read`);
     else if (held !== "missing") {
       const value = held.value as { keys?: unknown; full?: unknown } | null;
-      if (!Array.isArray(value?.keys) || !value.keys.every(isAccountKey) || typeof value.full !== "boolean") problems.push(`${options.heldPath} is not a list of held keys`);
+      if (!Array.isArray(value?.keys) || !value.keys.every(isAccountKeyEncoding) || typeof value.full !== "boolean") problems.push(`${options.heldPath} is not a list of held keys`);
       else { this.keys = new Set(value.keys); this.overflowed = value.full; }
     }
     if (enrolling === null) problems.push(`${options.enrollingPath} cannot be read`);
@@ -57,6 +57,18 @@ export class AccountHolds {
     if (this.confirmed) return;
     if (this.options.enrollingPath) writePrivateState(this.options.enrollingPath, { by });
     this.enrollingBy = by;
+  }
+
+  /**
+   * The barrier of a link whose device waited to link (docs/account.md, "Who may admit a device"). Nothing of such a
+   * device is written before its link has passed, so its barrier goes to disk in the turn that writes its row, right
+   * before it. A barrier that stands and no link confirmed (another link's, on its way or refused) already holds
+   * the adds back, and is left as it is. Returns what takes this call's write back, should the row not be written.
+   */
+  startEnrollingBeforeRow(by: string): () => void {
+    if (this.enrollingBy !== null && !this.confirmed) return () => {};
+    this.startEnrolling(by, { stale: true });
+    return () => this.endEnrolling();
   }
 
   /** The link of `by` succeeded: it ends the wait, unless an earlier successful link already holds it. */
@@ -104,8 +116,10 @@ export class AccountHolds {
     this.overflowed = true;
   }
 
-  /** Whether an add for `key` is held back: a held key, a list that overflowed, or holds that cannot be read. */
-  holds(key: string): boolean { return this.error !== null || this.overflowed || this.keys.has(key); }
+  /** Unreadable holds and named keys bar both paths; overflow alone bars signed adds, not list admissions (T17). */
+  holds(key: string, source: "add" | "list" = "add"): boolean {
+    return this.error !== null || this.keys.has(key) || (source === "add" && this.overflowed);
+  }
 
   list(): string[] { return [...this.keys]; }
 

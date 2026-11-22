@@ -1,6 +1,3 @@
-/** Grok's pictures end to end in Chrome, from a recorded 1.0.67 session: parsed page -> prompt
- * thumbnail and the read_file tool's work line -> <img> bytes read back by grokImage, as the image
- * endpoint reads them. */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +12,6 @@ import { chromePath } from "./chrome-path.ts";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-grok-image-browser-")));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
-// the recorded session: a red 48x48 picture sent with the prompt, a blue one read_file read
 const RED = "grok-image:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
 const BLUE = "grok-image:c75fe07b33afb7b182fa53cd500727a7cfa1699443a17d87d053d6536ad65438";
 const served: string[] = [];
@@ -61,9 +57,7 @@ try {
     await page.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
     await page.goto(`http://127.0.0.1:${server.port}/`);
     await page.getByText("blue", { exact: true }).waitFor();
-    // the picture sent with the prompt sits under its words, decoded from the bytes Grok logged
     assert.deepEqual(await decoded(page, ".chat-turn-user .chat-user-images img"), [[48, 48]]);
-    // the read_file picture shows on the folded work line
     assert.deepEqual(await decoded(page, ".work-block-line .work-image img"), [[48, 48]]);
     assert.deepEqual(errors, []);
     if (evidence) {

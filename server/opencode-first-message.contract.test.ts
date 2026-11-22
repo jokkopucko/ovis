@@ -1,21 +1,10 @@
-/**
- * A create request's first message with an `@skill` for OpenCode v2, sent before any Chat read the
- * pane's catalog: a fake 2.0.32 service (service.json + /api/info, /api/session, /api/skill) and a
- * stand-in TUI that draws the recorded autocomplete once `@effect` is typed, and the accepted skill after Tab. With the pane's session
- * reported, the service is verified and the skill is attached through the autocomplete. A pane whose
- * session the service does not hold (a brand-new OpenCode 2 before its first prompt, or an OpenCode 1
- * TUI) has no version the bridge can vouch for, so its '@' is read as v1's file mention: plain text,
- * never recorded as a skill. The service is the server's own (createServer's openCodeStateDir), and an
- * opencode.json that is a FIFO holds neither the scan nor the send. A chat message sent at once types its
- * skill the same way, and stops at the sender's own refusal.
- */
 import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import * as herdr from "./herdr/client.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, sessionSnapshot, subscribeEvents, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { closeOpenCodeNative } from "./opencode-native.ts";
 import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-service.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
@@ -61,7 +50,6 @@ process.stdin.on("data", (chunk) => {
     return new Response("Not found", { status: 404 });
   } });
   writeFileSync(join(root, "service.json"), JSON.stringify({ url: fake.url.origin, pid: process.pid, password: "fixture-secret", version: "2.0.32" }));
-  // only the server knows where this OpenCode's state is: the process-wide default points elsewhere
   openCodeServiceOptions.stateDir = join(root, "not-this-opencode");
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), openCodeStateDir: root });
 });
@@ -76,22 +64,54 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A new OpenCode pane (the stand-in), its session reported or not, in `state`. */
+async function paneProcesses(pane: string, cwd: string): Promise<string> {
+  const info = await herdrRpc<{ process_info?: { foreground_processes?: { pid?: number; argv?: string[] }[] } }>("pane.process_info", { pane_id: pane }).catch((error: unknown) => ({ error: String(error) }));
+  const processes = "process_info" in info ? info.process_info?.foreground_processes ?? [] : [];
+  const read = (path: string): string => { try { return readFileSync(path, "utf8").trim(); } catch { return "?"; } };
+  const held = (pid: number): string[] => { try { return readdirSync(`/proc/${pid}/fd`).map((fd) => { try { return readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { return "?"; } }); } catch { return []; } };
+  const config = join(cwd, "opencode.json");
+  const waiting = (() => { try { return readdirSync("/proc").filter((name) => /^\d+$/.test(name)); } catch { return []; } })()
+    .map(Number)
+    // a process blocked opening a FIFO with no writer waits in wait_for_partner and holds no fd on it yet
+    .filter((pid) => { const wchan = read(`/proc/${pid}/wchan`); return wchan === "wait_for_partner" || wchan.includes("fifo") || held(pid).includes(config); })
+    .slice(0, 20)
+    // any process on the machine can match: its name only, never its arguments, which may carry a secret
+    .map((pid) => ({ pid, name: read(`/proc/${pid}/comm`), wchan: read(`/proc/${pid}/wchan`) }));
+  const pane_processes = "error" in info ? info : processes.map(({ pid, argv }) => ({ pid, argv, wchan: pid === undefined ? null : read(`/proc/${pid}/wchan`), fds: pid === undefined ? [] : held(pid) }));
+  return JSON.stringify({ pane_processes, waiting });
+}
+
 async function openCodePane(label: string, session: string | null, cwd: string, state: "working" | "idle"): Promise<string> {
   const created = await workspaceCreate({ cwd, label: `ovis-test-opencode-first-${label}` });
   workspaces.push(created.workspace.workspace_id);
   const pane = created.root_pane.pane_id;
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${standIn} ${label}\n` });
-  for (const deadline = Date.now() + 10_000; (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane)?.agent !== "opencode";) {
-    if (Date.now() > deadline) throw new Error("the OpenCode stand-in did not start");
-    await Bun.sleep(50);
+  // herdr names the pane's agent from its foreground process: heard as it happens, not polled
+  const watching = Promise.withResolvers<void>();
+  const detected = Promise.withResolvers<boolean>();
+  const subscription = subscribeEvents([{ type: "pane.agent_status_changed", pane_id: pane }], {
+    onStarted: () => watching.resolve(),
+    onEvent: (frame) => { if (frame.data?.agent === "opencode") detected.resolve(true); },
+    onError: (error) => { watching.reject(error); detected.reject(error); },
+    onClose: () => { watching.reject(new Error("herdr closed the agent-status subscription before acknowledging it")); detected.resolve(false); },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"expired">((done) => { timer = setTimeout(() => done("expired"), 10_000); });
+  try {
+    if (await Promise.race([watching.promise, expired]) === "expired") throw new Error("herdr did not acknowledge the agent-status subscription");
+    await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${standIn} ${label}\n` });
+    if (await Promise.race([detected.promise, expired]) !== true) {
+      const seen = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane);
+      if (seen?.agent !== "opencode") throw new Error(`the OpenCode stand-in did not start: ${JSON.stringify(seen)} ${await paneProcesses(pane, cwd)}`);
+    }
+  } finally {
+    clearTimeout(timer);
+    subscription.close();
   }
   if (session) await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:opencode", agent: "opencode", agent_session_id: session, session_start_source: "select" });
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "herdr:opencode", agent: "opencode", ...(session ? { agent_session_id: session } : {}), state });
   return pane;
 }
 
-/** A page's connection to the server, with `frame`: the first frame `match` takes, received already or still to come. */
 function connect(label: string) {
   const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
   const frames: any[] = [];
@@ -101,7 +121,6 @@ function connect(label: string) {
     frames.push(frame);
     for (const waiter of [...waiters]) if (waiter.match(frame)) { waiters.delete(waiter); waiter.done(frame); }
   });
-  /** the first frame `match` takes, received already or still to come */
   const frame = (match: (frame: any) => boolean, what: string, ms = 15_000): Promise<any> => {
     const seen = frames.find(match);
     if (seen) return Promise.resolve(seen);
@@ -114,11 +133,9 @@ function connect(label: string) {
   return { socket, frame };
 }
 
-/** A new OpenCode pane, its session reported or not, and the create route's first message for it, typed when it is first ready. */
 async function firstMessage(label: string, session: string | null, cwd = root) {
   const pane = await openCodePane(label, session, cwd, "working");
   const reported = session ? { agent_session_id: session } : {};
-  // the page's connection, open before its request: the one that types the first message on its own
   const { socket, frame } = connect(label);
   const { connection } = await frame((item) => item.type === "snapshot", "no snapshot");
   const message = await server.queueFirstMessage(pane, "@effect apply it", "opencode", connection);
@@ -127,12 +144,11 @@ async function firstMessage(label: string, session: string | null, cwd = root) {
   const sent = frame((item) => item.type === "pending-messages" && item.removed?.some((entry: any) => entry.id === message.id && entry.outcome === "sent"), "the first message was not sent");
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "herdr:opencode", agent: "opencode", ...reported, state: "idle" });
   await sent;
-  // the Enter after the message, as the stand-in records it
-  await new Promise<void>((resolve, reject) => {
-    const watcher = watch(root, () => { if (typed(label).endsWith("\r")) { clearTimeout(timer); watcher.close(); resolve(); } });
-    const timer = setTimeout(() => { watcher.close(); reject(new Error(`no Enter after the message: ${JSON.stringify(typed(label))}`)); }, 5_000);
-    if (typed(label).endsWith("\r")) { clearTimeout(timer); watcher.close(); resolve(); }
-  });
+  // the Enter after the message, as the stand-in records it: read its log, as fs.watch can miss the last append
+  for (const deadline = Date.now() + 5_000; !typed(label).endsWith("\r");) {
+    if (Date.now() > deadline) throw new Error(`no Enter after the message: ${JSON.stringify(typed(label))}`);
+    await Bun.sleep(25);
+  }
   const shown = await (await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`)).json() as PanePromptResponse;
   socket.close();
   return { typed: typed(label), outcomes: shown.outcomes ?? [] };
@@ -226,8 +242,6 @@ it("sends a first message while the folder's opencode.json is a FIFO no one writ
   writeFileSync(join(folder, ".opencode", "skills", "effect", "SKILL.md"), "---\nname: effect\ndescription: Apply Effect\n---\nUse Effect.\n");
   const fifo = join(folder, "opencode.json");
   expect(await Bun.spawn(["mkfifo", fifo]).exited).toBe(0);
-  // the writer comes long after the send should: a read that blocks on the FIFO could only return once
-  // the writer opened it, after it marks `opening`
   const opening = join(root, "fifo-opening");
   const writer = Bun.spawn(["sh", "-c", `sleep 30; touch '${opening}'; printf '{}' > '${fifo}'`]);
   try {

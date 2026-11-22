@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 describe("remote entry shell agents", () => {
   it.skipIf(process.platform === "win32")("offers an agent installed only on the login shell's PATH", async () => {
-    // regression (fails on main): the bridge a remote PC runs asked its own bare PATH alone
     const herdr = Bun.which("herdr");
     expect(herdr).not.toBeNull();
     const root = mkdtempSync("/tmp/hre-");
@@ -16,7 +15,6 @@ describe("remote entry shell agents", () => {
     mkdirSync(login);
     mkdirSync(bridges, { recursive: true, mode: 0o700 });
     writeFileSync(join(login, "gjc"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    // the user's login shell: its profile adds `login bin`; any other use is a plain shell
     const shell = join(root, "login-shell");
     writeFileSync(shell, `#!/bin/sh\nif [ "$1" = "-l" ] && [ "$2" = "-c" ]; then PATH='${login}:/usr/bin:/bin'; export PATH; exec /bin/sh -c "$3"; fi\nexec /bin/sh "$@"\n`, { mode: 0o755 });
     const servicePath = "/usr/bin:/bin";
@@ -25,7 +23,6 @@ describe("remote entry shell agents", () => {
     const env = { PATH: servicePath, HOME: home, SHELL: shell, XDG_CONFIG_HOME: xdg, XDG_STATE_HOME: join(root, "state"), HERDR_REMOTE_SESSION: session, HERDR_REMOTE_START_NEW: "1", OVIS_HERDR_BIN: herdr! };
     const socket = join(xdg, "herdr/sessions", session, "herdr.sock");
     const descriptor = join(bridges, createHash("sha256").update(socket).digest("hex") + ".json");
-    // subscribed before the bridge starts, so its registration cannot be missed
     const watcher = watch(bridges);
     let child: ReturnType<typeof Bun.spawn> | undefined;
     try {

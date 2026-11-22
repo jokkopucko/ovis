@@ -5,15 +5,13 @@ import { quoteFits, quoteIntoComposer } from "../lib/chatQuote.ts";
 import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import "./ReplyComments.css";
 
 /**
  * Where a selection running past a reply's last word into nothing more is read up to: a triple-click
  * ends at the start of what follows the words (the copy row, a work block), a drag past the last
- * word at the reply's end, over its copy row and time. `cut`: the text after the words a selection
- * of the whole carries (the copy row's labels where they are selectable, the time), to take off the
- * end of what it reads. Null: the range is read as it is (no words before, nothing past them, or
- * more than the copy row past them: a work block, another part of the reply).
+ * word at the reply's end, over its copy row and time.
  */
 function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } | null {
   const words = [...turn.children].filter((child) => child.classList.contains("markdown") && range.intersectsNode(child)).at(-1);
@@ -22,12 +20,9 @@ function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } 
   tail.setStart(words, words.childNodes.length);
   tail.setEnd(range.endContainer, range.endOffset);
   if (tail.collapsed) return null;
-  // the copy row's buttons take no words; at the reply's end its time may be taken too. A work block's
-  // title is a button as well, and is words of the turn: never passed over
   const meta = turn.querySelector(":scope > .chat-turn-meta");
   const atEnd = range.endContainer === turn && range.endOffset >= turn.childNodes.length;
   const cut: string[] = [];
-  // from the first node after the words to the range's end: never the words themselves
   let last: Node = words;
   while (last.lastChild !== null) last = last.lastChild;
   const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
@@ -35,10 +30,8 @@ function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } 
   for (let node = walker.nextNode() as Text | null; node !== null && tail.comparePoint(node, 0) <= 0; node = walker.nextNode() as Text | null) {
     const taken = node.data.slice(0, node === tail.endContainer ? tail.endOffset : node.length);
     if (taken.trim() === "") continue;
-    // anything taken past the words but the copy row (a work block's title, selectable or not) is more than nothing
     const copyRow = meta?.contains(node) === true && (atEnd || node.parentElement?.closest("button, [role=button]") != null);
     if (!copyRow) return null;
-    // what a copy of the selection carries: selectable and drawn (a mouse's copy row hides its MD and TXT)
     if (selectable(node.parentElement) && drawn(node.parentElement)) cut.push(taken);
   }
   const trimmed = range.cloneRange();
@@ -57,12 +50,6 @@ function selectable(element: Element | null): boolean {
   return true;
 }
 
-/**
- * The selected text, as a copy carries it, when the selection lies in the words of one agent reply
- * in `root`: never across a work block, the reply's copy row, a user message, another pane or a field.
- * One running past the reply's last word into nothing more (wordsEnd) is read up to it: the copy's
- * text, its line breaks and a tool file's path as written kept, without what was taken past the words.
- */
 export function replySelectionText(selection: Selection | null, root: Element): string | null {
   if (selection === null || selection.isCollapsed || selection.rangeCount !== 1) return null;
   const selected = selection.getRangeAt(0);
@@ -74,10 +61,8 @@ export function replySelectionText(selection: Selection | null, root: Element): 
   if (turn === null || turn !== end.closest(".chat-turn-agent")) return null;
   const past = wordsEnd(selected, turn);
   const range = past?.range ?? selected;
-  // every part of the reply the range touches is its words: a work block, a skill or goal line or the meta row is not
   for (const child of turn.children) if (range.intersectsNode(child) && !child.classList.contains("markdown")) return null;
   let text = chatSelectionClipboardPayload(selection, root)?.text ?? selection.toString();
-  // the copy row's text comes last in the copy, in order: taken off its end, and nothing once one is not there
   for (const piece of (past?.cut ?? []).reverse()) {
     text = text.trimEnd();
     if (!text.endsWith(piece.trim())) break;
@@ -92,7 +77,6 @@ const HANDLE_ROOM = 28;
 const OFFER_W = 148;
 const OFFER_H = 36;
 const FORM_W = 360;
-/** a frame narrower than this docks the form along its bottom edge, where a phone's keyboard meets it */
 const DOCK_BELOW = 560;
 
 interface Placed { quote: string; left: number; top: number }
@@ -118,19 +102,13 @@ function writeReplyCommentDraft(storageKey: string, quote: string, text: string)
   const key = replyCommentDraftKey(storageKey, quote);
   if (text === "") {
     replyCommentDrafts.delete(key);
-    try { window.sessionStorage?.removeItem(`ovis:reply-comment-draft:${key}`); } catch { /* private mode */ }
+    try { window.sessionStorage?.removeItem(`ovis:reply-comment-draft:${key}`); } catch {}
     return;
   }
   replyCommentDrafts.set(key, text);
-  try { window.sessionStorage?.setItem(`ovis:reply-comment-draft:${key}`, text); } catch { /* private mode */ }
+  try { window.sessionStorage?.setItem(`ovis:reply-comment-draft:${key}`, text); } catch {}
 }
 
-/**
- * The actions on a selection in a chat's reply. It floats over the transcript, so a selection in
- * progress never moves what is under it (#1922); with a mouse it stands where the button was
- * released, on a touch screen below the selection. Quote, first, puts the words in the composer as a
- * `> ` quote (lib/chatQuote.ts); Comment (#511) opens a form that saves a comment for the next message.
- */
 export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller: RefObject<HTMLDivElement | null>; storageKey: string; paneKey: string | null }) {
   const t = useT();
   const layer = useRef<HTMLDivElement>(null);
@@ -161,10 +139,8 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     const box = host.getBoundingClientRect();
     const touch = pointer.current?.touch ?? matchMedia("(pointer: coarse)").matches;
     const mouse = !touch && pointer.current !== null ? pointer.current : null;
-    // on a phone the frame runs on under a grown composer: the offer keeps to the part still in sight, above it
     const composer = host.closest(".pane-frame")?.querySelector(".composer")?.getBoundingClientRect();
     const bottom = composer !== undefined && composer.height > 0 ? Math.min(box.bottom, composer.top) : box.bottom;
-    // a touch screen draws the offer taller than OFFER_H (its targets): once drawn, its own height counts
     const height = Math.max(OFFER_H, host.querySelector<HTMLElement>(".selection-offer")?.offsetHeight ?? 0);
     let top = mouse !== null ? mouse.y + EDGE : last.bottom + (touch ? HANDLE_ROOM : EDGE);
     if (top + height > bottom - EDGE) top = first.top - height - (touch ? HANDLE_ROOM : EDGE);
@@ -172,11 +148,9 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     const left = Math.min(Math.max(x - box.left - OFFER_W / 2, EDGE), Math.max(box.width - OFFER_W - EDGE, EDGE));
     setOffer({ quote, left, top: Math.min(Math.max(top - box.top, EDGE), Math.max(bottom - box.top - height - EDGE, EDGE)) });
   }, [scroller]);
-  // the first placement counted OFFER_H: once the offer is drawn (taller on a touch screen), it is placed again by its own height, before it is painted
   const offerShown = offer !== null;
   useLayoutEffect(() => { if (offerShown) place(); }, [offerShown, place]);
 
-  // on the document, the scroller looked up as each event comes: the chat's timeline can arrive after this mounts
   useEffect(() => {
     const inChat = (target: EventTarget | null): boolean => target instanceof Node && scroller.current?.contains(target) === true;
     const down = (event: PointerEvent) => {
@@ -224,7 +198,6 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     getSelection()?.removeAllRanges();
     quoteIntoComposer(paneKey, placed.quote);
   };
-  // the draft, read again as it changes (a send settling, another tab): whether the quote fits follows it
   const draft = useSyncExternalStore(composerDrafts.subscribe, () => paneKey === null ? "" : composerDrafts.read(composerDraftKey(paneKey)).text);
   // a secret prompt stands in the composer's place (paneKey null): Comment alone, which waits for the next message
   const fits = offer !== null && paneKey !== null && quoteFits(draft, offer.quote);
@@ -258,14 +231,12 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   };
 
   return <div className="reply-comment-layer" ref={layer}>
-    {/* outside the pill, on the chat's far side from it (at the foot, over the jump control's room); drawn first, so the pill stays over it */}
     {offer !== null && form === null && paneKey !== null && !fits && <p id={quoteNote} className={`selection-note${offer.top < (layer.current?.clientHeight ?? 0) / 2 ? " is-below" : ""}`} role="status">{t("Too long to quote: shorten the message or the selection.")}</p>}
     {offer !== null && form === null && <div className="selection-offer" role="group" aria-label={t("Selection")} style={{ left: offer.left, top: offer.top }}
       // a mouse press keeps the selection; a touch's is read from the offer it showed
       onMouseDown={(event) => event.preventDefault()}
       onPointerDown={() => { pressing.current = true; }}
       onPointerCancel={() => { pressing.current = false; }}>
-      {/* too long, it stays focusable and says why in words, for a touch or a keyboard that has no hover */}
       {paneKey !== null && <button type="button" className="selection-quote" aria-disabled={!fits || undefined}
         aria-describedby={fits ? undefined : quoteNote} title={fits ? t("Quote it in your message") : undefined} onClick={() => quote(offer)}>
         <Quote aria-hidden="true" />{t("Quote")}
@@ -297,15 +268,13 @@ function ReplyCommentForm({ form, comment, onComment, onKeyDown, onSave, onCance
   </form>;
 }
 
-/**
- * The comments waiting for the pane's next message, as one chip over the input card: it opens their
- * list, where each can be removed, and its X removes them all. `waiting`: the message in the box
- * goes without them (a slash command, an answer to the agent's question).
- */
 export function ReplyCommentsChip({ comments, storageKey, waiting }: { comments: readonly ReplyComment[]; storageKey: string; waiting: boolean }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const listed = comments.length > 0;
+  usePhoneSheetBack(() => setOpen(false), open && listed);
+  useEffect(() => { if (!listed) setOpen(false); }, [listed]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!(event.target instanceof Node && root.current?.contains(event.target))) setOpen(false); };
@@ -316,7 +285,6 @@ export function ReplyCommentsChip({ comments, storageKey, waiting }: { comments:
   }, [open]);
   if (comments.length === 0) return null;
   const count = comments.length;
-  // a note on a diff line is no comment on the reply: then the chip counts comments alone
   const onReply = comments.every((item) => item.source === undefined);
   const label = waiting
     ? count === 1 ? t("1 comment waiting") : t("{count} comments waiting", { count })
@@ -349,7 +317,6 @@ export function ReplyCommentsChip({ comments, storageKey, waiting }: { comments:
   </div>;
 }
 
-/** The pane's waiting comments, read again whenever any tab changes them. */
 export function useReplyComments(storageKey: string): readonly ReplyComment[] {
   return useSyncExternalStore(replyComments.subscribe, () => replyComments.read(storageKey));
 }

@@ -7,7 +7,7 @@
  * shape gjc's transcript has (letta-code 0.34.44): a user prompt, a tool result or an assistant
  * message that stopped for a tool means work; one that stopped for good is rest, one that errored
  * or was aborted a rest after a failure. A cloud conversation keeps its messages on the server:
- * its status stays unknown. A pane a report gives a status keeps it.
+ * its status stays unknown.
  */
 import type { AgentStatus } from "../shared/herdr-api.generated.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
@@ -28,7 +28,6 @@ export function lettaTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
   return { ...gjcTurnAfter(turn, line), asks: [] };
 }
 
-/** How much of a messages file's end is read when it is read anew: a long conversation's start says nothing of its last turn. */
 export const LETTA_MESSAGES_BYTES = 4 * 1024 * 1024;
 
 /** Opened never through a link, never waiting on a FIFO. */
@@ -58,7 +57,7 @@ export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
     let fd: number;
     try { fd = openSync(path, MESSAGES_FLAGS); } catch { return null; }
     // a folder above it swapped for a link between the check and the open opens another file: the same one must be open
-    try { const opened = fstatSync(fd, { bigint: true }); if (opened.isFile() && opened.dev === checked.dev && opened.ino === checked.ino) return fd; } catch { /* gone */ }
+    try { const opened = fstatSync(fd, { bigint: true }); if (opened.isFile() && opened.dev === checked.dev && opened.ino === checked.ino) return fd; } catch {}
     closeSync(fd);
     return null;
   };
@@ -71,7 +70,6 @@ export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
     lines: (path, from, size, each, current) => {
       const fd = open(path);
       if (fd === null) return from;
-      // a torn first line of the window parses as no record, and says nothing
       const start = from === 0 && size > cap ? size - cap : from;
       try {
         const read = readOmoLinesCooperatively(fd, start, size, each, current);
@@ -83,18 +81,12 @@ export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
   };
 }
 
-/** The conversation a pane shows (letta-store.ts resolveLettaTranscript) and when its letta process started. */
 type Bound = { store: string; agent: string; conversation: string; startedAt: number };
 
 export interface LettaDiscovery {
   resolve?: (pane: HerdrPane, panes: readonly HerdrPane[]) => Promise<Bound | null>;
 }
 
-/**
- * The Letta panes of a snapshot that no report gives a status, with the messages file of the
- * conversation each shows (null when it cannot be told, or is kept on the server) and when its
- * letta process started, so a turn a resumed conversation left unfinished is not taken for work.
- */
 export async function lettaPanes(panes: HerdrPane[], deps: LettaDiscovery = {}): Promise<Map<string, OmoPane>> {
   const resolve = deps.resolve ?? ((pane: HerdrPane, all: readonly HerdrPane[]) => resolveLettaTranscript(pane, all).catch(() => null));
   const found = new Map<string, OmoPane>();
@@ -108,17 +100,14 @@ export async function lettaPanes(panes: HerdrPane[], deps: LettaDiscovery = {}):
 /**
  * A Letta pane still without a status once its local messages had their say (a cloud conversation,
  * whose messages are on the server, or one not bound): Letta's own title, which carries a spinner
- * while a turn runs. Only where no report gave a status and no messages file is tracked. Returns
- * the panes whose title status changed since `last` saw them, which keeps each pane's last one.
+ * while a turn runs.
  */
 export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane_id: string; agent_status: AgentStatus }[] }, tracks: (paneId: string) => boolean, last: Map<string, AgentStatus>, newest = true): { paneId: string; status: AgentStatus }[] {
   const { panes } = snapshot;
-  // a read older than one already applied shows what the newest said, and changes nothing it keeps
   if (!newest) {
     for (const pane of panes) {
       if (pane.agent !== "letta") continue;
       if (!tracks(pane.pane_id) && pane.agent_status === "unknown") pane.agent_status = last.get(pane.pane_id) ?? pane.agent_status;
-      // a tracked pane's file says working while its approval waits: the newest read saw it blocked
       else if (tracks(pane.pane_id) && last.get(pane.pane_id) === "blocked") pane.agent_status = "blocked";
     }
     syncAgents(snapshot);
@@ -136,11 +125,8 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
         // approved, the call runs and the title spins: the file may still end at an answer from before the wait
         const status: AgentStatus = asking ? "blocked" : last.get(pane.pane_id) === "blocked" && said === "working" ? "working" : pane.agent_status === "working" ? "working" : "idle";
         const before = last.get(pane.pane_id);
-        // only the approval's start and end are the title's to tell; the file tells its own turns
-        // a first look at an approval wait is told too, as one at work is: the user is waited on
         if (before === undefined ? status === "blocked" : before !== status && (status === "blocked" || before === "blocked")) changed.push({ paneId: pane.pane_id, status });
         if (asking || status === "working") pane.agent_status = status;
-        // what the file said is where the title goes on from if the file stops
         last.set(pane.pane_id, status);
         titled.add(pane.pane_id);
       }
@@ -152,7 +138,6 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
     if (status === null) continue;
     pane.agent_status = status;
     titled.add(pane.pane_id);
-    // a pane first found at rest tells nobody; one found at work does, so that its end is a finish
     const before = last.get(pane.pane_id);
     if (before === undefined ? status === "working" : before !== status) changed.push({ paneId: pane.pane_id, status });
     last.set(pane.pane_id, status);
@@ -162,19 +147,12 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
   return changed;
 }
 
-/** The snapshot's agents list says what its panes say. */
 function syncAgents(snapshot: { panes: HerdrPane[]; agents?: { pane_id: string; agent_status: AgentStatus }[] }): void {
   const status = new Map(snapshot.panes.map((pane) => [pane.pane_id, pane.agent_status]));
   for (const agent of snapshot.agents ?? []) agent.agent_status = status.get(agent.pane_id) ?? agent.agent_status;
 }
 
-/**
- * The tracker's Letta composition, as GJC's: no aliases, no background counts, an unfinished turn
- * of a process that is gone told as a failed rest, and a status only once a whole turn record was read.
- */
-/** What of a Letta pane's title finds it anew: the name and whether a spinner or the approval mark shows, never which spinner frame. */
 export function lettaRefreshKey(pane: HerdrPane): string {
-  // another pane's title (a shell's, per command) says nothing of Letta
   if (pane.agent !== "letta") return "";
   const title = pane.terminal_title ?? "";
   const mark = LETTA_ASKING_TITLE.test(title) ? "asking" : LETTA_BUSY_TITLE.test(title) ? "busy" : "";
@@ -184,7 +162,6 @@ export function lettaRefreshKey(pane: HerdrPane): string {
 export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs" | "refreshKey" | "file">): OmoStatus {
   return new OmoStatus({
     ...deps,
-    // found again when its title's name or mark changes (a /resume of another agent, a turn's start or end), else as gjc's
     refreshKey: lettaRefreshKey,
     file: lettaMessagesFile(),
     agent: "letta",

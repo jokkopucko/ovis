@@ -38,10 +38,6 @@ describe("drawerSettles", () => {
   });
 });
 
-/**
- * The listener itself, on a stand-in document: a claimed stroke must keep every later move
- * from the page (the terminal's one-finger scroll listens below it) until the finger lifts.
- */
 describe("watchDrawerSwipe", () => {
   type Handler = (event: unknown) => void;
   let listeners: Map<string, Handler>;
@@ -69,7 +65,6 @@ describe("watchDrawerSwipe", () => {
     (globalThis as Record<string, unknown>)["document"] = saved.document;
   });
 
-  /** One stroke through the listener; how many moves reached the page, and what the drawer did. */
   const stroke = (points: [number, number][], open = false, target: unknown = null, midway?: () => void) => {
     const calls: boolean[] = [];
     const stop = watchDrawerSwipe(() => open, (next) => calls.push(next));
@@ -153,7 +148,6 @@ describe("watchDrawerSwipe", () => {
     const seen: string[] = [];
     const watch = new Proxy(style, { set: (target, key: string, value: string) => { target[key] = value; if (key === "transform") seen.push(value); return true; } });
     drawer.style = watch;
-    // past the swipe it opens, the finger comes back to a third of the drawer, and is let go slowly: it closes
     const timed = stroke([[4, 400], [24, 400], [100, 400], [100, 400], [100, 400]]);
     expect(seen).toContain("translateX(-204px)");
     expect(timed.calls).toEqual([true, false]);
@@ -171,14 +165,12 @@ describe("watchDrawerSwipe", () => {
     const calls: boolean[] = [];
     const stop = watchDrawerSwipe(() => true, (next) => calls.push(next));
     const event = (x: number, timeStamp: number) => ({ touches: [{ clientX: x, clientY: 400 }], target: null, timeStamp, preventDefault: () => {}, stopPropagation: () => {} });
-    // a swipe from the scrim closes the drawer, and its touchend never reaches the document
     listeners.get("touchstart")!(event(360, 0));
     listeners.get("touchmove")!(event(330, 16));
     listeners.get("touchmove")!(event(290, 32));
     expect(calls).toEqual([false]);
     expect(drawer.style["transform"]).toBe("translateX(-70px)");
     expect(scrim.style["transition"]).toBe("none");
-    // the next touch finds it held, and lets it go where it was: most of it showed, so it stays open
     listeners.get("touchstart")!(event(100, 5000));
     expect(calls).toEqual([false, true]);
     expect(drawer.style["transform"]).toBe("");
@@ -197,7 +189,6 @@ describe("watchDrawerSwipe", () => {
     const calls: boolean[] = [];
     const stop = watchDrawerSwipe(() => false, (next) => calls.push(next));
     const event = (x: number, timeStamp: number) => ({ touches: [{ clientX: x, clientY: 400 }], target: null, timeStamp, preventDefault: () => {}, stopPropagation: () => {} });
-    // 36 px of 300 in 20 ms: far short of half, but fast enough to open
     listeners.get("touchstart")!(event(4, 0));
     listeners.get("touchmove")!(event(40, 20));
     listeners.get("touchend")!({ touches: [], timeStamp: 30 });

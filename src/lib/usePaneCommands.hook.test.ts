@@ -7,20 +7,15 @@ import { usePaneCommands } from "./usePaneCommands.ts";
 
 const config: SlashCommand = { name: "config", description: "Open config", source: "builtin", visibility: "terminal" };
 
-// Keep React, the hook, its cache and the API function real; only the network is a stand-in.
 describe("usePaneCommands after a failed read", () => {
   let renderer: ReactTestRenderer | null = null;
   let down = false;
-  /** while set, every read is refused as a watching device's is (#2132) */
   let refused = false;
-  /** while set, each read waits for the test to answer it, in the order the test chooses */
   let held: ((rows: SlashCommand[]) => void)[] | null = null;
-  /** while set, a read never answers, whatever its signal says (a connection that went quiet) */
   let stalled = false;
   let seen: readonly SlashCommand[] = [];
   let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
   function Probe({ pane }: { pane: string }) { seen = usePaneCommands(pane, "claude"); return null; }
-  /** Lets the read's promise chain finish: a bounded number of turns, each inside act. */
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
 
   beforeAll(() => { Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true }); });
@@ -83,7 +78,6 @@ describe("usePaneCommands after a failed read", () => {
     down = true;
     await act(async () => { renderer = create(createElement(Probe, { pane: "w-retry:p3" })); });
     await settle(() => fetchSpy.mock.calls.length >= 1);
-    // the failed read's retry is pending; a catalog change starts a read, then the retry joins it
     down = false; held = [];
     const answers = held;
     await act(async () => { invalidatePaneCommands("w-retry:p3", "local"); });
@@ -123,7 +117,6 @@ describe("usePaneCommands after a failed read", () => {
     await settle(() => fetchSpy.mock.calls.length > calls);
     await settle(() => false);
     expect(seen.map((command) => command.name)).toEqual(["config"]);
-    // and still asks again once the failed read's wait is over
     const failed = fetchSpy.mock.calls.length;
     await act(async () => { jest.advanceTimersByTime(2_000); });
     await settle(() => fetchSpy.mock.calls.length > failed);

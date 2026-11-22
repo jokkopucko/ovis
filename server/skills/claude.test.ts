@@ -27,7 +27,6 @@ function put(path: string, text: string): void {
 function ctx(home: string, cwd: string, environ: string[] | null = null): AgentCommandContext {
   return { home, cwd, repoRoot: null, env: environ, roots: {} };
 }
-/** discover's own rows: bundled skills come back as builtin-source rows */
 const found = (home: string, cwd: string) => source.discover(ctx(home, cwd)).filter(({ source: kind }) => kind !== "builtin");
 const withBundled = (home: string, cwd: string) => source.discover(ctx(home, cwd));
 const real = (path: string): string => realpathSync(path);
@@ -387,7 +386,6 @@ describe("Claude discovery", () => {
     expect(found(home, cwd).map(({ name }) => name)).toEqual(["ok"]);
   });
 
-  // needs todo 5's paneCommands (visibility and shadows)
   it("lists the screens with visibility terminal and the hidden four as agent-hidden", () => {
     const { home, cwd } = fixture();
     const rows = paneCommands("claude", cwd, home);

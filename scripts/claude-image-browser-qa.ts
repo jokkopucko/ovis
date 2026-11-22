@@ -1,8 +1,3 @@
-/** Claude Code pictures in Chat, end to end on an owned herdr pane: a Claude stand-in bound to a
- * native transcript -> real HTTP -> React -> the image endpoint -> Chrome's decoder. A prompt that
- * is only a picture, sent after a rewind, is a turn of its own and the turns it left behind stay
- * hidden; a picture a Read returned shows small on its folded work line. Run after bun run build.
- * Every byte of fixture text is synthetic. */
 import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -22,7 +17,6 @@ const SESSION = "c1a0de00-0000-4000-8000-000000000992";
 // real 1x1 files, so Chrome decodes them: a naturalWidth of 1 proves the bytes that arrived are a
 // picture, not a broken-image placeholder
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-// opaque blue, so a screenshot shows the thumbnail and not an empty card
 const GIF = "R0lGODlhAQABAPAAAAAA/////yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
 const ids = { ask: "00000000-0000-4000-8000-0000000000a1", read: "00000000-0000-4000-8000-0000000000a2", result: "00000000-0000-4000-8000-0000000000a3", answer: "00000000-0000-4000-8000-0000000000a4", abandoned: "00000000-0000-4000-8000-0000000000a5", abandonedAnswer: "00000000-0000-4000-8000-0000000000a6", picture: "00000000-0000-4000-8000-0000000000a7", pictureAnswer: "00000000-0000-4000-8000-0000000000a8" };
 const at = (second: number) => `2026-10-24T00:00:${String(second).padStart(2, "0")}.000Z`;
@@ -33,12 +27,10 @@ const image = (media_type: string, data: string) => ({ type: "image", source: { 
 const records = [
   user(ids.ask, null, "What is in shot.png?", 1),
   assistant(ids.read, ids.ask, [{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: join(root, "shot.png") } }], "tool_use", 2),
-  // Claude Code's Read of an image file: the picture is the result
   user(ids.result, ids.read, [{ type: "tool_result", tool_use_id: "toolu_read", content: [image("image/png", PNG)] }], 3),
   assistant(ids.answer, ids.result, [{ type: "text", text: "It is a single red pixel." }], "end_turn", 4),
   user(ids.abandoned, ids.answer, "A question the rewind took back", 5),
   assistant(ids.abandonedAnswer, ids.abandoned, [{ type: "text", text: "An answer the rewind took back." }], "end_turn", 6),
-  // the rewind went back to the first answer, and the prompt sent from there is only a picture
   user(ids.picture, ids.answer, [image("image/gif", GIF)], 7),
   assistant(ids.pictureAnswer, ids.picture, [{ type: "text", text: "That one is a blue pixel." }], "end_turn", 8),
 ];
@@ -92,7 +84,6 @@ try {
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null });
   browser = await chromium.launch({ executablePath: chromePath(), headless: process.env["HEADED"] !== "1", args: ["--no-sandbox", "--no-proxy-server"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
-  // the pane opens on its chat, and the chat reads its fixture's last answer
   const openChat = async (target: Page) => {
     await target.addInitScript((id) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
@@ -108,7 +99,6 @@ try {
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  // what the image endpoint answered, by ref: the real server reads the bytes from the transcript
   const served = new Map<string, { status: number; type: string | null }>();
   page.on("response", (response) => {
     const url = new URL(response.url());
@@ -128,7 +118,6 @@ try {
   assert.deepEqual(served.get(promptRef), { status: 200, type: "image/gif" });
   console.log("PASS a Claude prompt that is only a picture is its own turn, its thumbnail decoded, the rewind's turns hidden");
 
-  // a settled turn's work is folded, and its line shows the picture the Read returned, small
   const work = log.locator(".work-block-head");
   assert.equal(await work.count(), 1);
   assert.equal(await work.getAttribute("aria-expanded"), "false");
@@ -143,7 +132,6 @@ try {
   assert.equal(await log.locator(".work-block-line .work-image").getAttribute("aria-label"), "Image 1 from Read");
   console.log("PASS the folded line shows the picture Claude Code's Read returned, decoded from the served bytes");
 
-  // opened, the row carries it on its own line, and larger in its detail once the row opens
   await work.click();
   assert.equal(await log.locator(".work-block-line .work-images").count(), 0);
   assert.equal(await log.locator(".work-row-line .work-image").count(), 1);
@@ -166,12 +154,10 @@ try {
   if (evidence) {
     mkdirSync(evidence, { recursive: true });
     await page.screenshot({ path: join(evidence, "claude-images-desktop.png") });
-    // a phone opens the chat at its own width, with no sidebar over it
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
     const small = await phone.newPage();
     const smallLog = await openChat(small);
     await small.screenshot({ path: join(evidence, "claude-images-phone-prompt.png") });
-    // the folded line keeps its thumbnail on one line at a phone's width
     const head = await smallLog.locator(".work-block-head").boundingBox();
     const line = await smallLog.locator(".work-block-line .work-image").boundingBox();
     assert.ok(head !== null && line !== null && Math.abs((line.y + line.height / 2) - (head.y + head.height / 2)) < 2, "the thumbnail sits on the folded line");

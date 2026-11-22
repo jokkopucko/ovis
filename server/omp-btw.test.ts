@@ -14,7 +14,6 @@ describe("ompBtwTopics", () => {
   beforeAll(() => { root = mkdtempSync(join(tmpdir(), "ovis-btw-")); });
   afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-  /** a session file and its artifacts folder (the file's path without `.jsonl`), as OMP lays them out */
   const session = (name: string): { transcript: string; history: string } => {
     const transcript = join(root, `${name}.jsonl`);
     writeFileSync(transcript, "");
@@ -45,7 +44,6 @@ describe("ompBtwTopics", () => {
   it("reads only well-formed topic files of the main session: not a subagent's history, a lock, a link or a record OMP would refuse", () => {
     const { transcript, history } = session("guarded");
     save(history, topic("kept", 1));
-    // a focused subagent's own history (btw-history/sessions/<key>) is another conversation
     mkdirSync(join(history, "sessions", "sub"), { recursive: true });
     save(join(history, "sessions", "sub"), topic("subagent", 2));
     save(history, topic("other", 3), "entry-renamed.json");
@@ -67,7 +65,6 @@ describe("ompBtwTopics", () => {
       const written = new Date(Date.UTC(2026, 10, 1) + index * 1000);
       utimesSync(join(history, `entry-n${index}.json`), written, written);
     }
-    // the least recently written file asked the newest question: past the read bound, it is not read
     save(history, topic("n0", 999_999));
     utimesSync(join(history, "entry-n0.json"), new Date(Date.UTC(2026, 9, 1)), new Date(Date.UTC(2026, 9, 1)));
     writeFileSync(join(history, "entry-n100.title"), "t".repeat(5000));
@@ -175,7 +172,6 @@ describe("GET /api/pane/btw hard caps", () => {
 
   it("counts the first item of every container, so nested single-item arrays cannot pass for half their items", async () => {
     const { transcript, folder } = history("nested");
-    // 1,500 chains of eleven nested single-item containers: about 34,500 items, about 18,000 when first items go uncounted
     const chain = JSON.parse(`${"[".repeat(10)}{}${"]".repeat(10)}`);
     writeFileSync(join(folder, "entry-n.json"), JSON.stringify({ ...topic("n", 2), images: Array.from({ length: 1500 }, () => chain) }));
     writeFileSync(join(folder, "entry-q.json"), JSON.stringify(topic("q", 1)));

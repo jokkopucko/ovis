@@ -11,8 +11,6 @@ import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./he
 type TestBridge = { port: number; stop: () => void };
 type ConversationChanged = Extract<ServerMessage, { type: "conversation-changed" }>;
 
-// These integration tests exercise real native-file stat ticks and asynchronous herdr/WS
-// lifecycles. Platform timers cannot be faked; all waits name a condition and a deadline.
 async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
   const deadline = Date.now() + 12_000;
   while (!(await check())) {
@@ -174,7 +172,6 @@ describe("native conversation invalidation", () => {
     await reader.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId, afterDisable);
     expect(monitor.size).toBe(0);
 
-    // Idempotent terminal attachment must not implicitly restore chat interest.
     const disabledCalls = watchCalls();
     attach(reader);
     await barrier(reader);
@@ -190,7 +187,6 @@ describe("native conversation invalidation", () => {
 
     reader.ws.close();
     await until(() => monitor.size === 0, "closing the only interested client kept no monitor");
-    // The uninterested terminal is still attached, and can subscribe without attaching again.
     const after = terminal.frames.length;
     await barrier(terminal, "observe");
     await terminal.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId, after);
@@ -222,7 +218,6 @@ describe("native conversation invalidation", () => {
     const after = socket.frames.length;
     watch(socket);
     await socket.waitFor((frame) => frame.type === "error" && frame.code === "not_attached", after);
-    // Disabling an already released subscription is harmless.
     watch(socket, false);
     await barrier(socket, "observe");
     expect(socket.ws.readyState).toBe(WebSocket.OPEN);
@@ -243,7 +238,6 @@ describe("native conversation invalidation", () => {
     await socket.changed(paneId, after);
     expect((await read()).metadata?.model).toBe("detached-model");
 
-    // the pane's own attach, its attached interest's disable and its detach leave the detached interest be
     attach(socket);
     await socket.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId);
     watch(socket, false);
@@ -341,7 +335,7 @@ describe("native conversation invalidation", () => {
     afterFirst = first.frames.length;
     rmSync(path);
     await first.changed(paneId, afterFirst);
-    expect(await read()).toEqual({ source: "scrollback", turns: [] });
+    expect(await read()).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     afterFirst = first.frames.length;
     writeFileSync(path, transcript());
     await first.changed(paneId, afterFirst);
@@ -353,7 +347,6 @@ describe("native conversation invalidation", () => {
     await first.changed(paneId, afterFirst);
     expect(JSON.stringify((await read()).turns)).toContain("new session answer");
 
-    // The role ACK is a frame-order barrier: detach was processed before the write.
     first.send({ type: "detach", pane_id: paneId });
     await barrier(first, "observe");
     expect(monitor.size).toBe(1);
@@ -371,7 +364,6 @@ describe("native conversation invalidation", () => {
     third.send({ type: "detach", pane_id: paneId });
     await barrier(third, "observe");
     await until(() => monitor.size === 0, "the last interest detached while terminal-only clients stayed");
-    // A detached client reattaching later has no interest until it opts in again.
     const beforeReattach = first.frames.length;
     attach(first);
     await first.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId, beforeReattach);
@@ -508,8 +500,6 @@ describe("native conversation invalidation", () => {
     attach(socket);
     watch(socket);
     await socket.changed(paneId);
-    // interest is accepted while the attach is still being created: a pane closed before the
-    // client joined answers the attach with an error, not pty-exit, so wait for the join
     await socket.waitFor((frame) => frame.type === "pane-geometry" && frame.pane_id === paneId && frame.fixed === true);
     const monitor = monitors.get(paneId)!;
     await workspaceClose(workspaceId);

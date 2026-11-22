@@ -1,31 +1,19 @@
-/**
- * The fictional session behind the README media (scripts/readme-media/stage.ts) and the browser
- * demo (site/demo/transport.ts): two repositories with two agent worktrees each, a shell tab, their
- * curated chats and one Codex approval. Nothing here comes from a real machine. It imports no server
- * code, so the browser bundle can take it.
- */
 import type { ConversationTurn, InteractivePrompt, SessionHistoryAgent, SessionHistoryRow, SlashCommand } from "../../shared/protocol.ts";
 import { AGENT_CATALOG, catalogRow, meetsMinVersion, type AgentCatalogResponse } from "../../shared/agent-catalog.ts";
 
 export interface DemoSpec {
   key: string;
-  /** the workspace's label and the folder name: under the demo root, or under herdr's worktrees folder */
   label: string;
-  /** the pane's title */
   title: string;
   agent: string | null;
   state?: "idle" | "working" | "blocked";
-  /** a linked worktree of this repository spec's key, checked out on `branch` */
   worktreeOf?: string;
   branch?: string;
-  /** a second tab, labelled `label`, in this spec's workspace instead of a workspace of its own */
   tabOf?: string;
 }
 
-/** The demo PC's versions of the agents its panes run; every other catalog agent is not installed there. */
 const DEMO_INSTALLED: Readonly<Record<string, string>> = { claude: "2.1.311", codex: "0.163.0", omp: "18.8.7", pi: "0.73.1", hermes: "0.22.5" };
 
-/** GET /api/agent-catalog on the demo PC, a Linux one: the real catalog, with the agents above installed. */
 export const DEMO_AGENT_CATALOG: AgentCatalogResponse = {
   platform: "linux",
   agents: AGENT_CATALOG.map((entry) => {
@@ -36,7 +24,6 @@ export const DEMO_AGENT_CATALOG: AgentCatalogResponse = {
   }),
 };
 
-// The sidebar reads as two repositories, each with its own agent and two agent worktrees under it.
 export const SPECS: DemoSpec[] = [
   { key: "api", label: "checkout-api", title: "Idempotent payments", agent: "claude", state: "working" },
   { key: "web", label: "export-guard", title: "Guard the export button", agent: "codex", state: "blocked", worktreeOf: "api", branch: "feat/export-guard" },
@@ -49,7 +36,6 @@ export const SPECS: DemoSpec[] = [
 
 export const t = (min: number, sec = 0) => `2026-09-25T09:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}.000Z`;
 
-/** The flags each agent resumes a session by, as server/session-history.ts cites them. */
 const RESUME_FLAGS: Record<SessionHistoryAgent, string[]> = {
   claude: ["--resume"], codex: ["resume"], pi: ["--session"], omp: ["--resume"], gjc: ["--resume"], cmd: ["--session"],
   omo: ["--session-id"], opencode: ["--session"], hermes: ["--resume"], grok: ["--resume"], agy: ["--conversation"], devin: ["--resume"],
@@ -67,27 +53,18 @@ export function resumedSession(agent: string | null, args: unknown): string | nu
   return args.length === flags.length + 1 && flags.every((flag, index) => args[index] === flag) && typeof id === "string" ? id : null;
 }
 
-/**
- * Web push on the demo: the fictional workstation's key, and two subscriptions its push service has
- * already answered for, so the alerts notice has something to show. The public demo has no
- * PushManager, so only a browser script that lends it one (scripts/push-health-demo-regression.ts)
- * ever hands these over; nothing here reaches a real push service.
- */
 export const DEMO_PUSH = {
   publicKey: "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
-  /** retired by its push service after one alert got through: the tombstone that says why alerts stopped */
   retired: {
     subscription: { endpoint: "https://push.example.test/demo/retired", keys: { p256dh: "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJks", auth: "BzxxptsQRXqv5BlOg7jtIg" } },
     status: { registered: false, last_success_at: t(2), last_failure_at: t(41), last_failure: "gone" as const },
   },
-  /** refused by its push service, and still registered: told, and not mended by subscribing again */
   refused: {
     subscription: { endpoint: "https://push.example.test/demo/refused", keys: { p256dh: "AyA9WneUsc7rCCVCX3yZttPwDSpHZIGeu9j1Ei9MaYajwN36FzRRbouoxeL_HDlWc5CtyucEIT5beJWyz-wJJkM", auth: "BUJ_vPk2c7DtKmek4R5bmA" } },
     status: { registered: true, last_success_at: t(2), last_failure_at: t(44), last_failure: "rejected" as const },
   },
 };
 
-/** Two earlier, fictional sessions of an agent in a demo folder, newest first. */
 export function sessionHistoryRows(agent: SessionHistoryAgent): SessionHistoryRow[] {
   const row = (id: string, title: string, firstMessage: string, started: number, updated: number): SessionHistoryRow =>
     ({ id, title, firstMessage, startedAt: t(started), updatedAt: t(updated), resume: { argv: [agent, ...RESUME_FLAGS[agent], id] } });
@@ -99,7 +76,7 @@ export function sessionHistoryRows(agent: SessionHistoryAgent): SessionHistoryRo
 /**
  * The skills an agent would offer in a demo folder before any pane runs it (GET /api/agent/commands):
  * Codex types its skills as `$name`, the others as `/name`; a project skill and one of the user's own
- * for each, so the new workspace and tab dialogs show both. Agents not listed here offer none.
+ * for each, so the new workspace and tab dialogs show both.
  */
 export function agentSkillRows(agent: string): SlashCommand[] {
   const skill = (name: string, description: string, origin: "user" | "project"): SlashCommand => ({

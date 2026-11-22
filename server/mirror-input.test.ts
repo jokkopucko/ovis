@@ -47,7 +47,6 @@ describe("typing into a mirrored pane", () => {
   });
 
   test("raw terminal input is not validated here: a marker inside it goes as typed, as before", async () => {
-    // only a submit is checked (core/composer.ts submitFraming); keyboard input keeps its bytes
     const raw = "line one\x1b[201~\rline two";
     expect(await mirrorInput(raw, agent)).toBe(raw);
     expect(await mirrorInput("\x1b[201~", agent)).toBe("\x1b[201~");

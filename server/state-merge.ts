@@ -1,10 +1,4 @@
 /**
- * An install from before 0.4.16 could keep its state in two dirs: a fresh 0.4.14 or 0.4.15 install
- * kept it under the new name (ovis) until its next restart, its first update included, which took
- * the old one (herdr-web-ui) because the bridge registry is created there (update-state.ts). Each
- * dir may then hold paired devices, shared preferences and push subscriptions the other lacks. A
- * server whose state dir is one of the two takes over the other's before any store reads them.
- *
  * Paired devices (devices.json) are an authorization record, so both dirs end with the same one:
  * a release before this one that ever reads either finds every device and a closed gate. Devices are
  * merged by id against the ids both held after the last merge (state-merge.json, kept in both dirs):
@@ -15,23 +9,15 @@
  * and pairs nothing (devices.ts), neither registry is written, and a dir without a registry gets a
  * closed, empty one marked incomplete: its missing devices are never read as revoked.
  *
- * Preferences and mutes, too, end alike in both dirs. Each merge starts from what the last one
- * settled on and lays over it what each dir changed since (against what that dir held after the last
- * merge); where both changed a setting, the preferences document written last wins. Mutes take each
- * dir's additions and removals. The first merge keeps this dir's, the other's where this one has none
- * or wrote longer ago, and the union of the mutes. Push subscriptions go to the
- * dir in use only, each taken over once, with the key pair it was made for (push.ts PUSH_EXTRA_KEYS).
- *
- * Nothing is deleted: a file about to be replaced is first copied to `state-merge-backups/<time>/`
- * in its own dir. Every write replaces a whole file atomically and the merge only adds what one side
- * holds or removes what one side dropped since the last merge, so a merge stopped at any point
- * (a crash, a power loss) merges the same way at the next start.
+ * Push subscriptions go to the dir in use only, each taken over once, with the key pair it was made
+ * for (push.ts PUSH_EXTRA_KEYS).
  */
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
-import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
+import type { RowOrigin } from "./account/admission-order.ts";
+import { readDeviceRegistry, VOUCHED, type StoredDevice } from "./devices.ts";
 import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
 import { normalizeEndpoint, PUSH_EXTRA_KEYS } from "./push.ts";
 import { readStateId, STATE_ID_FILE, writeStateId } from "./preferences.ts";
@@ -43,20 +29,14 @@ const BACKUPS = "state-merge-backups";
 /** Beside a registry written where one was missing: it may lack devices the other dir holds. */
 const INCOMPLETE = "state-merge-devices-incomplete.json";
 
-/** What a merge leaves the device store to know. */
 export interface SiblingMerge {
   /** why the device registries could not be merged: the store must stay gated (devices.ts) */
   devicesBlocked: string | null;
+  legacyCredential?: (row: StoredDevice) => boolean;
 }
 
-/**
- * The other of the two default state dirs, when `active` is one of them and the other is a dir of
- * its own (not a link to `active`): that one may hold state `active` lacks. A custom
- * OVIS_STATE_DIR elsewhere has none.
- */
 export function siblingStateDir(active: string, env: Record<string, string | undefined> = process.env): string | null {
   const { legacy, next } = stateDirNames(env);
-  // by real path: a supervisor names its dir as it found it on disk, a link in the config path resolved
   const own = realpath(active);
   const other = own === realpath(legacy) ? next : own === realpath(next) ? legacy : null;
   if (other === null) return null;
@@ -80,15 +60,14 @@ interface MergeRecord {
   /** one more than the newest record of the two dirs: the clock may go back, this never does */
   seq: number;
   at: string;
-  /** both dirs' real paths, sorted */
   dirs: string[];
-  /** the device ids both registries held after the last merge that wrote both */
   devices: string[];
-  /** each dir's preferences as they were on disk after this merge, by real path */
+  /** Exact credentials witnessed in both folders by an ordinary Step 1 merge. Never an admission order. */
+  legacy_credentials?: string[];
+  /** The relay identity those credentials were witnessed under: a later reset or a foreign sibling does not unwitness them. */
+  legacy_identity?: string;
   preferences: Record<string, PreferencesSnapshot>;
-  /** the preferences this merge settled on, which a dir that could not be written has still to take */
   preferences_target?: PreferencesSnapshot;
-  /** the hashes of the endpoints taken over from each dir, by its real path */
   push: Record<string, string[]>;
   /** whether the merged registry had a closed gate: with both registries gone, the install is still not a fresh one */
   gated?: boolean;
@@ -115,45 +94,109 @@ const earliest = (values: (string | null | undefined)[]): string | null =>
  * creation and its last sighting. A missing registry (`null`) says nothing was dropped there, nor
  * does an incomplete one (`incomplete`: written where a registry was missing, devices.ts placeholder).
  */
+/**
+ * With OVIS_ACCOUNT_OPENS_ALL on (T48, T27 in 2d): `holdImports` while the merged safety log holds a lock, a block or
+ * a freeze in force, so a row only the other dir holds is no import now and stays in that dir's file; and
+ * `dropConflictingKeys`, so a row whose key differs between the two copies is dropped rather than given either key.
+ */
+export interface MergeRules { readonly boundAccount?: string | null; readonly holdImports?: boolean; readonly dropConflictingKeys?: boolean; readonly onDropped?: (device: StoredDevice) => void; readonly sharedLegacyIdentity?: string }
+
+const credentialFingerprint = (identity: string, row: StoredDevice): string =>
+  createHash("sha256").update(text([identity, row.id, row.relay_public_key, row.token_hash])).digest("base64url");
+
+// Rollback cannot transfer a held credential to a live twin, in either direction.
+function separateHeldTwins(own: StoredDevice, other: StoredDevice): boolean {
+  return (Object.hasOwn(own, "held") || Object.hasOwn(other, "held"))
+    && (own.relay_public_key !== other.relay_public_key || own.token_hash !== other.token_hash);
+}
+
 export function mergeRegistries(own: Registry | null, other: Registry | null,
   bases: { own: ReadonlySet<string> | null; other: ReadonlySet<string> | null },
-  incomplete: { own: boolean; other: boolean } = { own: false, other: false }): Registry {
+  incomplete: { own: boolean; other: boolean } = { own: false, other: false }, rules: MergeRules = {}): Registry & { held: StoredDevice[] } {
   const mine = own?.devices ?? [];
   const theirs = other?.devices ?? [];
   const theirIds = new Set(theirs.map((device) => device.id));
   const myIds = new Set(mine.map((device) => device.id));
   const devices: StoredDevice[] = [];
-  for (const device of mine) {
+  const held: StoredDevice[] = [];
+  for (const original of mine) {
     // revoked through the other dir since the last merge
-    if (other !== null && !incomplete.other && bases.other?.has(device.id) && !theirIds.has(device.id)) continue;
-    const twin = theirs.find((candidate) => candidate.id === device.id);
+    if (other !== null && !incomplete.other && bases.other?.has(original.id) && !theirIds.has(original.id)) continue;
+    const twin = theirs.find((candidate) => candidate.id === original.id);
     if (!twin) {
-      devices.push(device);
+      devices.push(original);
+      continue;
+    }
+    let device = original;
+    // The other folder can still contain the settled pairing after this folder's link was cleared.
+    // Require the same credential: the mere absence of a binding does not turn a member into a paired row.
+    if (rules.boundAccount !== undefined && original.account !== undefined && original.account !== rules.boundAccount &&
+      twin.account === undefined && original.token_hash === twin.token_hash && original.relay_public_key === twin.relay_public_key) {
+      const { account: _account, linked_at: _linked, account_add: _add, member_approved_in: _member, joined_by: _joined, ...paired } = original;
+      device = paired;
+    }
+    if (rules.dropConflictingKeys && twin.relay_public_key !== device.relay_public_key) { rules.onDropped?.(device); continue; }
+    const history = {
+      role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
+      // Step 2 uses a keyless cookie's own pairing time against a freeze. Never backdate it from its twin.
+      created_at: rules.dropConflictingKeys && device.relay_public_key === undefined ? device.created_at : earliest([device.created_at, twin.created_at])!,
+      last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
+    } satisfies Pick<StoredDevice, "role" | "created_at" | "last_seen_at">;
+    if (!rules.dropConflictingKeys && separateHeldTwins(device, twin)) {
+      devices.push({ ...device, ...history });
       continue;
     }
     // the credential is chosen apart from the rest: whichever is kept, the role is never widened
     if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
+    // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
+    // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
+    const staleMembership = rules.boundAccount !== undefined && twin.account !== undefined && twin.account !== rules.boundAccount;
+    const takes = twin.account !== undefined && !staleMembership
+      && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""));
+    // how the row joined is merged apart from the account and key: a link on the device's own word (any mark but a
+    // vouched one, `null` included) is kept whichever copy holds it and whichever account the row takes, as no later
+    // link undoes it. Otherwise the kept copy's mark, or, where both copies are in that account, the other's when the
+    // kept one has none: a vouched mark goes with its own account only. Only a missing mark is none
+    const { joined_by: own, origin: ownOrigin, account_add: ownAdd, ...rest } = device;
+    const add = [ownAdd, twin.account_add].find(record => record !== undefined &&
+      (rules.boundAccount === undefined || (rules.boundAccount !== null && isObject(record) && record["account"] === rules.boundAccount)));
+    // this dir keeps its own origin for the key it admitted; only a copy that carries another origin, or another key,
+    // takes it away: a copy with none erases nothing, and the sibling's never comes here (P22, T27 in 2d). Main never
+    // writes an origin, so this holds with the release flag off too
+    const mergedKey = takes ? twin.relay_public_key : device.relay_public_key;
+    const origin = keptOrigin(device, twin, mergedKey);
+    // a key this dir never held is no row of its own here: its one-time legacy pass never stamps it (T50)
+    const notOwnKey = mergedKey !== device.relay_public_key;
+    const keptMark = takes ? twin.joined_by : own;
+    const otherMark = takes ? own : staleMembership ? undefined : twin.joined_by;
+    const marks = [keptMark, otherMark].filter((mark) => mark !== undefined);
+    const word = marks.findIndex((mark) => !VOUCHED.has(mark));
+    const joinedBy = word >= 0 ? marks[word] : device.account !== undefined && device.account === twin.account ? marks[0] : keptMark;
     devices.push({
-      ...device,
-      role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
-      created_at: earliest([device.created_at, twin.created_at])!,
-      last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
+      ...rest,
+      ...(rules.dropConflictingKeys && twin.held && !device.held ? { held: twin.held } : {}),
+      ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),
+      ...(origin === undefined ? {} : { origin }),
+      ...(notOwnKey ? { imported: true as const } : {}),
+      ...history,
       // the signed add behind the row, kept from either copy (/api/account/status lists it)
-      ...(device.account_add === undefined && twin.account_add !== undefined ? { account_add: twin.account_add } : {}),
-      // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
-      // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
-      ...(twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""))
+      ...(add === undefined ? {} : { account_add: add }),
+      ...(takes
         ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }), ...(twin.link_moved_key === undefined ? {} : { link_moved_key: twin.link_moved_key }) } : {}),
     });
   }
   for (const device of theirs) {
     // revoked here since the last merge
     if (myIds.has(device.id) || own !== null && !incomplete.own && bases.own?.has(device.id)) continue;
-    devices.push(device);
+    // a row only the other dir holds has no place in this dir's order, and is marked as no row of this dir's own, so
+    // this dir's one-time legacy pass never stamps it (T50)
+    const { origin: _elsewhere, ...copied } = device;
+    if (rules.holdImports) held.push(device);
+    else devices.push({ ...copied, imported: true });
   }
   // every piece of evidence that either side was ever gated keeps the merge gated
   const gate = earliest([own?.gate_closed_at, other?.gate_closed_at, ...mine.map((d) => d.created_at), ...theirs.map((d) => d.created_at)]);
-  return { gate_closed_at: gate, devices };
+  return { gate_closed_at: gate, devices, held };
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -163,6 +206,8 @@ const isSnapshot = (value: unknown): value is PreferencesSnapshot =>
 const isRecord = (value: unknown): value is MergeRecord =>
   isObject(value) && value["version"] === 1 && Number.isSafeInteger(value["seq"]) && typeof value["at"] === "string"
   && isStrings(value["dirs"]) && isStrings(value["devices"])
+  && (value["legacy_credentials"] === undefined || isStrings(value["legacy_credentials"]))
+  && (value["legacy_identity"] === undefined || typeof value["legacy_identity"] === "string")
   && isObject(value["preferences"]) && Object.values(value["preferences"]).every(isSnapshot)
   && (value["preferences_target"] === undefined || isSnapshot(value["preferences_target"]))
   && isObject(value["push"]) && Object.values(value["push"]).every(isStrings)
@@ -172,7 +217,6 @@ const isRecord = (value: unknown): value is MergeRecord =>
       isObject(side) && typeof side["same"] === "boolean" && (side["temp"] === null || typeof side["temp"] === "string")
       && (side["base"] === null || isStrings(side["base"]))));
 
-/** The merge record both dirs share, the newer one when they differ; null when there is none yet. Throws when one cannot be read. */
 function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
   let found: MergeRecord | null = null;
   for (const dir of dirs) {
@@ -180,7 +224,6 @@ function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
     if (read.kind === "missing") continue;
     const value = read.kind === "json" ? read.value : null;
     if (!isRecord(value)) throw new Error(`${join(dir, RECORD)} is not a state merge record`);
-    // a record of another pair of dirs (one moved since) says nothing about these
     if (text(value.dirs) !== text(pair)) continue;
     if (found === null || value.seq > found.seq) found = value;
   }
@@ -192,9 +235,9 @@ function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
  * this one, which knows nothing of the merge, stays gated on this dir too, the dir's own registry
  * gets a closed gate, its devices as they are; a damaged one is left alone (it keeps every release gated).
  */
-function closeGateOnDisk(active: string, stamp: string, now: Date): void {
+function closeGateOnDisk(active: string, stamp: string, now: Date, opensAll: boolean): void {
   const path = join(active, "devices.json");
-  const own = readDeviceRegistry(path);
+  const own = readDeviceRegistry(path, opensAll);
   if (own.kind === "bad" || own.kind === "ok" && (own.gateClosedAt !== null || own.devices.length > 0)) return;
   try {
     backUp(active, "devices.json", stamp);
@@ -208,13 +251,11 @@ function closeGateOnDisk(active: string, stamp: string, now: Date): void {
   }
 }
 
-/** Marks the registry of `dir` as missing devices that may be elsewhere, or clears that mark. */
 function markIncomplete(dir: string, incomplete: boolean): void {
   if (incomplete) writePrivateState(join(dir, INCOMPLETE), { devices_incomplete: true });
   else rmSync(join(dir, INCOMPLETE), { force: true });
 }
 
-/** Copies `name` in `dir`, if it is there, to the backups of this merge before it is replaced. */
 function backUp(dir: string, name: string, stamp: string): void {
   const from = join(dir, name);
   try { statSync(from); } catch (error) {
@@ -226,7 +267,6 @@ function backUp(dir: string, name: string, stamp: string): void {
   copyFileSync(from, join(to, name));
 }
 
-/** A preferences document and its mutes, as each store reads them; null when either is damaged. */
 function readPreferences(dir: string): { doc: PreferencesSnapshot & { revision: number }; written: number } | null {
   const read = readStateDocument(join(dir, "preferences.json"));
   const mutes = readStateDocument(join(dir, "muted-panes.json"));
@@ -235,9 +275,8 @@ function readPreferences(dir: string): { doc: PreferencesSnapshot & { revision: 
   if (body === null || muted === undefined) return null;
   const raw = read.kind === "json" ? read.value as { revision?: unknown } : {};
   const revision = Number.isSafeInteger(raw.revision) ? Math.max(0, raw.revision as number) : 0;
-  // settings and pins conflict by this document alone: mutes never do (they merge as a set)
   let written = 0;
-  try { written = statSync(join(dir, "preferences.json")).mtimeMs; } catch { /* absent */ }
+  try { written = statSync(join(dir, "preferences.json")).mtimeMs; } catch {}
   return { doc: { revision, settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: muted ?? [] }, written };
 }
 
@@ -247,10 +286,22 @@ type Intent = (ids: string[], sides: NonNullable<MergeRecord["pending"]>["sides"
 const closedFor = (read: ReturnType<typeof readDeviceRegistry>): boolean =>
   read.kind === "bad" || read.kind === "ok" && (read.gateClosedAt !== null || read.devices.length > 0);
 
-function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent, now: Date): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
+/**
+ * The origin a folder's copy keeps after a merge whose row holds `key` (P22, T27 in 2d): its own exactly when its copy
+ * holds that key. Only another origin the other copy gives the same key takes it away; one for another key decides
+ * nothing.
+ */
+function keptOrigin(copy: StoredDevice, other: StoredDevice, key: string | undefined): RowOrigin | undefined {
+  const own = copy.origin;
+  if (own === undefined || copy.relay_public_key !== key) return undefined;
+  const theirs = other.origin;
+  if (theirs === undefined || other.relay_public_key !== key) return own;
+  return own.from === theirs.from && own.how === theirs.how && own.by === theirs.by && own.admit_no === theirs.admit_no && own.at === theirs.at ? own : undefined;
+}
+
+function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent, now: Date, rules: MergeRules, identity: string | undefined, legacy: Set<string>): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {
   const ownPath = join(active, "devices.json");
   const otherPath = join(sibling, "devices.json");
-  // the base each registry is merged against: see MergeRecord.pending for a merge that did not finish
   const baseOf = (dir: string, path: string): ReadonlySet<string> | null => {
     if (base === null) return null;
     const side = base.pending?.sides[realpath(dir)];
@@ -259,8 +310,9 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     return side.base === null ? null : new Set(side.base);
   };
   const bases = { own: baseOf(active, ownPath), other: baseOf(sibling, otherPath) };
-  const own = readDeviceRegistry(ownPath);
-  const other = readDeviceRegistry(otherPath);
+  const opensAll = rules.dropConflictingKeys === true;
+  const own = readDeviceRegistry(ownPath, opensAll);
+  const other = readDeviceRegistry(otherPath, opensAll);
   const unreadable = own.kind === "bad" ? ownPath : other.kind === "bad" ? otherPath : null;
   if (unreadable !== null) {
     return { ids: null, changed: 0, blocked: `Cannot read ${unreadable}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore a valid devices.json there or fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` };
@@ -271,6 +323,20 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
   const registry = (read: typeof own): Registry | null => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices } : null;
   const mine = registry(own);
   const theirs = registry(other);
+  if (rules.dropConflictingKeys && identity !== undefined && base !== null && !ownIncomplete && !otherIncomplete) {
+    const eligible = (row: StoredDevice): boolean => !row.invalid_origin && row.held === undefined
+      && (row.origin === undefined || row.origin.from === "legacy")
+      && row.carried_notice === undefined && row.paired_over === undefined;
+    const twins = new Map(theirs?.devices.filter(eligible).map(row => [row.id, row]));
+    const previouslyVerified = new Set(base.legacy_credentials);
+    for (const row of mine?.devices ?? []) {
+      const twin = twins.get(row.id);
+      if (!twin || !eligible(row) || row.imported && twin.imported || !bases.own?.has(row.id) || !bases.other?.has(row.id)) continue;
+      const fingerprint = credentialFingerprint(identity, row);
+      if (fingerprint === credentialFingerprint(identity, twin)
+        && (base.legacy_credentials === undefined || previouslyVerified.has(fingerprint))) legacy.add(fingerprint);
+    }
+  }
   if (mine === null && theirs === null) {
     // both gone after a merge that knew paired devices or a closed gate: this is no first installation
     if (base !== null && (base.devices.length > 0 || base.gated === true || (base.pending?.ids.length ?? 0) > 0)) {
@@ -278,15 +344,43 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     }
     return { blocked: null, ids: [], changed: 0 };
   }
-  const merged = mergeRegistries(mine, theirs, bases, { own: ownIncomplete, other: otherIncomplete });
+  const { held, ...merged } = mergeRegistries(mine, theirs, bases, { own: ownIncomplete, other: otherIncomplete }, rules);
+  // the sibling's file is its own word on its own rows: a row only it held keeps its origin
+  // and mark there, a twin the origin both copies agree on, and a row only this dir held is a copy there (P22, T50)
+  const myCopy = new Map((mine?.devices ?? []).map((device) => [device.id, device]));
+  const theirCopy = new Map((theirs?.devices ?? []).map((device) => [device.id, device]));
+  const otherMerged = { ...merged, devices: merged.devices.map(({ origin: _here, imported: _marked, recovered_over: _hereRecovery, ...device }) => {
+    const copy = theirCopy.get(device.id);
+    if (copy === undefined) return { ...device, imported: true as const };
+    const mineToo = myCopy.get(device.id);
+    if (!rules.dropConflictingKeys && mineToo && separateHeldTwins(mineToo, copy)) return { ...copy, role: device.role };
+    const kept = mineToo === undefined ? copy.origin : keptOrigin(copy, mineToo, device.relay_public_key);
+    const other = { ...device, ...(kept === undefined ? {} : { origin: kept }),
+      ...(kept?.from === "recover" && copy.recovered_over ? { recovered_over: copy.recovered_over } : {}),
+      ...(copy.imported || copy.relay_public_key !== device.relay_public_key ? { imported: true as const } : {}) };
+    if (rules.dropConflictingKeys && device.relay_public_key === undefined) {
+      other.created_at = copy.created_at;
+      if (copy.token_hash !== device.token_hash) other.untrusted_created_at = copy.created_at;
+      else if (copy.untrusted_created_at === undefined) delete other.untrusted_created_at;
+      else other.untrusted_created_at = copy.untrusted_created_at;
+      if (copy.token_hash === device.token_hash && copy.off_pair_binding !== undefined) other.off_pair_binding = copy.off_pair_binding;
+      else delete other.off_pair_binding;
+    }
+    if (!rules.dropConflictingKeys && mineToo) {
+      if (Object.hasOwn(copy, "held")) other.held = copy.held;
+      else delete other.held;
+    }
+    return other;
+  }) };
+  // rows held back from an import stay in the other dir's file, and out of the ids this merge records
+  if (held.length) otherMerged.devices.push(...held);
   // with a complete registry in it, the result holds every device not revoked since the last merge
   const complete = mine !== null && !ownIncomplete || theirs !== null && !otherIncomplete;
   const onDisk = (read: typeof own) => read.kind === "ok" ? { gate_closed_at: read.gateClosedAt, devices: read.devices, ...(read.placeholder ? { placeholder: true } : {}) } : null;
   const added = merged.devices.filter((device) => !mine?.devices.some((held) => held.id === device.id)).length;
   const needOwn = text(onDisk(own)) !== text(merged);
-  const needOther = text(onDisk(other)) !== text(merged);
+  const needOther = text(onDisk(other)) !== text(otherMerged);
   const ownFailed = (error: unknown) => ({ ids: null, changed: 0, blocked: `Cannot write the paired devices of ${sibling} into ${ownPath} (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.` });
-  // the new bytes first, each in a file of its own: publishing one renames it into place (MergeRecord.pending)
   let ownTemp: string | null = null;
   let otherTemp: string | null = null;
   let otherUnprepared: unknown = null;
@@ -294,7 +388,7 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     try { ownTemp = preparePrivateState(ownPath, merged); } catch (error) { return ownFailed(error); }
   }
   if (needOther) {
-    try { otherTemp = preparePrivateState(otherPath, merged); } catch (error) { otherUnprepared = error; }
+    try { otherTemp = preparePrivateState(otherPath, otherMerged); } catch (error) { otherUnprepared = error; }
   }
   if (needOwn || needOther) {
     const side = (need: boolean, temp: string | null, base: ReadonlySet<string> | null) => ({ same: !need, temp, base: base === null ? null : [...base] });
@@ -305,7 +399,6 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
     }
   }
   if (ownTemp !== null) {
-    // a failed publish leaves the prepared file: the record then says this dir did not get the merge
     try {
       backUp(active, "devices.json", stamp);
       publishPrivateState(ownTemp, ownPath);
@@ -321,16 +414,13 @@ function mergeDevices(active: string, sibling: string, base: MergeRecord | null,
       backUp(sibling, "devices.json", stamp);
       publishPrivateState(otherTemp, otherPath);
     } catch (error) {
-      // the dir in use is complete; a release before this one reading the other dir would miss what changed here
       const reason = `Cannot write the merged paired devices into ${otherPath}: ${error instanceof Error ? error.message : String(error)}`;
       console.error(reason);
       // that release must at least find a closed gate there, and no device revoked here
-      if (!closedFor(readDeviceRegistry(otherPath))) closeGateOnDisk(sibling, stamp, now);
-      const left = readDeviceRegistry(otherPath);
+      if (!closedFor(readDeviceRegistry(otherPath, opensAll))) closeGateOnDisk(sibling, stamp, now, opensAll);
+      const left = readDeviceRegistry(otherPath, opensAll);
       const revokedThere = left.kind === "ok" && left.devices.some((device) => !merged.devices.some((kept) => kept.id === device.id));
       const risk = !closedFor(left) ? "have no sign-in gate" : revokedThere ? "still let in a device revoked here" : null;
-      // the base of the next merge is what the other dir still holds of what both held: the devices
-      // both hold now, and those of the last base it still holds although this dir revoked them
       const known = new Set([...merged.devices.map((device) => device.id), ...bases.other ?? []]);
       const blocked = risk === null ? null : `${reason}. An Ovis release before 0.4.16 starting on ${sibling} would ${risk}. Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
       return { blocked, ids: (theirs?.devices ?? []).map((device) => device.id).filter((id) => known.has(id)), changed: added, gated: merged.gate_closed_at !== null };
@@ -348,17 +438,13 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
     console.error(`The shared preferences of ${own === null ? active : sibling} cannot be read; those of ${sibling} are not merged into ${active}`);
     return null;
   }
-  // what the last merge settled on, and what each dir held on disk after it: a dir's change since is
-  // what differs from its own; what it has still to take is what differs from the settled one
   const target = base?.preferences_target ?? null;
   const ownBefore = target === null ? null : base?.preferences[realpath(active)] ?? null;
   const otherBefore = target === null ? null : base?.preferences[realpath(sibling)] ?? null;
   const theirsNewer = other.written > own.written;
   const changed = (value: unknown, was: PreferencesSnapshot | null, at: (snapshot: PreferencesSnapshot) => unknown) =>
     value !== undefined && (was === null || text(value) !== text(at(was)));
-  /** The settled value with each dir's change since laid over it; where both changed it, the document written last. */
   const pick = (mine: unknown, theirs: unknown, at: (snapshot: PreferencesSnapshot) => unknown): unknown => {
-    // the first merge: this dir's, the other's where this one has none or wrote longer ago
     if (target === null) return theirs !== undefined && (mine === undefined || theirsNewer) ? theirs : mine;
     const mineChanged = changed(mine, ownBefore, at);
     const theirsChanged = changed(theirs, otherBefore, at);
@@ -385,12 +471,10 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
   }
   const merged = { settings: settings as PreferencesChange["settings"], ...(pins === undefined ? {} : { pins }), muted_panes: muted };
   const document = { revision: Math.max(own.doc.revision, other.doc.revision) + 1, settings: merged.settings, ...(pins === undefined ? {} : { pins }) };
-  // what each store would read back: two lists each within their limit may not be together
   if (sharedPreferencesBody(merged) === null || new TextEncoder().encode(text({ ...document, muted_panes: muted })).length > MAX_PREFERENCES_BYTES) {
     console.error(`The shared preferences of ${sibling} and ${active} together are too large; those of ${sibling} are not merged`);
     return null;
   }
-  /** Writes the merged document where it differs; false when that failed. */
   const write = (dir: string, held: PreferencesSnapshot): boolean => {
     try {
       if (text(merged.settings) !== text(held.settings) || text(pins) !== text(held.pins)) {
@@ -407,8 +491,6 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
       return false;
     }
   };
-  // both dirs end alike, as the devices do: whichever one a later start uses has every setting. A dir
-  // that could not be written keeps its snapshot as it is on disk, and takes the settled values next time
   write(active, own.doc);
   write(sibling, other.doc);
   mergeStateId(active, sibling, stamp);
@@ -426,10 +508,6 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
   return { snapshots, target: merged };
 }
 
-/**
- * Both dirs end with one state folder id (preferences.ts), this dir's or, while it has none, the other's:
- * a browser that knew it from either is not told the folder started over. A damaged one is left alone.
- */
 function mergeStateId(active: string, sibling: string, stamp: string): void {
   try {
     const own = readStateId(active);
@@ -446,7 +524,6 @@ function mergeStateId(active: string, sibling: string, stamp: string): void {
 
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } } & Record<string, unknown>;
 
-/** A JSON file of the push service: undefined when absent. Throws when it cannot be read or parsed. */
 function readPushFile(path: string): unknown {
   const read = readStateDocument(path);
   if (read.kind === "malformed") throw new Error(`${path} is not JSON`);
@@ -492,7 +569,7 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
     try {
       const value = readPushFile(join(active, "push-retired.json"));
       retired = (Array.isArray(value) ? value : []).map((entry) => (entry as { hash?: unknown } | null)?.hash).filter((hash): hash is string => typeof hash === "string");
-    } catch { /* telemetry: an endpoint it would have kept out only fails its next push */ }
+    } catch {}
     // push.ts keys a retired mark by the normalized endpoint (a mark from before #2012 by the spelling handed over)
     const settled = (subscription: Subscription) => mine.some((held) => held.endpoint === subscription.endpoint)
       || before.includes(endpointHash(subscription.endpoint))
@@ -530,25 +607,31 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
   }
 }
 
-/**
- * Takes over `sibling`'s paired devices, shared preferences and push subscriptions into `active`
- * (see the top of this file). Call it before any store of `active` reads them.
- */
-export function mergeSiblingState(active: string, sibling: string, now = new Date()): SiblingMerge {
+/** The exact credentials this folder's last successful merge witnessed. */
+export function recordedLegacyCredential(active: string): ((row: StoredDevice) => boolean) | undefined {
+  const read = readStateDocument(join(active, RECORD));
+  const record = read.kind === "json" && isRecord(read.value) ? read.value : null;
+  const identity = record?.legacy_identity;
+  if (!record?.dirs.includes(realpath(active)) || identity === undefined || !record.legacy_credentials?.length) return undefined;
+  const verified = new Set(record.legacy_credentials);
+  return row => verified.has(credentialFingerprint(identity, row));
+}
+
+export function mergeSiblingState(active: string, sibling: string, now = new Date(), rules: MergeRules = {}): SiblingMerge {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   let blocked: string | null;
   try {
-    blocked = merge(active, sibling, now, stamp);
+    blocked = merge(active, sibling, now, stamp, rules);
   } catch (error) {
     // whatever went wrong, the server still starts, gated: a start that failed would fall back to an older release
     blocked = `Cannot merge the state of ${sibling} into ${active} (${error instanceof Error ? error.message : String(error)}). External access without a token or trusted Tailscale login remains blocked; restart the server once it is fixed.`;
   }
-  // the device store says why (devices.ts)
-  if (blocked !== null) closeGateOnDisk(active, stamp, now);
-  return { devicesBlocked: blocked };
+  if (blocked !== null) closeGateOnDisk(active, stamp, now, rules.dropConflictingKeys === true);
+  const legacyCredential = blocked === null && rules.dropConflictingKeys ? recordedLegacyCredential(active) : undefined;
+  return { devicesBlocked: blocked, ...(legacyCredential ? { legacyCredential } : {}) };
 }
 
-function merge(active: string, sibling: string, now: Date, stamp: string): string | null {
+function merge(active: string, sibling: string, now: Date, stamp: string, rules: MergeRules): string | null {
   const pair = [realpath(active), realpath(sibling)].sort();
   let base: MergeRecord | null;
   try {
@@ -557,9 +640,17 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     // without the last merge a revoked device could come back: nothing is merged, and the store stays gated
     return `${error instanceof Error ? error.message : String(error)}, so the paired devices of ${active} and ${sibling} cannot be merged. Restore or remove it, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
   }
+  // Reset does not change the identity used to hash old witnesses. Revalidate those exact twins;
+  // only a merge without a previous witness list may establish witnesses with today's shared identity.
+  const identity = (base?.legacy_credentials !== undefined ? base.legacy_identity : undefined) ?? rules.sharedLegacyIdentity;
+  const legacy = new Set<string>();
+  const witnessed = () => !rules.dropConflictingKeys ? {} : {
+    legacy_credentials: [...legacy], ...(identity === undefined ? {} : { legacy_identity: identity }),
+  };
   let intent: MergeRecord | null = null;
   const intend: Intent = (ids, sides, gated) => {
     intent = { version: 1, seq: (base?.seq ?? 0) + 1, at: now.toISOString(), dirs: pair, devices: base?.devices ?? [],
+      ...witnessed(),
       gated: gated || base?.gated === true, preferences: base?.preferences ?? {},
       ...(base?.preferences_target ? { preferences_target: base.preferences_target } : {}), push: base?.push ?? {}, pending: { ids, sides } };
     try { writePrivateState(join(active, RECORD), intent); }
@@ -567,11 +658,10 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
       intent = null;
       return `Cannot write ${join(active, RECORD)} before publishing the merged paired devices (${error instanceof Error ? error.message : String(error)}). Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
     }
-    // the newer of the two records is read: the active dir's copy is enough
-    try { writePrivateState(join(sibling, RECORD), intent); } catch { /* reported with the record that follows */ }
+    try { writePrivateState(join(sibling, RECORD), intent); } catch {}
     return null;
   };
-  const devices = mergeDevices(active, sibling, base, stamp, intend, now);
+  const devices = mergeDevices(active, sibling, base, stamp, intend, now, rules, identity, legacy);
   const written = intent as MergeRecord | null;
   const preferences = mergePreferences(active, sibling, base, stamp);
   const push = mergePush(active, sibling, base, stamp);
@@ -583,9 +673,8 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
     seq: (written?.seq ?? base?.seq ?? 0) + 1,
     at: now.toISOString(),
     dirs: pair,
-    // a merge that could not run keeps the last one's base, so the next one compares with it, and
-    // what a publication it may have left unfinished says
     devices: devices.ids ?? base?.devices ?? [],
+    ...witnessed(),
     ...(devices.ids === null && (written?.pending ?? base?.pending) ? { pending: written?.pending ?? base?.pending } : {}),
     gated: devices.gated === true || base?.gated === true,
     preferences: preferences?.snapshots ?? base?.preferences ?? {},
@@ -602,11 +691,10 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
       const reason = `Cannot write ${join(dir, RECORD)}: ${error instanceof Error ? error.message : String(error)}`;
       console.error(reason);
       // without it the next merge compares with an older one, and would bring back a device revoked
-      // until then: this run changes no device, so it cannot revoke one
+      // until then: blocked, the device store changes nothing while this server runs, so none is revoked
       if (dir === active) blocked ??= `${reason}. Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
     }
   }
-  // once the newest record names no pending publication, the prepared files left by an unfinished one go
   if (recorded && record.pending === undefined) {
     for (const pending of [written?.pending, base?.pending]) {
       for (const side of Object.values(pending?.sides ?? {})) if (side.temp !== null) rmSync(side.temp, { force: true });

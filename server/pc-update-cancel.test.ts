@@ -2,7 +2,6 @@ import { afterEach, expect, it } from "bun:test";
 import { unmanagedUpdateStatus, type UpdateStatus } from "../shared/update.ts";
 import { followOwnUpdate } from "./pc-update.ts";
 
-// A connected PC's own Ovis, stood in for over HTTP: it offers one release, and starts building it when asked
 const OFFERED = "a".repeat(40);
 const servers: { stop(): void }[] = [];
 afterEach(() => { for (const server of servers.splice(0)) server.stop(); });
@@ -15,7 +14,6 @@ function ownOvis(cancellable: boolean) {
     asked.push(`${request.method} ${pathname}`);
     if (pathname === "/api/updates/install") { building = true; return Response.json({ accepted: true, install_id: "11111111-2222-4333-8444-555555555555" }, { status: 202 }); }
     if (pathname === "/api/updates/cancel") {
-      // only the install it names
       if ((await request.json() as { install_id?: string }).install_id !== "11111111-2222-4333-8444-555555555555") return Response.json({ error: { code: "invalid_update_cancel" } }, { status: 400 });
       building = false; cancelled = true; return new Response(null, { status: 202 });
     }
@@ -31,7 +29,6 @@ for (const cancellable of [true, false]) {
   it(`asks that PC to stop an update cancelled here while it builds${cancellable ? "" : ", and says it finishes there when its Ovis cannot"}`, async () => {
     const pc = ownOvis(cancellable);
     const abort = new AbortController();
-    // cancelled once that PC reports it building
     const follow = followOwnUpdate({ endpoint: () => pc.endpoint, revision: OFFERED, signal: abort.signal, cancelled: () => true, pollMs: 5, onStep: (step) => { if (step.includes("updating itself")) abort.abort(); } });
     await expect(follow).rejects.toThrow(cancellable ? "stopped it before it was installed" : "may still finish it there");
     expect(pc.asked.includes("POST /api/updates/cancel")).toBe(cancellable);

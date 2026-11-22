@@ -28,24 +28,16 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
   const onConversationWatch = useCallback((pane: string, enabled: boolean) => {
     socketRef.current?.watchConversation(pane, enabled);
   }, []);
-  /** A scrollback stand-in's listener; a ref, so terminal output never re-renders the pane. */
   const chatOutputRef = useRef<(() => void) | null>(null);
   const onTerminalOutput = useCallback((listener: (() => void) | null) => {
     chatOutputRef.current = listener;
   }, []);
-  // bumped as a composer message goes out: the chat must not title the turn before it as running
   const [chatSent, setChatSent] = useState(0);
-  // bumped as such a message is refused with nothing typed
   const [chatUnsent, setChatUnsent] = useState(0);
   const [chatMetadata, setChatMetadata] = useState<{ pane: string; value: ConversationMetadata | null } | null>(null);
-  // What each pane's chat last read, and whether a message went out since: kept per pane here,
-  // not in the chat, so a message sent ends the greeting at once and neither another lens, another
-  // pane nor a failed read brings it back before the conversation shows a turn or a new history.
-  // It lives in lib/greeting.ts, over this component, which another PC's pane mounts again.
   const [, redrawGreeting] = useReducer((count: number) => count + 1, 0);
   const onChatRead = useCallback((pane: string, read: ChatRead | null) => {
     if (read !== null) {
-      // another session in the pane (a new history): a screen left open in the old one is no more
       const open = stillOpenRef.current;
       if (open !== null && open.pane === pane && read.history !== undefined && open.history !== undefined && read.history !== open.history) setStillOpen(null);
       const pending = pendingOpenRef.current;
@@ -60,39 +52,27 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
     if (next === memory) return;
     rememberGreeting(owner, next); redrawGreeting();
   }, [machineId, setStillOpen]);
-  // the stack (stackRef, above) holds the composer and the greeting over it (measured below)
   const [greetingRoom, setGreetingRoom] = useState(true);
   const greetingRef = useRef<HTMLDivElement | null>(null);
-  // The prompt the chat shows: while it waits, a message from the composer answers it.
   const [chatPrompt, setChatPrompt] = useState<{ pane: string; value: InteractivePrompt; answered: boolean } | null>(null);
   const [promptRefresh, setPromptRefresh] = useState(0);
-  // what the agent suggests typing next (Claude's grey input text), for the composer's placeholder
   const [chatSuggestion, setChatSuggestion] = useState<{ pane: string; value: string } | null>(null);
   const onChatSuggestion = useCallback((pane: string, value: string | null) => {
     setChatSuggestion((current) => value !== null
       ? (current?.pane === pane && current.value === value ? current : { pane, value })
       : current?.pane === pane ? null : current);
   }, []);
-  // a cancelled send the agent put back in its input box, for the composer to take again
   const [chatRestored, setChatRestored] = useState<{ pane: string; value: string } | null>(null);
   const onChatRestored = useCallback((pane: string, value: string | null) => {
     setChatRestored((current) => value !== null
       ? (current?.pane === pane && current.value === value ? current : { pane, value })
       : current?.pane === pane ? null : current);
   }, []);
-  // a typed pick of an approval's option, shown in the card until Confirm or Cancel
   const [pendingAnswer, setPendingAnswer] = useState<{ pane: string; promptId: string; answer: TypedAnswer } | null>(null);
-  // where the chat draws its prompt card: on the composer's column, between the held messages and
-  // the input card (the stack's order is written once, in the JSX below)
   const [promptDock, setPromptDock] = useState<HTMLDivElement | null>(null);
-  // Answered from the card, the card goes and would take the keyboard's focus with it: the message
-  // box is the next thing to type in. Not after a tap, which would raise the keyboard: the card
-  // tells a key, a mouse and a tap by the press itself (lib/promptAnswer.ts), so a key on a
-  // tablet hands the focus on and a tap on a touch-screen laptop does not.
   const onPromptAnswered = useCallback((toMessageBox: boolean) => {
     if (activeRef.current && toMessageBox && (chatViewRef.current || !findOpenRef.current)) stackRef.current?.querySelector<HTMLTextAreaElement>(".composer-text")?.focus({ preventScroll: true });
   }, []);
-  // only the pick of that pane and prompt: an answer that comes back late must not take another's
   const clearPendingAnswer = useCallback((pane: string, promptId?: string) => {
     setPendingAnswer((current) => current?.pane === pane && (promptId === undefined || current.promptId === promptId) ? null : current);
   }, []);
@@ -109,7 +89,6 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
     if (agentStatus === "working") setPendingAnswer(null);
   }, [agentStatus]);
   const onChatMetadata = useCallback((pane: string, value: ConversationMetadata | null) => {
-    // the same settings keep the same object: every conversation read would otherwise re-render the composer
     setChatMetadata((previous) => previous?.pane === pane && previous.value?.model === value?.model
       && previous.value?.reasoning_effort === value?.reasoning_effort
       && previous.value?.provider === value?.provider

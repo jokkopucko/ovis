@@ -13,10 +13,6 @@ import { createServer } from "./index.ts";
 import { handleMachineRequest, MACHINE_PROXY_PATH } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
-// A fictional Claude store under a HOME of its own: two shell panes herdr is told run Claude
-// sessions (the hook's report), each session with a subagent of its own. No Claude runs. A second
-// bridge, another PC's, runs in a process of its own over another HOME whose store holds the same
-// session and agent ids with other words in them.
 const root = mkdtempSync(join(tmpdir(), "herdr-background-agent-contract-"));
 const remoteHome = mkdtempSync(join(tmpdir(), "herdr-background-agent-remote-"));
 const originalHome = process.env["HOME"];
@@ -37,7 +33,6 @@ let shell: string;
 let watch: string;
 let sequence = 0;
 let frames: Frames;
-/** a read the test holds: it is told when the read is out, and answers once released */
 let hold: { entered: () => void; gate: Promise<void> } | null = null;
 const json = (value: unknown): string => `${JSON.stringify(value)}\n`;
 const base = () => `http://127.0.0.1:${server.port}`;
@@ -45,11 +40,6 @@ const detailUrl = (paneId: string, agentId: string, prefix = "/api") => `${base(
 const errorCode = async (response: Response): Promise<[number, string]> => [response.status, ((await response.json()) as ApiError).error.code];
 const owner = { authorization: `Bearer ${WATCH_TOKEN}` };
 
-/**
- * A session of the store `store`: a subagent `agentId` whose words name `voice`, and, with
- * `command`, a background command `bsuite`. The pane's running count tells the sessions apart: 2
- * with the command, 1 without.
- */
 function session(store: string, id: string, agentId: string, title: string, voice: string, command: boolean): void {
   mkdirSync(join(store, id, "subagents"), { recursive: true });
   writeFileSync(join(store, `${id}.jsonl`), [
@@ -67,7 +57,6 @@ function session(store: string, id: string, agentId: string, title: string, voic
   ].join(""));
 }
 
-/** What a bridge's /ws sends, kept from its first frame: a wait looks at what came after a mark, then at what comes. */
 class Frames {
   readonly seen: ServerMessage[] = [];
   private constructor(readonly socket: WebSocket) {
@@ -81,7 +70,6 @@ class Frames {
     return frames;
   }
 
-  /** the next frame from `from` on that `check` holds for; one not seen within FRAME_WAIT_MS fails */
   wait(check: (frame: ServerMessage) => boolean, from: number): Promise<ServerMessage> {
     const known = this.seen.slice(from).find(check);
     if (known) return Promise.resolve(known);
@@ -101,11 +89,6 @@ class Frames {
     });
   }
 
-  /**
-   * The bridge counts `count` running tasks for the pane, after the mark `from`: it has found the
-   * session's transcript, so a read asks herdr and no lookup. A pane-status frame says it, or a
-   * snapshot for a pane it had sent none for.
-   */
   counted(paneId: string, count: number, from: number): Promise<ServerMessage> {
     return this.wait((frame) => (frame.type === "pane-status" && frame.pane_id === paneId && frame.background_tasks === count)
       || (frame.type === "snapshot" && frame.snapshot.panes.some((pane) => pane.pane_id === paneId && pane.background_tasks === count)), from);
@@ -121,7 +104,6 @@ async function claudePane(id: string): Promise<string> {
   return paneId;
 }
 
-/** the hook's SessionStart report of a new Claude session in the pane */
 const report = (paneId: string, id: string) => herdrRpc("pane.report_agent_session", { pane_id: paneId, source: "herdr:claude", agent: "claude", seq: ++sequence, agent_session_id: id, session_start_source: "new" });
 
 /** the pane's Claude left and another started on `id`: herdr keeps a session until its agent's authority is cleared */
@@ -131,7 +113,6 @@ async function swap(paneId: string, id: string): Promise<void> {
   await report(paneId, id);
 }
 
-/** swaps the pane to `id` and waits for the bridge to count that session's tasks: FIRST runs two, SECOND one */
 async function swapped(paneId: string, id: string): Promise<void> {
   const mark = frames.seen.length;
   await swap(paneId, id);
@@ -140,20 +121,17 @@ async function swapped(paneId: string, id: string): Promise<void> {
 
 const detail = (paneId: string, agentId: string, prefix = "/api", headers: Record<string, string> = owner): Promise<Response> => fetch(detailUrl(paneId, agentId, prefix), { headers });
 
-/** another PC's bridge: this repository's server, in a process of its own with the store under `remoteHome` */
 async function startRemote(): Promise<{ process: ReturnType<typeof Bun.spawn>; port: number }> {
   const script = join(remoteHome, "remote-bridge.ts");
   writeFileSync(script, [
     `import { createServer } from ${JSON.stringify(join(import.meta.dir, "index.ts"))};`,
     `const server = createServer({ port: 0, hostname: "127.0.0.1", token: ${JSON.stringify(REMOTE_TOKEN)}, stateDir: ${JSON.stringify(join(remoteHome, "state"))}, machines: false, tailscaleOwner: null });`,
-    // it listens from here; what it knows of the panes comes in its frames, which the test waits for
     "console.log(JSON.stringify({ port: server.port }));",
     "process.on(\"SIGTERM\", () => { server.stop(); process.exit(0); });",
   ].join("\n"));
   const env: Record<string, string | undefined> = { ...process.env, HOME: remoteHome };
   delete env["CLAUDE_CONFIG_DIR"];
   const child = Bun.spawn([process.execPath, script], { env, stdout: "pipe", stderr: "inherit" });
-  // its first line says where it listens
   const reader = child.stdout.getReader();
   let text = "";
   for (;;) {
@@ -172,7 +150,6 @@ beforeAll(async () => {
   mkdirSync(project, { recursive: true });
   session(project, FIRST, "a1", "Review the parser", "Local", true);
   session(project, SECOND, "b1", "Write the lexer tests", "Local", false);
-  // the other PC's store: the same session, the same agent id, its own words
   session(join(remoteHome, ".claude", "projects", claudeProjectDir(root)), FIRST, "a1", "Remote review", "Remote", true);
   first = await claudePane(FIRST);
   second = await claudePane(SECOND);
@@ -194,7 +171,6 @@ beforeAll(async () => {
   server = createServer({ port: 0, hostname: "127.0.0.1", token: WATCH_TOKEN, stateDir, tailscaleOwner: null, backgroundAgentRead: read });
   await server.statusReady;
   frames = await Frames.connect(server.port, WATCH_TOKEN);
-  // each pane's session found: its tasks counted
   await frames.counted(first, 2, 0);
   await frames.counted(second, 1, 0);
 }, 90_000);
@@ -227,10 +203,8 @@ it("reads the selected pane's running subagent, bounded, and names no path", asy
   });
   expect(Number.isFinite(Date.parse(body.server_time))).toBe(true);
   expect(JSON.stringify(body)).not.toContain(root);
-  // the list says which rows open: the subagent, not the session's background command
   const activity: OmoActivity = await (await fetch(`${base()}/api/pane/omo-tasks?pane_id=${encodeURIComponent(first)}`, { headers: owner })).json();
   expect(activity.tasks.map((task) => [task.id, task.status, task.detail_kind]).sort()).toEqual([["a1", "running", "claude-subagent"], ["bsuite", "running", null]]);
-  // a read types nothing and moves no focus
   expect((await paneRead({ paneId: first, source: "visible", format: "text" })).text).toBe(screen);
   expect((await sessionSnapshot()).focused_pane_id).toBe(focus);
 }, 20_000);
@@ -238,7 +212,6 @@ it("reads the selected pane's running subagent, bounded, and names no path", asy
 it("answers only the session the pane runs: another session's agent is not found, and the pane follows a session swap", async () => {
   expect(await errorCode(await detail(first, "b1"))).toEqual([404, "background_agent_not_found"]);
   expect(await errorCode(await detail(second, "a1"))).toEqual([404, "background_agent_not_found"]);
-  // the first pane now runs the second session: its agent is readable there, and the first session's no longer is
   await swapped(first, SECOND);
   const moved = await detail(first, "b1");
   expect(moved.status).toBe(200);
@@ -256,7 +229,6 @@ it("tells a pane whose session was swapped while its read was out, and answers n
   let release!: () => void;
   hold = { entered, gate: new Promise<void>((resolve) => { release = resolve; }) };
   const answer = detail(first, "a1");
-  // the read of the first session's agent is out: the pane moves to the second session meanwhile
   await out;
   await swapped(first, SECOND);
   release();
@@ -329,11 +301,9 @@ it("answers each online PC from its own store, though both hold the same session
     expect(theirs).toMatchObject({ agent_id: "a1", session_id: FIRST, title: "Remote review", prompt: "Remote dispatch for a1", events: [{ kind: "text", text: "Remote work on a1" }, { kind: "tool" }] });
     expect(JSON.stringify(theirs)).not.toContain("Local");
     expect(JSON.stringify(theirs)).not.toContain(remoteHome);
-    // this PC's own answer for the same ids is still its own
     const here = await detail(first, "a1");
     const ours: PaneBackgroundAgentDetail = await here.json();
     expect([ours.session_id, ours.prompt, JSON.stringify(ours).includes("Remote")]).toEqual([FIRST, "Local dispatch for a1", false]);
-    // an id of neither PC's store is none on the other PC either
     expect(await errorCode(await ask("pc2", "b1"))).toEqual([404, "background_agent_not_found"]);
   } finally { remoteFrames.socket.close(); }
 }, 120_000);

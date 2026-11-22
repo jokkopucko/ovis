@@ -3,7 +3,6 @@
  * pane: off by default no Edit; on, a file in the pane's folder is edited, Save asks once more and
  * writes it, Cancel leaves it, a file changed on the PC meanwhile is not overwritten (the typed
  * text stays, Reload file shows the PC's), and a read-only file says it cannot be written.
- * Screenshots go to UI_EVIDENCE_DIR when it is set.
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -53,11 +52,9 @@ try {
       const notes = join(project, `notes-${tag}.md`);
       writeFileSync(notes, "# Notes\n\nFirst line.\n");
 
-      // off by default: the viewer offers no Edit
       const off = await open(origin, pane, width, theme, {}, `notes-${tag}.md`);
       await off.viewer.getByRole("button", { name: "Show source", exact: true }).waitFor();
       assert.equal(await off.viewer.getByRole("button", { name: "Edit file", exact: true }).count(), 0, `${tag}: no Edit while the setting is off`);
-      // Settings → Chat → File viewer holds the switch, off
       await off.page.goto(`${origin}/?pane=${encodeURIComponent(pane)}&settings=chat&section=file-viewer-more`);
       const toggle = off.page.locator(".settings-dialog").getByRole("switch", { name: "Edit text files", exact: true });
       await toggle.scrollIntoViewIfNeeded();
@@ -72,10 +69,8 @@ try {
       assert.equal(await box.inputValue(), "# Notes\n\nFirst line.\n");
       await box.fill("# Notes\n\nFirst line.\nSecond line.\n");
       await viewer.getByText("Unsaved changes", { exact: true }).waitFor();
-      // Save fades in as it is enabled: shown once it is
       await viewer.getByRole("button", { name: "Save", exact: true }).evaluate((button) => Promise.all(button.getAnimations().map((animation) => animation.finished)));
       await shot(page, `text-edit-editing-${tag}`);
-      // Escape does not close over changes not saved
       await page.keyboard.press("Escape");
       assert.equal(await viewer.isVisible(), true, `${tag}: Escape keeps the editor open over changes`);
       await viewer.getByRole("button", { name: "Save", exact: true }).click();
@@ -88,7 +83,6 @@ try {
       await viewer.getByText("Second line.", { exact: true }).waitFor();
       console.log(`PASS ${tag}: Edit, Save asks once more, then the file holds the text and the viewer shows it`);
 
-      // moved beside the pane (a wide window) while edited: the viewer is drawn again, and the text typed stays
       if (width >= 1280) {
         await viewer.getByRole("button", { name: "Edit file", exact: true }).click();
         await box.fill("typed before the move\n");
@@ -102,7 +96,6 @@ try {
         console.log(`PASS ${tag}: text typed and not saved survives moving the viewer beside the pane`);
       }
 
-      // Cancel leaves the file as it is
       await viewer.getByRole("button", { name: "Edit file", exact: true }).click();
       await box.fill("thrown away\n");
       await viewer.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -110,7 +103,6 @@ try {
       assert.equal(readFileSync(notes, "utf8"), "# Notes\n\nFirst line.\nSecond line.\n", `${tag}: Cancel writes nothing`);
       console.log(`PASS ${tag}: Cancel leaves the file as it was`);
 
-      // the PC's copy changes while the text is edited: nothing is overwritten
       await viewer.getByRole("button", { name: "Edit file", exact: true }).click();
       await box.fill("mine\n");
       writeFileSync(notes, "the agent's version\n");
@@ -127,7 +119,6 @@ try {
       assert.deepEqual(on.errors, [], `${tag}: no page errors`);
       await on.close();
 
-      // a read-only file opens for editing but says it cannot be written
       const locked = join(project, `locked-${tag}.md`);
       writeFileSync(locked, "locked\n");
       chmodSync(locked, 0o444);

@@ -11,20 +11,11 @@ import { AgentTile } from "./AgentTile.tsx";
 import "./AddAgentPanel.css";
 
 export interface AddAgentPanelProps {
-  /** the agent is installed now: the picker takes it */
   onReady: (agent: string) => void;
-  /** shows the tab an install runs in, which leaves the dialog */
   onOpenTerminal: (paneId: string) => void;
-  /** back to the dialog's own fields, with nothing picked */
   onBack: () => void;
 }
 
-/**
- * A creation dialog's Add another agent: the agents the PC open in it does not have yet and a picker
- * could start, as the setup guide's tiles. Install is the one tap; the ring turns on the tile until the
- * PC lists the agent, and then the picker takes it. The sign-in is the agent's own, when it first
- * starts. Back keeps what the dialog had.
- */
 export function AddAgentPanel({ onReady, onOpenTerminal, onBack }: AddAgentPanelProps) {
   const t = useT();
   const machineId = useMachineId();
@@ -46,7 +37,6 @@ export function AddAgentPanel({ onReady, onOpenTerminal, onBack }: AddAgentPanel
     return () => abort.abort();
   }, [machineId, t]);
 
-  // the focus starts on the first Install, else on Back
   useEffect(() => {
     if (agents === null && error === null) return;
     const install = document.querySelector<HTMLElement>(".add-agent .setup-tile-install");

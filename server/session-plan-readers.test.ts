@@ -12,7 +12,6 @@ describe("readPlan (Claude Code task list)", () => {
     const b = s.create("Build", 1);
     const c = s.create("Ship", 1);
     s.update({ taskId: b, addBlockedBy: [a] }, 1);
-    // `addBlocks` is the same edge seen from the other end
     s.update({ taskId: b, addBlocks: [c] }, 1);
     s.update({ taskId: a, status: "in_progress" }, 2);
     s.update({ taskId: a, status: "completed" }, 5);
@@ -50,7 +49,6 @@ describe("readPlan (Claude Code task list)", () => {
     const s = claude();
     const a = s.create("Old");
     s.update({ taskId: a, status: "completed" }, 2);
-    // a finished plan is still shown until another begins
     expect(planSummary(readPlan("claude-transcript", s.path))).toEqual({ done: 1, total: 1, current: null });
     s.create("New A", 3);
     s.create("New B", 3);
@@ -83,7 +81,6 @@ describe("readPlan (Codex checklist)", () => {
     expect((readPlan("codex-transcript", f.path) ?? []).map((step) => `${step.id}:${step.status}:${step.blocked_by.join(",")}:${step.label}`)).toEqual(["1:in_progress::Read", "2:pending:1:Fix"]);
     f.add({ timestamp: at(4), type: "response_item", payload: { type: "function_call", name: "update_plan", call_id: "c4", arguments: JSON.stringify({ plan: [{ step: "Read", status: "completed" }, { step: "Fix", status: "in_progress" }, { step: "Ship", status: "pending" }] }) } });
     expect(readPlan("codex-transcript", f.path)).toEqual([
-      // a step keeps when it started across checklists, found by its words
       { id: "1", label: "Read", active: null, status: "completed", blocked_by: [], owner: null, started_at: at(1), ended_at: at(4) },
       { id: "2", label: "Fix", active: null, status: "in_progress", blocked_by: ["1"], owner: null, started_at: at(4), ended_at: null },
       { id: "3", label: "Ship", active: null, status: "pending", blocked_by: ["2"], owner: null, started_at: null, ended_at: null },

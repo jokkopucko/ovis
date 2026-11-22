@@ -15,7 +15,6 @@ const row = (overrides: Partial<SessionHistoryRow> = {}): SessionHistoryRow => (
 describe("sessionHistoryListAgent", () => {
   it("lists a pane's own agent, and nothing for a pane whose agent keeps no store the route reads", () => {
     expect(sessionHistoryListAgent({ agent: "codex", scope: "pane" }, "claude", ["claude"])).toBe("codex");
-    // /resume in a Copilot chat never lists Claude's sessions, whose Resume would start another agent
     expect(sessionHistoryListAgent({ agent: "copilot", scope: "pane" }, "claude", ["claude", "codex"])).toBeNull();
     expect(sessionHistoryListAgent({ agent: null, scope: "pane" }, "claude", ["claude"])).toBeNull();
   });
@@ -63,7 +62,6 @@ describe("sessionHistorySourcePane", () => {
 });
 
 describe("sessionRowTime", () => {
-  // the key and its values, so the test reads what the row hands the translation, not its wording
   const t: Translate = (key, vars) => JSON.stringify({ key, vars });
   const now = Date.parse("2026-10-01T12:00:00.000Z");
   const updated = formatChatTimestamp(row().updatedAt, now, "en-US", t)!;
@@ -96,7 +94,6 @@ describe("paneShowingSession", () => {
     expect(paneShowingSession(panes, "w1", "claude", id)?.pane_id).toBe("claude");
     expect(paneShowingSession(panes, "w1", "codex", id)?.pane_id).toBe("codex");
     expect(paneShowingSession(panes, "w1", "omp", id)?.pane_id).toBe("omp");
-    // another session whose file name merely contains the id's characters is not this one
     expect(paneShowingSession([pane({ agent_session: { agent: "codex", kind: "path", source: "herdr:codex", value: `/s/x${id}.jsonl` } })], "w1", "codex", id)).toBeUndefined();
   });
   it("never matches another agent's session, another workspace's pane or a pane that reports none", () => {
@@ -135,11 +132,8 @@ describe("a Claude row bound to its store", () => {
     const panes = [pane({ pane_id: "p1", agent: "claude" }), reporting("p2")];
     expect(paneShowingSession(panes, "w1", "claude", id)?.pane_id).toBe("p2");
     expect(paneShowingRow(panes, "w1", "claude", claudeRow(ALTERNATE, "p1"))).toBeUndefined();
-    // the source pane itself reporting it is the same store by construction
     expect(paneShowingRow([reporting("p1")], "w1", "claude", claudeRow(ALTERNATE, "p1"))?.pane_id).toBe("p1");
-    // wherever the roster lists it: another pane reporting the id before it does not hide it
     expect(paneShowingRow([reporting("p2"), reporting("p1")], "w1", "claude", claudeRow(ALTERNATE, "p1"))?.pane_id).toBe("p1");
-    // a row from a bridge that gave no source is shown by no pane, and other agents keep the UUID match
     expect(paneShowingRow([reporting("p1")], "w1", "claude", claudeRow(null))).toBeUndefined();
     expect(paneShowingRow([pane({ agent_session: { agent: "codex", kind: "id", source: "herdr:codex", value: id } })], "w1", "codex", row())?.pane_id).toBe("p1");
   });
@@ -157,11 +151,9 @@ describe("a Claude row bound to its store", () => {
     const record: RecentResume = { machineId: "local", workspaceId: "w1", agent: "claude", id, store: ALTERNATE, paneId: "p-new", at: 1_000, seen: true };
     const panes = [pane({ pane_id: "p-new", agent: "claude", agent_session: null })];
     expect(standingResume([record], panes, "local", "w1", "claude", id, 2_000, ALTERNATE)).toBe(record);
-    // the same id listed from the default store is another session: its Resume stays offered
     expect(standingResume([record], panes, "local", "w1", "claude", id, 2_000, DEFAULT)).toBeUndefined();
     expect(recentlyResumedPane([record], panes, "local", "w1", "claude", id, 2_000, DEFAULT)).toBeUndefined();
     expect(recentlyResumedPane([record], panes, "local", "w1", "claude", id, 2_000, ALTERNATE)?.pane_id).toBe("p-new");
-    // rows of one id in two stores are two rows, each with its own pending key
     expect(rowKey(claudeRow(ALTERNATE))).not.toBe(rowKey(claudeRow(DEFAULT)));
     expect(rowKey(row())).toBe(`:${row().id}`);
   });
@@ -234,7 +226,6 @@ describe("a session resumed a moment ago (the reopen window)", () => {
     };
     expect([null, "pi", "claude", "omo", "omo"].map(step)).toEqual([false, false, false, false, false]);
     expect(current.seen && current.ran).toBe(true);
-    // the agent exits back to the shell: the pane no longer shows the session, and Resume returns
     expect(step(null)).toBe(true);
   });
   it("keeps Open, never Resume, for a pane still listed without a session however long ago: at +121 s and beyond", () => {

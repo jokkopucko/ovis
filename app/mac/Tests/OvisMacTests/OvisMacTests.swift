@@ -104,13 +104,10 @@ final class RunningCodeTests: XCTestCase {
         XCTAssertNil(Model.processDirectory(-1))
     }
 
-    /// The launcher of the checkout runs the checkout's supervisor, which fell back from the release's and runs the
-    /// release's bridge: the release is what runs.
     @MainActor
     func testFindsTheReleaseTheBridgeRunsUnderThisCheckoutsLauncher() async throws {
         let root = try code("plugin")
         let release = try code("state/updates/8e64ff3e5eb22439/release-2")
-        // each waits for its child, and the bridge for its stdin, which the test closes at the end
         try Data("/bin/sh \(root)/server/supervisor.ts\n:\n".utf8).write(to: URL(fileURLWithPath: "\(root)/server/managed.ts"))
         try Data("cd \(release) && /bin/sh server/index.ts\n:\n".utf8).write(to: URL(fileURLWithPath: "\(root)/server/supervisor.ts"))
         try Data("echo ready\nread line\n".utf8).write(to: URL(fileURLWithPath: "\(release)/server/index.ts"))
@@ -201,5 +198,22 @@ final class LogRotationTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: target)[.size] as? Int, 0)
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link), target)
         XCTAssertEqual(try String(contentsOfFile: "\(target).1", encoding: .utf8).count, 64)
+    }
+}
+
+final class LinkBrowsersTests: XCTestCase {
+    func testHandsOnlyAWebAddressToTheChosenBrowser() {
+        XCTAssertEqual(LinkBrowsers.webAddress("https://example.com/a?b=c")?.host, "example.com")
+        XCTAssertNotNil(LinkBrowsers.webAddress("HTTP://example.com"))
+        for refused in ["mailto:team@ovis.sh", "file:///etc/passwd", "javascript:alert(1)", "ovis://open?pane=t3", "x-other-app://open", "not an address"] {
+            XCTAssertNil(LinkBrowsers.webAddress(refused), refused)
+        }
+    }
+
+    func testFindsAgentBrowserOnThePathOrWhereNpmBunAndHomebrewPutIt() {
+        let at = { (paths: [String]) in { (path: String) in paths.contains(path) } }
+        XCTAssertEqual(LinkBrowsers.agentBrowserProgram(path: "/usr/bin:/opt/bin", home: "/Users/u", isProgram: at(["/opt/bin/agent-browser", "/opt/homebrew/bin/agent-browser"]))?.path, "/opt/bin/agent-browser")
+        XCTAssertEqual(LinkBrowsers.agentBrowserProgram(path: "/usr/bin", home: "/Users/u", isProgram: at(["/Users/u/.bun/bin/agent-browser"]))?.path, "/Users/u/.bun/bin/agent-browser")
+        XCTAssertNil(LinkBrowsers.agentBrowserProgram(path: "", home: "/Users/u", isProgram: at([])))
     }
 }

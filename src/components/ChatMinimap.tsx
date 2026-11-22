@@ -7,22 +7,15 @@ import "./ChatMinimap.css";
 
 export interface ChatMinimapProps {
   turns: readonly MinimapTurn[];
-  /** the timeline's row keys in order, to tell which rows are on screen */
   rowKeys: readonly string[];
   scroller: RefObject<HTMLDivElement | null>;
   onJump: (row: number) => void;
-  /** a wheel over the rail, which scrolls the chat from outside it: the chat counts it as the reader's input */
   onWheel?: (deltaY: number) => void;
 }
 
 const SPACING_PX = 8;
-/** the room the rail leaves above and below it, as in its height below */
 const MARGIN_REM = 12;
 
-/**
- * A tick per turn the user sent, beside the chat column; the turn in view is marked. A rail too
- * short for every turn gives a tick to each run of turns, so loading older history adds no buttons.
- */
 export function ChatMinimap({ turns, rowKeys, scroller, onJump, onWheel }: ChatMinimapProps) {
   const t = useT();
   const [current, setCurrent] = useState<number | null>(null);
@@ -68,11 +61,9 @@ export function ChatMinimap({ turns, rowKeys, scroller, onJump, onWheel }: ChatM
     };
   }, [scroller, rowKeys, turns]);
 
-  // a rail with no height to stand on draws nothing, rather than a button per turn
   if (turns.length < MINIMAP_MIN_TURNS || !fits || railPx <= 0) return null;
   const count = turns.length;
   const slots = minimapSlots(count, railPx);
-  // a rail too short to keep MINIMAP_MIN_TURNS ticks apart draws nothing, as too few turns do
   if (slots < MINIMAP_MIN_TURNS) return null;
   const currentSlot = current === null ? null : minimapTurnSlot(current, slots, count);
   const stop = Math.min(focusIndex ?? currentSlot ?? slots - 1, slots - 1);

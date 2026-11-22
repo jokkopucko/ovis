@@ -46,7 +46,6 @@ const nodeCursor = (value: string | undefined, id: string, epoch: string, revisi
 
 export interface DevinPageOptions {
   before?: string; since?: string; from?: string; limit?: number;
-  /** Prompts per page, the chat's history-page setting: the page starts at the prompt this many back. */
   prompts?: number;
 }
 export interface DevinPage {
@@ -62,7 +61,6 @@ export function defaultDevinDbPath(): string {
   return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "devin", "cli", "sessions.db");
 }
 
-/** Clears the per-session ancestry revisions, either all of them or one pane's session. */
 export function forgetDevinState(sessionId?: string, cwd?: string, dbPath?: string): void {
   if (sessionId === undefined || cwd === undefined) histories.clear();
   else histories.delete(JSON.stringify([dbPath ?? defaultDevinDbPath(), sessionId, cwd]));
@@ -71,14 +69,12 @@ export function forgetDevinState(sessionId?: string, cwd?: string, dbPath?: stri
 type Node = { node_id: number; parent_node_id: number | null; chat_message: string | null; created_at: number; depth: number; bytes: number };
 type ToolState = { tool_call_id: string; tool_call_json: string | null; tool_call_update_json: string | null };
 
-/** Where the page holding the last `prompts` user turns starts: the first of them, or 0 when there are fewer. */
 function promptsBack(turns: readonly { turn: ConversationTurn }[], prompts: number): number {
   let users = 0;
   for (let index = turns.length - 1; index >= 0; index--) if (turns[index]!.turn.role === "user" && ++users === prompts) return index;
   return 0;
 }
 
-/** Reads a single exact, visible native session in a readonly WAL snapshot. */
 export function devinConversation(sessionId: string, cwd: string, options: DevinPageOptions = {}, dbPath = defaultDevinDbPath()): DevinPage {
   let db: Database | null = null;
   try {
@@ -92,7 +88,6 @@ export function devinConversation(sessionId: string, cwd: string, options: Devin
     if (!session) throw new DevinHistoryUnavailable();
     // SQLite ids are 64-bit; one past 2^53 arrives rounded and would select a neighbouring node
     if (session.main_chain_id !== null && !Number.isSafeInteger(session.main_chain_id)) throw new DevinHistoryUnavailable();
-    // Follow only the selected head, not every branch in the session.
     const chain = session.main_chain_id === null ? [] : db.query<Node, [number, string, string]>(`
       WITH RECURSIVE ancestry(node_id, parent_node_id, chat_message, created_at, depth, bytes) AS (
         SELECT node_id, parent_node_id,
@@ -193,7 +188,6 @@ export function devinConversation(sessionId: string, cwd: string, options: Devin
         const call = record(rawCall);
         if (!text(call.name)) continue;
         const id = text(call.id);
-        // one id is one call: listed again, it would copy that call's stored output into every listing
         if (id && pending.has(id)) continue;
         const state = updates.get(id);
         const update = parse(state?.tool_call_update_json ?? null);
@@ -229,6 +223,6 @@ export function devinConversation(sessionId: string, cwd: string, options: Devin
     if (error instanceof DevinHistoryChanged || error instanceof DevinHistoryUnavailable) throw error;
     throw new DevinHistoryUnavailable();
   } finally {
-    try { db?.close(); } catch { /* a close failure cannot make an already-read snapshot usable */ }
+    try { db?.close(); } catch {}
   }
 }

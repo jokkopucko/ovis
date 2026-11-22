@@ -9,9 +9,6 @@ import { findHc } from "./herdr-core/discovery.ts";
 import type { RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { createServer } from "./index.ts";
 
-// A move asked for while a pane of the test session works: it waits, a cancel leaves everything as
-// it was, and once the pane is done it goes by itself. No herdr-core is reachable here, so a move
-// that goes stops before any agent is ended. The runtime switch is a stand-in that records asks.
 const SECRET = "test-runtime-move-wait-secret";
 const WAIT_MS = 20_000;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-runtime-move-wait-")));
@@ -28,7 +25,6 @@ const read = async (): Promise<MovePlanResponse> => (await (await fetch(`http://
 const send = (method: "POST" | "DELETE", body?: unknown) => fetch(`http://127.0.0.1:${server.port}/api/runtime/move`, {
   method, headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json", "x-herdr-update": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
-/** reads the status until `done` says so, within WAIT_MS */
 async function statusUntil(done: (status: MoveStatus) => boolean): Promise<MoveStatus> {
   for (const deadline = Date.now() + WAIT_MS; ;) {
     const { status } = await read();
@@ -37,7 +33,6 @@ async function statusUntil(done: (status: MoveStatus) => boolean): Promise<MoveS
     await Bun.sleep(100);
   }
 }
-/** a pane herdr says an agent is working in */
 async function busyPane(): Promise<string> {
   const created = await workspaceCreate({ cwd: root, label: "move-wait" });
   workspaces.push(created.workspace.workspace_id);
@@ -45,7 +40,6 @@ async function busyPane(): Promise<string> {
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "codex", state: "working" });
   return pane;
 }
-/** the person ended the agent: herdr names none in the pane */
 const ended = (pane: string) => herdrRpc("pane.release_agent", { pane_id: pane, source: "manual", agent: "codex" });
 
 beforeAll(() => {
@@ -81,7 +75,6 @@ describe("a move while a pane works", () => {
     expect(plan.panes.find((entry) => entry.pane_id === pane)?.verdict).toEqual({ kind: "busy", reason: "agent_working", agent: "codex", command: null });
     expect((await send("POST", { revision: plan.revision })).status).toBe(202);
     expect((await read()).status).toEqual({ state: "waiting", revision: plan.revision });
-    // a runtime switch asked meanwhile is refused: the move switches by itself
     const switching = await fetch(`http://127.0.0.1:${server.port}/api/runtime`, { method: "POST", headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ runtime: "herdr-core" }) });
     expect(switching.status).toBe(409);
     expect((await send("DELETE")).status).toBe(200);

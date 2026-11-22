@@ -5,8 +5,7 @@ import { connect, createServer, type Server } from "node:net";
 import { basename, dirname, join } from "node:path";
 
 /**
- * Which Ovis server is moving a herdr session (docs/runtime-move.md, "One move at a time"). The PC's own server and a
- * connection server's bridge can serve the same session, and only one may move it. The lock is the kernel's own:
+ * The lock is the kernel's own:
  * flock(2) on runtime-move.lock in that session's folder, which nothing removes and the kernel frees when the holder
  * dies; then the previous version's socket at runtime-move.sock as well. No process id or start time is ever read or
  * trusted.
@@ -17,10 +16,6 @@ export const moveLockPath = (herdrSocket: string): string => join(dirname(herdrS
 export class MoveLockUnsafe extends Error {}
 export const MOVE_LOCK_UNSAFE = "The folder of this herdr session's socket is not yours, anybody may write in it, or something Ovis did not make sits at runtime-move.sock or runtime-move.lock there, so Ovis cannot lock a move. Fix that on this PC, then try again.";
 
-/**
- * where a take is, for a test that comes in between: "stale" once it found a dead holder's socket, before removing it;
- * "bound" with its own socket bound and listening, not yet read back
- */
 export type MoveLockStep = "stale" | "bound";
 
 export interface MoveLockHandle {
@@ -70,7 +65,7 @@ function flockBinding(): Flock | null {
       const where = symbols[errnoAt] as () => number;
       flockCalls = { flock: symbols.flock as (fd: number, operation: number) => number, errno: () => read.i32(where() as never) };
       break;
-    } catch { /* the next, or none */ }
+    } catch {}
   }
   return flockCalls;
 }
@@ -83,7 +78,6 @@ function takeKernelLock(path: string): KernelLock | null {
   let fd: number;
   try { fd = openSync(join(dirname(path), "runtime-move.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | CLOEXEC, 0o600); }
   catch (error) { if (["ELOOP", "EISDIR", "ENOTDIR", "EACCES", "EPERM", "ENXIO"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE); throw error; }
-  // the descriptor is closed again on every way out but the lock taken
   let locked: boolean, errno = 0;
   try {
     const info = fstatSync(fd);
@@ -93,7 +87,6 @@ function takeKernelLock(path: string): KernelLock | null {
   } catch (error) { closeSync(fd); throw error; }
   if (!locked) {
     closeSync(fd);
-    // only another holder is "taken"; anything else (a filesystem without locks, say) is told as such
     if (errno === WOULD_BLOCK) return null;
     throw new MoveLockUnsafe(`This PC could not lock a move on the folder of this herdr session's socket (error ${errno}): its filesystem may not support locks. Ovis cannot move this session here.`);
   }
@@ -108,7 +101,6 @@ const listen = (path: string, token: string): Promise<Server | "in_use"> => new 
   server.listen(path, () => resolve(server));
 });
 
-/** What answers at the socket: the token its holder tells, "none" when nobody listens there, null when it cannot be told. */
 const ask = (path: string): Promise<string | "none" | null> => new Promise((resolve) => {
   let said = "";
   const socket = connect(path);
@@ -156,18 +148,17 @@ async function takeSocketLock(path: string, onStep: ((step: MoveLockStep) => Pro
   const held: Server = server;
   // the socket file this holder bound: another one at the name since (a racer's) is never removed by it
   let bound: number | null = null;
-  try { bound = lstatSync(path).ino; } catch { /* removed meanwhile: it is not this holder's */ }
+  try { bound = lstatSync(path).ino; } catch {}
   const ours = (): boolean => { try { return bound !== null && lstatSync(path).ino === bound; } catch { return false; } };
   const handle: MoveLockHandle = {
     holds: async () => kernel.held() && held.listening && ours() && await ask(path) === token,
     release: () => {
-      if (ours()) try { unlinkSync(path); } catch { /* gone already */ }
+      if (ours()) try { unlinkSync(path); } catch {}
       held.close();
       kernel.release();
     },
   };
   if (await handle.holds()) return handle;
-  // another server's listener answers at the name: this one is unreachable, and gives up
   held.close();
   return null;
 }

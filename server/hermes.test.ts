@@ -132,10 +132,8 @@ describe("hermes message rows parsing", () => {
     const prompt = "Reply with one word: what color is the attached image? Then use your vision tool to look at ./blue.png and reply with its color in one word.";
     expect(parseHermesRows(rows)[0]!.parts).toEqual([{ kind: "text", text: `![red.png](/tmp/hermes-proj/red.png)\n\n${prompt}` }]);
     const user = (content: string) => parseHermesRows([{ ...rows[0]!, content }])[0]!.parts[0];
-    // a path Markdown would read otherwise is written so the file API gets it back exactly
     expect(user("Look\n\n[Image attached at: /tmp/a (1)/b c#2.png]\n[screenshot]")).toEqual({ kind: "text", text: "![b c#2.png](/tmp/a%20%281%29/b%20c%232.png)\n\nLook" });
     expect(user("Look\n\n[Image attached at: /tmp/a[b.png]\n[screenshot]")).toEqual({ kind: "text", text: "![a[b.png](/tmp/a%5Bb.png)\n\nLook" });
-    // anything Hermes itself would not read as its hints stays as written
     for (const content of [
       "Look\n\n[Image attached: https://example.com/a.png]\n[screenshot]",
       "Look\n\n[Image attached at: relative/a.png]",
@@ -146,9 +144,7 @@ describe("hermes message rows parsing", () => {
       "Look\n\n[Image attached at: /tmp/a.png]",
       "[Image attached at: /tmp/a.png]",
     ]) expect(user(content)).toEqual({ kind: "text", text: content });
-    // words with a code fence left open come after the pictures, so they cannot take them in
     expect(user("```js\nLook\n```text\n\n[Image attached at: /tmp/a.png]\n[screenshot]")).toEqual({ kind: "text", text: "![a.png](/tmp/a.png)\n\n```js\nLook\n```text" });
-    // a skill invocation keeps its picture: it comes off the stored text before the skill is read
     const skill = readFileSync(new URL("./fixtures/skill-invocations/hermes.txt", import.meta.url), "utf8");
     expect(parseHermesRows([{ ...rows[0]!, content: `${skill}\n\n[Image attached at: /tmp/a.png]\n[screenshot]` }])[0]!.parts[0]).toEqual({ kind: "text", text: "![a.png](/tmp/a.png)\n\n/probe-skill hello" });
   });
@@ -171,7 +167,6 @@ describe("hermes message rows parsing", () => {
     expect(toolSummary("Bash", { command: "bun test", description: "Run the unit tests" })).toBe("Run the unit tests");
     expect(toolSummary("Agent", { prompt: "Find the callers", description: "Find callers" })).toBe("Find callers");
     expect(toolSummary("eval", { code: "1", summary: "x".repeat(200) })).toHaveLength(120);
-    // a blank purpose falls back to the command; a summary without code is another tool's data
     expect(toolSummary("Bash", { command: "bun test", description: " " })).toBe("bun test");
     expect(toolSummary("mcp__notes__add", { summary: "Weekly notes", path: "notes.md" })).toBe("notes.md");
   });
@@ -432,7 +427,6 @@ describe("hermesConversationPage SQLite integration", () => {
     expect(() => hermesConversationPage("s_curs", dbPath, { before: "other:session:10" })).toThrow(HistoryChanged);
   });
 
-  /** Creates alternating turns so a 100-row page starts on a user message. */
   const populate = (count = 150): void => {
     const db = new Database(dbPath);
     try {

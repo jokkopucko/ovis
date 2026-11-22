@@ -6,7 +6,6 @@ const IMAGE_MIME_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
   webp: "image/webp",
 };
 
-/** Infer previewable image types only when a file has no useful browser MIME type. */
 export function composerImageMimeType(name: string, type: string): string | null {
   const normalizedType = type.toLowerCase();
   if (normalizedType !== "" && normalizedType !== "application/octet-stream") return null;
@@ -16,7 +15,6 @@ export function composerImageMimeType(name: string, type: string): string | null
   return IMAGE_MIME_TYPE_BY_EXTENSION[name.slice(dotIndex + 1).toLowerCase()] ?? null;
 }
 
-/** Give extension-recognized images a concrete MIME type for previews and uploads. */
 export function normalizeComposerImageFile(file: File): File {
   const mimeType = composerImageMimeType(file.name, file.type);
   return mimeType === null

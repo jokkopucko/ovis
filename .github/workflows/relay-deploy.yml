@@ -1,12 +1,10 @@
 name: Relay deploy
-# Deploys the Ovis relay (relay/, https://relay.ovis.sh) to Cloudflare after a push to main that touches
-# the Worker's code passes CI, or by hand from main. The deploy job waits in the `production` environment for the
+# The deploy job waits in the `production` environment for the
 # maintainer's approval (a required reviewer, set in GitHub). A deploy drops every socket; clients reconnect.
 # Without the Cloudflare secrets the job passes with a notice; relay/README.md lists the one-time setup.
 on:
   push:
     branches: [main]
-    # the Worker's code: relay/ and the shared module it imports
     paths: ['relay/**', 'shared/relay-server-proof.ts', 'shared/relay-pass.ts']
   workflow_dispatch:
 permissions:
@@ -39,6 +37,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: none
       - run: bun install --frozen-lockfile
       - run: bun test ./relay
       - name: Check the Cloudflare secrets

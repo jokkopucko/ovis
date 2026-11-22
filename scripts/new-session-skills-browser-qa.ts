@@ -14,8 +14,7 @@
  * and goes once on Send now; a choice the launch does not take disables Start and is dropped with the
  * agent; the keyboard reaches every control; a skill list the PC answers busy (503 file_busy, #2254) is asked for
  * again and shows its chips, never the error.
- * Captures at 390 (true mobile emulation) and 1280, dark and light. All files and HTTP traffic
- * stay in this disposable, loopback-only app; no herdr session is opened.
+ * All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,36 +24,34 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openLens } from "./header-lens.ts";
+import { record, type QaWindow } from "./new-session-skills-fixture.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-new-session-skills-"));
 const evidence = join(process.env["UI_EVIDENCE_DIR"] || join(repo, "evidence"), "new-session-skills");
 mkdirSync(evidence, { recursive: true });
 
-interface Recorded { url: string; body: Record<string, unknown> }
-interface QaWindow { qaRequests: Recorded[]; qaHold: boolean; qaRelease: () => void; qaSubmits: string[]; qaDrop: () => void; qaSockets: WebSocket[]; qaOldBridge: boolean; qaSkillsBusy: Record<string, number>; qaSkillsBusyServed: number }
-
 const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 const recorded = (page: Page) => page.evaluate(() => (window as unknown as QaWindow).qaRequests);
 const submits = (page: Page) => page.evaluate(() => (window as unknown as QaWindow).qaSubmits);
 
-/** The chat lens of the demo's Claude pane. */
 async function openChat(page: Page, url: string): Promise<void> {
   await page.goto(url);
-  await page.locator(".conn-live").waitFor({ state: "attached" });
-  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
-  await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
+  const pane = page.locator(`.pane-frame.is-current[data-layout-pane="${panes.api}"]`);
+  await pane.waitFor({ state: "attached" });
+  await page.waitForFunction(() => (window as unknown as QaWindow).qaSockets.some((socket) => socket.readyState === WebSocket.OPEN));
+  await openLens(page, "chat");
+  await pane.locator(".terminal-stack.is-chat").waitFor();
 }
 
-/** The New tab dialog on the pane's workspace: a phone's header title lists the tabs and the ways to a new one (a sheet); with a mouse the tab's own menu. */
 async function openDialog(page: Page) {
   const phone = (page.viewportSize()?.width ?? 1280) <= 640;
   if (phone) {
-    await page.locator(".app-header .context-tabs").tap();
-    // the menu is a sheet on a phone (RowMenu): its items are buttons there
+    await page.locator(".app-header .header-tabs-sheet").tap();
     await page.getByRole("button", { name: "New tab with agent…", exact: true }).tap();
   } else {
-    // with a mouse the tab's menu opens on a right-click, as herdr's tab row offers it
     await page.locator('.tab-strip-item.is-active [role="tab"]').click({ button: "right" });
     await page.getByRole("menuitem", { name: "New tab with agent…", exact: true }).click();
   }
@@ -63,11 +60,6 @@ async function openDialog(page: Page) {
   return dialog;
 }
 
-/**
- * Claude Code's launch choices as drawn: Model and Effort share one row, and Ultracode is one line under them (the
- * switch, its name and a short note, no taller than the switch), its whole sentence, version included, read with the
- * switch and shown as the line's tooltip.
- */
 async function assertUltracodeLine(dialog: ReturnType<Page["getByRole"]>, width: number): Promise<void> {
   const drawn = await dialog.evaluate((node) => {
     const box = (element: Element | null | undefined) => { const rect = element!.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, height: rect.height }; };
@@ -94,7 +86,6 @@ async function assertUltracodeLine(dialog: ReturnType<Page["getByRole"]>, width:
   assert.match(drawn.described, /Dynamic workflows/, `the switch's description says what it does ${at}`);
 }
 
-/** An agent by its label: a row's name starts with its mark's word ("omp Oh My Pi"), and one whose launch takes a model and an effort says so after the label ("Codex: model, effort"). */
 async function pickAgent(page: Page, dialog: ReturnType<Page["getByRole"]>, label: string): Promise<void> {
   await dialog.locator(".agent-picker-trigger").click();
   await page.getByRole("option", { name: new RegExp(`(^|\\s)${label}(: |$)`) }).click();
@@ -105,78 +96,17 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // After the demo's transport: every tab/create body the page sends is recorded as it is sent, and
-  // held unanswered while qaHold is on, as a slow PC would; every submit frame on the socket is counted.
-  const record = `<script>(() => {
-    const demoFetch = window.fetch;
-    window.qaRequests = [];
-    window.qaHold = false;
-    window.qaOldBridge = false;
-    // an agent's skill list answered 503 file_busy this many more times, as a PC still reading slow skill folders would (#2254)
-    window.qaSkillsBusy = {};
-    window.qaSkillsBusyServed = 0;
-    let release = null;
-    window.qaRelease = () => { if (release) release(); release = null; };
-    window.fetch = async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const busyAgent = url.includes("/agent/commands") ? new URL(url, location.href).searchParams.get("agent") : null;
-      if (busyAgent && (window.qaSkillsBusy[busyAgent] ?? 0) > 0) {
-        window.qaSkillsBusy[busyAgent] -= 1;
-        window.qaSkillsBusyServed += 1;
-        return new Response(JSON.stringify({ error: { code: "file_busy", message: "the skill folders did not answer in time" } }), { status: 503, headers: { "content-type": "application/json", "retry-after": "1" } });
-      }
-      if ((init?.method ?? "GET") === "POST" && (url.includes("/api/tab/create") || url.includes("/api/workspace/create"))) {
-        window.qaRequests.push({ url, body: JSON.parse(String(init?.body ?? "null")) });
-        if (window.qaHold) await new Promise((resolve) => { release = resolve; });
-        // a bridge from before first_message: it starts the agent and answers without the field
-        if (window.qaOldBridge) {
-          const answer = await demoFetch(input, init);
-          const { first_message: _, ...made } = await answer.json();
-          return new Response(JSON.stringify(made), { status: answer.status, headers: { "content-type": "application/json" } });
-        }
-      }
-      return demoFetch(input, init);
-    };
-    const Demo = window.WebSocket;
-    window.qaSubmits = [];
-    window.qaSockets = [];
-    window.qaDrop = () => { for (const socket of window.qaSockets.splice(0)) socket.close(); };
-    const Counted = function (url, protocols) {
-      const socket = new Demo(url, protocols);
-      window.qaSockets.push(socket);
-      const send = socket.send.bind(socket);
-      socket.send = (data) => {
-        if (typeof data === "string") { const frame = JSON.parse(data); if (frame.type === "submit") window.qaSubmits.push(frame.text); }
-        send(data);
-      };
-      return socket;
-    };
-    for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Object.defineProperty(Counted, name, { value: Demo[name] });
-    window.WebSocket = Counted;
-  })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${record}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}`;
-  const settings = (theme: string): void => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); };
+  const settings = (theme: string): void => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); };
   const phone = (browser: Browser, theme: "dark" | "light") => browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme });
   const desktop = (browser: Browser, theme: "dark" | "light") => browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US", colorScheme: theme });
   const log: string[] = [];
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      // the composer carries no New tab button and Settings offers none, even where an earlier version stored it on
-      // (composerNewTabButton): New tab with agent… is the tab menu's
       const noButton = await desktop(browser, "dark");
       try {
         await noButton.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", composerNewTabButton: true })); });
@@ -202,7 +132,6 @@ try {
         console.log("PASS the composer has no New tab button and Settings no switch for it, even with the old setting stored; the tab menu opens New tab with agent…");
       } finally { await noButton.close(); }
 
-      // the plan's scenario: a phone, Codex, its $ skills, a prompt, Start; a double tap sends one create
       const dark = await phone(browser, "dark");
       try {
         await dark.addInitScript(settings, "dark");
@@ -212,7 +141,6 @@ try {
         page.on("pageerror", (error) => { errors.push(error.message); console.error(error.stack); });
         await openChat(page, url);
         const dialog = await openDialog(page);
-        // the PC is still reading Codex's skill folders: its first answer is a busy 503, and the dialog asks again
         await page.evaluate(() => { (window as unknown as QaWindow).qaSkillsBusy = { codex: 1 }; });
         await pickAgent(page, dialog, "Codex");
         const chips = dialog.locator(".new-session-skill-chip");
@@ -260,9 +188,6 @@ try {
         console.log("PASS phone: Codex's $ skills before any process, the chip in the message, one tab/create with the prompt behind -- on a double tap, nothing queued twice");
       } finally { await dark.close(); }
 
-      // Claude Code, whose command line never takes the message: it starts with its model, effort and Ultracode
-      // alone, the message rides on the request, the chat shows it pending, the bridge sends it once the agent
-      // rests, and this page sends nothing over the socket at any point
       const pendingPath = await desktop(browser, "dark");
       try {
         await pendingPath.addInitScript(settings, "dark");
@@ -281,7 +206,6 @@ try {
         await dialog.getByLabel("Effort").selectOption("high");
         const ultracode = dialog.getByRole("switch", { name: "Ultracode", exact: true });
         assert.equal(await ultracode.getAttribute("aria-checked"), "false", "Ultracode starts off: Claude Code's own setting");
-        // its hint is read with it, as Model's and Effort's are, and its visible label is a label: a click on it flips the switch
         assert.equal(await ultracode.getAttribute("aria-describedby"), "new-session-ultracode-hint");
         await assertUltracodeLine(dialog, 1280);
         await dialog.locator("label[for='new-session-ultracode']").click();
@@ -290,18 +214,18 @@ try {
         assert.match(await dialog.locator("#new-session-prompt-hint").innerText(), /Queued for Claude Code's first turn/);
         await settled(page);
         await page.screenshot({ path: join(evidence, "desktop-dark-claude-pending.png") });
+        await page.evaluate(() => { (window as unknown as QaWindow).qaHoldAgentReady = true; });
         await dialog.getByRole("button", { name: "Start", exact: true }).click();
         await dialog.waitFor({ state: "detached" });
         const sent = await recorded(page);
         assert.match(String(sent[0]?.body["first_message_connection"]), /^demo-connection-\d+$/, "the request names this page's connection as the one that types the message");
         assert.deepEqual(sent.map(({ body: { first_message_connection: _, ...body } }) => body), [{ workspace_id: "w1C", cwd: "/home/demo/checkout-api", label: null, agent: { kind: "claude", args: ["--model", "opus", "--effort", "high", "--settings", "{\"ultracode\":true}"] }, first_message: "Plan the config file" }], "Ultracode is one --settings object after the effort it keeps; the message is the request's first_message, never an argument of Claude Code's");
-        // the new pane opens on its chat, where the bridge's pending message shows until the agent rests
         const bubble = page.locator(".pane-frame.is-current .pending-message-bubble", { hasText: "Plan the config file" });
         await bubble.waitFor();
-        // shot at once: the demo's agent rests 1.5 s after the start, and the bubble goes with it
         await page.screenshot({ path: join(evidence, "desktop-dark-claude-pending-bubble.png") });
         assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "", "nothing is put in the box");
         const turn = page.locator(".pane-frame.is-current .chat-turn", { hasText: "Plan the config file" });
+        await page.evaluate(() => (window as unknown as QaWindow).qaReleaseAgent());
         await turn.first().waitFor({ timeout: 8_000 });
         await bubble.waitFor({ state: "detached" });
         await page.locator(".pane-frame.is-current .composer-status:is([data-status=\"idle\"], [data-status=\"done\"])").waitFor({ timeout: 8_000 });
@@ -312,8 +236,6 @@ try {
         log.push("", "POST /api/tab/create bodies, desktop, Claude Code with model, effort, Ultracode on and a first message:");
         log.push(...sent.map((request, index) => `${index + 1}. ${JSON.stringify(request.body)}`));
         log.push(`submit frames from the page: ${JSON.stringify(await submits(page))}`);
-        // the switch is one opening's choice: the next New tab opens on Claude Code, the agent last started, with
-        // it off again, and so does the one after a dialog closed with Escape while it was on
         const next = await openDialog(page);
         await next.locator(".agent-picker-trigger", { hasText: "Claude Code" }).waitFor();
         const nextSwitch = next.getByRole("switch", { name: "Ultracode", exact: true });
@@ -346,16 +268,15 @@ try {
         await pickAgent(page, dialog, "Oh My Pi");
         assert.equal(await dialog.getByLabel("Model").count(), 0, "no model field for an agent whose launch takes none");
         await dialog.getByLabel("First message").fill("Reconnect me");
+        await page.evaluate(() => { (window as unknown as QaWindow).qaHoldAgentReady = true; });
         await dialog.getByRole("button", { name: "Start", exact: true }).click();
         await dialog.waitFor({ state: "detached" });
         await page.locator(".pane-frame.is-current .pending-message-bubble", { hasText: "Reconnect me" }).waitFor();
         await page.evaluate(() => (window as unknown as QaWindow).qaDrop());
-        // a drop the connection is back from within the reconnect grace is not said (src/lib/reconnectGrace.ts): the
-        // socket opened after the drop is what shows the reconnect
         await page.waitForFunction(() => (window as unknown as QaWindow).qaSockets.some((socket) => socket.readyState === WebSocket.OPEN));
         await page.locator(".conn-live").waitFor({ state: "attached" });
         const turn = page.locator(".pane-frame.is-current .chat-turn", { hasText: "Reconnect me" });
-        // the agent rests with the message held, not typed: the note says why, and Send now and Discard are offered
+        await page.evaluate(() => (window as unknown as QaWindow).qaReleaseAgent());
         await page.locator(".pane-frame.is-current .composer-status:is([data-status=\"idle\"], [data-status=\"done\"])").waitFor({ timeout: 8_000 });
         const held = page.locator(".pane-frame.is-current .pending-message", { hasText: "Reconnect me" });
         await held.locator(".pending-message-note", { hasText: "the page that started this agent left before it was ready" }).waitFor();
@@ -379,8 +300,6 @@ try {
         console.log("PASS a connection that drops before the agent is ready gets the first message held, not typed, and sent exactly once on Send now");
       } finally { await reconnect.close(); }
 
-      // a bridge that ignores first_message: the agent starts without it, so the dialog stays open and says so,
-      // and Open shows the new tab with the text in its message box, not lost
       const oldBridge = await desktop(browser, "dark");
       try {
         await oldBridge.addInitScript(settings, "dark");
@@ -408,9 +327,6 @@ try {
         console.log("PASS a bridge that ignores first_message: the dialog stays open, says so, and Open shows the text in the new tab's message box");
       } finally { await oldBridge.close(); }
 
-      // validation and the keyboard: a model that is not one word disables Start and is said; another
-      // agent drops the choices its launch does not take, Ultracode included; Tab reaches every control;
-      // Escape closes
       const validation = await desktop(browser, "light");
       try {
         await validation.addInitScript(settings, "light");
@@ -443,8 +359,6 @@ try {
         assert.equal(await dialog.getByLabel("Effort").inputValue(), "");
         assert.equal(await dialog.getByRole("switch", { name: "Ultracode", exact: true }).getAttribute("aria-checked"), "false", "Ultracode too");
         assert.equal(await start.isEnabled(), true);
-        // Tab from the agent picker reaches the name, the model, the effort, Ultracode, the message, each chip
-        // (once the agent's skills are listed again), Cancel, Start and the X, and stays inside the dialog
         await dialog.locator(".new-session-skill-chip").first().waitFor();
         await dialog.locator(".agent-picker-trigger").focus();
         const order: string[] = [];
@@ -456,7 +370,6 @@ try {
           }));
         }
         assert.deepEqual(order, ["", "new-session-model", "new-session-effort", "Ultracode", "new-session-prompt", "Add /review-pr to the message", "Add /changelog to the message", "Cancel", "Start", "Close dialog", "Claude Code"], `the tab order: ${JSON.stringify(order)}`);
-        // a model names one agent's models: Claude Code's is not carried to Codex, which also offers the field
         await dialog.getByLabel("Model").fill("opus");
         await pickAgent(page, dialog, "Codex");
         assert.equal(await dialog.getByLabel("Model").inputValue(), "", "a Claude Code model is dropped on a switch to Codex");
@@ -467,8 +380,6 @@ try {
         console.log("PASS a model that is not one word disables Start with a reason, another agent drops it and Ultracode, Codex does not take Claude Code's model, Tab reaches every control, Escape closes");
       } finally { await validation.close(); }
 
-      // the other theme at each width, with Codex's skills and a message, then Claude Code with Ultracode on,
-      // for the evidence set
       for (const [name, make, theme] of [["phone-light", phone, "light"], ["desktop-light", desktop, "light"], ["desktop-dark", desktop, "dark"]] as const) {
         const context = await make(browser, theme);
         try {
@@ -492,15 +403,12 @@ try {
           const ultracode = claude.getByRole("switch", { name: "Ultracode", exact: true });
           await ultracode.click();
           assert.equal(await ultracode.getAttribute("aria-checked"), "true");
-          // the switch, its name and its note stay inside the dialog's width, on one line under Model and Effort,
-          // which share a row at a desk and on a phone alike
           const [field, frame] = await Promise.all([claude.locator(".new-session-ultracode").boundingBox(), claude.boundingBox()]);
           assert.ok(field !== null && frame !== null, `the Ultracode line is laid out (${name})`);
           assert.ok(field.x >= frame.x && field.x + field.width <= frame.x + frame.width, `Ultracode inside the dialog (${name})`);
           await assertUltracodeLine(claude, make === phone ? 390 : 1280);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll with Claude Code (${name})`);
           if (make === phone) {
-            // the narrowest phone too: two shrunk columns rather than a stack, and the note gives way, never the line
             await page.setViewportSize({ width: 320, height: 844 });
             await assertUltracodeLine(claude, 320);
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at 320 (${name})`);

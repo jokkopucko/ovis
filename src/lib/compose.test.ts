@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
-import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
+import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -18,7 +19,6 @@ describe("menu rows", () => {
     expect(briefDescription("Explains any senpi tip in depth, including Tip: lines in the TUI. Use when the user asks about a tip.")).toBe("Explains any senpi tip in depth, including Tip: lines in the TUI");
     expect(briefDescription("Set thinking level")).toBe("Set thinking level");
     expect(briefDescription("Show changelog entries.")).toBe("Show changelog entries");
-    // a stop before a lowercase word, inside a version or in an ellipsis ends no sentence
     expect(briefDescription("Fetch docs, e.g. for react. Then stop.")).toBe("Fetch docs, e.g. for react");
     expect(briefDescription("Upgrade to v1.2 now")).toBe("Upgrade to v1.2 now");
     expect(briefDescription("Loading...")).toBe("Loading...");
@@ -33,7 +33,6 @@ describe("menu rows", () => {
     expect(commandGroup({ name: "hud:setup", description: "", source: "skill", origin: "plugin" })).toBe("skill-plugin");
     expect(commandGroup({ name: "review", description: "", source: "skill" })).toBe("skill");
     expect(commandGroup({ name: "model", description: "", source: "builtin" })).toBe("builtin");
-    // a plugin's command file is not a skill: it keeps its own group
     expect(commandGroup({ name: "hud:configure", description: "", source: "plugin" })).toBe("plugin");
   });
 });
@@ -73,6 +72,18 @@ describe("omo command completion", () => {
     expect(slashCommandReplacement(builtin, "omo", slash)).toBe("/model ");
   });
 
+  it("sends a picked OpenCode built-in that takes no argument bare, and every other pick with its space (#3813)", () => {
+    const row = (name: string, source: SlashCommand["source"] = "builtin"): SlashCommand => ({ name, description: "", source });
+    expect(sendsBarePick(row("new"), "opencode")).toBeTrue();
+    expect(sendsBarePick(row("compact"), "opencode")).toBeTrue();
+    // OpenCode's own menu only types these, with their space, for Enter to send
+    for (const name of ["rename", "cd", "btw"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
+    for (const name of ["init", "review", "hello"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
+    for (const source of ["user", "project", "plugin", "skill"] as const) expect(sendsBarePick(row("hello", source), "opencode")).toBeFalse();
+    expect(sendsBarePick({ ...row("customize-opencode", "skill"), trigger: "@" }, "opencode")).toBeFalse();
+    for (const agent of ["claude", "codex", "omo", "pi", null]) expect(sendsBarePick(row("new"), agent)).toBeFalse();
+  });
+
   it("keeps Claude, Codex and pi filtering and insertion unchanged", () => {
     const claudeSkill = { name: "delegate", description: "", source: "skill" as const };
     const codexSkill = { ...claudeSkill, trigger: "$" as const };
@@ -97,7 +108,6 @@ describe("omo command completion", () => {
     expect(activeTrigger("/prompts:rev", 12, options("codex"))).toEqual({ kind: "slash", query: "prompts:rev", start: 0, end: 12 });
     expect(activeTrigger("/skill:pd", 9, options("pi"))).toEqual({ kind: "slash", query: "skill:pd", start: 0, end: 9 });
     expect(activeTrigger("x $", 3, options("pi"))).toBeNull();
-    // the whole namespaced name is what Enter writes, for a pi skill as for an omo one
     expect(applyCompletion("/skill:pd", activeTrigger("/skill:pd", 9, options("pi"))!, slashCommandReplacement(skill, "pi", slash))).toEqual({ text: "/skill:mass-ulw ", caret: 16 });
   });
 
@@ -127,6 +137,10 @@ describe("omo command completion", () => {
 describe("composerMessage and submitNote", () => {
   it("keeps the message as written for agent.prompt: inner newlines stay, the composer's own trailing ones go", () => {
     expect(composerMessage("line one\r\nline two\n\n")).toBe("line one\nline two");
+    // line breaks that do not end the message are read in one pass, by the rule the server reads them with
+    // (withoutTrailingBreaks): as a pattern they cost their count squared, a third of a second for the 20,000 the
+    // composer takes
+    expect(composerMessage(`${"\n".repeat(60_000)}a\n\n`).length).toBe(60_001);
   });
 
   it("keeps pasted Markdown, blank lines and code indentation in one submitted message", () => {
@@ -141,10 +155,8 @@ describe("composerMessage and submitNote", () => {
     expect(submitNote("submit_timeout", "x")).toMatch(/^Not sent: .*nothing was typed/);
     expect(submitNote("disconnected", "x")).toMatch(/^Not confirmed: .*Check the terminal/);
     expect(submitNote("pane_not_found", "pane w1:p9 not found")).toBe("Not sent: pane w1:p9 not found");
-    // #511: the no-agent sentence is for the bridge's no-agent refusal alone; an unknown input state keeps its own words
     expect(submitNote("agent_not_ready", NO_AGENT_MESSAGE)).toBe("Not sent: no agent is running in this pane. Your message stayed here.");
     expect(submitNote("agent_not_ready", "The agent's current input state is not known")).toBe("Not sent: The agent's current input state is not known");
-    // a paste left in the input line says so, and is never taken for a refusal that typed nothing
     expect(submitNote("pasted_not_sent", PASTED_NOT_SENT_MESSAGE)).toBe("Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.");
     expect(submitNotTyped("pasted_not_sent")).toBe(false);
   });
@@ -154,20 +166,14 @@ describe("composerMessage and submitNote", () => {
     expect(["disconnected", "timeout", "submit_failed"].map(submitNotTyped)).toEqual([false, false, false]);
     expect(["pending_input_unsupported", "invalid_delivery", "invalid_submit_text", "agent_not_ready", "pending_limit"].map(submitNotTyped)).toEqual([true, true, true, true, true]);
     expect(["pane_not_found", "retired_submit_id"].map(submitNotTyped)).toEqual([true, true]);
-    // refused before the paste because Claude's input box held a draft (#609)
     expect(submitNotTyped("input_draft")).toBe(true);
-    // refused by the view while the terminal holds input, before anything reached the socket
     expect(submitNotTyped("held_input")).toBe(true);
-    // regression #541: a send dropped before its frame left the browser typed nothing
     expect(submitNotTyped("not_transmitted")).toBe(true);
     expect(submitNote("not_transmitted", "the connection dropped before this message was sent")).toBe("Not sent: the connection dropped before this message left. Send it again.");
-    // a send whose wait ended before the PC said what it supports typed nothing, and the note names that, not a drop (#1806)
     expect(submitNotTyped("capabilities_unknown")).toBe(true);
     expect(submitNote("capabilities_unknown", "this PC has not said yet what it supports; nothing was sent")).toBe("Not sent: this PC has not said yet what it supports. Send it again.");
-    // an Insert refused for a control character says so, not that the terminal is not ready: a retry would be refused the same
     expect(insertNote("invalid_insert_text", "the text holds a control character")).toBe("Not inserted: the line holds a control character. Remove it, then insert again.");
     expect(insertNote("capabilities_unknown", "this PC has not said yet what it supports; nothing was sent")).toBe("Not inserted: this PC has not said yet what it supports. Insert it again.");
-    // a Send now that never left proves a held row unsent, not a queued one its turn's end may still type
     expect(pendingActionUncertain("not_transmitted", "held")).toBe(false);
     expect(pendingActionUncertain("not_transmitted", "queued")).toBe(true);
     expect(pendingActionUncertain("pending_not_found", "held")).toBe(true);
@@ -175,16 +181,15 @@ describe("composerMessage and submitNote", () => {
     expect(pendingActionUncertain("disconnected", "held")).toBe(true);
     expect(submitNote("held_input", "x")).toBe("Not sent: send or discard the held input first.");
     expect(submitNote("pending_input_unsupported", "x")).toBe("Update this PC to send messages in the next turn. Your draft stayed here.");
-    // Alt+Enter's hold on a PC that cannot hold one: refused by the socket before anything left
     expect(submitNotTyped("pending_hold_unsupported")).toBe(true);
     expect(submitNote("pending_hold_unsupported", "x")).toBe("Update this PC to hold messages. Your draft stayed here.");
-    // a first message held because its launched agent ended typed nothing, and says so apart from a changed terminal or session, in the client's words (#1547)
     expect(submitNotTyped("first_message_launch_ended")).toBe(true);
     const ended = "The agent started for this message has ended; review the message before sending it";
     const changed = "The pane's terminal or agent session changed; review the message before sending it again";
     expect(submitNote("first_message_launch_ended", ended)).not.toContain(ended);
     expect(submitNote("pending_target_changed", changed)).not.toContain(changed);
     expect(submitNote("first_message_launch_ended", "x")).not.toBe(submitNote("pending_target_changed", "x"));
+    expect(submitNote("typed_while_waiting", "x")).toBe("Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.");
     expect(submitNotTyped("submit_changed")).toBe(false);
     expect(submitNotTyped("pending_uncertain")).toBe(false);
     expect(submitNotTyped("submit_partial")).toBe(false);
@@ -192,7 +197,6 @@ describe("composerMessage and submitNote", () => {
 
   it("offers to clear a terminal draft only when the server named one", () => {
     expect(submitRefusal("input_draft", "x", "ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
-    // bash mode, a clipped box or an older bridge name none: the note alone
     expect(submitRefusal("input_draft", "x")).toBe(submitNote("input_draft", "x"));
     expect(submitRefusal("agent_blocked", "x", "ㅔ")).toBe(submitNote("agent_blocked", "x"));
   });
@@ -200,7 +204,6 @@ describe("composerMessage and submitNote", () => {
   it("names the draft after a Send it that did not go, and offers another draft's buttons", () => {
     const other = submitRefusal("input_draft", "x", "other draft");
     expect(draftSendNote(other, "fix the tests")).toBe(other);
-    // cleared and not confirmed, refused, or a box shown with no draft named: the reason, then the draft
     for (const result of [submitNote("submit_partial", "x"), submitNote("agent_not_ready", "x"), submitRefusal("input_draft", "x", undefined, "! ls")]) {
       const note = draftSendNote(result, "fix the tests");
       expect(typeof note).toBe("string");
@@ -210,10 +213,13 @@ describe("composerMessage and submitNote", () => {
   });
 
   it("offers to send anyway only when the server showed the box and named no draft", () => {
+    // a refusal over another agent's box keeps its note where herdr labels the pane Claude Code (an OmO with its SDK child)
+    expect(submitNote("input_draft", AGENT_INPUT_DRAFT_MESSAGE, "claude")).toBe(submitNote("input_draft", "x", "gjc"));
+    expect(submitNote("input_draft", "x", "claude")).not.toBe(submitNote("input_draft", "x", "gjc"));
+    // Claude Code's box holding a folded paste has a note of its own, saying why nothing can be sent over it
+    expect(submitNote("input_draft", CLAUDE_FOLDED_DRAFT_MESSAGE, "claude")).not.toBe(submitNote("input_draft", "x", "claude"));
     expect(submitRefusal("input_draft", "x", undefined, "! ls")).toEqual({ note: "Not sent: Claude Code's input box in the terminal may not be empty. It shows “! ls”.", anyway: true });
-    // a box the server could not read whole is shown nothing to send over: the plain note
     expect(submitRefusal("input_draft", "x", undefined, "")).toBe(submitNote("input_draft", "x"));
-    // a named draft is cleared, not sent over
     expect(submitRefusal("input_draft", "x", "ㅔ", "❯ ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
     expect(submitRefusal("agent_blocked", "x", undefined, "! ls")).toBe(submitNote("agent_blocked", "x"));
   });
@@ -235,16 +241,13 @@ describe("a stopped send's turn", () => {
   it("is the same turn in a later read whose earlier turns changed, until a newer turn", () => {
     const stopped = stoppedTurn(page, "Rename the backup job and rerun it");
     expect(stopped).not.toBeNull();
-    // a new turns array: an earlier turn edited, the stopped turn a new object with the same time and words
     expect(endsWithTurn([turn("assistant", "earlier answer, edited", "2026-11-01T00:00:01Z"), { ...page[1]! }], stopped)).toBe(true);
     expect(endsWithTurn([...page, turn("assistant", "answer", "2026-11-01T00:00:03Z")], stopped)).toBe(false);
-    // the same words sent again are a newer turn
     expect(endsWithTurn([page[0]!, turn("user", words, "2026-11-01T00:00:04Z")], stopped)).toBe(false);
     expect(stoppedTurn(page, "other words")).toBeNull();
   });
 
   it("taken while the copy was in the box, still names it after a read that answers no copy", () => {
-    // the send empties the box: a read before the send's receipt answers no restored copy
     const taken = stoppedTurn(page, words);
     expect(stoppedTurn(page, null)).toBeNull();
     expect(endsWithTurn(page, taken)).toBe(true);
@@ -311,9 +314,7 @@ describe("composerPayload", () => {
     expect(composerMessage(pasted)).toBe("run this\ntouch /tmp/x\nnext");
     expect(composerPayload(pasted, true)).toBe("\u001b[200~run this\rtouch /tmp/x\rnext\u001b[201~");
     expect(composerPayload(pasted, false)).toBe("run this\rtouch /tmp/x\rnext");
-    // dropping one marker cannot leave another made of the bytes around it
     expect(composerMessage("a\u001b[20\u001b[201~0~b")).toBe("ab");
-    // a marker at the end goes before the trailing newlines it hid
     expect(composerMessage("ls\n\u001b[201~")).toBe("ls");
   });
 
@@ -354,7 +355,6 @@ describe("insertLeadingMention", () => {
   it("goes after the mentions of files picked before it, so a batch reads in pick order however its uploads finish", () => {
     expect(insertLeadingMention(`${first}notes`, second, [first])).toEqual({ text: `${first}${second}notes`, at: 12, length: 12 });
     expect(insertLeadingMention(`${second}notes`, first, [])).toEqual({ text: `${first}${second}notes`, at: 0, length: 12 });
-    // an earlier mention the user deleted no longer anchors anything
     expect(insertLeadingMention("notes", second, [first])).toEqual({ text: `${second}notes`, at: 0, length: 12 });
   });
 
@@ -363,7 +363,6 @@ describe("insertLeadingMention", () => {
     expect(insertLeadingMention(full, first, [])).toEqual({ text: full, at: 0, length: 0, missing: 10 });
     const room = "x".repeat(MAX_COMPOSER_CHARS - first.length);
     expect(insertLeadingMention(room, first, [])).toEqual({ text: `${first}${room}`, at: 0, length: first.length });
-    // the separating space counts: after a command with no room for it, nothing goes in
     const command = `/review${"x".repeat(MAX_COMPOSER_CHARS - 7 - first.length)}`;
     expect(insertLeadingMention(command, first, [])).toEqual({ text: command, at: command.length, length: 0, missing: 1 });
   });
@@ -387,15 +386,12 @@ describe("composer presentation helpers", () => {
   });
 
   it("makes the status row compact by the card's width, not the window's", () => {
-    // a phone's card, and a laptop's with the sidebar open in a 940px window
     expect(composerStatusCompact(374)).toBe(true);
     expect(composerStatusCompact(588)).toBe(true);
     expect(composerStatusCompact(COMPOSER_STATUS_COMPACT_BELOW - 1)).toBe(true);
-    // the threshold itself, a 1024px window with the sidebar open, and the full 820px card
     expect(composerStatusCompact(COMPOSER_STATUS_COMPACT_BELOW)).toBe(false);
     expect(composerStatusCompact(672)).toBe(false);
     expect(composerStatusCompact(820)).toBe(false);
-    // a card that is not laid out yet has no width: it is not called narrow
     expect(composerStatusCompact(0)).toBe(false);
   });
 
@@ -411,16 +407,19 @@ describe("composer presentation helpers", () => {
     expect(composerDelivery(null, "working")).toBe("immediate");
   });
 
+  it("queues a message for a pane shown blocked only where the server shows a card's wait so", () => {
+    expect(composerDelivery("codex", "blocked", true)).toBe("queue");
+    for (const state of ["idle", "done", "unknown"] as const) expect(composerDelivery("codex", state, true)).toBe("immediate");
+    expect(composerDelivery(null, "blocked", true)).toBe("immediate");
+  });
+
   it("says the reconnecting sentence in the status content only once there is a draft", () => {
-    // the empty box's placeholder says it
     expect(composerStatusHint({ uploading: false, connected: false, text: "" })).toBe(null);
     expect(composerStatusHint({ uploading: false, connected: false, text: " " })).toBe("offline");
     expect(composerStatusHint({ uploading: false, connected: false, text: "draft" })).toBe("offline");
     expect(composerStatusHint({ uploading: false, connected: true, text: "draft" })).toBe(null);
     expect(composerStatusHint({ uploading: true, connected: true, text: "" })).toBe("uploading");
-    // an upload caught by a dropped connection: the box is empty, so the placeholder says why
     expect(composerStatusHint({ uploading: true, connected: false, text: "" })).toBe("uploading");
-    // with a draft the placeholder is gone: the reconnecting sentence is the one said (the tile says Uploading)
     expect(composerStatusHint({ uploading: true, connected: false, text: "draft" })).toBe("offline");
   });
 
@@ -470,16 +469,13 @@ describe("composer presentation helpers", () => {
       named("unrelated", "Something else"),
     ];
     const find = (query: string) => rankSlashCommands(commands, query, {}).map((command) => command.name);
-    // the namespace is not a prefix to type: the command's own word finds it
     expect(find("brain")).toEqual(["my-brainstorm-helper", "superpowers:brainstorming"]);
-    // both name prefixes precede the word match
     expect(find("review")).toEqual(["review", "reviewer-notes", "code-review"]);
     expect(find("ainst")).toEqual(["my-brainstorm-helper", "superpowers:brainstorming"]);
     expect(find("spbr")).toEqual(["superpowers:brainstorming"]);
     expect(find("diff")).toEqual(["review"]);
     expect(find("zzz")).toEqual([]);
     expect(find("")).toHaveLength(commands.length);
-    // a stronger kind of match beats a frequently used weaker one
     expect(rankSlashCommands(commands, "review", { "code-review": 9 }).map((command) => command.name)[0]).toBe("review");
   });
 
@@ -530,9 +526,6 @@ describe("context left", () => {
   });
 });
 
-// The catalog says which commands run in the terminal (a row's visibility, or its bare form's
-// interaction): the chat lists them apart and never sends one on its own. A row the agent's own
-// menu hides (agent-hidden) mirrors that menu: never listed, and typed by hand it goes like any text.
 describe("terminal commands", () => {
   const config: SlashCommand = { name: "config", description: "Open configuration", source: "builtin", visibility: "terminal" };
   const tree: SlashCommand = { name: "tree", description: "Browse the session tree", source: "builtin", forms: [{ match: "bare", interaction: "terminal" }] };
@@ -547,13 +540,11 @@ describe("terminal commands", () => {
   it("groups a row with terminal visibility, or a bare terminal form, apart from its source", () => {
     expect(terminalCommand(config)).toBe(true);
     expect(terminalCommand(tree)).toBe(true);
-    // only a subcommand needs the terminal: the command itself stays with its source
     expect([model, resume, plain, skill].map(terminalCommand)).toEqual([false, false, false, false]);
     expect(commandGroup(config)).toBe("terminal");
     expect(commandGroup(tree)).toBe("terminal");
     expect(commandGroup(resume)).toBe("builtin");
     expect(commandGroup(skill)).toBe("skill-project");
-    // the group stands last: the agent's offered commands first, what needs the terminal after them
     expect(COMMAND_GROUPS[COMMAND_GROUPS.length - 1]).toBe("terminal");
   });
 
@@ -561,7 +552,6 @@ describe("terminal commands", () => {
     const listed = commandsForTrigger(commands, "claude", slash).map((command) => command.name);
     expect(listed).toEqual(["config", "tree", "model", "resume", "compact", "deploy"]);
     expect(terminalCommand(heapdump)).toBe(false);
-    // rows without the new fields (an older server) read as they always did
     expect(commandsForTrigger([plain, skill], "claude", slash)).toEqual([plain, skill]);
   });
 
@@ -569,9 +559,7 @@ describe("terminal commands", () => {
     expect(typedTerminalCommand(commands, "/config")).toBe(config);
     expect(typedTerminalCommand(commands, "  /CONFIG  ")).toBe(config);
     expect(typedTerminalCommand(commands, "/tree")).toBe(tree);
-    // takes no argument, but a stray one is still the same command typed
     expect(typedTerminalCommand(commands, "/tree w13:p2")).toBe(tree);
-    // the typed form decides: /model opens a dialog and /model sonnet needs nothing, /resume list needs the terminal
     expect(typedTerminalCommand(commands, "/model")).toBeNull();
     expect(typedTerminalCommand(commands, "/model sonnet")).toBeNull();
     expect(typedTerminalCommand(commands, "/resume")).toBeNull();
@@ -590,16 +578,12 @@ describe("terminal commands", () => {
     // a row typed with another trigger is another row: Codex's $skill is never /skill
     expect(typedTerminalCommand([{ ...config, trigger: "$" }], "/config")).toBeNull();
     expect(typedTerminalCommand([{ ...config, trigger: "$" }], "$config")).toEqual({ ...config, trigger: "$" });
-    // a catalog without the fields names no terminal command, as before the fields existed
     expect(typedTerminalCommand([plain, skill], "/compact")).toBeNull();
   });
 
 });
 
 describe("the menu over a catalog the server built", () => {
-  // The rows come from the integrated server catalog, serialized as they cross the wire, so the
-  // client is checked against the forms and visibility the scanners really emit (Codex: terminal
-  // screens and the popup's agent-hidden rows), not against hand-written rows.
   function codexRows(): SlashCommand[] {
     const home = mkdtempSync(join(tmpdir(), "compose-catalog-"));
     try {
@@ -696,7 +680,6 @@ it("takes a word naming a command the menu hides for a command, never for one no
   ];
   expect(namesHiddenCommand(commands, "heapdump")).toBe(true);
   expect(namesHiddenCommand(commands, "Heap")).toBe(true);
-  // a listed command is the menu's to show, and a word no command starts is unmatched
   expect(namesHiddenCommand(commands, "help")).toBe(false);
   expect(namesHiddenCommand(commands, "deploy")).toBe(false);
   expect(namesHiddenCommand(commands, "")).toBe(false);

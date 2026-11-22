@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { keepEventStream, STREAM_REOPEN_MAX_MS, STREAM_REOPEN_MS, type EventStreamHandlers } from "./eventStream.ts";
 
-/** an EventSource the test drives: the browser's own reconnect, its giving up, a message */
 class FakeSource {
   readyState = 0;
   closedByApp = false;

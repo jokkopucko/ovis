@@ -23,7 +23,6 @@
   font-size: var(--fs-xs);
 }
 
-/* every slot outlined, and one highlight moving to the place the pane would take */
 .split-drop-slot {
   position: absolute;
   border: var(--hairline) dashed var(--border-strong);

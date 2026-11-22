@@ -1,7 +1,5 @@
 /**
- * The device's side of pairing with a typed code (shared/relay-pair-code.ts): one CPace exchange
- * with the PC on the relay's rendezvous for the code's nameplate, which ends in the PC's pairing
- * offer, or in why not. Exactly one exchange per call: a call is one tap on Pair, and nothing here
+ * Exactly one exchange per call: a call is one tap on Pair, and nothing here
  * tries again with the code it was given, so a relay acting as the PC gets one guess per tap.
  * The offer is then checked as a scanned link's is (its key must give its PC id) and must carry a
  * pairing code; the hosted shell, or Settings → Remote PCs on a PC that adds another, shows the
@@ -14,7 +12,6 @@ import { validateOffer, type RelayOffer } from "./relay-offer.ts";
 import { normalizePairCode, PAIR_CLOSE, PairCodeExpiredError, PairCodeGuest, splitPairCode } from "./relay-pair-code.ts";
 import { deriveServerId } from "./relay-server-proof.ts";
 
-/** Why a typed code gave no offer; each is a sentence on the code screen (TYPED_CODE_FAILURES). */
 export type TypedCodeFailure = "not-a-code" | "no-pc" | "wrong" | "expired" | "busy" | "unreachable" | "forged";
 
 export const TYPED_CODE_FAILURES: readonly TypedCodeFailure[] = ["not-a-code", "no-pc", "wrong", "expired", "busy", "unreachable", "forged"];
@@ -24,17 +21,14 @@ export class TypedCodeError extends Error {
 }
 
 const { NO_HOST, BUSY, DROPPED } = PAIR_CLOSE;
-/** an exchange that does not finish in this long is given up */
 const EXCHANGE_MS = 30_000;
 
 export interface TypedCodeOptions {
-  /** the relay the PC holds its code on: Ovis's own, where the PC meets the hosted app */
   relay?: string;
   signal?: AbortSignal;
   connect?: (url: string) => RelaySocket;
 }
 
-/** The offer of a PC that showed `input`; throws TypedCodeError. */
 export function offerFromCode(input: string, options: TypedCodeOptions = {}): Promise<RelayOffer> {
   const code = normalizePairCode(input);
   if (code === null) return Promise.reject(new TypedCodeError("not-a-code"));
@@ -51,7 +45,7 @@ export function offerFromCode(input: string, options: TypedCodeOptions = {}): Pr
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", aborted);
-      try { socket.close(); } catch { /* already closed */ }
+      try { socket.close(); } catch { }
       if (result instanceof TypedCodeError) reject(result);
       else resolve(result);
     };

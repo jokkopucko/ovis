@@ -1,0 +1,15 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/…/codex-cap/work
+
+• Remapped `list.cancel` to `ctrl-q`.
+
+• Remapped `list.cancel` to `alt-x`.
+
+
+
+  Remap Shortcut
+  Action: Cancel  list.cancel
+  Current: alt-x
+  Press the new key now. Esc cancels.
+

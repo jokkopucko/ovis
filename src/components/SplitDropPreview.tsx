@@ -3,7 +3,6 @@ import { useT } from "../lib/i18n.ts";
 import type { DropZone, SplitRect } from "../lib/split.ts";
 import "./SplitDropPreview.css";
 
-/** a rectangle of the area, drawn in a little from its edges */
 const place = (rect: SplitRect): CSSProperties => ({
   left: `calc(${rect.x * 100}% + var(--space-1))`, top: `calc(${rect.y * 100}% + var(--space-1))`,
   width: `calc(${rect.w * 100}% - 2 * var(--space-1))`, height: `calc(${rect.h * 100}% - 2 * var(--space-1))`,
@@ -11,16 +10,10 @@ const place = (rect: SplitRect): CSSProperties => ({
 
 export interface GridPreview {
   zone: DropZone | null;
-  /** every slot's rectangle, outlined so the places a pane can go read at a glance */
   slots: SplitRect[];
-  /** the place the dropped pane would take */
   target: SplitRect | null;
 }
 
-/**
- * A guide over the pane area; it never takes a drag, focus or space from the terminals: every slot
- * outlined, and one highlight on the slot's edge or middle the pane would take.
- */
 export function SplitDropPreview({ visible, grid }: { visible: boolean; grid: GridPreview }) {
   const t = useT();
   const zone = grid.zone;

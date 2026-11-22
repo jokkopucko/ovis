@@ -5,8 +5,8 @@ import type { HttpStream, MuxClock } from "../shared/relay-mux-engine.ts";
 import { WS_CONTINUATION_CAPACITY } from "../shared/relay-mux.ts";
 
 export const BULK_BYTES = 64 * 1024 * 1024;
+const PROBE_INTERVAL_OFF_RTT_MS = 37;
 
-/** Discrete events, not elapsed wall time. An event-loop turn drains producer/reader microtasks. */
 export class BenchmarkClock implements MuxClock {
   private time = 0;
   private sequence = 0;
@@ -137,12 +137,11 @@ export async function benchmarkMux(
       pending.set(key, clock.now());
       terminal.send(key);
       // Fixed offered load avoids coordinated omission; 37 ms is not phase-locked to RTT.
-      if (!finished && (bulk || sent < 128)) cancelProbe = clock.setTimeout(probe, 37);
+      if (!finished && (bulk || sent < 128)) cancelProbe = clock.setTimeout(probe, PROBE_INTERVAL_OFF_RTT_MS);
     };
     probe();
     let bytes = 0;
     let elapsedMs = 0;
-    // Match the production server adapter's bounded, maximum-DATA-sized writes.
     const bodyDone = bulk ? new Promise<void>((resolve, reject) => {
       respond = (stream) => {
         void (async () => {

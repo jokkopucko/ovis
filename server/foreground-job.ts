@@ -11,7 +11,10 @@ import { darwinArgv, darwinProcessGroup } from "./darwin-process.ts";
 
 export interface JobProcess { pid: number; name: string; argv: string[] }
 
-/** the most processes one lookup follows: a terminal's foreground job, not a whole PC */
+/**
+ * past this many processes found, the Linux lookup goes no level deeper, but it ends the level it is
+ * on, however wide: a terminal's foreground job, not a whole PC
+ */
 const JOB_MAX = 256;
 
 /** A Linux process's parent, group and command name from /proc/<pid>/stat; the name may hold spaces and parentheses. */
@@ -23,10 +26,18 @@ async function linuxStat(pid: number): Promise<{ parent: number; group: number; 
 }
 
 /** The children of every thread of a Linux process (/proc/<pid>/task/<tid>/children). */
-async function linuxChildren(pid: number): Promise<number[]> {
+async function linuxThreadChildren(pid: number): Promise<number[]> {
   const tasks = await readdir(`/proc/${pid}/task`);
   const lists = await Promise.all(tasks.map((task) => readFile(`/proc/${pid}/task/${task}/children`, "utf8")));
   return lists.flatMap((list) => list.split(" ").filter((word) => word !== "").map(Number));
+}
+
+/**
+ * A thread that ended while it was read hands its children to another thread, maybe one read already:
+ * the whole process is read once more, never only the threads that answered, or a child is lost.
+ */
+async function linuxChildren(pid: number): Promise<number[]> {
+  return linuxThreadChildren(pid).catch(() => linuxThreadChildren(pid));
 }
 
 async function linuxBelow(pid: number): Promise<JobProcess[]> {
@@ -40,7 +51,6 @@ async function linuxBelow(pid: number): Promise<JobProcess[]> {
       for (const child of await linuxChildren(parent).catch(() => [])) {
         if (seen.has(child)) continue;
         seen.add(child);
-        // a process that ended meanwhile, or left the job for a group of its own, is not in it
         const stat = await linuxStat(child).catch(() => null);
         if (stat === null || stat.group !== group) continue;
         const argv = (await readFile(`/proc/${child}/cmdline`, "utf8").catch(() => "")).split("\0");

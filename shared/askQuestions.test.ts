@@ -43,6 +43,25 @@ describe("a past question tool call", () => {
     }
   });
 
+  test("reads agy's ask_question string options, (Recommended) prefix, and is_multi_select", () => {
+    expect(askedQuestions("ask_question", { questions: [
+      { question: "Which test runner?", options: ["(Recommended) Bun test", "Vitest"] },
+      { question: "Which targets?", is_multi_select: true, options: ["Desktop", "Mobile"] },
+    ] })).toEqual([
+      { header: null, question: "Which test runner?", multi: false, recommended: 0, options: [
+        { label: "Bun test", description: null, preview: null },
+        { label: "Vitest", description: null, preview: null },
+      ] },
+      { header: null, question: "Which targets?", multi: true, recommended: null, options: [
+        { label: "Desktop", description: null, preview: null },
+        { label: "Mobile", description: null, preview: null },
+      ] },
+    ]);
+    for (const bad of [{ questions: [{ question: "Q?", options: [""] }] }, { questions: [{ question: "Q?", options: ["(Recommended)   "] }] }]) {
+      expect(askedQuestions("ask_question", bad)).toBeNull();
+    }
+  });
+
   test("ignores a recommendation that names no option", () => {
     for (const recommended of [2, -1, 0.5, "0"]) {
       expect(askedQuestions("ask", { questions: [{ question: "Q?", recommended, options: [{ label: "A" }, { label: "B" }] }] })?.[0]?.recommended).toBeNull();

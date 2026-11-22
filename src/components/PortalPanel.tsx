@@ -23,7 +23,6 @@ import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const t = useT();
   const { status, error, pending, busy, request } = usePortal();
-  // what was typed; until then, the relay and the sign-in this PC used last
   const [typed, setTyped] = useState<string | null>(null);
   const [edited, setEdited] = useState<AuthDraft | null>(null);
   if (!status?.supported) return null;
@@ -32,7 +31,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const problem = draft.method === "none" ? null : authProblem(draft);
   const offered = draft.method === "none" || status.auth_methods.includes(draft.method);
   const on = status.phase !== "idle";
-  // a Portal that ended on its own is started again once by the server; Stop still ends it
   const progress = status.phase === "starting" ? t("Starting…") : status.phase === "recovering" ? t("Recovering…") : status.phase === "stopping" ? t("Stopping…") : null;
   let control;
   if (on) {
@@ -46,7 +44,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       </>
     );
   } else {
-    // Add a connection shows an idle Portal only where it can start (usable, nothing blocking it)
     control = (
       <>
         <PortalAuthChoice status={status} draft={draft} disabled={readOnly || busy} onChange={setEdited} />
@@ -71,7 +68,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       {control}
       {progress !== null && <p className="settings-item settings-hint portal-progress" role="status">{progress}</p>}
       {error !== null && <p className="settings-item settings-hint portal-error" role="alert">{error}</p>}
-      {/* the server's account of the last failure, then Portal's own words */}
       {status.phase === "error" && status.error !== null && (
         <div className="settings-item">
           <p className="settings-hint portal-error" role="alert">{status.error}</p>

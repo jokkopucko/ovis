@@ -4,6 +4,8 @@
  * their agent worktrees and the release shell tab, and curated chats served in place of real
  * transcripts. The real hostname never reaches the page.
  */
+// with HERDR_TEST_LIVE=1 test-herdr.ts leaves the session alone, and staging would close every workspace in the one you work in
+if (process.env["HERDR_TEST_LIVE"] === "1") throw new Error("readme-media/stage.ts stages its own herdr session: unset HERDR_TEST_LIVE");
 process.env["HERDR_TEST_SESSION"] = "ovis-demo";
 await import("../test-herdr.ts");
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -22,7 +24,6 @@ export { CHATS, PROMPT };
 
 export interface DemoPane extends DemoSpec { pane: string; workspace: string }
 
-/** A small fictional project for the terminal shot: real git history, real tests. */
 function releaseRepo(dir: string) {
   const sh = (cmd: string) => { const r = Bun.spawnSync(["bash", "-c", cmd], { cwd: dir, env: { ...process.env, GIT_AUTHOR_NAME: "demo", GIT_AUTHOR_EMAIL: "demo@example.com", GIT_COMMITTER_NAME: "demo", GIT_COMMITTER_EMAIL: "demo@example.com" } }); if (r.exitCode !== 0) throw new Error(cmd + ": " + r.stderr.toString()); };
   rmSync(dir, { recursive: true, force: true });
@@ -46,13 +47,11 @@ function gitRepo(dir: string) {
 }
 
 export async function stage() {
-  // start clean: close whatever an earlier run left in the demo session
   for (const ws of (await sessionSnapshot()).workspaces) await workspaceClose(ws.workspace_id).catch(() => {});
   // herdr's worktree folders from an earlier run would refuse the same paths
   rmSync(join(ROOT, "worktrees"), { recursive: true, force: true });
   const panes: DemoPane[] = [];
   const byKey = (key: string | undefined) => panes.find((p) => p.key === key);
-  // each repository is a real git checkout (the one with the shell tab holds the release history),
   // a worktree is herdr's own (under the demo root, so no home path shows), and a tab joins its
   // repository's workspace
   for (const spec of SPECS) {
@@ -82,7 +81,6 @@ export async function stage() {
   await Bun.sleep(800);
   for (const p of panes) {
     await herdrRpc("pane.send_text", { pane_id: p.pane, text: `PS1='\\[\\e[38;5;214m\\]${p.label}\\[\\e[0m\\] \\$ '; clear\n` });
-    // the pane's label is its title everywhere, whatever the program in it sets
     await herdrRpc("pane.rename", { pane_id: p.pane, label: p.title });
     if (p.agent) await herdrRpc("pane.report_agent", { pane_id: p.pane, source: "manual", agent: p.agent, state: p.state ?? "idle" });
   }
@@ -97,12 +95,13 @@ export async function stage() {
   async function routes(page: any) {
     const scrub = (text: string) => text.split(REAL_HOST).join(HOST);
     // the live event stream cannot be rewritten; the 5 s machines poll carries the same data
-    await page.route("**/api/machines/events", (route: any) => route.abort());
-    await page.route("**/api/machines", async (route: any) => {
+    // by path: the app asks with `?compact_agents=1`, which a glob ending in the path does not match
+    await page.route((url: URL) => url.pathname === "/api/machines/events", (route: any) => route.abort());
+    await page.route((url: URL) => url.pathname === "/api/machines", async (route: any) => {
       try {
         const response = await route.fetch();
         await route.fulfill({ response, body: scrub(await response.text()) });
-      } catch { /* the page closed mid-request */ }
+      } catch {}
     });
     await page.route("**/api/pane/conversation?*", async (route: any) => {
       const id = new URL(route.request().url()).searchParams.get("pane_id") ?? "";
@@ -127,7 +126,6 @@ export async function stage() {
     for (const workspace of new Set(panes.map((p) => p.workspace))) await workspaceClose(workspace).catch(() => {});
     rmSync(stateDir, { recursive: true, force: true });
   }
-  /** Codex asks again: each capture starts from the same state. */
   async function reset() {
     promptAnswered = false;
     const web = panes.find((p) => p.key === "web")!;

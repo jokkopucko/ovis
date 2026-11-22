@@ -14,7 +14,6 @@ describe("the Portal sign-in form", () => {
     expect(authOf(draftOf(wallets))).toEqual(wallets);
     const oidc = { method: "oidc", allow: ["me@example.com"], issuer: "https://login.example.com", client_id: "client-1" } as const;
     expect(authOf(draftOf(oidc))).toEqual(oidc);
-    // switching to another sign-in asks for that one's list, not the last one typed
     expect(authOf({ ...draftOf(wallets), method: "credential" })).toEqual({ method: "credential", allow: [], issuer: null, client_id: null });
     // and an OIDC address typed earlier is not sent with a wallet
     expect(authOf({ ...draftOf(oidc), method: "siwe" })).toMatchObject({ method: "siwe", issuer: null, client_id: null });

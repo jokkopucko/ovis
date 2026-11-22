@@ -5,7 +5,6 @@
  */
 export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "Move everything to herdr-core": "全部迁移到 herdr-core",
-  "Every workspace, tab and agent reopens on herdr-core, all at once.": "所有工作区、标签页和 Agent 一次性在 herdr-core 上重新打开。",
   "Install herdr-core and move everything": "安装 herdr-core 并全部迁移",
   "Installs herdr-core {version} into ~/.local/bin, then shows what moves before anything does.": "将 herdr-core {version} 安装到 ~/.local/bin,然后先显示将迁移的内容。",
   "Install and move…": "安装并迁移…",
@@ -24,6 +23,7 @@ export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "A command is running": "命令运行中",
   "{command} running": "{command} 运行中",
   "Scrollback and programs running in shells do not come along. herdr itself stays as it is.": "历史输出（回滚缓冲）和 Shell 中运行的程序不会迁移。herdr 本身保持不变。",
+  "Each pane opens a new shell from your login profile: variables set by hand in a pane stay behind.": "每个窗格都按登录配置文件打开新的 shell，在窗格里手动设置的变量不会迁移。",
   "Move everything": "全部迁移",
   "Move everything once all work is done": "等所有工作完成后一次性迁移",
 
@@ -67,4 +67,5 @@ export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "Running on herdr-core.": "正在 herdr-core 上运行。",
   "The server was switching its runtime.": "服务器正在切换运行时。",
   "An agent did not reopen its conversation on herdr-core.": "有代理未能在 herdr-core 上重新打开同一对话。",
+  "Every workspace, tab and agent reopens on herdr-core, all at once, after a list shows what moves. Scrollback and programs running in shells do not come along.": "所有工作区、标签页和 Agent 会一次性在 herdr-core 上重新打开，开始前会先列出要迁移的内容。历史输出（回滚缓冲）和 Shell 中运行的程序不会迁移。",
 };

@@ -18,7 +18,6 @@ const offer = (token: string, ip: string): Promise<Response> => handleAuthReques
 );
 
 describe("POST /api/auth", () => {
-  // a held answer is a wait of one second: the clock stands still, so a slow run cannot outlast it
   beforeEach(() => { setSystemTime(Date.now()); });
   afterEach(() => { setSystemTime(); });
   it("answers a wrong token, and a right one, as it always did", async () => {
@@ -37,7 +36,6 @@ describe("POST /api/auth", () => {
     forgetAuthAttempts();
     for (let attempt = 0; attempt < 4; attempt += 1) expect((await offer("wrong", "10.0.0.7")).status).toBe(401);
     expect((await offer(TOKEN, "10.0.0.7")).status).toBe(204);
-    // the run starts over after the success
     for (let attempt = 0; attempt < 4; attempt += 1) expect((await offer("wrong", "10.0.0.7")).status).toBe(401);
     expect((await offer("wrong", "10.0.0.7")).status).toBe(401);
     expect((await offer(TOKEN, "10.0.0.7")).status).toBe(429);
@@ -100,7 +98,6 @@ describe("the budget visitors behind one proxy share", () => {
   it("is never filled by one browser left polling with an old cookie", () => {
     const start = Date.now();
     try {
-      // a locked page polls /api/health every 5 s for three hours with the token it had before
       for (let second = 0; second <= 3 * 3600; second += 5) {
         setSystemTime(start + second * 1000);
         ask("old-token", "100.64.0.9 via 127.0.0.1");
@@ -137,7 +134,6 @@ describe("the budget visitors behind one proxy share", () => {
       setSystemTime(start);
       for (let attempt = 0; attempt < 49; attempt += 1) recordPresentedTokenFailure(`first-${attempt} via 127.0.0.1`);
       for (let peer = 1; peer < AUTH_CLIENTS_MAX; peer += 1) recordPresentedTokenFailure(`fill via 127.1.${Math.floor(peer / 256)}.${peer % 256}`);
-      // the oldest key fails again: its hold starts, and it is now the newest
       recordPresentedTokenFailure("last via 127.0.0.1");
       expect(presentedToken(cookie(TOKEN), TOKEN, "unknown via 127.0.0.1")).toBe("held");
       recordPresentedTokenFailure("overflow via 127.2.0.1");

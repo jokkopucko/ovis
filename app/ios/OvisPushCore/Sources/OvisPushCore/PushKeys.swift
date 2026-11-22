@@ -59,14 +59,14 @@ public struct PushKeyStore {
     }) throws -> PushKeys {
         guard data.count == 48 else { throw Failure.damaged }
         // SEC 2's P-256 subgroup order: only scalars in 1..<order are valid bytes.
-        let order: [UInt8] = [
+        let p256GroupOrder: [UInt8] = [
             0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84,
             0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51
         ]
         let scalar = Data(data.prefix(32))
-        guard scalar.contains(where: { $0 != 0 }), scalar.lexicographicallyPrecedes(order) else {
+        guard scalar.contains(where: { $0 != 0 }), scalar.lexicographicallyPrecedes(p256GroupOrder) else {
             throw Failure.damaged
         }
         // Once the bytes are valid, any CryptoKit import failure must reach the caller.

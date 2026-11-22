@@ -62,7 +62,7 @@ it("keeps a startup send bound to the reported omp session and observes its late
     resume.resolve();
     expect(await finished).toBeNull();
     expect(deliver).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledTimes(2); // initial pane and startup poll, no extra delivery lookup
+    expect(get).toHaveBeenCalledTimes(2);
     expect((await poll()).outcomes).toMatchObject([{ state: "accepted", evidence: [] }]);
     const handoff = JSON.parse(readFileSync(new URL("../fixtures/omp-handoff-18.8.7-session.jsonl", import.meta.url), "utf8")
       .split("\n").find(line => line.includes('"type":"compaction"'))!);

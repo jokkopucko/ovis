@@ -1,6 +1,4 @@
 /**
- * The relay's rendezvous for pairing with a typed code (shared/relay-pair-code.ts,
- * docs/relay.md "Pairing with a typed code"): `GET /v1/pair?nameplate=<3>&role=host|guest&v=1`.
  * The PC holds the room for a nameplate (`host`); a device that typed the code joins it (`guest`),
  * one at a time. The two run CPace through it; the relay reads none of it and is not trusted to
  * keep any limit: the PC counts tries itself. These limits only stop abuse through an honest relay.
@@ -25,23 +23,14 @@ import { RELAY_PASS_CLOSE, RELAY_PASS_EXPIRED, RELAY_PASS_INVALID, RELAY_PASS_RE
 import { SERVER_KEY_INVALID, SERVER_KEY_MISMATCH, SERVER_PROOF_CLOSE, SERVER_PROOF_MS, deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../shared/relay-server-proof.ts";
 import { passMode, type PassPolicy, type PassResult } from "./pass.ts";
 
-// The PC's side and the app read these from shared/relay-pair-code.ts (the remote PC bundle carries
-// shared/, not relay/); they are copied here so the Worker imports none of the pairing cryptography,
-// and relay/pair-room.test.ts holds the two copies equal.
 export const ATTEMPT_BYTES = 16;
 
 export const PAIR_CLOSE = {
-  /** no PC shows this code */
   NO_HOST: 4404,
-  /** another PC holds this nameplate */
   TAKEN: 4409,
-  /** another guest is trying, the room took its fill of guests, or they came too fast */
   BUSY: 1013,
-  /** the host ended this attempt */
   DROPPED: 1000,
-  /** the host is gone */
   HOST_GONE: 1001,
-  /** the guest's or host's time ran out, or it was idle */
   EXPIRED: 1001,
   POLICY: 1008,
   TOO_BIG: 1009,
@@ -49,18 +38,13 @@ export const PAIR_CLOSE = {
 
 /** the public part of a typed code: three Crockford base32 characters */
 export const NAMEPLATE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{3}$/;
-/** the largest frame either side may send */
 export const PAIR_MAX_FRAME = 4096;
 /** a host's room lasts at most this long: a code lives 10 minutes */
 export const PAIR_HOST_MS = 11 * 60_000;
-/** a guest has this long to finish its exchange */
 export const PAIR_GUEST_MS = 30_000;
 /** guests a room takes in its life: the PC's three tries and some that drop before trying */
 export const PAIR_GUESTS_PER_ROOM = 12;
-/** the shortest gap between two guests of one room */
 export const PAIR_GUEST_GAP_MS = 2000;
-
-
 
 export interface PairSocketRequest {
   kind: "pair";
@@ -69,7 +53,6 @@ export interface PairSocketRequest {
   version: string | null;
   /** the PC key a host offers, which it proves before it holds the nameplate */
   key?: { server_id: string; public_key: string };
-  /** what the relay made of a keyed host's pass, when it asks for passes */
   pass?: PassResult;
 }
 
@@ -86,16 +69,11 @@ export function parsePairRequest(url: URL): PairSocketRequest | { error: string 
   return { ...request, key: { server_id: serverId, public_key: publicKey } };
 }
 
-/** what a pairing socket is, kept with the socket */
 export interface PairInfo {
   pair: "host" | "guest";
-  /** a guest's attempt id, 32 hex */
   attempt?: string;
-  /** when it is closed whatever it sends */
   deadline: number;
-  /** when it last sent something */
   seen: number;
-  /** a host: guests it took so far, and when the last one came */
   guests?: number;
   lastGuest?: number;
   /** a host still proving its PC key: it holds no nameplate until it answers (its deadline is `expires`) */
@@ -107,7 +85,6 @@ export interface PairInfo {
   ended?: true;
 }
 
-/** what a host let in with a pass that holds keeps of it */
 type HostPass = Required<Pick<PairInfo, "pass_exp" | "pass_kid" | "server_id">>;
 
 /** how long after its pass's expiry a host keeps its nameplate, for clocks that differ */
@@ -163,7 +140,6 @@ export class PairRoom<S extends object> {
 
   private find(pair: "host" | "guest", except?: S) { return this.peers().find((peer) => peer.info.pair === pair && peer.socket !== except); }
 
-  /** whether this room knows the socket: a Durable Object holding both kinds of room asks */
   owns(socket: S): boolean {
     return this.host.info(socket) !== null;
   }
@@ -202,7 +178,6 @@ export class PairRoom<S extends object> {
     if (host && why !== null) this.end(host.socket, RELAY_PASS_CLOSE, why);
   }
 
-  /** Sets a host's info and makes sure the room wakes by its deadline and by the next change to its pass. */
   private placeHost(socket: S, info: PairInfo, now: number): void {
     this.host.setInfo(socket, info);
     this.host.wake?.(info.deadline);
@@ -223,7 +198,6 @@ export class PairRoom<S extends object> {
     const now = this.host.now();
     // the host already there goes first if its pass no longer holds, before this socket is any part of the room
     this.endLapsedHost(now);
-    // a socket the room refuses still needs its info, so its close is this room's to handle
     this.host.setInfo(socket, { pair: request.role, deadline: now, seen: now });
     if (request.version !== WIRE_VERSION) return this.end(socket, PAIR_CLOSE.POLICY, "unsupported wire version");
     if (request.role === "host") {
@@ -258,7 +232,6 @@ export class PairRoom<S extends object> {
     this.host.send(host.socket, JSON.stringify({ type: "guest", attempt }));
   }
 
-  /** The host holds the nameplate from now: devices may join it. */
   private hold(socket: S, now: number, pass: HostPass | undefined): void {
     this.placeHost(socket, { pair: "host", deadline: now + PAIR_HOST_MS, seen: now, guests: 0, ...pass }, now);
     this.host.send(socket, JSON.stringify({ type: "waiting" }));
@@ -296,7 +269,6 @@ export class PairRoom<S extends object> {
     if (bytes === null) {
       let message: unknown;
       try { message = JSON.parse(frame as string); } catch { return; }
-      // `null`, a number or a list is JSON too, and no message of the host's
       if (typeof message !== "object" || message === null || Array.isArray(message)) return;
       const drop = message as { type?: unknown; attempt?: unknown };
       if (drop.type === "drop" && guest && drop.attempt === guest.info.attempt) this.end(guest.socket, PAIR_CLOSE.DROPPED, "the PC ended this try");
@@ -326,7 +298,6 @@ export class PairRoom<S extends object> {
     for (const peer of this.peers()) if (peer.info.pair === "guest") this.end(peer.socket, PAIR_CLOSE.HOST_GONE, "the PC is gone");
   }
 
-  /** Closes sockets past their deadline or idle; returns when the next is due, or null when none is left. */
   sweep(): number | null {
     const now = this.host.now();
     this.endLapsedHost(now);

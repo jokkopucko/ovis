@@ -4,7 +4,6 @@ import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBl
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
-/** The pane's one open ask call, named by its session and call id: none when no call, or more than one, is open. */
 export function ompOpenCall(open: OmoAsks, session: string): string | null {
   return open.length === 1 && session ? JSON.stringify([session, open[0]!.id]) : null;
 }
@@ -25,10 +24,8 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
   if (!parsed || call === null) return { prompt };
-  // only a call the screen draws: one of its questions as the question shown, or (the review) its headers as the
-  // review's rows, which omp draws whatever the strip's colours prove
   const asked = askedQuestions("ask", open[0]!.args) ?? [];
-  const shown = parsed.responder === "omp-submit" ? [] : asked.flatMap((question, index) => questionShown(prompt, question, false) ? [index] : []);
+  const shown = parsed.responder === "omp-submit" ? [] : asked.flatMap((question, index) => questionShown(prompt, question) ? [index] : []);
   const drawn = parsed.responder === "omp-submit"
     ? JSON.stringify(callLabels(open[0]!.args, asked)) === JSON.stringify((parsed.answers ?? []).map(answer => answer.question))
     : shown.length > 0;
@@ -53,7 +50,7 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const active = questions?.[form.index];
   const labels = questions ? callLabels(call!.args, questions) : null;
   const matches = labels && labels.length + 1 === form.count && labels.every((label, index) => label === parsed.steps?.[index]?.label)
-    && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active, false);
+    && parsed.responder !== "omp-submit" && active !== undefined && questionShown(prompt, active);
   const identity = call && matches && session ? JSON.stringify([session, call.id, call.args]) : null;
   return publicPrompt({
     ...parsed,
@@ -83,7 +80,7 @@ export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): Int
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" || open.length !== 1) return prompt;
   // the whole question, never a prefix omp cut: another call's question may start the same way
-  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked, false));
+  const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked));
   if (matches.length !== 1) return prompt;
   const asked = matches[0]!;
   const options = asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null }));
@@ -105,7 +102,7 @@ function callLabels(input: unknown, questions: readonly AskedQuestion[]): string
 }
 
 /** The same drawn question and ordered options must authorize both Markdown and tab moves. */
-function questionShown(prompt: InteractivePrompt, asked: AskedQuestion, cut: boolean): boolean {
+function questionShown(prompt: InteractivePrompt, asked: AskedQuestion): boolean {
   return asked.multi === prompt.multi_select
     && asked.options.length === prompt.options.length
     && asked.options.every((option, index) => {
@@ -114,16 +111,14 @@ function questionShown(prompt: InteractivePrompt, asked: AskedQuestion, cut: boo
       return option.preview === null && shows(shown.label, drawn(label(option.label), false))
         && (description === null ? shown.description === null : shown.description !== null && shows(shown.description, drawn(description, false)));
     })
-    && shows(prompt.question, drawn(asked.question, true), cut);
+    && shows(prompt.question, drawn(asked.question, true));
 }
 
-/** a name as a page shows it, for telling the card's options apart: one Unicode form by look, spacing collapsed, any case (src/lib/promptAnswer.ts `spaced`) */
 const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
 
 /** omp adds ` (Recommended)` to the recommended option's label; the card read off the screen drops it (dialogs/omp.ts), and so does this one */
 const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
 
-/** text with every run of spaces and line breaks as one space */
 const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
 /**
@@ -154,12 +149,6 @@ function drawn(markdown: string, question: boolean): string | null {
   return omp !== null && card !== null && flat(omp) === flat(card) ? omp : null;
 }
 
-/**
- * `markdown` as the card draws it (src/components/PromptCard.tsx), put in omp's terms to compare: the
- * question through the chat's block scanner, with a link's address after its words; a label or a
- * description through its inline scanner, links as their words. Null for what has no such text
- * (math, a picture, a table, a quote, a task box).
- */
 function cardDrawn(markdown: string, question: boolean): string | null {
   try {
     return question ? parseMarkdown(markdown, 0, false).map(cardBlock).join("\n") : cardInline(parseInline(markdown, false), false);
@@ -177,7 +166,7 @@ function cardBlock(block: MarkdownBlock): string {
     // (src/components/Markdown.tsx), not the code omp shows (#2233)
     case "code": return block.language === "mermaid" || block.language === "math" || block.language.toLowerCase() === "svg" ? undrawn() : block.value;
     case "list": return block.items.map((item, index) => item.checked !== undefined ? undrawn()
-      : `${block.ordered ? `${(block.start ?? 1) + index}. ` : "- "}${cardInline(item.content, true)}\n${(item.blocks ?? []).map(cardBlock).join("\n")}`).join("\n");
+      : `${block.ordered ? `${item.number ?? (block.start ?? 1) + index}. ` : "- "}${cardInline(item.content, true)}\n${(item.blocks ?? []).map(cardBlock).join("\n")}`).join("\n");
     default: return undrawn();
   }
 }

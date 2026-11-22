@@ -19,7 +19,6 @@ it("keeps a native OpenCode question when an outcome screen read fails", async (
   });
   const screen = spyOn(client, "paneRead").mockRejectedValue(new Error("fixture screen unavailable"));
   spyOn(conversation, "readCommandTranscript").mockResolvedValue(null);
-  // the prompt reader asks the verified service (service.json checked against /api/info)
   spyOn(service, "openCodeService").mockResolvedValue({ config: { baseUrl: "http://127.0.0.1:1234", port: 1234, pid: 123, password: "fixture" }, version: "2.0.32" });
   spyOn(service, "listPendingQuestionForms").mockResolvedValue([{
     id: "form_fixture", sessionID: "ses_fixture", title: "Fixture question", metadata: { kind: "question" },

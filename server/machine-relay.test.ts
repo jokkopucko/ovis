@@ -8,7 +8,6 @@ import { agentRowTokens, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts"
 import { RECEIPT_RESUME_ID } from "../shared/receipt-resume.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 
-/** Samples every 100 ms like the relay's timer, returning the first close code. */
 function run(clock: RelayStallClock, buffered: (at: number) => number, from: number, until: number): number {
   for (let at = from; at <= until; at += 100) {
     const code = clock.sample(buffered(at), at);
@@ -126,7 +125,6 @@ describe("MachineRelay stall timer", () => {
   });
   afterAll(() => { upstream.stop(true); });
 
-  /** A relay bound to a stub phone socket whose queue holds `buffered` bytes; `closes` records its close codes. */
   async function relayWithQueue(buffered: number) {
     const manager = {
       endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "test" }),
@@ -224,7 +222,6 @@ describe("MachineRelay snapshot frames", () => {
     const upstream = Bun.serve({
       port: 0, hostname: "127.0.0.1",
       fetch(request, server) { return server.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
-      // the second snapshot names its type last: it is read all the same
       websocket: { open(socket) { socket.send(JSON.stringify({ type: "snapshot", snapshot, features: [] })); socket.send(output); socket.send(JSON.stringify({ snapshot, type: "snapshot" })); }, message() {} },
     });
     const manager = { endpoint: () => ({ url: `http://127.0.0.1:${upstream.port}`, token: "test" }), trackTerminal: () => () => {} } as unknown as MachineManager;

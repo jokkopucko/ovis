@@ -26,17 +26,13 @@ export interface RelayDevice {
   readonly pending_key?: { readonly private_key: CryptoKey; readonly public_spki: string };
   /** the account this PC confirmed this pairing is a member of (a link it applied, or its account status): what leaving and disconnecting count as reached */
   readonly account?: string;
-  /** when an introduction saved this PC: until its mailbox brings the add, the PC may not know this device yet */
   readonly introduced_at?: number;
-  /** the PC's direct carriers its last AUTH_OK named (docs/relay.md, "Direct on the same network"): tried first next time */
   readonly direct?: readonly string[];
 }
 
-/** Updates are atomic, including between two tabs the same PC admits at once. */
 export interface RelayDeviceStore {
   get(serverId: string): Promise<RelayDevice | undefined>;
   update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice): Promise<RelayDevice>;
-  /** Every saved PC, in the order they were first saved. */
   list(): Promise<RelayDevice[]>;
   /** Forgets a PC: its key is gone for good, and the PC's next pairing makes a new one; a push subscription kept for it goes too. */
   remove(serverId: string): Promise<void>;

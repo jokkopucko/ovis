@@ -6,11 +6,13 @@
  * account identifiers are included. Once per UTC day a browser visits, a separate active message
  * (POST /v1/active on the receiver) names the install and the kinds of coding agents running, from
  * TELEMETRY_HARNESSES only, and the day's usage (TelemetryUsage): kinds of screen, ways in, and counts.
+ * Once a UTC day has ended, a counts message (POST /v1/counts on the receiver, TelemetryCounts) says how
+ * often that day's fixed controls were used, from TELEMETRY_COUNTERS only, each as a bucket.
  *
  *  GET  /api/telemetry  -> TelemetryStatus, no-store
  *  POST /api/telemetry  { enabled?: boolean, notice_seen?: true, notice_version?: number, settings?: TelemetrySettings } -> TelemetryStatus
  *       (same-origin, `x-herdr-update: 1`)
- *       The server accepts notice_seen only with notice_version === NOTICE_VERSION.
+ *       The server accepts notice_seen only with notice_version === NOTICE_VERSION (shared/telemetry-notice.ts).
  *
  * A server that sends nothing (tests, a remote PC's bridge, an older server) answers 404 to
  * both, and the app shows neither the notice nor the switch.
@@ -18,12 +20,6 @@
 
 export type TelemetryEventName = "install" | "update";
 
-/**
- * The notice's wording as a number: an install that saw an older one sees the notice again, and
- * sends nothing until it has (3: events now carry an allowlisted settings snapshot; 4: a daily
- * active message with the harness kinds; 5: that message also counts the day's usage, TelemetryUsage).
- */
-export const NOTICE_VERSION = 5;
 
 /**
  * Every theme id a snapshot may name: the three original palettes, the app's Codex theme and
@@ -104,8 +100,15 @@ export interface TelemetryChange {
   notice_seen?: true;
   notice_version?: number;
   settings?: TelemetrySettings;
+  /**
+   * with `settings`: the counting generation (TelemetryStatus.counts_generation) the page last heard. Settings told
+   * from before an off it did not hear are not kept
+   */
+  generation?: number;
   /** a pane alert was tapped (public/sw.js): counted in today's `alerts_opened`, and nothing else */
   alert_opened?: true;
+  /** what a browser used since it last told: added to today's counts (TelemetryCounts). A server before it answers 400 */
+  counts?: TelemetryCountsChange;
 }
 
 const oneOf = <const T extends readonly string[]>(choices: T) => (value: unknown): boolean =>
@@ -238,10 +241,12 @@ export const TELEMETRY_SURFACES = ["android-app", "browser", "ios-app", "mac-app
 export type TelemetrySurface = typeof TELEMETRY_SURFACES[number];
 
 /**
- * How a visit reached this server: server/access.ts `observedIngress`, with an unforwarded request
- * split into one from this PC itself (`local`) and one from another device (`lan`).
+ * How a visit reached this server: the observed ingress /api/health reports (server/dispatch.ts
+ * `requestIngress`), with the Ovis relay and Portal, and an unforwarded request split into one from
+ * this PC itself (`local`) and one from another device (`lan`). Only the word, never an address,
+ * Portal name or relay id.
  */
-export const TELEMETRY_INGRESS = ["funnel", "lan", "local", "proxy", "tailscale", "unknown"] as const;
+export const TELEMETRY_INGRESS = ["funnel", "lan", "local", "portal", "proxy", "relay", "tailscale", "unknown"] as const;
 export type TelemetryIngress = typeof TELEMETRY_INGRESS[number];
 
 /** The most a usage count says: a busier day is reported as this many. */
@@ -326,6 +331,177 @@ export interface TelemetryActive {
 export const ACTIVE_LATE_DAYS = 2;
 
 /**
+ * The kind of pane a chat/terminal switch was made on: the pane's agent (TELEMETRY_HARNESSES), or
+ * `shell` for a pane with none.
+ */
+export const TELEMETRY_VIEW_KINDS = [...TELEMETRY_HARNESSES, "shell"] as const;
+export type TelemetryViewKind = typeof TELEMETRY_VIEW_KINDS[number];
+/** Where a chat/terminal switch was asked for: the header's Chat/Terminal buttons, a pane's own control (a split half's lens, the chat's Open terminal), the shortcut, or the command palette. */
+export const TELEMETRY_VIEW_SOURCES = ["header", "pane", "shortcut", "palette"] as const;
+export type TelemetryViewSource = typeof TELEMETRY_VIEW_SOURCES[number];
+/** Actions the app offers in more than one way, counted by the way each was taken (TELEMETRY_ACTION_SOURCES). */
+export const TELEMETRY_ACTIONS = ["close_pane", "files", "inbox", "new_tab", "new_workspace", "settings", "sidebar", "split"] as const;
+export type TelemetryAction = typeof TELEMETRY_ACTIONS[number];
+export const TELEMETRY_ACTION_SOURCES = ["button", "menu", "palette", "shortcut"] as const;
+export type TelemetryActionSource = typeof TELEMETRY_ACTION_SOURCES[number];
+
+/** Counters with no dimension: a chat send, the composer's buttons and the agent inbox's controls. */
+const TELEMETRY_PLAIN_COUNTERS = [
+  "chat_send",
+  "composer_attach", "composer_hold", "composer_paste_send", "composer_quick_reply", "composer_slash", "composer_stop", "composer_suggestion", "composer_voice",
+  "inbox_enter", "inbox_filter", "inbox_leave", "inbox_open", "inbox_rail_alerts", "inbox_rail_inbox", "inbox_rail_pcs", "inbox_rail_settings", "inbox_rail_waiting", "inbox_search",
+] as const;
+
+export type TelemetryCounter =
+  | typeof TELEMETRY_PLAIN_COUNTERS[number]
+  | `view_${"chat" | "terminal"}_${TelemetryViewKind}`
+  | `view_${"chat" | "terminal"}_by_${TelemetryViewSource}`
+  | `${TelemetryAction}_by_${TelemetryActionSource}`;
+
+/**
+ * Every name a day's counts may hold, sorted: fixed words, and the switch names made from
+ * TELEMETRY_HARNESSES (a new harness adds two), so the Worker's copy only changes with a deploy; the
+ * Worker drops any other name and keeps the rest.
+ * A switch is counted twice, once under the pane's kind and once under the way it was asked for,
+ * never as their combination.
+ */
+export const TELEMETRY_COUNTERS: readonly TelemetryCounter[] = ([
+  ...TELEMETRY_PLAIN_COUNTERS,
+  ...(["chat", "terminal"] as const).flatMap((to) => [
+    ...TELEMETRY_VIEW_KINDS.map((kind) => `view_${to}_${kind}` as const),
+    ...TELEMETRY_VIEW_SOURCES.map((source) => `view_${to}_by_${source}` as const),
+  ]),
+  ...TELEMETRY_ACTIONS.flatMap((action) => TELEMETRY_ACTION_SOURCES.map((source) => `${action}_by_${source}` as const)),
+] satisfies TelemetryCounter[]).sort();
+
+/**
+ * Controls that are not always drawn, each said once a day to have been shown, so a count of zero can
+ * be told from a control nobody saw: the composer (with Attach and Send), its Stop, voice, Paste and send,
+ * quick replies and suggestion; the header's and a pane's Chat/Terminal switch; and the agent inbox.
+ */
+export const TELEMETRY_SHOWN = [
+  "composer", "composer_paste_send", "composer_quick_reply", "composer_stop", "composer_suggestion", "composer_voice",
+  "inbox", "view_switch_header", "view_switch_pane",
+] as const;
+export type TelemetryShown = typeof TELEMETRY_SHOWN[number];
+
+/**
+ * Where the app was used: a window at most 640px wide (src/lib/sheets.ts SHEET_QUERY, where dialogs
+ * are bottom sheets) is narrow, any other wide. One definition for every count.
+ */
+export type TelemetryWidth = "narrow" | "wide";
+
+/**
+ * A day's count as it leaves the PC: 1 for 1-2, 2 for 3-9, 3 for 10-29, 4 for 30 or more. A name
+ * used 0 times is left out. Exact numbers stay on the PC.
+ */
+export type TelemetryBucket = 1 | 2 | 3 | 4;
+
+export function countBucket(count: number): TelemetryBucket | 0 {
+  if (!(count >= 1)) return 0;
+  return count < 3 ? 1 : count < 10 ? 2 : count < 30 ? 3 : 4;
+}
+
+/** One width's day: the bucket of each counter used, and the controls shown (both sorted). */
+export interface TelemetryWidthCounts {
+  counts: Partial<Record<TelemetryCounter, TelemetryBucket>>;
+  shown: TelemetryShown[];
+}
+
+/**
+ * One install's use of the app's controls on one UTC day that has ended, sent once (POST /v1/counts).
+ * `version` is the app's version that day. A width the app was not used at that day is null. The
+ * kinds of agent, screen and way in of the day are in that day's active row, never in here.
+ */
+export interface TelemetryCounts {
+  event: "counts";
+  day: string;
+  install_id: string;
+  version: string;
+  narrow: TelemetryWidthCounts | null;
+  wide: TelemetryWidthCounts | null;
+}
+
+/** How many days back a counts message may name: it goes once its day has ended, so a PC off for a while still sends it. */
+export const COUNTS_LATE_DAYS = 14;
+
+/** What a browser tells the server it used, in one width, since it last told: counts to add and controls shown. */
+export interface TelemetryCountsChange {
+  width: TelemetryWidth;
+  add: Partial<Record<TelemetryCounter, number>>;
+  shown: TelemetryShown[];
+  /**
+   * the counting generation (TelemetryStatus.counts_generation) the page last heard: every off begins a new one,
+   * and a batch from an older one (another tab's, from before an off) is dropped
+   */
+  generation?: number;
+  /** the UTC day the batch was counted on (YYYY-MM-DD): a batch sent just after midnight still counts for the day before */
+  day?: string;
+}
+
+const isCounter = (name: string): name is TelemetryCounter => (TELEMETRY_COUNTERS as readonly string[]).includes(name);
+const isShown = (name: string): name is TelemetryShown => (TELEMETRY_SHOWN as readonly string[]).includes(name);
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null ? value as Record<string, unknown> : null;
+}
+
+/** `value`'s names that are TELEMETRY_SHOWN, sorted and without repeats; null when it is not an array of strings. Unknown names (a newer app's) are dropped. */
+function shownNames(value: unknown): TelemetryShown[] | null {
+  if (!Array.isArray(value) || value.some((name) => typeof name !== "string")) return null;
+  return [...new Set((value as string[]).filter(isShown))].sort();
+}
+
+/**
+ * One width's counts as the receiver keeps them: names it knows with a bucket, and shown controls it
+ * knows. A name it does not know (a newer app's) or a value that is not a bucket is dropped, the rest
+ * kept; null when the shape is not one at all.
+ */
+export function telemetryWidthCounts(value: unknown): TelemetryWidthCounts | null {
+  const record = plainRecord(value);
+  if (!record || Object.keys(record).length !== 2) return null;
+  const counts = plainRecord(record["counts"]);
+  const shown = shownNames(record["shown"]);
+  if (!counts || !shown) return null;
+  const clean: Partial<Record<TelemetryCounter, TelemetryBucket>> = {};
+  for (const name of Object.keys(counts).sort()) {
+    const bucket = counts[name];
+    if (isCounter(name) && (bucket === 1 || bucket === 2 || bucket === 3 || bucket === 4)) clean[name] = bucket;
+  }
+  return { counts: clean, shown };
+}
+
+/**
+ * A browser's counts change as the server takes it: known names with a whole count of 1 to
+ * TELEMETRY_COUNT_MAX, known shown controls. Unknown names (a newer page's) are dropped; null when
+ * the shape or the width is not one, or any count is not a whole count in range, known name or not:
+ * that is no page's message.
+ */
+export function telemetryCountsChange(value: unknown): TelemetryCountsChange | null {
+  const record = plainRecord(value);
+  const keys = record ? Object.keys(record) : [];
+  const optional = ["generation", "day"];
+  if (!record || keys.filter((key) => !optional.includes(key)).length !== 3) return null;
+  const generation = record["generation"];
+  if (generation !== undefined && !integerBetween(0, Number.MAX_SAFE_INTEGER)(generation)) return null;
+  const day = record["day"];
+  if (day !== undefined && (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day))) return null;
+  const width = record["width"];
+  const add = plainRecord(record["add"]);
+  const shown = shownNames(record["shown"]);
+  if ((width !== "narrow" && width !== "wide") || !add || !shown) return null;
+  const clean: Partial<Record<TelemetryCounter, number>> = {};
+  const count = integerBetween(1, TELEMETRY_COUNT_MAX);
+  for (const [name, value] of Object.entries(add)) {
+    if (!count(value)) return null;
+    if (isCounter(name)) clean[name] = value as number;
+  }
+  return { width, add: clean, shown, ...(generation === undefined ? {} : { generation: generation as number }), ...(day === undefined ? {} : { day: day as string }) };
+}
+
+/**
  * One event, exactly as it is sent. The receiver keeps these fields, the day and the country the
  * request came from (two characters, worked out by its host); no IP, no address.
  */
@@ -358,4 +534,8 @@ export interface TelemetryStatus {
   next: TelemetryEvent | null;
   /** the active message today's visits send, as it would be sent; harnesses seen so far today (empty and day = today before a visit) */
   active: TelemetryActive;
+  /** today's counts so far as they would be sent once the day has ended; absent from a server before counts */
+  counts?: TelemetryCounts;
+  /** the counting generation a browser's batches name (TelemetryCountsChange.generation); absent where counts are off */
+  counts_generation?: number;
 }

@@ -1,9 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { CompletionTracker } from "./completion.ts";
+import { privateStateFs } from "./private-state.ts";
 
 const snapshot = (panes: { id: string; status: string; agent?: string | null; focused?: boolean }[]): SessionSnapshot => ({
   panes: panes.map((pane) => ({ pane_id: pane.id, agent: pane.agent === undefined ? "claude" : pane.agent, agent_status: pane.status, focused: pane.focused ?? false })),
@@ -136,33 +138,27 @@ describe("CompletionTracker", () => {
     const tracker = new CompletionTracker(null, () => null, () => true);
     tracker.observe("reported", "working", "claude");
     expect(tracker.observe("reported", "idle", "claude")).toBe("done");
-    // the program cleared its report: no badge kept from it
     expect(tracker.observe("reported", "unknown", "claude")).toBe("unknown");
 
     tracker.observe("cleared", "working", "claude");
     expect(tracker.observe("cleared", "unknown", "claude")).toBe("unknown");
     expect(tracker.observe("cleared", "idle", "claude")).toBe("idle");
 
-    // another identity's unknown right after work is not work invented for it
     tracker.observe("handover", "working", "codex");
     expect(tracker.observe("handover", "unknown", "claude")).toBe("unknown");
 
-    // a pause it reported, then idle: the user may have declined; no finish
     tracker.observe("paused", "blocked", "claude");
     expect(tracker.observe("paused", "idle", "claude")).toBe("idle");
     tracker.observe("resumed", "blocked", "claude");
     tracker.observe("resumed", "working", "claude");
     expect(tracker.observe("resumed", "idle", "claude")).toBe("done");
 
-    // a report naming no program: nobody can say the idle is the same program's
     tracker.observe("anonymous", "working", null);
     expect(tracker.observe("anonymous", "idle", null)).toBe("idle");
 
-    // straight from one program's work to another's idle: not a finish of either
     tracker.observe("direct", "working", "codex");
     expect(tracker.observe("direct", "idle", "claude")).toBe("idle");
 
-    // a report cleared while subscriptions moved is news on replay, and clears the finish
     tracker.observe("replay", "working", "claude");
     expect(tracker.observe("replay", "idle", "claude")).toBe("done");
     expect(tracker.replayed("replay", "unknown", { before: "idle", agent: "claude" })).toBe(true);
@@ -209,10 +205,8 @@ describe("CompletionTracker", () => {
     const tracker = new CompletionTracker();
     // omo, live-traced: pi/working, then claude/unknown, then claude/idle
     expect(tracker.observe("p", "working", "pi")).toBe("working");
-    // the turn goes on under omo's claude child: still working, not unknown
     expect(tracker.observe("p", "unknown", "claude")).toBe("working");
     expect(tracker.observe("p", "idle", "claude")).toBe("done");
-    // snapshots keep saying done until the pane is seen
     expect(tracker.present(snapshot([{ id: "p", status: "idle" }])).panes[0]!.agent_status).toBe("done");
     expect(tracker.seen("p")).toBe(true);
     expect(tracker.present(snapshot([{ id: "p", status: "idle", focused: true }])).panes[0]!.agent_status).toBe("idle");
@@ -221,11 +215,9 @@ describe("CompletionTracker", () => {
   });
 
   it("finishes the pane herdr has focused as done: nobody moved focus there to see it", () => {
-    // live: the browser sent work to herdr's focused pane, which went working -> idle
     const tracker = new CompletionTracker();
     expect(tracker.observe("p", "working", "claude")).toBe("working");
     expect(tracker.observe("p", "idle", "claude")).toBe("done");
-    // a snapshot with the focus it had all along does not count as seeing it
     expect(tracker.present(snapshot([{ id: "p", status: "idle", focused: true }])).panes[0]!.agent_status).toBe("done");
     expect(tracker.seen("p")).toBe(true);
     expect(tracker.present(snapshot([{ id: "p", status: "idle", focused: true }])).panes[0]!.agent_status).toBe("idle");
@@ -246,7 +238,6 @@ describe("CompletionTracker", () => {
 
   it("finishes an agent that reads unknown at rest, as Codex does, and keeps it done until seen", () => {
     const tracker = new CompletionTracker();
-    // A first sighting at rest is not a finish.
     expect(tracker.observe("p", "unknown", "codex")).toBe("unknown");
     // live, herdr 0.9.3: codex/working for a turn, then codex/unknown at rest
     expect(tracker.observe("p", "working", "codex")).toBe("working");
@@ -255,7 +246,6 @@ describe("CompletionTracker", () => {
     expect(tracker.present(codex("unknown")).panes[0]!.agent_status).toBe("done");
     expect(tracker.seen("p")).toBe(true);
     expect(tracker.present(codex("unknown", true)).panes[0]!.agent_status).toBe("unknown");
-    // the next turn works and finishes the same way
     expect(tracker.observe("p", "working", "codex")).toBe("working");
     expect(tracker.observe("p", "unknown", "codex")).toBe("done");
   });
@@ -295,16 +285,37 @@ describe("CompletionTracker", () => {
       const before = new CompletionTracker(file, () => "herdr-a");
       before.observe("finished", "working", "gjc");
       expect(before.observe("finished", "idle", "gjc")).toBe("done");
-      // omo mid-turn when the server stopped: its finish may have been seen at herdr's terminal meanwhile
       before.observe("running", "working", "pi");
       const after = new CompletionTracker(file, () => "herdr-a");
       const panes = after.present(snapshot([{ id: "finished", agent: "gjc", status: "idle" }, { id: "running", agent: "pi", status: "idle" }])).panes;
       expect(panes.map((pane) => pane.agent_status)).toEqual(["done", "idle"]);
-      // seen after the restart stays seen after the next one
       expect(after.seen("finished")).toBe(true);
       const again = new CompletionTracker(file, () => "herdr-a");
       expect(again.present(snapshot([{ id: "finished", agent: "gjc", status: "idle" }])).panes[0]!.agent_status).toBe("idle");
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("flushes the kept finishes before they replace the old file, and the folder after", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-completion-flush-"));
+    const file = join(dir, "completions.json");
+    const tracker = new CompletionTracker(file, () => "herdr-a");
+    tracker.observe("p", "working", "gjc");
+    const order: string[] = [];
+    const flush = ((fd: number) => { order.push(`fsync ${fs.fstatSync(fd).isDirectory() ? "directory" : "file"}`); }) as never;
+    const fsync = spyOn(fs, "fsyncSync").mockImplementation(flush);
+    const directoryFsync = spyOn(privateStateFs, "fsyncSync").mockImplementation(flush);
+    const rename = spyOn(fs, "renameSync");
+    rename.mockImplementation(((from: string, to: string) => { order.push("rename"); rename.mockRestore(); fs.renameSync(from, to); }) as never);
+    try {
+      expect(tracker.observe("p", "idle", "gjc")).toBe("done");
+      fsync.mockRestore(); directoryFsync.mockRestore(); rename.mockRestore();
+      expect(order).toEqual(process.platform === "win32" ? ["fsync file", "rename"] : ["fsync file", "rename", "fsync directory"]);
+      expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ herdr: "herdr-a", finished: ["p"] });
+      expect(fs.readdirSync(dir)).toEqual(["completions.json"]);
+    } finally {
+      fsync.mockRestore(); directoryFsync.mockRestore(); rename.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("keeps a Codex finish across a restart while herdr still reports unknown", () => {
@@ -346,7 +357,6 @@ describe("CompletionTracker", () => {
       expect(restarted.present(snapshot([{ id: "p", status: "idle" }])).panes[0]!.agent_status).toBe("idle");
       writeFileSync(file, "{not json");
       expect(new CompletionTracker(file, () => "herdr-a").present(snapshot([{ id: "p", status: "idle" }])).panes[0]!.agent_status).toBe("idle");
-      // without a herdr to name, nothing is written: it could not be told apart later
       const nowhere = join(dir, "none.json");
       const unnamed = new CompletionTracker(nowhere, () => null);
       unnamed.observe("p", "working");
@@ -358,46 +368,38 @@ describe("CompletionTracker", () => {
 
   it("takes a status read back from a snapshot for news only where it is a change", () => {
     const tracker = new CompletionTracker(null);
-    // a pane never reported here: it starts from what it was, so the finish is a finish
     expect(tracker.replayed("fresh", "idle", { before: "working", agent: "claude" })).toBe(true);
     expect(tracker.observe("fresh", "idle", "claude")).toBe("done");
     // herdr reads that finish as idle in a snapshot and done in an event: not news, the DONE stands
     expect(tracker.replayed("fresh", "idle", { before: "done", agent: "claude" })).toBe(false);
     expect(tracker.current("fresh")).toBe("done");
-    // unknown under another agent's name is shown as working: its idle after a gap is the finish
     tracker.observe("handoff", "working", "pi");
     expect(tracker.observe("handoff", "unknown", "claude")).toBe("working");
     expect(tracker.replayed("handoff", "idle", { before: "unknown", agent: "claude" })).toBe(true);
     expect(tracker.observe("handoff", "idle", "claude")).toBe("done");
-    // a browser's snapshot reported the pane at rest before the replay came: the work it did is still taken in
     const late = new CompletionTracker(null);
     late.present(snapshot([{ id: "late", status: "unknown", agent: "codex" }]));
     expect(late.replayed("late", "unknown", { before: "working", agent: "codex" })).toBe(true);
     expect(late.observe("late", "unknown", "codex")).toBe("done");
-    // a browser's snapshot settled the finish first: the replay still goes on to the devices, and it stays DONE
     const settled = new CompletionTracker(null);
     settled.observe("p", "working", "claude");
     settled.present(snapshot([{ id: "p", status: "idle" }]));
     expect(settled.current("p")).toBe("done");
     expect(settled.replayed("p", "idle", { before: "working", agent: "claude" })).toBe(true);
     expect(settled.observe("p", "idle", "claude")).toBe("done");
-    // work kept from before a loss of events is settled by the resync, and makes no finish of a later change at rest
     const lossy = new CompletionTracker(null);
     lossy.observe("p", "working", "codex");
     lossy.observe("q", "working", "codex");
     lossy.resync([{ pane_id: "p", agent_status: "idle", agent: "codex" }, { pane_id: "q", agent_status: "idle", agent: "codex" }], new Set(["q"]));
     expect([lossy.current("p"), lossy.current("q")]).toEqual(["done", "working"]);
     expect(lossy.replayed("p", "unknown", { before: "idle", agent: "codex" })).toBe(false);
-    // another agent sits in the pane at rest after the loss: the work from before is over, not going on under its name
     const handed = new CompletionTracker(null);
     handed.observe("p", "working", "codex");
     handed.observe("gone", "working", "codex");
     handed.resync([{ pane_id: "p", agent_status: "unknown", agent: "claude" }], new Set());
     expect(handed.current("p")).toBe("done");
     expect(handed.replayed("p", "idle", { before: "unknown", agent: "claude" })).toBe(false);
-    // and a pane that went during the loss is forgotten
     expect(handed.current("gone")).toBeUndefined();
-    // work starting, or stopping for a question, is news from any state
     expect(tracker.replayed("fresh", "working", { before: "idle", agent: "claude" })).toBe(true);
     expect(tracker.replayed("fresh", "blocked", { before: "idle", agent: "claude" })).toBe(true);
   });

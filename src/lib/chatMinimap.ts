@@ -1,11 +1,8 @@
 import type { ConversationTurn } from "../../shared/protocol.ts";
 
-/** Fewer turns than this read at a glance: the minimap stays out. */
 export const MINIMAP_MIN_TURNS = 4;
-/** The empty margin beside the chat column the rail needs, so it never lies over the text. */
 export const MINIMAP_GUTTER_PX = 32;
 
-/** The closest two ticks may sit: past this a rail stands for several turns with one tick. */
 export const MINIMAP_TICK_MIN_PX = 4;
 
 export interface MinimapTurn {
@@ -13,7 +10,6 @@ export interface MinimapTurn {
   readonly preview: string;
 }
 
-/** One tick per message the user sent; a compaction, a runtime notice, a task report or a goal's wait is no turn of theirs. */
 export function minimapTurns(turns: readonly ConversationTurn[]): MinimapTurn[] {
   const result: MinimapTurn[] = [];
   turns.forEach((turn, row) => {
@@ -28,10 +24,6 @@ export function minimapTop(index: number, count: number): number {
   return count <= 1 ? 0 : (Math.max(0, Math.min(index, count - 1)) / (count - 1)) * 100;
 }
 
-/**
- * The tick of the turn in view: the first turn whose row is on screen, else the last one that
- * began above it (a long answer fills the view). Null before the first turn.
- */
 export function minimapCurrent(turnRows: readonly number[], firstVisible: number, lastVisible: number): number | null {
   let before: number | null = null;
   for (const [index, row] of turnRows.entries()) {
@@ -41,28 +33,19 @@ export function minimapCurrent(turnRows: readonly number[], firstVisible: number
   return before;
 }
 
-/**
- * How many ticks a rail this tall draws for `count` turns: one per turn while they sit
- * MINIMAP_TICK_MIN_PX apart, else one per slot of that size, so a long history loaded into the
- * chat adds no buttons once the rail is full. A rail too short for MINIMAP_MIN_TURNS ticks gets
- * fewer, never closer ones.
- */
 export function minimapSlots(count: number, railPx: number): number {
   if (!(railPx > 0)) return count;
   return Math.min(count, Math.floor(railPx / MINIMAP_TICK_MIN_PX) + 1);
 }
 
-/** The first turn of a slot: turns are shared out evenly, the last slot ending at the last turn. */
 export function minimapSlotTurn(slot: number, slots: number, count: number): number {
   return slots >= count ? slot : Math.floor((slot * count) / slots);
 }
 
-/** The turn a slot's tick jumps to: its first, except the last tick, which reaches the newest turn. */
 export function minimapSlotTarget(slot: number, slots: number, count: number): number {
   return slot === slots - 1 ? count - 1 : minimapSlotTurn(slot, slots, count);
 }
 
-/** The slot a turn falls in. */
 export function minimapTurnSlot(turn: number, slots: number, count: number): number {
   if (slots >= count) return turn;
   return Math.min(slots - 1, Math.floor(((turn + 1) * slots - 1) / count));

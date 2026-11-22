@@ -6,28 +6,20 @@ import { clampFilePanelWidth, filePanelMaxWidth, FILE_PANEL_MIN_WIDTH, keyedFile
 import { useT } from "../lib/i18n.ts";
 
 export interface FilePanelResizerProps {
-  /** the chosen width in px; null is the default one */
   width: number | null;
   onResize(width: number | null): void;
 }
 
-/**
- * The file panel's left edge: drag it to resize, double-click to go back to the default width.
- * Drawn inside the panel it sizes, which is the positioned parent.
- */
 export function FilePanelResizer({ width, onResize }: FilePanelResizerProps) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ right: number; grip: number; width: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
-  // what the panel measures now: the default width is a token, and a narrow window caps a chosen one
   const [shown, setShown] = useState(width ?? FILE_PANEL_MIN_WIDTH);
-  // the widest the keys allow in this window; a resize can move it while the panel's own width holds
   const [limit, setLimit] = useState(() => filePanelMaxWidth(window.innerWidth));
   const sidebarWidth = (): number => ref.current?.closest(".app-body")?.querySelector(".sidebar")?.getBoundingClientRect().width ?? 0;
   const measure = (): number => {
     const measured = Math.floor(ref.current?.parentElement?.getBoundingClientRect().width ?? shown);
-    // a panel that measures nothing keeps the last width it showed as the value
     if (measured > 0) setShown(measured);
     setLimit(filePanelMaxWidth(window.innerWidth, sidebarWidth()));
     return measured > 0 ? measured : shown;
@@ -61,7 +53,6 @@ export function FilePanelResizer({ width, onResize }: FilePanelResizerProps) {
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     const state = drag.current;
     if (!state) return;
-    // the panel's right edge stays put, so the width is what is left of it right of the grip
     const next = clampFilePanelWidth(state.right - (event.clientX - state.grip), window.innerWidth, sidebarWidth());
     if (next === state.width) return;
     state.width = next;
@@ -74,7 +65,6 @@ export function FilePanelResizer({ width, onResize }: FilePanelResizerProps) {
     drag.current = null;
     setDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    // a press that moved nothing chooses no width
     if (state.moved) storeFilePanelWidth(state.width);
   };
   const reset = (): void => {

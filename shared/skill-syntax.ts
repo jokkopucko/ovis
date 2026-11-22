@@ -1,9 +1,7 @@
-/** Static invocation syntax, safe to import as a value in the browser. */
 export interface SkillSyntax {
   skillTriggers: readonly ("/" | "$")[];
   inline: readonly ("/" | "$")[];
   namespaced: boolean;
-  /** `{bare}` is the command name without its `skill:` namespace. */
   chipForms: readonly string[];
 }
 

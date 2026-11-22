@@ -2,12 +2,10 @@ import { describe, expect, it } from "bun:test";
 
 import { clampSplit, keyedSplit, parseSidebarSplit, sectionAt, splitBounds, splitDrag, splitPercent, splitSnap, type SplitRoom } from "./sidebarSplit.ts";
 
-// a 600px column: each head 42px, rows 34px
 const ROOM: SplitRoom = { topHead: 42, bottomHead: 42, room: 600, row: 34, topRow: 34, bottomRow: 34 };
 
 describe("splitDrag", () => {
   it("previews the height a release saves", () => {
-    // past the bounds but short of the snap zone: the release saves the clamp, so the preview shows it too
     expect(splitDrag(70, ROOM)).toEqual({ snap: null, height: 76, shown: 76 });
     expect(splitDrag(530, ROOM)).toEqual({ snap: null, height: 524, shown: 524 });
     expect(splitDrag(300, ROOM)).toEqual({ snap: null, height: 300, shown: 300 });
@@ -22,7 +20,6 @@ describe("splitDrag", () => {
 describe("splitPercent", () => {
   it("stays within the separator's 0-100 range in a window shorter than the heads", () => {
     expect(splitPercent(150, 600)).toBe(25);
-    // a snap preview draws a 52px head in 30px of room
     expect(splitPercent(52, 30)).toBe(100);
     expect(splitPercent(-22, 30)).toBe(0);
     expect(splitPercent(10, 0)).toBe(0);
@@ -38,11 +35,8 @@ describe("splitBounds and clampSplit", () => {
   });
 
   it("clamps a kept split to a window too short for it", () => {
-    // the split was chosen in a tall window; this one holds 300px
     expect(clampSplit(480, { ...ROOM, room: 300 })).toBe(224);
-    // Shorter than two full rows: each section keeps its heading and half the remaining row space.
     expect(splitBounds({ ...ROOM, room: 100 })).toEqual({ min: 50, max: 50 });
-    // Shorter even than the two headings: neither section pushes the footer outside the shell.
     expect(splitBounds({ ...ROOM, room: 60 })).toEqual({ min: 30, max: 30 });
     expect(clampSplit(2000, { ...ROOM, room: 60 })).toBe(30);
   });
@@ -73,7 +67,6 @@ describe("splitSnap", () => {
 describe("sectionAt", () => {
   it("names the section on each side of the line for either order", () => {
     expect([sectionAt("top", "pcs"), sectionAt("bottom", "pcs")]).toEqual(["pcs", "agents"]);
-    // Settings → Group agents by state puts Agents on top
     expect([sectionAt("top", "agents"), sectionAt("bottom", "agents")]).toEqual(["agents", "pcs"]);
   });
 });

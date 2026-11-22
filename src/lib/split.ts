@@ -1,26 +1,7 @@
-/**
- * Panes side by side on a desktop, as a window snapped to half the screen: a tab, a sidebar or
- * Agents row, or a pane's title dragged to the left or right half of the pane area opens its pane
- * there, beside the one already open (a title over its own tab's panes arranges that tab instead:
- * useSplitLayout). The area also takes more panes, side by side and stacked, as editor groups do in VS Code: a
- * pane dropped on a slot's edge opens beside, above or below it, and dropped on its middle in its
- * place, up to MAX_SPLIT_SLOTS.
- *
- * The selected pane (App's) is the active slot's; every other slot keeps its own. The slots are
- * independent: several may show the same tab (each draws it on a connection of its own), and a
- * pick from the sidebar changes the active slot alone.
- *
- * The layout is a tree of row and column splits whose leaves are slots. A slot keeps its id, and
- * with it its terminals' connections, when the active one changes and when the tree around it
- * changes: App draws every slot in one container, by a stable key, at the rectangle the tree gives
- * it. A single pane is shown in one slot (App's solo slot, `a` at first); the slot left when a
- * split ends stays, so its terminal keeps its connection.
- */
 import type { PaneDirection } from "../../shared/protocol.ts";
 
 export type SplitSide = "left" | "right";
 export type SplitEdge = "left" | "right" | "top" | "bottom";
-/** a slot's id: one lowercase letter, kept for as long as the slot is open */
 export type SplitSlot = string;
 
 export interface SplitTarget {
@@ -28,24 +9,19 @@ export interface SplitTarget {
   paneId: string;
 }
 
-/** `row` lays its two children out left and right, `column` top and bottom; `ratio` is the first one's share */
 export type SplitNode = { slot: SplitSlot } | { dir: "row" | "column"; ratio: number; first: SplitNode; second: SplitNode };
 
 export interface SplitState {
   root: SplitNode;
-  /** the pane of every slot but the active one: the active slot's is App's selection */
   panes: Record<SplitSlot, SplitTarget>;
-  /** the slot of the selected pane */
   active: SplitSlot;
 }
 
-/** where a drop lands: beside the slot on an edge, or in its place (`edge` null) */
 export interface DropZone {
   slot: SplitSlot;
   edge: SplitEdge | null;
 }
 
-/** a rectangle as fractions of the pane area */
 export interface SplitRect {
   x: number;
   y: number;
@@ -53,7 +29,6 @@ export interface SplitRect {
   h: number;
 }
 
-/** a boundary between the two children of a split: `path` names the split, `area` is its rectangle */
 export interface SplitDivider {
   path: string;
   dir: "row" | "column";
@@ -61,26 +36,17 @@ export interface SplitDivider {
   area: SplitRect;
 }
 
-/**
- * A split change: `split` null with `solo` when one slot is left. `select` is the pane the active
- * slot then shows, which App selects.
- */
 export interface SplitChange {
   split: SplitState | null;
   solo: SplitSlot;
   select: SplitTarget;
 }
 
-/** each pane keeps room for a terminal on a laptop's screen, and each slot is one more connection */
 export const MAX_SPLIT_SLOTS = 4;
-/** a slot never gets less than this share of the split it is in */
 export const MIN_SPLIT_RATIO = 0.15;
-/** one arrow key's move of a boundary */
 export const SPLIT_RATIO_STEP = 0.05;
-/** a drop this close to a slot's edge (as a share of its size) opens the pane beside it */
 const EDGE_BAND = 0.25;
 
-/** what a dragged tab or sidebar row carries: the pane it opens, and the PC it is on */
 export const PANE_DRAG_TYPE = "application/x-herdr-pane";
 
 const STORAGE_KEY = "ovis:split";
@@ -97,17 +63,14 @@ export function sameTarget(a: SplitTarget | null | undefined, b: SplitTarget | n
 
 const isLeaf = (node: SplitNode): node is { slot: SplitSlot } => "slot" in node;
 
-/** The slots in the tree, in reading order. */
 export function slotsOf(node: SplitNode): SplitSlot[] {
   return isLeaf(node) ? [node.slot] : [...slotsOf(node.first), ...slotsOf(node.second)];
 }
 
-/** The panes the split shows besides the selected one. */
 export function otherTargets(state: SplitState | null): SplitTarget[] {
   return state ? Object.values(state.panes) : [];
 }
 
-/** A slot other than the active one shows the pane. */
 export function splitShows(state: SplitState | null, target: SplitTarget): boolean {
   return otherTargets(state).some((other) => sameTarget(other, target));
 }
@@ -121,7 +84,6 @@ function halves(node: { dir: "row" | "column"; ratio: number }, rect: SplitRect)
   return [{ ...rect, h }, { ...rect, y: rect.y + h, h: rect.h - h }];
 }
 
-/** Where each slot is drawn, as fractions of the pane area. */
 export function slotRects(root: SplitNode): Map<SplitSlot, SplitRect> {
   const rects = new Map<SplitSlot, SplitRect>();
   const walk = (node: SplitNode, rect: SplitRect): void => {
@@ -134,7 +96,6 @@ export function slotRects(root: SplitNode): Map<SplitSlot, SplitRect> {
   return rects;
 }
 
-/** Every boundary that can be moved. A path is the turns from the root: `0` first, `1` second. */
 export function splitDividers(root: SplitNode): SplitDivider[] {
   const dividers: SplitDivider[] = [];
   const walk = (node: SplitNode, rect: SplitRect, path: string): void => {
@@ -148,17 +109,12 @@ export function splitDividers(root: SplitNode): SplitDivider[] {
   return dividers;
 }
 
-/**
- * The side a slot is drawn on while the split is two slots side by side, as the two halves were:
- * null in any other layout.
- */
 export function slotSide(state: SplitState, slot: SplitSlot): SplitSide | null {
   const root = state.root;
   if (isLeaf(root) || root.dir !== "row" || !isLeaf(root.first) || !isLeaf(root.second)) return null;
   return root.first.slot === slot ? "left" : root.second.slot === slot ? "right" : null;
 }
 
-/** The split at `path` set to `ratio`, kept within MIN_SPLIT_RATIO of either end. */
 export function resizeSplit(state: SplitState, path: string, ratio: number): SplitState {
   if (!Number.isFinite(ratio)) return state;
   const clamped = Math.round(Math.min(1 - MIN_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio)) * 1000) / 1000;
@@ -183,7 +139,6 @@ function insertBeside(root: SplitNode, at: SplitSlot, slot: SplitSlot, edge: Spl
   return { ...root, first: insertBeside(root.first, at, slot, edge), second: insertBeside(root.second, at, slot, edge) };
 }
 
-/** The tree without `drop`'s slots (a split left with one child gives way to it), null when nothing is left. */
 function pruneSlots(root: SplitNode, drop: ReadonlySet<SplitSlot>): SplitNode | null {
   if (isLeaf(root)) return drop.has(root.slot) ? null : root;
   const first = pruneSlots(root.first, drop);
@@ -201,7 +156,6 @@ function freeSlot(used: readonly SplitSlot[]): SplitSlot | null {
   return null;
 }
 
-/** Each slot's pane, the active one's included. */
 function contents(state: SplitState, active: SplitTarget): Map<SplitSlot, SplitTarget> {
   const map = new Map<SplitSlot, SplitTarget>();
   for (const slot of slotsOf(state.root)) map.set(slot, slot === state.active ? active : state.panes[slot]!);
@@ -217,18 +171,10 @@ function settle(root: SplitNode, map: Map<SplitSlot, SplitTarget>, active: Split
   return { split: { root, panes, active }, solo: active, select };
 }
 
-/** One pane in its solo slot, so a single pane and a split take the same steps. */
 function soloState(solo: SplitSlot): SplitState {
   return { root: { slot: solo }, panes: {}, active: solo };
 }
 
-/**
- * A pane dropped on a zone: the split after it, and the pane to select (the dropped one, whose slot
- * becomes the active one). Null when nothing changes: a pane dropped onto the active slot that
- * already shows it, an edge when the area already holds MAX_SPLIT_SLOTS, or nothing open.
- * Nothing moves: the slot under the drop shows the pane, or a new slot beside it does, and every
- * other slot keeps what it shows, so a pane may be shown in several.
- */
 export function dockPane(
   state: SplitState | null,
   active: SplitTarget | null,
@@ -253,13 +199,11 @@ export function dockPane(
   return settle(insertBeside(now.root, zone.slot, added, zone.edge), map, added);
 }
 
-/** Another slot made active: a click in it. Null for the active slot or one not in the split. */
 export function activateSlot(state: SplitState, active: SplitTarget, slot: SplitSlot): SplitChange | null {
   if (slot === state.active || !(slot in state.panes)) return null;
   return settle(state.root, contents(state, active), slot);
 }
 
-/** A pane picked in another slot (a sibling pane of its tab, a tab opened there): that slot shows it and is active. */
 export function pickInSlot(state: SplitState, active: SplitTarget, slot: SplitSlot, target: SplitTarget): SplitChange | null {
   if (!(slot in state.panes) && slot !== state.active) return null;
   const map = contents(state, active);
@@ -267,7 +211,6 @@ export function pickInSlot(state: SplitState, active: SplitTarget, slot: SplitSl
   return settle(state.root, map, slot);
 }
 
-/** The slot a closed slot's place goes to: the sibling it shared a split with (its nearest slot). */
 function heirOf(root: SplitNode, slot: SplitSlot): SplitSlot | null {
   if (isLeaf(root)) return null;
   if (isLeaf(root.first) && root.first.slot === slot) return slotsOf(root.second)[0] ?? null;
@@ -275,7 +218,6 @@ function heirOf(root: SplitNode, slot: SplitSlot): SplitSlot | null {
   return heirOf(root.first, slot) ?? heirOf(root.second, slot);
 }
 
-/** Slots closed: their panes stay open in herdr; the active slot's place goes to its nearest one when it is closed. */
 export function closeSlots(state: SplitState, active: SplitTarget, closed: ReadonlySet<SplitSlot>): SplitChange | null {
   const root = pruneSlots(state.root, closed);
   if (root === null) return null;
@@ -289,7 +231,6 @@ export function closeSlots(state: SplitState, active: SplitTarget, closed: Reado
   return settle(root, map, next);
 }
 
-/** Slots other than the active one closed (their panes gone): the layout left, the selection untouched. */
 export function withoutSlots(state: SplitState, closed: ReadonlySet<SplitSlot>): { split: SplitState | null; solo: SplitSlot } {
   const drop = new Set([...closed].filter((slot) => slot !== state.active));
   const root = pruneSlots(state.root, drop);
@@ -299,13 +240,11 @@ export function withoutSlots(state: SplitState, closed: ReadonlySet<SplitSlot>):
   return { split: { ...state, root, panes }, solo: state.active };
 }
 
-/** A slot's pane replaced (its pane closed and another of its tab takes its place). */
 export function replaceSlotPane(state: SplitState, slot: SplitSlot, target: SplitTarget): SplitState {
   if (!(slot in state.panes)) return state;
   return { ...state, panes: { ...state.panes, [slot]: target } };
 }
 
-/** Keep the preview's side near the midpoint; a first entry uses the exact half. */
 export function dropSide(x: number, left: number, width: number, previous: SplitSide | null = null): SplitSide {
   const middle = left + width / 2;
   const margin = Math.min(12, width / 4);
@@ -314,11 +253,6 @@ export function dropSide(x: number, left: number, width: number, previous: Split
   return x < middle ? "left" : "right";
 }
 
-/**
- * The zone of a half of the pane area, as the two halves take a drop: with one pane, beside it on
- * that side; split, in the place of the slot that covers most of that half, the active one where
- * slots cover it alike (two slots stacked cover both halves alike).
- */
 export function sideZone(state: SplitState | null, solo: SplitSlot, side: SplitSide): DropZone | null {
   if (state === null) return { slot: solo, edge: side };
   const [from, to] = side === "left" ? [0, 0.5] : [0.5, 1];
@@ -331,13 +265,6 @@ export function sideZone(state: SplitState | null, solo: SplitSlot, side: SplitS
   return best && best.share > 0 ? { slot: best.slot, edge: null } : null;
 }
 
-/**
- * The zone under a point of the pane area (`box`, in the same coordinates as the point), for the
- * rows and columns. With one pane every drop is beside it: above or below in a band along its top
- * and bottom, else on the half the pointer is over, kept steady around the midpoint as the halves
- * are. Split, a slot's edge band opens the pane beside it and its middle opens the pane in its
- * place; a full area takes no new slot, so all of a slot is its middle.
- */
 export function dropZone(
   x: number,
   y: number,
@@ -369,7 +296,6 @@ export function dropZone(
   return null;
 }
 
-/** The rectangle a zone's guide fills: the half of the slot the pane would take, or all of it. */
 export function zoneRect(zone: DropZone, state: SplitState | null, solo: SplitSlot): SplitRect | null {
   const rect = state ? slotRects(state.root).get(zone.slot) : zone.slot === solo ? FULL : undefined;
   if (!rect) return null;
@@ -382,14 +308,8 @@ export function zoneRect(zone: DropZone, state: SplitState | null, solo: SplitSl
   }
 }
 
-/** The amount another side's share must be nearer before it replaces the side shown. */
 const BESIDE_MARGIN = 0.05;
 
-/**
- * The side of a pane a pane dropped at the pointer goes to (herdr's pane.move within the tab): the
- * nearest edge, its distance counted as a share of the pane's width or height so each side takes a
- * quarter of a pane of any shape. Where shares meet, the side shown stays, as a half does near the middle.
- */
 export function besideSide(x: number, y: number, box: { left: number; top: number; width: number; height: number }, previous: PaneDirection | null = null): PaneDirection {
   const width = Math.max(1, box.width);
   const height = Math.max(1, box.height);
@@ -401,7 +321,6 @@ export function besideSide(x: number, y: number, box: { left: number; top: numbe
   return previous !== null && shares[previous] - shares[nearest] < BESIDE_MARGIN ? previous : nearest;
 }
 
-/** A pane dragged in, if the drag carries one. */
 export function draggedPane(data: string): SplitTarget | null {
   try {
     const value = JSON.parse(data) as { machine_id?: unknown; pane_id?: unknown };
@@ -431,12 +350,10 @@ function readNode(value: unknown, depth = 0): SplitNode | null {
   return first && second ? { dir: node.dir, ratio: node.ratio, first, second } : null;
 }
 
-/** The split this window left, if any: a reload opens it again while its panes are still there. */
 export function storedSplit(): SplitState | null {
   try {
     const value = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) ?? "null") as Record<string, unknown> | null;
     if (!value || typeof value !== "object") return null;
-    // the two halves kept before the rows and columns: slot b on one side, the other slot's pane
     if ("other" in value) {
       const other = readTarget(value["other"]);
       const bSide = value["bSide"], active = value["active"];
@@ -472,6 +389,5 @@ export function storeSplit(state: SplitState | null): void {
     if (state === null) window.sessionStorage.removeItem(STORAGE_KEY);
     else window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
-    /* private mode: the split just is not kept across a reload */
   }
 }

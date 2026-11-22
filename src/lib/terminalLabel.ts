@@ -8,6 +8,5 @@ import type { Translate } from "./i18n.ts";
  */
 export function terminalLabel(paneId: string | null, title: string | null, t: Translate): string {
   const name = title?.trim() ?? "";
-  // displayPaneTitle falls back to the pane id for a pane with nothing else to call it
   return paneId !== null && name !== "" && name !== paneId ? t("Terminal for {title}", { title: name }) : t("Terminal");
 }

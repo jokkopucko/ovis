@@ -12,7 +12,6 @@
  * than rendered as junk.
  */
 
-/** one checklist row shared by the todo/task renderers */
 export interface ChecklistRow {
   label: string;
   done: boolean;

@@ -1,0 +1,15 @@
+
+ ✓ Trust ~/scratch/devin?
+
+⠀⣴⣾⣶⡄⠀⠀⠀⠀
+⠀⠛⠿⠟⠻⣶⣾⣶⡄  Devin CLI
+⠀⣤⣶⣦⣴⠿⢿⠿⠃  v3000.12.43
+⠀⠻⢿⠿⠃⠀⠀⠀⠀
+
+ Free plan, use /upgrade to access better models · 100% remaining (resets in 1h 7m)
+
+ ● ~/scratch/devin
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❭ Ask Devin to build features, fix bugs, or work on your code
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+SWE-2 Flash Medium                                                         Use /help to see all available slash commands

@@ -1,0 +1,39 @@
+
+  main ~/.c/o/outside-fixes/pr-3959-grok-scratch                                            2.3K / 128K │ [Dashboard]
+
+
+     ❯ first follow-up please                                                                               7:23 PM
+
+
+
+     ❯ second follow-up please                                                                              7:23 PM
+
+
+     word1 word2                                                                                            7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     ❯ third follow-up please                                                                               7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15        7:23 PM   █
+     word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29                █
+     word30 word31 word32 word33                                                                                      █
+                                                                                                                      █
+                                                                                                                      █
+     ❯ fourth follow-up please                                                                              7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15        7:23 PM   █
+     word16 word17 word18 word19                                                                                      █
+                                                                                                                      █
+
+    #1 a long queued follow-up part1 part2 part3 part4 part5 part6 part7 part8 part9 part10 part11 part12 part13 par…
+    #2 multi line A (+1 line)
+
+    ⠦ Responding… 9.5s                                                                             9.5s ⇣2.32k [stop]
+
+  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                               │
+  ╰────────────────────────────────────────────────────────────────────────────────────────────────────── Stand-in ─╯
+
+  Enter:send now  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+;:queue  │  Ctrl+.:shortcuts

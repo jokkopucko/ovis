@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, type Dispatch, type RefObject, type Set
 import type { Terminal } from "@xterm/xterm";
 import { hasModifiers, navigationSequence, stepModifier, terminalChord, type ModifierLatch, type StickyModifiers } from "./keys.ts";
 import { keyBarInputSequence, type KeyBarKeyItem } from "./keyBar.ts";
-import { hermesCtrlCTooSoon, stopKey } from "./hermesStop.ts";
+import { DOUBLE_ESCAPE_GAP_MS, hermesCtrlCTooSoon, stopKey } from "./hermesStop.ts";
 import type { Translate } from "./i18n.ts";
 import type { HerdrSocket } from "./ws.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
@@ -18,10 +18,8 @@ export interface TypedKeysDeps {
   composingRef: RefObject<boolean>;
   inputLineRef: RefObject<boolean>;
   modifiersRef: RefObject<StickyModifiers>;
-  /** the held modifiers that stay after a key (lib/keys.ts ModifierLatch) */
   lockedRef: RefObject<StickyModifiers>;
   setLatch: (latch: ModifierLatch) => void;
-  /** after a key that carried the held modifiers: lets go of those held for one key */
   consumeModifiers: () => void;
   paneId: string | null;
   reassertIfStaleRef: RefObject<() => void>;
@@ -34,15 +32,11 @@ export interface TypedKeysDeps {
 
 export function useTypedKeys(deps: TypedKeysDeps) {
   const { agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef } = deps;
-  // key-bar taps go through xterm so the onData -> socket path above is reused. A held key's repeats
-  // (`repeat`) keep a modifier held for one key until the finger lifts (KeyBar's onKeyHoldEnd)
   const pressKey = useCallback((item: KeyBarKeyItem, repeat = false) => {
     const term = termRef.current;
     if (!term) return;
     if (composingRef.current || compositionCommitPendingRef.current) return;
     const active = item.modifiers ?? modifiersRef.current;
-    // A saved combination is exact; an ordinary key inherits the held modifiers.
-    // The built-in interrupt remains its dedicated Ctrl+C action.
     const modified = (item.key !== "ctrl-c" || item.modifiers !== undefined) && (hasModifiers(active) || item.modifiers !== undefined);
     const chord = modified ? terminalChord(item.key, active) : null;
     const input = (modified ? navigationSequence(item.key, active) : null)
@@ -53,10 +47,6 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     barKeyRef.current = { key: item.key, chord };
     try { term.input(input); } finally { barKeyRef.current = null; }
     if (item.modifiers === undefined && !repeat) consumeModifiers();
-    // with the input line, the keyboard belongs to it: a key tap must not move it to the grid. On a
-    // touch screen a key tap never takes the focus at all: focusing the grid raises the soft
-    // keyboard, and a key pressed with the keyboard put away (after dictating, say) must leave it
-    // away. Only the keyboard key, or a tap on the line or the grid, brings it up.
     if (!inputLineRef.current && !coarseRef.current) term.focus();
   }, [commitPendingText]);
 
@@ -74,9 +64,16 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   // when this pane last sent Hermes a Ctrl+C: status flicker or a quick new turn resets the
   // guard above, so a second Ctrl+C inside Hermes' 2 s force-quit window is refused by time
   const hermesCtrlCAtRef = useRef<number | null>(null);
-  // a turn waiting on an approval (blocked) is still the same turn
   useEffect(() => { if (agentStatus !== "working" && agentStatus !== "blocked") hermesStopSentRef.current = false; }, [agentStatus]);
   useEffect(() => { hermesStopSentRef.current = false; hermesCtrlCAtRef.current = null; }, [paneId, agent]);
+  // the second Escape of a two-Escape Stop, still to be sent: it belongs to the pane and connection of the first
+  const secondEscapeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dropSecondEscape = useCallback(() => {
+    if (secondEscapeRef.current !== null) clearTimeout(secondEscapeRef.current);
+    secondEscapeRef.current = null;
+  }, []);
+  // one terminal serves the pane it is switched to: a pending Escape must not follow it there
+  useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
     const socket = socketRef.current;
@@ -89,18 +86,38 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     if (key === null) {
       const t = tRef.current;
       if (hermesStopSentRef.current) return;
-      setInputError(hermesCtrlCTooSoon(hermesCtrlCAtRef.current, now)
-        ? t("Not stopped: Hermes got Ctrl+C under 2 seconds ago, and a second one would quit it. Try again in a moment.")
-        : t("Not stopped: Hermes does not show a turn to interrupt. Check the terminal."));
+      setInputError(agent === "grok"
+        ? (hermesCtrlCTooSoon(hermesCtrlCAtRef.current, now)
+          ? t("Not stopped: Grok got Ctrl+C under 2 seconds ago, and a second one may quit it. Try again in a moment.")
+          : t("Not stopped: Grok does not show a turn to cancel. Check the terminal."))
+        : hermesCtrlCTooSoon(hermesCtrlCAtRef.current, now)
+          ? t("Not stopped: Hermes got Ctrl+C under 2 seconds ago, and a second one would quit it. Try again in a moment.")
+          : t("Not stopped: Hermes does not show a turn to interrupt. Check the terminal."));
       return;
     }
     if (key === "\u0003") {
       hermesStopSentRef.current = true;
       hermesCtrlCAtRef.current = now;
     }
-    stopKeyRef.current = true;
-    try { term.input(key); } finally { stopKeyRef.current = false; }
-  }, [agent]);
+    const press = (sent: string): void => {
+      stopKeyRef.current = true;
+      try { term.input(sent); } finally { stopKeyRef.current = false; }
+    };
+    if (key !== "\u001b\u001b") return press(key);
+    // two Escapes as two key presses: written together they read as one Alt+Escape
+    press("\u001b");
+    // nothing typed is sent after a disconnect: the second Escape goes out only on the connection, role and
+    // pane readiness the first one had (the socket object itself survives a reconnect)
+    const lease = paneId === null ? null : socket.inputLease(paneId);
+    dropSecondEscape();
+    secondEscapeRef.current = setTimeout(() => {
+      secondEscapeRef.current = null;
+      const now = socketRef.current;
+      if (now !== socket || !now.connected || termRef.current !== term) return;
+      if (paneId !== null && now.inputLease(paneId) !== lease) return;
+      press("\u001b");
+    }, DOUBLE_ESCAPE_GAP_MS);
+  }, [agent, paneId, dropSecondEscape]);
 
   return { pressKey, toggleModifier, abortTurn };
 }

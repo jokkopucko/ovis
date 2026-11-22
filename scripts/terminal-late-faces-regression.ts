@@ -25,15 +25,13 @@ import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/clien
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 
-// Nerd Font icons (a folder, GitHub's mark, a branch): one cell each, a whole em in the icon font
 const ICONS = ["\uf07b", "\uf113", "\ue0a0"];
 const ROWS = [
   "|abcdefghijklmn|",
   "|가나다라마바사|",
   `|${ICONS.join(" ")} abcdefghi|`,
 ];
-// the two late faces: the icon font, and the Hangul face typed ahead of the installed fonts, so that it
-// draws the Korean on every machine. JetBrains Mono Web gives every machine the same 0.6em cell
+// JetBrains Mono Web gives every machine the same 0.6em cell
 const TERMINAL_FONT = "Ovis Hangul Mono, Late Stand-in, JetBrains Mono Web";
 const LATE_FACES = [/\/SymbolsNerdFontMono-Regular[^/]*\.woff2$/, /\/OvisHangulMono-Regular[^/]*\.woff2$/];
 // the stand-ins, as narrow as WebKit's: an icon inside its one cell, Hangul at Apple SD Gothic Neo's width
@@ -51,7 +49,6 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 try {
-  // Given: a pane that prints Latin, Korean and icons, each row closed by a bar.
   const program = join(state, "rows.mjs");
   writeFileSync(program, `process.stdout.write(${JSON.stringify(`\x1b[2J\x1b[H${ROWS.join("\r\n")}\r\nROWS_READY\r\n`)});
 setInterval(() => {}, 1 << 30);
@@ -77,8 +74,6 @@ setInterval(() => {}, 1 << 30);
       document.fonts.add(face);
       void face.load();
     }
-    // the page hears of a face's arrival through promises (a face's own, or the font set's load):
-    // they wait at a gate, and once it opens all go on in the same task
     const nativeLoaded = Object.getOwnPropertyDescriptor(FontFace.prototype, "loaded")!.get!;
     const nativeLoad = FontFaceSet.prototype.load;
     let open = Promise.resolve();
@@ -97,7 +92,6 @@ setInterval(() => {}, 1 << 30);
   page.setDefaultTimeout(10000);
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  // the two faces wait until both are let go together
   const waiting = new Map<string, Route>();
   const fetched: string[] = [];
   let bothAsked: () => void = () => {};
@@ -115,7 +109,6 @@ setInterval(() => {}, 1 << 30);
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   await page.locator(".conn-live").waitFor();
   await page.locator(shownRows(), { hasText: "ROWS_READY" }).waitFor();
-  // the typed font is the terminal's (it is set once its faces loaded, or failed to in time)
   await page.waitForFunction((shown) => {
     const rows = document.querySelector(shown);
     return rows !== null && getComputedStyle(rows).fontFamily.includes("Late Stand-in");
@@ -126,7 +119,6 @@ setInterval(() => {}, 1 << 30);
   // xterm draws the rows with the stand-ins in the frame after the font is set
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
-  // When: both faces load, and the page hears of both in the same task.
   type Gate = { hold: () => void; open: () => void; arrived: (face: FontFace) => Promise<FontFace> };
   await page.evaluate(() => (window as unknown as { lateFacesGate: Gate }).lateFacesGate.hold());
   await Promise.all([...waiting.values()].map(route => route.continue()));
@@ -139,13 +131,11 @@ setInterval(() => {}, 1 << 30);
   });
   await page.evaluate(() => new Promise<void>((resolve) => {
     (window as unknown as { lateFacesGate: Gate }).lateFacesGate.open();
-    // a few frames: the arrival's own, then xterm's redraw
     let frames = 4;
     const tick = (): void => { frames -= 1; if (frames === 0) resolve(); else requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   }));
 
-  // Then: every icon is drawn at the size that fits its cell, and the Korean row's bar stands in the Latin row's column.
   const drawn = await page.evaluate(([icons, shown]) => {
     const rows = document.querySelector<HTMLElement>(shown)!;
     const left = rows.getBoundingClientRect().left;
@@ -171,7 +161,6 @@ setInterval(() => {}, 1 << 30);
       }
       return null;
     });
-    // xterm's run of Hangul, or libghostty's two-cell box around one syllable
     const hangul = [...rows.querySelectorAll("span")].find(span => span.textContent === "가나다라마바사") ?? rows.querySelector(".ghostty-wide");
     return { base, bars, sizes, hangulSize: hangul ? getComputedStyle(hangul).fontSize : null,
       renderer: document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "xterm" };

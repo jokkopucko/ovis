@@ -22,10 +22,6 @@ import { recentSshOutput } from "./ssh.ts";
 import { RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 
 const MiB = 1024 * 1024;
-/**
- * `value` as JSON of exactly `total` bytes (whitespace after its first byte), served lazily so a
- * reader that stops early leaves most of it unsent; `cancelled` settles when the reader gives up.
- */
 function padded(value: unknown, total: number): { stream: ReadableStream<Uint8Array>; cancelled: Promise<void> } {
   const json = JSON.stringify(value);
   const space = new Uint8Array(64 * 1024).fill(0x20);
@@ -43,7 +39,6 @@ function padded(value: unknown, total: number): { stream: ReadableStream<Uint8Ar
   });
   return { stream, cancelled: cancelled.promise };
 }
-/** `event`, or a failure once it has not come within a few seconds */
 async function within(event: Promise<void>, what = "the remote answer was not cancelled"): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { await Promise.race([event, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(what)), 5000); })]); }
@@ -52,16 +47,13 @@ async function within(event: Promise<void>, what = "the remote answer was not ca
 
 describe("machine settings recovery", () => {
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("logs the cause when settings are unreadable", () => {
-    // Given a settings file this user cannot read.
     const dir = mkdtempSync(join(tmpdir(), "herdr-machine-settings-"));
     const path = join(dir, "machine-settings.json");
     writeFileSync(path, "{}", { mode: 0o000 });
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try {
-      // When the manager loads its settings.
       const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("local offline"); });
       manager.stop();
-      // Then only the filesystem code accompanies the recovery diagnostic.
       expect(errors.mock.calls).toEqual([[expect.any(String), "EACCES"]]);
     } finally {
       errors.mockRestore();
@@ -108,7 +100,6 @@ describe("independently managed bridge updates", () => {
     const socket = "/home/u/.config/herdr/herdr.sock";
     const descriptor = { pid: process.pid, port: 7317, token: "a".repeat(64), socket_path: socket, bridge_protocol: 1, bundle_version: "older", managed_remote: false };
     const commands: string[] = [];
-    // that PC's own Ovis answers through the tunnel as a server its updater did not start
     const tunnels: ReturnType<typeof Bun.serve>[] = [];
     const asked: string[] = [];
     let bridgeReady = false;
@@ -132,7 +123,6 @@ describe("independently managed bridge updates", () => {
     try {
       await expect(prepare(runtime)).rejects.toMatchObject({ action: "setup", message: expect.stringContaining("does not update itself") });
       await expect(prepare(runtime, { update: true, auto: true, public: { installations: [] }, abort: new AbortController() })).rejects.toMatchObject({ action: "setup" });
-      // it was only asked how it updates, never to install anything
       expect(asked.every((request) => request.startsWith("GET "))).toBe(true);
       descriptor.managed_remote = true;
       await expect(prepare(runtime)).rejects.toThrow("Bridge verification failed (404)");
@@ -239,12 +229,35 @@ describe("machine boundaries", () => {
       const next = await ask();
       expect(next.status).toBe(200);
       expect(await next.json()).toEqual({ ok: true });
-      // a PC that is not connected is refused before anything is asked of it
       endpoint.mockReturnValue(undefined);
       const before = hits;
       expect((await ask()).status).toBe(503);
       expect(hits).toBe(before);
     } finally { error.mockRestore(); endpoint.mockRestore(); bridge.stop(true); manager.stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+  it("tries again on a PC's read only while it waits to reconnect: a connected PC is read, a removed one left alone", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-proxy-retry-"));
+    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), async () => { throw new Error("fixture offline"); });
+    const bridge = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ok: true }) });
+    const reconnect = spyOn(manager as unknown as { reconnect(runtime: unknown): Promise<void> }, "reconnect").mockResolvedValue(undefined);
+    const on = manager["runtime"]({ id: "on", name: "on", kind: "relay", enabled: true, state: "connected", snapshot: null, error: null });
+    on.endpoint = { url: `http://127.0.0.1:${bridge.port}`, token: "fixture-token" };
+    const off = manager["runtime"]({ id: "off", name: "off", kind: "relay", enabled: true, state: "disconnected", snapshot: null, error: "The PC did not answer through the relay" });
+    manager["machines"].set("on", on);
+    manager["machines"].set("off", off);
+    manager["retryLater"](off);
+    const ask = (id: string) => handleMachineRequest(new Request(`http://localhost/api/machines/${id}/session`), manager);
+    try {
+      const generation = on.generation;
+      expect((await ask("on")).status).toBe(200);
+      expect([on.machine.state, on.generation, on.endpoint !== undefined]).toEqual(["connected", generation, true]);
+      expect((await ask("gone")).status).toBe(503);
+      expect(reconnect).not.toHaveBeenCalled();
+      expect((await ask("off")).status).toBe(503);
+      expect(reconnect.mock.calls.map(([runtime]) => runtime)).toEqual([off]);
+      expect((await ask("off")).status).toBe(503);
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    } finally { reconnect.mockRestore(); bridge.stop(true); manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
   it("keeps file streaming and 304 bodyless", async () => {
     const dir = mkdtempSync(join(tmpdir(), "herdr-proxy-stream-"));
@@ -272,7 +285,6 @@ describe("machine boundaries", () => {
       expect(ranges).toEqual(["bytes=0-9"]);
       expect(file.headers.get("content-range")).toBe("bytes 0-9/100");
       expect(file.headers.get("set-cookie")).toBeNull();
-      // the first bytes arrive while the PC still holds the rest: nothing is buffered here
       const reader = file.body!.getReader();
       expect(new TextDecoder().decode((await reader.read()).value)).toBe("first");
       rest.resolve();
@@ -305,7 +317,6 @@ describe("machine boundaries", () => {
       expect((await ask("GET", "pane/read?pane_id=p", true)).status).toBe(200);
       expect((await ask("OPTIONS", "pane/input", true)).status).not.toBe(403);
       expect(hits).toEqual(["GET /api/pane/read", "OPTIONS /api/pane/input"]);
-      // a connection that may drive goes through
       expect((await ask("POST", "pane/input", false)).status).toBe(200);
       expect(hits).toEqual(["GET /api/pane/read", "OPTIONS /api/pane/input", "POST /api/pane/input"]);
     } finally { endpoint.mockRestore(); bridge.stop(true); manager.stop(); rmSync(dir, { recursive: true, force: true }); }
@@ -326,7 +337,6 @@ describe("machine boundaries", () => {
         expect((await refused.json() as { error: { code: string } }).error.code, path).toBe("read_only");
       }
       expect(hits).toEqual([]);
-      // a connection that may drive goes through
       expect((await ask("GET", "agent/commands?agent=claude", false)).status).toBe(200);
       expect(hits).toEqual(["GET /api/agent/commands"]);
     } finally { endpoint.mockRestore(); bridge.stop(true); manager.stop(); rmSync(dir, { recursive: true, force: true }); }
@@ -357,7 +367,6 @@ describe("machine boundaries", () => {
   it("proxies only pane/workspace data and never remote management credentials", () => {
     for (const path of ["pane/focus", "pane/move", "layout/ratio", "tab/move"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["pane/focus/extra", "pane/move/extra", "layout/apply", "layout/ratio/extra", "layout/../auth", "agent/commands/extra", "agent/start"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
-    // the commands an agent offers in a folder before any pane runs it (the new workspace and tab dialogs)
     for (const path of ["agent/rename", "agent/commands"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     // the install catalog a PC answers for itself, and an install or sign-in started on that PC; nothing else under it
     for (const path of ["agent-catalog", "agent-catalog/install", "agent-catalog/sign-in"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
@@ -370,8 +379,6 @@ describe("machine boundaries", () => {
   });
 });
 
-// A setup job placed directly in the manager: driving a whole setup needs a real SSH host, but
-// action() and stage() are the code that decides what the dialog shows.
 type TestJob = { public: SetupJob; abort: AbortController; timer: ReturnType<typeof setTimeout>; stageStartedAt: number; pending?: { resolve(value: string): void; reject(error: Error): void }; update: boolean; auto: boolean; finished: Promise<void>; headlessStart?: boolean };
 describe("setup job labels", () => {
   const dirs: string[] = [];
@@ -520,7 +527,6 @@ describe("setup job labels", () => {
   }
 
   for (const phase of ["approval", "starting"] as const) it(`resumes a saved Windows retry when startup review is cancelled during ${phase}`, async () => {
-    // Given a dialog which has pre-empted a saved PC's background reconnection.
     const f = windowsSetup();
     try {
       const job = f.manager.setup({ destination: "pc", machine_id: "windows" });
@@ -529,10 +535,8 @@ describe("setup job labels", () => {
         f.manager.action(job.id, { action: "approve" });
         await within(f.waiting.promise);
       }
-      // When Cancel connection or dialog unmount cancels that job.
       f.manager.action(job.id, { action: "cancel" });
       await f.manager["jobs"].get(job.id)?.finished;
-      // Then background reconnection is restored, without headless consent.
       expect(job.phase).toBe("cancelled");
       expect(f.runtime.machine.state).toBe("reconnecting");
       expect(f.runtime.retry).toBeDefined();
@@ -541,7 +545,6 @@ describe("setup job labels", () => {
   });
 
   for (const bundleReady of [true, false]) it(`resumes a saved Windows retry when sign-in expires ${bundleReady ? "without installation" : "after installation clears the setup deadline"}`, async () => {
-    // Given a setup waiting for sign-in, with or without an installation stage.
     const f = windowsSetup(bundleReady);
     const deadlines = new Map<number, () => void>();
     const set = globalThis.setTimeout, clear = globalThis.clearTimeout;
@@ -565,10 +568,8 @@ describe("setup job labels", () => {
       const expire = deadlines.get(Number(state.timer));
       expect(expire).toBeDefined();
       if (!expire) return;
-      // When the active deadline expires, without waiting on wall-clock time.
       expire();
       await state.finished;
-      // Then this is a timeout, not explicit cancellation, and the PC keeps retrying.
       expect(job.phase).toBe("failed");
       expect(f.runtime.machine.state).toBe("reconnecting");
       expect(f.runtime.retry).toBeDefined();
@@ -577,7 +578,6 @@ describe("setup job labels", () => {
   });
 
   it("releases the automatic update queue when Windows needs sign-in", async () => {
-    // Given an old Windows bundle followed by another PC in the global update queue.
     const f = windowsSetup(false);
     f.runtime.machine.action_required = "update_bridge";
     const linux = f.manager["runtime"]({ id: "linux", name: "linux", kind: "ssh", enabled: true, state: "error", action_required: "update_bridge", target: { destination: "linux" }, snapshot: null, error: null });
@@ -592,12 +592,10 @@ describe("setup job labels", () => {
       return job;
     });
     try {
-      // When both updates are queued, nobody signs in or cancels Windows.
       f.manager["queueAutoUpdate"]("windows");
       f.manager["queueAutoUpdate"]("linux");
       await within(second.promise, "Windows sign-in held the automatic update queue");
       await f.manager["autoChain"];
-      // Then the next update starts while Windows reconnects with startup choices available.
       expect(started).toEqual(["windows", "linux"]);
       expect(f.runtime.machine).toMatchObject({ action_required: "windows_login", state: "reconnecting" });
       expect(f.runtime.retry).toBeDefined();
@@ -605,7 +603,6 @@ describe("setup job labels", () => {
   }, 10_000);
 
   for (const automatic of [false, true]) for (const refused of [false, true]) it(`waits for delayed Windows startup status during ${automatic ? "automatic update" : "initial setup"} (${refused ? "scheduler failure" : "sign-in"})`, async () => {
-    // Given a launcher which publishes its result only at its 30-second deadline.
     const f = windowsSetup(!automatic);
     if (!automatic) f.manager["machines"].delete("windows");
     else f.runtime.machine.state = "error";
@@ -615,13 +612,11 @@ describe("setup job labels", () => {
     const sleep = spyOn(Bun, "sleep").mockImplementation(async (ms) => { elapsed += Number(ms); });
     const notice = spyOn(windowsHost, "startupNotice").mockImplementation(async () => elapsed >= 30_000 ? result : null);
     try {
-      // When setup or an unattended update starts that launcher.
       const job = automatic ? f.manager.updateBridge("windows", true) : f.manager.setup({ destination: "pc" });
       if (!automatic) { await within(f.approval.promise); f.manager.action(job.id, { action: "approve" }); }
       const state = f.manager["jobs"].get(job.id);
       if (!state) throw new Error("Setup job missing");
       await within(Promise.race([f.waiting.promise, state.finished]));
-      // Then startup options survive the delay; only a sign-in wait retries in the background.
       expect(job.action_required).toBe(action);
       expect(elapsed).toBeGreaterThanOrEqual(30_000);
       if (automatic) {
@@ -633,7 +628,6 @@ describe("setup job labels", () => {
   });
 
   for (const headless of [false, true]) it(`restores saved Windows retries when ${headless ? "headless startup fails" : "SSH drops during sign-in waiting"}`, async () => {
-    // Given a saved PC whose startup review has replaced its background connection.
     const f = windowsSetup();
     if (!headless) f.runtime.machine.state = "disconnected";
     const failure = headless ? "Headless launch failed" : "SSH connection ended";
@@ -646,11 +640,9 @@ describe("setup job labels", () => {
         ? spyOn(windowsHost, "start").mockRejectedValue(new Error(failure))
         : spyOn(windowsHost, "descriptors").mockRejectedValue(new Error(failure));
       try {
-        // When the waiting connection drops, or its explicit headless launch fails.
         if (headless) f.manager.action(job.id, { action: "start_headless" });
         f.resume.resolve();
         await f.manager["jobs"].get(job.id)?.finished;
-        // Then the failure stays visible while the enabled saved PC retries.
         expect(job.phase).toBe("failed");
         expect(f.runtime.machine).toMatchObject({ state: "reconnecting", error: failure, action_required: null });
         expect(f.runtime.retry).toBeDefined();
@@ -659,31 +651,26 @@ describe("setup job labels", () => {
   });
 
   for (const automatic of [false, true]) it(`stops retrying scheduler failures during ${automatic ? "automatic update" : "background reconnection"}`, async () => {
-    // Given a real startup-status reader receiving a Task Scheduler failure.
     const startupNotice = windowsHost.startupNotice;
     const f = windowsSetup(!automatic);
     const failure = "Task registration denied (0x80070005)";
     windowsHost.startupNotice = startupNotice;
     const reader = spyOn(SshConnection.prototype, "runPowerShell").mockResolvedValue(`interactive_failed: ${failure}`);
     try {
-      // When an unattended connection encounters the scheduler refusal.
       if (automatic) {
         const job = f.manager.updateBridge("windows", true);
         await f.manager["jobs"].get(job.id)?.finished;
         expect(job.action_required).toBe("windows_start_failed");
       } else await f.manager["reconnect"](f.runtime);
-      // Then it offers startup review with the actual failure, without endless retries.
       expect(f.runtime.machine).toMatchObject({ state: "error", action_required: "windows_start_failed", error: failure });
       expect(f.runtime.retry).toBeUndefined();
     } finally { reader.mockRestore(); f.close(); }
   });
 
   it("offers one-time headless consent when the Windows scheduler refuses startup", async () => {
-    // Given a scheduler failure transported through the real startup-status reader.
     const startupNotice = windowsHost.startupNotice;
     const f = windowsSetup();
     const schedulerError = "Task registration denied (0x80070005)";
-    // Restore the reader that this fixture normally replaces.
     const statusReader = spyOn(SshConnection.prototype, "runPowerShell").mockResolvedValue(`interactive_failed: ${schedulerError}`);
     windowsHost.startupNotice = startupNotice;
     const forced = Promise.withResolvers<void>();
@@ -699,12 +686,10 @@ describe("setup job labels", () => {
       await within(f.waiting.promise, "scheduler failure did not offer startup choices");
       expect(job.step).toBe(schedulerError);
       expect(job.action_required).toBe("windows_start_failed");
-      // When the user explicitly chooses a headless start.
       f.manager.action(job.id, { action: "start_headless" });
       f.resume.resolve();
       await within(forced.promise);
       await f.manager["jobs"].get(job.id)?.finished;
-      // Then only that next launch carries headless consent.
       expect(starts).toEqual([false, true]);
       expect(f.manager["jobs"].get(job.id)?.headlessStart).toBe(false);
     } finally { start.mockRestore(); statusReader.mockRestore(); f.close(); }
@@ -750,7 +735,6 @@ describe("SSH output during setup", () => {
     const path = process.env["PATH"];
     process.env["PATH"] = `${bin}:${path}`;
     const manager = new MachineManager(join(root, "state"), {} as PushService, new CompletionTracker(null));
-    // stop() cancels the job, which kills the fake ssh (it `exec`s sleep, so there is no orphan)
     cleanups.push(() => { manager.stop(); process.env["PATH"] = path; rmSync(root, { recursive: true, force: true }); });
     return manager;
   }
@@ -766,7 +750,6 @@ describe("SSH output during setup", () => {
     const job = await until(() => manager.job(started.id)?.ssh_output ? manager.job(started.id) : null);
     expect(job.phase).toBe("connecting");
     expect(job.ssh_output).toBe("To authenticate, visit: https://login.tailscale.com/a/check123");
-    // the dialog polls this route: the line has to be in its answer, not only on the manager
     const response = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/setup/${started.id}`, { headers: { origin: "http://localhost:7317" } }), manager);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ phase: "connecting", ssh_output: "To authenticate, visit: https://login.tailscale.com/a/check123" });
@@ -783,8 +766,6 @@ describe("SSH output during setup", () => {
   });
 });
 
-// A first connect that finds another version's bridge fails before the PC is ever registered,
-// so the sidebar has no row to put the update button on: the job has to carry the action itself.
 // ssh's run() is answered in place of a PC (a PATH-swapped fake cannot serve it: spawned runs
 // never see the swapped PATH), so setup() fails inside its own catch — where the action is set.
 describe("a first connect that finds a bridge of another version", () => {
@@ -811,11 +792,9 @@ describe("a first connect that finds a bridge of another version", () => {
       expect(job.phase).toBe("failed");
       expect(job.error).toContain("different version");
       expect(job.action_required).toBe("update_bridge");
-      // the dialog polls this route: the action has to be in its answer, not only on the manager
       const response = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/setup/${started.id}`, { headers: { origin: "http://localhost:7317" } }), manager);
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ phase: "failed", action_required: "update_bridge" });
-      // and the PC was never registered, so the job is the dialog's only signal
       expect(manager.list().map((machine) => machine.kind)).toEqual(["local"]);
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
@@ -837,8 +816,6 @@ describe("a first connect that finds a bridge of another version", () => {
       const started = manager.setup({ destination: "independent-pc" });
       for (let i = 0; i < 100 && !["failed", "connected"].includes(manager.job(started.id)?.phase ?? ""); i += 1) await Bun.sleep(25);
       const job = manager.job(started.id)!;
-      // this app cannot update that server, and that server is already the newer one: this app is
-      // the side that is behind (a Mac on 0.4.13 met a PC already on 0.4.16 and was sent to the PC)
       expect(job).toMatchObject({ phase: "failed", action_required: "setup" });
       expect(job.error).toContain("independently managed");
       expect(job.error).toContain(`(v${newer})`);
@@ -848,9 +825,6 @@ describe("a first connect that finds a bridge of another version", () => {
   });
 });
 
-// A bridge update that cannot reach its PC (switched off, asleep, gone in the middle) learned
-// nothing about the bridge: the PC waits as offline and checks the version again once it answers,
-// instead of asking for an update it cannot run. A PC that refuses the key keeps the button.
 describe("a bridge update on a PC that cannot be reached", () => {
   const id = "0b9d6a52-7a5e-4f8e-9a51-2f3c4d5e6f70";
   const socket = "/home/u/.config/herdr/herdr.sock";
@@ -866,19 +840,15 @@ describe("a bridge update on a PC that cannot be reached", () => {
     SshConnection.prototype.run = (async (script: string) => {
       if (script.includes("uname")) return `Linux\nx86_64\n/home/u\n/home/u/.config\n\n${JSON.stringify(descriptor)}\n`;
       if (script.includes("socket=")) return socket;
-      // the bridge check after the host was read: the connection drops (or the check fails) here
       if (script.includes("kill -0")) { if (options.failRun) throw new Error("Connection to macbook closed by remote host."); return "live"; }
       throw new Error("Unexpected remote mutation");
     }) as typeof real.run;
     SshConnection.prototype.close = () => {};
     const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), async () => { throw new Error("local offline"); });
-    // registered disabled so no reconnect of its own runs; enabled again without a reconnect,
-    // as a PC that was connected when its update began
     (manager as unknown as { machines: Map<string, { machine: { enabled: boolean } }> }).machines.get(id)!.machine.enabled = true;
     try {
       const started = manager.updateBridge(id);
       for (let i = 0; i < 100 && manager.job(started.id)?.phase !== "failed"; i += 1) await Bun.sleep(25);
-      // copied: stop() below disconnects the live record
       return structuredClone({ job: manager.job(started.id)!, machine: manager.list().find((machine) => machine.id === id)! });
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   }
@@ -937,12 +907,10 @@ describe("a bridge update on a PC that cannot be reached", () => {
     const runtime = internals.machines.get(id)!;
     Object.assign(runtime.machine, { enabled: true, state: "error", action_required: "update_bridge" });
     try {
-      // an automatic update queued before the Cancel, which runs once the one ahead of it is done
       runtime.updateCancelled = true;
       internals.queueAutoUpdate(id);
       await internals.autoChain;
       expect(internals.jobs.size).toBe(0);
-      // a scheduled update keeps the Cancel, the user's button takes it back
       await internals.jobs.get(manager.updateBridge(id, true).id)!.finished;
       expect(runtime.updateCancelled).toBe(true);
       Object.assign(runtime.machine, { state: "error", action_required: "update_bridge" });
@@ -951,9 +919,6 @@ describe("a bridge update on a PC that cannot be reached", () => {
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-  // The record a live server showed for a switched-off MacBook: an earlier failed update left the
-  // button and its error, then an update that was cancelled (Cancel update, a closed dialog, the
-  // setup's time limit) disconnected the PC and kept both, with no reconnect ever scheduled.
   it("reconnects after a cancelled update, and asks again only once the PC answers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "herdr-cancelled-update-"));
     writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "macbook", enabled: false, target: { destination: "macbook" }, snapshot: null }]));
@@ -978,8 +943,6 @@ describe("a bridge update on a PC that cannot be reached", () => {
       await (internals.jobs.get(started.id) as { finished: Promise<void> }).finished;
       expect(manager.job(started.id)!.phase).toBe("cancelled");
       expect(view()).toMatchObject({ state: "reconnecting", action_required: null });
-      // the PC answers with an old bridge: the button comes back, and the cancelled update does
-      // not start again by itself
       reachable = true;
       for (let i = 0; i < 120 && view().state !== "error"; i += 1) await Bun.sleep(25);
       expect(view()).toMatchObject({ state: "error", action_required: "update_bridge", updating: null });
@@ -988,8 +951,6 @@ describe("a bridge update on a PC that cannot be reached", () => {
     } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-  // A MacBook that slept through a few tries wakes to a delay of up to a minute: the chat the
-  // user opens then asks for the PC, and that ask is what starts the next try.
   it("tries a waiting PC again when a chat asks for it, at most once per interval", async () => {
     const dir = mkdtempSync(join(tmpdir(), "herdr-retry-now-"));
     writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "macbook", enabled: false, target: { destination: "macbook" }, snapshot: null }]));
@@ -1002,7 +963,6 @@ describe("a bridge update on a PC that cannot be reached", () => {
     const internals = manager as unknown as { machines: Map<string, Waiting>; retryLater(runtime: Waiting): void; jobs: Map<string, { finished: Promise<void> }> };
     const runtime = internals.machines.get(id)!;
     runtime.machine.enabled = true;
-    // six failed tries already: the next waits a minute
     runtime.attempts = 6;
     internals.retryLater(runtime);
     const conversation = () => handleMachineRequest(new Request(`http://127.0.0.1/api/machines/${id}/pane/conversation?pane_id=w1%3Ap1`), manager);
@@ -1011,21 +971,18 @@ describe("a bridge update on a PC that cannot be reached", () => {
       expect((await conversation()).status).toBe(503);
       expect(starts).toBe(1);
       await waitingAgain();
-      // the try failed and the PC waits again; another read within the interval starts none
       expect((await conversation()).status).toBe(503);
       expect(starts).toBe(1);
       clock += 5000;
       expect((await conversation()).status).toBe(503);
       expect(starts).toBe(2);
       await waitingAgain();
-      // a bridge update that could not reach the PC was a try as well: the next read waits the interval
       clock += 5000;
       await internals.jobs.get(manager.updateBridge(id).id)!.finished;
       expect(starts).toBe(3);
       expect(runtime.retry).toBeDefined();
       expect((await conversation()).status).toBe(503);
       expect(starts).toBe(3);
-      // a PC that is switched off is never tried
       runtime.machine.enabled = false;
       clock += 5000;
       await conversation();
@@ -1079,18 +1036,15 @@ describe("terminal attach capability", () => {
       expect(isRealNode(stand("bun-as-node", "echo bun"))).toBe(false);
       expect(isRealNode(stand("broken", "exit 1"))).toBe(false);
       expect(isRealNode(join(dir, "absent"))).toBe(false);
-      // a node that never answers is given up on, not waited for
       expect(isRealNode(stand("hung", "exec sleep 30"), process.env, 200)).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
 describe("host detection", () => {
-  /** a PC that answers sh with `shError` (or not at all) and PowerShell with `ps` */
   const pc = (shError: string | null, ps: string | Error): SshConnection => ({
     run: async (script: string) => {
       if (shError !== null) throw new Error(shError);
-      // the sh probe, then the socket realpath
       return script.includes("uname") ? "Linux\nx86_64\n/home/u\n/home/u/.config\n/usr/bin/herdr\nbundle-ready\n" : "/home/u/.config/herdr/herdr.sock";
     },
     runPowerShell: async (script: string) => {
@@ -1128,7 +1082,6 @@ describe("host detection", () => {
       },
     } as unknown as SshConnection;
     const { inspection } = await detectHost(ssh, "qa");
-    // regression (fails on main): the inspection must read XDG_CONFIG_HOME and prefer it over APPDATA
     expect(scripts.some((script) => script.includes("$env:XDG_CONFIG_HOME"))).toBe(true);
     expect(inspection.expectedSocket).toBe("C:\\Temp\\xdg\\herdr\\sessions\\qa\\herdr.sock");
   });
@@ -1139,13 +1092,11 @@ describe("host detection", () => {
       runPowerShell: async (script: string) => script.includes("XDG_CONFIG_HOME") ? answer : windowsAnswer,
     } as unknown as SshConnection;
     const { inspection } = await detectHost(ssh, "qa");
-    // control: the empty XDG line preserves APPDATA, LOCALAPPDATA and herdr field positions
     expect(inspection.expectedSocket).toBe("C:\\Users\\u\\AppData\\Roaming\\herdr\\sessions\\qa\\herdr.sock");
     expect(inspection.herdrPath).toBe("C:\\Users\\u\\AppData\\Local\\Programs\\Herdr\\bin\\herdr.exe");
   });
   it("uses Windows APPDATA when XDG_CONFIG_HOME is absent", async () => {
     const { inspection } = await detectHost(pc("'sh' is not recognized as an internal or external command", windowsAnswer), "qa");
-    // control: the existing APPDATA fallback is unchanged
     expect(inspection.expectedSocket).toBe("C:\\Users\\u\\AppData\\Roaming\\herdr\\sessions\\qa\\herdr.sock");
   });
   it("refuses a Windows PC that is not x64, by name", async () => {
@@ -1172,8 +1123,6 @@ describe("host detection", () => {
   });
 });
 
-// verify() runs inside a setup that needs a real SSH host. Here its SSH forward is a loopback
-// relay, and the bridge is a real server whose herdr is absent, or a stand-in with a fixed answer.
 describe("bridge verification failures", () => {
   const TOKEN = "a".repeat(64);
   const GENERIC = (status: number) => `Bridge verification failed (${status}). Reconnect after checking the remote bridge.`;
@@ -1186,20 +1135,17 @@ describe("bridge verification failures", () => {
     if (socketBefore === undefined) delete process.env["HERDR_SOCKET"]; else process.env["HERDR_SOCKET"] = socketBefore;
   });
   const temp = () => { const dir = mkdtempSync(join(tmpdir(), "herdr-bridge-verify-")); dirs.push(dir); return dir; };
-  /** a bridge whose herdr socket is `socket` */
   function bridge(socket: string): number {
     process.env["HERDR_SOCKET"] = socket;
     const server = createServer({ port: 0, hostname: "127.0.0.1", token: TOKEN, stateDir: temp(), machines: false, registerBridge: false, tailscaleOwner: null });
     stops.push(() => server.stop());
     return server.port!;
   }
-  /** a bridge that answers /api/bridge with one fixed response */
   function answering(status: number, body: string): number {
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(body, { status }) });
     stops.push(() => server.stop(true));
     return server.port!;
   }
-  /** what the person adding the PC is told when verification of the bridge on `port` fails */
   async function told(port: number, socket = "/home/u/.config/herdr/herdr.sock"): Promise<string> {
     const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
     stops.push(() => manager.stop());
@@ -1211,7 +1157,6 @@ describe("bridge verification failures", () => {
     const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
     return verify(ssh, descriptor, socket).then(() => "verified", (error: Error) => error.message);
   }
-  /** what verifying `fields` says when nothing answers at the end of the tunnel, and the arguments forward() got */
   async function unanswered(fields: Record<string, unknown>): Promise<{ told: string; forwards: unknown[][] }> {
     const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
     stops.push(() => manager.stop());
@@ -1223,7 +1168,6 @@ describe("bridge verification failures", () => {
     return { told, forwards };
   }
 
-  // Evaluate the entrypoint's actual socket setup without starting its daemon.
   const entryLines = readFileSync(new URL("./remote-entry.ts", import.meta.url), "utf8").split("\n");
   const socketSetup = ["const herdrConfig =", "const session =", 'process.env["HERDR_SOCKET"] ='].map((prefix) => {
     const line = entryLines.find((line) => line.startsWith(prefix));
@@ -1304,7 +1248,6 @@ describe("bridge verification failures", () => {
     expect(message).not.toContain("/home/u");
   });
 
-  /** a bridge that answers /api/bridge with `value` as JSON of `total` bytes */
   function sized(status: number, value: unknown, total: number): { port: number; cancelled: Promise<void> } {
     let cancelled: Promise<void> = new Promise(() => {});
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { const body = padded(value, total); cancelled = body.cancelled; return new Response(body.stream, { status }); } });
@@ -1314,7 +1257,6 @@ describe("bridge verification failures", () => {
 
   it("bounds bridge errors without echoing secrets", async () => {
     const secret = { error: { code: "connect_failed", message: "fixture-secret-token http://127.0.0.1:1/private" } };
-    // within its 8 KiB the known code is still read
     expect(await told(sized(500, secret, 8 * 1024).port)).toContain("herdr is not answering");
     const over = sized(500, secret, 8 * 1024 + 32 * MiB);
     const message = await told(over.port);
@@ -1359,7 +1301,6 @@ describe("bridge verification failures", () => {
     const short = spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(200));
     const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
     stops.push(() => manager.stop());
-    // its headers and the start of a body, then nothing
     const ssh = { forward: async (local: number) => {
       const stalled = Bun.listen({ hostname: "127.0.0.1", port: local, socket: { data(socket) { socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{\"pid\""); } } });
       stops.push(() => stalled.stop(true));
@@ -1399,7 +1340,6 @@ describe("saved PCs that cannot be read", () => {
       expect(manager.list().map((machine) => machine.kind)).toEqual(["local"]);
       expect(manager.settings()).toEqual({ auto_update_bridges: true, set_aside: aside });
       expect(String(error.mock.calls[0]?.[0])).toContain(aside[0]!);
-      // the next save makes a readable file again
       (manager as unknown as { persist(): void }).persist();
       expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))).toEqual([]);
     } finally { manager?.stop(); error.mockRestore(); }
@@ -1430,7 +1370,6 @@ describe("saved PCs that cannot be read", () => {
       writeFileSync(path, "[]");
       persist();
       expect(readFileSync(path, "utf8")).toBe(saved);
-      // the same length, other bytes
       writeFileSync(path, saved.replace("Saved PC", "Other PC"));
       persist();
       expect(readFileSync(path, "utf8")).toBe(saved);
@@ -1448,7 +1387,6 @@ describe("saved PCs that cannot be read", () => {
 
 describe("a Windows startup retried after a scheduler failure", () => {
   it("does not read the previous attempt's startup status as this one's", async () => {
-    // Given a PC whose last start left a scheduler failure in its startup status file.
     const dir = mkdtempSync(join(tmpdir(), "herdr-windows-stale-status-"));
     const manager = new MachineManager(dir, {} as never, {} as never, async () => { throw new Error("fixture local offline"); });
     const runtime = manager["runtime"]({ id: "windows", name: "pc", kind: "ssh", enabled: true, state: "error", action_required: "windows_start_failed", target: { destination: "pc" }, snapshot: null, error: "Task registration denied" });
@@ -1464,7 +1402,6 @@ describe("a Windows startup retried after a scheduler failure", () => {
     runtime.ssh = {
       run: async () => { throw new Error("Windows has no sh"); },
       runPowerShell: async (script: string) => {
-        // The remote registry: the launch script may clear the status before it starts the bridge.
         if (script.includes("Win32_Process")) {
           if (script.includes(`Remove-Item -LiteralPath "$dir\\${windowsBridgeFiles().status}"`)) status = null;
           launched = true;
@@ -1480,14 +1417,11 @@ describe("a Windows startup retried after a scheduler failure", () => {
       spyOn(windowsHost, "inspect").mockResolvedValue({ platform: "win32-x64", home: "C:\\Users\\u", herdrPath: "C:\\herdr.exe", expectedSocket: socket, bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "C:\\runtime", registryDir: "C:\\registry" }),
       spyOn(windowsHost, "herdrVersion").mockResolvedValue("herdr 0.9.5"),
       spyOn(manager as never, "verify").mockResolvedValue({ endpoint: { url: "http://fixture", token: "fixture" }, identity: { ...descriptor, socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 } } } as never),
-      // The new bridge loads, clears any status itself and registers after the first poll.
       spyOn(Bun, "sleep").mockImplementation(async () => { if (launched) { status = null; registered = true; } }),
     ];
     manager["pause"] = async () => { if (++pauses >= 3) job.abort.abort(); };
     try {
-      // When the user retries after fixing Task Scheduler.
       const outcome = await manager["prepare"](runtime, job).then(() => "connected", (error: Error) => error.message);
-      // Then the new bridge connects instead of the old failure being shown again.
       expect(outcome).toBe("connected");
       expect(job.public.action_required).not.toBe("windows_start_failed");
     } finally {

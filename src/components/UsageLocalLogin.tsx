@@ -13,11 +13,9 @@ import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
 export function UsageSignInAgain({ usage, onStarted, onFollow }: {
   readonly usage: ProviderUsage;
   readonly onStarted: (paneId: string) => void;
-  /** where a popover hosts it: the dialog is opened outside the popover, which closes as focus leaves it */
   readonly onFollow?: (request: Extract<UsageLoginRequest, { provider: "claude" | "codex" }>) => void;
 }) {
   const t = useT();
-  // the sign-in, followed in its own dialog: Open terminal there hands over to the tab
   const [request, setRequest] = useState<Extract<UsageLoginRequest, { provider: "claude" | "codex" }> | null>(null);
   const provider = usage.id;
   if (provider !== "claude" && provider !== "codex") return null;
@@ -27,7 +25,7 @@ export function UsageSignInAgain({ usage, onStarted, onFollow }: {
   </span>;
 }
 
-export function UsageLocalLogin({ provider, onStarted, onFollowed }: { readonly provider: UsageLoginProvider; readonly onStarted: (paneId: string) => void; /** a sign-in followed in the browser was closed: the flow that started it is done too */ readonly onFollowed?: () => void }) {
+export function UsageLocalLogin({ provider, onStarted, onFollowed }: { readonly provider: UsageLoginProvider; readonly onStarted: (paneId: string) => void; readonly onFollowed?: () => void }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +52,6 @@ export function UsageLocalLogin({ provider, onStarted, onFollowed }: { readonly 
     const id = provider.id;
     if (id === "antigravity") return;
     if ((id === "claude" || id === "codex") && typeof name !== "string") return;
-    // Claude and Codex are followed in the browser (UsageSignInDialog), which starts the login itself
     if (id === "claude" || id === "codex") { setFollowing({ provider: id, name: String(name) }); return; }
     setBusy(true); setError(null);
     void startUsageLogin({ provider: id, ...(confirmed ? { replace: true as const } : {}) }).then((started) => {

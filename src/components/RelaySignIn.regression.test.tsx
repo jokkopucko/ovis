@@ -32,7 +32,7 @@ const mount = async (child: ReactNode) => {
   await act(async () => { renderer = create(<SettingsProvider>{child}</SettingsProvider>); });
 };
 const online = { phase: "online", relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null } as const;
-const relay = { status: online, unsupported: false, pending: false, request: async () => online };
+const relay = { status: online, unsupported: false, readFailed: false, pending: false, request: async () => online, reread: () => {} };
 const relayView = () => <RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} phone={false}
   account={{ service: SERVICE, onOpen: openAccount, onSignedIn() {} }} />;
 
@@ -110,7 +110,7 @@ it("honors a committed session when cancellation arrives before finish resolves"
     },
   } });
   function Harness() {
-    actions = useLinkPageSignIn(SERVICE, signedIn, openAccount);
+    actions = useLinkPageSignIn(SERVICE, signedIn);
     return <output>{actions.state.kind}</output>;
   }
   await mount(<Harness />);
@@ -130,12 +130,13 @@ it("keeps the active account code and polling when recheck changes", async () =>
   expect(signal?.aborted).toBe(false);
 });
 
-it("opens Settings without a tab when only a desktop provider is offered", async () => {
-  service.offer(["apple"], []);
+it("says where to sign in, with no button and no tab, when only a desktop provider is offered", async () => {
+  service.offerSignIns(["apple"], []);
   service.offerLinkPage([]);
   await mount(relayView());
-  await act(async () => { button("Sign in to Ovis").props.onClick(); });
-  expect(openAccount).toHaveBeenCalledTimes(1);
+  expect(text(renderer!.root)).toContain("Sign in on this PC's own screen, or in the Ovis app.");
+  expect(renderer!.root.findAll((node) => node.type === "button" && /Sign in|Continue with/.test(text(node)))).toHaveLength(0);
+  expect(openAccount).not.toHaveBeenCalled();
   expect(opened).toEqual([]);
 });
 

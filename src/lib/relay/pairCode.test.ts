@@ -18,7 +18,6 @@ afterAll(() => relay.stop());
 const connect = (url: string) => new WebSocket(url.replace(/^wss:\/\/[^/]+/, relayUrl));
 const hexOf = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-/** A PC holding `code` on the relay that answers with `reply` (the offer's JSON, or null when its six-digit code is gone). */
 async function host(code: string, reply: string | null | ((exchange: PairCodeHost) => Uint8Array)) {
   const socket = new WebSocket(`${relayUrl}/v1/pair?nameplate=${splitPairCode(code).nameplate}&role=host&v=1`);
   socket.binaryType = "arraybuffer";
@@ -52,7 +51,6 @@ async function host(code: string, reply: string | null | ((exchange: PairCodeHos
 
 const failure = (promise: Promise<unknown>) => promise.then(() => "no failure", (error: unknown) => error instanceof TypedCodeError ? error.failure : String(error));
 
-/** an offer as a PC makes it: its id is the one its key gives */
 function pcOffer(): RelayOffer {
   const key = generateKeyPair().publicKey;
   return { v: 1, server_id: deriveServerId(key), server_public_key: exportPublicKey(key), relay: "wss://relay.example" };
@@ -80,7 +78,6 @@ describe("pairing with a typed code on the device", () => {
   it("says the relay could not be reached, not that the code was wrong, when the PC goes after the device answered", async () => {
     const pc = await host("AB8DE-FGHJK", (exchange) => exchange.hello());
     const typed = failure(offerFromCode("AB8DE-FGHJK", { connect }));
-    // the PC has the device's answer, then leaves: the relay closes the device as the host is gone
     await pc.heard;
     pc.close();
     expect(await typed).toBe("unreachable");

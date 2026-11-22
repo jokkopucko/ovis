@@ -21,7 +21,6 @@ const saved = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | null = null;
 beforeEach(() => {
   for (const name of globals) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-  // only what SettingsProvider reads and writes: no stored settings, a root it themes, no listeners that fire
   const style = { setProperty: () => {}, removeProperty: () => {}, getPropertyValue: () => "", backgroundColor: "" };
   const listen = { addEventListener: () => {}, removeEventListener: () => {} };
   const values: Record<string, unknown> = {
@@ -62,7 +61,6 @@ test("a goal's wait leaves a minute past when it continues, on its own timer", (
 test("a goal's wait that takes the place of a later one, already long past due, is not shown", () => {
   const row = mount(waitTurn("2026-10-05T01:00:00.000Z"));
   expect(shown(row)).toBe(true);
-  // the tab slept: half an hour passed with no timer run, and the next read brings a wait due before it
   jest.setSystemTime(new Date(now + 30 * 60_000));
   act(() => { row.update(element(waitTurn("2026-10-05T00:20:00.000Z"))); });
   expect(shown(row)).toBe(false);

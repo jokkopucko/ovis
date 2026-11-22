@@ -163,9 +163,7 @@ test("questionnaire parser rejects oversized adversarial input before reading so
   expect(parsePiQuestionnaire(oversized, unreadableSource)).toBeNull();
   expect(isPiQuestionnaireScreen(oversized)).toBe(true);
   expect(parseInteractivePrompt("pi", oversized)).toBeNull();
-  // Many short lines stay below the character cap but exceed the independent line budget.
   expect(parsePiQuestionnaire(fixture.screens.review.replace("Press Enter to submit", "x\n".repeat(600)), multi)).toBeNull();
-  // Also exercise a missing caption inside both budgets: no growing suffix copies are needed.
   const bounded = fixture.screens.review.replace("Press Enter to submit", `${"x".repeat(80)}\n`.repeat(400));
   expect(bounded.length).toBeLessThan(MAX_QUESTIONNAIRE_SCREEN_CHARS);
   expect(parsePiQuestionnaire(bounded, multi)).toBeNull();
@@ -179,7 +177,6 @@ test("an extension's status line under pi's footer keeps the questionnaire's car
     const screen = fixture.screens[name] + footer + status;
     expect(isPiQuestionnaireScreen(screen)).toBe(true);
     expect(card(parsePiQuestionnaire(screen, single))).toEqual(card(read(name)));
-    // only directly under pi's footer, never a prompt in its place, and no more output after it
     expect(parsePiQuestionnaire(fixture.screens[name] + status, single)).toBeNull();
     for (const prompt of ["\n❯ a new message", "\nuser@host:~/app$"]) expect(parsePiQuestionnaire(fixture.screens[name] + footer + prompt, single)).toBeNull();
     expect(parsePiQuestionnaire(`${screen}\nSome later output`, single)).toBeNull();

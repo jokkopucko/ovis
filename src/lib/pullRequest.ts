@@ -6,7 +6,6 @@ import { quoteBlock } from "./replyComments.ts";
 
 const checkName = (check: PullRequestCheck): string => check.workflow === null ? check.name : `${check.workflow} / ${check.name}`;
 
-/** What Send to agent puts in the draft for a failing check: its name, its page, and its log's last lines when it has one. */
 export function checkDraft(view: Pick<PullRequestView, "number">, check: PullRequestCheck, log: PullRequestCheckLog | null): string {
   const head = `The check "${checkName(check)}" failed on pull request #${view.number}${check.url === null ? "" : ` (${check.url})`}.`;
   if (log === null || log.text.trim() === "") return head;
@@ -14,7 +13,6 @@ export function checkDraft(view: Pick<PullRequestView, "number">, check: PullReq
   return `${head}\nThe last lines of its log:\n\n${fence}\n${log.text}\n${fence}`;
 }
 
-/** What Send to agent puts in the draft for a review thread: where it is, who wrote it, and its first comment quoted. */
 export function threadDraft(view: Pick<PullRequestView, "number">, thread: PullRequestThread): string {
   const place = thread.line === null ? thread.path : `${thread.path}:${thread.line}`;
   const by = thread.author === null ? "" : ` from @${thread.author}`;
@@ -30,7 +28,6 @@ export function mergeLabel(t: Translate, method: PullRequestMergeMethod): string
   }
 }
 
-/** Why Merge is off, in GitHub's terms; null when it is on. */
 export function mergeBlockedWord(t: Translate, view: PullRequestView): string | null {
   if (view.mergeable) return null;
   if (view.state === "merged") return t("Already merged.");
@@ -46,7 +43,6 @@ export function mergeBlockedWord(t: Translate, view: PullRequestView): string | 
   }
 }
 
-/** `pc`: the PC's name the words are prefixed with (another PC, or this one among several); none for this PC alone */
 export function pullRequestErrorMessage(t: Translate, error: unknown, pc?: string): string {
   const pcPrefix = pc ? `[${pc}] ` : "";
   if (!(error instanceof ApiError)) return `${pcPrefix}${t("The pull request could not be loaded.")}`;

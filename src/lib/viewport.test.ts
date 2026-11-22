@@ -7,7 +7,6 @@ describe("keyboard viewport reference", () => {
     const remembered = { large: 790, height: 790 };
     // When: resizes-content shrinks the visual/layout viewport and the lvh ruler.
     const reference = keyboardViewportReference(477, 533, 477, remembered, true);
-    // Then: occlusion is measured from the full viewport, not the shortened lvh.
     expect(reference).toBe(790);
     expect(keyboardHoldsGrid(reference - 477 > reference * 0.2, 390, 390)).toBe(true);
   });
@@ -25,7 +24,6 @@ describe("keyboard viewport reference", () => {
   });
 
   test("rotation uses the new width's baseline and refits (control)", () => {
-    // The viewport module looks up its remembered height by window width.
     const heights = new Map([[393, { large: 852, height: 852 }]]);
     const reference = keyboardViewportReference(372, 393, 393, heights.get(852), true);
     expect(reference).toBe(393);

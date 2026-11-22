@@ -125,7 +125,7 @@ longer works**.
 PC's `server_id`, public key, relay and host name only (**Copy a link without a code** under the setup
 guide's QR code; it holds nothing secret, though whoever carries the link can read the host name). Copying it opens a 10-minute window, as a Bluetooth device's pairing mode
 does: outside it the PC refuses a comparison with `auth_failed` before any prompt, and does not count
-it as a failed pairing, so nobody the owner did not invite can raise a prompt. Such a link may have come through a channel nobody vouches
+it as a failed pairing, so nobody the owner did not invite can raise a prompt. The window is kept across a restart of the PC's server for the rest of its ten minutes (a saved deadline further ahead than that reads as closed), and `POST /api/relay/link/close`, from this PC only, ends it and declines the comparisons it was showing. Such a link may have come through a channel nobody vouches
 for, so its key is not trusted on its own: a relay, or whoever handed the link over, could have put
 its own key there and sit between the phone and the PC. Trust comes from two people looking at
 two screens instead, as in Bluetooth's numeric comparison:
@@ -152,8 +152,18 @@ two screens instead, as in Bluetooth's numeric comparison:
 7. **Confirm and approve.** The phone sends `PAIR_CONFIRM` once its person taps **The numbers
    match**, and the PC's owner approves (`POST /api/relay/pairing`). Only both together make the
    device, the same record and key a pairing with a code makes, and `AUTH_OK` follows as usual.
+   A join that a PC's own page offers (a signed-in device the PC still has to approve) sends
+   `PAIR_CONFIRM` as soon as the digits show, with no tap: its person pressed **Ask to join** on
+   that page, the key is the one the page's id derives from, and the PC's approval of the same
+   digits stays the gate.
    On a PC without a screen, `bun scripts/plugin.ts pair --approve` in its terminal shows each
-   waiting phone with its digits and asks y/n: the PC's terminal is the PC itself.
+   waiting phone with its digits and asks for them: typing the six digits, or their last three,
+   approves, Enter by itself declines, and anything else answers nothing and is asked again. It
+   asks as `add` does, by the same rules for which line answers which request
+   ([A PC with no screen](#a-pc-with-no-screen)), and reads the waiting requests once more before
+   it sends an approval typed as three digits. Input that is not a terminal (a pipe, `ssh` without
+   `-t`) answers nothing: the command says so and fails, and no request is declined, so each keeps
+   waiting for a run at a terminal. The PC's terminal is the PC itself.
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's
@@ -180,19 +190,24 @@ pairing. A comparison that pairs this PC only counts toward the same 20 failures
 a wrong code, after which the PC takes no such pairing for 10 minutes. One that asks to join the
 account (`pair-intent-account`) counts toward 20 of its own, so a flood of those cannot pause
 pairing with a QR code or a code. A relay in the middle can spend both, so it gets about 40 tries
-in 10 minutes, one in twenty-five thousand, before both pause.
+in 10 minutes, one in twenty-five thousand, before both pause. A comparison from another PC of the
+account (`pair-intent-pc-vouched`, [Adding a PC of your account](account.md#adding-a-pc-of-your-account))
+counts toward 20 of its own too, but gives a relay no tries: the PC takes one only for a key that a
+device signed in to the account named in an admission, and the PC asking holds the other's key from
+the account's directory, checked against its id, so a relay cannot stand in for either end.
 **Revoke all** ends every comparison under way, an approved one included, and withdraws its prompt. The prompt lives in memory only. The relay learns nothing new: the comparison travels inside the
 encrypted channel, so it sees only a few more frames and their sizes and timing.
 
 The phone's screen asks **Does {name} show this number?** with **The numbers match** and **Cancel**,
-then waits for the approval. A PC that declines, or does not approve in time, leaves the phone at
+then waits for the approval. On a PC's own page, the join shows the digits under **Approve it on {name}**, with
+**Cancel** alone, and waits for the approval. A PC that declines, or does not approve in time, leaves the phone at
 **{name} did not approve this phone**, with no key saved.
 
 **Pairing with a typed code.** For a device with no camera pointed at the PC, **Show a code to
 type** under the QR code shows ten characters, `XXXXX-XXXXX` (Crockford base32: no I, L, O or U;
 O, I and L typed are read as 0, 1 and 1), and **Pair with a code** on app.ovis.sh takes them
-(on its front page, or behind **Pair with a QR or code** on the sign-in screen when the account
-service runs). The code finds the PC and hands the device the same offer the QR code carries, then the
+(in a browser, under **Add a PC → Scan a QR code**: Add a PC is behind **Start without signing in**
+on the sign-in screen, or the front page itself when no account service runs). The code finds the PC and hands the device the same offer the QR code carries, then the
 device pairs with the six-digit code in it as a scanned QR code does: nothing else admits it
 ([`shared/relay-pair-code.ts`](../shared/relay-pair-code.ts),
 [`server/relay/pair-code.ts`](../server/relay/pair-code.ts),
@@ -260,6 +275,22 @@ paired device with drive access instead.
 The hosted shell hides the group because mutations
 over the relay answer 403 `local_required`. While the relay is off an offer answers 409
 `relay_off`; while it is in error it answers 409 `relay_offline`, so wait for **Online** before pairing.
+An offer asked for with the header `x-ovis-no-account-only: 1` (the QR code of Add a connection's
+relay tab, which puts the PC in the account named for it) is made only while the PC is in no
+account and an account is named for it: a PC in an account answers 409 `in_account`, one that no
+account was named for 409 `no_account_named`, and the code of such an offer ends when the PC joins
+an account ([account.md](account.md#who-may-admit-a-device)). That code pairs through the relay
+only: `POST /api/devices/pair` at the PC's own address answers it 401 `invalid_code`. A device that
+pairs with that code through the relay is no device of the PC until it has linked itself into an
+account: until then it reads its own account status and sends its link, and nothing else (403
+`link_required`), and one that has not linked after 30 seconds is gone. An offer asked for without
+the header never carries that code: with it pending, the offer starts a code of its own, which
+replaces it.
+An offer or a typed code (`POST /api/relay/code`) asked for with the header
+`x-ovis-expect-account: <account id>` is such a code made for that one account: a device that
+pairs with it is taken into that account alone, the answer repeats the account and names the
+code, and `POST /api/relay/offer/keep` reads by that name whether the code is still pending and how
+it ended ([account.md](account.md#a-code-made-for-an-account)).
 
 **A start that fails.** If a start fails before the PC's relay link exists, the switch stays
 off and the panel shows **The relay did not start: …** with the reason and **Try again**. Nothing
@@ -277,44 +308,243 @@ code as well ([Access and safety](guide.md#access-and-safety)).
 ### A PC with no screen
 
 A PC you reach only over SSH (a home server, a desktop in another room) links itself from its own
-terminal, with the same two ways its Settings page offers and the same rules. In an installed
-plugin, run the plugin's script as in [In a terminal](guide.md#in-a-terminal); from a checkout:
+terminal, with the same two ways its Settings page offers and the same rules. The installer's
+`ovis` command runs them ([In a terminal](guide.md#in-a-terminal)); from a checkout, or on Windows,
+`bun scripts/plugin.ts` takes its place:
 
 ```bash
-bun scripts/plugin.ts link            # sign in to your account, then approve the device that adds this PC
-bun scripts/plugin.ts link --google   # the same, at Google's own device page (--github: GitHub's)
-bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
+ovis add             # sign in to your account, then scan this PC's QR code with a device of the account
+ovis add --approve   # the same sign-in, then approve here the device that adds this PC
+ovis add --google    # either, at Google's own device page (--github: GitHub's)
+ovis link --code     # a code to type and the relay QR code, renewed until Ctrl+C
 ```
 
-Both turn the relay on first when it is off, and wait until it is online.
+The installer runs `ovis add` as its last step when it is given `--add`
+(`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add`), at a terminal you can answer at and
+while the app runs. What was typed in that terminal while the installer worked is discarded before
+the step starts, so it answers nothing the step asks; where the installer cannot discard it, it
+prints the command instead. On a PC where it has just installed herdr the app is not up yet: start
+herdr, then run `ovis add`, as its last lines say.
 
-- **`link`** signs in the way a PC's own page does: it prints the Ovis sign-in page
+`add`, `login` and `link` are one command under three names. Both ways turn the relay on first when
+it is off, and wait until it is online.
+
+- **`add`** signs in the way a PC's own page does: it prints the Ovis sign-in page
   (`https://account.ovis.sh/link`), a code and a QR code of the page with the code filled in. On any
   device, open it, check the code, choose **Continue with GitHub** or **Continue with Google**, sign
   in, and confirm. An account service without that page, or `--github` / `--google`, uses the
-  provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists this PC in your
-  account ([Adding a PC](account.md#adding-a-pc)) and waits. On a phone already in your account,
-  tap **Add** on this PC; the terminal shows the request with its six digits
-  (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
-  y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
-  this PC only. Every nine minutes it lists the PC anew so the account's devices keep showing it as
-  new; a renewal the account service does not take is tried again until it is, so the PC never
-  stays off the list. It ends once the PC is in the account, and the sign-in ends with it: nothing
-  of it is kept on the PC. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
+  provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists
+  this PC in your account ([Adding a PC](account.md#adding-a-pc)) and, once the relay is online,
+  shows **one QR code** with a code to type and this PC's ID. A device signed in to the same
+  account that scans it (or types the code at app.ovis.sh, **Pair with a code**) is paired, puts
+  this PC in the account and brings in the account's other devices: there is no **Add** to press,
+  no digits to compare and nothing to answer in the terminal. The code is made for that account
+  (`x-ovis-expect-account` on both calls, [A code made for an account](account.md#a-code-made-for-an-account)):
+  a device signed in to another account, or to none, pairs with it but gets nothing of this PC.
+  Its link into another account is refused and it goes at once, one that does not link goes after
+  30 seconds, and the code stays usable for your own device while it has time and pairings left. The command takes the code only when this
+  PC's answer repeats the account that signed in; an answer that names another account makes it
+  fail, after it asked this PC to take the code back and said what came of that (see below). Whoever holds the code can still pair with this PC
+  ([Who may admit a device](account.md#who-may-admit-a-device)), so the command guards it:
+  - It is made only by running the command, after the sign-in, and drawn only on a terminal.
+    Where the output is not one (a pipe, a file, a CI log) the command stops before the sign-in
+    with **The QR code is a key to this PC**; `--print` writes it anyway, as plain lines that stay.
+  - On a terminal it is drawn on the terminal's other screen, which the command leaves as soon as
+    a device paired, when the run stops, on Ctrl+C and on any error. A terminal that has such a
+    screen (most do) then shows the code no more, in its window or its scrollback. Where there is
+    none, or the output is kept elsewhere, the drawing stays: GNU screen without `altscreen on`,
+    the Linux console, a session recorded by `script` or asciinema, tmux `pipe-pane`, a
+    terminal's own log. Treat the code that stays there as live until the command confirms it was
+    taken back, or until it runs out. That screen keeps nothing that scrolled off it: in a window too small for the QR
+    code the command says so and shows the code to type, and draws the QR code when the window
+    grew.
+  - When the run ends, the command asks this PC to take back the code it made (`POST
+    /api/devices/pair/cancel` with the code's id and the six digits its QR code carried, as `link
+    --code` does; a code to type whose QR code never came, by its id alone), and says what came of
+    it: taken back; already ended (`cancelled: false`: another code replaced it, say); or not
+    confirmed (this PC did not answer). Treat the code as live until the command says it was taken
+    back, or until it runs out. It asks before anything is written to a terminal
+    that may be gone: on success, on Ctrl+C, a SIGTERM, the terminal closing (SIGHUP), an output
+    that takes no more writes, an error and the 30 minutes. Only a process that is killed
+    outright (SIGKILL, a crash, the PC losing power) leaves its code to run out by itself, within
+    its ten minutes. A new code comes as one runs out, three codes at most, about 30 minutes;
+    then the command stops. While this PC still reads the code as live past its ten minutes, a
+    device that paired with it in time may still be linking: no new code comes and the run does
+    not stop until it has linked or its time is over. A code is made only after a look at this PC's account and devices
+    that was answered and found this PC in no account. A device that pairs with a code made for
+    the account is in no list until it linked itself into that account, and this PC then ends
+    the code itself: a device that shows in the list did not come by it, ends nothing, and is
+    asked about as below. At each look the command reads its code by its id
+    (`POST /api/relay/offer/keep`). A code that ended before it ran out (another code was made on
+    this PC, it was taken back there, a device that held it was revoked, five devices paired with
+    it and none joined the account, or a wrong code was typed for it five times) ends the run
+    with **The code no longer works:** and why; one this PC no longer knows (it restarted) is said
+    to be dead, and the next comes when it would have run out. When this PC runs an older Ovis, the
+    command says so on the screen of each QR code it draws (once, before its first code, with
+    `--print`), and once a device paired, through the relay or with the six digits at this PC's
+    own address, no code is shown again. Update Ovis on that PC in Settings → Updates before you
+    pair. The command
+    asks for its QR code with `x-ovis-pairing`: the code to type it just made, else a fresh one.
+    It shows only a QR code that this PC's answer names as that code; when another code was made
+    since (in Settings, by `pair`, or by another run), it shows none, leaves that code as it is
+    and says to run it again.
+  - It says what the code let in. It ends well only once this PC is in the account that signed in
+    and that account's other devices are in: **This PC is in your account (the start of its id),
+    added by (the device)**. The device named is the member of that account that linked itself
+    (a row of `GET /api/devices` with `account` and no `added_by`): the one that came since the
+    command started, else the one paired before (it linked itself meanwhile). A device that only
+    took the code is never named as the one that added the PC, nor is a device of the account
+    that the adding device then brought in. Where that leaves no single device, none is named.
+  - A PC that ended in **another account** than the one that signed in was put there by a device
+    the code let in: anyone who holds the code and is signed in to an account of their own can do
+    that. The command asks nothing then. It removes every device that came since the first code,
+    that account's members among them, looking again until none is left (a member brings the
+    account's other devices in meanwhile), and says which went, with both account ids and the
+    device that added the PC. With those gone this PC is in no account again: it stays listed in
+    the account that signed in, its relay pass is asked under that account
+    (`POST /api/account/relay-account`), and the command fails with **Run ovis add again**. When
+    a device paired before this run holds this PC in that account, or a device could not be
+    removed, the command says so, takes this PC off the list of the account that signed in and
+    names **Revoke all** in Settings → Devices and PCs. When this PC's devices or its account
+    cannot be read after the removal, or more devices keep pairing than the command looks again
+    for (four times), it says that one **may still be paired** and where to revoke it, also when
+    this PC is out of that account again. It never names the other account for the relay pass.
+  - A device whose row names the account that signed in is taken as that account's and is not
+    asked about. That is the device's own word, not a proof: an account's first member on a PC
+    links itself, and names its account in a record its own key signed
+    ([What this does not protect against](account.md#what-this-does-not-protect-against)).
+  - Every other device that came since the first code got in by the code alone: the command names
+    it and asks
+    **Keep that device? Type keep to keep it, or press Enter to remove it:**, whether this PC is
+    in no account or joined the account by another device meanwhile. One paired through the relay
+    gets 15 seconds first, in which a signed-in device links itself; one paired at this PC's own
+    address is asked about at once. **Only the word keep keeps it.** Anything else (a y
+    included), no answer in the time left, an input that is not a terminal, and a run that ends
+    before an answer (Ctrl+C, a SIGTERM, the terminal closing, an error, the 30 minutes; also
+    for a device still in its 15 seconds) remove it (`DELETE /api/devices/{id}`), and the command
+    says which devices went. The removal carries `x-ovis-unless-account` with the account that
+    signed in, so a device that linked itself in that very moment stays
+    ([PC API](account.md#pc-api)). A pairing code the removed device started, or was handed, ends
+    with it, so nobody pairs with that code afterwards. The command never ends on what it read
+    before a removal: it looks at this PC's account and devices once more, so a device that paired
+    or an account this PC joined while the removal was on its way is dealt with as above. With this
+    PC still in no account it then fails with **Sign
+    in on that device, then run ovis add again**; with this PC in the account it ends as above,
+    and fails only when the device could not be removed. As a run ends, this PC's devices are read
+    up to three times. When they cannot be read, or more keep pairing than the command looks again
+    for, it removes the devices it knew of and says that one **may still be paired**, and where to
+    revoke it (Settings → Devices and PCs on this PC). Only a line typed at least a second and
+    a half after the question showed answers it. And the first line that comes after a question
+    left the screen unanswered (other devices to ask about, this PC joined an account meanwhile,
+    or the device became a member) answers nothing, whenever it comes and whatever it says: what
+    was typed at that question and not sent would otherwise arrive under the next one. Either is
+    dropped with a line saying so, and the question is asked again. What was typed and not sent
+    before the question showed is discarded as it first shows, where the terminal's input can be
+    emptied (`tcflush`), and the word typed full-width with an input method is the same word. When that device becomes a
+    member after all while the question waits, the question is dropped and the command ends well.
+
+  The approve-here window that listing the PC opens is closed at once
+  (`POST /api/relay/link/close`): this way takes no approval. An Ovis server that stops answering
+  for a moment is waited for, also when a code is due: none is made while a look goes unanswered,
+  and one that was refused because the relay is off or not back online is asked for again, as one
+  of the same three (**This PC's Ovis relay is off or not online just now**). A code refused
+  because this PC is in an account by now is not asked for again, and one refused because this PC
+  did not take the account's id ends the run; neither ends the code pending on this PC. A server that restarted lost the code, and the next comes when that one would have
+  run out. However it ends, the sign-in ends with it: nothing of it is kept on
+  the PC. On a PC already in an account it says so, with the start of that account's id, and
+  signs in to nothing; when that account's other devices are still being brought in, it waits for
+  them, up to 30 minutes, and fails if they are not in by then. With
+  `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
+- **`add --approve`** signs in and lists the PC the same way, shows no code, and waits. On a device
+  already signed in to this account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the
+  terminal shows the request with its six digits
+  (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to
+  approve, or press Enter to decline**). Only the request's own digits approve it: all six, with
+  or without the space, or the last three, so a line begun for another request, or typed ahead of
+  any, cannot approve this one. Full-width digits, as an input method types them, are the same
+  digits. When the last three are also those of another request (one asked about earlier in the
+  run, or waiting now: once in a thousand pairs), they name neither: the question says so and
+  asks for all six, and only all six approve. A request already asked about with its last three
+  is asked about again with all six as soon as such a request waits beside it, and `add` reads the
+  waiting requests once more before it sends an approval typed as three digits: three digits
+  typed for the other request approve nothing then. Only Enter by itself declines. Any other line (a
+  `y` out of habit, a mistyped digit) answers nothing: a decline ends the request for good, so
+  it is not read into a line that was not one. One line says what approves and what declines,
+  and the question is asked again. Three or six digits that are not the request's are the sign
+  that it may be another device's request, so that line says so in words (**444 are not this
+  request's digits: … shows 111 222. If the device you are adding shows other digits than those,
+  this request is not that device's: press Enter by itself to decline it, and do not type the
+  digits below**) before the question is shown again. That approval is this PC's own, as on its screen:
+  the window it opens takes approvals from this PC only.
+  The waiting goes on under that question: a request that stops waiting unanswered
+  is dropped with a line saying so, and an answer the server did not take is asked for again
+  rather than sent a second time. Only a line typed after a request's question showed, with its
+  digits, answers it: the terminal is read from the moment the PC is listed to the end of the
+  wait, so a line typed ahead (during the sign-in, while nothing is asked, before the question is
+  on the screen, or a second line at one question) is dropped with a line saying so and never
+  kept for a later request. So is a line that comes within a second and a half of a question
+  showing, too soon to have compared its digits (a key pressed twice); the question is then asked
+  again. And so is the first line that comes after a request left the screen unanswered (it ran
+  out, or was answered elsewhere), whenever it comes and whatever it says: a terminal hands a line
+  over only when Enter is pressed, so what was typed at that request's question and not sent would
+  otherwise arrive under the next one. The question shown then is asked again, and the line typed
+  under that counts. The same holds for the first line after an answer that did not reach the
+  PC's server: it may have been typed while that answer was on its way.
+  For the same reason, what was typed and not sent before a question showed is discarded as the
+  question first shows (the terminal's input is emptied, with `tcflush`), so it is no part of the
+  line sent at it. Where the input cannot be emptied (Windows, or no C library found), the first
+  line after each question answers nothing instead, and the question is asked again.
+  That costs an answer typed too early: digits typed before the question showed stay on the
+  screen in front of it, but they were discarded, so Enter pressed at the question is an empty
+  line and declines the request, and the device has to ask again. Type the digits after the
+  question shows.
+  One limit remains, as the terminal is read a line at a time and shows only when Enter was
+  pressed, not when a line was begun: keys pressed in the moment after a question showed, before
+  it was read, are part of the line sent at it. Such a line approves only if it is that request's
+  own digits, and declines only if it is empty.
+  Input that is not a terminal
+  (a pipe, a file, a closed stdin) answers nothing, whatever it carries and whenever: the command
+  says so, names the way out (over ssh, `ssh -t`), and declines every request as it shows.
+  So does a terminal whose input ended (Ctrl+D),
+  from then on. It asks for that window again every 30 seconds, and with every
+  look of the last half minute in which a window may still be opened, so the last one ends with
+  the run however long a look takes (short of one look that alone takes over half a minute, after
+  which the last window is the one before it). Every nine minutes, and once more in that last half minute,
+  it lists the PC anew so the account's devices keep showing it as new until the run is all but
+  over; a renewal the account service does not take is tried again until it is, also once the PC
+  is in the account, so the PC never stays off the list. An Ovis server that stops
+  answering meanwhile (a restart, an update) does not end the command: it waits, keeping the
+  sign-in, and asks for the window again with the first call the server answers. It ends well only
+  once the PC is in the account that signed in and the adding device has brought in the account's
+  other devices (**Added. Bringing in your account's other devices…** while it does), and names
+  the account by the start of its id. A PC that ended in another account is reported with both ids
+  and what to do (**Revoke all** in Settings → Devices and PCs), is taken off the list of the
+  account that signed in, and the command fails. After 30 minutes of waiting it stops by itself;
+  run it again to keep waiting. The server keeps a window ten minutes from when it was last asked
+  for, so the command stops asking, and stops listing the PC anew, ten minutes before its end: a run
+  that reaches the 30 minutes leaves no window behind and no card showing the PC as new, and a
+  server that goes away in those last ten minutes ends it unless the PC is in the account by then. A run
+  that ends sooner (the PC was added, Ctrl+C) leaves the window to run out by itself, within ten
+  minutes.
 - **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
   ID for the other device to compare. Both renew when they run out. When the relay mints no typed
-  code (a relay that is not Ovis's own, or one that refuses it), it says why and shows the QR code
-  alone, as Settings does. Ctrl+C, SIGTERM, SIGHUP (the terminal closing), or any error, takes both
-  back (`POST /api/devices/pair/cancel` with `{ "code" }`, the six-digit code it showed, which ends
-  that pending code and the typed code bound to it; a pairing started since, in Settings or on
-  another device, stays). Redeeming them follows the usual admission rules.
+  code (a relay that is not Ovis's own, or one that refuses it), it says why and shows a QR code
+  of its own alone. Its QR code carries its own code to type, else a fresh code (`x-ovis-pairing`,
+  [A code made for an account](account.md#a-code-made-for-an-account)). Ctrl+C, SIGTERM, SIGHUP
+  (the terminal closing), or any error, takes back what it made (`POST /api/devices/pair/cancel`
+  with `{ "code", "id" }`, the six-digit code it showed and its id, or the id of a code to type whose
+  QR code never came, which ends that code and the typed code bound to it; a pairing started
+  since, in Settings or on another device, stays). Redeeming them follows the usual admission rules. A PC that runs the
+  machine profile makes no such code (409 `machine_profile`): it takes devices through its Ovis
+  account, so `link --code` says so, points to `add`, and has nothing to take back.
 
 **Which copy runs.** An in-app update (**Settings → Updates**) installs a new release beside the
 plugin checkout and does not replace the checkout. `link` follows the release that runs, as
 `phone-setup` does, from the first checkout that has it on. A checkout from before `link` prints
 the usage line without it: reinstall the plugin (`herdr plugin install devswha/ovis`), which
-replaces the checkout, then run it again. A server too old for it (no account routes) is named as
+replaces the checkout, then run it again. A checkout from before `add` and `login` does the same
+for those two names, and its `link` still works. A server too old for it (no account routes) is named as
 such: `link` says to update it rather than failing on the first request.
 
 **Who counts as this PC.** `link` talks only to an Ovis on a loopback address, with the token the
@@ -533,8 +763,10 @@ scope, `/s/<server_id>/~/api/…`, which that PC's service worker answers
 - **Rendered HTML pages.** The app fetches the rendered page through the relay, at most 64 MiB, and
   posts it to a render host at `/s/<server_id>/~render` (`render.html` from
   [`scripts/shell-build.ts`](../scripts/shell-build.ts)), in a frame sandboxed with `allow-scripts`
-  alone, which writes it into its own document. The host's Content-Security-Policy is the PC's
-  policy for rendered pages (`pagePolicy(null)`), so the page's inline scripts run, while the
+  alone. Until you press **Run scripts** above the page, the host draws it in a frame of its own
+  that allows no script (`sandbox=""`), so nothing in the page runs; after the press it writes the
+  page into its own document. The host's Content-Security-Policy is the PC's policy for rendered
+  pages (`pagePolicy(null)`), so the page's inline scripts run once you asked for them, while the
   sandbox's opaque origin keeps it away from the app, its device keys and the relay connection.
   As on a direct connection, the PC puts the page's own pictures, scripts and media into it, up to
   8 MiB each and 32 MiB in all (for a page of up to 8 MiB); a larger video or sound gets no address
@@ -701,7 +933,8 @@ run yourself need no account and no pass.
   key to the account service (the `account` server proof, as for its mailbox) and asks
   `POST /v1/pc/relay-pass` for a pass under an account: the account of its members
   ([Linking devices with an account](account.md)), else the one its signed-in owner named with
-  `POST /api/account/relay-account` after adding the PC to that account. A pass the relay refuses
+  `POST /api/account/relay-account` after adding the PC to that account. That account is also the
+  one the PC's first member comes from ([account.md](account.md#pc-api)). A pass the relay refuses
   (`4402`, or `invalid`/`expired` in `sync`) is dropped and a new one asked for at once, at most once
   a minute. The service gives one only
   when that account lists the PC, so another account listing it neither charges nor blocks it.
@@ -710,12 +943,35 @@ run yourself need no account and no pass.
   it, and only once every relay runs a version that reads it. An older PC names none and gets v1.
   While passes are enforced and the PC's pass says `new` 0, a relay closes a client the PC has
   identified as a device new to it (named on its control socket with `new_session`) with `4403`
-  (`no new sessions for this server`); its own devices and the clients already connected stay. The
-  PC does not send `new_session` yet.
+  (`no new sessions for this server`); its own devices and the clients already connected stay.
+  The PC names a client only once a pairing on its session would make a device new to it
+  (`server/relay/link.ts` `refuseNewDevice`): a pairing code that holds, or a comparison of digits
+  both people confirmed, with a key none of its devices holds. It then makes no device, spends no
+  code and counts no failed pairing, and closes the client's socket itself after 2 s should the relay
+  not (a relay that does not hold the PC's latest pass yet, or a control socket that is reconnecting).
+  A device it knows signs in as ever, on a new socket too, and a client that has not got that far (a
+  wrong code, a comparison nobody approved) hears nothing of the pass. A device it knows that pairs
+  again with the key it saved (it opens the pairing QR once more, or forgot this PC and pairs again
+  with its account's key) is not new and is never refused. Pairing does not prove that key, so
+  whoever holds a pairing that would succeed and names a paired device's public key gets that
+  pairing's session past the limit. It cannot sign in with the key afterwards, so each further
+  session takes another pairing that succeeds (on a PC in no account, a code that session started
+  itself). The PC refuses only while the relay
+  enforces passes, which `sync` says in `relay_pass.mode` (`enforce`, or `grace` past `enforce_at`;
+  a relay that names no mode counts as enforcing only past its `enforce_at`), and the pass the
+  relay holds it to is a v2 pass with `new` 0. That pass is the PC's latest: the relay refuses only
+  whom the PC names, so the PC's pass decides. The PC stops sending a pass 5 minutes before it runs
+  out and the relay honors it until 5 minutes after: when no renewal came, the PC keeps to what
+  that pass said of new sessions for those last minutes too (timed from when it got the pass, not
+  from its own clock). The refused phone or browser can tell why from the relay's `4403` close; one
+  the PC had to close by itself hears `1012` (`server gone`), a lost connection.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
-  A new pass goes to the relay on the open control socket; nothing reconnects. The file names the
+  A new pass goes to the relay on the open control socket; nothing reconnects. The relay takes one
+  renewal a minute on a socket and drops any sooner unanswered, so a pass that follows another
+  within that minute goes out once it has passed (65 s after the one before), and one that came
+  while a control socket was still being let in goes out as soon as that socket is. The file names the
   account service the pass came from, and a pass from another one (a staging one) is never sent.
   While `OVIS_ACCOUNT_SERVICE_URL` cannot be used, the saved pass still holds until it runs out.
 - **Sending it.** In the `x-ovis-relay-pass` header of every socket the PC opens to Ovis's relays,
@@ -728,9 +984,15 @@ run yourself need no account and no pass.
   then stops reconnecting until it gets a pass, and reconnects as soon as it does. `GET /api/relay`
   says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or
   `unavailable`), what the relay last said of it (`relay`), and from when the relay will need it
-  (`enforce_at`). `new_sessions: false` there means the pass in use says new client sessions to this
-  PC are not allowed for the pass's lifetime (enforced by a later relay change), shown only while
-  the relay says passes are on and this one holds (`relay` `ok`); it is absent otherwise. `pass` is absent on a relay that is not Ovis's, and with
+  (`enforce_at`). `enforced` says whether the relay enforces passes now, as the PC knows it: its
+  last `sync` said `enforce`, or an `enforce_at` that has passed by the PC's clock, or it refused the
+  PC for its pass. `new_sessions: false` there means the pass the relay holds this PC to says new
+  client sessions to it are not allowed for the pass's lifetime, shown only while the relay says
+  passes are on and this one holds (`relay` `ok`); it is absent otherwise. While both hold on a PC
+  the relay lets in (`enforced` true, `new_sessions` false), the PC refuses every device new to it,
+  and the app says so on the PC ("This account has reached its relay data limit for new
+  connections"), whatever `enforce_at` says: a relay in `enforce` names no date, or one far ahead.
+  `pass` is absent on a relay that is not Ovis's, and with
   `OVIS_ACCOUNT_SERVICE_URL=off`. `error_code` says which of the reasons below it is.
 
 ## Why it is not online

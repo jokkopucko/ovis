@@ -5,7 +5,6 @@ import XCTest
 @testable import OvisPushCore
 
 final class PushKeyStoreTests: XCTestCase {
-    /// A keychain stand-in: production's decoding and recovery, without a signed access group.
     private final class Store {
         var data: Data?
         var removals = 0

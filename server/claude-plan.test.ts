@@ -10,7 +10,6 @@ describe("claudePlanFile", () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-  /** A Claude config dir with one transcript whose lines carry `slugs`, and the given plan files. */
   function store(slugs: string[], plans: Record<string, string> = {}): { config: string; transcript: string } {
     const config = mkdtempSync(join(tmpdir(), "herdr-claude-plan-"));
     roots.push(config);

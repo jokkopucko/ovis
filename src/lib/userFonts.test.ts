@@ -4,7 +4,6 @@ import type { UserFont } from "../../shared/user-fonts.ts";
 import { nativeTransport, setTransport } from "./transport.ts";
 import { addServedFonts } from "./userFonts.ts";
 
-/** What the page was given: each face's family, descriptors and the bytes it was made from. */
 interface Made { family: string; source: string; weight?: string; style?: string }
 
 let asked: string[];
@@ -14,7 +13,6 @@ const fontSet = { add: (face: FontFace) => { added.push(face as unknown as Made)
 
 const font = (file: string, family: string, weight: 400 | 700 = 400, style: "normal" | "italic" = "normal"): UserFont => ({ file, family, weight, style, bytes: 4, version: "4-1" });
 
-/** A PC serving these fonts, each file's bytes its name. */
 function serving(fonts: readonly UserFont[] | null): void {
   setTransport({ ...nativeTransport, fetch: async (input) => {
     const url = new URL(String(input), "http://pc.test");
@@ -54,12 +52,9 @@ it("asks the PC nothing while no font is named", async () => {
 });
 
 it("adds every face of a named family the PC serves, once, and no other family", async () => {
-  // Given a PC serving two faces of QA Mono and one of D2Coding.
   serving([font("QA Mono-Regular.ttf", "QA Mono"), font("QA Mono-BoldItalic.woff2", "QA Mono", 700, "italic"), font("D2Coding.ttf", "D2Coding")]);
-  // When the terminal font names QA Mono (in another case, quoted, behind a font the PC does not serve), twice.
   await addServedFonts('Menlo, "qa mono"', fontSet);
   await addServedFonts('Menlo, "qa mono"', fontSet);
-  // Then both its faces are on the page, each made from its own file, and only these were fetched.
   expect(added.map(({ family, source, weight, style }) => ({ family, source, weight, style }))).toEqual([
     { family: "QA Mono", source: "QA Mono-Regular.ttf", weight: "400", style: "normal" },
     { family: "QA Mono", source: "QA Mono-BoldItalic.woff2", weight: "700", style: "italic" },

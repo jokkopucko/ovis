@@ -25,7 +25,6 @@ test("a pre-move read delivered after confirmation stays fenced", () => {
   try {
     const before = order.read();
     const receipt = order.moved();
-    // delivered later at a frozen, then a backward clock: the numbers are what they were
     now.mockReturnValue(1_000);
     monotonic.mockReturnValue(1_000);
     expect(before.read_seq < receipt.moved_seq).toBe(true);
@@ -48,13 +47,11 @@ test("a session read still waiting on herdr when a move is confirmed carries the
   const previousSocket = process.env.HERDR_SOCKET;
   const socketPath = join(root, "herdr.sock");
   const sockets = new Set<Socket>();
-  /** each session.snapshot herdr was asked for, named by its answer's `version`; held while `holding` */
   const reads = new Map<string, { beforeMove: boolean }>();
   const held: (() => void)[] = [];
   let holding = false;
   let moveAsked = false;
   let heldWaiter: (() => void) | null = null;
-  // Only the external daemon is a stand-in: the HTTP routes, RPC client and snapshot path run unchanged.
   const daemon = createSocketServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -64,7 +61,6 @@ test("a session read still waiting on herdr when a move is confirmed carries the
       if (!buffer.includes("\n")) return;
       const { id, method } = JSON.parse(buffer.split("\n")[0]!) as { id: string; method: string };
       buffer = "";
-      // a subscription that never starts stays open and quiet
       if (method === "events.subscribe") return;
       const answer = (result: unknown) => { if (!socket.destroyed) socket.write(`${JSON.stringify({ id, result })}\n`); };
       if (method === "workspace.move") moveAsked = true;

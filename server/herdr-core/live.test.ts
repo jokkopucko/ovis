@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HC_METHODS } from "../../scripts/hc-types.ts";
+import { corePids, stopTestCores } from "../../scripts/test-hc.ts";
 import { herdrRpc, paneMoveToNewTab, paneRead, paneSendText, ping, sessionSnapshot, tabRename, workspaceClose, workspaceCreate, workspaceRename } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
 import { CoreAttachSession } from "./attach-session.ts";
@@ -13,13 +15,18 @@ import type { HerdrPane } from "../../shared/protocol.ts";
 
 /**
  * The hc client against a real hc, in a core of its own: a session name and state, config and
- * runtime folders no other core uses, so the user's core and the Herdr app never see it. Runs only
- * where OVIS_TEST_HC_BIN names an hc (generation 1).
+ * runtime folders no other core uses, so the user's core and the Herdr app never see it.
  */
 const bin = process.env["OVIS_TEST_HC_BIN"];
 
 const WAIT_MS = 5000;
-/** each test and hook outlasts its own bounded waits and calls, so a failure names the wait that ran out */
+
+/** whether release `a` is older than release `b`, both `major.minor.patch` */
+const olderThan = (a: string, b: string): boolean => {
+  const [left, right] = [a, b].map((version) => version.split(".").map(Number));
+  for (let at = 0; at < 3; at++) if (left![at] !== right![at]) return (left![at] ?? 0) < (right![at] ?? 0);
+  return false;
+};
 const TEST_MS = 30_000;
 
 interface Waiter { check: () => boolean; resolve: () => void }
@@ -28,7 +35,6 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
   let dir = "";
   /** set only once every isolating variable is in it: nothing runs hc without it */
   let env: Record<string, string> | null = null;
-  /** the core and holder this test started, stopped (or killed) in afterAll */
   let pids: number[] = [];
   let hc: HcConnection;
   const waiters = new Set<Waiter>();
@@ -58,9 +64,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     env = isolated;
     const started = Bun.spawn([bin!, "server", "start"], { env: isolated, stdout: "ignore", stderr: "pipe" });
     expect({ exit: await started.exited, stderr: await new Response(started.stderr).text() }).toMatchObject({ exit: 0 });
-    const status = Bun.spawn([bin!, "server", "status", "--json"], { env: isolated, stdout: "pipe", stderr: "ignore" });
-    const running = JSON.parse(await new Response(status.stdout).text()) as { pid: number; holder?: { pid: number } | null };
-    pids = [running.pid, ...(running.holder ? [running.holder.pid] : [])];
+    pids = await corePids(bin!, isolated);
     // spawnHcConnect would run hc with the env this process started with: this core's env is passed explicitly
     hc = new HcConnection(() => {
       const child = Bun.spawn([bin!, "connect"], { env: isolated, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
@@ -75,25 +79,29 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
 
   afterAll(async () => {
     hc?.close();
-    // a core started with anything but the isolated env could be the user's: only this test's is stopped
-    let stopped = 0;
-    if (bin && env) stopped = await Bun.spawn([bin, "server", "stop"], { env, stdout: "ignore", stderr: "ignore" }).exited;
-    // hc's core and holder are detached daemons, not children: their exit has no event to await
-    const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    const deadline = Date.now() + WAIT_MS;
-    while (pids.some(running) && Date.now() < deadline) await Bun.sleep(25);
-    const alive = pids.filter(running);
-    for (const pid of alive) process.kill(pid, "SIGKILL");
+    // a core started with anything but the isolated env could be the user's: only this test's is stopped,
+    // its holder included (read again: there was none right after the start)
+    const { stopped, killed, unproven } = bin && env ? await stopTestCores(bin, [{ env, pids }], WAIT_MS) : { stopped: [], killed: [], unproven: [] };
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect({ stopped, killed: alive }).toEqual({ stopped: 0, killed: [] });
+    expect({ stopped, killed, unproven }).toEqual({ stopped: bin && env ? [0] : [], killed: [], unproven: [] });
   }, TEST_MS);
 
-  it("publishes the schema hc-api.generated.ts was made from", async () => {
+  it("publishes the schema hc-api.generated.ts was made from, or what the types rely on in an older hc", async () => {
     const proc = Bun.spawn([bin!, "schema"], { env: env!, stdout: "pipe", stderr: "ignore" });
-    const schema: unknown = JSON.parse(await new Response(proc.stdout).text());
+    const schema = JSON.parse(await new Response(proc.stdout).text()) as { info: { version: string }; methods: { name: string }[] };
     expect(await proc.exited).toBe(0);
-    // a different hc: refresh with OVIS_HC_BIN=<it> bun run generate:types --refresh-hc
-    expect(schema).toEqual(JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "scripts", "hc-schema.json"), "utf8")));
+    const stored = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "scripts", "hc-schema.json"), "utf8")) as typeof schema;
+    const hello = await hc.hello();
+    expect([hello.version, stored.info.version].filter((version) => !/^\d+\.\d+\.\d+$/.test(version)), "a release of hc names itself major.minor.patch: name a release in OVIS_TEST_HC_BIN").toEqual([]);
+    if (!olderThan(hello.version, stored.info.version)) {
+      // the hc the types were made from, or a newer one: refresh with OVIS_HC_BIN=<it> bun run generate:types --refresh-hc
+      expect(schema).toEqual(stored);
+    } else {
+      // an older supported hc publishes another schema; what the types and the client call must still be there
+      expect(schema.methods.map((method) => method.name)).toEqual(expect.arrayContaining([...HC_METHODS]));
+      expect(hello.methods).toEqual(expect.arrayContaining([...HC_METHODS]));
+      expect(hello.features).toEqual(expect.arrayContaining(["framed", "attach", "events", "resize_notifications"]));
+    }
   }, TEST_MS);
 
   it("speaks generation 1 in framed mode", async () => {
@@ -249,7 +257,6 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
   it("renames and moves Ovis's own workspaces and tabs in labels, and splits them in its own document, on a core no Herdr app arranges", async () => {
     const socket = join(dir, "herdr.sock");
     const adapter = await startHerdrCoreAdapter(hc, socket);
-    // the core is this test's own and stops in afterAll: a failure here leaves nothing for another test
     try {
       expect((await ping(socket)).layout).toEqual({ rename: true, split: true, move: true, arrange: true, worktrees: true });
       const api = await workspaceCreate({ cwd: dir, label: "api" }, socket);
@@ -257,7 +264,6 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
 
       await workspaceRename(api.workspace.workspace_id, "backend", socket);
       await tabRename(api.tab.tab_id, "server", socket);
-      // #2812: split right, then the first pane down; a viewer sizes each terminal to its pane, and the panes keep their places
       const right = (await herdrRpc<{ pane: HerdrPane }>("pane.split", { target_pane_id: api.root_pane.pane_id, direction: "right" }, socket)).pane;
       const down = (await herdrRpc<{ pane: HerdrPane }>("pane.split", { target_pane_id: api.root_pane.pane_id, direction: "down" }, socket)).pane;
       const tabRects = async () => (await sessionSnapshot(socket)).layouts.find((layout) => layout.tab_id === api.tab.tab_id)!.panes.map((pane) => [pane.pane_id, pane.rect]);
@@ -287,7 +293,6 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
       snapshot = await sessionSnapshot(socket);
       expect(snapshot.workspaces.some((workspace) => workspace.workspace_id === web.workspace.workspace_id)).toBe(false);
       expect(snapshot.tabs.filter((tab) => tab.workspace_id === api.workspace.workspace_id).map((tab) => tab.label)).toEqual(["server", "moved"]);
-      // the moved pane takes its new workspace's name, so it never renames it
       expect(snapshot.workspaces.find((workspace) => workspace.workspace_id === api.workspace.workspace_id)?.label).toBe("backend");
       await workspaceClose(api.workspace.workspace_id, socket);
     } finally {
@@ -299,13 +304,14 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
 /**
  * Another machine of a real hc's core, shown as a PC of its own (#2497): two cores of their own
  * (sessions, state, config and runtime folders nobody else uses), the second added to the first as
- * `lab` through a `--via` command that runs its `hc connect` in its own env, as SSH would there. Runs
- * only where OVIS_TEST_HC_BIN names an hc.
+ * `lab` through a `--via` command that runs its `hc connect` in its own env, as SSH would there.
  */
 describe.skipIf(!bin)("another machine of a real hc's core", () => {
   let dir = "";
   /** each core's env, set only once every isolating variable is in it */
   const envs: Record<string, string>[] = [];
+  /** each core's pid and its holder's, in the order of `envs`: stopped (or killed) in afterAll */
+  const pids: number[][] = [];
   let hc: MachineScopedConnection | null = null;
   let stopAdapter: (() => void) | null = null;
   let socket = "";
@@ -351,6 +357,7 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
     const assignments = Object.entries(lab).filter(([key]) => key.startsWith("HC_") || key.startsWith("XDG_") || key === "PATH").map(([key, value]) => `${key}='${value}'`).join(" ");
     writeFileSync(via, `#!/bin/sh\nexec env ${assignments} sh -c "$1"\n`);
     chmodSync(via, 0o755);
+    for (const env of envs) pids.push(await corePids(bin!, env));
     await run(here, ["machine", "add", "--name", "lab", "--via", via]);
     await run(here, ["run", "--bg", "bash"]);
     hc = new MachineScopedConnection(() => {
@@ -369,15 +376,16 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
   afterAll(async () => {
     stopAdapter?.();
     hc?.close();
-    // only this test's cores, each by its own isolated env
-    const stopped = await Promise.all(envs.map((env) => Bun.spawn([bin!, "server", "stop"], { env, stdout: "ignore", stderr: "ignore" }).exited));
+    // only this test's cores, each by its own isolated env, holders included. `here` goes first: while it
+    // runs it keeps dialing `lab` through the --via command, and an `hc connect` there starts a core again
+    // once `lab` is stopped (and, with `dir` deleted, from the hc on the PATH rather than this one)
+    const { stopped, killed, unproven } = await stopTestCores(bin!, envs.map((env, at) => ({ env, pids: pids[at] ?? [] })), WAIT_MS);
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect(stopped.every((code) => code === 0)).toBe(true);
+    expect({ stopped, killed, unproven }).toEqual({ stopped: envs.map(() => 0), killed: [], unproven: [] });
   }, TEST_MS);
 
   it("lists the machine, then starts, types into and reads a terminal there by its own address", async () => {
     expect((await listHcMachines(hc!)).map((machine) => [machine.name, machine.connected])).toEqual([["lab", true]]);
-    // this PC's own terminal is none of lab's
     expect((await sessionSnapshot(socket)).panes).toEqual([]);
     const made = await workspaceCreate({ label: "on lab" }, socket);
     const paneId = made.root_pane.pane_id;

@@ -1,0 +1,45 @@
+
+
+
+
+
+
+                        ▄▀▄       ▄
+                        ▀▀▀▀▄  ▄▄▀▀▀
+        ▄▄▄▄▄▄▄▄▄       ▀▀▀▀▀▀▀▀▀▀▀▀
+      ▄▀▀▀▀▀▀▀▀▀▀▀▀▄▄     ▀▀▀▀▀▀▀▀▀
+    ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄  ▄▀▀▀▀▀
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄
+          ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀
+
+          Explore the uncharted!
+
+  ❯ Use the ask_user_question tool exactly
+    once to ask me: Which headless approach
+
+  🌒 Checking with you · 36s · ↑ 11k · ↓ 13 tokens
+
+    ───────────▾  📋 Question 1/1   ────────────
+
+    Which headless approach should I build?
+
+
+    ❯● Device + WebDriverAgent (Recommended)
+       Uses iphone172 and the MacBook; no App
+       Attest workaround, no ToS risk, durable.
+     ○ Dev API + Firebase token
+       No hardware, but depends on an
+       unprotected staging API.
+     ✎ Custom answer： Type directly…
+
+    ↑/↓ select · Ctrl+V paste · Type text to
+    attach an answer · Enter submit · Esc cancel
+    · Ctrl+K to fold / click the header
+                                    11k/1.0M 1.1%
+   dsh-deepseek-flash …  ≈…   ctx 1.1% (11k/1.0m)
+   esc to interrupt
+

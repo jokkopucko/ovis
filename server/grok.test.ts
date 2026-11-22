@@ -76,7 +76,6 @@ describe("Grok native event adapter", () => {
       expect(new Bun.CryptoHasher("sha256").update(image!.bytes).digest("hex")).toBe(ref.slice("grok-image:".length));
     }
     expect(await grokImage(own, `grok-image:${"0".repeat(64)}`)).toBeNull();
-    // escaped JSON names the same picture, and the endpoint finds it as the parser does
     // Grok only appends: a rewrite here starts the reader afresh
     writeFileSync(own, recorded.replace('"content":{"type":"image","data"', '"content":{"type":"im\\u0061ge","data"'));
     forgetTranscriptState();
@@ -243,7 +242,6 @@ describe("shared pager projection", () => {
     const away = join(root, "away");
     mkdirSync(elsewhere);
     writeFileSync(join(elsewhere, "updates.jsonl"), user(0, "FOREIGN prompt...") + answer("FOREIGN answer..."));
-    // only the first open of the path, the projection's, meets the other session's folder
     let opens = 0;
     const real = fs.openSync;
     const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
@@ -269,7 +267,6 @@ describe("shared pager projection", () => {
     const away = join(root, "away");
     mkdirSync(elsewhere);
     writeFileSync(join(elsewhere, "updates.jsonl"), "{ not a record\n");
-    // a lookup outside any page (an image, a tool output) projects while the other folder is in place for its open
     let swaps = 0;
     const real = fs.openSync;
     const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
@@ -284,7 +281,6 @@ describe("shared pager projection", () => {
     }) as typeof fs.openSync);
     try { expect(() => grokProjection(path, statSync(path))).toThrow(GrokUnavailable); } finally { spy.mockRestore(); }
     expect(swaps).toBe(1);
-    // the pane's own file reads as it is
     expect(page().turns.flatMap((turn) => turn.parts)).toEqual([{ kind: "text", text: "the pane's prompt" }, { kind: "text", text: "the pane's answer" }]);
   });
   test("serves no tool output from another session that a folder swap puts at the path around the lookup's opens after its first", () => {
@@ -294,12 +290,9 @@ describe("shared pager projection", () => {
     const elsewhere = join(root, "elsewhere");
     const away = join(root, "away");
     mkdirSync(elsewhere);
-    // the same records and length: only the output's bytes tell the files apart
     writeFileSync(join(elsewhere, "updates.jsonl"), user(0) + tool() + update("FRGN".repeat(1500)));
     expect(transcriptToolOutput("grok-transcript", path, ref)).toBe("own ".repeat(1500));
     forgetTranscriptState();
-    // a cold lookup: the path names the pane's own file when it begins and at its first open, the projection's
-    // (verified); the later open that reads the output meets the other folder
     let opens = 0;
     let swaps = 0;
     const real = fs.openSync;
@@ -355,7 +348,7 @@ describe("exact store lookup", () => {
       "grok.mjs",
       "grok.js.exe",
       "grok-2.0.0-darwin-arm64",
-      "grok-statusline", // Synthetic nonnumeric suffix; not a claim about a shipped build.
+      "grok-statusline",
     ];
     for (const exe of accepted) {
       expect(isGrokExecutable(exe)).toBe(true);
@@ -378,14 +371,11 @@ describe("exact store lookup", () => {
     { name: "the newest held events file is renamed", otherGroup: "group", otherSession: "resumed-session", otherMtime: 300, binds: false, change: "rename" },
     { name: "a replacement reported file has a newer timestamp", otherGroup: "group", otherSession: "resumed-session", otherMtime: 300, binds: false, replacement: "current" },
     { name: "a replacement competing file has an older timestamp", otherGroup: "group", otherSession: "resumed-session", otherMtime: 300, binds: false, replacement: "other" },
-    // a newer held events file moved to a name or a folder the session filter does not take
     { name: "the newest held events file is renamed without its prefix", otherGroup: "group", otherSession: "resumed-session", otherMtime: 300, binds: false, change: "rename-away" },
     { name: "the newest held session's folder is renamed past the id filter", otherGroup: "group", otherSession: "resumed-session", otherMtime: 300, binds: false, change: "rename-folder" },
-    // older write times: these must not bind as merely older held sessions either
     { name: "an older held session's folder is renamed past the id filter", otherGroup: "group", otherSession: "older-session", otherMtime: 100, binds: false, change: "rename-folder" },
     { name: "an events-named file is held deeper in the store", otherGroup: "group", otherSession: "older-session", otherMtime: 100, binds: false, nested: true },
     { name: "a held events file is renamed in a folder renamed past the id filter", otherGroup: "group", otherSession: "older-session", otherMtime: 100, binds: false, change: "rename-both" },
-    // another file held in a session folder: its events file beside it says nothing moved away
     { name: "another file is held beside an older session's events file", otherGroup: "group", otherSession: "older-session", otherMtime: 100, binds: true, heldLock: "beside events.jsonl" },
     { name: "another file is held in a session folder with no events file", otherGroup: "group", otherSession: "older-session", otherMtime: 100, binds: false, heldLock: "alone" },
   ] as { name: string; otherGroup: string; otherSession: string; otherMtime: number; binds: boolean; change?: string; replacement?: string; nested?: boolean; heldLock?: string }[]) {
@@ -407,7 +397,6 @@ describe("exact store lookup", () => {
       utimesSync(other, scenario.otherMtime, scenario.otherMtime);
       utimesSync(retained, 50, 50);
       utimesSync(outside, 400, 400);
-      // Only the reported directory has updates.jsonl, including the duplicate-id case.
       const executable = join(home, "grok");
       // Use our runtime, not a sleep executable that may dispatch by its copied name.
       copyFileSync(process.execPath, executable);
@@ -417,7 +406,6 @@ describe("exact store lookup", () => {
         mkdirSync(dirname(lock), { recursive: true });
         writeFileSync(lock, "");
         if (scenario.heldLock !== "alone") writeFileSync(join(dirname(lock), "events.jsonl"), "");
-        // a file held at the store's root (Grok's session index) is no session's
         const index = join(home, "sessions", "session_search.sqlite");
         writeFileSync(index, "");
         held.push(lock, index);
@@ -450,7 +438,6 @@ describe("exact store lookup", () => {
         apply(target, receiver, args) {
           const replacement = "replacement" in scenario ? scenario.replacement : null;
           const file = replacement === "current" ? current : other;
-          // Replace after /proc's link or lsof's listing was read, before the path's stat is sampled.
           if (replacement && !replaced && args[0] === file) {
             replaced = true;
             unlinkSync(file);
@@ -674,7 +661,6 @@ describe("macOS held-file evidence", () => {
     expect((await darwin(store, { environment: `HOME=${userHome}\0` })).result).toBe(transcript);
     // a NOTE holding "GROK_HOME=" is NOTE's value, not a home
     expect((await darwin(store, { environment: `NOTE=x GROK_HOME=/wrong\0HOME=${userHome}\0` })).result).toBe(transcript);
-    // an empty GROK_HOME falls back to HOME; a relative one does not
     expect((await darwin(store, { environment: `GROK_HOME=\0HOME=${userHome}\0` })).result).toBe(transcript);
     expect((await darwin(store, { environment: `GROK_HOME=relative\0HOME=${userHome}\0` })).result).toBeNull();
     // a home the held file does not live in does not bind
@@ -696,7 +682,6 @@ describe("macOS held-file evidence", () => {
   }
 
   test("does not select a different session from held files", async () => {
-    // the other held session is older, so each null below has its own reason
     const store = place(100, "resumed-session");
     expect((await darwin(store)).result).toBe(store.transcript);
     const withoutReported = store.listing.split("\n").filter((line) => !line.endsWith(`${session}/events.jsonl`)).join("\n");
@@ -808,7 +793,6 @@ describe("macOS held-file evidence", () => {
     const native = Bun.spawn;
     const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: "grok-fixture", foreground_processes: [{ pid: 4242, name: "grok", argv: [exe] }] });
     const startTime = spyOn(darwinProcess, "startTime").mockReturnValue(1792929600000001n);
-    // the real kill at the timeout, shortened from 3 s
     const timeouts: (number | undefined)[] = [];
     const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[], options: { timeout?: number }) => {
       timeouts.push(options.timeout);

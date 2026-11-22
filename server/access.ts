@@ -2,29 +2,37 @@
  * Who a request is and whether it gets in. There is no user database: a request is trusted
  * for where it comes from (this PC, with no proxy in front), for who Tailscale says it is
  * (the PC's own login, which `tailscale serve` states in a header it strips from what it
- * receives), or for what it holds (a paired device's cookie, or the shared token). A token,
- * when one is configured, is required of everything but a paired device, this PC and its own
- * Tailscale login included: a plain local connection, since the remote-PC bridge runs on a
- * loopback port of a PC other people may use, and the login, since any other proxy on this PC
- * (nginx, Caddy, a tunnel) passes a visitor's copy of that header on unless told to drop it.
- * Without a token, and until the first device is paired, anything that reaches the server is
- * let in as it always was, except through a proxy
- * on a PC whose Tailscale login is known: there, a request with no login header is a tagged
- * node (tailscale serve states no person for it), and a tailnet can hold many of those. The
- * exception is an install whose operator declared `tailscale serve` the only way in
- * (OVIS_TAILSCALE_SERVE_ONLY) on a tailnet Tailscale says holds no tagged node and no second
- * login: no stranger exists there to be mistaken for, so a serve-proxied request with no login is
+ * receives, counted only under a name this PC knows as its own), or for what it holds
+ * (a paired device's cookie, or the shared token). A token, when one is configured, is required
+ * of everything but a paired device, this PC and its own Tailscale login included: a plain local
+ * connection, since the remote-PC bridge runs on a loopback port of a PC other people may use,
+ * and the login, since any other proxy on this PC (nginx, Caddy, a tunnel) passes a visitor's
+ * copy of that header on unless told to drop it.
+ * Without a token, and until the first device is paired, a client of a non-loopback bind is let
+ * in under whatever name it reached this PC by, as it always was. A request from loopback (a
+ * browser here, or a proxy on this PC) is let in only under a name this PC knows as its own
+ * (`knownAuthority`): a loopback name, or this PC's full tailnet name or IPv4 address. Under any
+ * other name it pairs, and so does a proxied request on a PC whose Tailscale login is known:
+ * there, a request with no login header is a tagged node (tailscale serve states no person for
+ * it), and a tailnet can hold many of those. The exception is an install whose operator
+ * declared `tailscale serve` the only way in (OVIS_TAILSCALE_SERVE_ONLY) on a tailnet Tailscale
+ * says holds no tagged node and no second login: no stranger exists there to be mistaken for, so
+ * a serve-proxied request with no login is
  * the owner, and the owner's own phone opens the address without a code. On that path, and only
  * there, the request's Host must name this PC's own Tailscale name or address: `tailscale serve`
  * passes the client's Host through, and under the declaration no other ingress exists to forge it
  * through, while a rebinding page can only ever present its own origin.
  * A PC whose own node is tagged has no login to compare with: its proxied requests pair, the
- * owner's included, unless OVIS_TAILSCALE_OWNER names the login to let in.
+ * owner's included, unless OVIS_TAILSCALE_OWNER names the login to let in. That login, too, counts
+ * only under a name `knownAuthority` accepts: a loopback name, or this PC's tailnet name or IPv4
+ * address, which are still read from `tailscale status`.
  *
  * A proxy on this PC connects from loopback like a local client does, so it is known only by
- * what it sends: a forwarding header, or a Host that is not a name for this machine. A proxy
- * that sends neither (nginx's bare `proxy_pass` rewrites Host to the upstream address and adds
- * nothing) cannot be told from a local client: only a token closes that setup.
+ * what it sends: a forwarding header, or a Host that is not a loopback name (`cameThroughProxy`).
+ * Until a device is paired it is let in only where its Host is one `knownAuthority` accepts, so a
+ * proxy that passes its own domain is asked to pair. A proxy that sends neither (nginx's bare
+ * `proxy_pass` rewrites Host to the upstream address and adds nothing) cannot be told from a
+ * local client: only a token closes that setup.
  *
  * Portal's own sign-in (a private link, an Ethereum wallet, an OIDC account) is one more way in,
  * and the one exception to "a token is required of everything but a paired device": a visitor it let
@@ -57,7 +65,6 @@ export interface AccessInput {
   tokenMatched: boolean;
   /** the device the cookie belongs to */
   device: DeviceMatch | null;
-  /** the PC's own Tailscale login, when known */
   owner: string | null;
   /** this PC's Tailscale node is tagged: Tailscale runs here, and names no person as its owner */
   tagged: boolean;
@@ -148,9 +155,7 @@ export const inTailnet = (address: string | null | undefined): boolean => {
  * nginx's bare `proxy_pass`, looks the same: see `cameThroughProxy`).
  */
 export function observedIngress(input: Pick<AccessInput, "loopback" | "forwarded" | "funnel" | "tailscaleLogin" | "forwardedFor" | "owner" | "tagged" | "serveOnly"> & {
-  /** the connection's source address is known at all */
   peerKnown: boolean;
-  /** a forwarding header (`forwardingHeaders`) came with the request */
   forwardingHeaders: boolean;
 }): Exclude<ObservedIngress, "relay" | "portal"> {
   if (!input.peerKnown) return "unknown";
@@ -171,6 +176,17 @@ export function forwardingHeaders(headers: Headers): boolean {
   return PROXY_HEADERS.some((name) => headers.has(name)) || headers.has("tailscale-funnel-request");
 }
 
+/**
+ * forwardingHeaders for the machine profile's owner socket, which also takes the headers a common proxy, tunnel or
+ * CDN adds beyond PROXY_HEADERS for a forwarder in front of it. Only the profile asks, so an ordinary server's
+ * decisions stay as they were.
+ */
+export function machineForwardingHeaders(headers: Headers): boolean {
+  return forwardingHeaders(headers) || MACHINE_PROXY_HEADERS.some((name) => headers.has(name));
+}
+const MACHINE_PROXY_HEADERS = ["x-forwarded-port", "x-forwarded-server", "x-forwarded-scheme", "x-original-forwarded-for", "cf-connecting-ip",
+  "true-client-ip", "x-client-ip", "fly-client-ip", "x-envoy-external-address", "cdn-loop"];
+
 /** Headers a proxy adds and a browser or CLI on this PC has no reason to send; a Tailscale login is stated by a proxy too. */
 const PROXY_HEADERS = ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded", "via", "tailscale-user-login"];
 
@@ -186,7 +202,6 @@ export function hostName(host: string): string | null {
   return authority ? authority[1]!.toLowerCase().replace(/\.$/, "") : null;
 }
 
-/** Is this Host header a name for this machine itself? */
 export function isLoopbackHost(host: string): boolean {
   const name = hostName(host);
   return name !== null && (name === "localhost" || name.endsWith(".localhost") || name === "[::1]"
@@ -209,6 +224,16 @@ export function addressesNode(input: Pick<AccessInput, "host" | "dnsName" | "tai
   const name = input.host === null ? null : hostName(input.host);
   if (name === null) return false;
   return (input.dnsName !== null && name === input.dnsName.toLowerCase()) || (input.tailnetIp !== null && name === input.tailnetIp);
+}
+
+/**
+ * Is the Host one a request from this PC carries other than through a rebound name: a loopback name,
+ * or this PC's tailnet name or address (tailscale serve keeps the device's Host: serve.go
+ * `r.Out.Host = r.In.Host`)? A web page whose own name was rebound to 127.0.0.1 reaches a loopback
+ * server from loopback, and its Host and Origin are still that name. No Host at all is no browser's.
+ */
+export function knownAuthority(input: Pick<AccessInput, "host" | "dnsName" | "tailnetIp">): boolean {
+  return input.host === null || isLoopbackHost(input.host) || addressesNode(input);
 }
 
 /** The request shape of the owner's no-login grant: a serve-only install, a forwarded request from loopback with no login, not Funnel. */
@@ -257,6 +282,19 @@ export function ownerAccess(access: Access): boolean {
   return access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
 }
 
+/**
+ * The machine profile's whole rule; decideAccess is never asked there. A device through the relay with its
+ * proof is that device. The caller on the owner's socket (`<state folder>/serve.sock`, which the kernel lets
+ * only this account and root connect to) is the local owner, while its Host is exactly `localhost` and no
+ * forwarding or identity header shows a proxy in front of the socket: a forwarder is not the owner. Anybody
+ * else is nobody: no token, device cookie, Tailscale login, Portal identity or open install counts there.
+ */
+export function decideMachineAccess(input: { relayPeer?: DeviceMatch; ownerSocket: boolean; host: string | null; forwarded: boolean }): Access {
+  if (input.relayPeer !== undefined) return { level: "full", via: "relay", role: input.relayPeer.role, device: input.relayPeer };
+  if (input.ownerSocket && input.host === "localhost" && !input.forwarded) return { level: "full", via: "local", role: "drive" };
+  return { level: "none", reason: "pairing_required" };
+}
+
 export function decideAccess(input: AccessInput): Access {
   if (input.relayPeer !== undefined) return { level: "full", via: "relay", role: input.relayPeer.role, device: input.relayPeer };
   if (input.tokenMatched) return { level: "full", via: "token", role: "drive" };
@@ -273,6 +311,9 @@ export function decideAccess(input: AccessInput): Access {
     if (!(family === 4 ? tailnetIpv4.check(address, "ipv4") : family === 6 && tailnetIpv6.check(address, "ipv6"))) {
       return { level: "none", reason: "pairing_required" };
     }
+    // A page whose own name was rebound to 127.0.0.1 can type the login and the address too, but its
+    // Host stays its own name (knownAuthority)
+    if (!knownAuthority(input)) return { level: "none", reason: "pairing_required" };
     if (input.tailscaleLogin.toLowerCase() === input.owner.toLowerCase()) return { level: "full", via: "tailscale", role: "drive", login: input.tailscaleLogin };
     return { level: "none", reason: "other_user" };
   }
@@ -286,6 +327,8 @@ export function decideAccess(input: AccessInput): Access {
   }
   if (input.loopback && !input.forwarded) return { level: "full", via: "local", role: "drive" };
   if (input.loopback && input.forwarded && (input.owner !== null || input.tagged || input.serveOnly)) return { level: "none", reason: "pairing_required" };
+  // nor is the open grant: a rebound page on this PC is not a client of the open LAN
+  if (input.loopback && !knownAuthority(input)) return { level: "none", reason: "pairing_required" };
   // the public internet is never "open", whatever is paired
   if (!input.gated && !input.funnel) return { level: "full", via: "open", role: "drive" };
   return { level: "none", reason: "pairing_required" };

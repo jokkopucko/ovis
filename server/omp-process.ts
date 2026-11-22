@@ -1,5 +1,6 @@
 /** WSL can block procfs memory reads during agent exit. Keep them outside the bridge. */
 import { readFileSync } from "node:fs";
+import { BUN_ENV } from "./entries.ts";
 
 export interface ProcessMemory { argv: string[]; environ: string[] }
 const MAX_OUTPUT = 1024 * 1024;
@@ -13,10 +14,7 @@ const ENVIRON_MAX = 1024 * 1024;
  */
 const ROUTING = /^(?:HOME|OMP_PROFILE|PI_PROFILE|PI_CONFIG_DIR|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|DSH_HOME|DSH_TUI_RESUME_SESSION|KIRO_HOME|XDG_DATA_HOME|XDG_STATE_HOME|TMUX|TMUX_PANE)=/;
 
-/**
- * The routing words of a process's environment, or null when it could not be read. An environment
- * read empty is a process gone or not ours to read, not one without the variables.
- */
+/** An environment read empty is a process gone or not ours to read, not one without the variables. */
 export function ompRoutingEnviron(environ: readonly string[] | null): string[] | null {
   if (environ === null || !environ.some((word) => word !== "")) return null;
   return environ.filter((word) => ROUTING.test(word));
@@ -79,10 +77,8 @@ export function isWsl(): boolean {
 }
 
 /**
- * Concurrent polls share a probe; timed-out children retain their slot until they exit. A
- * successful answer is kept per pid and start time, so polling one process spawns one helper and
- * a reused pid misses; a failed one is never kept, so the next poll tries again. `timeoutMs` bounds
- * the read, from the helper's PROBE_STARTED line on; `startMs` bounds the helper's own start.
+ * A successful answer is kept per pid and start time, so polling one process spawns one helper and
+ * a reused pid misses; a failed one is never kept, so the next poll tries again.
  */
 export function createOmpProcessProbe({ timeoutMs = 1000, startMs = 10_000, maxProcesses = 4, startTicks = processStartTicks, command = (pid, argv) => [process.execPath, "-e", SCRIPT, String(pid), argv ? "1" : "0"] }: {
   timeoutMs?: number;
@@ -91,9 +87,7 @@ export function createOmpProcessProbe({ timeoutMs = 1000, startMs = 10_000, maxP
   startTicks?: (pid: number) => string | null;
   command?: (pid: number, argv: boolean) => string[];
 } = {}): (pid: number, argv: boolean) => Promise<ProcessMemory | null> {
-  /** Answers still being read, shared by concurrent polls of one process. */
   const pending = new Map<string, Promise<ProcessMemory | null>>();
-  /** Helpers not yet exited, answered or not: a kernel-blocked one keeps its slot. */
   let live = 0;
   const cache = new Map<number, { start: string; argv: boolean; memory: ProcessMemory }>();
   let warned = false;
@@ -115,7 +109,7 @@ export function createOmpProcessProbe({ timeoutMs = 1000, startMs = 10_000, maxP
       return Promise.resolve(null);
     }
     let child: Bun.Subprocess<"ignore", "pipe", "ignore">;
-    try { child = Bun.spawn(command(pid, argv), { stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
+    try { child = Bun.spawn(command(pid, argv), { env: { ...process.env, ...BUN_ENV }, stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
     catch { return Promise.resolve(null); }
     child.unref();
     live++;
@@ -146,10 +140,8 @@ export function createOmpProcessProbe({ timeoutMs = 1000, startMs = 10_000, maxP
             const end = started ? -1 : output.indexOf("\n");
             if (end >= 0) {
               if (output.slice(0, end) !== PROBE_STARTED) { finish(null); return; }
-              // the helper runs: from here on only its read of the target is timed
               started = true;
               output = output.slice(end + 1);
-              // the bound is on the answer alone, as before the start line
               bytes = Buffer.byteLength(output);
               clearTimeout(timer);
               timer = setTimeout(() => finish(null), timeoutMs);

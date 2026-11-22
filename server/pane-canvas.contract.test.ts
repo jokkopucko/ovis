@@ -123,7 +123,6 @@ describe("pane canvas: focus, explicit swap and dragged split ratio", () => {
   });
 
   it("tells a browser where herdr's focus moved when herdr itself moved it", async () => {
-    // Fresh, never-focused panes cannot match queued focus events from the preceding tests.
     const first = (await paneSplit(root, "right", false)).pane_id;
     const second = (await paneSplit(anotherTab, "right", false)).pane_id;
     const focused: string[] = [];

@@ -6,14 +6,11 @@ import { join } from "node:path";
 import { chromium, type CDPSession, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A finger reorders the sidebar's workspaces (src/lib/touchReorder.ts), on the unmodified app over
-// the demo's fixture transport at a phone's size with touch: a long press lifts a row, a drag drops
-// it where the line shows, a quick stroke only scrolls, and Alt+Up moves it a step without pane actions in the workspace menu.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-touch-reorder-demo-"));
 
-/** the top-level rows, in the order the sidebar draws them */
 const topRows = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".machine-workspaces .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace ?? ""));
 const serverOrder = (page: Page) => page.evaluate(async () => ((await (await fetch("/api/session")).json()).snapshot as { workspaces: { workspace_id: string }[] }).workspaces.map((workspace) => workspace.workspace_id));
 const centerOf = async (page: Page, id: string) => {
@@ -24,7 +21,6 @@ const centerOf = async (page: Page, id: string) => {
 const touch = (cdp: CDPSession, type: "touchStart" | "touchMove" | "touchEnd", point?: { x: number; y: number }) =>
   cdp.send("Input.dispatchTouchEvent", { type, touchPoints: point ? [{ x: point.x, y: point.y }] : [] });
 
-/** A finger moves after the row lifts, or immediately for a quick scroll stroke. */
 async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number }, to: { x: number; y: number }, holdMs: number, during?: () => Promise<void>): Promise<void> {
   // the demo's timeline raises a finish droplet over the top of a phone's screen at its own moment, where the first
   // row sits: a person dismisses it before pressing the row under it
@@ -48,8 +44,6 @@ async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number 
 
 const pinnedRows = (page: Page) => page.locator(".workspace-list-pinned > .workspace-group").evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.workspace));
 
-/** Both input methods change saved pins, never the transport's workspace roster. */
-/** The demo has two repositories: a third top-level workspace gives a drag a row to pass. */
 async function addScratchWorkspace(page: Page): Promise<string> {
   const scratch = await page.evaluate(async () => {
     const response = await fetch("/api/workspace/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: "/home/demo/scratch", label: "scratch" }) });
@@ -129,11 +123,9 @@ async function checkPinned(page: Page, cdp?: CDPSession): Promise<void> {
 }
 
 type Hooks = Record<string, (...args: never[]) => unknown>;
-/** a call into the demo server's order controls (site/demo/transport.ts) */
 const demo = <T = unknown>(page: Page, name: string, ...args: unknown[]) =>
   page.evaluate(([name, args]) => ((window as unknown as { __herdrDemoOrder: Hooks }).__herdrDemoOrder[name as string] as (...a: unknown[]) => unknown)(...(args as unknown[])), [name, args] as const) as Promise<T>;
 const localTop = (page: Page) => page.evaluate(() => [...document.querySelector(".machine-workspaces")!.querySelectorAll<HTMLElement>(":scope .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace ?? ""));
-/** every order the first PC's list was drawn in, recorded by a MutationObserver from page load */
 const drawnOrders = (page: Page) => page.evaluate(() => (window as unknown as { __orderCommits: string[] }).__orderCommits.slice());
 const waitOrder = (page: Page, want: readonly string[], label: string) => page.waitForFunction((want) =>
   [...document.querySelector(".machine-workspaces")!.querySelectorAll<HTMLElement>(":scope .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace).join() === want.join(), want, { timeout: 10_000 })
@@ -167,17 +159,11 @@ async function drawn(page: Page): Promise<void> {
   await demo(page, "status", marker.pane, markerStatus);
   await page.locator(`.machine-workspaces .workspace-group[data-workspace="${marker.workspace}"] > .workspace-header [data-status="${markerStatus}"]`).first().waitFor({ state: "attached", timeout: 10_000 });
 }
-/** Alt+Up on a top-level row: the keyboard's reorder, one group up */
 async function stepUp(page: Page, id: string): Promise<void> {
   await page.locator(`.machine-workspaces .workspace-group[data-workspace="${id}"] > .workspace-header .workspace-select`).first().focus();
   await page.keyboard.press("Alt+ArrowUp");
 }
 const up = (order: readonly string[], id: string) => { const next = [...order]; const index = next.indexOf(id); [next[index - 1], next[index]] = [next[index]!, next[index - 1]!]; return next; };
-/**
- * One keyboard step of a workspace with no worktrees: exactly one move, so its receipt's epoch is
- * settled when the server logs it. Up when it can (a swap with the group above), else down, which
- * lands after the next group's last worktree, wherever herdr keeps it. The order it shows.
- */
 async function stepOne(page: Page, order: readonly string[], id: string): Promise<string[]> {
   const index = order.indexOf(id);
   await page.locator(`.machine-workspaces .workspace-group[data-workspace="${id}"] > .workspace-header .workspace-select`).first().focus();
@@ -191,9 +177,7 @@ async function stepOne(page: Page, order: readonly string[], id: string): Promis
   assert.deepEqual([...next].sort(), [...order].sort(), "a step down keeps the same rows");
   return next;
 }
-/** herdr's own order of the rows the sidebar shows at the top level */
 const herdrTop = async (page: Page, rows: readonly string[]) => (await serverOrder(page)).filter((id) => rows.includes(id));
-/** another client moves the last top row to the front until herdr's order is none of `avoid`; that order */
 async function otherOrder(page: Page, rows: readonly string[], avoid: readonly (readonly string[])[]): Promise<string[]> {
   for (let attempt = 0; attempt < rows.length; attempt++) {
     const now = await herdrTop(page, rows);
@@ -203,7 +187,6 @@ async function otherOrder(page: Page, rows: readonly string[], avoid: readonly (
   }
   throw new Error(`no other order avoids ${avoid.map((order) => order.join()).join(" | ")}`);
 }
-/** where the drawn-order record stands now: a case checks only what was drawn after its own drag */
 const drawnMark = async (page: Page) => (await drawnOrders(page)).length;
 async function neverDrawnSince(page: Page, since: number, order: readonly string[], label: string): Promise<string[]> {
   const drawnNow = (await drawnOrders(page)).slice(since);
@@ -211,12 +194,7 @@ async function neverDrawnSince(page: Page, since: number, order: readonly string
   return drawnNow;
 }
 
-/**
- * Workspace order evidence (lib/workspaceOrder.ts) on the demo server: each case holds reads, cached
- * GETs, SSE rosters, move answers and boot proofs apart and arms its wait before the step it waits on.
- */
 type Browser = Awaited<ReturnType<typeof chromium.launch>>;
-/** a fresh demo (its server state is per page) whose first PC's drawn orders are recorded from load */
 async function openOrderPage(browser: Browser, url: string) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
   await context.addInitScript(() => {
@@ -240,11 +218,6 @@ async function openOrderPage(browser: Browser, url: string) {
 }
 const reorderError = (page: Page) => page.locator(".machine-workspaces .sidebar-inline-error", { hasText: "Reorder failed" });
 
-/**
- * Refused moves: a single refused move rolls back to herdr's order and says so; a batch whose second
- * move is refused keeps the first move's floor, so a pre-move roster delivered afterwards, by SSE or
- * as a cached GET, cannot bring the pre-move order back after herdr's own order showed.
- */
 async function checkRefusedMoves(browser: Browser, url: string): Promise<unknown> {
   const single = await openOrderPage(browser, url);
   const lone = await addScratchWorkspace(single.page);
@@ -262,7 +235,6 @@ async function checkRefusedMoves(browser: Browser, url: string): Promise<unknown
   await single.context.close();
 
   const { context, page, errors } = await openOrderPage(browser, url);
-  // two repositories with a worktree each: moving one group past the other takes two moves
   const repos = await page.evaluate(async () => {
     const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { workspaces: { workspace_id: string; worktree?: { is_linked_worktree: boolean } | null }[] } };
     return snapshot.workspaces.filter((workspace) => workspace.worktree && !workspace.worktree.is_linked_worktree).map((workspace) => workspace.workspace_id);
@@ -290,7 +262,6 @@ async function checkRefusedMoves(browser: Browser, url: string): Promise<unknown
   assert.equal(await logCount(page, "move"), 1, "the first move of the batch was confirmed");
   assert.equal(await logCount(page, "move-refused"), 1, "the second was refused");
   assert.ok((await drawnOrders(page)).slice(since2).includes(D.join()), "the dragged order showed while the batch ran");
-  // herdr's order after one of the two moves, shown by the first roster at or above that move
   const P = await herdrTop(page, O);
   await demo(page, "publish");
   await waitOrder(page, P, "herdr's order after the partial batch shows on a qualifying roster");
@@ -310,15 +281,9 @@ async function checkRefusedMoves(browser: Browser, url: string): Promise<unknown
   return { single: { F0, F }, partial: { O, D, P } };
 }
 
-/**
- * A boot proof asked before a newer receipt proves nothing after it: the stale answer retires
- * nothing, so the next roster of another epoch still asks again and is not applied until that
- * fresh answer. Passive sideband proof alone never changes the order either.
- */
 async function checkProofGating(browser: Browser, url: string): Promise<unknown> {
   const { context, page, errors } = await openOrderPage(browser, url);
   const lone = await addScratchWorkspace(page);
-  // polls wait, so only the rosters this case delivers can change anything
   await demo(page, "holdGets", true);
   await demo(page, "holdSse", true);
   await demo(page, "verifyMode", "hold");
@@ -335,7 +300,6 @@ async function checkProofGating(browser: Browser, url: string): Promise<unknown>
   await waitLog(page, "verify-start", starts + 1);
   await drawn(page);
   assert.deepEqual(await localTop(page), D1, "passive proof of another epoch changes no order");
-  // a newer drag while that answer is pending: its receipt makes the pending answer stale
   const D2 = await stepOne(page, D1, lone);
   await waitOrder(page, D2, "the newer drag shows");
   await waitLog(page, "move", 2);
@@ -346,7 +310,6 @@ async function checkProofGating(browser: Browser, url: string): Promise<unknown>
   await waitLog(page, "verify-answer", staleAnswers + 1);
   await drawn(page);
   assert.deepEqual(await localTop(page), D2, "the stale answer applied nothing");
-  // had it retired the newer receipt's epoch, this roster of the proved epoch would apply at once
   const X = await otherOrder(page, D2, [O, D1, D2]);
   await demo(page, "advance", 1000);
   await demo(page, "publish");
@@ -364,11 +327,6 @@ async function checkProofGating(browser: Browser, url: string): Promise<unknown>
   return { O, D1, D2, X, epochs: { E1, E2, E3 } };
 }
 
-/**
- * E2 receipt -> E3 proof and full snapshot -> a previously unseen E1 roster by SSE and as a cached
- * GET: the accepted-epoch guard outlives its first snapshot, so neither restores the pre-move order;
- * and the same SSE delivered while a settlement load is held invalidates that load.
- */
 async function checkUnseenRetiredEra(browser: Browser, url: string): Promise<unknown> {
   const { context, page, errors } = await openOrderPage(browser, url);
   const lone = await addScratchWorkspace(page);
@@ -389,7 +347,6 @@ async function checkUnseenRetiredEra(browser: Browser, url: string): Promise<unk
   await demo(page, "publish");
   await waitOrder(page, X, "the third lifetime's proof and full roster apply");
   const guarded = await drawnMark(page);
-  // the first lifetime's roster, never delivered before: by SSE, then as a cached GET
   const starts = await logCount(page, "verify-start");
   await demo(page, "advance", 1000);
   await demo(page, "deliverSse", unseen);
@@ -403,7 +360,6 @@ async function checkUnseenRetiredEra(browser: Browser, url: string): Promise<unk
   await readRoster(page);
   await drawn(page);
   assert.deepEqual(await localTop(page), X, "an unseen first-lifetime cached GET cannot restore O");
-  // immediate-load variant: settlement's load is held, the unseen roster arrives by SSE and invalidates it
   await demo(page, "holdMoves", true);
   await demo(page, "holdGets", true);
   const Y = await stepOne(page, X, lone);
@@ -416,11 +372,9 @@ async function checkUnseenRetiredEra(browser: Browser, url: string): Promise<unk
   await page.waitForFunction((held) => (window as unknown as { __herdrDemoOrder: { pendingGets(): number } }).__herdrDemoOrder.pendingGets() > held, held, { timeout: 10_000 });
   await demo(page, "advance", 1000);
   await demo(page, "deliverSse", unseen);
-  // the held settlement load read Z at or above the move; the SSE roster superseded it, so it commits nothing
   for (let i = 0; i <= held; i++) await demo(page, "releaseGet");
   await drawn(page);
   assert.deepEqual(await localTop(page), Y, "the invalidated load released nothing and the unseen roster restored nothing");
-  // until the next legitimate roster (whose order may even equal O), O was never drawn
   await neverDrawnSince(page, since, O, "the pre-move order after the guard");
   assert.ok(!(await drawnOrders(page)).slice(guarded).includes(O.join()));
   await demo(page, "publish");
@@ -489,7 +443,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   const happy: Record<string, unknown> = {};
   const failure: Record<string, unknown> = {};
 
-  // happy: a read started before the move, delivered after it by SSE and as the settlement's cached GET, cannot undo it
   const O = await localTop(page);
   const epoch = await demo<string>(page, "epoch");
   await demo(page, "holdSse", true);
@@ -505,16 +458,12 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   await demo(page, "deliverSse", stale);
   await drawn(page);
   assert.deepEqual(await localTop(page), A, "a pre-move read delivered after the receipt keeps the dragged order");
-  // until another order legitimately replaces it (which may even equal O), O is never drawn
   const happyDrawn = await neverDrawnSince(page, happySince, O, "the pre-move order O after the drag");
-  // another client moves again; the first full roster read after both is B, not an echo of A
   await demo(page, "otherClientMove", A[2]!, 1);
   const B = await herdrTop(page, A);
   await demo(page, "holdSse", false);
   await demo(page, "publish");
   await waitOrder(page, B, "B shows on the first qualifying SSE roster");
-  // the same through App's polled load: publication held, another client moves after this move's
-  // receipt, and the load App starts at settlement reads that distinct order B2 and applies it
   await demo(page, "holdSse", true);
   await demo(page, "holdMoves", true);
   const C = up(B, B[1]!);
@@ -535,7 +484,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   Object.assign(happy, { epoch, O, A, B, C, B2, drawn_while_held: happyDrawn, log: await demo(page, "log") });
   console.log("PASS reorder-holds-through-snapshot: a pre-move SSE roster and cached GET keep the dragged order; another client's B shows on the first qualifying roster by SSE, and a distinct B2 by load");
 
-  // failure: a pre-move read delivered at frozen and backward clocks; a pane-status patch; another PC
   await demo(page, "addPc");
   await page.locator(".machine-workspaces").nth(1).waitFor({ state: "attached" });
   await demo(page, "holdSse", true);
@@ -557,7 +505,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   await demo(page, "status", "w1C:p1", "working");
   failure["clock_status_other_pc"] = { before: D0, order: D, drawn_after_drag: await neverDrawnSince(page, frozenSince, D0, "the pre-move order under frozen clocks") };
 
-  // multiple generations: a new drag before the first one's moves answer; the newest order stays
   await demo(page, "holdMoves", true);
   const G1 = up(D, D[1]!);
   await stepUp(page, D[1]!);
@@ -575,7 +522,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   await waitOrder(page, G2, "the settled generations land where the newest drag put them");
   failure["generations"] = { G1, G2 };
 
-  // a wrong-epoch roster alone cannot release; a refused proof keeps everything; a later mismatch asks again
   await demo(page, "verifyMode", "refuse");
   await demo(page, "holdSse", true);
   const beforeRestart = await demo<number>(page, "hold");
@@ -589,7 +535,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   await demo(page, "otherClientMove", R[2]!, 1);
   const S = await herdrTop(page, R);
   const refusals = await logCount(page, "verify-refuse");
-  // the manager's own health call proves the new server: passive proof, which retires nothing
   await demo(page, "proveSource");
   await demo(page, "publish");
   await waitLog(page, "verify-refuse", refusals + 1);
@@ -603,7 +548,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   await waitLog(page, "verify-answer", answers + 1);
   await waitOrder(page, S, "the correlated proof retires the old epoch and applies the new server's roster");
   const settledMark = await drawnMark(page);
-  // the held pre-restart roster, by SSE and as a cached GET, cannot bring the old order back
   await demo(page, "deliverSse", beforeRestart);
   await demo(page, "cacheNextGet", beforeRestart);
   await readRoster(page);
@@ -612,7 +556,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   assert.deepEqual((await drawnOrders(page)).slice(settledMark), [], "nothing was drawn after the new server's order");
   failure["restart"] = { before: G2, oldEpoch, newEpoch, R, S, drawn_while_held: restartDrawn };
 
-  // round 6: a receipt, then proof of a successor with no snapshot of it, then another restart before any
   await demo(page, "verifyMode", "proof-only");
   const guardSince = await drawnMark(page);
   const movesBeforeGuard = await logCount(page, "move");
@@ -647,7 +590,6 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
   return { happy, failure };
 }
 
-/** An older server (no pairs, receipts without numbers) on a PC never protected: the fallback, on its own page. */
 async function checkLegacyFallback(browser: Awaited<ReturnType<typeof chromium.launch>>, url: string): Promise<unknown> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
@@ -690,17 +632,7 @@ try {
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
 
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -725,13 +657,11 @@ try {
       assert.ok(before.length >= 3, `three top-level workspaces: ${JSON.stringify(before)}`);
       assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), before, "the sidebar draws herdr's order");
 
-      // a quick stroke is a scroll, not a lift
       await stroke(page, cdp, await centerOf(page, before[0]!), await centerOf(page, before[2]!), 0, async () => {
         assert.equal(await page.locator(".workspace.is-lifted").count(), 0, "a stroke that moves at once lifts nothing");
       });
       assert.deepEqual(await topRows(page), before, "a quick stroke moves nothing");
 
-      // a long press lifts the first row; dragged past the third and let go, it lands after it
       const target = await centerOf(page, before[2]!);
       await stroke(page, cdp, await centerOf(page, before[0]!), { x: target.x, y: target.y + 4 }, 600, async () => {
         assert.equal(await page.locator(`.workspace-group.is-lifted[data-workspace="${before[0]}"]`).count(), 1, "the held row is lifted");
@@ -747,17 +677,15 @@ try {
       assert.equal(await page.locator('button[aria-controls="workspace-drawer"]').getAttribute("aria-expanded"), "true", "the drag left the drawer open");
       console.log("PASS a long press lifts a workspace row on a touch screen, and a drag drops it where the line shows");
 
-      // The phone's explicit menu has the same workspace scope as desktop right-click.
       const moved = before[0]!;
       const movedRow = page.locator(`.workspace-group[data-workspace="${moved}"]`);
       await movedRow.locator(".row-menu-toggle").click();
       const workspaceSheet = page.locator(".row-sheet");
       await workspaceSheet.waitFor();
-      assert.deepEqual(await workspaceSheet.locator(".row-sheet-item").allTextContents(), ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"],
+      assert.deepEqual(await workspaceSheet.locator(".row-sheet-item").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"],
         "the touch menu of a repository contains its group's native actions, with no pane or reorder actions");
       await workspaceSheet.getByRole("button", { name: "Cancel", exact: true }).click();
       await workspaceSheet.waitFor({ state: "detached" });
-      // Keyboard reordering remains available on the row itself.
       await movedRow.locator(".workspace-select").focus();
       await page.keyboard.press("Alt+ArrowUp");
       const stepped = [before[1]!, before[0]!, before[2]!, ...before.slice(3)];

@@ -6,7 +6,6 @@ import { buildRevision } from "./app-revision.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-/** an app folder whose dist/ holds that build.json, as vite writes it */
 function app(build?: unknown): string {
   const root = mkdtempSync(join(tmpdir(), "ovis-app-"));
   roots.push(root);
@@ -21,12 +20,9 @@ it("names the desktop app's own build, from a clean tree, where no supervisor se
 });
 
 it("takes the release the supervisor runs first, and names no build it cannot vouch for", () => {
-  // the desktop app names its own staged build, never an OVIS_REVISION it inherited from where it was launched
   expect(buildRevision(app({ revision: B, dirty: false }), { ...desktop, OVIS_REVISION: A })).toBe(B);
   expect(buildRevision(app({ revision: B, dirty: false }), { OVIS_REVISION: A })).toBe(A);
-  // a build from a dirty tree, or one that does not say (an older build), is not that revision
   for (const build of [{ revision: B, dirty: true }, { revision: B }]) expect(buildRevision(app(build), desktop)).toBeUndefined();
-  // outside the desktop app a dist/ may have been rebuilt apart from the server that runs
   expect(buildRevision(app({ revision: B, dirty: false }), {})).toBeUndefined();
   for (const build of [undefined, "", "not json", {}, { revision: "abc", dirty: false }]) expect(buildRevision(app(build), desktop)).toBeUndefined();
   expect(buildRevision(app(), { OVIS_REVISION: "main" })).toBeUndefined();

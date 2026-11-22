@@ -7,12 +7,9 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A cancelled send the agent put back in its input box (`restored` on GET /api/pane/prompt), on
-// the unmodified app over the demo's fixture transport: the composer takes the text back without
-// taking the focus, the chat keeps the turn that send made out of view while they match, and
-// typing or editing over the fill is never replaced or cleared. A message sent over the fill keeps
-// that turn out too, until a read brings the new turn. All files and HTTP traffic stay in this
+// All files and HTTP traffic stay in this
 // disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-restored-draft-demo-"));
 
@@ -21,17 +18,13 @@ const app = mkdtempSync(join(tmpdir(), "herdr-restored-draft-demo-"));
 const playwrightCore = "playwright-core";
 const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
 
-/** what the transcript's trailing turn says — whitespace differs from the restored text on purpose */
 const TURN_TEXT = "Rename the backup job\nand rerun it";
-/** what the agent's input box holds again, as one line */
 const RESTORED = "Rename the backup job and rerun it";
 
 const extraTurn = (): unknown => ({ role: "user", ts: new Date().toISOString(), parts: [{ kind: "text", text: TURN_TEXT }] });
 
-/** A transcript write, announced as a bridge with "conversation-watch" does: the chat reads on it. */
 const announce = (page: Page): Promise<void> => page.evaluate(() => (window as unknown as { announceConversation: () => void }).announceConversation());
 
-/** What the infra pane's prompt and conversation reads answer with from here on, announced as a transcript change. */
 const feed = async (page: Page, restored: string | null, turn: unknown | null): Promise<void> => {
   await page.evaluate(([text, extra]) => {
     const view = window as unknown as { restoredText: string | null; extraTurn: unknown };
@@ -41,25 +34,17 @@ const feed = async (page: Page, restored: string | null, turn: unknown | null): 
   await announce(page);
 };
 
-/** The composer box's value, waited for: the fills and clears under test are a poll away. */
 const boxValue = (page: Page, expected: string): Promise<unknown> => page.waitForFunction(
   (value) => document.querySelector<HTMLTextAreaElement>(".composer-text")?.value === value,
   expected, { timeout: 10_000 },
 );
 
-/** How many prompt reads the page has asked for so far. */
 const promptReads = (page: Page): Promise<number> => page.evaluate(() => (window as unknown as { promptReads: number }).promptReads);
 
-/**
- * Waits until the page asked for a prompt read after read `n`: the reads go one after another, so
- * by then read `n`'s answer has been applied. Counted after a feed, read count + 1 is the first one
- * asked for after it.
- */
 const promptReadsPast = (page: Page, n: number): Promise<unknown> => page.waitForFunction(
   (count) => (window as unknown as { promptReads: number }).promptReads > count, n, { timeout: 10_000 },
 );
 
-/** A rendered turn saying the send's words: the transcript's own answer, when it stands. */
 const turnShown = (page: Page): Promise<unknown> => page.waitForFunction(
   () => [...document.querySelectorAll(".chat-turn")].some((turn) => turn.textContent?.includes("Rename the backup job")),
   undefined, { timeout: 10_000 },
@@ -70,11 +55,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Over the demo's own fetch: the infra pane's prompt read answers `restored` as
-  // window.restoredText names it, and its conversation read appends window.extraTurn while set —
-  // the send the restored text belongs to, which herdr's transcript still holds. window.extraServed
-  // counts the reads that carried the turn and window.promptReads the prompt reads, so a check can
-  // wait for an answer to have landed. Everything else is the demo's.
   const restoredRead = `<script>(() => {
     const demo = window.fetch;
     const infra = ${JSON.stringify(panes.omp)};
@@ -150,17 +130,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${restoredRead}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.omp)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -177,19 +147,13 @@ try {
         await page.goto(url);
         await page.locator(".conn-live").waitFor({ state: "attached" });
         await page.locator(".terminal-stack.is-chat").waitFor();
-        // the fixture's own two turns, before the send's turn joins them
         await page.waitForFunction(() => document.querySelectorAll(".chat-turn").length === 2, undefined, { timeout: 10_000 });
         await appFaces(page);
         const composer = page.getByRole("textbox", { name: "Message", exact: true });
 
-        // a send the agent restored fills an empty composer — without the focus, which would raise
-        // a phone's keyboard — and the chat keeps the turn that send made out of view while the
-        // read still carries it (whitespace differs on purpose, as a terminal wrapped it). A desktop
-        // composer takes the focus when the pane opens: put it away so the fill is what is checked
         await composer.evaluate((node) => (node as HTMLElement).blur());
         await feed(page, RESTORED, extraTurn());
         await boxValue(page, RESTORED);
-        // the reads run one after another: a second read served means the first one's answer was drawn
         await page.waitForFunction(() => (window as unknown as { extraServed: number }).extraServed >= 1, undefined, { timeout: 10_000 });
         await announce(page);
         await page.waitForFunction(() => (window as unknown as { extraServed: number }).extraServed >= 2, undefined, { timeout: 10_000 });
@@ -199,16 +163,11 @@ try {
         assert.equal(await composer.evaluate((node) => document.activeElement === node), false, "a restored fill does not take the focus");
         console.log("PASS a send the agent restored fills an empty composer without focus, and the chat keeps that send's turn out");
 
-        // gone from the agent's box: the untouched fill is cleared, never kept as a draft — and
-        // the transcript settles back to what the reads answer
         await feed(page, null, null);
         await boxValue(page, "");
         await page.waitForFunction(() => document.querySelectorAll(".chat-turn").length === 2, undefined, { timeout: 10_000 });
         console.log("PASS the fill goes with the restored send once the agent's box no longer holds it");
 
-        // the same send restored again, then edited: the fill became the user's words, so the
-        // send going away leaves them alone (its turn stands again in the transcript, which is
-        // how the poll's landing is seen)
         await feed(page, RESTORED, extraTurn());
         await boxValue(page, RESTORED);
         const edited = `${RESTORED} twice`;
@@ -221,7 +180,6 @@ try {
         assert.equal(await composer.inputValue(), edited, "an edited fill is never cleared");
         console.log("PASS a fill the user edited is theirs and stays when the restored send goes away");
 
-        // a box already holding the user's own words is never overwritten by a restored send
         const own = "my own words";
         await composer.fill(own);
         await boxValue(page, own);
@@ -230,8 +188,6 @@ try {
         assert.equal(await composer.inputValue(), own, "the user's own draft is never replaced");
         console.log("PASS a composer holding the user's own words is never overwritten by a restored send");
 
-        // an upload that finished while the box held only a restored `/command` waits on it, and
-        // its path goes in once the fill is cleared
         await composer.fill("");
         await boxValue(page, "");
         await feed(page, "/compact", null);
@@ -244,10 +200,6 @@ try {
         await boxValue(page, "@/tmp/notes.txt ");
         console.log("PASS a path that waited on a restored /command goes in once the fill is cleared");
 
-        // the fill replaced by a new message and sent: the send empties the agent's box, so the next
-        // prompt read answers no restored send while the transcript still ends with the cancelled
-        // turn (the agent has not written the new one yet). That turn stays out until a read brings
-        // the new one, which leaves it off the transcript's active chain
         await composer.fill("");
         const served = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);
         await feed(page, RESTORED, extraTurn());
@@ -255,17 +207,14 @@ try {
         await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count, served, { timeout: 10_000 });
         await announce(page);
         await page.waitForFunction((count) => (window as unknown as { extraServed: number }).extraServed > count + 1, served, { timeout: 10_000 });
-        // the cancelled send's turn, or its outcome drawn as a sent row (.chat-turn-sent)
         const cancelledShown = (): Promise<number> => page.locator(".chat-turn", { hasText: "Rename the backup job" }).count();
         assert.equal(await cancelledShown(), 0, "the restored send's turn is out of view");
-        // the bridge lists the cancelled send's outcome too: it gets no sent row while its turn is out
         await page.evaluate((text) => {
           const at = new Date(Date.now() - 1000).toISOString();
           Object.assign(window, { promptOutcomes: [{ id: "cancelled", pane_id: "", text, state: "accepted", evidence: [], created_at: at, updated_at: at }] });
         }, RESTORED);
         await promptReadsPast(page, await promptReads(page) + 1);
         assert.equal(await cancelledShown(), 0, "the restored send's outcome is out of view");
-        /** a message from the composer, once the agent is at rest (Stop gives way to Send) */
         const sendAtRest = async (text: string): Promise<void> => {
           await page.locator(".composer-stop").waitFor({ state: "detached", timeout: 10_000 });
           await composer.fill(text);
@@ -278,7 +227,6 @@ try {
         };
         const next = "Reply with one word";
         await composer.fill(next);
-        // the box empties as the message goes, in one task: no prompt read answers between the two
         await page.evaluate(() => {
           Object.assign(window, { holdReads: true, restoredText: null });
           document.querySelector<HTMLButtonElement>(".composer-send")!.click();
@@ -286,7 +234,6 @@ try {
         await page.locator(".chat-sent-waiting-list", { hasText: next }).waitFor({ timeout: 10_000 });
         await promptReadsPast(page, await promptReads(page) + 1);
         assert.equal(await cancelledShown(), 0, "the cancelled turn and its outcome stay out after the send");
-        // a second message before the transcript has the first: the box was empty at its send
         await sendAtRest("And a second one");
         await promptReadsPast(page, await promptReads(page) + 1);
         assert.equal(await cancelledShown(), 0, "a second send keeps the cancelled turn out while the transcript is unchanged");
@@ -296,9 +243,6 @@ try {
         assert.equal(await cancelledShown(), 0, "the new turns' read leaves the cancelled one out");
         console.log("PASS a message sent over a restored send keeps that send's turn and outcome out until the new turn is read");
 
-        // A Send now empties the box before its receipt: a prompt read between the two answers no
-        // copy before the send counts. Here that read comes first: the turn stands again, as for a
-        // copy cleared in the terminal, and the send that follows on the same turns takes it out
         const servedAgain = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);
         await feed(page, RESTORED, extraTurn());
         await boxValue(page, RESTORED);
@@ -316,10 +260,6 @@ try {
         assert.equal(await cancelledShown(), 0, "the new turn's read leaves the cancelled one out");
         console.log("PASS a send after the restored copy left the box keeps that send's turn out until the new turn is read");
 
-        // Send now of a held row (a follow-up held over a stopped send's copy): the bridge empties the box
-        // as the row starts going out, long before its receipt. The receipt waits here until a prompt read
-        // answered the box empty: no painted frame meanwhile shows the cancelled turn. A row that went
-        // out and came back held, never typed, leaves the copy as it was
         const servedLast = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);
         await feed(page, RESTORED, extraTurn());
         await boxValue(page, RESTORED);
@@ -363,7 +303,6 @@ try {
         await row.getByRole("button", { name: /^Send now:/ }).click();
         await page.waitForFunction(() => (window as unknown as HeldRowCheck).sendNowAsked !== null, undefined, { timeout: 10_000 });
         await page.locator('.pending-message[data-state="sending"]').waitFor({ timeout: 10_000 });
-        // the bridge emptied the box: a prompt read answers no copy, before the receipt
         await page.evaluate(() => { Object.assign(window, { restoredText: null }); });
         await promptReadsPast(page, await promptReads(page) + 1);
         await page.evaluate(() => (window as unknown as HeldRowCheck).answerSendNow());
@@ -371,7 +310,6 @@ try {
         await promptReadsPast(page, await promptReads(page) + 1);
         const shownFrames = await page.evaluate(() => { const view = window as unknown as HeldRowCheck; view.sampling = false; return view.shownFrames; });
         assert.equal(shownFrames, 0, "no painted frame shows the cancelled turn between the empty box and the receipt");
-        // the agent writes the follow-up's turn: the read leaves the cancelled one off its chain
         await page.evaluate((text) => {
           const view = window as unknown as HeldRowCheck;
           view.extraTurn = { role: "user", ts: new Date().toISOString(), parts: [{ kind: "text", text }] };

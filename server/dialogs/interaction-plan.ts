@@ -1,24 +1,19 @@
 import { KEY, type AnswerStep, type ParsedPrompt } from "./shared.ts";
 
 export interface InteractionPlan {
-  /** Position after the reversible moves sent so far, in the original drawing's rows. */
   cursor: number;
   /** Tabs sent so far: each flips a switch beside the rows (Claude's Ultracode), and moves no cursor. */
   toggles: number;
   moves(answer: number): AnswerStep[];
   matches(screen: string): boolean;
-  /** The irreversible step that picks the answer's row, from that answer's own key sequence. */
   commit(answer: number): AnswerStep;
-  /** Whether the answer's commit has no safe key and is left to the terminal. */
   terminalFallback(answer: number): boolean;
 }
 
-/** Bind a reader's existing key sequences to its own row identity, not a card's viewport hash. */
 export function pickerPlan(
   parsed: ParsedPrompt,
   read: (screen: string) => ParsedPrompt | null,
   sequences: AnswerStep[][],
-  /** the row at `cursor`, with a switch beside the rows as `toggles` flips leave it: the drawing's own when 0 */
   rowIdentity: (prompt: ParsedPrompt, cursor: number, toggles: number) => string | undefined,
 ): InteractionPlan {
   let seen = parsed;
@@ -42,7 +37,6 @@ export function pickerPlan(
   return plan;
 }
 
-/** Reads after moves and refuses an irreversible step unless the reader still matches. */
 export async function executeInteractionPlan(
   plan: InteractionPlan,
   answer: number,
@@ -50,7 +44,6 @@ export async function executeInteractionPlan(
     rereadMoves: boolean;
     read(): Promise<string | null>;
     send(step: AnswerStep, commit: boolean): Promise<void>;
-    /** Asking identity, checked before each move; cancellation is a separate commit guard. */
     active(): boolean;
     cancelled(): boolean;
   },

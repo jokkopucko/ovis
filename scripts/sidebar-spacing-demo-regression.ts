@@ -1,18 +1,11 @@
-/**
- * Purpose: verify sidebar spacing when PC groups fold in a real browser, and that picking an agent of a folded PC
- * keeps its fold. How the PCs and Agents share the height: Agents takes half the sidebar where both lists are
- * long and sits on the footer with the gap above it where both are short, as it always has, and takes the
- * height the PCs leave free down to the footer when they end above that half. The demo's roster is rewritten into two PCs (the Host "Laptop" and "Work PC"): a lone Host is
- * drawn without its header and has no fold (MachineSidebar.tsx).
- * Tags: sidebar, spacing, responsive, browser, regression.
- * Usage: bun scripts/sidebar-spacing-demo-regression.ts
- */
+/** Usage: bun scripts/sidebar-spacing-demo-regression.ts */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-spacing-demo-"));
 const spacing = 16;
@@ -55,10 +48,6 @@ const twoPcs = `(() => {
   };
 })();`;
 
-/**
- * Closes every demo workspace that runs an agent, through the demo's own API, so the Agents list
- * says "No agents running" while the shell workspace keeps the PC's own list in place.
- */
 const closeAgentWorkspaces = (page: Page) => page.evaluate(async () => {
   for (let closed = 0; closed < 32; closed++) {
     const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { panes: Array<{ pane_id: string; workspace_id: string; agent: string | null }>; agents: Array<{ pane_id: string }> } };
@@ -71,10 +60,6 @@ const closeAgentWorkspaces = (page: Page) => page.evaluate(async () => {
   throw new Error("the demo still lists an agent workspace after 32 closes");
 });
 
-/**
- * Where the lists sit: the PCs' rows (the last PC's bottom), Agents' box and whether its rows are cut, and the
- * footer. `pcsCut` and `agentsCut` say a list holds more rows than it shows.
- */
 const layout = (page: Page) => page.evaluate(() => {
   const box = (selector: string) => document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
   const list = document.querySelector<HTMLElement>(".machine-list")!;
@@ -100,16 +85,7 @@ try {
   writeFileSync(join(app, "two-pcs.js"), twoPcs);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./two-pcs.js"></script>\n    <script type="module"'));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.slice(prefix.length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app, { prefix: "/app/" });
 
   for (const [mobile, empty] of [[false, false], [true, false], [false, true], [true, true]] as const) {
     const label = `${mobile ? "390px" : "desktop"}${empty ? " with no agents" : ""}`;
@@ -125,7 +101,6 @@ try {
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${server.port}/app/`);
       await page.locator(".conn-live").waitFor({ state: "attached" });
-      // before the drawer opens: the selection leaves with its workspace, and a new one closes the drawer
       if (empty) assert.ok(await closeAgentWorkspaces(page) > 0, `${label} closed the demo's agent workspaces`);
       if (mobile) await page.locator(".drawer-toggle").tap();
       const machineToggles = page.locator(".machine-toggle");
@@ -134,7 +109,6 @@ try {
       await machineToggles.nth(1).waitFor();
       if (empty) await page.locator(".agents-sidebar.is-empty .agent-empty").waitFor({ state: "attached" });
       if (await agentToggle.getAttribute("aria-expanded") !== "true") await agentToggle.click();
-      // the one-line list folds its idle agents under one resting line: open it, so Agents has all its rows
       if (!empty) {
         const resting = page.locator(".agents-sidebar .agent-resting-label .agent-background-toggle");
         await resting.click();
@@ -144,8 +118,6 @@ try {
       assert.equal(before.length > 0, !empty, `${label} ${empty ? "has no agent rows" : "has agent rows"} before folding`);
       assert.equal(await machineToggle.getAttribute("aria-expanded"), "true");
 
-      // Both PCs open, their rows longer than the sidebar: Agents takes half of it, as it always has, or less when
-      // its rows are fewer, and sits on the footer.
       const open = await layout(page);
       if (!empty) assert.ok(open.pcsCut, `${label} the two open PCs are longer than their list`);
       if (open.agentsCut) assert.ok(Math.abs(open.agentsHeight - open.shellHeight / 2) <= 1, `${label} with both lists long Agents takes half the sidebar (${open.agentsHeight}px of ${open.shellHeight}px)`);
@@ -153,8 +125,6 @@ try {
       assert.ok(Math.abs(open.agentsBottom - open.footerTop) <= 1, `${label} Agents sits on the footer while the PCs are long`);
       assert.ok(!open.pcsCut || open.agentsTop - open.rowsBottom <= open.lineHeight + 1, `${label} the PC rows reach Agents while they are long`);
 
-      // With Work PC folded, inspect either case: Laptop still needs scrolling, or the PCs now fit
-      // and Agents uses the freed height (or, if both fit, stays on the footer with the gap above).
       await machineToggles.nth(1).click();
       await page.waitForFunction(() => document.querySelectorAll(".machine-workspaces").length === 1);
       const short = await layout(page);
@@ -193,14 +163,11 @@ try {
       });
       if (metrics.contentsCut > 1) assert.ok(metrics.agentsTop - metrics.machineBottom <= spacing + metrics.lineHeight, `${label} folded PC gap is ${metrics.agentsTop - metrics.machineBottom}px`);
       assert.ok(metrics.listBottom - metrics.machineBottom <= spacing, `${label} folded list padding is ${metrics.listBottom - metrics.machineBottom}px`);
-      // every PC folded: Agents takes the height down to the footer before it cuts a row, and never runs under it
       assert.ok(metrics.contentsCut <= 1 || Math.abs(metrics.agentsBottom - metrics.footerTop) <= 1, `${label} Agents cuts rows only once it reaches the footer (${metrics.contentsCut}px cut, ${metrics.footerTop - metrics.agentsBottom}px left)`);
       assert.ok(Math.abs(metrics.agentsBottom - metrics.footerTop) <= 1, `${label} Agents ends above the footer`);
       assert.equal(metrics.contentsOverflow, "auto", `${label} Agents keeps scroll ownership`);
       assert.equal(Math.round(metrics.footerBottom), Math.round(metrics.shellBottom), `${label} footer stays at the bottom`);
       assert.deepEqual(await page.locator(".agents-sidebar .agent-title").allTextContents(), before, `${label} agent order is unchanged`);
-      // Agents is global to the sidebar: a pane picked from it on a folded PC opens, and the PC stays folded
-      // (a phone's pick closes the drawer, so the desktop checks it)
       if (!mobile && !empty) {
         const agent = page.locator('.agents-sidebar .agent-item[data-machine="local"] .agent-select').first();
         await agent.click();

@@ -1,4 +1,3 @@
-/** Touch controls → browser WS → Herdr's pane encoder → real raw-mode PTY. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
@@ -9,12 +8,14 @@ import { createServer } from "../server/index.ts";
 import { workspaceCreate, workspaceClose, paneSendText, paneSendKeys, paneRead } from "../server/herdr/client.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openLens } from "./header-lens.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-sticky-qa-"));
 const owned: string[] = [];
 const server = createServer({ port: 0, stateDir: join(root, "state"), token: "" });
 // launched inside the try: a missing Chrome must still stop the server and remove the temp directory
 let launched: Browser | undefined;
+const BRACKETED_PASTE_OFF = "\x1b[?2004l";
 const errors: string[] = [];
 const evidence = process.env.UI_EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
@@ -53,8 +54,6 @@ try {
         if (message.type === "error") console.log("terminal error", message);
         socket.send(raw);
       });
-      // the typing frames each key produced, in order: a ping that confirms typing (#2587) can go out
-      // after any of them, once the pong of the one before comes back
       socket.onMessage((raw) => {
         const frame = JSON.parse(String(raw));
         if (frame.type === "input" || frame.type === "keys") frames.push(frame);
@@ -67,12 +66,11 @@ try {
     const ctrl = page.locator('[data-key="Control"]');
     await until(async () => !(await ctrl.isDisabled()), "terminal input ready");
     // Herdr's screen stream enables bracketed paste; exercise xterm with it disabled too.
-    ws!.send(JSON.stringify({ type: "pty-data", pane_id: pane, data: "\x1b[?2004l" }));
+    ws!.send(JSON.stringify({ type: "pty-data", pane_id: pane, data: BRACKETED_PASTE_OFF }));
     const input = page.locator(".xterm-helper-textarea");
     await input.focus();
     let previousMask = 0;
     const held = async (mask: number) => {
-      // locked (two taps from off, one back to off), so each stays held across every key below
       for (const [bit, key] of [[4, "Control"], [2, "Alt"], [1, "Shift"]] as const) {
         const button = page.locator(`[data-key="${key}"]`);
         if ((mask & bit) && !(previousMask & bit)) { await button.tap(); await button.tap(); }
@@ -108,7 +106,6 @@ try {
         }
         console.log(`${mode} ${prefix}+${name}: ${Buffer.from(received).toString("hex")}`);
       }
-      // Every modifier stays held across all keys, including Control.
       assert.equal(await ctrl.getAttribute("aria-pressed"), String(!!(mask & 4)));
     }
     await held(7);
@@ -124,7 +121,6 @@ try {
       await until(() => read().length > before.length, `optional modified ${key} received by PTY`);
     }
     if (evidence) await page.screenshot({ path: join(evidence, `sticky-${mode}-phone.png`) });
-    // Dropped text is also paste, even one character with every modifier held.
     const dropBefore = read();
     const dropFrames = frames.length;
     await page.locator(".xterm").evaluate((element) => {
@@ -136,7 +132,6 @@ try {
     assert.equal(frames[dropFrames].type, "input", "drop bypasses held modifiers");
     assert.equal(frames[dropFrames].text, "z");
     assert.equal(Buffer.from(read().slice(dropBefore.length).trim().split(/\s+/).join(""), "hex").toString(), "z");
-    // Paste is text, including a single character; it must not become a shortcut.
     const pasteBefore = read();
     const pasteFrames = frames.length;
     await input.evaluate((element) => {
@@ -147,7 +142,6 @@ try {
     await until(() => read().length > pasteBefore.length, "paste received");
     assert.equal(frames.slice(pasteFrames).some((frame) => frame.type === "keys"), false);
     assert.equal(Buffer.from(read().slice(pasteBefore.length), "hex").toString(), "x");
-    // Deferred IME commits are text, including one character with every modifier held.
     for (const text of ["한", "한글"]) {
       const imeBefore = read();
       const imeFrames = frames.length;
@@ -159,12 +153,10 @@ try {
         box.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: text }));
         box.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: text }));
       }, text);
-      // a commit can reach the program in more than one read: wait for all of its bytes, two hex digits each
       await until(() => read().length - imeBefore.length >= Buffer.byteLength(text) * 2, "IME commit received");
       assert.equal(frames.slice(imeFrames).some((frame) => frame.type === "keys"), false, "IME commit bypasses held modifiers");
       assert.equal(Buffer.from(read().slice(imeBefore.length), "hex").toString(), text);
     }
-    // A second composition starts before the first deferred commit runs.
     const burstBefore = read();
     const burstFrames = frames.length;
     await input.evaluate((element) => {
@@ -180,7 +172,6 @@ try {
     await until(() => Buffer.from(read().slice(burstBefore.length), "hex").toString() === "한글", "IME burst received");
     assert.equal(frames.slice(burstFrames).some((frame) => frame.type === "keys"), false, "consecutive IME commits bypass held modifiers");
     assert.equal(Buffer.from(read().slice(burstBefore.length), "hex").toString(), "한글");
-    // Hardware modifiers combine with held touch modifiers as well.
     await held(2);
     await input.evaluate((element) => { (element as HTMLTextAreaElement).value = ""; });
     await input.focus();
@@ -216,7 +207,6 @@ try {
     ws!.send(JSON.stringify({ type: "input-ready", pane_id: pane, ready: true }));
     await until(async () => !(await ctrl.isDisabled()), "key bar enabled again");
     console.log(`${mode} chord while not ready: told, not sent`);
-    // Removing the optional Alt button must not leave an invisible held modifier.
     await page.keyboard.press(settingsShortcut);
     const settings = page.getByRole("dialog", { name: "Settings", exact: true });
     await openSettingsPage(page, "Terminal");
@@ -244,14 +234,11 @@ try {
     await keyBarSettings.getByRole("button", { name: "Close settings", exact: true }).tap();
     previousMask = 0;
     assert.equal(await page.locator('[data-key="Alt"]').getAttribute("aria-pressed"), "false");
-    // Leaving the terminal lens clears held state on the same pane.
-    await page.getByTitle(/^Chat transcript \(.+\)$/).tap();
-    await page.getByTitle(/^Live terminal \(.+\)$/).tap();
+    await openLens(page, "chat", "tap");
+    await openLens(page, "terminal", "tap");
     await until(async () => !(await ctrl.isDisabled()), "terminal lens ready again");
     for (const key of ["Control", "Alt", "Shift"]) assert.equal(await page.locator(`[data-key="${key}"]`).getAttribute("aria-pressed"), "false");
     previousMask = 0;
-    // A cancelled chord or text says so in a banner. The banner column lets taps through to the
-    // terminal under it, so its Dismiss has to take them back.
     ws!.send(JSON.stringify({ type: "error", code: "input_failed", message: "Terminal input could not be confirmed. Check the terminal before typing again.", pane_id: pane }));
     const refused = page.locator(".terminal-banner", { hasText: "Terminal input could not be confirmed" });
     await refused.waitFor();
@@ -260,7 +247,6 @@ try {
     assert.equal(await ctrl.isDisabled(), false, "a refused key leaves the pane ready for the next one");
     await input.focus();
     await held(7);
-    // Disconnect clears all modifiers and sends no retained shortcuts on reconnect.
     await ws!.close();
     await until(async () => (await ctrl.getAttribute("aria-pressed")) === "false", "disconnect clears held Ctrl");
     for (const key of ["Alt", "Shift"]) assert.equal(await page.locator(`[data-key="${key}"]`).getAttribute("aria-pressed"), "false");

@@ -1,0 +1,65 @@
+user@host:~/scratch/lab-hermes$ /home/user/.dori-sa/agent-lab/run
+ hermes
+
+██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝
+
+╭──────────────────────── Hermes Agent v0.21.5+8892.g354724f (2026.9.24) · upstream 354724fb ─────────────────────────╮
+│                                                          Available Tools                                            │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          browser: browser_vault_enter_code, ...                     │
+│  ⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀                          browser-use: browser_exec                                  │
+│  ⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀                          clarify: clarify                                           │
+│  ⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀                          code_execution: execute_code                               │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          computer_use: computer_use                                 │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          connections: manage_connections                            │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          delegation: delegate_task                                  │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          file: patch, read_file, search_files, write_file           │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          (and 8 more toolsets...)                                   │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                                                     │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          Available Skills                                           │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          autonomous-ai-agents: claude-code, codex, +3 more          │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          creative: architecture-diagram, ascii-video, +8 more       │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          devops: sdlc-review                                        │
+│  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                          email: email-inbox-triage, himalaya                        │
+│                                                          media: gif-search, songsee, youtube-content                │
+│  gpt-6-luna · Nous Research                              note-taking: obsidian                                      │
+│  /home/user/scratch/lab-…  productivity: airtable, box, +13 more                      │
+│  Session: 20261112_163307_88cede                         research: arxiv, competitor-news-monitor, +2 more          │
+│                                                          social-media: xurl                                         │
+│                                                          software-development: codebase-inspection, dogfood, +10    │
+│                                                          more                                                       │
+│                                                          web: blocked-page-recovery                                 │
+│                                                                                                                     │
+│                                                          25 tools · 55 skills · /help for commands                  │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Welcome to Hermes Agent! Type your message or /help for commands.
+✦ Tip: The status bar turns yellow, then orange, then red as context fills up.
+
+
+────────────────────────────────────────
+● Use your tool for asking the user a question to ask me ONE multiple-choice question: 'Which color?' with options red,
+green, blue. Wait for my answer, then reply with just the color.
+Initializing agent...
+────────────────────────────────────────
+
+  ┊ ❓ preparing clarify…
+╭─ Hermes Agent needs your input ────────────────╮
+│ 1 question                                     │
+│ ▸ Which color?                                 │
+│   ❯ 1. red (Recommended)                       │
+│     2. green                                   │
+│     3. blue                                    │
+│     4. Other (type your answer)                │
+╰────────────────────────────────────────────────╯
+
+  ❓ Which color?  ( 57.9s · ↓ 34 tok)
+  ↑/↓ to select, Enter to lock, Tab next question  (3542s)
+ ☤ gpt-6-luna │ 12.7K/1.1M │ [░░░░░░░░░░] 1% │ ◷ 2.9s │ ↑ 12 t/s │ 2m │ ⏱ 1m 2s          ─ Use your tool for asking...
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? ❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

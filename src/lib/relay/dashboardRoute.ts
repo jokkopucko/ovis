@@ -46,10 +46,6 @@ export function isDashboardHash(hash: string | null | undefined): boolean {
   return parseHead(head) !== null;
 }
 
-/**
- * Parses the location hash into one of the five real dashboard views and, for `#pcs`, its optional
- * `filter`, `relay` and `pc` parameters. Any empty or non-dashboard fragment defaults to Overview.
- */
 export function parseDashboardHash(hash: string | null | undefined): DashboardRoute {
   const input = hash ?? "";
   const raw = input.startsWith("#") ? input.slice(1) : input;
@@ -72,7 +68,6 @@ export function parseDashboardHash(hash: string | null | undefined): DashboardRo
   };
 }
 
-/** Formats a dashboard route back into a canonical URL hash (`#overview`, `#pcs?filter=needs`, etc.). */
 export function formatDashboardHash(route: {
   readonly view: DashboardView;
   readonly filter?: DashboardFilter;

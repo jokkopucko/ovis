@@ -6,7 +6,6 @@ import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { SignOutRow, wayBackIn } from "./SignOutRow.tsx";
 
-/** English, whatever the machine running the test prefers. */
 function render(viaPortal: boolean): string {
   const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });

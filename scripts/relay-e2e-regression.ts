@@ -10,11 +10,16 @@
  * `connect` seam, the browser's through Playwright's WebSocket routing (relay-browser-bridge.ts).
  * Every page runs on a frozen clock; a deadline is reached by advancing it, never by waiting.
  *
- * After its own journey (pairing, terminal, roster, reload, the relay lost mid-session, storage,
- * network, revoke) it runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
+ * Its own journey is pairing, terminal, roster, reload, the relay lost mid-session, storage,
+ * network and revoke. Against this checkout's server that is the whole run: the browser lane
+ * (scripts/ci-browser.sh) runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
  * rotation, version skew) and relay-media-browser-qa.ts (both PCs' files and media, a remote PC,
- * isolation in worker and blob mode, MP4 seek and Range), all against the same server tree. The
- * media part encodes its video with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
+ * isolation in worker and blob mode, MP4 seek and Range) as entries of their own. Against another
+ * server tree (the two commands below that name one) it runs both after its journey, on that tree,
+ * so one command still checks an older server from end to end. The media part encodes its video
+ * with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
+ *
+ * Run after `bun run build:shell`. The media part encodes its video with FFMPEG (default `ffmpeg`).
  *
  *   bun scripts/relay-e2e-regression.ts                  this checkout's shell against this checkout's server
  *   RELAY_E2E_SERVER_DIR=<tree> bun scripts/relay-e2e-regression.ts
@@ -28,7 +33,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { chromium } from "playwright-core";
 import type { Browser, BrowserContext, Page } from "playwright-core";
@@ -47,8 +52,6 @@ import { relayMediaQa } from "./relay-media-browser-qa.ts";
 import { relayShellQa } from "./relay-shell-browser-qa.ts";
 
 const repo = join(import.meta.dir, "..");
-
-// ---- --skew <tag>: this run again, against a worktree of the tag's server ----
 
 const skewAt = process.argv.indexOf("--skew");
 if (skewAt !== -1) {
@@ -69,7 +72,6 @@ if (skewAt !== -1) {
 
 async function main(): Promise<void> {
   if (!existsSync(join(repo, "dist-shell/index.html"))) throw new Error("dist-shell/ is missing: run `bun run build:shell` first");
-  // the server under test: this checkout's, or the older tree's (todo 19); the shell and relay are always this checkout's
   const tree = await relayServerTree();
   const { createServer, RelayService } = tree;
   const serverDir = tree.dir;
@@ -82,7 +84,6 @@ async function main(): Promise<void> {
   const note = (line: string): void => { report.push(line); console.log(line); };
 
   const RELAY = "wss://relay.test";
-  /** The page's fake time: fixed, so nothing in the page runs on the wall clock. */
   const T0 = new Date("2026-10-30T00:00:00Z");
 
   async function bounded<T>(promise: Promise<T>, what: string, ms = 30_000): Promise<T> {
@@ -106,7 +107,6 @@ async function main(): Promise<void> {
   const site = servePagesSite(join(repo, "dist-shell"), 0);
   const origin = `http://127.0.0.1:${site.port}`;
 
-  /** A PC: its own state dir and files, its relay through the seam, a sync event per (re)connection. */
   async function startPc(name: string) {
     const stateDir = mkdtempSync(join(root, `${name}-state-`));
     const dir = mkdtempSync(join(root, `${name}-files-`));
@@ -116,14 +116,13 @@ async function main(): Promise<void> {
       socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) synced.resolve(); });
       return socket;
     } });
-    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, relay: service, pushLoopbackHttp: true });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, relay: service, pushLoopbackHttp: true, accountOpensAll: false });
     const base = `http://127.0.0.1:${app.port}`;
     const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
     const pc = {
       name, stateDir, dir, service, app, base,
       devices: app.context.services.devices,
       push: app.context.services.core.push,
-      /** turns its relay on through the API and resolves once its control socket synced */
       async start(): Promise<void> {
         synced = Promise.withResolvers<void>();
         const response = await post("/start");
@@ -131,9 +130,7 @@ async function main(): Promise<void> {
         await bounded(synced.promise, `${name} synced with the relay`);
       },
       async stop(): Promise<void> { assert.equal((await post("/stop")).status, 200); },
-      /** the next sync: the PC's link reconnecting to a restarted relay by itself */
       resynced(): Promise<void> { synced = Promise.withResolvers<void>(); return synced.promise; },
-      /** a pairing offer through the API, re-based onto the shell host */
       async offer(): Promise<RelayOffer> {
         const response = await post("/offer");
         const body = await response.text();
@@ -146,13 +143,10 @@ async function main(): Promise<void> {
     return pc;
   }
 
-  // ---- the browser side ----
-
   interface Opened { context: BrowserContext; page: Page }
 
   /**
-   * A fresh context on a frozen clock: its own storage, relay sockets carried to the relay, every
-   * request logged. `blob` takes the service worker away, as a
+   * `blob` takes the service worker away, as a
    * native WebView has none, so resources load as blobs.
    */
   async function open(options: { width?: number; blob?: boolean; trace?: boolean } = {}): Promise<Opened> {
@@ -185,7 +179,6 @@ async function main(): Promise<void> {
     csp.push(await watchCsp(page));
     return { context, page };
   }
-  /** Another page of a context, on the same frozen clock and policy watch. */
   async function tab(context: BrowserContext): Promise<Page> {
     const page = await context.newPage();
     page.setDefaultTimeout(30_000);
@@ -194,7 +187,6 @@ async function main(): Promise<void> {
     csp.push(await watchCsp(page));
     return page;
   }
-  /** Runs the page's frozen clock a frame at a time until `check` holds: paint and the app's own timers, in page time only. */
   async function frames(page: Page, what: string, check: () => Promise<boolean>, limitMs = 20_000): Promise<void> {
     for (let ran = 0; !(await check()); ran += 16) {
       if (ran >= limitMs) throw new Error(`${what}: not within ${limitMs} ms of page time`);
@@ -207,21 +199,15 @@ async function main(): Promise<void> {
     assert.equal(await page.locator("main[data-relay-state]").count(), 0, "the shell's screen is gone once the app is up");
   };
   const scopeOf = (id: string): string => `${origin}/s/${id}/`;
-  /** Opens a pairing link as the PC's QR code gives it, confirms, and lands in the app. */
   async function pair(page: Page, offer: RelayOffer): Promise<void> {
     await page.goto(encodeOffer(offer, origin));
     await state(page, "confirm").waitFor();
     await page.getByRole("heading", { name: `Pair with ${offer.name}?` }).waitFor();
     assert.ok(!page.url().includes("#offer"), "the offer left the address before the question");
     await page.getByRole("button", { name: "Pair", exact: true }).click();
-    // a first pairing stops at Ready: nothing opens until Open PC (lib/relay/shell.tsx)
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app");
-    await ready.getByRole("button", { name: "Open PC" }).click();
     await inApp(page);
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint after a pairing");
   }
-  /** The phone's saved record for a PC, or null. */
   const saved = (page: Page, serverId: string): Promise<{ device_id: string; extractable: boolean } | null> => page.evaluate(async (serverId) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("ovis-relay", 2);
@@ -253,7 +239,6 @@ async function main(): Promise<void> {
     assert.notEqual(new URL(origin).origin, new URL(desk.base).origin, "the shell is not on the PC's origin");
     note(`shell ${origin}; PCs ${desk.base} and ${laptop.base}; relay ws://127.0.0.1:${relayPort} as ${RELAY}; both relays turned on through POST /api/relay/start`);
 
-    // ---- pairing, the terminal, the roster, a reload ----
     const main = await open({ trace: true });
     const { page } = main;
     const deskScope = scopeOf(deskOffer.server_id);
@@ -269,9 +254,13 @@ async function main(): Promise<void> {
     note(`paired: ${deskScope}#offer=… -> confirm -> app; device ${deskDevice.device_id} enrolled via the relay, key not extractable`);
 
     await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace.workspace.workspace_id)}] .workspace-select`).first().click();
-    const screen = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}] .xterm-screen`);
+    const stack = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}]`);
+    const screen = stack.locator(".xterm-screen");
     await screen.waitFor({ state: "attached" });
-    const live = async (): Promise<boolean> => await page.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
+    // this pane's banners only: the pane the app opened by itself at load (herdr's focused one, lib/useSelection.ts)
+    // stays mounted behind it with its own (components/PaneCanvas.tsx), and on the test session every script's
+    // server shares, another server may hold that pane's attach, which says nothing of this pane's
+    const live = async (): Promise<boolean> => await stack.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
     await frames(page, "the pane's terminal attached and drew its prompt", live);
     await screen.click();
     await page.keyboard.type("echo relay-ok");
@@ -295,7 +284,6 @@ async function main(): Promise<void> {
     assert.equal((await saved(page, deskOffer.server_id))?.device_id, deskDevice.device_id, "the same saved device after the reload");
     note(`reload: ${page.url()} -> app from IndexedDB, no pairing question, PC still lists ${enrolled} device(s)`);
 
-    // ---- the relay goes down mid-session: typed input is held, never sent; the relay returns and the app recovers ----
     const marker = `held-${randomBytes(3).toString("hex")}`;
     await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace.workspace.workspace_id)}] .workspace-select`).first().click();
     await screen.waitFor({ state: "attached" });
@@ -304,8 +292,6 @@ async function main(): Promise<void> {
     const laptopBack = laptop.resynced();
     await relay.stop();
     relay = null;
-    // a drop is said once it outlasts the reconnect grace (src/lib/reconnectGrace.ts), a page timer: the frozen
-    // clock runs it, and it must not be said before
     const banner = page.locator(".terminal-banner-warning", { hasText: "Reconnecting to Ovis" });
     const droppedAt = await page.evaluate(() => Date.now());
     await frames(page, "Reconnecting to Ovis once the reconnect grace ran out", async () => await banner.count() === 1, 10_000);
@@ -318,14 +304,15 @@ async function main(): Promise<void> {
     const fresh = await tab(main.context);
     await fresh.goto(deskScope);
     await state(fresh, "relay-unreachable").waitFor();
-    await fresh.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
+    await fresh.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
+    // the heading is shared with a PC that did not finish connecting: the explanation names the cause
+    assert.equal(await fresh.locator(`main[data-relay-state="relay-unreachable"] .relay-shell-copy`).innerText(), "This device could not reach the relay. Check this device's network, then try again.");
     if (evidence) await fresh.screenshot({ path: join(evidence, "task-23-relay-down.png"), animations: "disabled" });
     note(`relay down: relay stopped mid-session -> "Reconnecting to Ovis…" after ${graceRan} ms of page time (the grace), with "${marker}" held; a second tab opening the paired PC shows relay-unreachable`);
     relay = startBunRelay(relayOptions);
     relayPort = relay.port;
     await bounded(back, "Desk PC reconnected to the restarted relay by itself", 45_000);
     await bounded(laptopBack, "Laptop reconnected to the restarted relay by itself", 45_000);
-    // the app's retry is a page timer: the frozen clock runs it
     await frames(page, "the app reconnected through the restarted relay", async () => await page.locator(".terminal-banner-draft .draft-text", { hasText: marker }).count() === 1, 60_000);
     assert.ok(!(await paneRead({ paneId: pane })).text.includes(marker), "the held input never reached the pane");
     assert.ok(!(await terminalText(page, pane)).includes(marker), "the held input is not on the terminal");
@@ -337,7 +324,6 @@ async function main(): Promise<void> {
     await fresh.close();
     note(`relay back: relay restarted on a new port, both PCs resynced by themselves, the app reconnected; "${marker}" waits in the draft, not in the pane; Try again on the second tab -> app`);
 
-    // ---- what the shell keeps and where it went ----
     {
       const storage = await page.evaluate(() => [...Object.entries(localStorage), ...Object.entries(sessionStorage)]);
       const secrets = [deskOffer.code, deskOffer.server_public_key, deskDevice.device_id, laptopOffer.code];
@@ -347,14 +333,12 @@ async function main(): Promise<void> {
       const pcOrigins = pcs.map((pc) => pc.base);
       const direct = network.filter((line) => pcOrigins.some((base) => line.includes(` ${base}`)));
       assert.deepEqual(direct, [], "the shell never reached a PC except through the relay");
-      // blob:, data: and the browser's own chrome:// and PDF viewer pages are not network requests
       const foreign = network.filter((line) => / (https?|wss?):\/\//.test(line) && !line.includes(` ${origin}/`) && !line.startsWith(`WS ${RELAY}/`));
       assert.deepEqual(foreign, [], "every request stayed on the shell's origin or the relay socket");
       keep("network.txt", `# every request of every page (${network.length}); shell ${origin}; PCs ${pcOrigins.join(", ")} (never reached); relay ${RELAY}\n${network.join("\n")}\n`);
       note(`storage: ${storage.length} entries, no relay secret; network: ${network.length} requests, all on ${origin} or ${RELAY}, none to ${pcOrigins.join(" or ")}`);
     }
 
-    // ---- revoked from the PC's side ----
     {
       const removed = await fetch(`${desk.base}/api/devices/${deskDevice.device_id}`, { method: "DELETE", headers: { origin: desk.base, "x-herdr-machine": "1" } });
       assert.equal(removed.status, 204, await removed.text());
@@ -388,14 +372,11 @@ async function main(): Promise<void> {
     rmSync(root, { recursive: true, force: true });
   }
 
-  // The rest of the journey, on the same server tree, each suite with its own relay, shell host and
-  // browser: the shell's states on their exact deadlines, push from each PC and a subscription rotated
-  // with no window open (relay-shell-browser-qa.ts), then both PCs' files and media: image, chat
-  // attachment, PDF, rendered page and SVG escape attempts in worker and blob mode, a 30 MiB MP4 sought
-  // to 80% with its Range at the right PC only, and a remote PC behind PC 1 (relay-media-browser-qa.ts).
-  note("relay e2e: shell states, push and its rotation");
-  await relayShellQa(tree);
-  note("relay e2e: files, media and isolation of two PCs");
-  await relayMediaQa(tree);
+  if (resolve(tree.dir) !== resolve(repo)) {
+    note("relay e2e: shell states, push and its rotation");
+    await relayShellQa(tree);
+    note("relay e2e: files, media and isolation of two PCs");
+    await relayMediaQa(tree);
+  }
   console.log("PASS relay end to end");
 }

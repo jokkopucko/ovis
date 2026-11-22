@@ -12,7 +12,6 @@ import type { MachineManager } from "./machines.ts";
 const dir = mkdtempSync(join(tmpdir(), "herdr-sidebar-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 let files = 0;
-/** a config.toml of its own for each test */
 const configFile = (text?: string): string => {
   const path = join(dir, `config-${++files}.toml`);
   if (text !== undefined) writeFileSync(path, text);
@@ -32,7 +31,6 @@ const changed = async (config: HerdrSidebarConfig, edit: () => void): Promise<vo
   }
 };
 
-/** a PC whose panes report these agents and tokens; `agents` are herdr's agent records, by pane */
 const machineWith = (panes: Array<{ pane_id: string; agent?: string; tokens?: Record<string, unknown> }>, agents: Array<{ pane_id: string; agent: string; tokens?: Record<string, unknown> }> = []): Machine =>
   ({ id: "local", state: "connected", snapshot: { panes, agents } }) as unknown as Machine;
 
@@ -48,7 +46,6 @@ describe("herdrConfigPath", () => {
 
 describe("agentRowTokens", () => {
   test("takes the `$name` tokens of herdr's agent rows, in order, each place of one named twice, and leaves the built-ins and styles", () => {
-    // the rows herdr-projects adds, and the ones the Quota plugin's README suggests (#1209)
     expect(parse(`
 [ui.sidebar.agents]
 rows = [["state_icon", "machine", "workspace", { token = "tab", rules = [{ equals = "Agent", hide = true }] }], ["agent"], [{ token = "$summary", dim = true, fg = "#89b4fa" }, "$progress"]]
@@ -94,7 +91,6 @@ codex = [["agent"]]
     expect(parse("[ui]\nsidebar_width = 30")).toBeNull();
     expect(parse(`[ui.sidebar.agents]\nrow_gap = 1`)).toBeNull();
     expect(parse(`[ui.sidebar.agents]\nrows = ["$quota"]`)).toBeNull();
-    // a name herdr's tokens cannot have, and an entry that is no token, are passed over
     expect(parse(`[ui.sidebar.agents]\nrows = [["$", "$has space", 3, { dim = true }, "$ok"]]`)).toEqual({ rows: [{ name: "ok" }], by_agent: {} });
     expect(agentRowTokens(null)).toBeNull();
     expect(agentRowTokens({ ui: [] })).toBeNull();
@@ -120,7 +116,6 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
     ];
     const agents = [{ pane_id: "w1:p3", agent: "codex", tokens: { quota: "5h 10% · Wk 9%", load: 99 } }];
     const told = decidedRowTokens(raw, reportedTokenValues([machineWith(panes, agents), { id: "away", state: "disconnected", snapshot: null } as unknown as Machine]));
-    // a place with hide rules shows the reported values it draws, and hides any other
     const rest = { contains: "", hide: true };
     expect(told).toEqual({
       rows: [
@@ -135,14 +130,11 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
     });
     const text = JSON.stringify(told);
     for (const operand of ["private-literal", "80", "WK", "starts_with", "\"contains\":\"W", "gt", "ignore_case"]) expect(text).not.toContain(operand);
-    // every reported value draws as the config's own rules draw it, under every agent's rows
     for (const agent of ["claude", "codex", null]) {
       for (const tokens of [...panes.map((pane) => pane.tokens), ...agents.map((record) => record.tokens)]) {
         expect(paneTokenValues(told, agent, tokens)).toEqual(paneTokenValues(raw, agent, tokens));
       }
     }
-    // no rows: nothing to decide; no value reported: each place with hide rules hides whatever comes
-    // values from two rosters are decided together
     expect(decidedRowTokens(raw, reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "50" } }])]), reportedTokenValues([machineWith([{ pane_id: "w1:p1", tokens: { load: "95" } }, { pane_id: "w1:p2", tokens: { load: "12" } }])]))?.rows?.[1])
       .toEqual({ name: "load", rules: [{ equals: "12" }, { equals: "50" }, rest] });
     expect(decidedRowTokens(null, reportedTokenValues([machineWith(panes)]))).toBeNull();
@@ -169,7 +161,6 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
       { pane_id: "w1:p1", agent: "claude", tokens: { quota: "5h 100% · Wk 3%", load: "95", eta: "soon", model: "opus" } },
       { pane_id: "w1:p2", agent: "codex", tokens: { quota: "5h 40% · wk 70%", load: "12", eta: "  " } },
       { pane_id: "w1:p3", agent: "codex" },
-      // a blank pane agent takes its agent record's; a pane's own agent comes before its record's
       { pane_id: "w1:p4", agent: "  ", tokens: { load: "95" } },
       { pane_id: "w1:p5", agent: "claude", tokens: { load: "95" } },
     ];
@@ -184,7 +175,6 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
     expect(JSON.stringify(machines)).toBe(before);
     const snapshot = shown[0]!.snapshot!;
     expect(snapshot.panes.map((pane) => pane.tokens)).toEqual([
-      // a token named twice stays where one of its places draws it
       { eta: "soon", model: "opus" },
       { quota: "5h 40% · wk 70%", load: "12", eta: "  " },
       undefined,
@@ -194,7 +184,6 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
     expect(snapshot.agents.map((record) => record.tokens)).toEqual([{ load: 99 }, undefined, undefined]);
     expect(snapshot.panes[1]).toBe(machines[0]!.snapshot!.panes[1]!);
     expect(shown[1]).toBe(machines[1]!);
-    // what the browser draws from them, with the rules decided for the values they keep, is what the config draws
     const told = decidedRowTokens(raw, reportedTokenValues(shown));
     expect(JSON.stringify(told)).not.toMatch(/private-literal|starts_with|"contains":"[^"]|"gt"|ignore_case/);
     panes.forEach((pane, index) => {
@@ -203,7 +192,6 @@ codex = [[{ token = "$quota", rules = [{ starts_with = "5h 4" }, { contains = "W
       const shownRecord = snapshot.agents.find((candidate) => candidate.pane_id === pane.pane_id);
       expect(paneTokenValues(told, agent, snapshot.panes[index]!.tokens ?? shownRecord?.tokens)).toEqual(paneTokenValues(raw, agent, pane.tokens ?? record?.tokens));
     });
-    // no rows: every value goes as it is
     expect(withoutHiddenTokens(null, machines)).toBe(machines);
   });
 
@@ -227,15 +215,12 @@ describe("HerdrSidebarConfig", () => {
     const told: (AgentRowTokens | null)[] = [];
     const stop = config.subscribe((layout) => told.push(layout));
     try {
-      // a change that names the same tokens tells nothing (read now: get() reads the file as the timer does)
       writeFileSync(path, `# a comment\n[ui.sidebar.agents]\nrows = [["state_icon", "agent", "$quota"]]`);
       expect(config.get()).toEqual({ rows: [{ name: "quota" }], by_agent: {} });
       expect(told).toEqual([]);
-      // a change one browser's connection reads first is told to those already listening
       writeFileSync(path, `[ui.sidebar.agents]\nrows = [["agent", "$quota", "$summary"]]`);
       expect(config.get()).toEqual({ rows: [{ name: "quota" }, { name: "summary" }], by_agent: {} });
       expect(told).toEqual([{ rows: [{ name: "quota" }, { name: "summary" }], by_agent: {} }]);
-      // being edited, or gone: no rows, so the agent rows draw every token
       await changed(config, () => writeFileSync(path, `[ui.sidebar.agents\nrows = [[`));
       expect(told[1]).toBeNull();
       await changed(config, () => {
@@ -244,7 +229,6 @@ describe("HerdrSidebarConfig", () => {
       });
       expect(told[2]).toEqual({ rows: [{ name: "eta" }], by_agent: {} });
     } finally { stop(); }
-    // nobody listens: a read tells no one
     writeFileSync(path, `[ui.sidebar.agents]\nrows = [["$other", "$names"]]`);
     expect(config.get()).toEqual({ rows: [{ name: "other" }, { name: "names" }], by_agent: {} });
     expect(told).toHaveLength(3);
@@ -317,7 +301,6 @@ describe("HerdrSidebarConfig", () => {
   test.skipIf(process.platform === "win32")("does not wait for a writer when the config is a FIFO", async () => {
     const path = configFile();
     expect(await Bun.spawn(["mkfifo", path]).exited).toBe(0);
-    // A separate process bounds the regression even if get() blocks its event loop.
     const child = Bun.spawn([process.execPath, "-e", `
       import { HerdrSidebarConfig } from ${JSON.stringify(new URL("./herdr-sidebar.ts", import.meta.url).href)};
       console.log(JSON.stringify(new HerdrSidebarConfig(${JSON.stringify(path)}).get()));
@@ -375,7 +358,6 @@ describe("the machine events", () => {
       const told = JSON.parse(frame.slice("data: ".length)) as MachineEvent;
       expect(told.type === "machine-message" && told.message.type === "snapshot" ? told.message.snapshot.panes[0]!.tokens : null).toEqual({ eta: "soon" });
       expect(text).not.toContain("off · private");
-      // the manager's snapshot is left as it was
       expect(snapshot.panes[0]!.tokens).toEqual({ quota: "off · private", eta: "soon" });
     } finally {
       abort.abort();
@@ -386,7 +368,6 @@ describe("the machine events", () => {
   test("never let a browser draw a value the rules hide, streamed, polled or after a reconnect, nor tell it their operands", async () => {
     const path = configFile(`[ui.sidebar.agents]\nrows = [[{ token = "$quota", rules = [{ equals = "private-literal", hide = true }, { starts_with = "off", hide = true }] }, { token = "$eta", rules = [{ equals = "soon", hide = true }] }, "$eta"]]`);
     const config = new HerdrSidebarConfig(path, 10);
-    // as MachineManager does: the same machine each time, its snapshot replaced in place, and a new listener hears it at once
     const machine = machineWith([]);
     let emit: ((event: MachineEvent) => void) | undefined;
     const report = (tokens: Record<string, string>) => { machine.snapshot = machineWith([{ pane_id: "w1:p1", agent: "claude", tokens }]).snapshot; };
@@ -394,7 +375,6 @@ describe("the machine events", () => {
       list: () => [machine],
       subscribe: (listener: (event: MachineEvent) => void) => { emit = listener; listener({ type: "machines", machines: [machine] }); return () => undefined; },
     } as unknown as MachineManager;
-    // the browser: the rows and the roster it was told last, by whichever path
     let rows: AgentRowTokens | null = null;
     let held: Machine[] = [];
     const drawn = () => paneTokenValues(rows, "claude", held[0]?.snapshot?.panes[0]?.tokens);
@@ -402,7 +382,6 @@ describe("the machine events", () => {
     const apply = (event: MachineEvent) => {
       if (event.type === "herdr-sidebar") rows = event.agents;
       if (event.type === "machines") held = event.machines;
-      // a quota starting with "off" is hidden wherever the rows name it
       expect(drawn().filter((value) => value.startsWith("off"))).toEqual([]);
     };
     const poll = async () => {
@@ -418,7 +397,6 @@ describe("the machine events", () => {
       const reader = response.body!.getReader();
       const events: MachineEvent[] = [];
       let buffer = "";
-      // reads until `count` events came, applying each to the browser in order
       const until = async (count: number): Promise<MachineEvent[]> => {
         while (events.length < count) {
           const { value } = await reader.read();
@@ -438,7 +416,6 @@ describe("the machine events", () => {
       };
       return { until, close: async () => { abort.abort(); await reader.cancel().catch(() => undefined); } };
     };
-    // a first poll lands before any rows, when the browser draws every token it holds
     report({ quota: "off · Z", eta: "soon" });
     await poll();
     expect(drawn()).toEqual(["soon"]);
@@ -450,19 +427,15 @@ describe("the machine events", () => {
       // hidden wherever named: in no roster; drawn at its other place: that place is decided, without the operand
       report({ quota: "off · A", eta: "soon" });
       emit!({ type: "machines", machines: [machine] });
-      // the decision already covers what the browser held and draws, so only the roster comes
       const events = await first.until(3);
       expect(events.map((event) => event.type)).toEqual(["herdr-sidebar", "machines", "machines"]);
       expect(drawn()).toEqual(["soon"]);
-      // a poll that lands before the stream's queued roster, with the browser's rows a step behind
       report({ quota: "off · B", eta: "soon" });
       await poll();
       emit!({ type: "machines", machines: [machine] });
-      // once the browser holds no drawn quota or eta, a place with hide rules hides whatever comes there
       const rest = { contains: "", hide: true };
       expect((await first.until(5))[3]).toEqual({ type: "herdr-sidebar", agents: { rows: [{ name: "quota", rules: [rest] }, { name: "eta", rules: [rest] }, { name: "eta" }], by_agent: {} } });
     } finally { await first.close(); }
-    // a reconnect while the browser holds the last roster, the value changed meanwhile
     report({ quota: "off · C", eta: "soon" });
     const second = await open();
     try {
@@ -472,7 +445,6 @@ describe("the machine events", () => {
       emit!({ type: "machines", machines: [machine] });
       await second.until(4);
       expect(drawn()).toEqual(["5h 50%", "later"]);
-      // new rows: the roster is told again under them, its decision first
       writeFileSync(path, `[ui.sidebar.agents]\nrows = [[{ token = "$eta", rules = [{ contains = "late", hide = true }] }, { token = "$quota", rules = [{ starts_with = "off", hide = true }] }]]`);
       const events = await second.until(6);
       expect(events.slice(4).map((event) => event.type)).toEqual(["herdr-sidebar", "machines"]);
@@ -480,7 +452,6 @@ describe("the machine events", () => {
     } finally { await second.close(); }
     // every hidden value stayed on the server; rows that do not name a token then let its value go
     expect(text).not.toMatch(/private-literal|starts_with|"contains":"[^"]|"off ·/);
-    // the rows change while the browser is away, and it keeps a roster told under rows that did not name quota
     writeFileSync(path, `[ui.sidebar.agents]\nrows = [["$eta"]]`);
     report({ quota: "off · D", eta: "soon" });
     await poll();

@@ -1,4 +1,3 @@
-/** Conservative retained-content estimate, not a claim about engine RSS. Stops at the budget. */
 export function withinRetentionBudget(value: unknown, limit: number): boolean {
   let bytes = 0;
   const seen = new WeakSet<object>();

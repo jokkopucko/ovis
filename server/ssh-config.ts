@@ -8,24 +8,19 @@ import { globMatch, listMatches } from "./ssh-glob.ts";
 
 /** Include may nest; ssh itself stops at 16 */
 const MAX_INCLUDE_DEPTH = 4;
-/** hosts listed at most, so a generated config costs a bounded list */
 export const MAX_HOSTS = 200;
-/** aliases weighed against the config at most, listed or not, so aliases no block applies to cost a bounded list too */
 const MAX_WEIGHED = 2 * MAX_HOSTS;
 /** the options ssh takes from the first block that applies to a host, whichever block sets them */
 const EFFECTIVE_KEYS = ["hostname", "addressfamily", "proxycommand", "proxyjump", "user", "canonicalizehostname"] as const;
-/** the options that decide which PC ssh reaches */
 const ROUTE_KEYS = ["hostname", "addressfamily", "proxycommand", "proxyjump"] as const;
 /** the Match conditions weighed here, with `final` and `canonical` (true on the final pass, which a Match line naming
  * `final` unnegated asks for); any other (`exec`, `localnetwork`...) is unknown offline */
 const WEIGHED = ["host", "originalhost", "user", "localuser"] as const;
 
-/** a host an ssh config names, with what ssh would use for it */
 export interface ConfigHost {
   alias: string;
   hostname: string | null;
   user: string | null;
-  /** the AddressFamily ssh connects over, when it is not `any` */
   addressFamily?: "inet" | "inet6";
   /** set when ssh goes through a ProxyCommand or ProxyJump, so the name is resolved at the far end, not here */
   proxied?: true;
@@ -37,7 +32,6 @@ export interface ConfigHost {
 /** an included file's text; `unclaimed` when the hosts it names must claim no PC; null for a file left unread */
 export type Included = string | { text: string; unclaimed: true } | null;
 
-/** a Host pattern that names one host, not a set of them */
 const plainAlias = (pattern: string): boolean => pattern !== "" && !/[*?!]/.test(pattern);
 
 /**
@@ -73,7 +67,6 @@ function keyword(line: string): { key: string; values: string[]; raw: string } |
 }
 
 type Criterion = { negate: boolean } & ({ on: "all" | "unknown" } | { on: "final"; asksFinal: boolean } | { on: (typeof WEIGHED)[number]; patterns: string[] });
-/** a Host or Match block, in lowercase; `within` is the block an Include sat in when this one came from the included file */
 type Block =
   | { kind: "host"; patterns: string[]; aliases: string[]; within?: Block; unclaimed?: true }
   | { kind: "match"; criteria: Criterion[]; within?: Block };
@@ -112,7 +105,6 @@ interface Weighing {
   effective: Map<string, string | null>; applies: Map<Block, boolean | null>; wantsFinal: boolean | null;
   /** whether an option taken came from a file listed by path (see Included), so the host must claim no PC */
   unclaimed: boolean;
-  /** the final pass, when ssh surely makes one */
   finalPass?: Weighing;
 }
 const passOf = (alias: string, target: string, localUser: string | null, final: boolean): Weighing =>
@@ -121,7 +113,6 @@ const passOf = (alias: string, target: string, localUser: string | null, final: 
 const expandHost = (hostname: string, alias: string): string => hostname.replace(/%([%h])/g, (_, token: string) => token === "h" ? alias : "%");
 const allOf = (verdicts: (boolean | null)[]): boolean | null => verdicts.includes(false) ? false : verdicts.includes(null) ? null : true;
 
-/** whether a Match condition holds for the alias given the options set so far, as ssh weighs it; null when unknown offline */
 function holds({ alias, target, localUser, final, effective }: Weighing, criterion: Criterion): boolean | null {
   const user = effective.get("user") === undefined ? localUser : effective.get("user")!;
   const hostname = effective.get("hostname");
@@ -158,7 +149,6 @@ function applies(weighing: Weighing, block: Block): boolean | null {
 /** an option still unset may be set by what offline reading cannot see: it becomes unknown */
 const leaveUnknown = (effective: Map<string, string | null>): void => { for (const key of EFFECTIVE_KEYS) if (!effective.has(key)) effective.set(key, null); };
 
-/** one pass over the entries, line by line: the first block that applies sets each option */
 function pass(entries: Entry[], weighing: Weighing): void {
   for (const entry of entries) {
     switch (entry.kind) {
@@ -196,7 +186,6 @@ function pass(entries: Entry[], weighing: Weighing): void {
 /**
  * What ssh would take for `alias` (in lowercase): the first pass, then the final pass a `Match final` line asks for, where Host lines match the HostName and only options still unset are taken. A canonical name
  * (CanonicalizeHostname) only DNS gives, or a final pass that may or may not run, leaves every option still unset unknown.
- * The first pass is returned (the blocks that apply to the alias as named), holding the options of both.
  */
 function weigh(entries: Entry[], alias: string, localUser: string | null): Weighing {
   const first = passOf(alias, alias, localUser, false);
@@ -214,13 +203,11 @@ function weigh(entries: Entry[], alias: string, localUser: string | null): Weigh
   return first;
 }
 
-/** whether a block applies to the alias on the first pass, else on the final pass ssh makes */
 const appliesOnEither = (weighing: Weighing, block: Block): boolean | null => {
   const first = applies(weighing, block);
   return first !== false || weighing.finalPass === undefined ? first : applies(weighing.finalPass, block);
 };
 
-/** whether a block's own Match conditions or those of the Includes it came through rule `alias` out without weighing a line */
 function ruledOut(block: Block, alias: string, localUser: string | null): boolean {
   const bare = passOf(alias, alias, localUser, false);
   const cheap = (criterion: Criterion): boolean => criterion.on === "all" || criterion.on === "originalhost" || criterion.on === "localuser";
@@ -230,7 +217,6 @@ function ruledOut(block: Block, alias: string, localUser: string | null): boolea
   return false;
 }
 
-/** a listed host as ssh would reach it; `named` is false when no block naming it surely applies */
 function describe(alias: string, effective: Map<string, string | null>, named: boolean): ConfigHost {
   const [hostname, user] = [effective.get("hostname"), effective.get("user")];
   const family = effective.get("addressfamily")?.toLowerCase();
@@ -252,9 +238,6 @@ const currentUser = (): string | null => { try { return userInfo().username; } c
  * proxy and User the first block that applies to it sets (a later `Host *` or Match included, `%h` standing for the
  * alias). A Match block is weighed for `all`, `host`, `originalhost`, `user`, `localuser` (`localUser` being this
  * account), `final` and `canonical`; any other condition leaves what its block sets unknown, and the host undetermined.
- * Hosts named only by a pattern (`*`, `?`, `!`), or in an included file whose Include's block does not apply to them,
- * are left out; one whose block may or may not apply is listed undetermined; a later block repeating an alias adds
- * nothing. `include(pattern)` reads the files an Include names, as text, in their order, null for one it left unread.
  */
 export async function sshConfigHosts(text: string, include: (pattern: string) => Promise<Included[]> = async () => [], localUser = currentUser()): Promise<ConfigHost[]> {
   const blocks: HostBlock[] = [];
@@ -314,11 +297,9 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
   for (const block of blocks) {
     for (const alias of block.aliases) {
       if (hosts.length >= MAX_HOSTS) return hosts;
-      // an alias its block's own conditions rule out costs no weighing, so inactive included hosts never use up the list
       if (seen.has(alias) || ruledOut(block, alias.toLowerCase(), localUser)) continue;
       let weighing = weighings.get(alias);
       if (weighing === undefined) {
-        // the list stops at its limits, so a huge config costs its option lines once per weighed alias at most
         if (weighings.size >= MAX_WEIGHED) return hosts;
         weighing = weigh(entries, alias.toLowerCase(), localUser);
         weighings.set(alias, weighing);

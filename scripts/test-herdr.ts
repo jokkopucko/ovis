@@ -4,9 +4,8 @@
  * running for the next run. The workspaces, panes and agents the tests create never
  * show in the herdr the user works in.
  *
- * `bun test` loads this first (bunfig.toml); the browser and SSH scripts import it.
  * HERDR_TEST_LIVE=1 keeps the old behaviour: tests use HERDR_SOCKET, else the default
- * session. Without a herdr binary nothing changes, so CI runs as before.
+ * session.
  * HERDR_TEST_MODE=unit points HERDR_SOCKET at a socket that does not exist, so a test that
  * reaches for herdr in a unit run fails instead of working in the user's herdr.
  */
@@ -70,7 +69,6 @@ export function agentStandIns(dir: string): string {
   return dir;
 }
 
-/** where HERDR_TEST_MODE=unit points HERDR_SOCKET: a socket that does not exist */
 const UNIT_SOCKET = (): string => join(tmpdir(), "ovis-unit-tests-have-no-herdr.sock");
 
 /**
@@ -89,7 +87,6 @@ export function unitHerdrOnly(): () => void {
   };
 }
 
-/** Point this process (and what it spawns) at the test session, starting its server if needed. */
 export async function useTestHerdr(): Promise<string | null> {
   // Unit tests must not discover or start herdr, even on a developer's PC. Nor may they fall back
   // to the default socket: a bare `HERDR_TEST_MODE=unit bun test` also loads the contract files,
@@ -144,8 +141,6 @@ export async function useTestHerdr(): Promise<string | null> {
       await Bun.sleep(100);
     }
   }
-  // some tests read "a live workspace" without owning one: keep one resident, as a
-  // session in use always has
   if ((await sessionSnapshot(socket)).workspaces.length === 0) {
     await workspaceCreate({ cwd: homedir(), label: "ovis-test-resident" }, socket);
   }

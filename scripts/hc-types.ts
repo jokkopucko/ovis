@@ -1,29 +1,18 @@
 /**
  * TypeScript types for the herdr-core (`hc`) API, generated from hc's own OpenRPC document
- * (`hc schema`, herdr-core's schema/hc.openrpc.json, Apache-2.0). `generate-protocol-types.ts`
- * writes them to server/herdr-core/hc-api.generated.ts beside herdr's own wire types.
- *
- * Shape decisions, and why:
- *
- * - Only the methods Ovis calls are emitted, with the closure of the records they name, as for
- *   herdr's types. A method added here is typed from then on.
- * - Each method's params become `<Method>Params` (`terminal.attach` → `TerminalAttachParams`); a
- *   param is optional unless the schema marks it required. `HcMethods` maps every method to its
- *   params and result, which is what `HcConnection.call` and `open` are typed by.
+ * (`hc schema`, herdr-core's schema/hc.openrpc.json, Apache-2.0).
  * - String enums widen with `(string & {})`, as herdr's do: hc grows its vocabulary between
  *   releases, and a word from a newer core must still flow through.
- * - Output is deterministic (sorted, no timestamps), so regenerating an unchanged schema is a
- *   no-op diff.
  */
 
 type Json = Record<string, any>;
 
-/** The hc methods Ovis calls: their params, results and every record those name are emitted. */
 export const HC_METHODS = [
   "doc.get",
   "doc.set",
   "events.subscribe",
   "hello",
+  "machine.exec",
   "machine.list",
   "server.status",
   "terminal.attach",
@@ -45,7 +34,6 @@ function refName(ref: string): string {
   return ref.slice(REF_PREFIX.length);
 }
 
-/** `terminal.attach` → `TerminalAttach` */
 export function methodTypeName(method: string): string {
   return method.split(/[._]/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
 }
@@ -74,7 +62,6 @@ function tsType(def: unknown, indent: string): string {
   if (node.anyOf || node.oneOf) {
     const variants: unknown[] = node.anyOf ?? node.oneOf;
     const rendered = [...new Set(variants.map((variant) => tsType(variant, indent)))];
-    // a variant that admits any value makes the whole union any value
     return rendered.includes("unknown") ? "unknown" : rendered.join(" | ");
   }
   const types: string[] = Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
@@ -92,7 +79,6 @@ function tsType(def: unknown, indent: string): string {
         return "boolean";
       case "array": {
         const item = tsType(node.items, indent);
-        // a fixed-length array of one kind (Display's `cell`) is a tuple
         if (typeof node.minItems === "number" && node.minItems === node.maxItems && node.minItems > 0 && node.minItems <= 4) {
           return `[${Array.from({ length: node.minItems }, () => item).join(", ")}]`;
         }

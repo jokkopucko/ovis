@@ -1,6 +1,3 @@
-/* The toggle sits beside the add button in the input card's last row; the list opens above the
-   card, as the slash menu does, so it never covers what is being typed. The chip can shrink, and
-   only the step inside it does (below): the buttons beside it never give way to it */
 .bg-tasks {
   display: inline-flex;
   flex: 0 1 auto;
@@ -19,12 +16,10 @@
   border-radius: var(--radius-pill);
   color: var(--status-working);
   font-size: var(--fs-xs);
-  /* its figures (the plan's step, the count) change in place without a shift */
   font-variant-numeric: var(--font-numeric);
   cursor: pointer;
 }
 
-/* a mouse's floor: the chip's own box is the --pointer-target, still a pill in the row's height */
 @media (pointer: fine) {
   .bg-tasks-toggle {
     min-height: var(--pointer-target);
@@ -41,18 +36,10 @@
   display: none;
 }
 
-/* the plan's progress is the chip's number: always drawn, the words beside it give way first */
 .bg-tasks-plan {
   font-variant-numeric: tabular-nums;
 }
 
-/* the step in progress, after the figures, in the agent's own words (#1040): one line, cut with
-   an ellipsis past the room the chip gives it, whole in the button's name and title. A one-line
-   clamp over text that may break anywhere, not nowrap with an ellipsis: its narrowest size is one
-   glyph, so on a card narrower than the row's controls the step gives its room back before the
-   add button, the figures or the round button do (nowrap would hold the whole step and push the
-   round button out of the card). The model beside the chip steps out as it does for the chip's
-   other words (Composer.css) */
 .bg-tasks-current {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -69,7 +56,6 @@
   margin-right: var(--space-1);
 }
 
-/* a plan and running tasks share the chip: a hairline between them, the tasks as icon and number */
 .bg-tasks-sep {
   flex: none;
   align-self: stretch;
@@ -87,9 +73,6 @@
   display: inline;
 }
 
-/* a narrow card (a phone, or a lane beside the sidebar): the chip gives up its words before the
-   model gives up its letters. The icon and the number say it, the button's name has the words.
-   The composer marks the card from its own width (composerStatusCompact) */
 .composer-surface[data-compact] .bg-tasks-toggle {
   justify-content: center;
 }
@@ -102,7 +85,6 @@
   display: inline;
 }
 
-/* the step takes the word Plan's place there, and less room: a phone's row keeps the model's name beside it */
 .composer-surface[data-compact] .bg-tasks-current {
   max-width: 8em;
 }
@@ -114,9 +96,6 @@
   }
 }
 
-/* a finger gets the target's height through an invisible expander: the chip itself stays the
-   --chip-h pill it is beside a mouse, not a --touch-target badge heavier than the buttons around it
-   (the border is 0, so the expander is measured from the chip's own box) */
 @media (pointer: coarse) {
   .composer-surface[data-compact] .bg-tasks-toggle {
     position: relative;
@@ -129,7 +108,6 @@
   }
 }
 
-/* nothing running: the list of what ran stays at hand, without the working tint */
 .bg-tasks-toggle.is-idle {
   background: transparent;
   color: var(--text-dim);
@@ -139,10 +117,6 @@
   color: var(--text-strong);
 }
 
-/* opened from the card's last row: the list wraps as a page does. It is anchored
-   to the input card and takes its width, as the slash menu does.
-   --bg-tasks-room is the measured room above the card (BackgroundTasks.tsx): on a short screen
-   the list keeps to it, a gap from each end, and scrolls; never less than one row */
 .bg-tasks-menu {
   position: absolute;
   right: 0;
@@ -167,7 +141,6 @@
   list-style: none;
 }
 
-/* what ended is one line until asked for: the list is for what runs now */
 .bg-ended-toggle {
   display: flex;
   align-items: center;
@@ -221,9 +194,6 @@
   padding: var(--space-1) var(--space-2);
 }
 
-/* a running task is a disclosure: the whole row is the button that opens its detail
-   (BackgroundAgentDetail), with the caret of the ended fold at its end; the row's padding is the
-   button's, so the hit area and the hover tint are the row */
 .bg-task.is-openable {
   padding: 0;
 }
@@ -244,7 +214,6 @@
   cursor: pointer;
 }
 
-/* an artifact's row (Artifacts.tsx) is a link to its page: drawn as a task's row, not as a link */
 a.bg-task-open {
   text-decoration: none;
 }
@@ -259,7 +228,6 @@ a.bg-task-open {
   background: var(--bg-hover);
 }
 
-/* a finger's row: the target's height, the text still at the row's top */
 @media (pointer: coarse) {
   .bg-task-open {
     min-height: var(--touch-target);
@@ -291,14 +259,12 @@ a.bg-task-open {
 .bg-step.is-completed .bg-task-icon { color: var(--status-done); }
 .bg-step.is-pending .bg-task-title { color: var(--text-dim); }
 
-/* what the running step does now, in the agent's own words */
 .bg-step-active {
   color: var(--text);
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
 
-/* the plan heading says how far it got; the tasks heading sets the tasks apart below it */
 .bg-plan-progress {
   margin-left: var(--space-2);
   font-weight: normal;
@@ -332,7 +298,6 @@ a.bg-task-open {
   overflow-wrap: anywhere;
 }
 
-/* a workflow: its steps wave by wave, a wave's steps side by side as chips that wrap */
 .bg-run {
   padding: var(--space-1) var(--space-2) var(--space-2);
 }

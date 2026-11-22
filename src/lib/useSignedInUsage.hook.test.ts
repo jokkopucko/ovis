@@ -3,7 +3,6 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useSignedInUsage } from "./useSetupGuide.ts";
 
-// The real hook with the guide's Start screen life: the first usage read fails, a retry waits, the guide closes.
 describe("plan usage turned on by the setup guide", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
   let timers: Map<number, () => void>;
@@ -33,19 +32,28 @@ describe("plan usage turned on by the setup guide", () => {
     }
   });
 
-  const mount = async (answers: (() => Promise<readonly string[]>)[]): Promise<void> => {
+  const mount = async (answers: (() => Promise<readonly string[]>)[], enabled = true): Promise<void> => {
     const read = (): Promise<readonly string[]> => { reads += 1; return answers.shift()!(); };
-    function Probe() {
-      useSignedInUsage([], read, false, () => { turnedOn += 1; });
+    function Probe({ on }: { on: boolean }) {
+      useSignedInUsage([], read, false, () => { turnedOn += 1; }, on);
       return null;
     }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await act(async () => { renderer = create(createElement(Probe, { on: enabled })); });
+    probe = (on: boolean) => act(async () => { renderer?.update(createElement(Probe, { on })); });
   };
+  let probe: (on: boolean) => Promise<void> = async () => {};
   const runTimers = async (): Promise<void> => {
     const due = [...timers.values()];
     timers.clear();
     await act(async () => { for (const run of due) run(); });
   };
+
+  it("reads nothing and turns nothing on until it is enabled (the user's press), then reads", async () => {
+    await mount([() => Promise.resolve(["claude"])], false);
+    expect([reads, turnedOn, timers.size]).toEqual([0, 0, 0]);
+    await probe(true);
+    expect([reads, turnedOn]).toEqual([1, 1]);
+  });
 
   it("turns usage on once a retried read finds a signed-in account", async () => {
     await mount([() => Promise.reject(new Error("offline")), () => Promise.resolve(["claude"])]);

@@ -3,7 +3,6 @@
  * relay to reach it through. It travels in the URL fragment (`${appBase}/s/${server_id}/#offer=<base64url JSON>`),
  * which a browser never sends to any server. The path carries the server_id too, so one origin can
  * hold a PWA scope per PC; decodeOffer refuses a URL whose path and payload name different servers.
- * The browser imports this file, so it reads no environment.
  */
 import { importPublicKey } from "./relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "./relay-id.ts";
@@ -12,16 +11,14 @@ export { SERVER_ID_PATTERN };
 
 export interface RelayOffer {
   v: 1;
-  /** 32 lowercase hex characters */
   server_id: string;
-  /** the server's X25519 public key, as the vendored key helpers encode it */
   server_public_key: string;
-  /** the relay's wss origin, no path */
   relay: string;
   /** one-time pairing code, 6 digits */
   code?: string;
-  /** a label for the PC, at most 64 characters */
   name?: string;
+  /** 1: the PC lets a device that pairs with this code link only once the account service holds its admission */
+  admission?: 1;
 }
 
 const MAX_PAYLOAD_CHARS = 2048;
@@ -35,7 +32,6 @@ export function encodeOffer(offer: RelayOffer, appBase: string): string {
   return `${base}/s/${checked.server_id}/${OFFER_PREFIX}${toBase64Url(JSON.stringify(checked))}`;
 }
 
-/** The offer in `url`'s fragment; null when there is none. Throws on anything malformed. */
 export function decodeOffer(url: string): RelayOffer | null {
   const parsed = new URL(url);
   if (!parsed.hash.startsWith(OFFER_PREFIX)) return null;
@@ -60,9 +56,11 @@ export function validateOffer(value: unknown): RelayOffer {
   if (typeof o.relay !== "string" || !isWssOrigin(o.relay)) throw new Error("Invalid offer relay");
   if (o.code !== undefined && (typeof o.code !== "string" || !/^\d{6}$/.test(o.code))) throw new Error("Invalid offer code");
   if (o.name !== undefined && (typeof o.name !== "string" || o.name.length > MAX_NAME_CHARS)) throw new Error("Invalid offer name");
+  if (o.admission !== undefined && o.admission !== 1) throw new Error("Invalid offer admission");
   const offer: RelayOffer = { v: 1, server_id: o.server_id, server_public_key: o.server_public_key, relay: o.relay };
   if (o.code !== undefined) offer.code = o.code as string;
   if (o.name !== undefined) offer.name = o.name as string;
+  if (o.admission === 1) offer.admission = 1;
   return offer;
 }
 

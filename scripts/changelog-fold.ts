@@ -2,13 +2,9 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Where each PR writes its changelog entry, one file per PR, so no two PRs edit the same lines. */
 export const FRAGMENTS_DIR = "changelog.d";
-/** The one file in FRAGMENTS_DIR that is not a fragment: it documents the format. */
 export const FRAGMENTS_README = "README.md";
-/** A fragment's name: lowercase words joined by `-` or `.`, ending in `.md`. */
 export const FRAGMENT_NAME = /^[a-z0-9][a-z0-9.-]*\.md$/;
-/** The sections a fragment may use, in the order a release lists them. */
 export const SECTIONS = ["Added", "Changed", "Removed", "Fixed", "Maintenance"] as const;
 
 const REPO = "https://github.com/devswha/ovis";
@@ -18,21 +14,12 @@ const UNRELEASED = "## [Unreleased]";
 const HINT = `see ${FRAGMENTS_DIR}/${FRAGMENTS_README}`;
 const CHANGELOG_HINT = `fix the entry, or move it into a ${FRAGMENTS_DIR}/ fragment (${HINT})`;
 
-/** A section's entries, each one `- ` line plus the indented lines that continue it, verbatim. */
 type Sections = Map<string, string[]>;
 
-/** Conflict markers left by a merge; `=======` only as a whole line, so a setext rule elsewhere is not one. */
 export function conflictMarkers(text: string): number[] {
   return text.split("\n").flatMap((line, index) => /^(<{7}|>{7})( |$)|^={7}$/.test(line.replace(/\r$/, "")) ? [index + 1] : []);
 }
 
-/**
- * Read `### Section` headings and their `- ` entries. Blank lines are dropped, so an entry may not
- * continue after one; every other line must sit under a heading and be an entry or its indented
- * continuation. `allowed` limits the
- * headings (a fragment); without it any `### ` heading is kept (the existing Unreleased notes).
- * `firstLine` is the file's line number of the text's first line, so an error names the real line.
- */
 function readSections(text: string, where: string, { allowed, firstLine = 1, hint = HINT }: { allowed?: readonly string[]; firstLine?: number; hint?: string } = {}): Sections {
   const sections: Sections = new Map();
   let entries: string[] | undefined;
@@ -62,7 +49,6 @@ function readSections(text: string, where: string, { allowed, firstLine = 1, hin
   return sections;
 }
 
-/** A fragment, checked: at least one known section, each with at least one entry. */
 export function parseFragment(text: string, name: string): Sections {
   if (!FRAGMENT_NAME.test(name)) throw new Error(`${FRAGMENTS_DIR}/${name}: rename it to lowercase words joined by "-" ending in .md, e.g. composer-attach-limit.md`);
   if (/^#{1,2} /m.test(text)) throw new Error(`${FRAGMENTS_DIR}/${name}: a fragment has no "#" or "##" heading, only ### sections (${HINT})`);
@@ -72,19 +58,11 @@ export function parseFragment(text: string, name: string): Sections {
   return sections;
 }
 
-/** Add ` ([#N](…/pull/N))` on its own line to every entry that does not link PR N yet (a link to another PR is not it). */
 export function linkPr(sections: Sections, pr: number): Sections {
   const link = `  ([#${pr}](${REPO}/pull/${pr}))`;
   return new Map([...sections].map(([name, entries]) => [name, entries.map((entry) => entry.includes(`${REPO}/pull/${pr})`) ? entry : `${entry}\n${link}`)]));
 }
 
-/**
- * Release `version`: the Unreleased notes become `## [version] - date` under an empty Unreleased.
- * The notes are the entries already under Unreleased (from PRs that predate the fragments),
- * then each fragment's, in the order given (the CLI sorts by file name). Sections follow SECTIONS,
- * then any other heading the old notes used, in their order. The compare links at the bottom move
- * on to the new version. Throws rather than drop a line it cannot place.
- */
 export function foldChangelog(changelog: string, fragments: { name: string; sections: Sections }[], version: string, date: string): string {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Expected version X.Y.Z without v");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Expected date YYYY-MM-DD");
@@ -126,10 +104,6 @@ function addedBy(path: string): number | undefined {
   return pr ? Number(pr) : undefined;
 }
 
-/**
- * The fragment files in `dir`, sorted by name so a fold always lists them in the same order.
- * Only regular files that are not dotfiles: an editor's swap file or .DS_Store is no fragment.
- */
 export function fragmentFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && !entry.name.startsWith(".") && entry.name !== FRAGMENTS_README)

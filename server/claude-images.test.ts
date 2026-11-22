@@ -6,12 +6,6 @@ import { basename, dirname, join } from "node:path";
 import { forgetTranscriptState, pictureIndexForTests, transcriptImage, transcriptImageAsync, transcriptPage } from "./conversation.ts";
 import { TranscriptReader, transcriptReader } from "./transcript-reader.ts";
 
-/**
- * The cooperative lookups read through a reader that opens, reads and stats the transcript with fs's
- * own calls, each answered as an async read is: a test's spy on fs.readSync, fs.fstatSync or
- * fs.statSync sees every read and stat a lookup makes, as it did when the lookup read the file itself.
- * A lease reads at most a MiB at a time (TranscriptFile.window).
- */
 let leases: { mockRestore(): void } | undefined;
 beforeEach(() => {
   const reader = new TranscriptReader({
@@ -51,7 +45,6 @@ function fixture(tiny = false) {
   writeFileSync(path, line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "read" } }) + call + padding + result);
   return { path, ref: `${id(3)}:0:0` };
 }
-/** The picture as main's lookup finds it: the search from the floor for its record, and forward for its call. */
 async function asMain(path: string, ref: string) {
   pictureIndexForTests(false);
   try { return await transcriptImageAsync(path, ref); } finally { pictureIndexForTests(true); }
@@ -62,7 +55,6 @@ function exact(image: Awaited<ReturnType<typeof transcriptImageAsync>>) {
   expect(image!.bytes.byteLength).toBe(png.length);
 }
 
-/** fs's stats of `path` report these times whatever the writes do, as a filesystem with a coarse or stale timestamp source would */
 function holdTimes(path: string, mtimeMs: number, ctimeMs: number): () => void {
   const times = { mtimeMs, ctimeMs, mtime: new Date(mtimeMs), ctime: new Date(ctimeMs) };
   const [fstat, stat] = [fs.fstatSync, fs.statSync];
@@ -103,7 +95,6 @@ describe("cooperative Claude images", () => {
   });
 
   it("serves through the shared reader's own file access, warm and cold", async () => {
-    // the other tests read through fs's calls (the reader above); this one through the reader's own
     leases?.mockRestore();
     leases = undefined;
     const { path, ref } = fixture();
@@ -139,7 +130,6 @@ describe("cooperative Claude images", () => {
     const { path, ref } = fixture(true);
     exact(await transcriptImageAsync(path, ref));
     let since = 0, most = 0, total = 0;
-    // every record the searches judge is parsed (its shape): a lease's window read allocates no buffer
     const parse = JSON.parse;
     const counting = spyOn(JSON, "parse").mockImplementation(((...args: Parameters<typeof JSON.parse>) => {
       since += 1; total += 1;
@@ -169,7 +159,6 @@ describe("cooperative Claude images", () => {
       setImmediate(turn);
       exact(await transcriptImageAsync(path, ref));
     } finally { looking = false; most = Math.max(most, since); counting.mockRestore(); }
-    // every record is followed by the boundary scan and judged by the search
     expect(total).toBeGreaterThan(12000);
     expect(most).toBeLessThanOrEqual(100);
   });
@@ -197,8 +186,6 @@ describe("cooperative Claude images", () => {
     const watching = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
       const result = read(...args);
       const request = args as unknown as [number, Uint8Array, number, number, number];
-      // the picture's record, read by the lookup and then by the read made again after the first
-      // append, once the digest of what was read has passed
       if (request[4] === record && ++records === 2) {
         const bytes = Buffer.from(original);
         bytes.write("gone", bytes.indexOf('"id":"read"') + 6);
@@ -225,7 +212,6 @@ describe("cooperative Claude images", () => {
       if (change === "truncate") truncateSync(path, 0);
       if (change === "rewrite" || change === "rewrite and grow") {
         const bytes = fs.readFileSync(path);
-        // Keep the tail and inode: a prefix rewrite must not pass an append-only check.
         bytes[bytes.indexOf('"read"') + 1] = 120;
         writeFileSync(path, bytes);
         if (change === "rewrite and grow") appendFileSync(path, line({ type: "progress", data: "appended" }));
@@ -233,8 +219,6 @@ describe("cooperative Claude images", () => {
       if (change === "clear") appendFileSync(path, line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } }));
       if (change === "rewind") appendFileSync(path, line({ type: "user", uuid: id(4), parentUuid: null, message: { content: "new branch" } }));
     };
-    // In flight by construction, not by scheduling: the change lands right after the lookup's first
-    // read of the file returns, so the lookup holds bytes from before it whatever the machine's speed.
     let applied = false;
     const read = fs.readSync;
     const watching = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
@@ -246,7 +230,6 @@ describe("cooperative Claude images", () => {
       expect(await transcriptImageAsync(path, ref)).toBeNull();
       expect(applied).toBe(true);
     } finally { watching.mockRestore(); }
-    // A failed old read cannot leave a half-built or obsolete shared boundary behind.
     if (change === "rewrite" || change === "rewrite and grow") {
       exact(await transcriptImageAsync(path, ref));
       exact(transcriptImage(path, ref));
@@ -285,9 +268,6 @@ it("a lookup rejected after an in-place rewrite and growth leaves no stale bound
   let scanned = false;
   let changed = false;
   const read = fs.readSync;
-  // the boundary scan reads the file from its start, a window at a time; the next read from the start is the
-  // picture's record: there, once the boundary is published, rewrite the record after the picture into a
-  // /clear (same length, same inode) and append, before the lookup reads on
   const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
     const result = read(...args);
     const at = args as unknown as [number, Uint8Array, number, number, number];
@@ -314,7 +294,6 @@ it("never serves a picture read from a rewrite the file undid before an append (
   const other = Buffer.from(png);
   other[40] = other[40]! ^ 1;
   const result = (bytes: Buffer) => line({ type: "user", uuid: id(3), parentUuid: id(2), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [{ ...picture, source: { ...picture.source, data: bytes.toString("base64") } }] }] } });
-  // a /clear after the first record puts the searches' first window off every other read's offsets
   const before = line({ type: "progress", data: "before" });
   const head = before + line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } })
     + line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "read" } })
@@ -328,8 +307,6 @@ it("never serves a picture read from a rewrite the file undid before an append (
   const record = Buffer.byteLength(head);
   let step = 0;
   const read = fs.readSync;
-  // once the boundary scan has read the whole file, rewrite it to another picture; once that picture's record
-  // is read, put the original bytes back and append, all on the same inode, before the lookup checks the file
   const size = Buffer.byteLength(original);
   const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
     const value = read(...args);
@@ -356,12 +333,9 @@ it("a lookup with a warm boundary rebuilds it when the file is rewritten before 
   expect(same.length).toBe(clear.length);
   const padding = line({ type: "progress", data: "x".repeat(1024 * 1024) }).repeat(3);
   writeFileSync(path, drawn + same + padding);
-  // the first lookup keeps the boundary: the second reads nothing of the file before its search
   exact(await transcriptImageAsync(path, `${id(1)}:0`));
   let changed = false;
   const read = fs.readSync;
-  // when the second lookup reads the picture's record, turn the record after it into a /clear (same length, same
-  // inode, far from the tail the kept boundary is checked by) and append
   const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
     const value = read(...args);
     const at = args as unknown as [number, Uint8Array, number, number, number];
@@ -390,7 +364,6 @@ it("a lookup that sees the file rewritten drops the boundary it kept, even when 
   exact(await transcriptImageAsync(path, `${id(1)}:0`));
   let changed = false;
   const read = fs.readSync;
-  // once the next lookup has read the picture's record, it stops naming it (same length, same inode)
   const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
     const value = read(...args);
     const at = args as unknown as [number, Uint8Array, number, number, number];
@@ -440,7 +413,6 @@ it.skipIf(process.platform === "win32")("a filesystem exception revokes a reject
   renameSync(`${dir}.away`, dir);
   writeFileSync(path, drawn + clear + padding);
   appendFileSync(path, line({ type: "progress", data: "append" }));
-  // The failed lookup must not leave a cached boundary that predates this clear.
   expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull();
 });
 
@@ -449,15 +421,12 @@ it("serves no picture from another transcript that a folder swap holds at the pa
   const elsewhere = mkdtempSync(join(tmpdir(), "ovis-image-swap-other-"));
   roots.push(dir, elsewhere);
   const path = join(dir, "session.jsonl");
-  // the same record and length: only the picture's bytes tell the files apart
   const foreign = Buffer.from(png);
   foreign[foreign.length - 1]! ^= 1;
   writeFileSync(path, line({ type: "user", uuid: id(1), message: { content: [picture] } }));
   writeFileSync(join(elsewhere, "session.jsonl"), line({ type: "user", uuid: id(1), message: { content: [{ ...picture, source: { ...picture.source, data: foreign.toString("base64") } }] } }));
   exact(await transcriptImageAsync(path, `${id(1)}:0`));
   forgetTranscriptState();
-  // the path names the pane's own file when the lookup begins; from the lease's open until it closes the
-  // other folder is in place, so the lease's own checks of the path against what it pinned agree
   const away = `${dir}.away`;
   const held = new Set<number>();
   let swaps = 0;
@@ -490,7 +459,6 @@ it("rejects an image when the path's last check sees a same-size rewrite that pu
   writeFileSync(path, text(png));
   const time = Math.floor(Date.now() / 1000) - 10;
   utimesSync(path, time, time);
-  // the lookup's last path check, after its last stat of the pinned file: only the change time moved
   let checks = 0;
   const stat = fs.statSync;
   const watch = spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
@@ -523,7 +491,6 @@ describe.skipIf(process.platform === "win32")("a transcript reached through a li
     symlinkSync(dirname(path), store, "dir");
     for (const linked of [file, join(store, basename(path))]) {
       exact(await transcriptImageAsync(linked, `${id(1)}:0`));
-      // again, on the boundary the first lookup kept
       exact(await transcriptImageAsync(linked, `${id(1)}:0`));
       exact(transcriptImage(linked, `${id(1)}:0`));
     }
@@ -535,7 +502,6 @@ describe.skipIf(process.platform === "win32")("a transcript reached through a li
     const copy = join(dirname(path), "copy.jsonl");
     copyFileSync(path, copy);
     symlinkSync(path, link);
-    // the same bytes in another file, once the lookup's first read returns: the path no longer names the file it read
     let moved = false;
     const read = fs.readSync;
     const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
@@ -560,7 +526,6 @@ describe("finding a picture's record", () => {
     writeFileSync(path, text);
     return path;
   }
-  /** the lookup with the index, cooperative and synchronous, and as the search alone makes it, which is main's lookup: all three agree */
   async function both(path: string, ref: string) {
     const bytes = (image: Awaited<ReturnType<typeof transcriptImageAsync>>) => image === null ? null : Buffer.from(image.bytes);
     const [cooperative, sync] = [await transcriptImageAsync(path, ref), transcriptImage(path, ref)];
@@ -570,14 +535,9 @@ describe("finding a picture's record", () => {
     return cooperative;
   }
 
-  /**
-   * The clock as it stands once a session has been quiet a while: a read of its bytes then vouches for
-   * the version to every later lookup, not only to those begun before it (vouchedPictureSteps)
-   */
   const quiet = () => setSystemTime(new Date(Date.now() + 10_000));
 
   it("reads a few windows for each tool's picture of a long transcript, not the transcript", async () => {
-    // 40 MiB of records the session's branch follows, then four tool calls, each answered with a picture
     let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
     for (let at = 0; at < 40; at += 1) text += line({ type: "progress", uuid: id(100 + at), data: "x".repeat(1024 * 1024) });
     for (let call = 0; call < 4; call += 1) {
@@ -586,8 +546,6 @@ describe("finding a picture's record", () => {
     }
     const path = transcript(text);
     quiet();
-    // the first lookup reads the whole transcript once, for the boundary it keeps, which vouches for the
-    // bytes it read: they are not read again before its index is used
     let cold = 0;
     const counted = fs.readSync;
     const counting = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
@@ -611,8 +569,6 @@ describe("finding a picture's record", () => {
   });
 
   it("reads a transcript once for a page of pictures right after an append, while the session is not yet quiet", async () => {
-    // within the timestamp tick of the last write a kept scan's bytes are read again before its index is
-    // trusted: once for the lookups of that version begun before that read, not once for each
     let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
     for (let at = 0; at < 16; at += 1) text += line({ type: "progress", uuid: id(100 + at), data: "x".repeat(1024 * 1024) });
     for (let call = 0; call < 4; call += 1) {
@@ -635,7 +591,6 @@ describe("finding a picture's record", () => {
     expect(bytes).toBeLessThan(Buffer.byteLength(text) + 4 * 3 * 1024 * 1024);
   });
 
-  // 40 MiB between a call and its result, in lines of 64 KiB and in lines just over a search window
   for (const kib of [64, 1025]) it(`reads about what lies between a tool's picture and a call far back (${kib} KiB lines)`, async () => {
     let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
     text += line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
@@ -682,7 +637,6 @@ describe("finding a picture's record", () => {
   });
 
   it("finds a tool's call whose id a search window's edge cuts in two", async () => {
-    // the forward search reads a MiB at a time from the floor: the call's id is put across the first edge
     const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read-across-the-edge", name: "Read" }] } });
     const head = (pad: number) => line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "x".repeat(pad) } });
     const pad = 1024 * 1024 - Buffer.byteLength(head(0)) - call.indexOf("read-across-the-edge") - 8;
@@ -694,8 +648,6 @@ describe("finding a picture's record", () => {
   });
 
   it("finds a tool's call whose id the backward walk's first window cuts where what its probe read ends", async () => {
-    // the result's first window back is 64 KiB: its probe finds the call's line start, and the window
-    // begins with the probe's bytes of that line, up to 64 KiB before the result, which is in the id
     const id2 = "read-across-the-probe";
     const call = (pad: number) => line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: id2, name: "Read", input: { pad: "x".repeat(pad) } }] } });
     const tail = (pad: number) => Buffer.byteLength(call(pad)) - call(pad).indexOf(id2);
@@ -715,13 +667,9 @@ describe("finding a picture's record", () => {
     const result = (uuid: number) => line({ type: "user", uuid: id(uuid), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } });
     const path = transcript(call(2) + padding + result(3) + padding + result(4) + padding + call(5) + padding + result(6));
     exact(await both(path, `${id(3)}:0:0`));
-    // answered already: the page draws it as no tool's result
     expect(await both(path, `${id(4)}:0:0`)).toBeNull();
-    // the call made again opens it again
     exact(await both(path, `${id(6)}:0:0`));
-    // a result whose call was never made
     expect(await both(transcript(padding + result(3)), `${id(3)}:0:0`)).toBeNull();
-    // a call and the results after it in one window: the record just before a result decides it
     const near = transcript(call(2) + result(3) + result(4));
     exact(await both(near, `${id(3)}:0:0`));
     expect(await both(near, `${id(4)}:0:0`)).toBeNull();
@@ -731,20 +679,15 @@ describe("finding a picture's record", () => {
     const text = (uuid: number) => line({ type: "user", uuid: id(uuid), message: { content: [{ type: "text", text: "no picture" }] } });
     const drawn = (uuid: number, image = picture) => line({ type: "user", uuid: id(uuid), message: { content: [image] } });
     const padding = line({ type: "progress", uuid: id(50), data: "x".repeat(1024 * 1024) }).repeat(2);
-    // a record without a picture first
     expect(await both(transcript(text(1) + padding + drawn(1)), `${id(1)}:0`)).toBeNull();
-    // two pictures under one uuid: the first one's
     exact(await both(transcript(drawn(1) + padding + drawn(1, otherPicture)), `${id(1)}:0`));
-    // a record the session's branch does not follow (a sidechain's) still comes first
     const sidechain = line({ type: "user", uuid: id(1), isSidechain: true, message: { content: [{ type: "text", text: "no picture" }] } });
     expect(await both(transcript(sidechain + padding + drawn(1)), `${id(1)}:0`)).toBeNull();
-    // and an assistant's record with the uuid is no user's: the picture after it is drawn
     const answer = line({ type: "assistant", uuid: id(1), message: { content: [{ type: "text", text: "hi" }] } });
     exact(await both(transcript(answer + padding + drawn(1)), `${id(1)}:0`));
   });
 
   it("searches for every picture after more records the branch does not follow than it keeps the uuids of", async () => {
-    // 128 Ki marks at most since a /clear: past them a uuid reads as seen, and the picture is searched for
     const sidechain = (uuid: number) => line({ type: "user", uuid: id(uuid), isSidechain: true, message: { content: [{ type: "text", text: "no picture" }] } });
     const drawn = (uuid: number) => line({ type: "user", uuid: id(uuid), message: { content: [picture] } });
     let text = drawn(5);
@@ -752,7 +695,6 @@ describe("finding a picture's record", () => {
     text += sidechain(99) + drawn(99) + drawn(4);
     const path = transcript(text);
     quiet();
-    // a sidechain's uuid past the limit still comes first
     expect(await both(path, `${id(99)}:0`)).toBeNull();
     exact(await both(path, `${id(4)}:0`));
     const cost = async (ref: string) => {
@@ -766,18 +708,13 @@ describe("finding a picture's record", () => {
       try { exact(await transcriptImageAsync(path, ref)); } finally { watch.mockRestore(); }
       return bytes;
     };
-    // the picture before them is indexed; the one after them is searched for
     expect(await cost(`${id(5)}:0`)).toBeLessThan(1024 * 1024);
     expect(await cost(`${id(4)}:0`)).toBeGreaterThan(Buffer.byteLength(text) / 2);
-    // after an append no read has vouched for the index yet: a picture it holds no record of is searched
-    // for once, as with the index off, not read for the index's sake on top of that
     appendFileSync(path, line({ type: "progress", data: "appended" }));
     expect(await cost(`${id(4)}:0`)).toBeLessThan(Buffer.byteLength(text) * 1.5);
   });
 
   it("still knows a sidechain's uuid after the scan has looked it up for a hundred pictures", async () => {
-    // the scan logs the uuids of records the branch does not follow, and folds them into a table once
-    // pictures have read the log 64 times over: both hold them
     const sidechain = (uuid: number) => line({ type: "user", uuid: id(uuid), isSidechain: true, message: { content: [{ type: "text", text: "no picture" }] } });
     const drawn = (uuid: number) => line({ type: "user", uuid: id(uuid), message: { content: [picture] } });
     let text = "";
@@ -785,20 +722,16 @@ describe("finding a picture's record", () => {
     for (let at = 0; at < 100; at += 1) text += drawn(2000 + at);
     for (let at = 0; at < 20; at += 1) text += sidechain(3000 + at);
     const path = transcript(text + drawn(1005) + drawn(3005) + drawn(4000));
-    // folded into the table, still in the log, and neither
     expect(await both(path, `${id(1005)}:0`)).toBeNull();
     expect(await both(path, `${id(3005)}:0`)).toBeNull();
     exact(await both(path, `${id(4000)}:0`));
     exact(await both(path, `${id(2050)}:0`));
   });
 
-  // 12 MiB: too long for the branch to follow, read whole by the scan; 20 MiB: across the scan's first
-  // window and past what it carries (a picture of the largest size, and a MiB more), its uuid never read
   for (const mib of [12, 20]) it(`searches for a picture after a record too long for the boundary scan to follow (${mib} MiB)`, async () => {
     const long = line({ type: "user", uuid: id(1), message: { content: [{ type: "text", text: "y".repeat(mib * 1024 * 1024) }] } });
     const path = transcript(line({ type: "user", uuid: id(2), message: { content: [picture] } }) + long + line({ type: "user", uuid: id(1), message: { content: [picture] } }));
     exact(await both(path, `${id(2)}:0`));
-    // the long record comes first and holds no picture
     expect(await both(path, `${id(1)}:0`)).toBeNull();
   });
 
@@ -808,11 +741,9 @@ describe("finding a picture's record", () => {
     const path = transcript(drawn(1) + clear + drawn(2));
     expect(await both(path, `${id(1)}:0`)).toBeNull();
     exact(await both(path, `${id(2)}:0`));
-    // the uuid again after the /clear: that record is the one
     appendFileSync(path, drawn(1, otherPicture));
     const after = await both(path, `${id(1)}:0`);
     expect(Buffer.from(after!.bytes).equals(other)).toBe(true);
-    // a prompt sent again from before an answer (a rewind) leaves the picture between off the branch
     const record = (uuid: number, parentUuid: number | null, type: string, content: unknown) => line({ type, uuid: id(uuid), parentUuid: parentUuid === null ? null : id(parentUuid), message: { role: type, content } });
     const rewound = transcript(record(10, null, "user", "look") + record(11, 10, "assistant", [{ type: "text", text: "ok" }])
       + record(12, 11, "user", [picture]) + record(13, 12, "assistant", [{ type: "text", text: "seen" }])
@@ -822,15 +753,12 @@ describe("finding a picture's record", () => {
     expect(Buffer.from(kept!.bytes).equals(other)).toBe(true);
   });
 
-  // a record whose shape passes what the endpoint holds (4 MiB): a file-history line of a million short names
   const unreadable = (named: string) => line({ type: "file-history-snapshot", messageId: named, snapshot: { files: Array.from({ length: 1_200_000 }, () => "a") } });
 
   it("refuses as the search does when a record it cannot judge names the picture's uuid before it", async () => {
     const drawn = line({ type: "user", uuid: id(1), message: { content: [picture] } });
     expect(await both(transcript(unreadable(id(1)) + drawn), `${id(1)}:0`)).toBeNull();
-    // one that does not name it is skipped by the search, which finds the picture
     exact(await both(transcript(unreadable(id(2)) + drawn), `${id(1)}:0`));
-    // and one after the picture is never reached
     exact(await both(transcript(drawn + unreadable(id(1))), `${id(1)}:0`));
   });
 
@@ -843,8 +771,6 @@ describe("finding a picture's record", () => {
   });
 
   it("checks the record a kept scan indexed against a file rewritten in place and grown since", async () => {
-    // a kept scan is checked by the bytes just before where it ended: a rewrite that keeps them where
-    // they were and grows the file keeps it, with the offsets it holds
     const drawn = (image = picture) => line({ type: "user", uuid: id(1), message: { content: [image] } });
     const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
     const tail = line({ type: "progress", data: "the tail a kept scan is checked by, longer than sixty-four bytes" });
@@ -857,15 +783,11 @@ describe("finding a picture's record", () => {
       appendFileSync(path, pad(100));
       return await both(path, `${id(1)}:0`);
     }
-    // the record moved on by 100 bytes: what the scan holds is no line now
     exact(await rewritten(drawn() + pad(1000), pad(100) + drawn() + pad(900)));
-    // moved back by a record's length, so where it was another record of the same uuid and length starts
     const first = await rewritten(pad(500 + size) + drawn() + drawn(otherPicture) + pad(1000), pad(500) + drawn() + drawn(otherPicture) + pad(1000 + size));
     expect(Buffer.from(first!.bytes).equals(png)).toBe(true);
-    // in place, another picture of the same length
     const now = await rewritten(drawn() + pad(1000), drawn(otherPicture) + pad(1000));
     expect(Buffer.from(now!.bytes).equals(other)).toBe(true);
-    // the same bytes where they were, but in one line with the record before them or after them: no record
     const joined = (text: string) => text.slice(0, -1) + " ";
     expect(await rewritten(pad(1000) + drawn(), joined(pad(1000)) + drawn())).toBeNull();
     expect(await rewritten(drawn() + pad(1000), joined(drawn()) + pad(1000))).toBeNull();
@@ -881,9 +803,6 @@ describe("finding a picture's record", () => {
     expect(Buffer.from((await both(twice, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
   });
 
-  // the record itself is where it was, byte for byte: only a line before it changed, to one of the same
-  // length, and the tail a kept scan is checked by is where it was. The change lies more than a digest
-  // piece (64 KiB) before the end of what the scan read: in what it digested, not in what it kept as is
   async function earlierRewritten(earlier: string, text: string, ref: string) {
     const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
     const tail = pad(256 * 1024) + line({ type: "progress", data: "the tail a kept scan is checked by, longer than sixty-four bytes" });
@@ -923,7 +842,6 @@ describe("finding a picture's record", () => {
     expect(Buffer.from(image!.bytes).equals(other)).toBe(true);
   });
 
-  /** a transcript whose picture of id(1) a line before it can be rewritten in place, at the same length, to another picture of id(1) */
   function rewritable() {
     const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
     const tail = pad(256 * 1024) + line({ type: "progress", data: "the tail a kept scan is checked by, longer than sixty-four bytes" });
@@ -963,10 +881,7 @@ describe("finding a picture's record", () => {
   it("reads a kept scan's bytes again when a later lookup would share a read begun before it, while a rewrite kept the file's times", async () => {
     // A read of the bytes vouches only to lookups that began before it. Here a lookup begins after the
     // read took its window, and after a same-size rewrite that kept every time the file reports: sharing
-    // that read would serve the picture the bytes no longer hold. The times are fine and recent (under
-    // PICTURE_RACY_MS), so the quiet rule vouches for nothing and only when the read began decides: the
-    // later lookup takes its turn once the first is done (one transcript's lookups go one after another),
-    // when an older read would otherwise vouch for it by the quiet rule
+    // that read would serve the picture the bytes no longer hold.
     const old = Date.now() - 1_000 + 0.25;
     const { path, after } = rewritable();
     const restore = holdTimes(path, old, old);
@@ -978,7 +893,6 @@ describe("finding a picture's record", () => {
       const read = fs.readSync;
       const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
         const value = read(...args);
-        // the first read from the start of the file is the check's: the warm scan reads only what was appended
         if (later === undefined && (args as unknown[])[4] === 0) {
           writeFileSync(path, grown);
           later = transcriptImageAsync(path, `${id(1)}:0`);
@@ -988,7 +902,6 @@ describe("finding a picture's record", () => {
       let first: Awaited<ReturnType<typeof transcriptImageAsync>>;
       try { first = await transcriptImageAsync(path, `${id(1)}:0`); } finally { watch.mockRestore(); }
       expect(later).toBeDefined();
-      // the first lookup began before the rewrite: what it read then is its answer
       exact(first);
       expect(Buffer.from((await later!)!.bytes).equals(other)).toBe(true);
       expect(Buffer.from((await asMain(path, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
@@ -1032,10 +945,7 @@ describe("the index against the search, on random transcripts", () => {
     return { type: "image", source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") } };
   });
   const uuids = [1, 2, 3, 4, 5].map(id);
-  // a call id the parser takes from a number is looked for in every spelling of it
   const calls: (string | number)[] = ["c1", "c2", 7];
-  // a record past what the endpoint holds: a million short names, and the uuid or call id it names, every
-  // one of the same length (a uuid's), so one can be rewritten in place to name another
   const unreadableLine = line({ type: "file-history-snapshot", messageId: "NAMED", snapshot: { files: Array.from({ length: 1_200_000 }, () => "a") } });
   const unreadable = { replace: (_: string, named: string) => unreadableLine.replace("NAMED", named.padEnd(36, "_")) };
   const isUnreadable = (text: string) => text.startsWith('{"type":"file-history-snapshot"');
@@ -1060,7 +970,6 @@ describe("the index against the search, on random transcripts", () => {
       else if (kind === 3 || kind === 4) out.push(chain({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: String(rng.pick(calls)), content: pictured() }] } }));
       else if (kind === 5) out.push(chain({ type: "user", message: { role: "user", content: pictured() } }));
       else if (kind === 6) {
-        // a record written twice under one uuid, the second time with another picture
         const first = chain({ type: "user", message: { role: "user", content: [pictures[0]] } });
         out.push(first, first.replace(pictures[0]!.source.data, pictures[1 + rng.int(2)]!.source.data));
       }
@@ -1069,10 +978,8 @@ describe("the index against the search, on random transcripts", () => {
       else if (kind === 9) out.push(line({ type: "progress", data: `${rng.pick(uuids)} ${"p".repeat(rng.int(400))}`, toolUseID: String(rng.pick(calls)) }));
       else if (kind === 10) { if (rng.next() < 0.3) out.push(line({ type: "user", message: { role: "user", content: "<command-name>/clear</command-name>" } })); }
       else if (kind === 11) {
-        // a prompt sent again from an earlier answer: a rewind
         if (state.answers.length > 0) { state.last = rng.pick(state.answers); out.push(chain({ type: "user", message: { role: "user", content: "a prompt again" } })); }
       } else if (!state.unread && state.budget.unread > 0 && rng.next() < 0.1) {
-        // each costs the search its shape: a few of them, across all the transcripts
         state.unread = true;
         state.budget.unread -= 1;
         out.push(unreadable.replace("NAMED", String(rng.next() < 0.5 ? rng.pick(uuids) : rng.pick(calls))));
@@ -1081,23 +988,17 @@ describe("the index against the search, on random transcripts", () => {
     return out;
   }
 
-  /** Rewrites the file in place: the same size (a kept scan is dropped), or grown, keeping the tail a kept scan is checked by where it was. */
   function rewrite(rng: ReturnType<typeof random>, lines: string[]): string[] {
     const next = [...lines];
     const body = next.length - 1;
     const kind = rng.int(6);
     if (kind === 0) {
-      // another picture of the same size in place
       const at = rng.int(body);
       for (const [from, to] of [[0, 1], [1, 2], [2, 0]] as const) if (next[at]!.includes(pictures[from]!.source.data)) { next[at] = next[at]!.replace(pictures[from]!.source.data, pictures[to]!.source.data); break; }
     } else if (kind === 1 && body >= 2) {
-      // two lines next to each other trade places
       const at = rng.int(body - 1);
       [next[at], next[at + 1]] = [next[at + 1]!, next[at]!];
     } else if (kind === 5) {
-      // a line before a record that holds a picture (or before the call it answers) becomes, at the
-      // same length, another record of its uuid with a picture, or one the endpoint cannot judge naming
-      // its uuid or call: the record itself, and the tail a kept scan is checked by, stay where they were
       const held = next.flatMap((text, at) => {
         if (at >= body || text.length > 100_000) return [];
         const entry = JSON.parse(text) as { uuid?: string; message?: { content?: { type?: string; tool_use_id?: string; content?: unknown }[] } };
@@ -1119,17 +1020,13 @@ describe("the index against the search, on random transcripts", () => {
         }
       }
     } else if (kind === 3 && body >= 2) {
-      // two lines next to each other become one
       const at = rng.int(body - 1);
       next[at] = next[at]!.slice(0, -1) + " ";
     } else if (kind === 4 && body >= 2) {
-      // a line goes, and the line before the tail takes its length, so the lines between move back by it:
-      // most often one as long as the line after it, which then starts where the line after that did
       const even = next.slice(0, body - 1).flatMap((text, at) => Buffer.byteLength(text) === Buffer.byteLength(next[at + 1]!) ? [at] : []);
       const [gone] = next.splice(even.length > 0 && rng.next() < 0.7 ? rng.pick(even) : rng.int(body - 1), 1);
       next.splice(body - 1, 0, line({ type: "progress", data: "q".repeat(Math.max(0, Buffer.byteLength(gone!) - 31)) }).slice(0, -1).padEnd(Buffer.byteLength(gone!) - 1, " ") + "\n");
     } else {
-      // bytes move from one padded line to another
       const padded = next.map((text, at) => at < body && text.startsWith('{"type":"progress","data":"') ? at : -1).filter((at) => at !== -1);
       if (padded.length >= 2) {
         const from = rng.pick(padded), to = rng.pick(padded);
@@ -1156,13 +1053,8 @@ describe("the index against the search, on random transcripts", () => {
       roots.push(dir);
       const path = join(dir, "session.jsonl");
       const state = { fresh: 0, last: null as string | null, answers: [] as string[], unread: false, budget };
-      // half the rounds as a session long quiet: every write gets an mtime of its own, well before a clock
-      // set ahead, so a read vouches for a version to later lookups (vouchedPictureSteps); the others in
-      // the tick of the last write, where every lookup after a change reads the bytes again
       const kind = rng.next();
       const quiet = kind < 0.5;
-      // a fifth as a coarse timestamp source: every stat reports one whole second, held, so a rewrite of
-      // the same size keeps the version, and no read vouches for it to a later lookup (fineTimes)
       restoreTimes();
       restoreTimes = kind >= 0.5 && kind < 0.7 ? holdTimes(path, Math.floor(Date.now() / 1000) * 1000 - 10_000, Math.floor(Date.now() / 1000) * 1000 - 10_000) : () => {};
       let writes = 0;
@@ -1172,7 +1064,6 @@ describe("the index against the search, on random transcripts", () => {
       };
       if (quiet) setSystemTime(new Date(Date.now() + 3_600_000));
       else setSystemTime();
-      // now and then a record the endpoint cannot judge opens the transcript, before a picture or a call it names
       const first: string[] = [];
       if (budget.unread > 0 && rng.next() < 0.12) {
         budget.unread -= 1;
@@ -1194,12 +1085,10 @@ describe("the index against the search, on random transcripts", () => {
           if (change === 0) lines = [...lines, ...records(rng, 1 + rng.int(4), state), tail()];
           else {
             lines = rewrite(rng, lines);
-            // grown: the old tail stays where it was, and records follow it
             if (change === 2) lines = [...lines, ...records(rng, 1 + rng.int(3), state), tail()];
           }
           write(lines.join(""));
         }
-        // the pictures the records hold, mostly, and any ref
         const held = lines.flatMap((text) => {
           if (text.length > 100_000) return [];
           const entry = JSON.parse(text) as { uuid?: string; message?: { content?: unknown } };
@@ -1217,7 +1106,6 @@ describe("the index against the search, on random transcripts", () => {
       }
     } } finally { restoreTimes(); }
     expect(differences).toEqual([]);
-    // the transcripts hold pictures to serve, not only misses
     expect(served).toBeGreaterThan(compared / 10);
   }, 60_000);
 });

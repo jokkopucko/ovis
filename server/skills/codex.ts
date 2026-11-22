@@ -22,7 +22,7 @@ const MANIFESTS = ["plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/p
 
 function canonical(path: string): string {
   try { return realpathSync(path); }
-  catch { return resolve(path); /* disabled paths may no longer exist */ }
+  catch { return resolve(path); }
 }
 
 /** Custom prompts are offered only by a Codex known to be older than 0.118.0. */
@@ -42,7 +42,6 @@ export function adminSkillsRoot(platform: string, env: readonly string[] | null,
   return base ? win32.join(base, "OpenAI", "Codex", "skills") : null;
 }
 
-/** The plugin a manifest directly in `root` declares: its `name`, else the directory's name. */
 function manifestName(root: string): string | null {
   for (const manifest of MANIFESTS) {
     try {
@@ -52,7 +51,7 @@ function manifestName(root: string): string | null {
       // a root plugin.json counts only when it carries no foreign $schema (plugin_namespace.rs)
       if (manifest === "plugin.json" && !(typeof fields.$schema === "string" && fields.$schema.startsWith("https://agent-plugins.org/schemas/"))) continue;
       return typeof fields.name === "string" && fields.name.trim() ? fields.name.trim() : basename(root);
-    } catch { /* no manifest here, or not JSON */ }
+    } catch {}
   }
   return null;
 }
@@ -84,15 +83,15 @@ function scanSkills(root: string, budget: { folders: number }): FoundSkill[] {
           const named = typeof fields?.name === "string" ? fields.name.replace(/\s+/g, " ").trim() : "";
           if (description) found.push({ name: named || basename(directory), description, path: declared });
         }
-      } catch { /* no SKILL.md here */ }
+      } catch {}
       if (depth >= MAX_SCAN_DEPTH) return;
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         if (entry.name.startsWith(".")) continue;
         const child = join(directory, entry.name);
         try { if (statSync(child).isDirectory()) visit(child, depth + 1); }
-        catch { /* a stale link hides only itself */ }
+        catch {}
       }
-    } catch { /* unreadable directory */ }
+    } catch {}
     finally { ancestors.delete(real); }
   };
   visit(root, 0);
@@ -181,7 +180,6 @@ export const source: AgentCommandSource = {
     const result: SlashCommand[] = offersPrompts(version)
       ? piTemplates(join(codexHome, "prompts"), "user").map((command) => ({ ...command, name: `prompts:${command.name}` }))
       : [];
-    // one SKILL.md reached by two routes (a link, an overlapping root) is one skill
     const seen = new Set<string>();
     // ext/skills/src/loader/namespace.rs: a skill takes the namespace of the nearest plugin manifest at or
     // above its directory, in every root; `fallback` names a cached plugin whose manifest is missing
@@ -221,14 +219,14 @@ export const source: AgentCommandSource = {
     const loaded = new Set<string>();
     const visit = (directory: string): void => {
       let path: string;
-      try { path = realpathSync(directory); } catch { return; /* optional cache */ }
+      try { path = realpathSync(directory); } catch { return; }
       if (ancestors.has(path)) return;
       ancestors.add(path);
       try {
         for (const entry of readdirSync(directory, { withFileTypes: true })) {
           const child = join(directory, entry.name);
           try { if (!statSync(child).isDirectory()) continue; }
-          catch { continue; /* a stale link hides only itself */ }
+          catch { continue; }
           if (entry.name === "skills") {
             if (loaded.has(canonical(child))) continue;
             loaded.add(canonical(child));
@@ -241,7 +239,7 @@ export const source: AgentCommandSource = {
             if (enabled) load(child, "plugin", (parts.length > 2 ? parts[1] : parts[0]) ?? basename(directory));
           } else if (!entry.name.startsWith(".")) visit(child);
         }
-      } catch { /* unreadable or broken cache entry */ }
+      } catch {}
       finally { ancestors.delete(path); }
     };
     visit(cache);

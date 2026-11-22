@@ -1,40 +1,46 @@
 import { fileUriPath } from "./fileUri.ts";
 import { charBefore } from "./lookbehind.ts";
+import { visualizationReference, type VisualizationReference } from "./visualization.ts";
 import { parseHtmlBlock, startsHtml } from "./markdownHtml.ts";
 import { linkTaskCode, linkTaskIds } from "./taskLinks.ts";
 
 export type InlineNode =
   | { type: "text"; value: string }
   | { type: "code"; value: string }
-  /** `dollar`: written as `$…$`, which a surface that cannot draw it shows again */
   | { type: "math"; value: string; dollar?: true }
   | { type: "strong" | "em" | "del"; children: InlineNode[] }
-  | { type: "link"; href: string; children: InlineNode[] }
-  /** `![alt](src)`; `fallback` is what a surface that draws no images shows after the `!` */
-  | { type: "image"; alt: string; src: string; fallback: InlineNode[]; /** CSS pixels, from an HTML `<img width>` */ width?: number }
-  /** a link to a local file (`[report](/repo/out/REPORT.md)`): its label opens the path */
-  | { type: "file"; path: string; children: InlineNode[]; /** the address as written, when decoding changed it: what a terminal shows */ written?: string };
+  | { type: "link"; href: string; title?: string; children: InlineNode[] }
+  | { type: "image"; alt: string; src: string; fallback: InlineNode[]; width?: number }
+  | { type: "file"; path: string; children: InlineNode[]; written?: string };
 
 export interface ListItem {
   content: InlineNode[];
-  /** a task list item (`- [x] done`, `- [ ] open`): whether its box is checked */
   checked?: boolean;
-  /** what is indented under the item's text, in order: a nested list, a table */
   blocks?: MarkdownBlock[];
+  /**
+   * An ordered item's number as written, when its list's numbers neither count up from the first
+   * nor all repeat it: `1.` then `4.` shows 1 and 4, as typed, where markdown would renumber them
+   * 1 and 2 and change what was said. Absent, so the list counts up from its first number, from a
+   * list that counts up; from one whose first two items share a number (`1.` `1.` …, markdown's way
+   * to let the numbers count), so a `2.` arriving in a streamed reply changes no number already on
+   * screen; and from one holding a number past `LIST_NUMBER_LIMIT`, which the browser cannot draw.
+   */
+  number?: number;
 }
+
+/** The largest list number a browser draws: past a 32-bit integer it ignores `start` and `value`. */
+export const LIST_NUMBER_LIMIT = 2 ** 31 - 1;
 
 export interface ListBlock {
   type: "list";
   ordered: boolean;
-  /** an ordered list's first number: a list split by a code block goes on from where it was */
   start?: number;
   items: ListItem[];
 }
 
 export type MarkdownBlock =
-  /** `dollar`: written between `$$` rather than `\[` and `\]`; `oneLine`: opened and closed on one line */
+  | ({ type: "visualization" } & VisualizationReference)
   | { type: "math"; value: string; dollar?: true; oneLine?: true }
-  /** `align`: centered by the HTML a README wrote it in (markdownHtml.ts) */
   | { type: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; content: InlineNode[]; align?: "center" }
   | { type: "paragraph"; lines: InlineNode[][]; align?: "center" }
   | ListBlock
@@ -43,13 +49,6 @@ export type MarkdownBlock =
   | { type: "table"; header: InlineNode[][]; rows: InlineNode[][][] }
   | { type: "hr" };
 
-/**
- * The characters `nodes` show as text, as a card draws them (#2220): emphasis, strikethrough and code
- * their text, a link or a file link its words, with its address after them when `addresses` (unless the
- * words are the address). Null for a node that shows something else than characters: math, a picture.
- * The one reading of what an Ask card's option says: the server holds it to omp's screen, the card draws
- * it, and a typed answer names the option by it.
- */
 export function shownText(nodes: InlineNode[], addresses = false): string | null {
   let out = "";
   for (const node of nodes) {
@@ -79,12 +78,6 @@ export function safeMarkdownHref(href: string): string | null {
   return /^(?:https?:\/\/|mailto:)/i.test(value) ? value : null;
 }
 
-/**
- * An address written without its scheme, as people and agents do: `www.example.com/x`,
- * `docs.example.com/guide`, `localhost:7317/`. A host needs a letters-only top level and,
- * past `www.`, a path to count: `README.md:3` is a file and its line, `notes.v2/x` a folder.
- * localhost and an IPv4 address are local servers, plain http, where a port is enough.
- */
 export function webLikeHref(target: string): string | null {
   const value = target.trim();
   if (/^(?:localhost(?::\d+)?|\d{1,3}(?:\.\d{1,3}){3}:\d+|\d{1,3}(?:\.\d{1,3}){3}(?=\/))(?:\/\S*)?$/i.test(value)) return `http://${value}`;
@@ -95,11 +88,9 @@ export function webLikeHref(target: string): string | null {
 }
 
 /**
- * The file a link names, when its target is a path rather than an address: agents link
- * files they wrote (`[report](/repo/out/REPORT.md)`, `[x](src/x.ts#L12)`, `[x](x.ts:12)`).
- * A line anchor (`#L12`, `:12`) stays for the viewer; other anchors are dropped. A line after a bare
- * word is a scheme's (`tel:123`), not a file's. The path is URL-encoded, as a `file:///` URI's is
- * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding.
+ * A path that begins with two separators (`//nas/work/a.md`, a network share on a Windows PC) stays a
+ * link: whether it opens is the server's to say, which knows its system and where its panes work
+ * (server/windows-share.ts).
  */
 export function markdownFileTarget(href: string): string | null {
   const value = href.trim();
@@ -109,14 +100,13 @@ export function markdownFileTarget(href: string): string | null {
   const path = target.replace(/(?::\d+){1,2}$|#L\d+(?:-L?\d+)?$/, "");
   if (path === "" || /^[a-z][a-z0-9+.-]*:/i.test(path) || (path !== target && !/[./]/.test(path))) return null;
   let decoded = path;
-  try { decoded = decodeURIComponent(path); } catch { /* `100%.png`: not encoding, a name */ }
+  try { decoded = decodeURIComponent(path); } catch {}
   // a control character belongs to no path, an encoded `%3A12` or `%23L12` names the file, not a
   // line, and an encoded space at either end would be trimmed away by the viewer
   if (/[\u0000-\u001f\u007f]|(?::\d+){1,2}$|#L\d+(?:-L?\d+)?$|^\s|\s$/.test(decoded)) decoded = path;
   return decoded + target.slice(path.length);
 }
 
-/** A file link's node, or null when the target names no file. */
 export function markdownFileNode(href: string, children: InlineNode[]): InlineNode | null {
   const path = markdownFileTarget(href);
   if (path === null) return null;
@@ -128,7 +118,6 @@ export function markdownFileNode(href: string, children: InlineNode[]): InlineNo
 /** A bare URL without the punctuation that closes the sentence around it (GFM's autolink rule). */
 export function trimUrl(url: string): string {
   let end = url.length;
-  // counted once: an opening one is never cut, a closing one only from the end
   let opened = 0;
   let closed = 0;
   for (let index = 0; index < end; index += 1) {
@@ -138,19 +127,15 @@ export function trimUrl(url: string): string {
   for (;;) {
     const last = url[end - 1];
     if (last !== undefined && ".,:;!?'\"*_~".includes(last)) { end -= 1; continue; }
-    // a closing parenthesis stays only while it closes one opened inside the URL
     if (last === ")" && closed > opened) { end -= 1; closed -= 1; continue; }
     break;
   }
   return url.slice(0, end);
 }
 
-/** Emphasis nests by one call each: past this many levels, what is inside is read as plain text. */
 const MAX_INLINE_DEPTH = 16;
 
-/** A Codex artifact directive names a local file; other or incomplete directives stay text. */
 function codexFileCitation(token: string): { path: string; label: string } | null {
-  // the spaces a directive may leave before its `}` are no attribute
   const body = token.slice(21, -1).replace(/[ \t]+$/, "");
   const attribute = /\s*([a-z_]+)="((?:[^"\\]|\\.)*)"/gy;
   const values = new Map<string, string>();
@@ -178,24 +163,11 @@ function codexFileCitation(token: string): { path: string; label: string } | nul
  * once, for every opener before it.
  */
 export function* inlineMarks(source: string): Generator<RegExpExecArray> {
-  // Underscores inside identifiers are literal: MAC_QA_CHAT_OK must survive
-  // rendering exactly as it appears in the terminal and native transcript.
-  // a bare or <angle> http(s) URL is a link too; it stops at the first non-ASCII character,
-  // so `…/pull/36에서` links the address and leaves the Korean after it as text.
-  // What may come before a mark is checked where its opener is found, not with a lookbehind
-  // (shared/lookbehind.ts): `$`, `www.`, `_` and `__` after no word, a lone `*` after no `*`
-  const marker = /(`[^`\n]+`|:codex-file-citation\{(?:[ \t]*[a-z_]+="[^"\\\n]*(?:\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4})[^"\\\n]*)*")+[ \t]*\}|\\\(.+?\\\)|\$(?:[^\s$\\`]|[^\s$`][^\n\r\u2028\u2029$`]*[^\s$\\`])\$(?![A-Za-z0-9_${#@*(`])|\[[^\]\n]+\]\([^\s)]+\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|\*[^*\n]+\*(?!\*)|_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/yu;
-  // its last part alone, for a `__` that nothing closes as bold: one `_` may still close it
+  const marker = /(`[^`\n]+`|:codex-file-citation\{(?:[ \t]*[a-z_]+="[^"\\\n]*(?:\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4})[^"\\\n]*)*")+[ \t]*\}|\\\(.+?\\\)|\$(?:[^\s$\\`]|[^\s$`][^\n\r\u2028\u2029$`]*[^\s$\\`])\$(?![A-Za-z0-9_${#@*(`])|\[[^\]\n]+\]\([^\s)]+(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\)|<https?:\/\/[^\s<>]+>|file:\/\/\/[!#-;=?-_a-~]+|https?:\/\/[!-;=?-~]+|www\.[!-;=?-~]+|\*\*[^*\n]+\*\*|__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}\p{M}_])|~~[^~\n]+~~|\*[^*\n]+\*(?!\*)|_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_]))/yu;
   const emphasis = /_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_])/yu;
-  // its bold part alone, for a `*` right after another, where a lone `*` opens nothing
   const strong = /\*\*[^*\n]+\*\*/y;
   const word = /^[\p{L}\p{N}\p{M}_]$/u;
-  // what any part of `marker` starts with
   const opener = /[`[<*_~$]|:codex-file-citation\{|\\\(|file:\/\/\/|https?:\/\/|www\./g;
-  /**
-   * Where `pattern` is next found from `from` on, at a place `startsAt` accepts. Asked with a `from`
-   * that only rises, so a place found serves every `from` before it.
-   */
   const next = (pattern: RegExp, startsAt: (index: number) => boolean = () => true): ((from: number) => number) => {
     let found = -1;
     return (from) => {
@@ -220,8 +192,22 @@ export function* inlineMarks(source: string): Generator<RegExpExecArray> {
   const dollarClose = next(/\$/g);
   const labelEnd = next(/[\]\n]/g);
   const targetEnd = next(/[\s)]/g);
+  const titleStart = next(/[^ \t]/g);
+  const doubleQuoteEnd = next(/["\n]/g);
+  const singleQuoteEnd = next(/['\n]/g);
+  const parenthesisEnd = next(/[()\n]/g);
   const emphasisClose = next(/_(?![\p{L}\p{N}\p{M}_])/gu, afterNonSpace);
   const strongClose = next(/__(?![\p{L}\p{N}\p{M}_])/gu, afterNonSpace);
+  const closesLink = (target: number): boolean => {
+    const end = targetEnd(target);
+    if (!(end > target)) return false;
+    if (source[end] === ")") return true;
+    if (source[end] !== " " && source[end] !== "\t") return false;
+    const open = titleStart(end);
+    const quote = source[open];
+    const close = quote === '"' ? doubleQuoteEnd(open + 1) : quote === "'" ? singleQuoteEnd(open + 1) : quote === "(" ? parenthesisEnd(open + 1) : null;
+    return close !== null && source[close] === (quote === "(" ? ")" : quote) && source[close + 1] === ")";
+  };
   let from = 0;
   for (;;) {
     opener.lastIndex = from;
@@ -235,17 +221,10 @@ export function* inlineMarks(source: string): Generator<RegExpExecArray> {
     } else if (char === "\\") {
       if (!(mathClose(start + 3) < mathBreak(start + 2))) pattern = null;
     } else if (char === "$") {
-      // a formula's `$` follows no Latin letter, digit, backslash or `$` (Korean, Japanese and
-      // Chinese text runs into a formula with no space: `값은$x$이다`), and its closer is on this line
       if (/[A-Za-z0-9\\$]/.test(source[start - 1] ?? "") || !(dollarClose(start + 2) < mathBreak(start + 1))) pattern = null;
     } else if (char === "[") {
       const label = labelEnd(start + 1);
-      const target = label + 2;
-      if (!(label > start + 1 && source[label] === "]" && source[label + 1] === "(")) pattern = null;
-      else {
-        const end = targetEnd(target);
-        if (!(end > target && source[end] === ")")) pattern = null;
-      }
+      if (!(label > start + 1 && source[label] === "]" && source[label + 1] === "(" && closesLink(label + 2))) pattern = null;
     } else if (char === "w") {
       if (/[\w.@/-]/.test(source[start - 1] ?? "")) pattern = null;
     } else if (char === "*") {
@@ -253,21 +232,23 @@ export function* inlineMarks(source: string): Generator<RegExpExecArray> {
     } else if (char === "_") {
       const end = lineEnd(start + 1);
       if (word.test(charBefore(source, start))) continue;
-      // a `__` that closes also closes as a `_`, so `marker` has no long search left to fail
       if (!(source[start + 1] === "_" && strongClose(start + 3) < end)) pattern = emphasisClose(start + 2) < end ? emphasis : null;
     }
     if (pattern === null) continue;
     pattern.lastIndex = start;
     const match = pattern.exec(source);
     if (match === null) continue;
-    // a price, not a formula: `$5 for the $` (a number, a space, then a word) stays text
     if (char === "$" && /^\$\d[\d.,]*\s+\p{L}/u.test(match[0])) continue;
     from = start + match[0].length;
     yield match;
   }
 }
 
-/** Dependency-free inline markdown scanner. Unknown or malformed markup remains text. */
+function inlineLink(inside: string): { destination: string; title?: string } {
+  const space = inside.search(/\s/);
+  return space === -1 ? { destination: inside } : { destination: inside.slice(0, space), title: inside.slice(space).trim().slice(1, -1) };
+}
+
 export function parseInline(source: string, links = true, depth = 0): InlineNode[] {
   if (depth > MAX_INLINE_DEPTH) return source === "" ? [] : [{ type: "text", value: source }];
   const nodes: InlineNode[] = [];
@@ -275,12 +256,9 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
   for (const match of inlineMarks(source)) {
     const index = match.index ?? 0;
     let token = match[0];
-    // the `!` of an image stays in the text before its bracket
     const image = token.startsWith("[") && index > offset && source[index - 1] === "!";
     const textEnd = image ? index - 1 : index;
     if (textEnd > offset) nodes.push(...plainText(source.slice(offset, textEnd), links));
-    // like an http address it stops at the first non-ASCII character (`file:///tmp/a.md에서`); a
-    // name with other letters in it is percent-encoded in a URI
     if (token.startsWith(":codex-file-citation{")) {
       const citation = links ? codexFileCitation(token) : null;
       nodes.push(citation === null ? { type: "text", value: token }
@@ -293,7 +271,6 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
       const url = token.slice(1, -1);
       nodes.push(links ? { type: "link", href: url, children: [{ type: "text", value: url }] } : { type: "text", value: token });
     } else if (/^(?:https?:|www\.)/i.test(token)) {
-      // what ends a sentence is not part of the address: "see https://x.dev/a)." links x.dev/a
       token = trimUrl(token);
       const href = /^www\./i.test(token) ? `https://${token}` : token;
       nodes.push(links ? { type: "link", href, children: [{ type: "text", value: token }] } : { type: "text", value: token });
@@ -304,13 +281,13 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
     } else if (token.startsWith("$")) {
       nodes.push({ type: "math", value: token.slice(1, -1), dollar: true });
     } else if (token.startsWith("[")) {
-      const split = token.lastIndexOf("](");
-      const label = token.slice(1, split);
-      const target = token.slice(split + 2, -1);
-      // a label holds no `]`, so no link nests in one: only emphasis counts toward the depth
+      const close = token.indexOf("]");
+      const label = token.slice(1, close);
+      const { destination: target, title } = inlineLink(token.slice(close + 2, -1));
       const href = safeMarkdownHref(target) ?? webLikeHref(target);
-      const shown: InlineNode = href !== null ? { type: "link", href, children: parseInline(label, false, depth) }
-        : markdownFileNode(target, parseInline(label, false, depth)) ?? { type: "text", value: label };
+      const children = parseInline(label, false, depth);
+      const shown: InlineNode = href !== null ? (title ? { type: "link", href, title, children } : { type: "link", href, children })
+        : markdownFileNode(target, children) ?? { type: "text", value: label };
       if (image) nodes.push({ type: "image", alt: label, src: target, fallback: [{ type: "text", value: "!" }, shown] });
       else nodes.push(shown);
     } else if (token.startsWith("**") || token.startsWith("__")) {
@@ -356,7 +333,6 @@ function lineAt(lines: string[], index: number): string {
 function startsTable(lines: string[], index: number): boolean {
   return lineAt(lines, index).includes("|") && isTableSeparator(lineAt(lines, index + 1));
 }
-/** A table in a list item (`within` > 0) ends at a line outside the item or at the next item. */
 function parseTable(lines: string[], start: number, within = 0): { block: MarkdownBlock; next: number } {
   const header = cells(lineAt(lines, start)).map((cell) => parseInline(cell));
   let index = start + 2;
@@ -369,10 +345,9 @@ function parseTable(lines: string[], start: number, within = 0): { block: Markdo
   return { block: { type: "table", header, rows }, next: index };
 }
 
-
-function startsBlock(lines: string[], index: number, html = false): boolean {
+function startsBlock(lines: string[], index: number, html = false, visualizations = false): boolean {
   const line = lines[index] ?? "";
-  return (html && startsHtml(line)) || /^\s*(?:\\\[|\$\$)/.test(line) || /^\s{0,3}```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*>/.test(line) || /^(?:\s*[-*_]){3,}\s*$/.test(line) || listLine.test(line)
+  return (visualizations && visualizationReference(line) !== null) || (html && startsHtml(line)) || /^\s*(?:\\\[|\$\$)/.test(line) || /^\s{0,3}```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*>/.test(line) || /^(?:\s*[-*_]){3,}\s*$/.test(line) || listLine.test(line)
     || startsTable(lines, index);
 }
 
@@ -383,18 +358,16 @@ function listItem(text: string): ListItem {
   return { content: parseInline(task[2] ?? ""), checked: task[1] !== " " };
 }
 
-function parseList(lines: string[], start: number): { block: ListBlock; next: number } {
+function parseList(lines: string[], start: number, visualizations = false): { block: ListBlock; next: number } {
   const first = listLine.exec(lineAt(lines, start));
   if (first === null) return { block: { type: "list", ordered: false, items: [] }, next: start + 1 };
   const baseIndent = (first[1] ?? "").length;
   const ordered = /\d/.test(first[2] ?? "");
   const number = ordered ? Number.parseInt(first[2] ?? "1", 10) : 1;
   const block: ListBlock = { type: "list", ordered, ...(ordered && number !== 1 ? { start: number } : {}), items: [] };
+  const numbers: number[] = [];
   let index = start;
   while (index < lines.length) {
-    // between items: blank lines (a loose list, as agents often write one) and an item's own
-    // indented lines, which read on as its text, or make a table in it; anything else ends
-    // the list, and so does an indented fence, which shows as its own block
     if (block.items.length > 0 && !listLine.test(lineAt(lines, index))) {
       let ahead = index;
       while (ahead < lines.length && lineAt(lines, ahead).trim() === "") ahead += 1;
@@ -402,13 +375,18 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
       const indent = /^\s*/.exec(line)?.[0].length ?? 0;
       const sibling = listLine.exec(line);
       if (sibling !== null && (sibling[1] ?? "").length === baseIndent && /\d/.test(sibling[2] ?? "") === ordered) { index = ahead; continue; }
-      // a list indented under the last item after a blank line (or after its table) nests in it
       if (sibling !== null && (sibling[1] ?? "").length >= baseIndent + 2) { index = ahead; continue; }
       if (ahead < lines.length && sibling === null && indent >= baseIndent + 2 && startsTable(lines, ahead)) {
         const item = block.items.at(-1)!;
         const table = parseTable(lines, ahead, baseIndent + 2);
         (item.blocks ??= []).push(table.block);
         index = table.next;
+        continue;
+      }
+      const reference = visualizations && ahead < lines.length && sibling === null && indent >= baseIndent + 2 ? visualizationReference(line) : null;
+      if (reference !== null) {
+        (block.items.at(-1)!.blocks ??= []).push({ type: "visualization", ...reference });
+        index = ahead + 1;
         continue;
       }
       if (ahead < lines.length && sibling === null && indent >= baseIndent + 2 && !/^\s*```/.test(line)) {
@@ -419,9 +397,7 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
           item.content.push({ type: "text", value: " " });
           for (const node of parseInline(line.trim())) item.content.push(node);
         } else {
-          // after a table or nested list the item's text goes on below it; a quote or rule
-          // there ends the list and shows as its own block, as it did before tables nested
-          if (startsBlock(lines, ahead)) break;
+          if (startsBlock(lines, ahead, false, visualizations)) break;
           if (last.type === "paragraph" && ahead === index) last.lines.push(parseInline(line.trim()));
           else item.blocks!.push({ type: "paragraph", lines: [parseInline(line.trim())] });
         }
@@ -435,15 +411,20 @@ function parseList(lines: string[], start: number): { block: ListBlock; next: nu
     if ((match[1] ?? "").length >= baseIndent + 2) {
       const parent = block.items.at(-1);
       if (parent === undefined) break;
-      const nested = parseList(lines, index);
+      const nested = parseList(lines, index, visualizations);
       (parent.blocks ??= []).push(nested.block);
       index = nested.next;
       continue;
     }
     if ((match[1] ?? "").length !== baseIndent || /\d/.test(match[2] ?? "") !== ordered) break;
     block.items.push(listItem(match[3] ?? ""));
+    if (ordered) numbers.push(Number.parseInt(match[2] ?? "1", 10));
     index += 1;
   }
+  const counts = numbers.every((written, at) => written === number + at);
+  const lazy = numbers.length > 1 && numbers[1] === number;
+  const drawable = numbers.every((written) => written <= LIST_NUMBER_LIMIT);
+  if (!counts && !lazy && drawable) block.items.forEach((item, at) => { item.number = numbers[at]; });
   return { block, next: index };
 }
 
@@ -465,7 +446,6 @@ export function mathNestsTooDeep(value: string): boolean {
   return false;
 }
 
-/** Whether `line` opens a display formula (`\[` or `$$`) and closes it, with nothing after the close. */
 function wholeFormula(line: string): boolean {
   const open = /^\s*(\\\[|\$\$)/.exec(line);
   if (open === null) return false;
@@ -473,11 +453,9 @@ function wholeFormula(line: string): boolean {
   return close !== -1 && line.slice(close + 2).trim() === "";
 }
 
-/** Code blocks longer than this open folded to their first FOLDED_CODE_LINES lines. */
 export const FOLD_CODE_AFTER_LINES = 30;
 export const FOLDED_CODE_LINES = 20;
 
-/** The folded head of a long code block and its full line count; null when it shows whole. */
 export function foldCode(value: string): { head: string; lines: number } | null {
   const lines = value.split("\n");
   if (lines.length <= FOLD_CODE_AFTER_LINES) return null;
@@ -490,15 +468,10 @@ export function foldCode(value: string): { head: string; lines: number } | null 
  */
 export const FOLD_OUTPUT_CHARS = 1000;
 
-/**
- * The folded head of a long output: a code block's line fold (foldCode), its head cut to FOLD_OUTPUT_CHARS;
- * `lines` is null when only the length folds it. Null when it shows whole.
- */
 export function foldToolOutput(output: string): { head: string; lines: number | null } | null {
   const byLines = foldCode(output);
   const head = byLines?.head ?? output;
   if (head.length <= FOLD_OUTPUT_CHARS) return byLines;
-  // at a line's end when one is near, else mid-line
   const end = head.lastIndexOf("\n", FOLD_OUTPUT_CHARS);
   let cut = end > FOLD_OUTPUT_CHARS / 2 ? end : FOLD_OUTPUT_CHARS;
   // never between the two halves of a character outside the BMP (an emoji): half of one draws as a replacement glyph
@@ -507,22 +480,24 @@ export function foldToolOutput(output: string): { head: string; lines: number | 
   return { head: head.slice(0, cut), lines: byLines?.lines ?? null };
 }
 
-/** Quotes nest by one call each: past this many levels, what is left is read as plain lines. */
 const MAX_QUOTE_DEPTH = 32;
 
-/** `html`: a file's markdown, whose HTML blocks are read as markdown (markdownHtml.ts); an agent's text keeps them as text */
-export function parseMarkdown(source: string, depth = 0, html = false): MarkdownBlock[] {
+export function parseMarkdown(source: string, depth = 0, html = false, visualizations = false): MarkdownBlock[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
   let index = 0;
-  // no formula opened before this line closes: the search that found so is not made again (one
-  // line per delimiter, `\[` and `$$`)
   const unclosedMath = { "\\[": 0, "$$": 0 };
   while (index < lines.length) {
     const line = lineAt(lines, index);
     if (line.trim() === "") { index += 1; continue; }
 
-    // a fence may be indented (inside a list item, as agents write them): its lines lose that indent
+    const visualization = visualizations ? visualizationReference(line) : null;
+    if (visualization !== null) {
+      blocks.push({ type: "visualization", ...visualization });
+      index += 1;
+      continue;
+    }
+
     const fence = /^( {0,3})```\s*([^\s`]*)/.exec(line);
     if (fence !== null) {
       const indent = fence[1] ?? "";
@@ -547,7 +522,6 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
       let complete = false;
       while (true) {
         const at = part.indexOf(close);
-        // the opening line closes its formula and goes on in prose: it is prose
         if (at !== -1 && next === index && part.slice(at + 2).trim() !== "") break;
         if (at !== -1 && part.slice(at + 2).trim() === "") {
           body.push(part.slice(0, at));
@@ -559,16 +533,11 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
         }
         body.push(part);
         next += 1;
-        // a blank line (display math holds none) or a fence ends the search, and so does a line
-        // that is a whole formula of its own, or one opening a formula with the other delimiter: it
-        // is drawn as one, rather than closing this one or being hidden by it
         if (next >= lines.length || lineAt(lines, next).trim() === "" || /^\s{0,3}```/.test(lineAt(lines, next)) || wholeFormula(lineAt(lines, next))
           || (open === "$$" ? /^\s*\\\[/ : /^\s*\$\$/).test(lineAt(lines, next))) break;
         part = lineAt(lines, next);
       }
-      // An incomplete formula stays prose; later headings and fences still parse normally.
       if (complete) continue;
-      // every `\[` up to where the search ended (the end, or a fence) would search the same lines
       unclosedMath[open] = next;
     }
 
@@ -596,13 +565,13 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
       const quoted: string[] = [];
       while (index < lines.length && /^\s*>/.test(lineAt(lines, index))) quoted.push(lineAt(lines, index++).replace(/^\s*>\s?/, ""));
       // a line of thousands of ">" (text nobody wrote by hand) would otherwise overflow the stack
-      blocks.push({ type: "blockquote", blocks: depth < MAX_QUOTE_DEPTH ? parseMarkdown(quoted.join("\n"), depth + 1, html)
+      blocks.push({ type: "blockquote", blocks: depth < MAX_QUOTE_DEPTH ? parseMarkdown(quoted.join("\n"), depth + 1, html, visualizations)
         : [{ type: "paragraph", lines: quoted.map((quotedLine) => parseInline(quotedLine)) }] });
       continue;
     }
 
     if (listLine.test(line)) {
-      const parsed = parseList(lines, index);
+      const parsed = parseList(lines, index, visualizations);
       blocks.push(parsed.block);
       index = parsed.next;
       continue;
@@ -616,7 +585,7 @@ export function parseMarkdown(source: string, depth = 0, html = false): Markdown
     }
 
     const paragraph: InlineNode[][] = [];
-    while (index < lines.length && lineAt(lines, index).trim() !== "" && (paragraph.length === 0 || !startsBlock(lines, index, html))) {
+    while (index < lines.length && lineAt(lines, index).trim() !== "" && (paragraph.length === 0 || !startsBlock(lines, index, html, visualizations))) {
       paragraph.push(parseInline(lineAt(lines, index)));
       index += 1;
     }

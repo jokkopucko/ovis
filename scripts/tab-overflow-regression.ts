@@ -12,7 +12,6 @@ const HEADER = ".header-tabs .tab-strip";
 const HALF = '.pane-slot[data-side="left"] .tab-strip';
 const TAB_MIN = 120;
 
-/** What the header's row shows: each drawn tab's name, width and whether its close is in view, and the More button's count. */
 async function headerRow(page: Page): Promise<{ tabs: { name: string; width: number; selected: boolean; closeShown: boolean }[]; more: string | null; overflow: number }> {
   return page.evaluate((selector) => {
     const row = document.querySelector<HTMLElement>(selector);
@@ -34,15 +33,6 @@ async function headerRow(page: Page): Promise<{ tabs: { name: string; width: num
   }, HEADER);
 }
 
-/**
- * More tabs than fit. The header's row on a desktop (the owner's report: tabs shrank until their
- * close took most of each, and a click meant for a tab closed it) never draws a tab narrower than
- * TAB_MIN: the tabs that do not fit wait behind a More button after the +, whose list opens any of
- * them, and the open tab is always in the row. A split half's strip still scrolls (#1515): a vertical
- * wheel over it moves it sideways, by the wheel's own unit (pixels, lines or pages), until the last
- * tab is in view. A sideways wheel (a trackpad, a tilt wheel), a diagonal trackpad swipe (#2103), a
- * pinch and a strip whose tabs fit are left to the browser.
- */
 export async function checkTabOverflow(browser: Browser, origin: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-tab-overflow-")));
   let workspaceId: string | null = null;
@@ -64,12 +54,10 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
       });
       const page = await context.newPage();
 
-      // the header's row with the last tab open: the row keeps it, and the rest that do not fit wait behind More
       const rowSettled = async (when: string, open: string): Promise<Awaited<ReturnType<typeof headerRow>>> => {
         await page.locator(`${HEADER} [role="tab"][aria-selected="true"]`, { has: page.locator(".tab-strip-label", { hasText: new RegExp(`^${open}$`) }) }).waitFor({ timeout: 15_000 });
         await page.locator(".header-tabs .tab-strip-more").waitFor({ timeout: 5_000 })
           .catch(() => { throw new Error(`${when}: 20 tabs that do not fit show no More button in the header's row`); });
-        // the row draws fewer tabs once it has measured its new width (a resize, a split closed)
         await page.waitForFunction((selector) => {
           const node = document.querySelector(selector);
           return !!node && node.scrollWidth - node.clientWidth <= 1;
@@ -91,12 +79,9 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
       const hidden = TAB_LABELS.filter((label) => !row.tabs.some((tab) => tab.name === label));
       assert.ok(hidden.includes("metrics"), "metrics waits behind More");
 
-      // More lists every tab left out of the row; one picked from it opens and comes into the row
       await page.locator(".header-tabs .tab-strip-more").click();
       const listed = await page.getByRole("menu").locator('[role="menuitem"] .menu-item-main').allTextContents();
       assert.deepEqual(listed.map((text) => text.trim()), hidden, "More lists the tabs left out of the row, in their order");
-      // a letter typed over the list moves to the next tab it starts, one tab per press, wrapping (G-160): one
-      // type-ahead owns the list, so a tab sharing its first letter with the next one is never skipped
       const letter = [..."abcdefghijklmnopqrstuvwxyz"].find((first) => hidden.filter((name) => name.startsWith(first)).length >= 2);
       assert.ok(letter, `two tabs behind More share a first letter: ${hidden.join(", ")}`);
       await page.waitForFunction(() => document.activeElement?.closest(".row-menu") != null);
@@ -113,13 +98,11 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
       await page.getByRole("menu").getByRole("menuitem").filter({ has: page.locator(".menu-item-main", { hasText: /^metrics$/ }) }).click();
       await rowSettled("metrics picked from More", "metrics");
 
-      // a narrower window keeps the tabs as wide, and fewer of them in the row
       await page.setViewportSize({ width: 1024, height: 900 });
       await rowSettled("at 1024px", "metrics");
       await page.setViewportSize({ width: 1280, height: 900 });
       console.log("PASS the header's row keeps every tab at least 120px wide and its close only on a full-size tab; the tabs that do not fit are listed behind More, and one picked there opens in the row");
 
-      // a split half's own strip still scrolls under the wheel
       const strip = page.locator(HALF);
       const overflowing = async (): Promise<void> => {
         await page.locator(`${HALF} [role="tab"]`, { has: page.locator(".tab-strip-label", { hasText: /^last-tab$/ }) }).waitFor({ state: "attached", timeout: 15_000 });
@@ -141,7 +124,6 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
         await page.mouse.wheel(0, -400);
         await page.waitForFunction(([selector, was]) => (document.querySelector(selector as string)?.scrollLeft ?? was) < (was as number), [HALF, down] as const, { timeout: 5_000 })
           .catch(() => { throw new Error(`${when}: a wheel turned up did not scroll the strip back`); });
-        // turned on down far enough, the wheel brings the last tab fully into view before the +
         await page.mouse.wheel(0, 10_000);
         await page.waitForFunction((selector) => {
           const node = document.querySelector(selector);
@@ -154,7 +136,6 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
         }, HALF, { timeout: 5_000 })
           .catch(() => { throw new Error(`${when}: wheeling down to the strip's end left the last tab out of view`); });
       };
-      // whether the strip let the browser have a synthetic wheel: true when nothing cancelled it
       const leftAlone = (selector: string, init: WheelEventInit): Promise<boolean> => page.locator(selector).first().evaluate((node, wheel) =>
         node.dispatchEvent(new WheelEvent("wheel", { ...wheel, bubbles: true, cancelable: true })), init);
 
@@ -183,7 +164,6 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
       assert.equal(await page.locator(fewStrip).evaluate((node) => node.scrollWidth <= node.clientWidth), true, "the one tab fits");
       assert.equal(await leftAlone(fewStrip, { deltaY: 120 }), true, "a strip whose tabs fit leaves the wheel alone");
 
-      // the split closed: the header's row is drawn again, with its More and no tab under the minimum
       await page.locator('.pane-slot[data-side="right"]').getByRole("button", { name: "Close this half", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length <= 1, null, { timeout: 15_000 });
       await rowSettled("after a split closed", "api");
@@ -196,7 +176,6 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
   }
 }
 
-/** only the open tab shows its close, as the Herdr app's tab does, and it is a full-size tab: the pointer over another tab shows none */
 async function closeOnlyOnFullTabs(page: Page): Promise<void> {
   await page.locator(`${HEADER} .tab-strip-item:not(.is-active)`).first().hover();
   const hovered = await headerRow(page);

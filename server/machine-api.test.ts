@@ -1,29 +1,120 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { MachineEvent } from "../shared/machines.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportAccountKey, newRecordId, signSafetyRecord } from "../shared/account-records.ts";
+import type { Machine, MachineEvent } from "../shared/machines.ts";
+import { createServer } from "./index.ts";
 import { handleMachineRequest, machineEventsClock, machineEventsQueuedBytes } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
-// The agreed policy, written out rather than read from the code: raising either must fail here.
 const STREAM_BYTES = 4 * 1024 * 1024;
+
+it("T60: the machine router forwards only the records POST with the target PC credential", async () => {
+  const calls: { method: string; path: string; authorization: string | null; body: unknown }[] = [];
+  using target = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    calls.push({ method: request.method, path: new URL(request.url).pathname, authorization: request.headers.get("authorization"), body: await request.json() });
+    return Response.json({ receipts: [] });
+  } });
+  const manager = {
+    endpoint: (id: string) => id === "desk" ? { url: target.url.origin, token: "target" } : undefined,
+    trackTerminal: () => () => {},
+  } as unknown as MachineManager;
+  const records = { records: [{ kind: "block", id: "signed-id" }] };
+  const send = (method: string, suffix = "account/records", origin = "https://app.example", readOnly = false, owner = true) =>
+    handleMachineRequest(new Request(`https://app.example/api/machines/desk/${suffix}`, {
+      method, headers: { origin, "x-herdr-machine": "1", "content-type": "application/json", authorization: "Bearer caller" },
+      body: method === "GET" ? undefined : JSON.stringify(records),
+    }), manager, undefined, undefined, readOnly, undefined, undefined, undefined, undefined, owner, true);
+
+  expect((await send("POST", "account/records", "https://other.example")).status).toBe(403);
+  expect((await send("POST", "account/records", "https://app.example", true)).status).toBe(403);
+  expect((await send("GET")).status).toBe(404);
+  expect((await send("POST", "account/records/extra")).status).toBe(403);
+  const visitor = await send("POST", "account/records", "https://app.example", false, false);
+  expect(visitor.status).toBe(403);
+  expect(calls).toEqual([]);
+  expect((await send("POST")).status).toBe(200);
+  expect(calls).toEqual([{ method: "POST", path: "/api/account/records", authorization: "Bearer target", body: records }]);
+});
+
+it("G5: with the account release off, an owner's roster records POST is refused as on main and nothing is forwarded", async () => {
+  let forwarded = 0;
+  using target = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { forwarded++; return Response.json({ results: [] }); } });
+  const manager = {
+    endpoint: (id: string) => id === "desk" ? { url: target.url.origin, token: "target" } : undefined,
+    trackTerminal: () => () => {},
+  } as unknown as MachineManager;
+  const response = await handleMachineRequest(new Request("https://app.example/api/machines/desk/account/records", {
+    method: "POST", headers: { origin: "https://app.example", "x-herdr-machine": "1", "content-type": "application/json" },
+    body: JSON.stringify({ records: [] }),
+  }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true, false);
+  expect(response.status).toBe(403);
+  expect(((await response.json()) as { error: { code: string } }).error.code).toBe("forbidden");
+  expect(forwarded).toBe(0);
+});
+
+it("T60: a signed roster block passes the receiving PC's real account route", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-roster-block-"));
+  const account = "acct_1";
+  // two members admitted well before this run (devices.json rows), so neither is in a fresh join hold
+  const member = async (index: number) => {
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const spki = await exportAccountKey(keys.publicKey);
+    const at = `2026-10-0${index + 1}T00:00:00.000Z`;
+    return { id: `member-${index}`, keys, spki, row: { id: `member-${index}`, relay_public_key: spki, account, linked_at: at, created_at: at,
+      label: `Phone ${index}`, role: "drive", token_hash: String(index).repeat(64), last_seen_at: null } };
+  };
+  const signer = await member(0);
+  const blocked = await member(1);
+  writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: signer.row.created_at, devices: [signer.row, blocked.row] }), { mode: 0o600 });
+  const target = createServer({ hostname: "127.0.0.1", port: 0, token: "target", stateDir, sidecar: false, machines: false, tailscaleOwner: null, accountOpensAll: true });
+  try {
+    const { devices } = target.context.services;
+    // the receiving PC has read its account once (S2-27): a PC still catching up takes no signature
+    target.context.services.catchUp?.wholeRead();
+    const record = await signSafetyRecord({
+      v: 1, kind: "block", account, target: blocked.spki, target_no: 2, signer: signer.spki, signer_no: 1,
+      signed_at: new Date().toISOString(), nonce: newRecordId(),
+    }, signer.keys.privateKey);
+    const manager = {
+      endpoint: () => ({ url: `http://127.0.0.1:${target.port}`, token: "target" }),
+      trackTerminal: () => () => {},
+    } as unknown as MachineManager;
+    const response = await handleMachineRequest(new Request("https://app.example/api/machines/desk/account/records", {
+      method: "POST", headers: { origin: "https://app.example", "x-herdr-machine": "1", "content-type": "application/json" },
+      body: JSON.stringify({ records: [record] }),
+    }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true, true);
+    const receipt: unknown = await response.json();
+    expect({ status: response.status, body: receipt }).toEqual({
+      status: 200,
+      // Track A's S2-09 adds block receipts; older PCs still return their own per-record result.
+      body: "applyBlock" in devices
+        ? { results: [], receipts: [{ id: record.id, outcome: "applied", n: 1 }] }
+        : { results: [{ id: record.id, outcome: "refused", code: "record_invalid" }] },
+    });
+    expect(devices.has(blocked.id)).toBe(!("applyBlock" in devices));
+  } finally {
+    target.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 const TOTAL_BYTES = 32 * 1024 * 1024;
 const CEILING_BYTES = 64 * 1024 * 1024;
 const STALL_MS = 30_000;
 
-// the streams' clock, moved on by each test instead of waiting, and given back after it
 const realNow = machineEventsClock.now;
 let clock = 0;
 beforeEach(() => { clock = 0; machineEventsClock.now = () => clock; });
 afterEach(() => { machineEventsClock.now = realNow; });
 
-/** A roster stand-in that tells every open stream, as the status hub tells the real one. */
 function managerStandIn() {
   const listeners = new Set<(event: MachineEvent) => void>();
   const manager = { subscribe: (listener: (event: MachineEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } } as unknown as MachineManager;
   return {
     manager, emit: (event: MachineEvent) => { for (const listener of [...listeners]) listener(event); }, listening: () => listeners.size,
-    /** the stream opened last, by its listener: whether it still listens */
     newest: () => { const listener = [...listeners].at(-1); return () => listener !== undefined && listeners.has(listener); },
-    /** the streams open now, by their listeners: how many of them still listen */
     group: () => { const now = [...listeners]; return () => now.filter((listener) => listeners.has(listener)).length; },
   };
 }
@@ -45,7 +136,6 @@ async function open(manager: MachineManager, onRevoke?: (end: () => void) => () 
   const decoder = new TextDecoder();
   let buffer = "";
   const events: MachineEvent[] = [];
-  /** reads until `count` events have come: "open", or how the stream ended ("ended" delivers what it held, "failed" drops it) */
   const readUntil = async (count: number): Promise<"open" | "ended" | "failed"> => {
     while (events.length < count) {
       let chunk: Awaited<ReturnType<typeof reader.read>>;
@@ -61,7 +151,6 @@ async function open(manager: MachineManager, onRevoke?: (end: () => void) => () 
     return "open";
   };
   const close = async () => { abort.abort(); await reader.cancel().catch(() => undefined); };
-  /** the browser goes away, its reader left as it was */
   const leave = () => abort.abort();
   return { events, readUntil, close, leave };
 }
@@ -71,7 +160,6 @@ describe("the machine events stream", () => {
     const { manager, emit } = managerStandIn();
     const stream = await open(manager);
     try {
-      // a burst is told before the browser reads any of it: every frame is written before it reads one
       for (let index = 0; index < 300; index++) emit(status(index));
       expect(await stream.readUntil(300)).toBe("open");
       expect(stream.events.map((event) => event.type === "machine-message" && event.message.type === "pane-status" ? event.message.pane_id : null))
@@ -148,10 +236,8 @@ describe("the machine events stream", () => {
       const within = Math.floor(STREAM_BYTES / frameBytes(status(0)));
       for (let sent = 0; sent < within; sent++) emit(status(0));
       expect(listening()).toBe(1);
-      // the frame that would take it past 4 MiB ends it
       emit(status(0));
       expect(listening()).toBe(0);
-      // errored, not closed: the 4 MiB that waited is not still handed to a browser that stopped reading
       expect(await stream.readUntil(1)).toBe("failed");
       expect(stream.events).toEqual([]);
       expect(machineEventsQueuedBytes()).toBe(0);
@@ -183,7 +269,6 @@ describe("the machine events stream", () => {
     try {
       emit(large(STREAM_BYTES + 1024));
       expect(listening()).toBe(1);
-      // the second is backlog the first does not cover, counted as it comes: larger than the whole total, it ends the stream
       emit(large(TOTAL_BYTES + 1024));
       expect(listening()).toBe(0);
       expect(machineEventsQueuedBytes()).toBe(0);
@@ -195,7 +280,6 @@ describe("the machine events stream", () => {
   it("ends the streams that stopped reading, the one holding the most first, never one sent its frames just now", async () => {
     const { manager, emit, listening, group, newest } = managerStandIn();
     const size = frameBytes(status(0));
-    // five streams at 3.9 MiB, then five at 3.0 MiB: 34.5 MiB, all of it just sent
     const more = await Promise.all(Array.from({ length: 5 }, () => open(manager)));
     const moreListen = group();
     for (let sent = 0; sent < Math.floor(0.9 * 1024 * 1024 / size); sent++) emit(status(0));
@@ -209,7 +293,6 @@ describe("the machine events stream", () => {
       try {
         emit(status(0));
         expect(listening()).toBe(10);
-        // one of the five holding 3.9 MiB went, and none of those holding 3.0 MiB
         expect(moreListen()).toBe(4);
         expect(lateListens()).toBe(true);
         expect(machineEventsQueuedBytes()).toBeLessThanOrEqual(TOTAL_BYTES);
@@ -223,7 +306,6 @@ describe("the machine events stream", () => {
 
   it("holds every stream together to 64 MiB while none has stopped reading, and to 32 MiB once they have", async () => {
     const { manager, emit, listening } = managerStandIn();
-    // twelve browsers that stopped reading, watching devices or not: 12 x 3.5 MiB would be 42 MiB
     const stalled = await Promise.all(Array.from({ length: 12 }, () => open(manager)));
     try {
       const frames = Math.floor(3.5 * 1024 * 1024 / frameBytes(status(0)));
@@ -274,14 +356,12 @@ describe("the machine events stream", () => {
     const steadyListens = newest();
     const mib = Math.floor(1024 * 1024 / frameBytes(status(0)));
     try {
-      // 2 MiB waiting, then each second 1 MiB more and 1 MiB read: its queue never empties
       for (let sent = 0; sent < 2 * mib; sent++) emit(status(0));
       for (let second = 0; second < 31; second++) {
         clock += 1000;
         for (let sent = 0; sent < mib; sent++) emit(status(0));
         expect(await steady.readUntil(steady.events.length + mib)).toBe("open");
       }
-      // eleven streams opened now take the total past 32 MiB while it reads on
       const fresh = await Promise.all(Array.from({ length: 11 }, () => open(manager)));
       try {
         for (let step = 0; step < 6; step++) {
@@ -301,7 +381,6 @@ describe("the machine events stream", () => {
 
   it("lets every stream together reach 64 MiB and no further while none has stopped reading", async () => {
     const { manager, emit } = managerStandIn();
-    // twenty fresh streams fed 3.9 MiB each would be 78 MiB
     const streams = await Promise.all(Array.from({ length: 20 }, () => open(manager)));
     try {
       let most = 0;
@@ -309,7 +388,6 @@ describe("the machine events stream", () => {
         emit(status(0));
         most = Math.max(most, machineEventsQueuedBytes());
       }
-      // reached to within one small frame of the ceiling, never past it
       expect(most).toBeLessThanOrEqual(CEILING_BYTES);
       expect(most).toBeGreaterThan(CEILING_BYTES - 1024);
     } finally {
@@ -336,4 +414,21 @@ describe("the machine events stream", () => {
       await Promise.all(next.map((stream) => stream.close()));
     }
   });
+});
+
+it("answers every roster read, the verified one too, without a PC's own agent_refs or a value herdr's rows hide", async () => {
+  const snapshot = { version: "test", protocol: 22, workspaces: [], tabs: [], layouts: [],
+    panes: [{ pane_id: "pA", terminal_id: "tA", workspace_id: "w1", tab_id: "w1:t1", focused: false, revision: 1, agent_status: "idle" }],
+    agents: [{ pane_id: "pA", agent: "codex", agent_status: "working", tokens: { quota: "SECRET" } }],
+    agent_refs: [{ pane_id: "pA", agent: "codex", agent_status: "done", tokens: { quota: "SECRET" } }] };
+  const remote = { id: "remote", name: "Away", kind: "ssh", enabled: true, state: "connected", error: null, snapshot } as unknown as Machine;
+  const manager = { list: () => [remote], verifySourceBoot: async () => ({ boot_id: "R" }) } as unknown as MachineManager;
+  const rows = { rows: [{ name: "quota", rules: [{ equals: "SECRET", hide: true }] }], by_agent: {} };
+  const herdrSidebar = { get: () => rows, subscribe: () => () => {} };
+  for (const query of ["", "?compact_agents=1", "?verify_source_boot=remote"]) {
+    const response = await handleMachineRequest(new Request(`http://127.0.0.1/api/machines${query}`), manager, undefined, undefined, false, herdrSidebar);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect({ query, marker: text.includes("agent_refs"), hidden: text.includes("SECRET") }).toEqual({ query, marker: false, hidden: false });
+  }
 });

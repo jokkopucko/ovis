@@ -6,18 +6,10 @@
  * A browser lets a page play audio only after the user interacted with it, so the audio context
  * is made and resumed from a tap or key (`unlockAlertSound`); until then a chime is skipped,
  * never queued to sound late.
- *
- * One chime sounds at a time in a tab. Alerts that come together - several panes finishing at
- * once - would otherwise sound over each other. An alert that comes while a chime sounds is
- * already told by it, except a question after a finish: the question's chime starts where the
- * finish's ends, so a question is never lost. `alertTurns.ts` coordinates eligible tabs by
- * machine, pane and kind. An alert deferred to another tab stays pending until that tab
- * confirms it chimed, or a local deadline/withdrawal lets this tab tell it instead.
  */
 
 export type AlertSoundKind = "blocked" | "done";
 
-/** Each chime's notes in Hz: a question rises, a finish falls. */
 export const CHIME_NOTES: Readonly<Record<AlertSoundKind, readonly number[]>> = {
   blocked: [660, 880],
   done: [880, 660],
@@ -27,31 +19,20 @@ const NOTE_LENGTH_S = 0.3;
 const PEAK_GAIN = 0.25;
 
 let context: AudioContext | null = null;
-/**
- * A chime scheduled to start later (a question behind a finish or a preview), with every caller it
- * tells: one question chime tells all the questions that came while it waited.
- */
 interface Scheduled {
   audio: AudioContext;
   start: number;
-  /** each caller's own "still wanted" (its pane not muted meanwhile) */
   wanters: (() => boolean)[];
   cancelled: boolean;
-  /** silences it before it starts and gives its place back */
   cancel: () => void;
 }
-// this tab's chimes that have not ended, on its context's clock: when the last of them ends,
-// and when the last question's does (a preview queued behind a question does not move that),
-// with that question's chime while it waits to start
 let sounding: { audio: AudioContext; until: number; question: number; questionStart: number; questionSound: Scheduled | null } | null = null;
-/** the scheduled chimes that have not started */
 const queued = new Set<Scheduled>();
 
 function contextClass(): typeof AudioContext | undefined {
   return globalThis.AudioContext ?? (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 }
 
-/** From a user gesture: lets this tab's later chimes play. Resolves whether it can play now. */
 export async function unlockAlertSound(): Promise<boolean> {
   const Context = contextClass();
   if (!Context) return false;
@@ -73,12 +54,6 @@ export function canPlayAlertSound(): boolean {
   return context?.state === "running";
 }
 
-/**
- * Confirms only audio that started, not a question scheduled behind a finish or preview. `wanted`
- * is this caller's: a scheduled chime that no caller wants any more never sounds
- * (`recheckAlertSounds`), and one that sounds for the others is not confirmed to a caller that
- * no longer wants it.
- */
 export function playAlertSound(kind: AlertSoundKind, wanted: () => boolean = () => true): boolean | Promise<boolean> {
   const audio = context;
   if (audio?.state !== "running") return false;
@@ -98,7 +73,6 @@ export function playAlertSound(kind: AlertSoundKind, wanted: () => boolean = () 
   });
 }
 
-/** Asks every scheduled chime whether any caller still wants it (a pane muted meanwhile), and silences each one none does. */
 export function recheckAlertSounds(): void {
   for (const sound of [...queued]) {
     if (sound.start <= sound.audio.currentTime) { queued.delete(sound); continue; }
@@ -106,23 +80,15 @@ export function recheckAlertSounds(): void {
   }
 }
 
-/** Settings' preview of the chime: always played, after a chime of this tab that still sounds. */
 export function previewAlertSound(): void {
   const audio = context;
   if (audio?.state === "running") chime(audio, "done", true);
 }
 
-/**
- * Plays `kind` unless this tab's last chime still sounds; a preview then starts where it ends.
- * Returns when the chime that tells it starts, and that chime while it waits to start (null once it
- * sounds).
- */
 function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): { start: number; sound: Scheduled | null } {
   const now = audio.currentTime;
   const current = sounding !== null && sounding.audio === audio && sounding.until > now ? sounding : null;
-  // a question chime cancelled while a preview waited behind it tells nothing any more
   const question = current !== null && current.question > now && current.questionSound?.cancelled !== true;
-  // already told by a chime that sounds or waits its turn: a finish by any, a question by a question's
   if (current && !preview && (kind === "done" || question)) {
     if (kind === "done" || current.questionStart <= now) return { start: now, sound: null };
     return { start: current.questionStart, sound: current.questionSound };
@@ -155,7 +121,6 @@ function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): { st
       // a stop before its start keeps a note from ever sounding; cut off from the output as well
       for (const oscillator of oscillators) oscillator.stop(audio.currentTime);
       for (const gain of gains) gain.disconnect();
-      // the last one waiting: the next chime starts where the one before it ends
       if (sounding === mine) sounding = current;
     },
   } : null;

@@ -7,8 +7,8 @@ ARG GH_VERSION=2.102.0
 ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 # Keep in sync with playwright-core in bun.lock.
 ARG PLAYWRIGHT_VERSION=1.63.0
-ARG BUN_VERSION=1.4.2
-ARG BUN_SHA256=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+ARG BUN_VERSION=1.4.4
+ARG BUN_SHA256=bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
 ARG NODE_VERSION=22.23.3
 ARG NODE_SHA256=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af
 ARG HERDR_VERSION=0.9.3
@@ -20,6 +20,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq unzip xz-utils tar ffmpeg python3 tini \
+      openssh-client openssh-server iproute2 binutils tmux procps \
+ && mkdir -p /run/sshd \
  && rm -rf /var/lib/apt/lists/*
 
 # Install fixed Bun and Node releases system-wide so the unprivileged runner can use them.
@@ -85,5 +87,6 @@ RUN chmod 0755 /opt/runner-hooks/job-started.sh
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/runner-hooks/job-started.sh
 
 USER runner
+ENV USER=runner
 WORKDIR /home/runner/actions-runner
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

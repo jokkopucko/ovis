@@ -3,7 +3,6 @@ import { readers } from "./index.ts";
 import { readersFor, type DialogReader, type ReaderContext } from "./registry.ts";
 import { onePerPass } from "./shared.ts";
 
-// Copied from the moved/list/sideways responder sets in prompt.ts at 3df0824e, the base of #1435.
 const snapshot: Record<string, readonly [DialogReader["reread"], DialogReader["list"]]> = {
   "claude-question": ["none", "none"],
   "claude-submit": ["none", "none"],
@@ -44,6 +43,8 @@ const snapshot: Record<string, readonly [DialogReader["reread"], DialogReader["l
   "hermes-question": ["none", "none"],
   "hermes-input": ["none", "none"],
   "hermes-approval": ["none", "none"],
+  "agy-question": ["none", "none"],
+  "dsh-question": ["before-commit", "none"],
   "cmd-question": ["before-commit", "none"],
   "opencode-question": ["before-commit", "none"],
   "opencode-v1-question": ["none", "none"],
@@ -82,16 +83,17 @@ test("keeps OmO cross-listing after each agent's own readers", () => {
 });
 
 test("keeps fallback readers last for known and unknown agents", () => {
-  for (const agent of ["claude", "codex", "omp", "omo", "pi", "hermes", "gjc", "opencode", "grok", "agy", "devin", "cmd", "", "unknown"]) {
+  for (const agent of ["claude", "codex", "omp", "omo", "pi", "hermes", "gjc", "opencode", "grok", "agy", "devin", "cmd", "dsh-tui", "", "unknown"]) {
     expect(readersFor(agent).slice(-3).map((reader) => reader.id)).toEqual(["fallback-menu", "fallback-gjc-menu", "fallback-keys"]);
   }
 });
 
-/** The readers each agent's screen is offered to, first to last: the first that reads it gives the card. */
 const order: Record<string, readonly string[]> = {
   "": ["omo-model", "omo-question", "omo-typing", "omo-review", "omo-pending", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
+  agy: ["agy-question", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   claude: ["claude-goal", "claude-question", "claude-submit", "claude-approval", "claude-plan", "claude-confirm", "claude-model", "claude-effort", "claude-held", "omo-model", "omo-question", "omo-typing", "omo-review", "omo-pending", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   cmd: ["cmd-question", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
+  "dsh-tui": ["dsh-question", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   codex: ["codex-menu", "codex-question", "codex-async-question", "codex-approval", "codex-model", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   letta: ["letta-model", "letta-effort", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   hermes: ["hermes-question", "hermes-input", "hermes-approval", "hermes-status", "hermes-version", "hermes-profile", "hermes-reload-skills", "hermes-help", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],

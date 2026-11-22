@@ -1,4 +1,4 @@
-import type { Page } from "playwright-core";
+import type { Locator, Page } from "playwright-core";
 
 /**
  * Waits for a sheet (Settings by default, or the palette) to finish rising: on a phone it rises from
@@ -10,32 +10,33 @@ export async function sheetRisen(page: Page, selector = ".settings-dialog"): Pro
 }
 
 /**
- * Settings shows one page at a time: opens the one a check needs, in a dialog that is already
- * open or opening. A phone lists the pages first, and from another page the way there is back.
+ * Presses a control in Settings once the press can reach it. A settings row the pointer rests on shows its help
+ * sentence, which can lie over a control outside that row (a long one in Korean or Japanese, on Back to settings or
+ * a button below); a pointer going to the control leaves the row, which hides the sentence, so the pointer goes
+ * there first; the click then re-finds the control and retries its hit test until nothing lies over it.
  */
+export async function pressInSettings(control: Locator): Promise<void> {
+  await control.hover({ force: true });
+  await control.click();
+}
+
 export async function openSettingsPage(page: Page, name: string, backName = "Back to settings"): Promise<void> {
   const dialog = page.locator(".settings-dialog");
   await dialog.waitFor();
   await sheetRisen(page);
   const tab = dialog.getByRole("tab", { name, exact: true });
-  if (await tab.count() === 0) await dialog.getByRole("button", { name: backName, exact: true }).click();
-  await tab.click();
+  if (await tab.count() === 0) await pressInSettings(dialog.getByRole("button", { name: backName, exact: true }));
+  await pressInSettings(tab);
   const panel = dialog.getByRole("tabpanel", { name, exact: true });
   await panel.waitFor();
-  // a page keeps its rarely changed rows folded (SettingsFold): open them, as a reader looking for one does
   await openSettingsFolds(page);
 }
 
-/** Opens the folded groups (SettingsFold: More settings, Experimental) of the Settings page in view, as a reader looking for one of their rows does. */
 export async function openSettingsFolds(page: Page): Promise<void> {
   const closed = page.locator(".settings-body:not([hidden]) details.settings-fold:not([open]) > summary");
   while (await closed.count() > 0) await closed.first().click();
 }
 
-/**
- * One side of Appearance's theme cards (ThemePicker in SettingsDialog.tsx), used as the select each
- * side once was: the side is switched to first, then its cards are read or one is picked. English labels.
- */
 export function themeSide(page: Page, side: "dark" | "light") {
   const switchTo = () => page.getByRole("group", { name: "Dark theme · Light theme", exact: true }).getByRole("button", { name: side === "dark" ? "Show dark themes" : "Show light themes", exact: true }).click();
   const cards = page.getByRole("radiogroup", { name: side === "dark" ? "Dark theme" : "Light theme", exact: true });

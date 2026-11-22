@@ -8,7 +8,6 @@ import { commandInvocations } from "./outcome.ts";
 import { handlePromptRequest, noteSubmitted } from "./prompt.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
 
-// taken before any test spies on fs: a Claude resolver proves the file its path names when it is asked (#3402)
 const realStat = fs.statSync;
 const claudeAt = (path: string) => async () => {
   const proven = realStat(path, { bigint: true });
@@ -84,7 +83,6 @@ it("keeps resolving a pi send while appends slide the window of a session over 1
     const url = new URL(`http://localhost/api/pane/prompt?pane_id=${encodeURIComponent(pane.pane_id)}`);
     const latest = async () => ((await (await handlePromptRequest(new Request(url), url))?.json()) as PanePromptResponse).outcomes?.at(-1);
     expect(await latest()).toMatchObject({ state: "accepted", evidence: [] });
-    // the agent writes on: the 16 MiB window now starts one whole entry later
     fs.appendFileSync(path, answer(20));
     expect(await latest()).toMatchObject({ state: "accepted", evidence: [] });
     fs.appendFileSync(path, JSON.stringify({ type: "model_change", id: "selected", parentId: "entry-20",
@@ -124,7 +122,6 @@ it("does not complete a pi send from another branch whose first entry heads the 
     const url = new URL(`http://localhost/api/pane/prompt?pane_id=${encodeURIComponent(pane.pane_id)}`);
     const latest = async () => ((await (await handlePromptRequest(new Request(url), url))?.json()) as PanePromptResponse).outcomes?.at(-1);
     expect(await latest()).toMatchObject({ state: "accepted" });
-    // /tree back to a0: the new branch's first entry is the first whole one in the next window
     for (let index = 0; index < 15; index++) fs.appendFileSync(path, entry(`b${index}`, index ? `b${index - 1}` : "a0"));
     fs.appendFileSync(path, JSON.stringify({ type: "model_change", id: "chosen", parentId: "b14",
       timestamp: new Date(at + 10).toISOString(), modelId: "chosen-model" }) + "\n");
@@ -145,7 +142,6 @@ it("keeps a pi branch's identity while its fork slides to the head of the window
   const entry = (id: string, parentId: string | null, mebibytes = 1) => JSON.stringify({ type: "message", id, parentId,
     message: { role: "assistant", content: "x".repeat(mebibytes * 1024 * 1024) } }) + "\n";
   fs.writeFileSync(path, [entry("e0", null), entry("e1", "e0"), entry("e2", "e1"), entry("e3", "e2"),
-    // a /tree branch from e1
     entry("fork", "e1"), ...Array.from({ length: 13 }, (_, index) => entry(`f${index}`, index ? `f${index - 1}` : "fork"))].join(""));
   const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "pi-transcript", path });
   try {
@@ -172,7 +168,6 @@ it("names a fork made after the pi branch's last entry afresh, though that entry
   const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "pi-transcript", path });
   try {
     const before = await conversation.readCommandTranscript("later-fork");
-    // between two polls: an answer on a0, then /tree back to a0 and another answer from there
     fs.appendFileSync(path, line({ type: "message", id: "a1", parentId: "a0" }) + line({ type: "message", id: "b0", parentId: "a0" })
       + line({ type: "model_change", id: "chosen", parentId: "b0", modelId: "chosen-model" }));
     const after = await conversation.readCommandTranscript("later-fork");
@@ -208,10 +203,8 @@ it("completes a pi send bound to a branch after the session leaves it and /tree 
     const url = new URL(`http://localhost/api/pane/prompt?pane_id=${encodeURIComponent(pane.pane_id)}`);
     const latest = async () => ((await (await handlePromptRequest(new Request(url), url))?.json()) as PanePromptResponse).outcomes?.at(-1);
     expect(await latest()).toMatchObject({ state: "accepted", evidence: [] });
-    // a poll sees the session on a new branch from root
     fs.appendFileSync(path, line({ type: "message", id: "b0", parentId: "root" }));
     expect(await latest()).toMatchObject({ state: "accepted", evidence: [] });
-    // /tree back to a1, where the model the send chose is recorded
     fs.appendFileSync(path, line({ type: "model_change", id: "chosen", parentId: "a1",
       timestamp: new Date(at + 10).toISOString(), modelId: "chosen-model" }));
     expect(await latest()).toMatchObject({ state: "result-observed", evidence: [{ kind: "transcript" }] });
@@ -253,11 +246,9 @@ it("does not credit a pi send with a later identical send's result when its own 
     await outcomes();
     fs.appendFileSync(path, line({ type: "message", id: "b0", parentId: "root" }));
     await outcomes();
-    // the first send's result, written on the branch the session went to
     fs.appendFileSync(path, line({ type: "model_change", id: "first-result", parentId: "b0",
       timestamp: new Date(at + 5).toISOString(), modelId: "chosen-model" }));
     await outcomes();
-    // /tree back to a1, and the same command again
     send("second", at + 10);
     fs.appendFileSync(path, line({ type: "model_change", id: "second-result", parentId: "a1",
       timestamp: new Date(at + 15).toISOString(), modelId: "chosen-model" }));
@@ -302,7 +293,6 @@ it("names a pi branch afresh on coming back to its last entry when something els
   const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "pi-transcript", path });
   try {
     const before = await conversation.readCommandTranscript("branch-back-hidden");
-    // a poll sees another branch, then an answer under a0 no poll sees, and /tree back to a0 again
     fs.appendFileSync(path, line({ type: "message", id: "b0", parentId: "root" }));
     expect((await conversation.readCommandTranscript("branch-back-hidden"))?.identity).not.toBe(before?.identity);
     fs.appendFileSync(path, line({ type: "message", id: "a1", parentId: "a0" }) + line({ type: "model_change", id: "chosen", parentId: "a0", modelId: "chosen-model" }));
@@ -329,12 +319,11 @@ it("does not take a later entry that reuses a remembered pi branch's last id for
     const before = await conversation.readCommandTranscript("reused-id");
     fs.appendFileSync(path, big("b0", "root", 15));
     await conversation.readCommandTranscript("reused-id");
-    // another entry with a1's id, then enough that the window no longer holds the first a1
     fs.appendFileSync(path, line({ type: "message", id: "a1", parentId: "b0" }));
     expect(await conversation.readCommandTranscript("reused-id")).toBeNull();
     fs.appendFileSync(path, big("b1", "a1", 2));
     const after = await conversation.readCommandTranscript("reused-id");
-    expect(after?.records.map(({ entry }) => entry.id)).toEqual(["a1", "b1"]); // control: the first a1 is cut away
+    expect(after?.records.map(({ entry }) => entry.id)).toEqual(["a1", "b1"]);
     expect(after?.identity).not.toBe(before?.identity);
   } finally {
     binding.mockRestore();
@@ -354,11 +343,9 @@ it("names a pi branch afresh when an append cuts its last entry away and forks a
   try {
     const before = await conversation.readCommandTranscript("leaf-cut-fork");
     expect(before?.records.at(-1)?.entry.id).toBe("a19");
-    // h0 runs on from a19 and h13 after it; then /tree back to h0 for another answer
     for (let index = 0; index < 14; index++) fs.appendFileSync(path, entry(`h${index}`, index ? `h${index - 1}` : "a19"));
     fs.appendFileSync(path, entry("k", "h0") + JSON.stringify({ type: "model_change", id: "chosen", parentId: "k", modelId: "chosen-model" }) + "\n");
     const after = await conversation.readCommandTranscript("leaf-cut-fork");
-    // control: a19 is cut away with the window's start and h0 heads it
     expect(after?.records.map(({ entry }) => entry.id)).toEqual(["h0", "k", "chosen"]);
     expect(after?.identity).not.toBe(before?.identity);
   } finally {
@@ -381,7 +368,7 @@ it("keeps a pi branch when an append cuts its last entry out of the window", asy
     expect(before?.records.at(-1)?.entry.id).toBe("a19");
     for (let index = 20; index < 35; index++) fs.appendFileSync(path, entry(index));
     const after = await conversation.readCommandTranscript("leaf-cut");
-    expect(after?.records[0]?.entry.id).toBe("a20"); // control: a19 is cut away with the window's start
+    expect(after?.records[0]?.entry.id).toBe("a20");
     expect(after?.identity).toBe(before?.identity);
   } finally {
     binding.mockRestore();

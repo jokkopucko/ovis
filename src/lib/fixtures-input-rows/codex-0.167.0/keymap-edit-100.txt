@@ -1,0 +1,31 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+
+
+
+  Edit Shortcut
+  Cancel · List
+  Current esc · Default keymap
+  Config `tui.keymap.list.cancel`
+  Cancel and close selection views.
+
+
+› 1. Replace binding                   Capture a replacement key for `esc`
+  2. Add alternate binding             Keep `esc` and add another key
+  3. Use leader...                     Capture the key that follows the configured leader
+  4. Replace with key chord            Replace `esc` with a two-stroke key chord
+  5. Add alternate key chord           Keep `esc` and add a two-stroke key chord
+  –  Remove custom binding (disabled)  No custom root override to remove
+  6. Back to shortcuts                 Return to the shortcut list
+
+  Changes write the root `tui.keymap.*` override.
+  enter select · esc back
+

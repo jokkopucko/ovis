@@ -1,14 +1,9 @@
-/* dictation (VoiceInput.tsx): the mic button and the pill shown above the input while it
-   listens. Accent only: red would read as an error. The level meters are painted by
-   useVoiceInput per frame, so only transform/opacity move and nothing here transitions them */
-
 .voice-mic-wrap {
   position: relative;
   display: inline-grid;
   flex: none;
 }
 
-/* breathes with the voice level behind the filled button while it listens */
 .voice-mic-ring {
   position: absolute;
   inset: 0;
@@ -78,8 +73,6 @@
   }
 }
 
-/* always mounted: a transition (not keyframes) so a cancel mid-entrance reverses smoothly;
-   visibility waits for the exit to finish */
 .voice-pill {
   position: absolute;
   bottom: calc(100% + var(--space-2));
@@ -149,9 +142,6 @@
   height: var(--icon-size);
 }
 
-/* Cancel and Insert stay the pill's small circles and take a finger's --touch-target through an
-   invisible expander, a few pixels past the pill's edge; the dot, words and timer between them
-   take no taps */
 @media (pointer: coarse) {
   .voice-pill-button {
     position: relative;
@@ -203,7 +193,6 @@
   font-weight: 600;
 }
 
-/* the live transcript, one line */
 .voice-pill-partial {
   flex: 0 1 auto;
   min-width: 0;
@@ -235,13 +224,11 @@
   will-change: transform;
 }
 
-/* listening is over: the waveform folds into its centre while the dot pulses */
 .voice-pill[data-state="transcribing"] .voice-bars {
   opacity: 0;
   transform: scaleX(0);
 }
 
-/* reduced motion's stand-in for the bars: one level bar, repainted a few times a second */
 .voice-meter {
   display: none;
   flex: none;

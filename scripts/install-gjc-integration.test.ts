@@ -14,7 +14,6 @@ function agentDir(): string {
 }
 
 it("rejects the unsupported agent directory CLI flag", async () => {
-  // Given an alternate directory that the extension would never publish under.
   const root = agentDir();
 
   // When the installer CLI receives the removed flag.
@@ -23,7 +22,6 @@ it("rejects the unsupported agent directory CLI flag", async () => {
     stdout: "ignore", stderr: "ignore", env: { ...process.env, HOME: root, USERPROFILE: root },
   });
 
-  // Then it fails before installing anything.
   expect(await command.exited).toBe(1);
   expect(existsSync(join(root, "extensions"))).toBe(false);
   expect(existsSync(join(root, ".gjc"))).toBe(false);
@@ -97,30 +95,24 @@ it("bundles the extension's internal modules into the installed standalone JavaS
 });
 
 it("preserves the Bun pragma when replacing an extension with a second-line ownership banner", async () => {
-  // Given an installation with the banner directly after the pragma.
   const root = agentDir();
   mkdirSync(join(root, "extensions"));
   const target = join(root, "extensions", "herdr-web-ui.js");
   writeFileSync(target, `// @bun\r\n${GJC_INTEGRATION_OWNERSHIP_BANNER}\nold\n`);
 
-  // When it is replaced with another Bun bundle.
   await installGjcIntegration({ agentDir: root, build: async () => "// @bun\nexport default 1;" });
 
-  // Then Bun still sees its pragma first.
   expect(readFileSync(target, "utf8")).toBe(`// @bun\n${GJC_INTEGRATION_OWNERSHIP_BANNER}\nexport default 1;\n`);
 });
 
 it("removes an extension with ownership directly after the Bun pragma", async () => {
-  // Given an installation with the new banner position.
   const root = agentDir();
   mkdirSync(join(root, "extensions"));
   const target = join(root, "extensions", "herdr-web-ui.js");
   writeFileSync(target, `// @bun\n${GJC_INTEGRATION_OWNERSHIP_BANNER}\ninstalled\n`);
 
-  // When it is removed.
   const result = await installGjcIntegration({ agentDir: root, remove: true });
 
-  // Then the installer accepts ownership.
   expect(result).toEqual({ action: "removed", path: target });
 });
 

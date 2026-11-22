@@ -1,19 +1,11 @@
 /**
- * `bun run build`: the client build (`vite build` into dist/), reused from a cache the self-hosted
- * runner's jobs share when OVIS_BUILD_CACHE_DIR names one (scripts/self-hosted-runner/run.sh
- * --build-cache). Fast checks, Integration and both browser jobs build the same commit; with the
- * cache only the first pays for it. Without the variable this is `vite build`, nothing else.
- *
- * An entry is named after everything the build reads: the commit (every tracked file, bun.lock and
- * the patches included; the client also embeds its hash), Bun's version, the platform, the build's
- * arguments, the variables Vite or vite.config.ts read, and any .env file. A checkout with changes
- * git has not committed, or with ignored files where Vite reads, never reads or writes the cache.
- * node_modules is what `bun install --frozen-lockfile` makes of bun.lock.
- *
  * On the runner the cache is read-only: a build goes to OVIS_BUILD_CACHE_OUTBOX, and the launcher
  * moves it in only for a trusted run (build-cache-promote.sh), writing the manifest of every file's
- * sha256 that a restore checks. Without an outbox (a cache of one's own) the build is stored
- * directly. Any cache failure builds.
+ * sha256 that a restore checks. An entry there belongs to the run that built it: the launcher files
+ * it under the run GitHub confirmed, `<run id>/<key>`, and a job reads only under its own
+ * GITHUB_RUN_ID. The key is only the job's word for what it built, so no build one run hands in may
+ * reach another's jobs: a pull request's under the key of a commit of main, say. Without an outbox
+ * (a cache of one's own) the build is stored directly, by its key alone. Any cache failure builds.
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -35,7 +27,6 @@ const git = (root: string, args: string[]): string | null => {
 const buildVariable = (name: string): boolean => name.startsWith("VITE_") || name === "NODE_ENV" || name === "HERDR_TEST_HOOKS";
 
 export function cacheKey(root: string, env: Record<string, string | undefined>, args: readonly string[]): Key {
-  // pull requests and main's pushes; a tag's release validation and manual runs always build
   if (env["GITHUB_ACTIONS"] === "true" && env["GITHUB_EVENT_NAME"] !== "pull_request" && !(env["GITHUB_EVENT_NAME"] === "push" && env["GITHUB_REF"] === "refs/heads/main")) {
     return { bypass: "only pull request runs and pushes to main use it" };
   }
@@ -72,7 +63,6 @@ export function cacheKey(root: string, env: Record<string, string | undefined>, 
   return { key: hash.digest("hex") };
 }
 
-/** Every file under `dir` by its path from there (`./a/b`), with its sha256; throws on anything but files and directories. */
 function hashes(dir: string, at = "."): Map<string, string> {
   const found = new Map<string, string>();
   for (const name of readdirSync(join(dir, at))) {
@@ -97,6 +87,16 @@ function parseManifest(text: string): Map<string, string> {
     sums.set(match[2]!, match[1]!);
   }
   return sums;
+}
+
+/**
+ * Where a job's entries are: with an outbox (the runner's cache) its own run's directory, the only
+ * one the launcher fills with that run's builds; without one, the cache itself. Null on the runner
+ * when `run` is no run id the launcher would name a directory after.
+ */
+export function entriesOf(cacheDir: string, outbox: string | undefined, run: string | undefined): string | null {
+  if (!outbox) return cacheDir;
+  return run !== undefined && /^[0-9]{1,20}$/.test(run) ? join(cacheDir, run) : null;
 }
 
 /**
@@ -129,7 +129,7 @@ export function restore(cacheDir: string, key: string, dist: string, outbox?: st
   try {
     if (outbox) writeFileSync(join(outbox, `used-${key}`), "");
     else utimesSync(entry, now, now);
-  } catch { /* evicted or unwritable: the use goes unrecorded */ }
+  } catch {}
   return true;
 }
 
@@ -138,7 +138,6 @@ const treeBytes = (dir: string): number => readdirSync(dir).reduce((total, name)
   return total + (stat.isDirectory() ? treeBytes(join(dir, name)) : stat.size);
 }, 0);
 
-/** Copies `dist` in as the entry for `key`, with its manifest (unless another job has written it first), then evicts. */
 export function store(cacheDir: string, key: string, dist: string, maxBytes: number): void {
   mkdirSync(cacheDir, { recursive: true });
   const entry = join(cacheDir, key);
@@ -151,7 +150,6 @@ export function store(cacheDir: string, key: string, dist: string, maxBytes: num
       writeFileSync(join(staging, MANIFEST), manifestOf(hashes(staging)));
       renameSync(staging, entry);
     } catch {
-      // another job renamed the same entry into place first, or the cache is full: theirs stands
       rmSync(staging, { recursive: true, force: true });
     }
   }
@@ -172,7 +170,6 @@ export function deliver(outbox: string, key: string, dist: string, run: string, 
   renameSync(join(outbox, `.${key}.claim-${process.pid}`), join(outbox, `${key}.claim`));
 }
 
-/** Removes the least recently used entries until the rest fit in `maxBytes`, and staging left by a crash. */
 export function evict(cacheDir: string, maxBytes: number): void {
   const entries: { path: string; used: number; size: number }[] = [];
   for (const name of readdirSync(cacheDir)) {
@@ -185,7 +182,7 @@ export function evict(cacheDir: string, maxBytes: number): void {
       }
       if (!existsSync(join(path, MANIFEST))) continue;
       entries.push({ path, used: stat.mtimeMs, size: treeBytes(path) });
-    } catch { /* removed by another job meanwhile */ }
+    } catch {}
   }
   entries.sort((a, b) => b.used - a.used);
   let total = 0;
@@ -195,19 +192,10 @@ export function evict(cacheDir: string, maxBytes: number): void {
   }
 }
 
-/**
- * Takes the build of `key` for this job (a directory made atomically), so the jobs of one commit that
- * start together do not all build it. A lock older than `staleMs` was left by a job that died: taken over.
- */
 /** Longer than a build under load takes, shorter than a waiter's default wait (300 s); the holder refreshes it. */
 export const STALE_LOCK_MS = 240_000;
 const OWNER = "owner";
 
-/**
- * Takes the build of `key` for this job (a directory made atomically, holding a token of its own), so
- * the jobs of one commit that start together do not all build it. A lock not refreshed for `staleMs`
- * was left by a job that died: taken over. Returns the token, or null when another job holds it.
- */
 export function takeLock(lockDir: string, key: string, staleMs = STALE_LOCK_MS): string | null {
   const lock = join(lockDir, `.lock-${key}`);
   const token = `${process.pid}-${crypto.randomUUID()}`;
@@ -217,12 +205,11 @@ export function takeLock(lockDir: string, key: string, staleMs = STALE_LOCK_MS):
       writeFileSync(join(lock, OWNER), token);
       return token;
     } catch (error) {
-      // a full or broken lock directory is no lock another job holds: build without waiting
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
         if (Date.now() - statSync(lock).mtimeMs <= staleMs) return null;
         rmSync(lock, { recursive: true, force: true });
-      } catch { /* released meanwhile: try again */ }
+      } catch {}
     }
   }
   return null;
@@ -232,27 +219,30 @@ const holds = (lockDir: string, key: string, token: string): boolean => {
   try { return readFileSync(join(lockDir, `.lock-${key}`, OWNER), "utf8") === token; } catch { return false; }
 };
 
-/** Keeps the lock this job holds from going stale while it builds and hands the build over. */
 export function refreshLock(lockDir: string, key: string, token: string): void {
   const now = new Date();
-  try { if (holds(lockDir, key, token)) utimesSync(join(lockDir, `.lock-${key}`), now, now); } catch { /* gone: nothing to refresh */ }
+  try { if (holds(lockDir, key, token)) utimesSync(join(lockDir, `.lock-${key}`), now, now); } catch {}
 }
 
-/** Removes the lock if this job still holds it, never one another job took over. Never fails the build. */
 export function releaseLock(lockDir: string, key: string, token: string): void {
   try { if (holds(lockDir, key, token)) rmSync(join(lockDir, `.lock-${key}`), { recursive: true, force: true }); } catch (error) {
     console.log(`build cache: could not release the lock of ${key.slice(0, 12)} (${(error as Error).message})`);
   }
 }
 
-/**
- * Waits until the entry for `key` is in the cache, or `ms` pass, or: with `lock`, that lock is gone or
- * stale; with `verdict`, the launcher has made that directory, once it took the build in or refused it.
- */
 export async function awaitBuild(cacheDir: string, key: string, ms: number, until: { lock?: string; verdict?: string; staleMs?: number }): Promise<void> {
   const { lock, verdict, staleMs = STALE_LOCK_MS } = until;
-  // a lock left by a job that was killed goes stale long before the wait ends: takeLock takes it over
-  const unlocked = (): boolean => { try { return Date.now() - statSync(lock!).mtimeMs > staleMs; } catch { return true; } };
+  const holder = (): string | null => { try { return readFileSync(join(lock!, OWNER), "utf8") || null; } catch { return null; } };
+  // The job whose build this waits for. Once another job holds the lock, that one let go with no
+  // entry (its build was not taken in), and the next one's would end the same way: each job waiting
+  // for the one before would build one after another, where building together takes one build's time.
+  let awaited = lock === undefined ? null : holder();
+  const unlocked = (): boolean => {
+    try { if (Date.now() - statSync(lock!).mtimeMs > staleMs) return true; } catch { return true; }
+    const now = holder();
+    awaited ??= now;
+    return now !== null && now !== awaited;
+  };
   const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || (lock !== undefined && unlocked()) || (verdict !== undefined && existsSync(verdict));
   const deadline = Date.now() + ms;
   while (!settled() && Date.now() < deadline) await Bun.sleep(200);
@@ -290,6 +280,12 @@ if (import.meta.main) {
   const cacheDir = process.env["OVIS_BUILD_CACHE_DIR"];
   if (!cacheDir) process.exit(viteBuild(args));
   const outbox = process.env["OVIS_BUILD_CACHE_OUTBOX"];
+  const run = process.env["GITHUB_RUN_ID"] ?? "";
+  const entries = entriesOf(cacheDir, outbox, run);
+  if (entries === null) {
+    console.log("build cache: not used (on the runner an entry is read under its run, and GITHUB_RUN_ID names none)");
+    process.exit(viteBuild(args));
+  }
   const lockDir = process.env["OVIS_BUILD_CACHE_LOCKS"] ?? cacheDir;
   const root = process.cwd();
   const dist = join(root, "dist");
@@ -297,16 +293,16 @@ if (import.meta.main) {
   const keyNow = (): Key => {
     try { return cacheKey(root, process.env, args); } catch (error) { return { bypass: `no key (${(error as Error).message})` }; }
   };
-  // only the build into dist/: another outDir or mode is built as asked
   const key: Key = args.length === 0 ? keyNow() : { bypass: "build arguments given" };
   if ("bypass" in key) {
     console.log(`build cache: not used (${key.bypass})`);
     process.exit(viteBuild(args));
   }
   const name = key.key.slice(0, 12);
+  const lock = outbox ? `${key.key}-${run}` : key.key;
   const restored = (): boolean => {
     try {
-      if (!restore(cacheDir, key.key, dist, outbox)) return false;
+      if (!restore(entries, key.key, dist, outbox)) return false;
       console.log(`build cache: hit ${name}, dist/ restored without building`);
       return true;
     } catch (error) {
@@ -316,39 +312,43 @@ if (import.meta.main) {
   };
   if (restored()) process.exit(0);
   if (!mayWrite(process.env, process.env["OVIS_BUILD_CACHE_WRITER"])) {
-    // nothing this run builds is taken in, so none of its jobs waits for another's
     console.log(`build cache: miss ${name}; building (this run does not write the cache)`);
     process.exit(viteBuild(args));
   }
   let owner: string | null = null;
   try {
     mkdirSync(lockDir, { recursive: true });
-    owner = takeLock(lockDir, key.key);
+    owner = takeLock(lockDir, lock);
     if (!owner) {
-      // another job of this commit is building it: a wait costs no CPU, a second build does
       console.log(`build cache: another job is building ${name}; waiting for it`);
-      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000, { lock: join(lockDir, `.lock-${key.key}`) });
+      await awaitBuild(entries, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000, { lock: join(lockDir, `.lock-${lock}`) });
       if (restored()) process.exit(0);
-      owner = takeLock(lockDir, key.key);
+      owner = takeLock(lockDir, lock);
     }
   } catch (error) {
     console.log(`build cache: could not lock ${name} (${(error as Error).message})`);
   }
+  // the job that held the lock can store its build and let go between this job's first look and its
+  // taking the lock: look again under the lock, or this job builds the same commit a second time
+  if (owner && restored()) {
+    releaseLock(lockDir, lock, owner);
+    process.exit(0);
+  }
   console.log(`build cache: miss ${name}; building`);
-  const heartbeat = owner ? setInterval(() => refreshLock(lockDir, key.key, owner!), 30_000) : undefined;
+  const heartbeat = owner ? setInterval(() => refreshLock(lockDir, lock, owner!), 30_000) : undefined;
   const code = await viteBuildAsync(args);
   // the checkout changed while Vite read it: this dist/ may not be the key's
   const after = code === 0 ? keyNow() : key;
   if (code === 0 && (!("key" in after) || after.key !== key.key)) console.log("build cache: the checkout changed during the build; not stored");
   else if (code === 0 && outbox) {
-    const run = process.env["GITHUB_RUN_ID"] ?? "";
     const attempt = process.env["GITHUB_RUN_ATTEMPT"] ?? "";
     try {
-      if (!/^\d+$/.test(run) || !/^\d+$/.test(attempt)) throw new Error("no GitHub run to name");
+      if (!/^\d+$/.test(attempt)) throw new Error("no attempt of the run to name");
       deliver(outbox, key.key, dist, run, attempt);
-      // the jobs waiting on the lock restore once the launcher has taken it in; its verdict says it decided
-      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_PROMOTE_SECONDS"] ?? "60") * 1000, { verdict: join(outbox, `judged-${key.key}`) });
-      console.log(existsSync(join(cacheDir, key.key, MANIFEST)) ? `build cache: stored ${name}` : `build cache: ${name} was not taken in (only trusted runs write the cache)`);
+      await awaitBuild(entries, key.key, Number(process.env["OVIS_BUILD_CACHE_PROMOTE_SECONDS"] ?? "60") * 1000, { verdict: join(outbox, `judged-${key.key}`) });
+      if (existsSync(join(entries, key.key, MANIFEST))) console.log(`build cache: stored ${name}`);
+      else if (existsSync(join(cacheDir, key.key, MANIFEST))) console.log(`build cache: ${name} was not filed under this run but by its key alone, as a launcher from before entries were kept per run does (scripts/self-hosted-runner/README.md, Build cache)`);
+      else console.log(`build cache: ${name} was not taken in (only trusted runs write the cache)`);
     } catch (error) {
       console.log(`build cache: could not hand ${name} over (${(error as Error).message})`);
     }
@@ -356,6 +356,6 @@ if (import.meta.main) {
     try { store(cacheDir, key.key, dist, maxBytes); } catch (error) { console.log(`build cache: could not store (${(error as Error).message})`); }
   }
   clearInterval(heartbeat);
-  if (owner) releaseLock(lockDir, key.key, owner);
+  if (owner) releaseLock(lockDir, lock, owner);
   process.exit(code);
 }

@@ -5,6 +5,9 @@ on:
       - 'server/**'
       - 'shared/**'
       - 'scripts/build-remote-bundle.ts'
+      - 'scripts/server-artifact.ts'
+      - 'scripts/install-*-integration.ts'
+      - 'integrations/**'
       - 'scripts/remote-bundle-smoke.ts'
       - 'scripts/pty-sidecar.ts'
       - 'crates/pty-sidecar/**'
@@ -12,6 +15,7 @@ on:
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/remote-bundles.yml'
+      - '.github/actions/setup-ci/**'
   workflow_dispatch:
   push:
     tags: ['remote-v*']
@@ -31,20 +35,18 @@ jobs:
           - { os: ubuntu-24.04-arm, pty: linux-arm64 }
           - { os: macos-15, pty: darwin-universal }
           - { os: macos-15-intel, pty: darwin-universal }
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJSON(matrix.os == 'macos-15' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_LABELS || toJSON(matrix.os)) }}
     env:
-      # the Rust PTY host each bundle carries beside its Node sidecar (scripts/pty-sidecar.ts)
       HERDR_BUNDLE_PTY_SIDECAR: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-${{ matrix.pty }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: ./.github/actions/setup-ci
         with:
-          bun-version: 1.4.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
+          bun-version: 1.4.4
+          node: 'true'
+          cache: none
       - run: bun install --frozen-lockfile
       - run: bun run typecheck && bun run build
       - run: bun scripts/pty-sidecar.ts build ${{ matrix.pty }} pty-sidecar
@@ -54,19 +56,18 @@ jobs:
         with:
           name: remote-${{ matrix.os }}
           path: remote-bundles/*
-  # Windows bundles are Bun alone, assembled on Linux from the pinned release; the smoke job
-  # below runs the result on a real Windows runner against herdr's own installer
   bundle-windows:
     timeout-minutes: 20
-    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    # release publishes its bundle: GitHub-hosted whatever the runner variables say, and no shared cache (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - run: bun install --frozen-lockfile
       - run: bun run typecheck && bun run build
       - run: bun run scripts/build-remote-bundle.ts win32-x64
@@ -84,7 +85,8 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: remote-win32-x64
@@ -110,16 +112,30 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-      - run: sudo bash scripts/ci-bounded-retry.sh 300 bash -c 'apt-get update && apt-get install -y openssh-server' && sudo mkdir -p /run/sshd
+          package-manager-cache: false
+      # the self-hosted image already ships sshd (and has no sudo); a hosted runner installs it
+      - name: OpenSSH server
+        run: |
+          if [ -x /usr/sbin/sshd ] && [ -d /run/sshd ]; then
+            echo "sshd is already installed"
+          else
+            sudo bash scripts/ci-bounded-retry.sh 300 bash -c 'apt-get update && apt-get install -y openssh-server' && sudo mkdir -p /run/sshd
+          fi
       - run: bun install --frozen-lockfile && bun run build && bun run scripts/build-remote-bundle.ts
-      - run: bun run scripts/ssh-integration.ts
-        env:
-          SSH_TEST_PASSWORD: 1
-      - run: bun run scripts/ssh-password-docker.ts
+      # password mode creates an account and starts sshd as root; without sudo (the self-hosted image) the
+      # key-only flow runs, with sshd as the runner user on a port of its own
+      - name: SSH integration
+        run: |
+          if sudo -n true 2>/dev/null; then export SSH_TEST_PASSWORD=1; fi
+          bun run scripts/ssh-integration.ts
+      - name: SSH password in a disposable container
+        run: |
+          if docker info >/dev/null 2>&1; then bun run scripts/ssh-password-docker.ts; else echo "::notice::no Docker here, password flow skipped"; fi
   release:
     if: startsWith(github.ref, 'refs/tags/remote-v')
     needs: [bundle, smoke-windows, ssh]

@@ -28,18 +28,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * file route), and the picture lands in Downloads, as a download in Chrome does. Android 8 and 9
  * write to Downloads only with the storage permission, which the app does not ask for: there the
  * picture goes to the share sheet. Only the PC's own page has the bridge; still, one save runs at a
- * time and SavedImage caps their size and number, so no page can fill the phone's storage.
+ * time and SavedImage caps their size and number for each instance of this plugin (up to 500 MiB),
+ * so a page cannot write without limit. It is a budget, not a guarantee: a phone with less free
+ * space can still fill, and a new instance (the activity restarted) starts a new budget.
  */
 @CapacitorPlugin(name = "OvisSave")
 public class SaveImagePlugin extends Plugin {
-    /** How long a shared picture stays for the app it went to, which may read it late. */
     private static final long SHARE_KEPT_MS = 60 * 60 * 1000;
 
     private final AtomicBoolean saving = new AtomicBoolean();
 
     private final SavedImage.Budget budget = new SavedImage.Budget();
 
-    /** name, type (image/*) and data (base64). Resolves `saved`: "downloads", or "shared" for the share sheet. */
     @PluginMethod
     public void saveImage(PluginCall call) {
         String type = call.getString("type");
@@ -107,9 +107,9 @@ public class SaveImagePlugin extends Plugin {
     }
 
     /**
-     * Each picture in a folder of its own under cache/saved (res/xml/file_paths.xml shares that
-     * folder and nothing else), so the address an app was granted never shows another picture; one
-     * shared over an hour ago is removed.
+     * Each picture in a folder of its own under cache/saved (of the cache, res/xml/file_paths.xml
+     * shares only that folder), so the address an app was granted never shows another picture; the
+     * next share tries to remove those shared over an hour ago.
      */
     private void toShareSheet(PluginCall call, String name, String type, byte[] bytes) throws IOException {
         File root = new File(getContext().getCacheDir(), "saved");

@@ -3,16 +3,13 @@ export type ActiveTrigger = {
   /** `$`: a skill token (`$name` for Codex, `$skill:name` for omo); absent for `/` */
   prefix?: "$";
   query: string;
-  /** Inclusive index of the trigger character. */
   start: number;
-  /** Exclusive end of the token being completed. */
   end: number;
 };
 
 const SLASH_QUERY = /^[\p{L}\p{N}_-]*$/u;
 const FILE_QUERY = /^\S+$/u;
 
-// A skill token stops at the first character a skill name cannot hold, so `/del,` keeps its comma.
 function tokenEnd(text: string, from: number, part: RegExp = /\S/u): number {
   let end = from;
   while (end < text.length && part.test(text[end] ?? "")) end += 1;
@@ -21,8 +18,7 @@ function tokenEnd(text: string, from: number, part: RegExp = /\S/u): number {
 const SKILL_CHAR = /[\p{L}\p{N}_-]/u;
 
 /**
- * Finds the completion token at the caret. `/` begins a word; the caller limits later tokens
- * to skills its agent honours there. With `skills`, `$skill` also completes (Codex's syntax).
+ * With `skills`, `$skill` also completes (Codex's syntax).
  * With `atSkills` the pane's `@` skills (OpenCode v2) are listed with the files, so a bare `@`
  * opens the menu too; otherwise a file needs at least one query character.
  */
@@ -51,15 +47,11 @@ export function activeTrigger(text: string, caret: number, options: { skills?: b
   if (at < lineStart) return null;
   const query = text.slice(at + 1, caret);
   if (query.length === 0) {
-    // a mention starts a word: an address keeps its @
     if (!options.atSkills || !(at === 0 || /\s/u.test(text[at - 1] ?? ""))) return null;
   } else if (!FILE_QUERY.test(query)) return null;
   return { kind: "file", query, start: at, end: tokenEnd(text, caret) };
 }
 
-/** Replaces exactly the active token and returns the caret position after the inserted completion.
- * A completion's trailing space reuses the space already after the token instead of doubling it,
- * and gives way to punctuation that follows it, leaving the caret before that punctuation. */
 export function applyCompletion(
   text: string,
   trigger: ActiveTrigger,

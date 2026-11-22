@@ -5,7 +5,6 @@ import { sshCandidates } from "./ssh-candidates.ts";
 import { wildcardIncludesRead } from "./ssh-include.ts";
 import { resolver, sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 
-/** `tailscale status --json` with this PC as user 1 and the named peers online, of the same login */
 const status = (peers: string[]): string => JSON.stringify({
   BackendState: "Running",
   Self: { DNSName: "self.tail.ts.net.", UserID: 1 },
@@ -99,7 +98,6 @@ it("keeps a row for the first 32 Tailscale PCs only, as the tailnet list asks no
 
 it("keeps the Tailscale row of a PC whose many config hosts a skipped Include leaves undetermined", async () => {
   const boxes = Array.from({ length: 200 }, (_, index) => `Host box${index}\n  HostName 100.64.0.1`);
-  // every option that routes `lab` is set before the skipped Include, so it still claims `other`
   const lab = ["Host lab", "  HostName 100.64.0.2", "  AddressFamily inet", "  ProxyCommand none", "  ProxyJump none", "  CanonicalizeHostname no"];
   const dir = sshDir({ config: [...lab, "Host *", "  Include %d/hosts", ...boxes].join("\n") });
   const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers, resolve: async () => [] });
@@ -120,7 +118,6 @@ it("adds the Tailscale PCs no config host already names, and names the Tailscale
 });
 
 it("takes a config host's HostName over its alias: a stale alias naming one Tailscale PC while it reaches another claims the one it reaches", async () => {
-  // the owner's Windows PC: `home-server` kept from before a rename, its HostName now old-desktop's Tailscale address
   const dir = sshDir({ config: "Host home-server\n  HostName 100.123.228.51\n" });
   const tailnet = JSON.stringify({
     BackendState: "Running",

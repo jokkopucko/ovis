@@ -5,7 +5,6 @@ import type { Machine } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { isBackgroundRole, PANE_TOKEN_NAME, paneTokenRuleMatches, paneTokenSpecs, type AgentRowTokens, type PaneTokenRule, type PaneTokenSpec, ROLE_TOKEN } from "../shared/pane-tokens.ts";
 
-/** how often a watched config.toml is looked at again while a browser listens */
 const POLL_MS = 5_000;
 /** A config is a short TOML document, not an unbounded log. */
 const MAX_CONFIG_BYTES = 1024 * 1024;
@@ -96,9 +95,7 @@ function tokenRule(value: unknown): PaneTokenRule | null {
 }
 
 /**
- * The `$name` tokens of one layout's rows, in order, a token named twice kept twice: herdr tests each
- * place's rules on its own, so one hidden at its first place may still show at a later one
- * (paneTokenValues draws it once, at the first place that shows it). Null when it is not a list of rows.
+ * herdr tests each place's rules on its own, so a token hidden at its first place may still show at a later one.
  */
 function tokenSpecs(rows: unknown): PaneTokenSpec[] | null {
   if (!Array.isArray(rows) || !rows.every(Array.isArray)) return null;
@@ -111,7 +108,6 @@ function tokenSpecs(rows: unknown): PaneTokenSpec[] | null {
       const name = token.slice(1);
       if (!PANE_TOKEN_NAME.test(name)) continue;
       const rules = Array.isArray(style?.["rules"]) ? (style["rules"] as unknown[]).flatMap((rule) => tokenRule(rule) ?? []) : [];
-      // only a rule that hides decides anything here: the web UI does not draw herdr's styles
       specs.push(rules.some((rule) => rule.hide) ? { name, rules } : { name });
     }
   }
@@ -139,7 +135,6 @@ export function agentRowTokens(config: unknown): AgentRowTokens | null {
 
 const nonblank = (value: string | null | undefined): string | null => value?.trim() || null;
 
-/** Whether every place `specs` name `name` hides `value`: the agent row then never draws it. */
 function hiddenEverywhere(specs: PaneTokenSpec[], name: string, value: unknown): boolean {
   if (typeof value !== "string" || !value.trim()) return false;
   const places = specs.filter((spec) => spec.name === name);
@@ -191,10 +186,6 @@ export function snapshotWithoutHiddenTokens<S extends Pick<SessionSnapshot, "pan
   return changed ? { ...snapshot, panes, agents } : snapshot;
 }
 
-/**
- * The token values the PCs' panes and agents report in `machines`, by token name, read now: the
- * manager's machines are changed in place, so a roster kept for later is kept as this.
- */
 export function reportedTokenValues(machines: readonly Machine[]): Map<string, Set<string>> {
   const reported = new Map<string, Set<string>>();
   for (const { snapshot } of machines) {
@@ -233,10 +224,8 @@ export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: Rea
 /**
  * herdr's sidebar rows for agents, read from its config.toml, and read again when the file
  * changes while a browser listens (herdr's own sidebar reads them at start and on reload-config).
- * A config that is missing or does not parse names no token: the rows draw every one.
  */
 export class HerdrSidebarConfig {
-  /** the file's mtime and size when last read; null when it was missing, undefined before the first look */
   private stamp: string | null | undefined;
   private layout: AgentRowTokens | null = null;
   private readonly listeners = new Set<(layout: AgentRowTokens | null) => void>();
@@ -249,7 +238,6 @@ export class HerdrSidebarConfig {
     return this.layout;
   }
 
-  /** Told each time what the rows draw changes; the file is looked at only while someone listens. */
   subscribe(listener: (layout: AgentRowTokens | null) => void): () => void {
     this.listeners.add(listener);
     if (this.timer === null) {
@@ -264,13 +252,11 @@ export class HerdrSidebarConfig {
     };
   }
 
-  /** A change found by any read is told to everyone listening: a browser that connects must not take it from the others. */
   private refresh(): void {
     if (!this.read()) return;
     for (const told of [...this.listeners]) told(this.layout);
   }
 
-  /** Reads the file again when it changed; true when what the rows draw changed with it. */
   private read(): boolean {
     let stamp: string | null;
     try {

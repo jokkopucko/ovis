@@ -1,0 +1,15 @@
+  Worked for <1s • 5:39 AM
+
+• Model changed to gpt-6.1-sol ultra for
+this session only
+
+  Keyboard shortcuts
+
+  Compose
+  … resize to see all
+  /keymap customize
+
+» Ask Codex to do anything
+
+  GPT-6.1-Sol ultra · /home/tester0/.ca…
+  ? / esc close

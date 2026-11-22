@@ -6,12 +6,6 @@ import { createServer } from "./index.ts";
 import { herdrRpc } from "./herdr/client.ts";
 import { startFakePushService } from "./push.fake.ts";
 
-/**
- * Answers to Claude's unnumbered menus (the folder-trust check among them), against the real
- * herdr server. Each pane runs a small menu under the name `claude`, reported as that agent:
- * ↑/↓ move its `❯` and Enter logs the row it lands on, so the test sees which row an answer
- * from the chat really picked.
- */
 const root = mkdtempSync(join(tmpdir(), "ovis-prompt-"));
 let server: { port: number; stop: () => void };
 const workspaces: string[] = [];
@@ -38,11 +32,6 @@ draw();
 writeFileSync(out, "");
 `;
 
-/**
- * A numbered menu under the line an agent keeps showing while it waits: the spinner, the time and
- * the token count move on five times a second. No reader knows the screen, so the card is the
- * fallback one, whose id covers the whole screen. The row's number is its key.
- */
 const TICKING = `
 const { appendFileSync, writeFileSync } = require("node:fs");
 const [out] = process.argv.slice(2);
@@ -115,7 +104,6 @@ async function menu(label: string, head: string[], rows: string[], drift = false
 const base = () => `http://localhost:${server.port}`;
 const chosen = (target: Menu) => readFileSync(target.log, "utf8").split("\n").filter(Boolean);
 
-/** the rows confirmed so far, once there is one: the menu logs it after the answer's 200 */
 async function confirmed(target: Menu): Promise<string[]> {
   for (let i = 0; i < 40 && chosen(target).length === 0; i++) await Bun.sleep(50);
   return chosen(target);
@@ -145,7 +133,6 @@ beforeAll(async () => {
   copyFileSync(process.execPath, join(root, "claude"));
   chmodSync(join(root, "claude"), 0o755);
   trust = await menu("trust", [" Accessing workspace:", "", " Quick safety check: Is this a project you created or one you trust?"], ["No, exit", "Yes, I trust this folder"]);
-  // the first row reaches past the rule, the only line off the rows, so the second reads as its wrapped tail
   guessed = await menu("guessed", ["─".repeat(35), " Trust?"], ["Yes, trust and enable all hooks", "Yes, trust this folder", "No, exit"]);
   drifting = await menu("drifting", [" Accessing workspace:", "", " Quick safety check: Is this a project you created or one you trust?"], ["No, exit", "Yes, I trust this folder", "Yes, and enable its hooks"], true);
   ticking = await menu("ticking", [], [], false, "tick.js");
@@ -169,7 +156,6 @@ describe("answers to Claude's unnumbered menus", () => {
 
   it("confirms nothing when the cursor lands on a row the card does not show", async () => {
     const prompt = await card(guessed);
-    // two rows merged into one: the card's second option is the menu's third row
     expect(prompt.options).toHaveLength(2);
     const response = await answer(guessed, prompt.id, 1);
     expect(response.status).toBe(409);
@@ -189,11 +175,9 @@ describe("answers to Claude's unnumbered menus", () => {
     const prompt = await card(twin);
     expect((await answer(twin, prompt.id, 0)).status).toBe(200);
     expect(await confirmed(twin)).toEqual(["Yes, run it"]);
-    // the menu is drawn again as it was: the same question, asked a second time
     const again = await card(twin);
     expect(again.options).toEqual(prompt.options);
     expect(again.id).not.toBe(prompt.id);
-    // the first asking's card, still open on another device
     expect((await answer(twin, prompt.id, 0)).status).toBe(409);
     await Bun.sleep(300);
     expect(chosen(twin)).toEqual(["Yes, run it"]);
@@ -203,11 +187,9 @@ describe("answers to Claude's unnumbered menus", () => {
     const prompt = await card(ticking);
     expect(prompt.fallback).toBe(true);
     expect(prompt.options.map((option) => option.label)).toEqual(["Staging", "Production", "Enter", "Esc"]);
-    // the working line has moved on several times: another time, spinner and token count
     let later = prompt;
     for (let i = 0; i < 40 && later.body === prompt.body; i++) { await Bun.sleep(100); later = await card(ticking); }
     expect(later.body).not.toBe(prompt.body);
-    // and it is still the card that was read: the answer tapped on it goes through
     expect(later.id).toBe(prompt.id);
     const response = await answer(ticking, prompt.id, 1);
     expect(response.status).toBe(200);
@@ -217,7 +199,6 @@ describe("answers to Claude's unnumbered menus", () => {
 
 describe("answer buttons on a question's alert (#2916)", () => {
   it("carries the card's id and options, and its button's answer goes through as the card's would", async () => {
-    // a server of its own, whose alerts go out at once to a fake device
     const device = await startFakePushService();
     const alerting = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "push-buttons"), machines: false, pushLoopbackHttp: true, alertTiming: { short: 0, long: 0, longTurn: 0 } });
     try {
@@ -227,11 +208,6 @@ describe("answer buttons on a question's alert (#2916)", () => {
       expect(subscribe.status).toBe(204);
       writeFileSync(join(root, "approval.js"), APPROVAL);
       const asked = await menu("push-buttons", [], ["Yes", "No"], false, "approval.js");
-      // the server may still be subscribing to the new pane: report it again until its alert arrives.
-      // At rest and blocked again, not working: an agent back at work ends the asking (prompt.ts
-      // promptWaitEnded), so an alert still on its way would carry the id of an asking gone by. At
-      // rest after blocked can read as a finish (completion.ts), whose alert this device has off and
-      // which carries no card: only the question's alert is the one looked for
       const question = (push: (typeof device.received)[number]) => push.payload.pane_id === asked.pane && push.payload.prompt_id !== undefined;
       const alert = () => device.received.find(question);
       for (let attempt = 0; attempt < 20 && !alert(); attempt++) {
@@ -247,7 +223,6 @@ describe("answer buttons on a question's alert (#2916)", () => {
       // what a tap allows is on the alert: the question and the command
       expect(payload.body).toContain("Do you want to proceed?");
       expect(payload.body).toContain("pwd");
-      // what the worker sends for the second button (public/sw.js answerFromAlert)
       const response = await fetch(`http://127.0.0.1:${alerting.port}/api/pane/prompt/answer`, {
         method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
         body: JSON.stringify({ pane_id: asked.pane, prompt_id: payload.prompt_id, option_index: payload.actions![1]!.option_index }),
@@ -400,7 +375,6 @@ describe("picks from Claude Code's model list", () => {
     );
     workspaces.push(created.workspace.workspace_id);
     const log = join(root, "claude-model.log");
-    // five rows of seven, the second in use: a window, as a pane shorter than the list gets
     await herdrRpc("pane.send_text", { pane_id: created.root_pane.pane_id, text: `exec '${join(root, "claude")}' '${join(root, "model.js")}' '${log}' '${JSON.stringify({ models: MODELS, current: 1, shown: 5 })}'\n` });
     for (let i = 0; i < 200 && !existsSync(log); i++) await Bun.sleep(50);
     expect(existsSync(log)).toBe(true);
@@ -415,7 +389,6 @@ describe("picks from Claude Code's model list", () => {
     // the window's last row, three below the cursor: ↓ ↓ ↓ and then s, never the Enter that saves a default
     expect((await answer(models, prompt.id, 4)).status).toBe(200);
     expect(await confirmed(models)).toEqual(["session: Haiku 4.5"]);
-    // Claude has closed its list: the card goes with it
     let after: unknown = prompt;
     for (let i = 0; i < 100 && after !== null; i++) {
       await Bun.sleep(50);
@@ -426,13 +399,6 @@ describe("picks from Claude Code's model list", () => {
   });
 });
 
-/**
- * The answers that had no second look before their Enter (a Codex menu, omp's permission), against
- * the real server. A pane draws screens the way those agents draw them and logs
- * every key it is sent: `{n}` in a line is row n's cursor. `swap`: on that key the next screen
- * takes the first one's place, as when the menu is answered in the terminal at that moment.
- * `hold`: after a key the screen is drawn again only once `<log>.go` exists.
- */
 const SCREENS = String.raw`
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const [out, specFile] = process.argv.slice(2);
@@ -483,7 +449,6 @@ async function send(target: Menu, promptId: string, choice: Record<string, unkno
   });
 }
 
-/** the keys the pane was sent, once nothing more arrives for a moment */
 async function keys(target: Menu): Promise<string[]> {
   let seen = chosen(target);
   for (let i = 0; i < 20; i++) {
@@ -525,7 +490,6 @@ describe("an answer whose menu changes under it", () => {
   it("moves to Deny on omp's permission and presses it", async () => {
     const prompt = await card(denied);
     expect(prompt.options.map((option) => option.label)).toEqual(["Approve", "Deny"]);
-    // the move draws the last row as the selected one, and the card must still be that menu's
     expect((await send(denied, prompt.id, { option_index: 1 })).status).toBe(200);
     expect(await keys(denied)).toEqual(["down", "enter"]);
   });
@@ -535,7 +499,6 @@ describe("an answer whose menu changes under it", () => {
     const response = await send(replaced, prompt.id, { option_index: 1 });
     expect(response.status).toBe(409);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe("prompt_changed");
-    // the Enter would have deleted the branch
     expect(await keys(replaced)).toEqual(["down"]);
     expect((await card(replaced)).options.map((option) => option.label)).toEqual(["Keep the branch", "Delete the branch", "Quit"]);
   });
@@ -550,14 +513,11 @@ describe("an answer whose menu changes under it", () => {
     await new Promise((resolve) => socket.addEventListener("open", resolve));
     try {
       const response = send(ended, prompt.id, { option_index: 1 });
-      // the ↓ has gone out and the answer waits for the menu to show the cursor on its row
       for (let i = 0; i < 100 && !chosen(ended).includes("down"); i++) await Bun.sleep(20);
       const waiting = performance.now();
       expect(chosen(ended)).toEqual(["down"]);
-      // answered in the terminal: herdr says the agent works again, and the server has heard it
       await herdrRpc("pane.report_agent", { pane_id: ended.pane, source: "manual", agent: "codex", state: "working" });
       await working;
-      // the same menu, asked again, with its cursor on the very row the Enter was for
       await herdrRpc("pane.report_agent", { pane_id: ended.pane, source: "manual", agent: "codex", state: "blocked" });
       // well inside the answer's own wait (1.5 s) for the cursor: the refusal below is for the
       // asking that ended, not for a menu that never showed the move
@@ -645,14 +605,12 @@ describe("picks from Codex's model lists", () => {
     expect(models.question).toBe("Select model for this session (currently GPT-6-Astra)");
     expect(models.options.map((option) => option.label)).toEqual(["GPT-6.1-Sol (default)", "GPT-6-Astra", "GPT-6-Luna"]);
     expect((await answer(lists, models.id, 2)).status).toBe(200);
-    // the levels of the model that was tapped: another list, another card
     let levels = await shown();
     for (let i = 0; i < 100 && (levels === null || levels.id === models.id); i++) { await Bun.sleep(50); levels = await shown(); }
     expect(levels!.question).toBe("Select reasoning level for GPT-6-Luna for this session (currently Medium)");
     expect(levels!.options.map((option) => option.label)).toEqual(["Low", "Medium (default)", "High"]);
     expect((await answer(lists, levels!.id, 2)).status).toBe(200);
     expect(await confirmed(lists)).toContain("session: GPT-6-Luna High");
-    // Codex has closed its lists: the card goes with them
     let after = await shown();
     for (let i = 0; i < 100 && after !== null; i++) { await Bun.sleep(50); after = await shown(); }
     expect(after).toBeNull();

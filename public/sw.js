@@ -3,8 +3,7 @@
 // offline; static assets (hashed bundles, icons, favicons) are cache-first since
 // they are content-addressed or rarely change. The web manifest is not: its URL
 // never changes and the browser rereads it to update the installed app, so a
-// cached copy would pin every install to its first manifest. API and websocket
-// traffic is never intercepted so live workspace data is always fresh.
+// cached copy would pin every install to its first manifest.
 // Nothing is precached. The typefaces are /assets/ files too (src/fonts/fonts.css): Pretendard
 // comes as 92 chunks split by unicode-range and the browser asks only for those whose characters
 // a page draws, so each is cached as it is first fetched and a phone that has shown Korean once
@@ -12,22 +11,7 @@
 // A new cache starts empty for the same reason, so the cache of the name before it is kept
 // until this one holds a shell and the files it starts with: the page that brought this worker
 // was loaded through the old one, and its shell, bundles and font chunks are all there. Deleted
-// at activation, the first reload without a network would find no shell at all. Only the new
-// build's files (BUILD_FILES), the retired shell's entry files, typefaces and icons are copied
-// across, so no other bundle of an old build outlives the first navigation that reaches the server.
-// Every build is a worker of its own: the build stamps BUILD into dist/sw.js
-// (scripts/service-worker-build.ts), so its cache is named after it and the last build's
-// bundles go with the last build's cache. CACHE_NAME is the part a person moves.
-// The typefaces and icons are not a build's: a font chunk's name changes only with its contents,
-// and most are the same file release after release. They live in FILES, which no build retires,
-// so an update does not cost a phone the glyphs it had drawn offline.
-// BUILD_FILES, stamped beside BUILD, names the build's own /assets/ files (names only, no typefaces).
-// A file of this build that the worker before kept (the reload after an update is still answered
-// by it, KaTeX or Mermaid fetched early among them) is moved into this cache when that one is
-// retired, and a file of another build is not copied forward. A worker no build stamped has no
-// list: any file is copied forward, as before.
-// A retired cache's own shell keeps its entry script and stylesheet here too: a page that started
-// from that shell offline and has not asked for them yet still boots, then offers a reload.
+// at activation, the first reload without a network would find no shell at all.
 const CACHE_NAME = "ovis-v4-sheep";
 const BUILD = "";
 const BUILD_FILES = null;
@@ -35,7 +19,6 @@ const CACHE = BUILD ? `${CACHE_NAME}-${BUILD}` : CACHE_NAME;
 const FILES = "ovis-files-v1";
 const buildFiles = BUILD_FILES ? new Set(BUILD_FILES) : null;
 
-/** Whether `pathname` is a file this build uses; any file, for a worker no build stamped. */
 function ofThisBuild(pathname) {
   return !buildFiles || buildFiles.has(pathname);
 }
@@ -51,13 +34,11 @@ function isCacheFirst(pathname) {
   return CACHE_FIRST_PATHS.has(pathname);
 }
 
-/** A typeface or an icon: kept in FILES across builds. */
 function isLongLived(pathname) {
   if (pathname.startsWith("/icons/") || CACHE_FIRST_PATHS.has(pathname)) return true;
   return pathname.startsWith("/assets/") && /\.(woff2?|ttf)$/.test(pathname);
 }
 
-/** A page where a file was asked for: a server that had no such file answered with its shell. */
 function isPage(response) {
   return (response.headers.get("content-type") || "").startsWith("text/html");
 }
@@ -67,18 +48,15 @@ self.addEventListener("install", (event) => {
 });
 
 self.addEventListener("activate", (event) => {
-  // no cache is deleted here: see CACHE_NAME, BUILD and keepShell
   event.waitUntil(self.clients.claim());
 });
 
-/** The files a shell cannot start without: its entry script and its stylesheet. */
 function shellFiles(html) {
   const files = new Set();
   for (const [, path] of html.matchAll(/<(?:script|link)\b[^>]*?\s(?:src|href)="(\/assets\/[^"?#]+\.(?:js|css))"/g)) files.add(path);
   return [...files];
 }
 
-/** A file from a cache of another name, else from the network; null when neither has it. */
 async function fileFor(path) {
   const older = await caches.match(path);
   if (older && !isPage(older)) return older;
@@ -93,10 +71,7 @@ async function fileFor(path) {
 /**
  * The shell just fetched becomes this cache's "/" once the cache holds every file that shell
  * starts with: the worker before may have answered them, and a network that drops before the
- * page asks again must not leave a shell without them. Until then the old caches and their
- * shell stay, a complete start offline. Then the caches of other names go, their typefaces and
- * icons moved to FILES first, except `spare`: the cache whose shell a page is running right now,
- * which may still ask for a file of its build. The next open, from the shell kept here, retires it.
+ * page asks again must not leave a shell without them.
  */
 async function keepShell(response, spare) {
   const html = await response.clone().text();
@@ -112,7 +87,6 @@ async function keepShell(response, spare) {
   const names = (await caches.keys()).filter((name) => name !== CACHE && name !== FILES && name !== spare);
   for (const name of names) {
     const old = await caches.open(name);
-    // the files the retired cache's shell starts with: a page given that shell may not have asked yet
     const oldShell = await old.match("/");
     const starts = new Set(oldShell ? shellFiles(await oldShell.text()) : []);
     for (const request of await old.keys()) {
@@ -127,17 +101,11 @@ async function keepShell(response, spare) {
   await Promise.all(names.map((name) => caches.delete(name)));
 }
 
-/** The shell to start from offline: this cache's, else the one a cache not yet deleted holds. */
 async function cachedShell() {
   return (await keptShell())?.response;
 }
 
-/**
- * A page that needs the host's shell (src/lib/shellMode.ts requestFreshShell) leaves this entry in
- * FILES: the next navigation takes it and asks the network first, its kept shell still the fallback.
- */
 const FRESH_SHELL = "/__ovis-fresh-shell";
-/** How long a kept shell is opened without asking the host first: past it, a refresh that kept failing shows. */
 const KEPT_SHELL_MS = 24 * 60 * 60 * 1000;
 
 async function takeFreshRequest() {
@@ -149,7 +117,6 @@ function keptRecently(response) {
   return Number.isFinite(at) && Date.now() - at < KEPT_SHELL_MS;
 }
 
-/** The shell kept for the next start and the cache that holds it; null when none was kept. */
 async function keptShell() {
   for (const name of [CACHE, ...(await caches.keys()).filter((name) => name !== CACHE && name !== FILES)]) {
     const response = await (await caches.open(name)).match("/");
@@ -224,7 +191,7 @@ async function relayResourceResponse(event, target) {
         clearTimeout(timer);
         const data = event.data;
         if (!data?.available) { finish(); resolve(null); return; }
-        if (data.status === undefined) return; // selected; headers arrive when the PC answers
+        if (data.status === undefined) return;
         const headers = new Headers(data.headers.filter(([name]) => RELAY_RESOURCES.headers.includes(name.toLowerCase())));
         // A paired PC is not trusted with the shell origin shared by every other PC.
         // PDF uses Chrome's isolated viewer, which refuses sandboxed documents. nosniff
@@ -283,17 +250,16 @@ self.addEventListener("fetch", (event) => {
     }
   }
 
+  // a sign-in's return carries its code in the address: never answered or kept by this worker
+  if (request.mode === "navigate" && url.pathname === "/callback") return;
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
-        // The hosted shell starts from the shell it kept: its host may be a slow ocean away, and
-        // which build a page runs is told apart from the PC's by the version policy, not by being
-        // fresh. The network's shell is kept for the next open.
         let kept = null;
         try {
           const fresh = RELAY_RESOURCES ? await takeFreshRequest() : false;
           kept = RELAY_RESOURCES && !fresh ? await keptShell() : null;
-        } catch (err) { /* storage that fails costs only the head start: the network is asked */ }
+        } catch (err) { }
         if (kept && keptRecently(kept.response)) {
           event.waitUntil(fetch(request)
             .then((response) => (response.ok ? keepShell(response, kept.cache) : undefined))
@@ -308,10 +274,7 @@ self.addEventListener("fetch", (event) => {
         }
         if (response.ok) {
           // not awaited: the page gets its shell as it comes, and the worker lives until the
-          // copy is kept (a put reads the whole body). A bundle asked for meanwhile may still
-          // be answered by the old cache: a hashed file is the same file in either, and only
-          // what the network gave is put in this one. A cache that cannot be written does not
-          // cost the page.
+          // copy is kept (a put reads the whole body).
           event.waitUntil(keepShell(response.clone()).catch(() => undefined));
         }
         return response;
@@ -327,17 +290,14 @@ self.addEventListener("fetch", (event) => {
         const own = await cache.match(request);
         if (own) return own;
         const older = await caches.match(request);
-        // a shell an older worker kept under a file's URL is no copy of that file
         if (older && !isPage(older)) {
           // a file only the cache of the name before still holds, asked for while the new shell's
           // copy is being kept: it is kept here too, so keepShell's retirement of that cache does
-          // not take the only copy of a file the new shell uses. Another build's file is only answered.
+          // not take the only copy of a file the new shell uses.
           if (ofThisBuild(url.pathname)) event.waitUntil(cache.put(request, older.clone()).catch(() => undefined));
           return older;
         }
         const response = await fetch(request);
-        // a file the server no longer has is not kept: an old page asking for its own build's
-        // bundle after an update gets a 404, or the shell from a server older than that answer
         if (response.ok && response.type === "basic" && !isPage(response)) {
           cache.put(request, response.clone());
         }
@@ -347,15 +307,10 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-// Web push (server/push.ts sends, shared/protocol.ts PushPayload is the JSON). Every
-// push shows a notification: Safari revokes a subscription whose pushes stay silent.
-// A window of the app that is visible right now already shows the change in its
-// sidebar, so the notification then arrives without sound or vibration.
 // In the hosted shell every PC has a worker of its own, scoped to `/s/<server_id>/`
 // (src/lib/shellMode.ts), with its own subscription: only that PC pushes to it, and
 // only that PC's windows are this worker's to tell or to open.
 
-/** The PC this worker is the hosted shell's worker for; null for the worker a PC's own server serves. */
 function shellServerId() {
   const scope = self.registration && self.registration.scope;
   const match = scope ? /^\/s\/([0-9a-f]{32})\/$/.exec(new URL(scope).pathname) : null;
@@ -389,7 +344,6 @@ async function closeEarlierAlerts(tag, earlier) {
       if (earlier.has(alert.data?.alert_id)) alert.close();
     }
   } catch {
-    /* the new alert is up: a failed clean-up leaves only the old ones */
   }
 }
 
@@ -406,7 +360,6 @@ function answerButtons(payload) {
   return answers.length > 0 ? answers : null;
 }
 
-/** The answer a button picked, sent; a new alert in its place when it did not take. */
 async function answerFromAlert(data, index) {
   const answer = data.actions[index];
   if (!answer) return;
@@ -422,13 +375,10 @@ async function answerFromAlert(data, index) {
   } catch {
     body = "The answer may not have gone through. Tap to open the question.";
   }
-  // the tapped alert is closed: one showing under its tag now is the pane's newer alert, which says what holds now
   try {
     if ((await self.registration.getNotifications({ tag: data.tag })).length > 0) return;
   } catch {
-    /* no listing: the follow-up shows */
   }
-  // and one whose push came in while that was listed: checked with no wait before the notice goes up
   const latest = latestAlerts.get(data.tag);
   if (latest !== undefined && latest !== data.alert_id) return;
   await self.registration.showNotification(data.title, {
@@ -440,9 +390,9 @@ async function answerFromAlert(data, index) {
   });
 }
 
-/** the newest alert each tag was given in this worker's life, noted as its push arrives (answerFromAlert) */
 const latestAlerts = new Map();
 
+// Every push shows a notification: Safari revokes a subscription whose pushes stay silent.
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -450,7 +400,6 @@ self.addEventListener("push", (event) => {
   } catch (err) {
     payload = { body: event.data ? event.data.text() : "" };
   }
-  // noted before anything is awaited: an answer's notice that comes back meanwhile sees it is no longer the newest
   const tag = payload.tag || "herdr";
   const alertId = crypto.randomUUID();
   latestAlerts.set(tag, alertId);
@@ -479,14 +428,6 @@ self.addEventListener("push", (event) => {
   );
 });
 
-/**
- * A window that runs the app and so takes a "select-pane": the shell's own paths only. Not a
- * markdown reader tab (`?read=`, or `#read=` in the hosted shell, which keeps a page's query in its
- * fragment: src/lib/pageQuery.ts; src/lib/fileReader.ts renders FileReader there instead of App),
- * nor a raw file or HTML page the file viewer opened in a tab of its own (those are /api/
- * responses), nor any shipped file (an icon, /social-preview.png, a notice): a path whose last
- * part has an extension is a file, except the shell's own index.html.
- */
 function isAppWindow(url) {
   let parsed;
   try { parsed = new URL(url); } catch { return false; }
@@ -494,13 +435,10 @@ function isAppWindow(url) {
   if (path.startsWith("/api/") || path === "/ws") return false;
   const last = path.slice(path.lastIndexOf("/") + 1);
   if (last.includes(".") && last !== "index.html") return false;
-  // as src/lib/pageQuery.ts pageSearch reads it: a query left from an older build first
   const query = shellServerId() !== null && parsed.search.length <= 1 && parsed.hash.length > 1 ? new URLSearchParams(parsed.hash.slice(1)) : parsed.searchParams;
   return (query.get("read") ?? "").trim() === "";
 }
 
-// Tap: bring the app forward on that pane - an open window is told which pane
-// (App listens), a closed app opens on /?pane=<id>.
 let latestNotificationClick = 0;
 let latestNotificationSelection = null;
 self.addEventListener("notificationclick", (event) => {
@@ -513,11 +451,8 @@ self.addEventListener("notificationclick", (event) => {
   const click = ++latestNotificationClick;
   const paneId = event.notification.data ? event.notification.data.pane_id : null;
   const machineId = event.notification.data?.machine_id || "local";
-  // the workspace the pane was last seen in: an ended pane's tap opens it (src/lib/deepLink.ts)
   const workspaceId = event.notification.data?.workspace_id || null;
   const selection = paneId ? { type: "select-pane", pane_id: paneId, machine_id: machineId, view: "chat", ...(workspaceId ? { workspace_id: workspaceId } : {}) } : null;
-  // Remember the intent before any lookup: an older focus can finish while this one
-  // is still finding its window.
   latestNotificationSelection = selection;
   // a tapped pane alert, for the daily anonymous usage counts (server/telemetry.ts): posted only when
   // the server says the counts are on and their notice was shown, so nothing tells it of a tap while
@@ -547,8 +482,6 @@ self.addEventListener("notificationclick", (event) => {
       const url = paneId ? `${home}${shellServerId() === null ? "?" : "#"}machine=${encodeURIComponent(machineId)}${workspaceId ? `&ws=${encodeURIComponent(workspaceId)}` : ""}&pane=${encodeURIComponent(paneId)}&view=chat` : home;
       const selectLatest = (client) => { if (client && latestNotificationSelection) client.postMessage(latestNotificationSelection); };
       const open = async () => {
-        // An opening can also finish after a newer tap. Repair that returned
-        // window, while its URL still selects the original pane on a cold start.
         selectLatest(await self.clients.openWindow(url));
       };
       const target = windows.find((client) => client.focused) || windows[0];
@@ -561,13 +494,9 @@ self.addEventListener("notificationclick", (event) => {
         try {
           await target.focus();
         } catch (err) {
-          // that window cannot be brought forward: open the app on the pane instead
           if (click === latestNotificationClick) await open();
           return;
         }
-        // Different windows finish focus independently. A late older focus can put
-        // its window in front after a newer tap focused another one. Give whichever
-        // window just came forward the latest selection, without another focus loop.
         selectLatest(target);
         return;
       }
@@ -576,10 +505,6 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
-/**
- * The hosted shell's database (src/lib/relay/device.ts openDatabase: the same name, version and
- * stores): `pending-push` holds, per PC, the subscription its worker could not hand over itself.
- */
 function openRelayDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("ovis-relay", 2);
@@ -593,7 +518,6 @@ function openRelayDatabase() {
   });
 }
 
-/** Keeps `subscription` for the PC to be told on the shell's next connection (src/lib/push.ts registerPendingPush). */
 async function keepPendingPush(serverId, subscription, oldEndpoint) {
   const db = await openRelayDatabase();
   try {
@@ -603,7 +527,6 @@ async function keepPendingPush(serverId, subscription, oldEndpoint) {
       const request = store.get(serverId);
       request.onsuccess = () => {
         const held = request.result;
-        // rotated again before the PC heard of the last one: the endpoint the PC knows is still that one's old
         const old = held && held.subscription.endpoint === oldEndpoint ? held.old_endpoint : oldEndpoint;
         store.put({ server_id: serverId, subscription, old_endpoint: old });
       };
@@ -617,9 +540,6 @@ async function keepPendingPush(serverId, subscription, oldEndpoint) {
 
 // The browser rotated the subscription (Firefox does; Chrome rarely): hand the server
 // the new endpoint and drop the old one, or pushes stop until the app is next opened.
-// The hosted shell's worker cannot reach its PC (only a window holds the relay channel):
-// it keeps the subscription for the PC and tells this PC's open windows, whose shell
-// registers it over the relay; with none open the shell does on its next start.
 self.addEventListener("pushsubscriptionchange", (event) => {
   const serverId = shellServerId();
   if (serverId !== null) {
@@ -630,7 +550,6 @@ self.addEventListener("pushsubscriptionchange", (event) => {
         if (!fresh && previous && previous.options.applicationServerKey) {
           fresh = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: previous.options.applicationServerKey });
         }
-        // no key to subscribe with here: the app subscribes again on its next start (src/lib/push.ts)
         if (!fresh) return;
         await keepPendingPush(serverId, fresh.toJSON(), previous ? previous.endpoint : null);
         const windows = (await self.clients.matchAll({ type: "window", includeUncontrolled: true }))

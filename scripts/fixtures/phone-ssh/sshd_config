@@ -1,0 +1,9 @@
+# phone-ssh fixture: test-only sshd settings
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AllowTcpForwarding yes
+PermitRootLogin no
+AllowUsers fixture
+X11Forwarding no
+PrintMotd no

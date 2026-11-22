@@ -2,19 +2,19 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as lettaStore from "../letta-store.ts";
-import * as runtime from "../herdr-core/runtime.ts";
+import * as served from "../runtime/capabilities.ts";
+import { HERDR, HERDR_CORE } from "../runtime/capabilities.ts";
 import { lettaMessagesPath } from "../letta-store.ts";
 import { handlers, hub, root } from "./status.fake.ts";
 
 // A herdr-core Letta pane: Letta sends no report, so herdr gives it no status (letta-code 0.34.44, hc 0.1.17)
 const letta = (title: string, status = "unknown") => ({ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "letta", agent_status: status, cwd: root, foreground_cwd: root, terminal_title: title, title });
-// One turn of letta-code 0.34.44's local backend: the prompt, a Bash call, its result, the answer
 const turn = readFileSync(join(import.meta.dir, "..", "fixtures", "letta", "messages-turn-0.34.44.jsonl"), "utf8").trim().split("\n");
 
 const resolved: { mockRestore(): void }[] = [];
 const resolving = () => { const spy = spyOn(lettaStore, "resolveLettaTranscript"); resolved.push(spy); return spy; };
 /** the server serves herdr-core, where Letta panes report nothing; on herdr's TUI the tracker stays out */
-const core = (serving = true) => { const spy = spyOn(runtime, "servingCore").mockReturnValue(serving); resolved.push(spy); };
+const core = (serving = true) => { const spy = spyOn(served, "capabilities").mockReturnValue(serving ? HERDR_CORE : HERDR); resolved.push(spy); };
 afterEach(() => { for (const spy of resolved.splice(0)) spy.mockRestore(); });
 
 describe("a Letta pane's status in the hub, where no report gives one", () => {
@@ -41,7 +41,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     await h.status.letta.refresh([letta("[ ! ] Action Required | Tutor")] as never);
     await h.snapshot();
     expect(h.last().status).toBe("blocked");
-    // the file now reads to an answer that was written before the approval was asked
     appendFileSync(messages, `${turn.slice(2).join("\n")}\n`);
     await h.status.letta.poll();
     expect(h.last().status).toBe("blocked");
@@ -68,7 +67,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     h.herdrSays(letta("⠋ Tutor"));
     await h.snapshot();
     expect(h.last().status).toBe("working");
-    // herdr-core tells a status event for a pane that reports nothing: unknown
     handlers.onStatus("w1:p1", "unknown", "letta");
     expect(h.last().status).toBe("working");
     h.herdrSays(letta("Tutor"));
@@ -84,7 +82,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     h.herdrSays(letta("⠋ Tutor"));
     await h.snapshot();
     expect(h.last().status).toBe("working");
-    // the program itself reports its turn done, then says nothing: the old spinner is no evidence of work any more
     handlers.onStatus("w1:p1", "done", "letta");
     handlers.onStatus("w1:p1", "unknown", "letta");
     expect(h.last().status).not.toBe("working");
@@ -108,7 +105,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     aborted.message.stopReason = "aborted";
     appendFileSync(messages, `${JSON.stringify(aborted)}\n`);
     await h.status.letta.poll();
-    // a new turn then ends well, all while the title still asked
     appendFileSync(messages, `${turn.slice(0, 1).concat(turn.slice(-1)).join("\n")}\n`);
     await h.status.letta.poll();
     h.herdrSays(letta("Tutor"));
@@ -122,7 +118,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor"));
     await h.snapshot();
-    // a read begins while the spinner still turns, and is answered only after a newer read saw it stop
     const release = await h.heldSnapshot();
     h.herdrSays(letta("Tutor"));
     await h.snapshot();
@@ -147,7 +142,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     const agent = "agent-local-b";
     const messages = lettaMessagesPath(store, agent, "default")!;
     mkdirSync(join(messages, ".."), { recursive: true });
-    // the prompt and the call waiting for approval: nothing more is written until the user answers
     writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
     const h = hub();
     resolving().mockResolvedValue({ path: join(root, "t2.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
@@ -174,7 +168,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     await h.snapshot();
     expect(h.status.letta.tracks("w1:p1")).toBe(true);
     const doneBefore = h.alerts.filter((alert) => alert === "done").length;
-    // the collector replays the snapshot's status around a gap: Ovis's own working, not herdr's word
     handlers.onStatus("w1:p1", "working", "letta", { before: "idle", agent: "letta" });
     expect(h.status.letta.tracks("w1:p1")).toBe(true);
     expect(h.alerts.filter((alert) => alert === "done")).toHaveLength(doneBefore);
@@ -225,7 +218,6 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     await h.status.letta.poll();
     expect(h.last().status).toBe("done");
     expect(h.alerts.filter((alert) => alert === "done")).toHaveLength(1);
-    // a report takes the pane back from Letta's own files
     h.herdrSays(letta("Tutor", "working"));
     const snapshot = await h.snapshot();
     expect(h.status.letta.runs("w1:p1")).toBe(false);

@@ -1,9 +1,3 @@
-/**
- * What the move dialog (RuntimeMove.tsx) shows in each state: the plan as a workspace > tab > pane
- * tree with a tag per pane, the panes holding a move up, the steps of a move under way, and a
- * rollback's result. The wait's rows carry their own pane's action (end its command, open an agent);
- * every other action stays in the dialog's footer.
- */
 import type { ReactNode } from "react";
 import { Check } from "lucide-react";
 
@@ -31,14 +25,10 @@ interface WaitActions {
   stopping: readonly MoveStopping[];
   pending: boolean;
   onStop: (pane: MovePane, force: boolean) => void;
-  /** null: this page cannot open a pane (no app around the dialog) */
   onOpenPane: ((paneId: string) => void) | null;
 }
 
-/**
- * A shell's command: End sends it Ctrl+C; while it still runs, Ending… until the server offers Force end.
- * An agent is never ended from here: its pane opens, and the person ends it there.
- */
+/** An agent is never ended from here: its pane opens, and the person ends it there. */
 function PaneAction({ t, pane, stopping, pending, onStop, onOpenPane }: WaitActions & { t: Translate; pane: MovePane }) {
   const { verdict } = pane;
   if (verdict.kind === "busy" && verdict.reason === "command_running") {
@@ -55,8 +45,7 @@ export function PlanView({ t, plan, leadId }: { t: Translate; plan: MovePlan; le
   const byId = new Map(plan.panes.map((pane) => [pane.pane_id, pane]));
   return (
     <>
-      {/* what does not move, read before the list and the Move button (G-104) */}
-      <p className="runtime-move-note" id={leadId}>{t("Scrollback and programs running in shells do not come along. herdr itself stays as it is.")}</p>
+      <p className="runtime-move-note" id={leadId}>{t("Scrollback and programs running in shells do not come along. herdr itself stays as it is.")} {t("Each pane opens a new shell from your login profile: variables set by hand in a pane stay behind.")}</p>
       <ul className="runtime-move-tree">
         {plan.workspaces.map((workspace) => (
           <li key={workspace.workspace_id}>

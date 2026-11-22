@@ -1,0 +1,288 @@
+.app.is-inbox {
+  --inbox-control: var(--touch-target);
+  --inbox-zone-h: calc(var(--inbox-control) + var(--space-3) * 2);
+}
+
+.app.is-inbox .pane-column {
+  background: var(--bg);
+}
+
+.app.is-inbox-list .pane-column {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.thread-title {
+  --inbox-avatar: var(--avatar-size);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-inline-end: var(--space-1);
+}
+
+.thread-title-words {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--lh-tight);
+}
+
+.thread-name,
+.thread-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-name {
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.thread-state {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.thread-state.is-reconnecting {
+  color: var(--status-reconnecting);
+}
+
+.thread-state.is-connected {
+  color: var(--status-done);
+}
+
+/* The list is in the sidebar's column, at the sidebar's own width (the shell's --sidebar-shown-w, styles.css), so
+   the pane is as wide here as in the classic shell and entering or leaving the mode refits no terminal. The
+   column's rail is cut out of that width, never added to it, at every width the sidebar can have: the list is what
+   the rail leaves, down to a sidebar at its least width (InboxList.css says how its top row fits there). No bar
+   crosses the window: the column's top controls and the pane's zone share one band (--inbox-zone-h), and the seam
+   runs from the window's top. */
+.app.is-inbox-wide {
+  --inbox-control: var(--control-h);
+  --inbox-rail-w: var(--inbox-zone-h);
+}
+
+.app.is-inbox-wide .inbox-column {
+  flex-direction: row;
+  padding-left: 0;
+}
+
+.inbox-column,
+.app.is-inbox-wide .pane-column {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.app.is-inbox-wide .pane-split {
+  flex-direction: column;
+}
+
+.thread-top {
+  --thread-side: calc(var(--inbox-control) * 2 + var(--space-2));
+  position: relative;
+  z-index: var(--z-header);
+  display: grid;
+  grid-template-columns: minmax(var(--thread-side), 1fr) minmax(0, auto) minmax(var(--thread-side), 1fr);
+  align-items: center;
+  column-gap: var(--space-3);
+  flex: 0 0 auto;
+  height: var(--inbox-zone-h);
+  padding-inline: var(--space-3);
+  background: var(--term-bg);
+  pointer-events: none;
+}
+
+.thread-top-middle {
+  grid-column: 2;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.thread-top-controls {
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: var(--space-2);
+}
+
+.thread-top-middle > *,
+.thread-top-controls > * {
+  pointer-events: auto;
+}
+
+.app.is-inbox-wide .pane-column.is-chat {
+  --header-over: var(--inbox-zone-h);
+}
+
+.app.is-inbox-wide .pane-column.is-chat .thread-top,
+.thread-top.is-empty {
+  position: absolute;
+  top: 0;
+  inset-inline: 0;
+}
+
+.app.is-inbox-wide .pane-column.is-chat .thread-top {
+  background: linear-gradient(var(--bg), transparent);
+}
+
+.thread-top.is-empty {
+  background: transparent;
+}
+
+.app.is-inbox-wide .terminal-host:first-child .chat-view::before {
+  display: none;
+}
+
+.app.is-inbox-wide .terminal-stack.is-chat > .terminal-surface {
+  overflow: visible;
+  clip-path: inset(calc(-1 * var(--header-over, 0px)) 0 0 0);
+}
+
+.thread-top .icon-button.inbox-round {
+  box-shadow: none;
+}
+
+.thread-top .icon-button.inbox-round svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.thread-chip {
+  --inbox-avatar: var(--mark-size);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  min-width: 0;
+  max-width: 100%;
+  height: var(--inbox-control);
+  padding-inline: calc((var(--inbox-control) - var(--mark-size)) / 2 - var(--hairline)) calc(var(--space-3) + var(--space-half));
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.thread-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-chip-state {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.thread-chip-state.is-reconnecting {
+  color: var(--status-reconnecting);
+}
+
+.thread-chip-state.is-connected {
+  color: var(--status-done);
+}
+
+.inbox-unchosen {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+.app.is-inbox-tab-room .pane-split {
+  padding-top: calc(var(--touch-target) + var(--hairline));
+  background: var(--term-bg);
+}
+
+.app.is-inbox-wide.is-inbox-terminal .pane-column {
+  background: var(--term-bg);
+}
+
+.app.is-inbox-wide.is-inbox-terminal .thread-top {
+  height: var(--header-h);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .app.is-inbox-wide.is-inbox-terminal .thread-top {
+    height: var(--inbox-zone-h);
+  }
+
+  .app.is-inbox-wide.is-inbox-terminal .pane-column {
+    padding-bottom: calc(var(--header-h) + var(--status-bar-h) - var(--inbox-zone-h));
+  }
+}
+
+@media (pointer: coarse) {
+  .app.is-inbox-wide {
+    --inbox-control: var(--touch-target);
+  }
+
+  .app.is-inbox-wide.is-inbox-terminal .thread-top {
+    --inbox-control: var(--touch-target-header);
+    grid-template-rows: minmax(0, 1fr);
+    align-items: unsafe center;
+  }
+}
+
+/* An installed desktop app with the title bar folded away has no header to drag the window by or to keep clear
+   of the window's controls (styles.css does both for the classic header): the two top bands do it here. */
+@media (display-mode: window-controls-overlay) {
+  .mode-inbox.is-wide .inbox-top,
+  .thread-top {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  .mode-inbox.is-wide .inbox-top :is(button, input),
+  .thread-top :is(button, .thread-chip) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  .mode-inbox.is-wide .inbox-top {
+    --inbox-top-start: calc(var(--inbox-top-inset) + max(0px, env(titlebar-area-x, 0px) - var(--inbox-rail-w)));
+  }
+
+  .thread-top {
+    padding-inline-end: calc(var(--space-3) + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  }
+}
+
+/* an iPad home-screen app in a window has the window's controls over its top-left corner (lib/viewport.ts) */
+:root[data-window-controls] .mode-inbox .inbox-top {
+  padding-inline-start: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
+}
+
+:root[data-window-controls] .mode-inbox.is-wide .inbox-top {
+  --inbox-top-start: calc(var(--inbox-top-inset) + max(0px, var(--window-controls-w, 72px) - var(--inbox-rail-w)));
+  padding-inline-start: var(--inbox-top-start);
+}
+
+.header-more-crumb.is-inbox {
+  max-height: none;
+  overflow-y: visible;
+}
+
+.header-more-crumb.is-inbox .header-more-path {
+  flex: none;
+  max-height: calc(6em * var(--lh-base));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

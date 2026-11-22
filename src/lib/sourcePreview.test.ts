@@ -20,9 +20,7 @@ describe("lineRequest", () => {
     const cut = shownSource("x\n".repeat(SOURCE_PREVIEW_LINES), true);
     expect(lineRequest(SOURCE_PREVIEW_LINES, cut, true, SOURCE_PREVIEW_LINES)).toEqual({ kind: "shown", line: SOURCE_PREVIEW_LINES });
     expect(lineRequest(SOURCE_PREVIEW_LINES + 1, cut, true, SOURCE_PREVIEW_LINES)).toEqual({ kind: "past-preview", line: SOURCE_PREVIEW_LINES + 1 });
-    // without the reader's count the shown text says the same, as its artificial row is gone
     expect(lineRequest(SOURCE_PREVIEW_LINES + 1, cut, true)).toEqual({ kind: "past-preview", line: SOURCE_PREVIEW_LINES + 1 });
-    // a byte cut on a newline: the same rule
     expect(lineRequest(4, shownSource("a\nb\nc\n", true), true, 3)).toEqual({ kind: "past-preview", line: 4 });
     expect(lineRequest(3, shownSource("a\nb\nc\n", true), true, 3)).toEqual({ kind: "shown", line: 3 });
   });

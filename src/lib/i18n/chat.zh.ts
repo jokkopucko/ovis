@@ -9,6 +9,13 @@
  */
 export const CHAT_ZH: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 聊天暂不可用。请打开终端查看运行状态和工具调用。",
+  "Not in the conversation. If the agent showed an error, it is in the terminal.": "未记录在对话中。如果智能体显示了错误，它在终端里。",
+  "Not in the conversation. If {agent} showed an error, it is in the terminal.": "未记录在对话中。如果 {agent} 显示了错误，它在终端里。",
+  "{agent} has not recorded a conversation Ovis can find for this pane yet. Before the first message this is normal; if it stays, use the terminal.": "{agent} 尚未记录 Ovis 能为此窗格找到的对话。在第一条消息之前这是正常的；如果一直如此，请使用终端。",
+  "Ovis can't read {agent} conversations yet. Use the terminal to work with it.": "Ovis 暂时无法读取 {agent} 的对话。请在终端中使用它。",
+  "Ovis couldn't find or read the file {agent} keeps this conversation in. Use the terminal.": "Ovis 找不到或无法读取 {agent} 保存此对话的文件。请使用终端。",
+  "{agent} chat needs herdr's {agent} integration, which is not installed on this PC. Settings → Agents shows the command that installs it; then start {agent} again in this pane.": "{agent} 聊天需要 herdr 的 {agent} 集成，但此电脑上尚未安装。设置 → 智能体中有安装它的命令；安装后请在此窗格中重新启动 {agent}。",
+  "herdr has not said which folder this pane is in, so Ovis can't find its conversation. Use the terminal.": "herdr 没有告知此窗格所在的文件夹，因此 Ovis 找不到它的对话。请使用终端。",
   "Chat read timed out.": "读取对话超时。",
   "Thinking…": "思考中…",
   "Updates paused — waiting for the agent's next activity": "更新已暂停 — 正在等待代理的下一次活动",
@@ -44,6 +51,7 @@ export const CHAT_ZH: Record<string, string> = {
   "Couldn't load earlier messages — retry": "无法加载更早的消息。重试",
   "Earlier messages": "更早的消息",
   "beginning of conversation": "对话开始",
+  "Show a terminal output preview": "打开终端输出预览",
   "Conversation unavailable — show a terminal output preview": "对话不可用。打开终端输出预览",
   "No conversation yet — say something below": "暂无对话。在下方说点什么吧",
   "New messages": "新消息",

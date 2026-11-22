@@ -24,14 +24,12 @@ describe("macOS kernel process record", () => {
   });
 
   it("takes a terminal and its start from one record, so a PID reused between reads cannot pair two processes", () => {
-    // the first read sees process A on ttys001; any later read of the PID sees process B on ttys002
     const records = [kinfo(1_793_000_000, 250_000, 1), kinfo(1_793_000_100, 0, 2)];
     let reads = 0;
     const read = () => records[Math.min(reads++, 1)]!;
     const name = (device: number) => `ttys00${device}`;
     expect(darwinTerminal(42, read, name)).toEqual({ tty: "ttys001", startedAt: 1_793_000_000_250 });
     expect(reads).toBe(1);
-    // no terminal, no start or no process: nothing is paired
     expect(darwinTerminal(42, () => kinfo(1_793_000_000, 0, -1), name)).toBeNull();
     expect(darwinTerminal(42, () => kinfo(0, 0, 1), name)).toBeNull();
     expect(darwinTerminal(42, () => new Uint8Array(0), name)).toBeNull();

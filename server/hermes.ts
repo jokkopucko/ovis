@@ -30,7 +30,6 @@ export interface HermesMessageRow {
   reasoning_chars?: number | null;
 }
 
-/** Clips non-tool row content that exceeds the byte budget and marks it trimmed. */
 function clipOversizedNonTool(content: string, maxBytes: number): string {
   const suffix = "\n… trimmed";
   const suffixBytes = Buffer.byteLength(suffix, "utf8");
@@ -40,7 +39,6 @@ function clipOversizedNonTool(content: string, maxBytes: number): string {
   return `${buf.subarray(0, budget).toString("utf8")}${suffix}`;
 }
 
-/** Safely formats a unix timestamp in seconds as an ISO string, or null if invalid. */
 function parseTimestamp(ts: unknown): string | null {
   if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return null;
   try {
@@ -51,7 +49,6 @@ function parseTimestamp(ts: unknown): string | null {
   }
 }
 
-/** Safely extracts raw input string for display and a record object for summary generation. */
 function parseToolInput(rawArgs: unknown): { inputStr: string; inputObj: Record<string, unknown> } {
   if (rawArgs === null) return { inputStr: "null", inputObj: {} };
   if (rawArgs === undefined) return { inputStr: "", inputObj: {} };
@@ -79,12 +76,10 @@ export function defaultHermesHome(home = userHome(), env: Record<string, string 
   return hermesHome(home, env, platform);
 }
 
-/** Locates the session database within the selected Hermes home. */
 export function hermesDbPath(hermesHome = defaultHermesHome()): string {
   return join(hermesHome, "state.db");
 }
 
-/** What processHermesHome found, by pid and argv, and when. */
 const processHomes = new Map<string, { home: string | null; at: number }>();
 const PROCESS_HOME_TTL_MS = 30_000;
 
@@ -156,7 +151,7 @@ function hermesTerminal(pid: number): { id: string; startedAt: number | null } |
       const device = record.tty.startsWith("ttys") ? `dev-${record.tty}` : record.tty;
       return { id: `tty-${device.replaceAll("/", "-")}`, startedAt: record.startedAt };
     }
-  } catch { /* process exited or terminal unavailable */ }
+  } catch {}
   return null;
 }
 
@@ -177,10 +172,6 @@ export function hermesBreadcrumbSession(home: string, terminalId: string, cwd: s
   }
 }
 
-/**
- * Resolves the Hermes session and store for a pane. A reported session is authoritative;
- * one process lookup supplies the pane's store and, when needed, breadcrumb evidence.
- */
 export async function hermesTranscriptForPane(
   pane: HerdrPane,
   cwd: string,
@@ -232,7 +223,6 @@ const hermesCache = new Map<string, {
   turns: ConversationTurn[];
 }>();
 
-/** Drops parsed pages for a closed pane's database, or every page during test cleanup. */
 export function forgetHermesTranscriptState(path?: string): void {
   if (path === undefined) {
     hermesCache.clear();
@@ -251,7 +241,6 @@ function reasoningChars(): number {
   return Math.floor((TRANSCRIPT_WINDOW_BYTES - Buffer.byteLength("\n… trimmed", "utf8")) / 4);
 }
 
-/** Computes the 16-character generation identity for a Hermes session in a database. */
 export function hermesTranscriptIdentity(dbPath: string, startedAt: number | string = ""): string | null {
   try {
     const stat = statSync(dbPath);
@@ -261,12 +250,10 @@ export function hermesTranscriptIdentity(dbPath: string, startedAt: number | str
   }
 }
 
-/** Formats an opaque generation-scoped full-output reference. */
 export function hermesOutputRef(identity: string, callId: string): string {
   return `${identity}:${callId}`;
 }
 
-/** Parses an opaque full-output reference into generation identity and provider call ID. */
 export function parseHermesOutputRef(ref: string): { identity: string; callId: string } | null {
   const colon = ref.indexOf(":");
   if (colon <= 0 || colon === ref.length - 1) return null;
@@ -303,7 +290,6 @@ export function decodeTerminalEnvelope(raw: string): { output: string; failed: b
   }
 }
 
-/** Hermes code-execution calls summarize with the first nonblank code line, falling back to file and standard fields. */
 export function hermesToolSummary(name: string, input: Record<string, unknown>): string {
   if (typeof input["code"] === "string") {
     const firstLine = input["code"].split("\n").map(l => l.trim()).find(l => l.length > 0);
@@ -342,7 +328,6 @@ export function hermesToolOutput(sessionId: string, dbPath: string, ref: string,
   }
 }
 
-/** End of an assistant call group and its contiguous results, or its starting index. */
 function toolGroupEnd(rows: readonly Pick<HermesMessageRow, "role" | "tool_call_id" | "tool_calls">[], start: number): number {
   const call = rows[start];
   if (call?.role !== "assistant" || !call.tool_calls) return start;
@@ -364,7 +349,6 @@ function toolGroupEnd(rows: readonly Pick<HermesMessageRow, "role" | "tool_call_
   }
 }
 
-/** Selects at most PAGE_SIZE active rows and TRANSCRIPT_WINDOW_BYTES before a row cursor, returning them chronologically. */
 function hermesRowsBefore(db: Database, sessionId: string, before: number, floor: number): HermesMessageRow[] {
   const boundary = db.query<Pick<HermesMessageRow, "id" | "role" | "tool_call_id" | "tool_calls"> & { text_bytes: number }, [number, number, string, number, number, number]>(
     `SELECT id, role, tool_call_id,
@@ -440,7 +424,6 @@ function hermesRowsBefore(db: Database, sessionId: string, before: number, floor
   return rows;
 }
 
-/** Reads forward from an already validated held row within the newest page, bounded by rows and bytes. */
 function hermesRowsFrom(db: Database, sessionId: string, start: number): HermesMessageRow[] {
   const boundary = db.query<Pick<HermesMessageRow, "id" | "role" | "tool_call_id" | "tool_calls"> & { text_bytes: number }, [number, string, number, number]>(
     `SELECT id, role, tool_call_id, NULL AS tool_calls,
@@ -501,7 +484,6 @@ function hermesRowsFrom(db: Database, sessionId: string, start: number): HermesM
   return rows;
 }
 
-/** Reads recorded reasoning settings without treating cumulative token usage as context. */
 function hermesMetadata(session: { model?: string | null; model_config?: string | null } | null): ConversationMetadata {
   let reasoningEffort: string | null = null;
   if (session?.model_config) {
@@ -516,17 +498,12 @@ function hermesMetadata(session: { model?: string | null; model_config?: string 
         else if (typeof config.effort === "string") reasoningEffort = config.effort;
       } else if (typeof config === "string") reasoningEffort = config;
       else if (typeof parsed.reasoning_effort === "string") reasoningEffort = parsed.reasoning_effort;
-    } catch { /* invalid model configuration */ }
+    } catch {}
   }
   return { model: session?.model ?? null, reasoning_effort: reasoningEffort };
 }
 
-/**
- * Reads a consistent SQLite snapshot in pages of at most PAGE_SIZE active rows.
- * Held pages include their starting row while it remains in the newest page; once
- * it falls behind, before/since pages cover the gap. Page contents name the cache
- * version so WAL edits invalidate unchanged row counts.
- */
+/** Page contents name the cache version so WAL edits invalidate unchanged row counts. */
 export function hermesConversationPage(
   sessionId: string,
   dbPath: string,
@@ -572,7 +549,6 @@ export function hermesConversationPage(
         : `${dbPath}\0${historyId}\0from:${page.from ?? ""}`;
       const prefix = `${historyId}:`;
 
-      /** Accepts any active row still present in this database generation. */
       const parseCursor = (cursor: string): number => {
         if (!cursor.startsWith(prefix)) throw new HistoryChanged();
         const value = cursor.slice(prefix.length);
@@ -667,7 +643,6 @@ export function hermesPromptPictures(text: string): { caption: string; images: s
   return { caption, images: (paths as string[]).map((path) => `![${path.slice(path.lastIndexOf("/") + 1)}](${markdownPath(path)})`).join("\n") };
 }
 
-/** Groups assistant activity and matched tool results into turns, preserving recorded reasoning. */
 export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const pendingTools = new Map<string, Extract<ConversationPart, { kind: "tool" }>>();
@@ -723,7 +698,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
                 if (callId) pendingTools.set(callId, toolPart);
               }
             }
-          } catch { /* malformed tool_calls json */ }
+          } catch {}
         } else if ((row.tool_calls_bytes ?? 0) > PAGE_TOOL_CALLS_BYTES) {
           turn.parts.push({ kind: "tool", name: "tool", summary: "", input: "", output: "", arguments_omitted: true });
         }
@@ -763,7 +738,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           turn.parts.push(orphan);
         }
       }
-    } catch { /* ignore individual malformed row */ }
+    } catch {}
   }
 
   return turns;

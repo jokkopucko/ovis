@@ -1,6 +1,4 @@
 /**
- * The name a person calls a model by, for the composer's pill, or the id exactly as received.
- *
  * A name is never guessed. Only an id that matches one of the patterns below WHOLE gets one,
  * and each pattern is the vendor's own regular id-to-name rule:
  * - Anthropic: `claude-<family>-<major>[-<minor>]` is "Claude <Family> <major>[.<minor>]"
@@ -23,21 +21,12 @@
  * and glm-5.03 stay ids), a major is never 0, and a minor of 0 is canonical only where the
  * vendor writes one: Anthropic does (claude-opus-4-0), OpenAI and Z.ai write the bare major
  * (gpt-5, not gpt-5.0). The id is lowercase, with nothing before, between or after its parts.
- *
- * Everything else is drawn as the identifier it is: a dated snapshot (claude-haiku-4-5-20251001),
- * a tier or product word this file cannot name for certain (gpt-5.6-sol-max, gpt-4.1-mini), an
- * older id order (claude-3-5-sonnet), another provider's route to a model (bedrock/…), and every
- * vendor not listed. So no suffix is ever dropped: an id either reads whole as a name or is shown
- * whole. The raw id stays in the label's title either way.
  */
 export interface ModelLabel {
-  /** what the pill draws */
   text: string;
-  /** false: `text` is the id as received, drawn in the identifier face */
   named: boolean;
 }
 
-// a version part in canonical form: no leading zero, two digits at most
 const NUMBER = "[1-9]\\d?";
 const CLAUDE = new RegExp(`^(?:anthropic/)?claude-(opus|sonnet|haiku|fable|mythos)-(${NUMBER})(?:-(0|${NUMBER}))?$`, "u");
 const GPT = new RegExp(`^gpt-(${NUMBER}(?:\\.${NUMBER})?)(-sol)?$`, "u");

@@ -11,16 +11,13 @@ export interface BackgroundAgentDeps {
   /** whether the pane is OmO's, whatever herdr names it: its tasks have no transcript to open */
   omoPane: (paneId: string) => boolean;
   claudeAgents: Pick<ClaudeSubagentStatus, "ensure" | "sessionOf">;
-  /** an OpenCode pane's session and store; without it an OpenCode pane has no detail, as any other agent's */
   opencodeAgents?: Pick<OpencodeSubagentStatus, "ensure" | "sessionOf" | "beginRead">;
-  /** the read itself (backgroundAgentDetail); a test holds it to change the pane's session while it is out */
   read?: (parentPath: string, agentId: string) => ReturnType<typeof backgroundAgentDetail> | Promise<ReturnType<typeof backgroundAgentDetail>>;
   now?: () => number;
 }
 
 type Session = "omo" | "other" | { path: string; live: boolean; startedAt: number | null } | { store: string; session: string } | null;
 
-/** Whether two lookups of the pane name the same session: the same transcript, or the same store and OpenCode session. */
 const sameSession = (before: Exclude<Session, "omo" | "other" | null>, after: Session): boolean => {
   if (typeof after !== "object" || after === null) return false;
   if ("store" in before) return "store" in after && after.store === before.store && after.session === before.session;
@@ -51,7 +48,6 @@ export async function handleBackgroundAgentRequest(request: Request, url: URL, d
   if (!validDetailId(agentId)) return badRequest("invalid_agent_id", "agent_id must be a word of letters, digits, - and _, at most 128 characters");
   const session = async (): Promise<Session> => {
     if (deps.omoPane(paneId)) return "omo";
-    // numbered as it begins: a snapshot of herdr's panes read since is newer than what this lookup answers
     const begun = deps.opencodeAgents?.beginRead();
     const pane = await deps.paneGet(paneId);
     if (pane.agent === "opencode" && deps.opencodeAgents !== undefined) {
@@ -60,7 +56,6 @@ export async function handleBackgroundAgentRequest(request: Request, url: URL, d
       return known?.live === true ? { store: known.path, session: known.session } : null;
     }
     if (pane.agent !== "claude") return "other";
-    // a session the background lookup has not got to yet is looked up here, for a second at most
     await within(1000, deps.claudeAgents.ensure(pane));
     return deps.claudeAgents.sessionOf(paneId);
   };

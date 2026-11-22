@@ -1,11 +1,7 @@
 /**
- * relay-qa-teardown.ts in a real Chromium: a check that closes its context while the app.ovis.sh proxy is between its
- * fetch and its fulfill ends that request quietly, and a proxy that fails while the page is open still fails.
  * context.close() first disposes the context's fetched responses and only then closes its pages; the proxy's fetched
  * response is held until that disposal is done, so its fulfill always lands in that window, as it did by chance in
- * relay-dashboard-browser-qa ("Fetch response has been disposed"). Every signal awaited here has a deadline, and a
- * navigation that ends before the proxy answered it (a route that never matched, a failed load) fails the run.
- * Loopback only.
+ * relay-dashboard-browser-qa ("Fetch response has been disposed").
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -14,13 +10,11 @@ import type { APIResponse, BrowserContext, Route } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 
-/** How long any one signal may take; the whole run takes a second or two. */
 const DEADLINE_MS = 20_000;
 
 const shell = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<p>shell</p>", { headers: { "content-type": "text/html" } }) });
 const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
 
-/** `signal`'s value, or an error naming `what` once DEADLINE_MS pass without it. */
 async function within<T>(signal: Promise<T>, what: string): Promise<T> {
   const timeout = AbortSignal.timeout(DEADLINE_MS);
   const expired = new Promise<never>((_, reject) => {
@@ -29,10 +23,6 @@ async function within<T>(signal: Promise<T>, what: string): Promise<T> {
   return Promise.race([signal, expired]);
 }
 
-/**
- * A page on app.ovis.sh proxied to `origin` as the relay QA scripts do; `outcome` is the proxy's error, or null, and
- * `navigation` the page's load: null once loaded, or its error.
- */
 async function proxied(origin: string, fetched: (response: APIResponse) => Promise<APIResponse>): Promise<{ context: BrowserContext; outcome: Promise<unknown>; navigation: Promise<unknown> }> {
   const context = await browser.newContext();
   const outcome = Promise.withResolvers<unknown>();
@@ -46,7 +36,6 @@ async function proxied(origin: string, fetched: (response: APIResponse) => Promi
   return { context, outcome: outcome.promise, navigation };
 }
 
-/** Waits for `signal` (bounded); a navigation that ends first, loaded or failed, means the proxy never held the page's load. */
 async function beforeNavigationEnds<T>(signal: Promise<T>, navigation: Promise<unknown>, what: string): Promise<T> {
   const first = await within(Promise.race([signal.then((value) => ({ value })), navigation.then((error) => ({ ended: error }))]), what);
   if ("ended" in first) throw new Error(`the navigation ended before ${what}: ${first.ended === null ? "it loaded" : String(first.ended).split("\n")[0]}`);

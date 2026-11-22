@@ -1,7 +1,7 @@
 /**
  * Simplified Chinese for the keys only the sidebar files use:
  * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
- * components/SidebarSplit.tsx.
+ * components/SidebarSplit.tsx, components/InboxList.tsx, lib/inboxRow.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_ZH: Record<string, string> = {
@@ -22,7 +22,6 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Helpers": "助手",
   "Helpers of {title}": "{title} 的助手",
   "Fold helpers under their agent": "把助手折叠在其代理下",
-  "On this device, an agent's helpers fold under one line below its row in the Agents list, with how many there are. A helper that needs you and the selected one stay in sight.": "在此设备的代理列表中，把代理的助手折叠为其行下方的一行，并显示数量。需要你回应的助手和选中的助手仍然可见。",
   "Background tasks running: {count}": "正在运行的后台任务：{count}",
   "Agent waiting on background work": "Agent 正在等待后台工作",
   "Has a question": "有问题",
@@ -34,6 +33,17 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Loading agents…": "正在加载代理…",
   "Herdr workspaces": "herdr 工作区",
   "No agents running": "没有运行中的代理",
+  "Clear search": "清除搜索",
+  "Nothing is running yet": "还没有任何内容在运行",
+  "Couldn't load the list.": "无法加载列表。",
+  "Retrying…": "正在重试…",
+  "Use + to start a workspace": "使用 + 新建工作区",
+  "No results": "无结果",
+  "You: {text}": "我：{text}",
+  "Turn failed": "出错",
+  "Filter by state": "按状态筛选",
+  "Search agents": "搜索 Agent",
+  "Filter by state: {state}": "按状态筛选：{state}",
   "Expand worktrees of {name}": "展开 {name} 的工作树",
   "Collapse worktrees of {name}": "折叠 {name} 的工作树",
   "Agents: {names}": "代理：{names}",
@@ -66,9 +76,12 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Collapse": "折叠",
   "Expand": "展开",
   "Working": "运行",
+  "Working, waiting on background work": "运行，等待后台工作",
   "Idle": "就绪",
   "{count} need you": "{count} 个需回应",
   "Agent state unknown": "代理状态未知",
   "Move to {group}": "移到 {group}",
   "Remove from {group}": "从 {group} 移出",
+  "{count} working": "{count} 个工作中",
+  "On this device, an agent's helpers fold into one line under it in the Agents list, with their count. A helper that needs you and the one you selected stay in sight.": "在此设备的 Agent 列表中，把 Agent 的助手折叠成它下方的一行，并显示数量。需要你回应的助手和当前选中的助手仍会显示。",
 };

@@ -18,10 +18,10 @@ public enum WebPushDecrypt {
         let shared = try keys.privateKey.sharedSecretFromKeyAgreement(with: publicKey)
         let secret = shared.withUnsafeBytes { Data($0) }
         let info = Data("WebPush: info\0".utf8) + keys.publicPoint + sender
-        let ikm = expand(hmac(keys.auth, secret), info, 32)
+        let ikm = expandOneBlock(hmac(keys.auth, secret), info, 32)
         let prk = hmac(Data(bytes[0..<16]), ikm)
-        let cek = expand(prk, Data("Content-Encoding: aes128gcm\0".utf8), 16)
-        let nonce = expand(prk, Data("Content-Encoding: nonce\0".utf8), 12)
+        let cek = expandOneBlock(prk, Data("Content-Encoding: aes128gcm\0".utf8), 16)
+        let nonce = expandOneBlock(prk, Data("Content-Encoding: nonce\0".utf8), 12)
         let box = try AES.GCM.SealedBox(
             nonce: AES.GCM.Nonce(data: nonce),
             ciphertext: Data(bytes[86..<(bytes.count - 16)]),
@@ -38,7 +38,7 @@ public enum WebPushDecrypt {
     }
 
     /// All the HKDF expansions here fit in one SHA-256 block.
-    private static func expand(_ key: Data, _ info: Data, _ count: Int) -> Data {
+    private static func expandOneBlock(_ key: Data, _ info: Data, _ count: Int) -> Data {
         Data(hmac(key, info + Data([1])).prefix(count))
     }
 }

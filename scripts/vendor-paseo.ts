@@ -40,7 +40,6 @@ if (import.meta.main) {
       const to = join(destination, file);
       mkdirSync(dirname(to), { recursive: true });
       if (file === "tsconfig.json") {
-        // Preserve upstream compiler policy; adapt the flattened layout and project boundary.
         const config = JSON.parse(readFileSync(from, "utf8"));
         config.compilerOptions.rootDir = ".";
         config.compilerOptions.composite = true;

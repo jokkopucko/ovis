@@ -3,12 +3,6 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/**
- * scripts/relay-ios-sim.sh's cleanup, with no Mac: ssh, scp, tailscale and bun are stubs on PATH.
- * The remote half reports BUILT and then stays blocked (WebDriverAgent never says it is ready),
- * the WDA deadline fires, and cleanup must still stop that remote half, run eamac's cleanup, stop
- * the local stack, turn the serve ports off and say so, within a bound.
- */
 const script = join(import.meta.dir, "relay-ios-sim.sh");
 /** The whole run's bound: the WDA deadline (2 s) and at most two stop graces (2 s each), with room. */
 const RUN_BOUND_MS = 30_000;

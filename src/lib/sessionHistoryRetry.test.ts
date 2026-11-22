@@ -75,7 +75,6 @@ it("clears the real retry timer when the list closes", async () => {
     const result = readSessionHistory(() => reading.promise, "pi", { signal: controller.signal });
     const rejected = result.catch((reason: unknown) => reason);
     reading.reject(busy());
-    // Await the read's exact rejection handler, which schedules its pause before this continuation.
     await reading.promise.catch(() => undefined);
     expect(jest.getTimerCount()).toBe(1);
     controller.abort();

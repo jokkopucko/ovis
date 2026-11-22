@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { Page, Locator, Route } from "playwright-core";
 
-/** The owned fixture directory has only a and b; no workspace is created by this check. */
 export async function checkFolderFilter(page: Page, dialog: Locator, createRequests: () => number): Promise<void> {
   const until = async (check: () => Promise<boolean>, label: string) => {
     const deadline = Date.now() + 5_000;
@@ -56,7 +55,6 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
     await page.unroute("**/api/workspace/directories**", holdDirectory);
   }
   const directory = dialog.getByLabel(/^Directory/);
-  // Browse writes the opened folder into Directory, so Start would use it without Use this folder
   await until(async () => {
     const value = await directory.inputValue();
     return value.endsWith("/a") || value === "a";
@@ -66,7 +64,6 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
     const value = await directory.inputValue();
     return !value.endsWith("/a") && value !== "a";
   }, "Directory follows Browse back to the parent");
-  // a long path is cut on the controls' row, not wrapped: the bar keeps its height between folders
   const bar = dialog.locator(".dir-browser-bar");
   const path = dialog.locator(".dir-browser-path");
   const rowHeight = Math.round((await bar.boundingBox())?.height ?? 0);
@@ -101,27 +98,20 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
   if (viewport) await page.setViewportSize(viewport);
   await dialog.getByRole("button", { name: "Use this folder", exact: true }).click();
   await filter.waitFor({ state: "detached" });
-  // a typed path that does not open shows home in its place, and Directory keeps what was typed:
-  // Start must refuse the typo, not start in home. Closing Browse is a new event, so React has run
+  // Closing Browse is a new event, so React has run
   // the listing's effects by the time the value is read.
   const typo = "~/ovis-no-such-folder";
   const picked = await directory.inputValue();
   await directory.fill(typo);
   await dialog.getByRole("button", { name: "Browse", exact: true }).click();
-  // until the listing comes, the path bar shows the typed path itself: wait for home in its place
   await until(async () => !["", typo].includes((await dialog.locator(".dir-browser-path").textContent()) ?? ""), "Browse shows home for a path that does not open");
   await dialog.getByRole("button", { name: "Browse", exact: true }).click();
   await filter.waitFor({ state: "detached" });
   assert.equal(await directory.inputValue(), typo, "Browse's home in place of a typo does not replace the typed Directory");
-  // the checks after this one browse the owned fixture folder again
   await directory.fill(picked);
   console.log("PASS folder filtering preserves IME keys, blocks form submission and clears on navigation");
 }
 
-/**
- * New folder, with Browse open on a folder the test owns: Escape closes only the name field, a
- * refused name says so in place and submits nothing, and a made folder opens so Directory follows it.
- */
 export async function checkNewFolder(page: Page, dialog: Locator, createRequests: () => number, name: string): Promise<void> {
   const until = async (check: () => Promise<boolean>, label: string) => {
     const deadline = Date.now() + 5_000;
@@ -136,7 +126,20 @@ export async function checkNewFolder(page: Page, dialog: Locator, createRequests
   const field = dialog.getByRole("textbox", { name: "New folder name" });
   await button.click();
   await field.waitFor();
+  assert.equal(await field.getAttribute("enterkeyhint"), "done", "the soft keyboard is asked to complete the name instead of advancing to the workspace label");
   assert.equal(await field.evaluate((input) => input === document.activeElement), true, "the name field takes focus");
+  await field.fill("ime-name");
+  const composition = await field.evaluate((input) => [
+    { key: "Enter", isComposing: true },
+    { key: "Enter", keyCode: 229 },
+    { key: "Escape", isComposing: true },
+  ].map((init) => input.dispatchEvent(new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true }))));
+  assert.deepEqual(composition, [true, true, true], "folder naming preserves IME candidate keys");
+  assert.equal(await field.inputValue(), "ime-name", "IME keys leave the pending name intact");
+  await directory.focus();
+  assert.equal(await directory.inputValue(), before, "moving focus does not make a folder");
+  assert.equal(await field.inputValue(), "ime-name", "moving focus keeps a non-empty name");
+  assert.equal(createRequests(), 0, "IME keys and focus changes start no workspace");
   await field.press("Escape");
   await field.waitFor({ state: "detached" });
   assert.equal(await dialog.isVisible(), true, "Escape closes the field, not the dialog");

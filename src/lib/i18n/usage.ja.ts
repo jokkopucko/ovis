@@ -8,6 +8,7 @@
 export const USAGE_JA: Record<string, string> = {
   "Remove {name}?": "{name}を削除しますか？",
   "Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.": "このアカウントをOvisから削除しますか？CLIのログインと認証情報はこのPCに残り、「Ovisから削除済み」の「復元」で戻せます。",
+  "Remove this account from Ovis? {tool} keeps its record of it, and Restore under Removed from Ovis brings it back.": "このアカウントをOvisから削除しますか？{tool} の記録はそのまま残り、「Ovisから削除済み」の「復元」で戻せます。",
   "Removed from Ovis": "Ovisから削除済み",
   "Restore": "復元",
   "Restore {name}": "{name} を復元",
@@ -95,4 +96,7 @@ export const USAGE_JA: Record<string, string> = {
   "Limit resets": "制限リセット",
   "Expires in {time}": "{time}後に期限切れ",
   "{n} left": "残り{n}回",
+  "Recorded by {tool}": "{tool} の記録",
+  "Recorded by {tool}, {when}": "{tool} の記録、{when}",
+  "It may have changed since.": "その後変わった可能性があります。",
 };

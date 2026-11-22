@@ -10,14 +10,12 @@ import { join } from "node:path";
  */
 
 const INSTALLER = readFileSync(join(import.meta.dir, "..", "install.sh"), "utf8");
-/** one top-level shell function from install.sh, by name, as written there */
 function fn(name: string): string {
   const match = new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}$`, "m").exec(INSTALLER);
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "install_node", "server_arch", "node_fits", "node_link"].map(fn).join("\n");
-/** main()'s choice of whether to install Node, as written there: from `needs_node=""` to its node_link call */
+const FUNCTIONS = ["say", "sha256", "kill_tree", "bounded", "rust_host_runs", "node_sha_for", "install_node", "server_arch", "node_fits", "node_link"].map(fn).join("\n");
 const NODE_DECISION = /^ {2}needs_node=""[\s\S]*?^ {2}node_link "\$code" "\$needs_node"$/m.exec(INSTALLER)?.[0] ?? "";
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-node-"));
@@ -29,7 +27,6 @@ function script(name: string, body: string): string {
   return path;
 }
 
-/** runs `call` after install.sh's functions under /bin/sh with `set -eu`, as the script runs */
 function sh(call: string, env: Record<string, string> = {}): { code: number; out: string; ms: number } {
   const started = performance.now();
   const run = Bun.spawnSync(["/bin/sh", "-c", `set -eu\n${FUNCTIONS}\n${call}`], { env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
@@ -80,7 +77,6 @@ describe("rust_host_runs", () => {
     const forking = script("forks", `${USAGE}\n${child} & wait`);
     const hung = sh(`if rust_host_runs ${forking}; then echo RUNS; else echo REFUSED; fi`);
     expect(hung.out).toContain("REFUSED");
-    // the watcher kills the tree before rust_host_runs returns
     expect(Bun.spawnSync(["pgrep", "-f", tag]).stdout.toString().trim()).toBe("");
   });
 
@@ -91,7 +87,6 @@ describe("rust_host_runs", () => {
 });
 
 describe("install_node", () => {
-  /** a PC for one install: stand-in curl and tar on PATH, and where Node would go */
   function pc(curl: string, tar: string): Record<string, string> {
     const root = mkdtempSync(join(dir, "pc-"));
     const bin = join(root, "tools");
@@ -100,7 +95,6 @@ describe("install_node", () => {
     writeFileSync(join(bin, "tar"), `#!/bin/sh\n${tar}\n`, { mode: 0o755 });
     return { PATH: `${bin}:${process.env["PATH"]}`, NODE_DIR: join(root, "node"), BIN_DIR: join(root, "bin"), NODE_VERSION: "v22.23.2", platform: "linux-x64" };
   }
-  /** curl that writes `body` to its -o file */
   const download = (body: string) => `while [ "$#" -gt 0 ]; do [ "$1" = -o ] && { printf '%s' '${body}' > "$2"; exit 0; }; shift; done; exit 1`;
   /** install_node as install.sh runs it, a subshell in a condition, where set -e does nothing */
   const attempt = (env: Record<string, string>) => sh(`if ( install_node ); then echo INSTALLED; else echo FAILED; fi`, env);
@@ -141,7 +135,6 @@ describe("install_node", () => {
 });
 
 describe("node_fits", () => {
-  /** whether install.sh takes the node first on PATH, one that answers the probe with `answer`, on a PC of `arch` */
   const fits = (answer: string, arch = "arm64") => {
     const bin = mkdtempSync(join(dir, "fits-"));
     writeFileSync(join(bin, "node"), `#!/bin/sh\necho '${answer}'\n`, { mode: 0o755 });
@@ -185,14 +178,12 @@ describe("node_fits", () => {
   it("asks a real Node the same way", () => {
     const real = Bun.which("node");
     if (real === null) throw new Error("this test needs Node");
-    // what this node itself says, not this Bun's own process.versions
     const [version, arch] = Bun.spawnSync([real, "-p", "process.versions.node + ' ' + process.arch"]).stdout.toString().trim().split(" ");
     expect(sh(`if node_fits ${real}; then echo FITS; else echo NO; fi`, { arch: arch! }).out.trim()).toBe(Number(version!.split(".")[0]) >= 18 ? "FITS" : "NO");
   });
 });
 
 describe("server_arch", () => {
-  /** arch and platform after server_arch, on a PC whose uname said `uname`, with a bun answering `answer` */
   const after = (answer: string, uname = "x64") => {
     const bin = mkdtempSync(join(dir, "bun-"));
     writeFileSync(join(bin, "bun"), `#!/bin/sh\necho '${answer}'\n`, { mode: 0o755 });
@@ -221,7 +212,6 @@ describe("server_arch", () => {
 });
 
 describe("main's choice to install Node", () => {
-  /** runs that choice with the Rust host refused, the app's Node and the user's PATH node answering as given; true when it downloads */
   const downloads = (app: string | null, user: string | null) => {
     const root = mkdtempSync(join(dir, "choice-"));
     const nodeDir = join(root, "share/ovis/node");
@@ -251,11 +241,6 @@ describe("main's choice to install Node", () => {
 });
 
 describe("node_link", () => {
-  /**
-   * a PC whose ~/.local/bin/node is `bin`, our Node in `ours` (NODE_DIR, or LEGACY_NODE_DIR from before the rename), the
-   * user's own PATH holding a node answering `user` (none when unset), and the running code: one that finds the app's
-   * Node itself (`finds`), or an older one
-   */
   function pc(finds: boolean, bin?: (env: Record<string, string>) => void, ours = "NODE_DIR", user?: string): Record<string, string> {
     const root = mkdtempSync(join(dir, "link-"));
     const userPath = join(root, "user-path");
@@ -264,7 +249,6 @@ describe("node_link", () => {
     // node_link probes only Node on original_path: do not let the real PC's /usr/bin/node fill an absent fixture.
     const env: Record<string, string> = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "", original_path: userPath };
     mkdirSync(join(env["CODE"]!, "server/pty"), { recursive: true });
-    // as the release's server/pty/sidecar.ts names the app's Node, or before it did
     writeFileSync(join(env["CODE"]!, "server/pty/sidecar.ts"), finds ? 'const APP_NODE_DIRS = [".local/share/ovis/node"];' : 'Bun.which("node")');
     mkdirSync(join(env[ours]!, "bin"), { recursive: true });
     writeFileSync(join(env[ours]!, "bin/node"), "app node", { mode: 0o755 });
@@ -320,7 +304,6 @@ describe("node_link", () => {
   });
 
   it("links the Node from before the rename back for such a release, and over a user's Node older than 18", () => {
-    // the link was removed, and nothing new was downloaded: our Node from before the rename already answered (#596 review)
     const legacy = pc(false, undefined, "LEGACY_NODE_DIR", "v10.24.1");
     expect(link(legacy, "needed").out).toContain("[ node]");
     expect(Bun.spawnSync(["readlink", node(legacy)]).stdout.toString().trim()).toBe(join(legacy["LEGACY_NODE_DIR"]!, "bin/node"));

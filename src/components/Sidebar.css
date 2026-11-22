@@ -1,22 +1,19 @@
+.sidebar-shell,
+.sidebar.inbox-column {
+  --side-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-nav));
+  --side-selected: var(--bg-hover);
+}
+
 .sidebar-shell {
-  /* One grid for every row: a leading cell that says who or what the row is, the title, and a
-     trailing cell that says how it is. The two cells are the columns of the header zone's own
-     buttons above the list. Aliases of existing tokens only. */
   --side-gutter: var(--space-3);
   --side-box: var(--control-h);
   --side-row: var(--control-h);
   --side-row-2: calc(var(--control-h) + var(--space-3));
   --side-action: var(--space-6);
-  --side-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-nav));
-  --side-selected: var(--bg-hover);
-  /* Until resized, Agents keeps today's half-shell allocation when both lists are long. The PCs
-     take the rest, but never reserve height beyond their rows: Agents can use what they leave free.
-     The PCs grow first (below), so a long roster does not change today's default split. */
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  /* the navigation column's surface (G-152): never brighter than the content beside it in the dark theme */
   background: var(--bg-nav);
 }
 
@@ -24,7 +21,6 @@
   padding: 0 var(--side-gutter);
 }
 
-/* a section head (Agents): quiet words, never a rule */
 .sidebar-section-label {
   display: flex;
   align-items: center;
@@ -49,7 +45,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   button.sidebar-section-label:hover { color: var(--text); }
 }
 
-/* the leading cell: a coding agent's brand mark, else the place's own glyph */
 .sidebar-mark {
   display: inline-flex;
   align-items: center;
@@ -65,7 +60,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   height: var(--icon-size);
 }
 
-/* the project's own icon, in the folder glyph's cell */
 .workspace-favicon img {
   display: block;
   width: var(--icon-size);
@@ -74,15 +68,11 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   border-radius: var(--radius-sm);
 }
 
-/* the marks that ride currentColor (codex, cursor, pi) read as the title does */
 .sidebar-mark .agent-mark {
   display: inline-flex;
   color: var(--text);
 }
 
-/* The filter over both lists (MachineSidebar.tsx): one field the height of a row, in the rows' gutter, its glass
-   inside the field's leading cell and its clear inside the trailing one, and no word beside it: the placeholder
-   says what it filters. It never grows: a long query scrolls inside the field. */
 .sidebar-filter {
   position: relative;
   display: flex;
@@ -92,7 +82,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: var(--space-2) var(--side-gutter) 0;
 }
 
-/* the glass sits in the field's leading cell, out of the pointer's way: a press on it lands in the field */
 .sidebar-filter-glass {
   position: absolute;
   top: calc(var(--space-2) + (var(--side-row) - var(--icon-size)) / 2);
@@ -143,7 +132,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   height: var(--icon-size);
 }
 
-/* a pointer's hover and press, as the app's icon buttons draw them (styles.css .icon-button) */
 @media (hover: hover) {
   .sidebar-filter-clear:hover { background: var(--bg-hover); color: var(--text); }
 }
@@ -159,9 +147,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   outline-offset: calc(var(--ring-offset) * -1);
 }
 
-/* a row the filter keeps for the selection, or as the head of a match, not as a match: its words dim,
-   and the selected one says why it is there (.sidebar-filter-note), so colour never carries it alone. An
-   offline PC's rows are already faded (Machines.css .machine-offline): they are not dimmed twice */
 .machine-group:not(.is-offline) .is-filter-context > .workspace-header .workspace-name,
 .machine-group:not(.is-offline) .is-filter-context > .workspace-header .workspace-place,
 .machine-group:not(.is-offline) .is-filter-context > .workspace-header .worktree-workspace-label,
@@ -175,13 +160,11 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   color: var(--text-dim);
 }
 
-/* beside the note a one-line row's secondary words would be cut to an ellipsis: they step aside for it */
 .workspace-group.is-filter-context.is-selected > .workspace-header .worktree-workspace-label,
 .agents-sidebar.is-one-line .agent-item.is-filter-context.is-selected .agent-context {
   display: none;
 }
 
-/* the no-match line: what happened, then what to do, each sentence on its own line */
 .sidebar-filter-empty {
   white-space: pre-line;
 }
@@ -198,12 +181,10 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-/* in an agent row it opens the row's trailing badges, apart from the title as they are */
 .agent-row-status > .sidebar-filter-note {
   margin-left: var(--space-2);
 }
 
-/* also the connecting shell's one line, which sits outside the grid */
 .tree-state {
   margin: 0;
   padding: var(--space-2) var(--space-2) var(--space-2) var(--side-box, var(--space-2));
@@ -211,7 +192,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   font-size: var(--fs-sm);
 }
 
-/* an empty PC: the words, and the one thing to do about them */
 .tree-state-empty {
   display: flex;
   flex-direction: column;
@@ -232,12 +212,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   list-style: none;
 }
 
-/* Pinned rows, agents and workspaces alike, stand first in a card: an edge, not a fill, so a row's
-   hover and selection read inside it as anywhere else, its corner the rows' own plus its padding.
-   The list under it follows a gap below. */
-/* Pinned rows stand first in a card whose top edge carries "── Pinned ──", like a fieldset's
-   legend: the caption sits on the line, masked by the sidebar's own background. The list carries the
-   name for screen readers, so the caption is hidden from them. */
 .sidebar-pinned {
   padding: var(--space-2) var(--space-1) var(--space-1);
   border: var(--hairline) solid var(--border);
@@ -252,7 +226,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   display: flex;
   align-items: center;
   justify-content: center;
-  /* half the caption's height above the card's edge, half below it */
   margin: var(--space-1) 0 calc(var(--fs-meta) * var(--lh-tight) / -2);
   color: var(--text-dim);
   font-size: var(--fs-meta);
@@ -277,9 +250,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   height: 1em;
 }
 
-/* Settings → Background workspaces apart: the workspaces a launcher tagged role=background stand after the
-   rest, under a heading like the Agents list's Background agents one (AgentSidebar.css) that folds them and
-   says how many there are; its caret takes the leading cell */
 .workspace-background-toggle {
   display: flex;
   align-items: center;
@@ -336,7 +306,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   border-radius: var(--radius-md);
 }
 
-/* the trailing padding keeps the status cell, which the selector draws at the row's right edge */
 .workspace-header {
   position: relative;
   display: flex;
@@ -363,13 +332,8 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   cursor: pointer;
 }
 
-/* One indent level. A linked worktree keeps herdr's repository workspace as its parent and sits
-   under that row's mark, clear of the folder column. The fill stays as wide as the list and the
-   row's content moves. */
 .worktree-children .workspace-header { padding-left: var(--side-box); }
 
-/* herdr's tree: a worktree hangs from its repository's folder on a dim branch, a tee for each
-   but the last and an elbow for the last, drawn in the indent and never in the way of a click */
 .worktree-children .workspace-group > .workspace-header::before,
 .worktree-children .workspace-group > .workspace-header::after {
   position: absolute;
@@ -393,10 +357,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   height: var(--hairline);
 }
 
-/* Settings > Appearance > Agents under workspaces (#773): a workspace's agents hang one level under its
-   row on the same dim branch a worktree hangs from, a tee for each and an elbow for the last unless the
-   repository's worktrees go on below them. A worktree's agents sit a level further in, its own branch
-   passing by them to the next worktree. Each is a row's height, its state in the rows' trailing cell. */
 .workspace-agents {
   --agent-indent: var(--side-box);
   margin: 0;
@@ -431,7 +391,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 }
 
 .workspace-agent-select > .sidebar-mark { margin-inline-end: calc(-1 * var(--space-2)); }
-/* the common ring, outside the row (G-034); scroll-margin keeps it in view when the keyboard lands here */
 .workspace-agent-select:focus-visible { outline-offset: var(--ring-offset); scroll-margin-block: calc(var(--ring-offset) + var(--space-1)); }
 .workspace-agent-select:disabled { cursor: default; }
 
@@ -452,9 +411,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-/* the title keeps a few characters in the narrowest sidebar; the tab's name and the counts give way first.
-   Navigation text stands a step back from the state beside it (G-042); the selected row's reads in the
-   strong ink and a heavier weight (G-035) */
 .workspace-agent-title {
   flex: 0 1 auto;
   min-width: calc(4 * var(--space-4));
@@ -512,7 +468,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   .workspace-agent:has(> .workspace-agent-select:enabled):hover { background: var(--side-hover); }
 }
 
-/* the selected agent's row carries the selection's fill; its workspace's row keeps the place in its words */
 .workspace-agent.is-selected { background: var(--side-selected); }
 .workspace-agent.is-selected .workspace-agent-title { color: var(--text-strong); font-weight: var(--fw-selected); }
 
@@ -528,9 +483,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   color: var(--text-dim);
 }
 
-/* The face that leads a workspace row is also the fold when linked worktrees sit under it: under a
-   pointer or keyboard focus it turns to the folder that says so, open while the worktrees show and
-   closed while they are folded; on touch, where nothing hovers, the folder always shows. */
 .sidebar-row-action.workspace-toggle {
   position: relative;
   flex: 0 0 var(--side-box);
@@ -569,7 +521,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   .workspace-toggle-fold { display: flex; }
 }
 
-/* how many worktrees a folded group holds: the face alone looks like any workspace's */
 .workspace-fold-count {
   flex: none;
   color: var(--text-dim);
@@ -578,7 +529,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   line-height: var(--lh-tight);
 }
 
-/* hover first, selection after it: one neutral fill at two strengths */
 @media (hover: hover) {
   .workspace-header:hover {
     background: var(--side-hover);
@@ -589,9 +539,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   background: var(--side-selected);
 }
 
-/* keyboard focus draws the common ring around the row's selector, 2px outside it (G-034), on the element
-   that holds the focus; scroll-margin keeps the ring in view when the keyboard lands on a row at the list's
-   edge */
 .workspace-select:focus-visible {
   outline: var(--ring);
   outline-offset: var(--ring-offset);
@@ -612,7 +559,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     border-inline-start-width: calc(var(--ring-offset) + 2 * var(--hairline));
   }
 
-  /* the tree's selected agent takes the bar from its workspace's row, as it takes the fill */
   .workspace-group.is-selected.has-selected-agent > .workspace-header {
     margin-inline-start: 0;
     border-inline-start: 0;
@@ -632,7 +578,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   min-width: 0;
 }
 
-/* a row's name is navigation: a step back from the state beside it (G-042), AA in both themes */
 .workspace-name {
   min-width: 0;
   overflow: hidden;
@@ -646,8 +591,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .workspace-name { flex: 0 1 auto; }
 
-/* Settings → Sidebar rows → Two lines: a row says what its pane is doing, and where under it,
-   on the height and in the type of an agent's row. */
 .machine-workspaces.is-two-line .workspace-header { min-height: var(--side-row-2); }
 
 .workspace-copy.is-two-line {
@@ -674,7 +617,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-/* a worktree workspace's own name follows its branch on the same line, and gives way first */
 .worktree-workspace-label {
   flex: 1 1 0;
   min-width: 0;
@@ -686,7 +628,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-/* the selected row's name: the strong ink and a heavier weight, so the selection is not colour alone (G-035) */
 .workspace-group.is-selected > .workspace-header .workspace-name {
   color: var(--text-strong);
   font-weight: var(--fw-selected);
@@ -700,7 +641,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   opacity: 0.55;
 }
 
-/* a finger's drag (lib/touchReorder.ts): the held row rises over the list and follows the finger */
 .workspace.is-lifted {
   position: relative;
   z-index: 2;
@@ -708,7 +648,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   box-shadow: var(--shadow-card);
 }
 
-/* where the held row lands: a line at the edge of the row, or of a group's worktrees, it goes past */
 .workspace-group[data-drop="before"],
 .worktree-children[data-drop="before"] {
   box-shadow: inset 0 calc(2 * var(--hairline)) 0 var(--accent);
@@ -719,7 +658,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   box-shadow: inset 0 calc(-2 * var(--hairline)) 0 var(--accent);
 }
 
-/* the field's text stays where the title was, and its edge clear of the mark */
 .workspace-rename-input,
 .pane-rename-input {
   flex: 1 1 auto;
@@ -727,6 +665,11 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   height: calc(var(--control-h) - var(--space-2));
   margin-left: calc(-1 * var(--space-1));
   padding: 0 var(--space-2) 0 calc(var(--space-1) - var(--hairline));
+}
+
+.workspace-rename-input:focus-visible,
+.pane-rename-input:focus-visible {
+  outline-offset: var(--ring-inset-offset);
 }
 
 .sidebar-row-action {
@@ -763,11 +706,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   .sidebar-row-action:hover:not(:disabled) { color: var(--text-strong); }
 }
 
-/* A row's menu button takes no room until the row is hovered, focused or its menu is open; only the
-   name gives way to it. A right-click or the context-menu key opens the same menu at the row and
-   hands the focus back where it was. On touch and in the drawer the selected row keeps its ⋯ too; a
-   desktop shows it under the pointer and the keyboard alone (G-021), so the menu can be found without
-   knowing the right-click. */
 .workspace-actions {
   display: flex;
   align-items: center;
@@ -775,7 +713,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   width: 0;
   overflow: hidden;
   opacity: 0;
-  /* out of the accessibility tree and the tab order while unseen: the row's selector is its one stop */
   visibility: hidden;
 }
 
@@ -805,8 +742,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-/* The status cell belongs to the selector (a click or a drag on it is the row's) and is drawn at
-   the row's right edge, after the menu button and a worktree group's chevron. */
 .sidebar-pane-meta {
   display: inline-flex;
   align-items: center;
@@ -821,8 +756,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   width: var(--side-box);
 }
 
-/* Compact states keep the label and tooltip the badges have on the other surfaces. The cell is
-   a box for every state, also when ready or unknown draw nothing in it. */
 .sidebar-status {
   justify-content: center;
   flex: 0 0 var(--side-box);
@@ -841,14 +774,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   height: var(--space-4);
 }
 
-/* A question mark asks for an answer; a dot, as an unread mark is, has finished and was not
-   looked at; a working-coloured dot runs and a ring of it waits on background work. Every state
-   keeps the color it has on every other surface. */
 
-/* Running breathes rather than spins: the dot holds full for most of the cycle and dims in a few
-   steps, so it reads as alive at a glance without tugging at the eye, and the browser draws only
-   those steps. Every dot shares one phase (alignBreath), so several runs breathe together. Under
-   reduced motion the dot holds still, its shape and colour the state's as ever (G-027). */
 .sidebar-status[data-status="working"] .sidebar-status-dot {
   animation: sidebar-breathe var(--dur-breathe) steps(6) infinite;
 }
@@ -871,10 +797,10 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   background: currentColor;
 }
 
-/* Settings -> Status indicators, Dots or Symbols: herdr's TUI glyph for every state
+/* herdr's TUI glyph for every state
    (lib/status.ts indicatorGlyph) in the color herdr gives it (the --indicator-* tokens): yellow
    runs, red asks for an answer, teal has finished, green is ready, grey is unknown. BG, which herdr
-   does not have, holds RUN's glyph still; RUN breathes as the dot does. */
+   does not have, holds RUN's glyph still. */
 .sidebar-status-glyph {
   color: var(--indicator-unknown);
   font-family: var(--font-mono);
@@ -893,7 +819,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   animation: sidebar-breathe var(--dur-breathe) steps(6) infinite;
 }
 
-/* under reduced motion the dot and the glyph hold still, their shape and colour the state's as ever (G-027) */
 @media (prefers-reduced-motion: reduce) {
   .sidebar-status[data-status="working"] .sidebar-status-dot,
   .sidebar-status[data-status="working"] .sidebar-status-glyph { animation: none; }
@@ -911,8 +836,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   100% { opacity: 1; }
 }
 
-/* background tasks still running, a pane's plan and its context left: a number beside the state, quieter than
-   it, at the information floor (G-039) */
 .background-count,
 .plan-count,
 .context-count {
@@ -942,7 +865,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   overflow-wrap: anywhere;
 }
 
-/* the footer is one row on the same grid: the Settings gear and the plan meters */
 .sidebar-footer {
   position: relative;
   display: flex;
@@ -951,8 +873,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: var(--space-2) var(--side-gutter) calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
 }
 
-/* The PCs get free space first, up to their rows; Agents starts with half the whole shell,
-   as before, and gets the space a short PCs list leaves. Neither grows past its own content. */
 .sidebar-shell > .pcs-sidebar {
   flex: var(--pcs-flex, 1000 1 0);
   min-height: var(--split-pcs-min, 0px);
@@ -965,8 +885,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 }
 .sidebar-shell > .agents-sidebar:is(.is-collapsed, .is-empty) { flex: 0 1 auto; min-height: 0; }
 
-/* When neither list fills its allocation, keep Agents docked to the footer as before. Grouped
-   Agents stays on top, and the footer still stays at the foot of the sidebar. */
 .sidebar-shell:not(.is-agents-first) > .sidebar-split { margin-top: auto; }
 .sidebar-shell.is-agents-first > .sidebar-footer { margin-top: auto; }
 
@@ -993,7 +911,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   .sidebar-footer-action:hover:not(:disabled) { background: var(--side-hover); }
 }
 
-/* which PC of the phone's several this is, and the way back to their list: a row above the gear */
 .sidebar-footer-pc {
   min-height: var(--side-row);
   margin-bottom: var(--space-1);
@@ -1015,7 +932,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   font-size: var(--fs-sm);
 }
 
-/* the gear first, the plan meters filling the rest */
 .sidebar-footer-row {
   display: flex;
   align-items: center;
@@ -1023,7 +939,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   min-width: 0;
 }
 
-/* Settings is its gear alone, so the plan meters beside it get the rest of the row */
 .sidebar-footer-row > .sidebar-footer-settings {
   flex: 0 0 auto;
   width: var(--side-box);
@@ -1038,9 +953,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     --side-action: var(--touch-target);
   }
 
-  /* The folder that folds a worktree group takes a finger's width: its icon stays on its column, and the
-     extra width lies in the row's gutter at its start, never over the selector after it, so the first
-     letters of the name select the row and the folder folds it (G-025). */
   .sidebar-row-action.workspace-toggle {
     position: relative;
     z-index: 1;
@@ -1054,9 +966,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     inset-inline-start: calc(var(--touch-target) - var(--side-box));
   }
 
-  /* The gear stays its --side-box column and takes a finger's --touch-target width through an
-     invisible expander that grows into the footer's gutter at its inline start, never toward the
-     plan meters after it. */
   .sidebar-footer-row > .sidebar-footer-settings {
     position: relative;
   }
@@ -1068,7 +977,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     inset-inline: min(0px, calc(100% - var(--touch-target))) 0;
   }
 
-  /* Row menus stay visible on touch. */
   .workspace-actions {
     width: auto;
     overflow: visible;
@@ -1084,7 +992,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-/* a finger presses a row as an iPhone list row is pressed: it fills, it does not dim (styles.css) */
 @media (hover: none) and (pointer: coarse) {
   .workspace-header:has(> .pane-select:active),
   .sidebar-footer-action:active {
@@ -1097,7 +1004,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-/* a pane's plan: its glyph in the working color until every step is done */
 .plan-count svg {
   color: var(--status-working);
 }
@@ -1106,7 +1012,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   color: var(--status-done);
 }
 
-/* the composer's context ring at the badges' size (Composer.css .composer-context): plain until little is left */
 .context-count-track,
 .context-count-used {
   fill: none;
@@ -1126,17 +1031,12 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   color: var(--status-blocked);
 }
 
-/* Compact rows, the default (Settings → Sidebar rows → Two lines keeps the tall ones), as herdr-app's list: one line
-   a little lower than a control under a pointer (a finger keeps its touch target), the name, and a branch other than the
-   default dim right after it */
 @media (pointer: fine) {
   .machine-workspaces:not(.is-two-line) {
     --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2);
   }
 }
 
-/* short of room the branch gives way first, and only then the name: a shrink this much larger than the name's leaves
-   the name whole until the branch is down to a couple of letters and its ellipsis, never a stray letter */
 .workspace-branch-tail {
   flex: 0 99999 auto;
   min-width: 2.5em;
@@ -1148,20 +1048,15 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-/* a compact row's state sits at its end in a cell its glyph's size, as far in as the mark at its start: no column wider
-   than what it holds (Two lines keeps the grid's --side-box cell) */
 .machine-workspaces:not(.is-two-line) .workspace-header { padding-right: var(--space-6); }
 
 .machine-workspaces:not(.is-two-line) .workspace-select > .sidebar-pane-meta { width: var(--space-6); }
 
-/* the badge fills that cell: a state that draws nothing (ready, unknown) keeps its box, label and tooltip */
 .machine-workspaces:not(.is-two-line) .workspace-select > .sidebar-pane-meta > .sidebar-status {
   flex-basis: 100%;
   width: 100%;
 }
 
-/* under a pointer the ⋯ shows just before the state's cell, over the end of the name and branch, which fade out under
-   it: nothing in the row moves and the state stays in sight. A finger and the drawer keep it in the row, the state beside it */
 @media (hover: hover) and (pointer: fine) and (min-width: 769px) {
   .machine-workspaces:not(.is-two-line) .workspace-header > .workspace-actions {
     position: absolute;
@@ -1172,7 +1067,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
   .machine-workspaces:not(.is-two-line) .workspace-header > .workspace-actions .sidebar-row-action { width: 100%; }
 
-  /* the text ends where the state's cell starts: its last --space-6 is under the ⋯, the --space-4 before it fades */
   .machine-workspaces:not(.is-two-line) .workspace-header:is(:hover, :focus-within) .workspace-copy,
   .machine-workspaces:not(.is-two-line) .workspace-header:has(> .workspace-actions [aria-expanded="true"]) .workspace-copy {
     -webkit-mask-image: linear-gradient(to left, transparent var(--space-6), var(--bg-panel) calc(var(--space-6) + var(--space-4)));
@@ -1180,18 +1074,14 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-/* the compact sidebar (Settings → Sidebar rows → One line, the default) */
 @media (min-width: 769px) {
-  /* the palette (⌘/Ctrl+K) filters the sidebar: its glass leaves the logo row, the + for a new workspace takes it */
   .app:not(.sidebar-collapsed) .header-side .palette-button:not(:only-child) { display: none; }
 }
 
-/* a workspace row's branch shows under the pointer or the focus; a finger keeps it */
 @media (hover: hover) and (pointer: fine) {
   .machine-workspaces:not(.is-two-line) .workspace-header:not(:hover, :focus-within) .workspace-branch-tail { visibility: hidden; }
 }
 
-/* state by shape as well as colour (HIG): working a dot, waiting a ?, an unread finish a check, in the same cell */
 .sidebar-status[data-status="done"] .sidebar-status-dot {
   width: calc(var(--space-1) + 1px);
   height: calc(var(--space-2) + 1px);

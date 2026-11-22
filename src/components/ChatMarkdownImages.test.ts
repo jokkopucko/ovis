@@ -82,7 +82,6 @@ it("uses the shared transport for pane stats and resolves inline bytes once", as
 });
 
 it("keeps transport byte failures out of inline viewer controls and retries them after reconnect", async () => {
-  // Given inline and standalone failures beside a healthy image, all using transport bytes.
   const files: string[] = [];
   const nestedControls: number[] = [];
   const recordCommit = () => {
@@ -115,13 +114,11 @@ it("keeps transport byte failures out of inline viewer controls and retries them
   const good = images()[0]!;
   await act(async () => { good.props.onLoad(); });
 
-  // When transport byte loads fail before an img can receive an error.
   await act(async () => {
     bytes[0]!.reject(new TypeError("relay closed"));
     bytes[1]!.reject(new TypeError("relay closed"));
   });
 
-  // Then the inline fallback is one file action, not nested in an image action.
   expect(nestedControls.length).toBeGreaterThan(0);
   expect(nestedControls.every((count) => count === 0)).toBe(true);
   expect(buttons().filter((node) => node.props.className === "markdown-image-open")).toHaveLength(0);
@@ -132,7 +129,6 @@ it("keeps transport byte failures out of inline viewer controls and retries them
   expect(opened).toEqual([]);
   expect(images()).toEqual([good]);
 
-  // Reconnect rechecks only failures, single-flight even across another reconnect.
   await render(false);
   await render(true);
   expect(requests).toHaveLength(5);
@@ -261,20 +257,17 @@ it("keeps a failed image's reserved slot and access to the viewer's download", a
 });
 
 it("retries only failed stats without multiplying pending or resolved images across reconnects", async () => {
-  // Given resolved, failed and pending images in the same answer.
   const text = Array.from({ length: 100 }, (_, index) => `![Image ${index}](./${index}.png)`).join("\n\n");
   await draw({ text, connected: false });
   for (let index = 0; index < 50; index++) await answer(index, info(`/project/${index}.png`));
   await answer(50, { error: { message: "offline" } }, 503);
   const sources = images().map((image) => image.props.src);
 
-  // When the connection flaps while the retry and other stats remain pending.
   for (let reconnect = 0; reconnect < 5; reconnect++) {
     await draw({ text, connected: false });
     await draw({ text, connected: true });
   }
 
-  // Then only the failed stat was retried, and its current answer still applies.
   expect(requests).toHaveLength(101);
   expect(images().map((image) => image.props.src)).toEqual(sources);
   await answer(100, info("/project/50.png"));
@@ -283,7 +276,6 @@ it("retries only failed stats without multiplying pending or resolved images acr
 });
 
 it("renders only the file action when an inline image fails decoding", async () => {
-  // Given an inline image with both file and image actions available.
   const files: string[] = [];
   await act(async () => {
     renderer = create(createElement(SettingsProvider, { children:
@@ -296,10 +288,8 @@ it("renders only the file action when an inline image fails decoding", async () 
   });
   await answer(0, info("/project/broken.png"));
 
-  // When decoding fails.
   await act(async () => { images()[0]!.props.onError(); });
 
-  // Then the fallback has no viewer control around it and opens only the file.
   expect(buttons()).toHaveLength(1);
   expect(buttons()[0]!.props.className).toBe("markdown-file");
   await act(async () => { buttons()[0]!.props.onClick(); });
@@ -318,7 +308,6 @@ it("retries failed image bytes only after a fresh stat, without remounting a dec
   expect(images()).toHaveLength(1);
   await draw({ text, connected: false });
   await draw({ text, connected: true });
-  // The previous stat is not enough to start new bytes: the file may now be oversized or gone.
   expect(images()).toHaveLength(1);
   expect(requests).toHaveLength(3);
   expect(requests[2]!.url.searchParams.get("path")).toBe("./retry.png");
@@ -355,7 +344,6 @@ it("keeps a decoded canonical image when a browser cwd hint arrives", async () =
 });
 
 it("keeps a decoded image and the answer's words when the pane's skill names arrive", async () => {
-  // the pane's commands load after its transcript: the answer is drawn first without skill names
   const text = "![Diagram](./diagram.png)\n\nRun /review next.";
   await draw({ text });
   await answer(0, info("/project/diagram.png"));
@@ -386,7 +374,6 @@ it("keeps manual Retry usable after a pending retry fails across reconnects", as
 });
 
 it("holds a reopened image at the size it decoded at, and loads nothing before the new stat", async () => {
-  // Given an image a chat on this PC and pane resolved and decoded once, at 240 x 80.
   const decodedImage = { complete: true, naturalWidth: 240, naturalHeight: 80 };
   const mount = async (pane = "w1:p1") => {
     const tree = createElement(SettingsProvider, { children: createElement(MachineContext.Provider, { value: "reopen-pc",
@@ -403,17 +390,14 @@ it("holds a reopened image at the size it decoded at, and loads nothing before t
   await answer(0, info("/project/diagram.png"));
   expect(slot().props.className).toBe("image-slot");
 
-  // When the chat mounts it again, before the new stat answers.
   await reopen();
 
-  // Then its slot is that image's box, not 16:9, and no bytes load until the stat confirms the file.
   expect(slot().props.className).toBe("image-slot is-loading is-sized");
   expect(slot().props.style).toMatchObject({ "--image-width": "240px", "--image-ratio": "240 / 80" });
   expect(images()).toHaveLength(0);
   expect(requests).toHaveLength(2);
   expect(requests[1]!.url.pathname).toBe("/api/machines/reopen-pc/fs/stat");
 
-  // Another pane on the same PC knows nothing of it.
   await reopen("w9:p9");
   expect(slot().props.className).toBe("image-slot is-loading");
 });

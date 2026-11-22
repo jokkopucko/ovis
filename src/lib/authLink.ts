@@ -7,7 +7,6 @@
  * stored credential. A wrong or stale link token simply falls back to the gate.
  */
 
-/** Parses `#auth=<token>`; null for any other fragment (or none at all). */
 export function authTokenFromHash(hash: string): string | null {
   const match = /^#auth=(.+)$/.exec(hash);
   const encoded = match?.[1];

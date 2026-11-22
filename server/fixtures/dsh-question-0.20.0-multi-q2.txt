@@ -1,0 +1,50 @@
+
+
+  ✦ dsh-TUI  v0.20.0
+  ████   █████  █████  ████    ████  █████  █████  █   █
+  █   █  █      █      █   █  █      █      █      █  █
+  █   █  ████   ████   ████    ███   ████   ████   ███
+  █   █  █      █      █          █  █      █      █  █
+  ████   █████  █████  █      ████   █████  █████  █   █
+
+  █   █    ███    ████    █   █   █████    ████    ████
+  █   █   █   █   █   █   ██  █   █       █       █
+  █████   █████   ████    █ █ █   ████     ███     ███
+  █   █   █   █   █  █    █  ██   █           █       █
+  █   █   █   █   █   █   █   █   █████   ████    ████
+  dsh-deepseek-flash · High effort
+  /home/jimmy/.cache/ovis-tmp/dshq
+  Tip: /effort slider tunes reasoning effort live with ←/→ · /tips more tips
+
+    Explore the uncharted!
+
+  ❯ Call ask_user_question exactly once with TWO questions in one call. Q1: "Which platforms
+    should we test?" multiSelect true, options iOS, Android, Web. Q2: "Which runner?" single
+    select, options "Bun test" and "Vitest". Do nothing else.
+
+  ⚓ Thinking (ctrl+o to expand)
+
+  ● ⏵ Asking the two setup questions in a single call
+
+
+
+
+
+  🌓 Quick question · 45s · ↑ 11k · ↓ 12 tokens
+
+    ───────────────────────────────────▾  📋 Question 2/2   ────────────────────────────────────
+
+    ◈ Runner
+    Which runner?
+
+
+    ❯● Bun test
+     ○ Vitest
+     ✎ Custom answer： Type directly…
+
+    ↑/↓ select · Ctrl+V paste · Type text to attach an answer · Enter submit · Esc previous
+    question · ←/→ switch question · Ctrl+C cancel batch · Ctrl+K to fold / click the header
+                                                                                    11k/1.0M 1.1%
+   dsh-deepseek-flash · high · cache 61.7% · ≈ unpriced 11.2k tok · dshq      ctx 1.1% (11k/1.0m)
+   esc to interrupt
+

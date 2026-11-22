@@ -33,7 +33,6 @@ function session() {
   return { path, agent, json };
 }
 
-/** Hold the real result on a file thread, without holding the test's event loop. */
 function holdScans() {
   const cells = new Int32Array(new SharedArrayBuffer(8));
   cells[1] = -1;

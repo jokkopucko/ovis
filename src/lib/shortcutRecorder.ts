@@ -1,7 +1,6 @@
 import { exactChordRefusal, exactChordRisk, formatExactChord, isReservedShortcutKey } from "./shortcutBindings.ts";
 import { exactChordFromEvent, shortcutEventKey, type ShortcutEventLike } from "./shortcuts.ts";
 
-/** The keys a recorded binding may use, with Mod+Shift or exact modifiers: what sanitizeShortcutOverrides accepts. */
 export const SHORTCUT_KEYS: readonly string[] = [..."abcdefghijklmnopqrstuvwxyz0123456789,-=[];'\\./`§", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"];
 
 /**
@@ -12,7 +11,6 @@ export const MENU_SHORTCUT_KEYS: readonly string[] = [..."abcdefghijklmnopqrstuv
 
 export type RecordedShortcut =
   | { kind: "key"; key: string }
-  // an exact chord as stored; a risk asks the user to confirm before it is saved
   | { kind: "exact"; value: string; risk: "terminal" | "browser" | null }
   | { kind: "cancel" }
   | { kind: "ignore" }
@@ -20,13 +18,6 @@ export type RecordedShortcut =
 
 const MODIFIER_KEYS: ReadonlySet<string> = new Set(["Shift", "Control", "Meta", "Alt", "AltGraph", "OS"]);
 
-/**
- * Reads one key press made while a row records. A Mod+Shift chord on a bindable key is stored as
- * that key, and a Mod+Shift key the browser or OS commonly keeps for itself is refused. Any other
- * chord keeps its exact modifiers: it needs Ctrl, Alt or ⌘, is refused where the browser, OS or
- * text editing keeps it, and carries a risk where the terminal or the browser also uses it. A bare
- * Escape cancels, and a lone modifier press is ignored so the chord can still be completed.
- */
 export function recordShortcut(event: ShortcutEventLike, platformIsMac: boolean): RecordedShortcut {
   if (event.isComposing || event.keyCode === 229) return { kind: "ignore" };
   if (MODIFIER_KEYS.has(event.key)) return { kind: "ignore" };
@@ -47,7 +38,6 @@ export function recordShortcut(event: ShortcutEventLike, platformIsMac: boolean)
   return { kind: "exact", value: formatExactChord(chord), risk: exactChordRisk(chord, platformIsMac) };
 }
 
-/** Every word of the query must appear in the shortcut's name or in its keys as shown. */
 export function shortcutMatchesQuery(label: string, keysText: string, query: string): boolean {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const haystack = `${label} ${keysText}`.toLowerCase();

@@ -66,7 +66,6 @@ describe("changelog fold", () => {
       [changelog.replace("## [1.2.2] - 2026-01-01", "## [1.2.3] - 2026-01-01"), "already has 1.2.3"],
     ];
     for (const [text, message] of cases) expect(() => foldChangelog(text, [], "1.2.3", "2026-02-03")).toThrow(message);
-    // the line number is the file's, not the Unreleased section's
     expect(() => foldChangelog(changelog.replace("- Old fix.\n", "- Old fix.\nStray.\n"), [], "1.2.3", "2026-02-03")).toThrow("CHANGELOG.md:9: \"Stray.\"");
     expect(() => foldChangelog(changelog, [], "v1.2.3", "2026-02-03")).toThrow("X.Y.Z");
     expect(() => foldChangelog(changelog, [], "1.2.3", "today")).toThrow("YYYY-MM-DD");
@@ -112,9 +111,6 @@ describe("changelog fold", () => {
   });
 });
 
-// Each PR writes its changelog entry as a file in changelog.d/ instead of appending to CHANGELOG.md's
-// Unreleased lists, which conflicted on nearly every merge (and once a resolver pushed the markers).
-// The release folds both into the new version, so what is here must fold without a surprise then.
 describe("changelog.d", () => {
   test("every fragment is well formed (format: changelog.d/README.md)", () => {
     const problems = fragmentFiles(join(root, FRAGMENTS_DIR)).flatMap((name) => {
@@ -136,7 +132,6 @@ describe("changelog.d", () => {
   });
 
   test("the next release folds today's Unreleased notes and fragments (bun scripts/changelog-fold.ts X.Y.Z)", () => {
-    // An entry an older PR appended to CHANGELOG.md that the fold cannot place fails here, naming the line.
     const fragments = fragmentFiles(join(root, FRAGMENTS_DIR)).map((name) => fragment(name, readFileSync(join(root, FRAGMENTS_DIR, name), "utf8")));
     // CRLF only from a Windows checkout's autocrlf; the fold itself writes and wants LF
     const text = readFileSync(join(root, "CHANGELOG.md"), "utf8").replace(/\r\n/g, "\n");

@@ -8,6 +8,7 @@ export class PendingRequestBook<T> {
   private retiredThrough = -1;
   constructor(private readonly pinned: (reply: T) => boolean = () => false, private readonly limit = 256) {}
   get size(): number { return this.entries.size; }
+  has(id: number): boolean { return this.entries.has(id); }
 
   get(id: number, fingerprint: string): Promise<T> | undefined {
     const existing = this.entries.get(id);

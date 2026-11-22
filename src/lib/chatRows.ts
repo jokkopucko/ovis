@@ -1,10 +1,6 @@
 import type { ConversationResponse, ConversationTurn } from "../../shared/protocol.ts";
 import { chatTurnAnchor } from "./chatScrollMemory.ts";
 
-/**
- * One browser-local identity for one native conversation lifetime. `incarnation`
- * increments when a history without an ID is replaced in the same pane.
- */
 export interface ChatRowScope {
   readonly machineId: string;
   readonly paneId: string;
@@ -16,10 +12,6 @@ export interface ChatRowSlot {
   readonly key: string;
 }
 
-/**
- * The assigned slots for loaded logical rows. Slots are allocated only when a
- * known ingestion transition adds rows; immutable turn revisions reuse them.
- */
 export interface ChatRowSlots {
   readonly scope: ChatRowScope;
   readonly rows: readonly ChatRowSlot[];
@@ -36,10 +28,6 @@ export function createChatRowSlots(scope: ChatRowScope, count: number): ChatRowS
   return { scope, rows: slotRows(scope, 0, count), nextSlot: count };
 }
 
-/**
- * Inserts rows at their known logical position without shifting existing row
- * identities. Use for both prepended pages and gap-fill pages.
- */
 export function insertChatRowSlots(slots: ChatRowSlots, index: number, count: number): ChatRowSlots {
   const rows = slotRows(slots.scope, slots.nextSlot, count);
   return {
@@ -60,9 +48,7 @@ export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowS
 /**
  * Where turns were written between turns already shown, by their index in `after`: a notice or a
  * subagent's result Claude Code records while a turn is at work goes before that turn
- * (server/claude-transcript.ts noticeAt), and the turns after it must keep their rows. Each list
- * names its turns (rowAnchor); a turn shown before that is not found later stays where it is
- * (a turn rewritten in place), and turns past the last one shown are appended, not inserted.
+ * (server/claude-transcript.ts noticeAt), and the turns after it must keep their rows.
  */
 export function insertedTurns(before: readonly string[], after: readonly string[]): number[] {
   const inserted: number[] = [];
@@ -75,17 +61,10 @@ export function insertedTurns(before: readonly string[], after: readonly string[
   return inserted;
 }
 
-/** An agent's turn by when it started: its first words and its first tool's result change while it runs. */
 function rowAnchor(turn: ConversationTurn): string {
   return turn.role === "assistant" && turn.ts !== null ? `assistant|${turn.ts}` : chatTurnAnchor(turn);
 }
 
-/**
- * The slots once the turns from row `start` on went from `shown` (the last answer's newest page) to
- * `moved` (the turns that left the newest page since) and `newest` (the new newest page). A turn
- * written between turns shown, among the moved ones too, takes a new slot at its place, so the turns
- * after it keep theirs; the rest are appended.
- */
 export function growChatRowSlots(slots: ChatRowSlots, start: number, shown: readonly ConversationTurn[], moved: readonly ConversationTurn[], newest: readonly ConversationTurn[]): ChatRowSlots {
   const now = [...moved, ...newest];
   const count = start + now.length;

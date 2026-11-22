@@ -35,7 +35,6 @@ it("lets the connection server holding the bridge token read and run this PC's m
   const plan = await fetch(`${base}/api/runtime/move`, { headers: bridge });
   expect([plan.status, await plan.json()]).toEqual([200, { available: false, reason: "herdr_app", status: { state: "idle" } }]);
   const update = { ...bridge, "x-herdr-update": "1" };
-  // each passes the gate and gets the move's own answer
   expect(await send("/api/runtime/move", "POST", update, { revision: "shown" })).toEqual([409, "unavailable"]);
   expect(await send("/api/runtime/move", "DELETE", update)).toEqual([200, null]);
   expect(await send("/api/runtime/move/stop-all", "POST", update, {})).toEqual([409, "not_waiting"]);

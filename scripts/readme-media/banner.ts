@@ -1,19 +1,7 @@
 /**
- * Renders the README banner and the README's framed "A look around" shots from banner.html in
- * headless Chrome: the graphite stage, the Ovis app icon, and the real app (the film's stills) in
- * a window object and a phone object. Every image is an opaque rectangle (the README loop GIF
+ * Every image is an opaque rectangle (the README loop GIF
  * cannot carry soft alpha, so nothing next to it is rounded either). Each PNG is then quantized to
  * 256 colours with ffmpeg, since the README must stay light.
- *
- *   bun scripts/readme-media/banner.ts [banner] [look]
- *
- * Inputs: the stills in _film/footage/stills (bun scripts/film/capture.ts), the brand fonts in
- * _film/fonts (falls back to the CDN copies), app/assets/icon-only.png (the sheep on navy, used as
- * it is). Needs ffmpeg.
- * Outputs: docs/media/banner.png (1920x800, shown at 960),
- * docs/media/look-{chat,prompt,terminal}.png (1760x1150, shown at 880 or 440): chat is the whole
- * window, centred; prompt and terminal are details on one rule (top-left corner 96px in, 1.25 px per
- * CSS px, so dots, pane title and sidebar stay in frame), bleeding off the right and bottom.
  */
 import { chromium } from "playwright-core";
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -34,7 +22,6 @@ function ffmpeg(args: string[]) {
   if (proc.exitCode !== 0) throw new Error(`ffmpeg: ${proc.stderr.toString()}`);
 }
 
-// the app icon as it ships, and the grain tile (brief section 1)
 const icon = join(root, "app/assets/icon-only.png");
 const grain = join(tmp, "grain.png");
 ffmpeg(["-f", "lavfi", "-i", "nullsrc=s=256x256,geq=random(1)*255:128:128,format=gray", "-frames:v", "1", grain]);
@@ -42,11 +29,9 @@ ffmpeg(["-f", "lavfi", "-i", "nullsrc=s=256x256,geq=random(1)*255:128:128,format
 const windowObject = (still: string) => `<div class="window"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">localhost:7317</span></div><img src="${url(join(stills, still))}" alt=""></div>`;
 const phoneObject = (still: string) => `<div class="phone"><img src="${url(join(stills, still))}" alt=""></div>`;
 // no install command in the art: at the README's display size it would be ~8px; the README has it as text
-// the tagline as ovis.sh's hero sets it
 const copy = `<div class="copy"><img class="mark" src="${url(icon)}" alt=""><div class="word">Ovis</div><div class="tag">Anyharness, <span class="accent">Anywhere, Anytime.</span></div></div>`;
 const hero = `${copy}<div class="scene">${windowObject("01-desktop-chat-claude.png")}${phoneObject("14-phone-codex-approval.png")}</div>`;
 
-// look: the window's width in px, and "whole" (centred) or "detail" (top-left corner at 96,96)
 interface Job { out: string; kind: "banner" | "look"; w: number; h: number; content: string; look?: { w: number; anchor: "whole" | "detail" }; maxBytes: number }
 // the stills are 2x, so 1.25 px per CSS px is still below 1 output px per source px
 const looks = [

@@ -1,6 +1,3 @@
-/* The file panel's left edge, an unseen grip centred on its seam: nothing shows until a pointer is
-   over it, it is held, or it has the keyboard's focus. The panel is only docked from 980px, so the
-   grip needs no media query of its own. */
 .file-panel-resizer {
   position: absolute;
   top: 0;
@@ -12,7 +9,6 @@
   touch-action: none;
 }
 
-/* the seam itself lights up amber under a pointer, while it is held and while it has focus */
 .file-panel-resizer::after {
   content: "";
   position: absolute;

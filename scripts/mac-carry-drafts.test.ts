@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Ovis for Mac's draft carry (app/mac/Resources/carry-drafts.js), run as the app runs it in a page. */
 type Baselines = { token: string; before: Record<string, string | null> };
 type Carry = (storage: Storage, carried: Record<string, string>, shared: boolean, token: string, loaded?: boolean, given?: Record<string, string | null> | null, post?: (baselines: Baselines) => void) => void;
 const source = readFileSync(join(import.meta.dir, "..", "app", "mac", "Resources", "carry-drafts.js"), "utf8");
@@ -72,7 +71,6 @@ describe("Mac app draft carry", () => {
     expect(landed(page).done).toEqual([draft]);
   });
 
-  /** A first run whose mark does not fit, the page loading, then the app's retry with the baselines it was posted. */
   function afterFailedMark(between: (page: ReturnType<typeof store>) => void) {
     const full = new Set(["ovis-mac:carried"]);
     const page = store({ [draft]: "older visit" }, full);

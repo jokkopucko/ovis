@@ -14,7 +14,6 @@ export const MAX_CONNECTIONS = 128;
 export const DEADLINE_MS = 5_000;
 /** A request head larger than this is refused. */
 export const HEAD_BYTES = 8 * 1024;
-/** Past this much waiting for a slow side, the other side is read no more until it drains below LOW_BYTES (TCP backpressure). */
 const HIGH_BYTES = 1 << 20;
 const LOW_BYTES = 256 * 1024;
 
@@ -25,14 +24,12 @@ export const GATE_HEADER = "x-ovis-direct-gate";
 export interface GateOptions {
   readonly hostname: string;
   readonly port: number;
-  /** the carrier's HTTP server on loopback */
   readonly upstreamPort: number;
   /** a secret the upstream checks in GATE_HEADER */
   readonly secret: string;
   readonly allowed: (address: string) => boolean;
   /** shared by every gate of one carrier: connections per address and in all */
   readonly counts: Map<string, number>;
-  /** how the upstream is reached; Bun.connect, and in tests one that is slow to resolve */
   readonly connect?: typeof Bun.connect;
 }
 
@@ -40,7 +37,6 @@ interface Side {
   socket: Socket<Conn> | Socket<undefined> | undefined;
   pending: Uint8Array[];
   pendingBytes: number;
-  /** the socket whose bytes are written to this side: paused while this side is behind */
   source?: () => Socket<Conn> | Socket<undefined> | undefined;
 }
 
@@ -49,20 +45,15 @@ interface Conn {
   head: Uint8Array[];
   headBytes: number;
   deadline: ReturnType<typeof setTimeout> | undefined;
-  /** toward the upstream once the head passed */
   up: Side | undefined;
-  /** toward the peer */
   down: Side;
   counted: boolean;
-  /** the upstream answered 101: from here bytes flow both ways */
   upgraded: boolean;
-  /** this connection was ended: nothing more goes either way */
   ended: boolean;
 }
 
 const total = (counts: Map<string, number>): number => [...counts.values()].reduce((sum, count) => sum + count, 0);
 
-/** Writes all of `bytes` to the side, holding what the socket did not take until it drains; a side behind pauses its source. */
 function send(side: Side, bytes: Uint8Array): boolean {
   if (side.pending.length > 0 || !side.socket) {
     side.pending.push(bytes);
@@ -97,7 +88,6 @@ function flush(side: Side): void {
 
 const refusal = (status: string): Uint8Array => new TextEncoder().encode(`HTTP/1.1 ${status}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`);
 
-/** The request head's line and headers, or null when it is not a request at all. */
 function parseHead(text: string): { line: string; headers: Map<string, string>; raw: string[] } | null {
   // read exactly as an HTTP parser must: CRLF lines only, no other control characters, no folded lines
   if (/[\x00-\x08\x0a-\x1f\x7f]/.test(text.replace(/\r\n/g, "")) || /\r\n[ \t]/.test(text)) return null;
@@ -143,7 +133,6 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
       up.socket = await (options.connect ?? Bun.connect)({
         hostname: "127.0.0.1", port: options.upstreamPort,
         socket: {
-          // the peer may have gone while connecting: then the upstream ends at once and gets nothing
           open: (upstream) => { if (conn.ended) { upstream.end(); return; } up.socket = upstream; flush(up); },
           data: (_upstream, chunk) => {
             // anything but a switch to WebSocket is the whole answer: it goes to the peer and the connection ends,

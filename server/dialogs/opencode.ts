@@ -1,10 +1,10 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, type AnswerStep, KEY, finishPrompt, keySteps, own, type ParsedPrompt } from "./shared.ts";
+import { ANSI_RE, type AnswerStep, KEY, editorRowsMatch, finishPrompt, keySteps, own, type ParsedPrompt, type TypedEditorAnswer } from "./shared.ts";
 
 /**
  * OpenCode v2's questions are forms its service holds (GET /api/session/{id}/form), read for the
  * exact session herdr reports for the pane and answered through POST .../reply (prompt.ts), never
- * from the screen. Registered so that a Chat send's outcome knows the card it opened.
+ * from the screen.
  */
 export const nativeQuestionReader: DialogReader = {
   id: "opencode-question",
@@ -18,7 +18,6 @@ export const nativeQuestionReader: DialogReader = {
 
 /** the TUI's own text for a typed answer's row (routes/session/question.tsx at v1.2.27) */
 const CUSTOM_LABEL = "Type your own answer";
-/** the content of one row inside the prompt's left border `┃` */
 const ROW_RE = /^ *┃(?: {2}(.*))?$/u;
 const OPTION_RE = /^(\d+)\. (.+)$/u;
 /** a single question's footer: one row wide, or wrapped into a key row and a word row on a narrow pane */
@@ -38,6 +37,10 @@ const V2_FORM_HEADER_RE = /^(?:Field \d+ of \d+|Review)(?: · |$)/u;
  * 1.x keeps no form a service could answer: these keys are the only way.
  */
 export function parseOpenCodeV1Question(screen: string): ParsedPrompt | null {
+  return readOpenCodeV1Question(screen);
+}
+
+function readOpenCodeV1Question(screen: string, answer?: TypedEditorAnswer): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/u).map((line) => line.trimEnd());
   let end = lines.length - 1;
   while (end >= 0 && (lines[end] === "" || ROW_RE.exec(lines[end]!)?.[1] === undefined && ROW_RE.test(lines[end]!))) end--;
@@ -50,7 +53,6 @@ export function parseOpenCodeV1Question(screen: string): ParsedPrompt | null {
   else if (FOOTER_WORDS_RE.test(row(end) ?? "") && FOOTER_KEYS_RE.test(row(end - 1) ?? "")) footer = end - 1;
   else return null;
   if (row(footer - 1) !== "") return null;
-  // the rows above the footer, back to the box's top: options with their descriptions, then the question
   let top = footer - 1;
   while (top > 0 && row(top - 1) !== undefined) top--;
   const body = lines.slice(top, footer - 1).map((line) => ROW_RE.exec(line)![1] ?? "");
@@ -60,11 +62,23 @@ export function parseOpenCodeV1Question(screen: string): ParsedPrompt | null {
   const question = body.slice(0, first - 1).filter(Boolean).join(" ").trim();
   if (!question) return null;
   const options: { label: string; description: string | null }[] = [];
-  for (const text of body.slice(first)) {
+  for (const [index, text] of body.entries()) {
+    if (index < first) continue;
     const option = OPTION_RE.exec(text);
     if (option) {
       if (Number(option[1]) !== options.length + 1) return null;
       options.push({ label: option[2]!.trim(), description: null });
+      if (answer && options.length - 1 === answer.prompt.customMenuIndex) {
+        // the custom row read for a typed answer is its editor, or the answer is not where it was typed
+        if (option[2]!.trim() !== CUSTOM_LABEL) return null;
+        // The textarea sits below Other, with the description indent. At its six-row limit
+        // the visible rows no longer prove the full value; the placeholder isn't a value either.
+        const field = body.slice(index + 1);
+        if (field.length >= 6 || !field.every((line) => line.startsWith("   ") || line === "")) return null;
+        const rows = field.map((line) => line.slice(3));
+        if (!editorRowsMatch(rows, answer.text) || editorRowsMatch(rows, CUSTOM_LABEL)) return null;
+        break;
+      }
     } else if (/^ {3}\S/u.test(text) && options.length > 0) {
       const last = options.at(-1)!;
       last.description = `${last.description ? `${last.description} ` : ""}${text.trim()}`;
@@ -89,7 +103,11 @@ export function parseOpenCodeV1Question(screen: string): ParsedPrompt | null {
   });
 }
 
-/** Whether the screen still ends in a 1.x question prompt, as promptTailIsActive asks of each card. */
+export function openCodeV1CustomEditorMatches(screen: string, answer: TypedEditorAnswer): boolean {
+  const shown = readOpenCodeV1Question(screen, answer);
+  return shown?.id === answer.prompt.id && shown.customMenuIndex === answer.prompt.customMenuIndex;
+}
+
 export const openCodeV1QuestionActive = (screen: string): boolean => parseOpenCodeV1Question(screen) !== null;
 
 export const v1QuestionReader: DialogReader = {

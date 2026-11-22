@@ -1,7 +1,3 @@
-/**
- * AST checks for agent command catalog boundaries.
- * Split strings and JSX text are not detected by the boundary literal scan.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

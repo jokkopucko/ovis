@@ -25,7 +25,6 @@
   min-width: 0;
 }
 
-/* a finger's field: the floor's height (the buttons beside it are .btn and grow to it in styles.css) */
 @media (pointer: coarse) {
   .find-bar-query .input {
     height: var(--touch-target);

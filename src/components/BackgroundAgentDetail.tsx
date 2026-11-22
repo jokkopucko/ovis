@@ -12,7 +12,6 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import type { OmoTask, PaneBackgroundAgentDetail } from "../../shared/protocol.ts";
 
-/** why the detail was not read: each has a note of its own, and none shows an empty view as if it were the agent's */
 type Failure = "update" | "unsupported" | "missing" | "changed" | "offline" | "unavailable" | "error";
 
 const failureOf = (error: unknown): Failure => {
@@ -26,16 +25,6 @@ const failureOf = (error: unknown): Failure => {
   return "error";
 };
 
-/**
- * What a running background task is doing, read from the PC on request: for a Claude Code
- * subagent (`detail_kind` claude-subagent) its own transcript, for an OpenCode one (opencode-subagent)
- * its child session, bounded, as text; the prompt it was
- * dispatched with, then its prose and the tools it called. A task of another kind has no transcript
- * to open and the sheet says so, as it does for a PC whose bridge is from before the route; nothing
- * is shown as the agent's that the PC did not read. Read when opened and on Refresh, never polled.
- * A dialog over the task list: Escape, the scrim and a phone's Back close it, and the focus goes
- * back to the row that opened it.
- */
 export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: string; task: OmoTask; onClose: () => void }) {
   const t = useT();
   const id = useId();
@@ -44,7 +33,6 @@ export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: strin
   const [detail, setDetail] = useState<PaneBackgroundAgentDetail | null>(null);
   const [loading, setLoading] = useState(supported);
   const [failure, setFailure] = useState<Failure | null>(supported ? null : task.detail_kind === undefined ? "update" : "unsupported");
-  // each read is one generation: an answer to an earlier read, or to a read of a sheet since closed, is dropped
   const generation = useRef(0);
   // the agent's session the sheet shows, as its first answer named it: an answer of another session is
   // the pane's next session, whose agent of the same id is another agent, and is never shown here
@@ -62,7 +50,6 @@ export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: strin
       (reason: unknown) => {
         if (mine !== generation.current) return;
         const failed = failureOf(reason);
-        // what is no longer this agent's, in this pane's session, goes with it: only a passing failure leaves the last read up
         if (failed !== "offline" && failed !== "unavailable" && failed !== "error") setDetail(null);
         setFailure(failed); setLoading(false);
       },
@@ -87,7 +74,6 @@ export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: strin
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  // what happened, then what to do about it: each on a line of its own
   const notes: Record<Failure, [string, string]> = {
     update: [t("This PC's bridge does not offer this yet"), t("Update this PC's bridge to see what a running agent is doing.")],
     unsupported: [t("This PC can't show details for this task"), t("Only a running Claude Code or OpenCode subagent's work can be opened here.")],
@@ -128,7 +114,6 @@ export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: strin
             <ol className="bg-agent-events">
               {detail.events.map((event, index) => {
                 if (event.kind === "text") return <li key={index} className="bg-agent-event is-text"><p className="bg-agent-text">{event.text}</p></li>;
-                // the server writes a tool event as its name, a space, then the arguments as JSON
                 const space = event.text.indexOf(" ");
                 const name = space === -1 ? event.text : event.text.slice(0, space);
                 const args = space === -1 ? "" : event.text.slice(space + 1);

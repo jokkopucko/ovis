@@ -19,7 +19,6 @@ it("names one pipe per state folder on Windows, whatever case the path is writte
 
 it("never reads a named pipe for the finish identity: the read would wait on the adapter for good", () => {
   const pipe = adapterAddress("C:\\state", "win32");
-  // the same for this server all along, and new for the next server on the same pipe name
   expect(finishHerdrIdentity(pipe, "win32")).toBe(pipeIdentity(pipe));
   expect(pipeIdentity(pipe)).toStartWith(`${pipe}#`);
   const next = Bun.spawnSync([process.execPath, "-e", `import { pipeIdentity } from ${JSON.stringify(import.meta.dir + "/pipe.ts")}; console.log(pipeIdentity(${JSON.stringify(pipe)}))`]);

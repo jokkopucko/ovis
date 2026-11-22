@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { paneStorageId, type Machine } from "../../shared/machines.ts";
+import { composerDraftKey, composerDrafts } from "./composerDraft.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { acknowledgeTerminalDraft, readTerminalDraft, setTerminalDraftSending, terminalDraftSending, terminalDraftVersion, writeTerminalDraft } from "./terminalDraft.ts";
 
@@ -29,7 +30,6 @@ it("does not erase a replacement even when the user retypes the same text before
 });
 
 it("late ack keeps replacement draft", () => {
-  // an Insert on its way: the draft is replaced meanwhile, then the acknowledgement comes
   const owner = "insert:w1:p1";
   writeTerminalDraft(owner, "git status");
   setTerminalDraftSending(owner, true);
@@ -38,7 +38,6 @@ it("late ack keeps replacement draft", () => {
   acknowledgeTerminalDraft(owner);
   setTerminalDraftSending(owner, false);
   expect(readTerminalDraft(owner)).toBe("git log");
-  // text typed after the sent prefix while it was on its way stays; the prefix goes
   writeTerminalDraft(owner, "git log");
   setTerminalDraftSending(owner, true);
   writeTerminalDraft(owner, "git log --oneline");
@@ -57,7 +56,6 @@ it("counts every write of a draft, so a paste can tell an edit made while it wai
   expect(terminalDraftVersion("version:w1:p2")).toBe(0);
 });
 
-/** a page's localStorage, recording every value written to it, while `run` goes */
 function withStorage(run: (data: Map<string, string>, written: string[], refuse: (prefix: string | null) => void) => void): void {
   const data = new Map<string, string>();
   const written: string[] = [];
@@ -76,14 +74,12 @@ function withStorage(run: (data: Map<string, string>, written: string[], refuse:
     else Reflect.deleteProperty(globalThis, "window");
   }
 }
-/** a PC whose herdr is proven keeps its pane state in storage (lib/paneLifetime.ts) */
 const herdr = (machine: string, lifetime: string) => paneLifetimes.observe([{ id: machine, snapshot: { panes: [], herdr_lifetime: lifetime } } as unknown as Machine]);
 const SK = "sk-0f3c9a1b2d4e5f60718293a4b5c6d7e8";
 
 it("keeps a line that holds an API key or token in this page alone, never in storage, even while it is typed (#2523)", () => withStorage((data, written) => {
   herdr("keys", "keys-herdr");
   const owner = paneStorageId("keys", "w1:p1");
-  // an ordinary line is kept for a reload
   writeTerminalDraft(owner, "git status");
   expect(data.get("ovis:terminal-line:" + owner)).toBe("git status");
   for (const key of [SK, "sk-ant-api03-Zx9_yQ7wV5uT3sR1qP-oN8mL6kJ4", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
@@ -98,7 +94,6 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
   written.length = 0;
   for (const key of [SK, "AKIAIOSFODNN7EXAMPLE"]) for (let end = 1; end <= key.length; end++) writeTerminalDraft(owner, key.slice(0, end));
   expect(written.some((value) => value.includes("sk-0f3c") || value.includes("AKIAIOSF"))).toBe(false);
-  // words, paths, IDs and hashes are not keys: they are kept
   for (const line of ["git checkout fix/input-line-key-storage", "cat /home/devswha/projects/ovis/src/lib/terminalDraft.ts", "echo 123e4567-e89b-12d3-a456-426614174000",
     "skip-worktree", "git clone https://github.com/VeryLongOrganizationName123/SomeRepository", "git clone https://github.com/SomeOrg123/SomeRepoName", "cd ~/Src/MyApp2/Lib/UiKit/Views3", "python manage.py runserver --settings=MyApp_Settings2_Production", "git show 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "docker pull image@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"]) {
     writeTerminalDraft(owner, line);
@@ -112,13 +107,23 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
   expect(paneLifetimes.unsent().some((item) => item.text.includes(SK))).toBe(false);
 }));
 
+it("carries an older server's unsent draft when the app replaces the page, and nothing of a line that holds a key (#2523)", () => withStorage((data, written) => {
+  paneLifetimes.observe([{ id: "older", snapshot: { panes: [] } } as unknown as Machine]);
+  const owner = paneStorageId("older", "w1:p1");
+  composerDrafts.set(composerDraftKey(owner), "an ordinary unsent draft");
+  writeTerminalDraft(owner, "export OPENAI_API_KEY=" + SK);
+  paneLifetimes.carry();
+  expect([...data.values()].some((value) => value.includes("an ordinary unsent draft"))).toBe(true);
+  expect([...data.values()].some((value) => value.includes(SK.slice(0, 7)))).toBe(false);
+  expect(written.some((value) => value.includes(SK.slice(0, 7)))).toBe(false);
+}));
+
 it("takes a key an earlier release stored out of storage, and never leaves it to recovery (#2523)", () => withStorage((data) => {
   herdr("legacy", "legacy-herdr");
   const read = paneStorageId("legacy", "w1:p1");
   const unread = paneStorageId("legacy", "w1:p2");
   data.set("ovis:terminal-line:" + read, SK);
   data.set("ovis:terminal-line:" + unread, "export DEEPSEEK_API_KEY=" + SK);
-  // read: it leaves storage and stays in this page
   expect(readTerminalDraft(read)).toBe(SK);
   expect(data.has("ovis:terminal-line:" + read)).toBe(false);
   expect(readTerminalDraft(read)).toBe(SK);
@@ -167,7 +172,6 @@ it("counts a line a herdr replacement took away, typed or not, so a paste that w
   paneLifetimes.observe(roster("retire-herdr-a"), (item) => item.pane_id);
   writeTerminalDraft("retire:w1:p1", "make release");
   const typed = terminalDraftVersion("retire:w1:p1");
-  // a paste into an empty line asks for its count before the clipboard answers
   const empty = terminalDraftVersion("retire:w1:p2");
   paneLifetimes.observe(roster("retire-herdr-b"), (item) => item.pane_id);
   expect(readTerminalDraft("retire:w1:p1")).toBe("");

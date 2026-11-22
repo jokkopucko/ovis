@@ -68,7 +68,6 @@ export function entriesOf(fd: number, read: Getdents, budget: { entries: number 
       // a name whose bytes are not UTF-8 cannot be opened by the name decoded: what that file sets is unknown
       if (!Buffer.from(name).equals(buffer.subarray(at + 19, end))) return "unread";
       at += length;
-      // every record counts against the budget, `.` and `..` too
       if (budget.entries-- <= 0) return "unread";
       if (name === "." || name === "..") continue;
       names.push(name);

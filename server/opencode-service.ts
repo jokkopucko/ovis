@@ -108,7 +108,6 @@ function openCodeRequest(config: OpenCodeServiceConfig, path: string, signal?: A
       const status = response.statusCode ?? 0;
       response.once("error", () => resolve(null));
       response.once("aborted", () => resolve(null));
-      // Replies need only their acknowledgement; errors and redirects have no usable form body.
       // Destroy rather than drain a body we will not use, so it cannot hold the request open.
       if (body !== undefined || status < 200 || status >= 300) {
         resolve({ status, body: "" });
@@ -177,7 +176,7 @@ const object = (value: unknown): Record<string, unknown> | null => typeof value 
 async function getJson(config: OpenCodeServiceConfig, path: string, signal?: AbortSignal, maxBytes?: number): Promise<unknown> {
   const response = await openCodeRequest(config, path, signal, undefined, maxBytes);
   if (!response || response.status < 200 || response.status >= 300) return undefined;
-  try { return JSON.parse(response.body) as unknown; } catch { return undefined; } // not JSON: no answer
+  try { return JSON.parse(response.body) as unknown; } catch { return undefined; }
 }
 
 /**
@@ -197,14 +196,8 @@ export interface OpenCodeService { config: OpenCodeServiceConfig; version: strin
 const VERIFIED_MS = 5_000;
 let verified: { key: string; until: number; service: OpenCodeService } | null = null;
 
-/** Where callers without their own state dir look for service.json; tests point it at a fixture. */
 export const openCodeServiceOptions: { stateDir?: string } = {};
 
-/**
- * service.json, verified against /api/info (kept 5 s). The catalog and its observers keep scan rows on
- * Windows; the question card and its answer, which used the service there before them, pass `onWindows`
- * (the identity check is HTTP, so it holds on Windows too).
- */
 export async function openCodeService(stateDir?: string, signal?: AbortSignal, { onWindows = false }: { onWindows?: boolean } = {}): Promise<OpenCodeService | null> {
   if (process.platform === "win32" && !onWindows) return null;
   const config = serviceFile(stateDir ?? openCodeServiceOptions.stateDir ?? opencodeStateDir());
@@ -217,7 +210,6 @@ export async function openCodeService(stateDir?: string, signal?: AbortSignal, {
   return verified.service;
 }
 
-/** service.json as last read, by path: every lookup stats it, and only a changed file is read and parsed again. */
 const files = new Map<string, { stamp: string; config: OpenCodeServiceConfig | null }>();
 
 function serviceFile(stateDir: string): OpenCodeServiceConfig | null {
@@ -284,7 +276,6 @@ function listed(body: unknown, directory: string): unknown[] | null {
  * a loaded one, so an empty skill list is no answer rather than "no skills".
  */
 export async function listOpenCodeCatalog(config: OpenCodeServiceConfig, directory: string, signal?: AbortSignal): Promise<{ commands: OpenCodeCommandInfo[]; skills: OpenCodeSkillInfo[] } | null> {
-  // skill rows carry their whole text
   const [commandBody, skillBody] = await Promise.all([
     getJson(config, `/api/command?${locationQuery(directory)}`, signal),
     getJson(config, `/api/skill?${locationQuery(directory)}`, signal, 8 * 1024 * 1024),
@@ -318,7 +309,7 @@ export function parseOpenCodeEvent(block: string): OpenCodeEvent | null {
   const data = block.split(/\r?\n/u).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /u, "")).join("\n");
   if (!data) return null;
   let parsed: unknown;
-  try { parsed = JSON.parse(data); } catch { return null; } // a torn or foreign block is no event
+  try { parsed = JSON.parse(data); } catch { return null; }
   const event = object(parsed);
   if (!event || typeof event.type !== "string") return null;
   const directory = object(event.location)?.directory;
@@ -331,7 +322,7 @@ export function parseOpenCodeEvent(block: string): OpenCodeEvent | null {
 
 /**
  * GET /api/event, volatile by contract: events missed while it was down are gone, so `onOpen`
- * tells the caller to re-read what it cached. Reconnects until closed; never holds the process.
+ * tells the caller to re-read what it cached.
  */
 export function subscribeOpenCodeEvents(config: OpenCodeServiceConfig, handlers: { onOpen(): void; onEvent(event: OpenCodeEvent): void; onClose(): void }): { close(): void } {
   let closed = false;

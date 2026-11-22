@@ -9,7 +9,6 @@ const workflow = Bun.YAML.parse(readFileSync(fileURLToPath(new URL("../.github/w
 const build = workflow.jobs.build.steps.find((step) => step.name?.startsWith("Build "))!;
 const signing = ["CSC_LINK", "CSC_KEY_PASSWORD", "WIN_CSC_LINK", "WIN_CSC_KEY_PASSWORD"];
 
-/** The names of the signing variables `bun run dist` sees when the build step runs with `env`. */
 const seenByDist = (env: Record<string, string>): string[] => {
   const stub = `bun() { for name in ${signing.join(" ")}; do [ "\${!name+set}" = set ] && echo "$name"; done; return 0; }`;
   const run = Bun.spawnSync(["bash", "-e", "-c", `${stub}\n${build.run}`], { env: { PATH: process.env.PATH ?? "", ...env } });

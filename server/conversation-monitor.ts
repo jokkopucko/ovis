@@ -23,7 +23,6 @@ function fileIdentity(path: string): string {
   } catch { return "missing"; }
 }
 
-/** One server-local stat loop, one resolution per interested pane, never a turn parser. SQLite includes its WAL. */
 export class ConversationMonitor {
   private readonly panes = new Map<string, WatchedConversation>();
   private readonly salt = randomUUID();
@@ -86,7 +85,6 @@ export class ConversationMonitor {
     const catalog = transcript.source === "agy-transcript" ? agyDatabasePath(transcript.path) : null;
     const catalogIdentity = catalog === null ? "" : `${fileIdentity(catalog)}:${fileIdentity(`${catalog}-wal`)}`;
     const observed = `${transcript.source}\0${transcript.path}\0${session}\0${cwd}\0${identity}\0${wal}\0${catalogIdentity}`;
-    // Resolve once immediately on disappearance, not on every missing-file stat.
     if (identity === "missing" && observed !== state.observed) state.nextResolve = 0;
     this.publish(paneId, state, observed);
     return identity !== "missing";
@@ -104,8 +102,6 @@ export class ConversationMonitor {
     state.resolving = true;
     let present = false;
     try {
-      // Concurrent panes share the fresh snapshot. Existing native resolvers retain their
-      // process/session evidence; no store is searched by transcript modification time.
       this.snapshot ??= sessionSnapshot().finally(() => { this.snapshot = null; });
       const snapshot = await this.snapshot;
       if (this.panes.get(paneId) !== state) return;

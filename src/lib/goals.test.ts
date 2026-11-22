@@ -30,7 +30,6 @@ test("a create_goal whose answer was cut keeps the objective it asked for", () =
 test("the turn shows the goal as its last goal call left it", () => {
   const parts: ConversationPart[] = [call("create_goal", goal("active")), { kind: "text", text: "working" }, call("update_goal", goal("complete")), call("get_goal", "not json")];
   expect(turnGoal(parts)?.status).toBe("complete");
-  // cleared (/goal clear), a get_goal says so: the turn shows no goal
   expect(turnGoal([...parts, call("get_goal", { goal: null })])).toBeNull();
   expect(turnGoal([{ kind: "text", text: "no goal here" }])).toBeNull();
 });
@@ -43,6 +42,5 @@ test("a goal's wait names only what it waits on, and shows until a minute past w
   const wait = { kind: "goal_wait" as const, due_at: "2026-10-05T00:06:30.000Z", waiting_on: { tasks: 0, monitors: 3, terminals: 1, dags: 0, cells: 2 } };
   expect(goalWaitSources(wait)).toEqual([["monitors", 3], ["terminals", 1], ["cells", 2]]);
   expect(goalWaitSources({ ...wait, waiting_on: { tasks: 0, monitors: 0, terminals: 0, dags: 0, cells: 0 } })).toEqual([]);
-  // OmO writes `resumed` as it continues: a wait long past due outlived the OmO that wrote it
   expect(goalWaitUntil(wait)).toBe(Date.parse("2026-10-05T00:07:30.000Z"));
 });

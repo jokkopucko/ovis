@@ -15,7 +15,6 @@ import { Sidebar } from "./Sidebar.tsx";
 
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
 
-/** a workspace a launcher tagged `herdr workspace report-metadata --token role=background` */
 const tagged = (id: string): WorkspaceInfo => ({ ...workspace(id), tokens: { role: "background" } });
 const workspace = (id: string): WorkspaceInfo =>
   ({ workspace_id: id, label: id, active_tab_id: `${id}:t`, number: 1, tab_count: 1, pane_count: 1, focused: false, agent_status: "idle", worktree: null });
@@ -49,7 +48,6 @@ describe("background workspaces in the sidebar", () => {
     define("window", { localStorage: storage, matchMedia: () => media, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
     define("document", { visibilityState: "visible", activeElement: null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
     define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-    // an online sidebar asks whether its rows are checkouts: none is
     fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
     pinsBefore = currentSidebarPins();
     setSidebarPins([]);
@@ -93,7 +91,6 @@ describe("background workspaces in the sidebar", () => {
     expect(heading()).toHaveLength(1);
     expect(heading()[0]!.props["aria-expanded"]).toBe(false);
     expect(heading()[0]!.findByProps({ className: "workspace-background-count" }).props.children).toBe(3);
-    // the workspace steps go through the rows as drawn
     expect(drawnWorkspaceRows("local")).toEqual(["a", "b", "bg1", "bg3"]);
   });
 

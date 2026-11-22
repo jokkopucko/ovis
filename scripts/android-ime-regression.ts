@@ -1,4 +1,3 @@
-/** Native Gboard taps on an owned API-36 Pixel 7 emulator. See docs/terminal-input.md. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";

@@ -1,0 +1,33 @@
+/* an account PC not in this app yet: its state word and one action under its name, as a PC group's state line */
+.account-pc-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--side-gutter) var(--space-1) var(--machine-indent);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+}
+
+.account-pc-line:empty {
+  display: none;
+}
+
+/* the row's one action sits at its end, as Check again does on an off PC (MachineOffLine) */
+.account-pc-action {
+  margin-inline-start: auto;
+  min-height: calc(var(--control-h) - var(--space-2));
+  padding-inline: var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+
+.account-pc-wait {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0 var(--side-gutter) var(--space-1) var(--machine-indent);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}

@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { decodeFrame, encodeFrame, FrameType, MuxProtocolError } from "./relay-mux.ts";
 import { commitmentHolds, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 
-// a P-256 SPKI in base64url: its fixed 27-byte prefix, then a 64-byte point
 const key = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE" + "A".repeat(86);
 
 test("the digits are six, and change with the channel, the device key and either nonce", () => {
@@ -12,7 +11,6 @@ test("the digits are six, and change with the channel, the device key and either
   const digits = pairDigits(binding, key, phone, pc);
   expect(digits).toMatch(/^[0-9]{6}$/);
   expect(pairDigits(binding, key, phone, pc)).toBe(digits);
-  // four independent inputs agreeing on another value by chance is a one-in-a-million event per pair
   const others = [pairDigits(randomPairNonce(), key, phone, pc), pairDigits(binding, key.slice(0, -1) + "B", phone, pc),
     pairDigits(binding, key, randomPairNonce(), pc), pairDigits(binding, key, phone, randomPairNonce())];
   expect(others.filter((other) => other === digits).length).toBeLessThan(2);

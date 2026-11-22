@@ -10,7 +10,6 @@ const template = fixture.machines[0]!.snapshot as SessionSnapshot;
 const templatePane = template.panes.find((pane) => pane.agent) ?? template.panes[0]!;
 const workspace = template.workspaces[0]!;
 
-/** a PC whose agents are the named panes, in that order, each with its own status */
 function machine(id: string, state: MachineState, panes: [id: string, status: AgentStatus, parent?: string, tokens?: Record<string, string>][]): Machine {
   const snapshot: SessionSnapshot = {
     ...template,
@@ -27,7 +26,6 @@ describe("agent roster", () => {
     const split = agentRoster(machines, { byActivity: true, seqs: (id) => seqs.get(id) ?? new Map(), pinned: [sidebarPinKey("remote", "d"), sidebarPinKey("local", "c")] });
     const key = ({ machine, entry }: { machine: Machine; entry: { pane: HerdrPane } }) => `${machine.id}/${entry.pane.pane_id}`;
     expect(split.pinned.map(key)).toEqual(["remote/d", "local/c"]);
-    // blocked first, then the latest change, within each PC; the PCs keep their order
     expect(split.rest.map(key)).toEqual(["local/b", "local/a", "remote/e"]);
   });
 
@@ -73,7 +71,6 @@ describe("agent roster", () => {
   });
 
   it("draws each helper right under the agent that started it, after its earlier helpers, in either order", () => {
-    // herdr-core's parent: c and d started from a, e from c; f names a pane that is no row
     const panes: [string, AgentStatus, string?][] = [["a", "working"], ["b", "idle"], ["c", "blocked", "a"], ["d", "working", "a"], ["e", "done", "c"], ["f", "blocked", "gone"]];
     const key = ({ entry }: { entry: { pane: HerdrPane } }) => entry.pane.pane_id;
     const seqs = new Map([["a", 1], ["b", 2], ["c", 3], ["d", 4], ["e", 5], ["f", 6]]);
@@ -116,13 +113,11 @@ describe("agent roster", () => {
     });
 
     it("lays out the background part anew, a helper whose agent stayed with the people standing as a root", () => {
-      // c's agent b is blocked: c must not read as one of a's helpers
       const machines = [machine("local", "connected", [["a", "working", undefined, background], ["b", "blocked", "a"], ["c", "working", "b"], ["d", "working", "a"]])];
       expect(parts(machines)).toEqual({ people: ["local/b"], background: ["local/a", "local/d", "local/c"] });
     });
 
     it("lays out the people's rows anew too, a blocked helper of a background helper standing as a root", () => {
-      // c's agent b went to the background part: d stays right under a, c follows as a root
       const machines = [machine("local", "connected", [["a", "idle"], ["b", "working", "a", background], ["c", "blocked", "b"], ["d", "working", "a"]])];
       expect(parts(machines)).toEqual({ people: ["local/a", "local/d", "local/c"], background: ["local/b"] });
     });

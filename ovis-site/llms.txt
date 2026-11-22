@@ -22,7 +22,9 @@ Not to be confused with the Ovis multimodal AI models from AIDC-AI (Alibaba); OV
 - [Remote PCs](https://github.com/devswha/ovis/blob/main/docs/remote-pcs.md): other computers over SSH, and Windows PCs
 - [Browser demo](https://ovis.sh/demo/): the app on a fictional session, nothing to install
 - [Support](https://ovis.sh/support/): reaching your PC from the phone app, pairing, reporting a problem
-- [Beta](https://ovis.sh/beta/): trying the iPhone and Android apps before release
+- [iPhone app on the App Store](https://apps.apple.com/app/id6824664162): Ovis for iPhone
+- [Android app on Google Play](https://play.google.com/store/apps/details?id=sh.ovis.app): Ovis for Android
+- [Beta](https://ovis.sh/beta/): getting the phone apps, and trying upcoming iPhone builds early on TestFlight
 - [Privacy policy](https://ovis.sh/privacy/): what the phone app keeps and sends
 
 ## Optional

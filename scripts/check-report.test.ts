@@ -231,7 +231,6 @@ describe("check report", () => {
       });
       expect(readFileSync(path, "utf8")).not.toContain("must-not-be-serialized");
 
-      // a teardown failure: the kept state is named in the report, and the run is not verified
       const kept = join(dir, "hwc-kept");
       report.status = "failure";
       report.exitCode = 1;

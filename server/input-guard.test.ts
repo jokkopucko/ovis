@@ -3,7 +3,6 @@ import { expect, test } from "bun:test";
 import { isMouseReport, isTerminalReply, sightingFacts, typingGuards } from "./input-guard.ts";
 
 const attach = (...members: string[]) => ({ clients: new Set(members), ready: true, process: {}, kind: "pty" as const, cols: 80 });
-/** typing taken while `origin` was the attach the client was in (none: typed with no attach of its own), now that `current` is the pane's */
 const typedThen = (origin: ReturnType<typeof attach> | undefined, current: ReturnType<typeof attach> | undefined, client: string): boolean =>
   typingGuards.herdrTyping(sightingFacts({ attachment: origin, process: origin?.process, claim: undefined, member: origin !== undefined },
     { attachment: current, claim: undefined }, client));
@@ -22,7 +21,6 @@ test("a click or a wheel is told from typing, so a queued one keeps the attach i
   // the default encoding: CSI M and three bytes, a byte may be any character
   expect(isMouseReport("\x1b[M #!")).toBe(true);
   expect(isMouseReport("\x1b[M\x60;;\x1b[M\x61;;")).toBe(true);
-  // typing, keys and a report mixed with typing are not mouse reports
   for (const text of ["", "a", "\x1b[A", "\x1b[<0;5;3", "\x1b[<0;5;3Mx", "x\x1b[<0;5;3M", "\x1b[M #", "\x1b[1;5A"]) {
     expect(isMouseReport(text)).toBe(false);
   }
@@ -34,7 +32,6 @@ test("the terminal's own answers are told from typing, so queued ones go to the 
   expect(isTerminalReply("\x1b]11;rgb:1818/1616/1313\x07")).toBe(true);
   expect(isTerminalReply("\x1b[6;17;8t")).toBe(true);
   expect(isTerminalReply("\x1b[I\x1b]10;rgb:d8d8/d0d0/c3c3\x1b\\\x1b]12;rgb:f0f0/a8a8/3030\x1b\\\x1b[?1;2c")).toBe(true);
-  // typing, keys and an answer mixed with typing are not answers
   for (const text of ["", "I", "\x1b[A", "\x1b[1;2A", "\x1bOB", "\x1b]11;?\x1b\\", "\x1b[Ix", "x\x1b[I", "\x1b]13;rgb:0/0/0\x07", "\x1b]11;hello\rworld\x07"]) {
     expect(isTerminalReply(text)).toBe(false);
   }
@@ -49,27 +46,20 @@ test("typing taken into an attach goes only into that attach, while it still has
   expect(typedThen(origin, origin, "a")).toBe(false);
 });
 
-// The checks below replaced closures in server/index.ts. Each oracle is that closure's body as it was
-// on main, its capture renamed only (`attachments.get(message.pane_id)` reads `attachments`), so every
-// state a check can meet answers as it always did.
 type Attachment = { clients: Set<unknown>; ready: boolean; held?: boolean; process: object; kind: "pty" | "mirror"; cols: number };
 type Scenario = {
   label: string;
   message: { pane_id: string };
   attachments: Map<string, Attachment>;
   client: { data: { attached: Map<string, object> } };
-  /** the attachment the input path saw, whether or not the client was in it (secret, queued typing, pending) */
   attachment: Attachment | undefined;
-  /** the attachment the client was in when it typed (herdr typing, keys) */
   origin: Attachment | undefined;
-  /** keys' `origin?.process`, and the seen attachment's process for the others: both taken before the await */
   pty: object | undefined;
   attachmentPty: object | undefined;
   claim: object | undefined;
   facts: ReturnType<typeof sightingFacts>;
 };
 
-/** The original membership check, as server/index.ts called it before typingGuards. */
 function originalSameAttachment<Client, A extends { clients: { has(client: Client): boolean } }>(origin: A | undefined, current: A | undefined, client: Client): boolean {
   return origin ? current === origin && origin.clients.has(client) : current === undefined;
 }
@@ -91,12 +81,10 @@ function* scenarios(): Generator<Scenario> {
     const paneId = "w1:p1";
     const before = {};
     const seen: Attachment | undefined = seenOne ? { clients: new Set(memberThen ? [client] : []), ready: true, process: before, kind: "pty", cols: 80 } : undefined;
-    // what each path took before its await
     const origin = seen?.clients.has(client) ? seen : undefined;
     const pty = origin?.process as object | undefined;
     const attachmentPty = seen?.process;
     const sighting = { attachment: seen, process: seen?.process, claim: claimThen, member: seen?.clients.has(client) === true };
-    // and what happened meanwhile
     if (seen) {
       seen.clients = new Set(memberNow ? [client] : []);
       seen.ready = ready;
@@ -121,7 +109,6 @@ test("each typing guard answers every state as the check it replaced", () => {
   for (const s of scenarios()) {
     const { message, attachments, client, origin, pty, claim, facts } = s;
     const verdicts: Record<string, [boolean, boolean]> = {
-      // input through herdr: its check right before herdr is written to, and its check in the queue's turn
       herdrTyping: [typingGuards.herdrTyping(facts), client.data.attached.get(message.pane_id) === claim
         && originalSameAttachment(origin, attachments.get(message.pane_id), client)],
       herdrTypingTurn: [!typingGuards.herdrTyping(facts), client.data.attached.get(message.pane_id) !== claim
@@ -159,7 +146,6 @@ test("each typing guard answers every state as the check it replaced", () => {
       checked += 1;
     }
   }
-  // every check met states where it allows and where it refuses
   expect(checked).toBeGreaterThan(10_000);
 });
 

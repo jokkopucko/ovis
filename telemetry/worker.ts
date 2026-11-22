@@ -6,10 +6,12 @@
  * beyond the content type; of where a request came from it keeps the country Cloudflare names
  * and nothing finer. It keeps the day rather than the time, and stores each
  * (install, event, version) once, so a replayed event counts once. It stores only the app's
- * validated, allowlisted settings snapshot. Deploy: telemetry/README.md.
+ * validated, allowlisted settings snapshot. /v1/counts fills `counts`, one row per install and
+ * finished UTC day, kept as first received: the bucket of each fixed counter used that day, per
+ * width, with the names it does not know dropped. Deploy: telemetry/README.md.
  */
 
-import { ACTIVE_LATE_DAYS, telemetryHarnesses, telemetrySettings, telemetryUsage, type TelemetryHarness, type TelemetryRuntime, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, COUNTS_LATE_DAYS, telemetryHarnesses, telemetrySettings, telemetryUsage, telemetryWidthCounts, type TelemetryHarness, type TelemetryRuntime, type TelemetrySettings, type TelemetryUsage, type TelemetryWidthCounts } from "../shared/telemetry.ts";
 
 /** the part of Cloudflare's D1 binding this Worker uses */
 interface D1Statement { bind(...values: unknown[]): { run(): Promise<unknown> } }
@@ -116,14 +118,10 @@ export function readActive(body: unknown, now: Date): StoredActive | null {
   const keys = Object.keys(value);
   const expected = ACTIVE_KEY_SETS.find((set) => set.length === keys.length);
   if (!expected || expected.some((key) => !Object.prototype.hasOwnProperty.call(value, key))) return null;
-  const { event, day, install_id, version, os, arch, install_method } = value;
+  const { event, install_id, version, os, arch, install_method } = value;
   if (event !== "active") return null;
-  if (typeof day !== "string" || !DAY.test(day)) return null;
-  const date = new Date(day + "T00:00:00Z");
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== day) return null;
-  const today = now.toISOString().slice(0, 10);
-  const earliest = new Date(now.getTime() - ACTIVE_LATE_DAYS * DAY_MS).toISOString().slice(0, 10);
-  if (day < earliest || day > today) return null;
+  const day = recentDay(value["day"], now, ACTIVE_LATE_DAYS);
+  if (day === null) return null;
   if (typeof install_id !== "string" || !UUID.test(install_id)) return null;
   if (typeof version !== "string" || !VERSION.test(version)) return null;
   if (typeof os !== "string" || !WORD.test(os) || typeof arch !== "string" || !WORD.test(arch)) return null;
@@ -135,6 +133,56 @@ export function readActive(body: unknown, now: Date): StoredActive | null {
   const runtime = readRuntime(value);
   if (runtime === undefined) return null;
   return { day, install_id, version, os, arch, install_method: install_method as StoredActive["install_method"], harnesses, usage, runtime };
+}
+
+export interface StoredCounts {
+  /** the UTC day the counts are of, which had ended when they were sent */
+  day: string;
+  install_id: string;
+  /** the app's version that day */
+  version: string;
+  narrow: TelemetryWidthCounts | null;
+  wide: TelemetryWidthCounts | null;
+}
+
+const COUNTS_KEYS = ["event", "day", "install_id", "version", "narrow", "wide"];
+
+/**
+ * A valid UTC date YYYY-MM-DD within [today - `late` days, today] at `now`, else null; with `ended`, today
+ * is refused too: a day not over yet would be counted only in part
+ */
+function recentDay(value: unknown, now: Date, late: number, ended = false): string | null {
+  if (typeof value !== "string" || !DAY.test(value)) return null;
+  const date = new Date(value + "T00:00:00Z");
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  const today = now.toISOString().slice(0, 10);
+  const earliest = new Date(now.getTime() - late * DAY_MS).toISOString().slice(0, 10);
+  return value < earliest || value > today || (ended && value === today) ? null : value;
+}
+
+/**
+ * The counts message as it is stored, or null when the body is not one or names a day outside
+ * [today - COUNTS_LATE_DAYS, today). The receiver's own today is refused: the first message for a day stands,
+ * so one sent before the day ended (a sender's clock ahead) would keep a part of it; refused, the sender keeps
+ * the day and sends it again later. Within a width, a counter or shown control it does not know (a
+ * newer app's) is dropped and the rest kept, so a new name never costs the day's row.
+ */
+export function readCounts(body: unknown, now: Date): StoredCounts | null {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+  const value = body as Record<string, unknown>;
+  const keys = Object.keys(value);
+  if (keys.length !== COUNTS_KEYS.length || COUNTS_KEYS.some((key) => !Object.prototype.hasOwnProperty.call(value, key))) return null;
+  if (value["event"] !== "counts") return null;
+  const day = recentDay(value["day"], now, COUNTS_LATE_DAYS, true);
+  if (day === null) return null;
+  const { install_id, version } = value;
+  if (typeof install_id !== "string" || !UUID.test(install_id)) return null;
+  if (typeof version !== "string" || !VERSION.test(version)) return null;
+  const width = (raw: unknown): TelemetryWidthCounts | null | undefined => raw === null ? null : telemetryWidthCounts(raw) ?? undefined;
+  const narrow = width(value["narrow"]);
+  const wide = width(value["wide"]);
+  if (narrow === undefined || wide === undefined) return null;
+  return { day, install_id, version, narrow, wide };
 }
 
 /** the body as text, or null as soon as it passes MAX_BODY_BYTES (without waiting for the rest) */
@@ -167,10 +215,21 @@ async function readJson(request: Request): Promise<{ body: unknown } | Response>
 
 export async function handle(request: Request, env: Env, now = new Date()): Promise<Response> {
   const url = new URL(request.url);
-  if (url.pathname !== "/v1/events" && url.pathname !== "/v1/active") return new Response(null, { status: 404 });
+  if (url.pathname !== "/v1/events" && url.pathname !== "/v1/active" && url.pathname !== "/v1/counts") return new Response(null, { status: 404 });
   const parsed = await readJson(request);
   if (parsed instanceof Response) return parsed;
   const { body } = parsed;
+  if (url.pathname === "/v1/counts") {
+    const counts = readCounts(body, now);
+    if (!counts) return new Response(null, { status: 400 });
+    // sent once a day has ended: a replay (an answer that was lost) is the same day, and the first one stands. No country:
+    // the day's active row has it
+    const json = (side: TelemetryWidthCounts | null) => side === null ? null : JSON.stringify(side);
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO counts (day, install_id, version, narrow, wide) VALUES (?, ?, ?, ?, ?)",
+    ).bind(counts.day, counts.install_id, counts.version, json(counts.narrow), json(counts.wide)).run();
+    return new Response(null, { status: 204 });
+  }
   if (url.pathname === "/v1/active") {
     const active = readActive(body, now);
     if (!active) return new Response(null, { status: 400 });

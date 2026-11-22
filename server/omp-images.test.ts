@@ -37,7 +37,6 @@ const caseSensitive = ((): string | null => {
 })();
 afterAll(() => { rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
 
-/** An omp agent directory holding one session of `text` and the blobs given, as omp lays them out. */
 function store(name: string, text: string, blobs: Record<string, Buffer> = { [DIGEST]: BLOB }): { path: string; blobs: string } {
   const agent = join(root, name, "agent");
   const sessions = join(agent, "sessions", "-tmp-omp-pictures-");
@@ -50,7 +49,6 @@ function store(name: string, text: string, blobs: Record<string, Buffer> = { [DI
 }
 const jsonl = (...entries: unknown[]) => entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 type Pictured = Extract<ConversationPart, { kind: "image" }> | Extract<ConversationPart, { kind: "tool" }>;
-/** Every turn's pictures, by ref: a prompt's own, then its tools'. */
 const refs = (path: string): string[][] => transcriptPage("omp-transcript", path).turns.map((turn) => turn.parts.flatMap((part) => {
   const pictured = part as Pictured;
   return pictured.kind === "image" ? [`${pictured.media_type} ${pictured.ref}`] : pictured.kind === "tool" ? (pictured.images ?? []).map((image) => `${image.media_type} ${image.ref}`) : [];
@@ -84,7 +82,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     expect(page).not.toContain(BLOB.toString("base64").slice(0, 32));
     expect(page).not.toContain("blob:sha256");
     for (const ref of ["pi-prompt:d4a9dbba:0", `pi:${CALL}:0`, "pi-prompt:faaa5772:0"]) expect(await served(path, ref)).toEqual({ mediaType: "image/webp", same: true });
-    // no picture at that place, an entry with none, a ref that is no ref
     for (const ref of ["pi-prompt:d4a9dbba:1", `pi:${CALL}:1`, "pi-prompt:5cd289cf:0", "pi-prompt:d4a9dbba", `pi:${CALL.split("|")[0]}:0`, "pi-prompt:../d4a9dbba:0"]) expect(await ompTranscriptImage(path, ref)).toBeNull();
   });
 
@@ -98,13 +95,10 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const agent = join(root, "layouts", "home", ".omp", "agent");
     mkdirSync(join(agent, "blobs"), { recursive: true });
     expect(ompBlobStore(at("home", ".omp", "agent", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(agent, "blobs"));
-    // a subagent's file, a level below its parent session
     expect(ompBlobStore(at("home", ".omp", "agent", "sessions", "-home-u-p-", "s", "sub.jsonl"))).toBe(join(agent, "blobs"));
     // omp's XDG data directory keeps both side by side, with no `agent` level
     mkdirSync(join(root, "layouts", "data", "omp", "blobs"), { recursive: true });
     expect(ompBlobStore(at("data", "omp", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(root, "layouts", "data", "omp", "blobs"));
-    // a store not made yet is named by the layout all the same (its blobs are asked for when read),
-    // and a session directory of its own names none
     expect(ompBlobStore(at("bare", "sessions", "-home-u-p-", "s.jsonl"))).toBe(join(root, "layouts", "bare", "blobs"));
     expect(ompBlobStore(at("own-dir", "s.jsonl"))).toBeNull();
     expect(ompBlobStore(join(root, "layouts", "nowhere", "sessions", "-p-", "s.jsonl"))).toBeNull();
@@ -114,11 +108,9 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     const ok = store("blob-ok", records);
     expect(refs(ok.path)).toEqual([["image/webp pi-prompt:u1:0"], []]);
-    // no blob: the prompt's words stay, with no picture named
     const missing = store("blob-missing", records, {});
     expect(refs(missing.path)).toEqual([[], []]);
     expect(await ompTranscriptImage(missing.path, "pi-prompt:u1:0")).toBeNull();
-    // bytes that do not hash to the name the transcript gave them
     const tampered = store("blob-tampered", records, { [DIGEST]: Buffer.concat([BLOB, Buffer.from("x")]) });
     expect(refs(tampered.path)).toEqual([[], []]);
     expect(await ompTranscriptImage(tampered.path, "pi-prompt:u1:0")).toBeNull();
@@ -133,15 +125,12 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
   it("names and serves nothing from a blob store that is a link, even to another omp's real store", async () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     const other = store("blob-dir-real", records);
-    // this session's agent directory keeps no store of its own: its `blobs` is a link to another's
     const linked = store("blob-dir-linked", records, {});
     rmSync(linked.blobs, { recursive: true });
     linkDirectory(other.blobs, linked.blobs);
-    // named by the layout, and refused where a blob is read: no picture in the page, none served
     expect(ompBlobStore(linked.path)).toBe(linked.blobs);
     expect(refs(linked.path)).toEqual([[], []]);
     expect(await ompTranscriptImage(linked.path, "pi-prompt:u1:0")).toBeNull();
-    // a store that becomes a link after it was found is refused where the blob is read
     expect(ompBlobPicture(linked.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
     expect(ompBlobPicture(other.blobs, "image/webp", `blob:sha256:${DIGEST}`)?.mediaType).toBe("image/webp");
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
@@ -150,7 +139,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
   it("names a picture once omp makes its store, live as in a cold read", async () => {
     const first = jsonl(prompt("u1", [{ type: "text", text: "read it" }]), call("a1", "c1"));
     const { path, blobs } = store("store-later", first, {});
-    // a fresh omp: no store yet when the page is first read
     rmSync(blobs, { recursive: true });
     expect(refs(path).flat()).toEqual([]);
     mkdirSync(blobs);
@@ -165,12 +153,9 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
 
   it("serves nothing when a link to another store is swapped in as the store or the blob is opened", async () => {
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
-    // the other omp's store holds the blob; this one's does not
     const other = store("swap-other", records);
     const own = store("swap-own", records, {});
     const agent = join(own.blobs, "..");
-    // the store, or the agent directory above it, is put aside and a link to the other omp's takes its
-    // place just for one open, then put back before the read is checked again
     const swaps = [
       { at: "blob", place: own.blobs, link: other.blobs },
       { at: "store", place: own.blobs, link: other.blobs },
@@ -190,8 +175,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
         expect(swapped).toBe(1);
       } finally { aroundBlobOpenForTests(null); }
     }
-    // the other store itself, a real directory, moved into this one's place as the store is opened,
-    // and both put back before the blob is opened through it
     let moves = 0;
     aroundBlobOpenForTests((opening, open) => {
       if (opening === "store") {
@@ -208,7 +191,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       expect(ompBlobPicture(own.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
     } finally {
       aroundBlobOpenForTests(null);
-      // a refusal at the store's open leaves the move half done: put both stores back
       if (moves === 1) { renameSync(own.blobs, other.blobs); renameSync(`${own.blobs}-aside`, own.blobs); }
     }
     expect(moves).toBeGreaterThanOrEqual(1);
@@ -220,12 +202,10 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       expect(ompBlobPicture(own.blobs, "image/webp", `blob:sha256:${DIGEST}`)).toBeNull();
     } finally { unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
     expect(await ompTranscriptImage(own.path, "pi-prompt:u1:0")).toBeNull();
-    // the other store, untouched, still serves its own picture
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
   });
 
   it("reads a blob only from the store authorized with the transcript, whatever the path above it names later", async () => {
-    // two omps' sessions at the same place in their own agent directories; only the other one holds the blob
     const records = jsonl(prompt("u1", [{ type: "text", text: "look" }, picture()]), answer("a1", "a webp"));
     const other = store("anchor-other", records);
     const own = store("anchor-own", records, {});
@@ -234,7 +214,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const authorized = ompAuthorizedTranscript(authorizedTranscript(own.path, sessions(own.blobs))!);
     expect(authorized).toEqual({ path: own.path, blobs: ompBlobAnchor(own.blobs)!.identity });
     expect(authorized.blobs).not.toBe(ompBlobAnchor(other.blobs)!.identity);
-    // after the transcript was authorized, this omp's agent directory becomes a link to the other's
     const agent = join(own.blobs, "..");
     renameSync(agent, `${agent}-aside`);
     linkDirectory(join(other.blobs, ".."), agent);
@@ -244,7 +223,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       expect(await ompTranscriptImage(authorized.path, "pi-prompt:u1:0", null)).toBeNull();
     } finally { unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
     expect(await served(other.path, "pi-prompt:u1:0")).toEqual({ mediaType: "image/webp", same: true });
-    // a transcript whose store is missing is authorized with none
     const bare = store("anchor-bare", records, {});
     rmSync(bare.blobs, { recursive: true });
     expect(ompAuthorizedTranscript(authorizedTranscript(bare.path, sessions(bare.blobs))!)).toEqual({ path: bare.path, blobs: null });
@@ -257,9 +235,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     try {
       expect(ompAuthorizedTranscript(checked)).toEqual({ path: own.path, blobs: ownIdentity });
     } finally { betweenAuthorizationForTests(null); unlinkSync(agent); renameSync(`${agent}-aside`, agent); }
-    // before the data directory is opened, this omp's sessions moved into the other agent directory and
-    // that directory moved to this one's path: the arrangement then is the one trusted, and the transcript
-    // and the blob store both come from the one data directory now at that path
     let consistent: string | undefined;
     betweenAuthorizationForTests((stage) => {
       if (stage !== "before") return;
@@ -279,8 +254,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       renameSync(sessions(other.blobs), sessions(own.blobs));
       renameSync(`${sessions(other.blobs)}-aside`, sessions(other.blobs));
     }
-    // this omp's sessions moved under the other's agent directory, and the two agent directories swapped
-    // names: the held data directory has no sessions left, and nothing is anchored
     betweenAuthorizationForTests((stage) => { if (stage !== "after") return;
       renameSync(sessions(other.blobs), `${sessions(other.blobs)}-aside`);
       renameSync(sessions(own.blobs), sessions(other.blobs));
@@ -296,7 +269,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       renameSync(sessions(other.blobs), sessions(own.blobs));
       renameSync(`${sessions(other.blobs)}-aside`, sessions(other.blobs));
     }
-    // and another real store moved into this one's place there is refused the same way
     const sessionsDir = sessions(own.blobs);
     betweenAuthorizationForTests((stage) => { if (stage !== "after") return; renameSync(sessionsDir, `${sessionsDir}-aside`); renameSync(sessions(other.blobs), sessionsDir); });
     try {
@@ -323,7 +295,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const short = answer.toString("utf16le", 0, units * 2);
     // a volume that makes no short names gives the path back as it is
     expect(short === blobs || short.includes("~")).toBe(true);
-    // only this test's own ASCII name changes case: the temporary directory keeps its spelling
     const cased = (name: string) => blobs.replace("a-store-of-a-long-name", name);
     for (const spelling of [short, cased("A-STORE-OF-A-LONG-NAME"), cased("A-Store-Of-A-Long-Name")]) {
       expect([spelling, ompBlobPicture(spelling, "image/webp", `blob:sha256:${DIGEST}`)?.mediaType]).toEqual([spelling, "image/webp"]);
@@ -347,7 +318,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const dir = caseSensitive!;
     mkdirSync(join(dir, "Box"));
     mkdirSync(join(dir, "box"));
-    // a junction whose name differs from its target's only by case
     mkdirSync(join(dir, "AGENT", "blobs"), { recursive: true });
     linkDirectory(join(dir, "AGENT"), join(dir, "agent"));
     const isAt = (held: string, named: string) => { const store = openHeldDirectory(held); try { return store.isAt(named); } finally { store.close(); } };
@@ -360,7 +330,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     blobPlatformForTests("freebsd");
     try {
       forgetTranscriptState();
-      // the blob keeps its place, empty: the inline picture before it is named and served as ever
       expect(refs(path)).toEqual([["image/png pi-prompt:u1:0"], []]);
       expect((await ompTranscriptImage(path, "pi-prompt:u1:0"))?.mediaType).toBe("image/png");
       expect(await ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
@@ -370,7 +339,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
 
   it("serves no picture from another session that a folder swap puts at the path around the scan's opens after its first", async () => {
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH1sAAAAASUVORK5CYII=", "base64");
-    // the same records and length: only the picture's bytes tell the files apart
     const foreign = Buffer.from(png);
     foreign[foreign.length - 1]! ^= 1;
     const text = (bytes: Buffer) => jsonl(prompt("u1", [{ type: "text", text: "look" }, { type: "image", mimeType: "image/png", data: bytes.toString("base64") }]), answer("a1", "seen"));
@@ -382,8 +350,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     writeFileSync(join(elsewhere, basename(path)), text(foreign));
     expect(Buffer.from((await ompTranscriptImage(path, "pi-prompt:u1:0"))!.bytes).equals(png)).toBe(true);
     forgetTranscriptState();
-    // the path names the pane's own file when the lookup begins and at the scan's first open; every later
-    // open, after the scan's awaits, meets the other folder
     const counts = { opens: 0, swaps: 0 };
     const real = fs.openSync;
     const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
@@ -404,14 +370,10 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
   });
 
   it("never holds the event loop for more than a few windows, however many small records it judges", async () => {
-    // 30,000 short answers that each name the call in their words, so the search hands every one to be
-    // judged, over 40 MiB, so the cold scan for clears takes several windows too
     const words = "call c1 again ".repeat(90);
     const many = Array.from({ length: 30_000 }, (_, at) => answer(`n${at}`, words));
     const { path } = store("many-records", jsonl(prompt("u1", [{ type: "text", text: "read it" }]), ...many, call("a1", "c1"), result("r1", "c1", [picture()]), answer("a2", "done")));
     forgetTranscriptState();
-    // work between two turns of the loop, counted in buffers taken rather than in time: a window read is
-    // one, a record judged is one or two
     let since = 0, sinceLarge = 0, most = 0, mostLarge = 0, total = 0;
     const real = Buffer.alloc.bind(Buffer);
     const counting = spyOn(Buffer, "alloc").mockImplementation(((...args: Parameters<typeof Buffer.alloc>) => {
@@ -434,9 +396,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       most = Math.max(most, since); mostLarge = Math.max(mostLarge, sinceLarge);
       counting.mockRestore();
     }
-    // a reader that judged every record, or scanned every window for clears, before the loop's next turn
-    // would take thousands of buffers, or every window, in one stretch
-    // the count is live: judging 30,000 records takes far more buffers than any one stretch may
     expect(total).toBeGreaterThan(30_000);
     expect(mostLarge).toBeLessThanOrEqual(2);
     expect(most).toBeLessThanOrEqual(400);
@@ -446,7 +405,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
   it("lets the event loop run between windows while it looks through a large transcript", async () => {
     const pad = "x".repeat(20 * 1024 * 1024);
     const { path } = store("event-loop", jsonl(prompt("u1", [{ type: "text", text: "read it" }]), answer("n1", pad), call("a1", "c1"), result("r1", "c1", [picture()]), answer("a2", "done")));
-    // warm, as the page's own read has already scanned the transcript for clears
     expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
     let turns = 0;
     let looking = true;
@@ -454,7 +412,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     setImmediate(turn);
     expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
     looking = false;
-    // a reader that held the loop for the whole search would let it turn once, at the end
     expect(turns).toBeGreaterThanOrEqual(20);
   });
 
@@ -470,13 +427,10 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       picture(DIGEST, "image/svg+xml"),
       picture(over.digest, "image/png"),
       picture(exact.digest, "image/png"),
-      // a ref that is no digest omp writes: never read
       { type: "image", data: "blob:sha256:../../etc/passwd", mimeType: "image/png" },
       { type: "image", data: `blob:sha256:${DIGEST.toUpperCase()}`, mimeType: "image/webp" },
       picture(),
     ]), answer("a1", "two")), { [DIGEST]: BLOB, [svg.digest]: svg.bytes, [exact.digest]: exact.bytes, [over.digest]: over.bytes });
-    // a blob ref in omp's form keeps its place whatever its blob holds, shown as nothing when that is
-    // no picture; a block naming no blob omp writes, or no raster, takes none
     expect(refs(path)).toEqual([["image/png pi-prompt:u1:2", "image/webp pi-prompt:u1:3"], []]);
     expect(await ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
     expect(await ompTranscriptImage(path, "pi-prompt:u1:1")).toBeNull();
@@ -490,16 +444,13 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const gifDigest = createHash("sha256").update(gif).digest("hex");
     const text = jsonl(prompt("u1", [{ type: "text", text: "two" }, picture(), picture(gifDigest, "image/gif")]), answer("a1", "both"));
     const { path, blobs } = store("blob-gone", text, { [DIGEST]: BLOB, [gifDigest]: gif });
-    // parsed again as a poll does, through the answers the parser keeps for each blob
     const parsed = () => parseOmpTranscript(text, Infinity, { images: true, blobs }).map((turn) => turn.parts.flatMap((part) => part.kind === "image" ? [`${part.media_type} ${part.ref}`] : []));
     expect(refs(path)).toEqual([["image/webp pi-prompt:u1:0", "image/gif pi-prompt:u1:1"], []]);
     expect(parsed()).toEqual(refs(path));
-    // the first blob goes while the bridge runs: its place stays, empty, and the gif keeps its own
     rmSync(join(blobs, DIGEST));
     expect(parsed()).toEqual([["image/gif pi-prompt:u1:1"], []]);
     expect(await ompTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
     expect((await ompTranscriptImage(path, "pi-prompt:u1:1"))?.mediaType).toBe("image/gif");
-    // the gif's blob becomes a link to the same bytes: no longer a blob omp wrote, so neither names it
     writeFileSync(join(root, "gif-elsewhere"), gif);
     rmSync(join(blobs, gifDigest));
     symlinkSync(join(root, "gif-elsewhere"), join(blobs, gifDigest));
@@ -521,7 +472,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
       forgetTranscriptState();
       alloc.mockClear();
       expect(Buffer.from((await ompTranscriptImage(path, "pi-prompt:u1:1"))!.bytes).equals(second)).toBe(true);
-      // the served picture is the one allocation past a window
       expect(alloc.mock.calls.map(([size]) => Number(size)).filter((size) => size > 1024 * 1024)).toEqual([second.length]);
     } finally { alloc.mockRestore(); }
   });
@@ -531,7 +481,6 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const first = png(1, 2 * 1024 * 1024);
     const second = png(2, 1000);
     const inline = (bytes: Buffer) => ({ type: "image", mimeType: "image/png", data: bytes.toString("base64") });
-    // a JSON writer may escape every `/`, and the first picture's text crosses the endpoint's windows
     const text = jsonl(prompt("u1", [{ type: "text", text: "two inline" }, inline(first), { type: "image", mimeType: "image/svg+xml", data: "PHN2Zz4=" }, inline(second)]), answer("a1", "both")).replaceAll("/", "\\/");
     const { path } = store("inline-escaped", text);
     expect(refs(path)).toEqual([["image/png pi-prompt:u1:0", "image/png pi-prompt:u1:1"], []]);
@@ -550,21 +499,17 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const bytes = Buffer.from(rows.join("\n"));
     const second = rows[0]!.length + rows[1]!.length + 2;
     expect(turnStarts(bytes, "omp-transcript", undefined, blobs)).toEqual([0, second]);
-    // with no blob to show, it is no turn the parser draws, and opens none
     expect(turnStarts(bytes, "omp-transcript", undefined, join(root, "no-blobs"))).toEqual([0]);
   });
 
   it("serves a tool's picture only from the result the page draws: the first one answering a call it shows", async () => {
     const shown = [prompt("u1", [{ type: "text", text: "read it" }]), call("a1", "c1")];
-    // a second result for an answered call
     const twice = store("tool-twice", jsonl(...shown, result("r1", "c1", [{ type: "text", text: "nothing" }]), result("r2", "c1", [picture()]), answer("a2", "done")));
     expect(refs(twice.path).flat()).toEqual([]);
     expect(await ompTranscriptImage(twice.path, "pi:c1:0")).toBeNull();
-    // a result answering no call the page draws
     const orphan = store("tool-orphan", jsonl(...shown, result("r1", "c2", [picture()]), answer("a2", "done")));
     expect(refs(orphan.path).flat()).toEqual([]);
     expect(await ompTranscriptImage(orphan.path, "pi:c2:0")).toBeNull();
-    // a call made again after an answer with no picture: the second answer's picture is the one named
     const again = store("tool-again", jsonl(...shown, result("r1", "c1", [{ type: "text", text: "nothing" }]), call("a2", "c1"), result("r2", "c1", [picture()]), answer("a3", "done")));
     expect(refs(again.path).flat()).toEqual(["image/webp pi:c1:0"]);
     expect(await served(again.path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
@@ -610,11 +555,9 @@ describe.skipIf(!heldOpenPlatform(process.platform))("omp's pictures reach the c
     const alloc = spyOn(Buffer, "alloc");
     try {
       const pad = "x".repeat(20 * 1024 * 1024);
-      // a call and its result, each padded past the largest picture the chat shows
       const { path } = store("large", jsonl(prompt("u1", [{ type: "text", text: "read it" }]),
         { ...call("a1", "c1"), message: { ...call("a1", "c1").message, content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "shot.png", pad } }] } },
         result("r1", "c1", [{ type: "text", text: pad }, picture()]), answer("a2", "done")));
-      // the first read scans the history once; the endpoint's own reads are what is left
       expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });
       alloc.mockClear();
       expect(await served(path, "pi:c1:0")).toEqual({ mediaType: "image/webp", same: true });

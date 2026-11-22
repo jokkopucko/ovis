@@ -1,10 +1,6 @@
 /**
- * One shared resource for every holder: made with the first `get`, kept while anyone holds it,
- * and disposed only after it has gone `idleMs` without a holder, so a holder that leaves and comes
- * back (a viewer closed and reopened, a remount) takes the same one. A `get` nobody follows with a
- * `hold` (a render React threw away) arms the same idle disposal, so it cannot leak. The diff
- * worker pool (components/DiffWorkerPool.tsx) is the user: its workers and their highlight caches
- * outlive a closed viewer instead of starting cold on the next.
+ * A `get` nobody follows with a `hold` (a render React threw away) arms the same idle disposal, so
+ * it cannot leak.
  */
 
 export interface IdleLeaseTimers {
@@ -13,11 +9,8 @@ export interface IdleLeaseTimers {
 }
 
 export interface IdleLease<T> {
-  /** The resource, made if there is none; safe to call while rendering. */
   get: () => T;
-  /** Keeps the resource from idling out until the returned release (once per hold). */
   hold: () => () => void;
-  /** The live resource without making one: undefined before the first get and after a disposal. */
   current: () => T | undefined;
 }
 

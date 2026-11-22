@@ -2,12 +2,13 @@ import { describe, expect, it } from "bun:test";
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
 import { ComposerDraftStore } from "./composerDraft.ts";
+import { DRAFT_TTL_MS } from "./draft.ts";
 import { PaneLifetimes, UNSENT_UNDO_WINDOW_MS, type UndoTimers } from "./paneLifetime.ts";
 import { PendingMessageStore } from "./pendingMessages.ts";
+import { messageWithComments } from "./replyComments.ts";
 
 class MemoryStorage implements Storage {
   readonly data = new Map<string, string>();
-  /** writes to keys with this prefix throw, as a full or blocked storage does */
   refuse: string | null = null;
   get length(): number { return this.data.size; }
   key(index: number): string | null { return [...this.data.keys()][index] ?? null; }
@@ -26,7 +27,6 @@ const pc = (id: string, lifetime: string | undefined, panes: HerdrPane[] = [pane
 const title = (item: HerdrPane): string => item.label ?? item.pane_id;
 let ids = 0;
 
-/** timers that fire only when the test moves the clock */
 function fakeClock() {
   let now = 0;
   let nextId = 0;
@@ -57,6 +57,31 @@ const page = (storage: Storage, timers: UndoTimers = fakeClock().timers): PaneLi
 const DRAFT = "ovis:composer-draft:w1:p1";
 
 describe("pane state per herdr lifetime", () => {
+  it("keeps a pane's reply comments for Recover unsent text when herdr is replaced, as the message they would have gone with (#3259)", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = new PaneLifetimes(() => storage, () => 1_000, () => `id-${++ids}`);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    lifetimes.paneStorage.setItem("ovis:composer-draft:w1:p1", "please look at these");
+    lifetimes.paneStorage.setItem("ovis:reply-comments:w1:p1", JSON.stringify([{ id: "c1", quote: "the retry loop", comment: "this should back off" }, { id: "c2", quote: "line 2", comment: "and this" }]));
+    lifetimes.observe([pc("local", "herdr-b")], title);
+    expect(storage.getItem("ovis:reply-comments:w1:p1")).toBeNull();
+    const comments = [{ id: "c1", quote: "the retry loop", comment: "this should back off" }, { id: "c2", quote: "line 2", comment: "and this" }];
+    expect(lifetimes.unsent().map(({ kind, text }) => ({ kind, text }))).toEqual(expect.arrayContaining([
+      { kind: "message", text: "please look at these" },
+      { kind: "message", text: messageWithComments(comments, "") },
+    ]));
+    expect(lifetimes.unsent()).toHaveLength(2);
+  });
+
+  it("keeps nothing for a pane with no reply comments, or a list that holds none", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = new PaneLifetimes(() => storage, () => 1_000, () => `id-${++ids}`);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    lifetimes.paneStorage.setItem("ovis:reply-comments:w1:p1", "[]");
+    lifetimes.observe([pc("local", "herdr-b")], title);
+    expect(lifetimes.unsent()).toEqual([]);
+  });
+
   it("keeps a pane's state across server restarts on one herdr, and leaves a replaced herdr's text to recovery", () => {
     const storage = new MemoryStorage();
     const first = page(storage);
@@ -66,7 +91,6 @@ describe("pane state per herdr lifetime", () => {
     first.paneStorage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo ", at: 1_000 }));
     first.paneStorage.setItem(`ovis:composer-sending:${DRAFT}`, JSON.stringify({ sent: "x", at: 1_000 }));
     storage.setItem("ovis:terminal-line:remote:pc2:w1%3Ap1", "another PC's line");
-    // a server restart on the same herdr: a new page, the same lifetime
     const reloaded = page(storage);
     reloaded.observe([pc("local", "herdr-a")], title);
     expect(reloaded.paneStorage.getItem(DRAFT)).toBe("for the old pane");
@@ -83,7 +107,6 @@ describe("pane state per herdr lifetime", () => {
       { machine_id: "local", pane_id: "w1:p1", pane_title: "api", kind: "message", text: "for the old pane" },
     ]);
     expect(storage.getItem("ovis:terminal-line:remote:pc2:w1%3Ap1")).toBe("another PC's line");
-    // the new herdr's panes write where they are read again
     reloaded.paneStorage.setItem(DRAFT, "for the new pane");
     expect(page(storage).paneStorage.getItem(DRAFT)).toBeNull();
     const next = page(storage);
@@ -98,12 +121,10 @@ describe("pane state per herdr lifetime", () => {
     const old = page(storage);
     old.observe([pc("local", "herdr-a")], title);
     old.paneStorage.setItem(CARD, card("my unsent card answer"));
-    // a reload after herdr was replaced: nothing of the old card is in any page's memory
     const reloaded = page(storage);
     reloaded.observe([pc("local", "herdr-b")], title);
     expect(reloaded.paneStorage.getItem(CARD)).toBeNull();
     expect(reloaded.unsent().map(({ pane_id, kind, text }) => ({ pane_id, kind, text }))).toEqual([{ pane_id: "w1:p1", kind: "message", text: "my unsent card answer" }]);
-    // the first page still draws herdr-a's panes: its write stays in its own memory
     reloaded.paneStorage.setItem(CARD, card("new runtime answer"));
     old.paneStorage.setItem(CARD, card("stale tab answer"));
     expect(storage.getItem(CARD)).toBe(card("new runtime answer"));
@@ -119,10 +140,101 @@ describe("pane state per herdr lifetime", () => {
     expect([...storage.data.keys()]).toEqual([]);
     lifetimes.observe([pc("local", undefined)], title);
     expect(lifetimes.paneStorage.getItem(DRAFT)).toBe("typed under an older bridge");
-    // the PC's server now names its herdr: what was typed before can no longer be told to be its panes'
     lifetimes.observe([pc("local", "herdr-a")], title);
     expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
     expect(lifetimes.unsent().map(({ kind, text }) => ({ kind, text }))).toEqual([{ kind: "message", text: "typed under an older bridge" }]);
+  });
+
+  it("leaves an older bridge's pane state to recovery in the next page when the app replaces this one, never sent, taken once", () => {
+    const storage = new MemoryStorage();
+    const HELD = "ovis:terminal-draft:remote:pc2:w1%3Ap1";
+    const leaving = page(storage);
+    leaving.observe([pc("local", undefined), pc("pc2", undefined)], title);
+    leaving.paneStorage.setItem(DRAFT, "typed under an older bridge");
+    leaving.paneStorage.setItem("ovis:terminal-line:w1:p1", "git status");
+    leaving.paneStorage.setItem(HELD, JSON.stringify({ text: "echo ", at: 1_000 }));
+    leaving.carry();
+    expect(storage.getItem(DRAFT)).toBeNull();
+
+    // back on the PC, whose server still names no herdr: nothing proves it is the herdr the text was typed under
+    const back = page(storage);
+    const drafts = new ComposerDraftStore(() => back.paneStorage);
+    back.onRetire((machineId) => drafts.forget(machineId));
+    back.observe([pc("local", undefined)], title);
+    expect(drafts.read(DRAFT)).toEqual({ text: "", sending: false });
+    expect(back.paneStorage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
+    expect(back.unsent().map(({ machine_id, kind, text }) => ({ machine_id, kind, text })).sort((x, y) => x.kind.localeCompare(y.kind))).toEqual([
+      { machine_id: "local", kind: "line", text: "git status" },
+      { machine_id: "local", kind: "message", text: "typed under an older bridge" },
+    ]);
+    back.observe([pc("pc2", "herdr-a")], title);
+    expect(back.paneStorage.getItem(HELD)).toBeNull();
+    expect(back.unsent().filter((item) => item.machine_id === "pc2").map(({ kind, text }) => ({ kind, text }))).toEqual([{ kind: "held", text: "echo " }]);
+    expect([...storage.data.keys()].filter((key) => key.startsWith("ovis:pane-carried:"))).toEqual([]);
+    const again = page(storage);
+    again.observe([pc("local", undefined), pc("pc2", undefined)], title);
+    expect(again.unsent()).toHaveLength(3);
+  });
+
+  it("never puts a carried draft into the pane that reuses its ID after herdr was replaced under a PC naming no herdr", () => {
+    const storage = new MemoryStorage();
+    const leaving = page(storage);
+    leaving.observe([pc("local", undefined, [pane("w1:p1", "claude on repo-a")])], title);
+    leaving.paneStorage.setItem(DRAFT, "rm -rf build and redeploy repo-a");
+    leaving.carry();
+    // herdr restarted meanwhile: w1:p1 is another program now, and the snapshot still names no herdr
+    const back = page(storage);
+    const drafts = new ComposerDraftStore(() => back.paneStorage);
+    back.onRetire((machineId) => drafts.forget(machineId));
+    back.observe([pc("local", undefined, [pane("w1:p1", "codex on repo-b")])], title);
+    expect(drafts.read(DRAFT).text).toBe("");
+    expect(back.unsent().map(({ pane_id, kind, text }) => ({ pane_id, kind, text }))).toEqual([{ pane_id: "w1:p1", kind: "message", text: "rm -rf build and redeploy repo-a" }]);
+  });
+
+  it("brings a carried message an older bridge took with no receipt back once, in recovery, never in the reused pane id (#2172)", () => {
+    const storage = new MemoryStorage();
+    const leaving = page(storage);
+    const pending = new PendingMessageStore(() => leaving.paneStorage, leaving);
+    leaving.onRetire((machineId) => pending.forget(machineId));
+    leaving.observe([pc("local", undefined)], title);
+    pending.keepUnconfirmed("w1:p1", "deploy the fix");
+    leaving.carry();
+    const back = page(storage);
+    const after = new PendingMessageStore(() => back.paneStorage, back);
+    back.onRetire((machineId) => after.forget(machineId));
+    back.observe([pc("local", undefined)], title);
+    expect(after.read("w1:p1")).toEqual([]);
+    expect(back.unsent().map(({ pane_id, kind, text }) => ({ pane_id, kind, text }))).toEqual([{ pane_id: "w1:p1", kind: "pending", text: "deploy the fix" }]);
+  });
+
+  it("brings two carried held messages with the same words back as two recovery items (#3990)", () => {
+    const storage = new MemoryStorage();
+    const leaving = page(storage);
+    leaving.observe([pc("local", undefined)], title);
+    leaving.paneStorage.setItem("ovis:pending:w1:p1", JSON.stringify({ version: 1, messages: [{ id: "one", text: "yes" }, { id: "two", text: "yes" }] }));
+    leaving.carry();
+    const back = page(storage);
+    const after = new PendingMessageStore(() => back.paneStorage, back);
+    back.onRetire((machineId) => after.forget(machineId));
+    back.observe([pc("local", undefined)], title);
+    expect(after.read("w1:p1")).toEqual([]);
+    expect(back.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["pending:yes", "pending:yes"]);
+  });
+
+  it("keeps no held input past its age in the carry, when the page leaves or when the next one takes it", () => {
+    const storage = new MemoryStorage();
+    const carried = (): string => storage.getItem("ovis:pane-carried:") ?? "";
+    const leaving = page(storage);
+    leaving.observe([pc("local", undefined), pc("pc2", undefined)], title);
+    leaving.paneStorage.setItem("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "typed a day ago", at: 1_000 - DRAFT_TTL_MS - 1 }));
+    leaving.paneStorage.setItem("ovis:terminal-draft:remote:pc2:w1%3Ap1", JSON.stringify({ text: "typed just now", at: 1_000 }));
+    leaving.carry();
+    expect(carried()).not.toContain("typed a day ago");
+    expect(carried()).toContain("typed just now");
+    const later = new PaneLifetimes(() => storage, () => 1_001 + DRAFT_TTL_MS, () => `id-${++ids}`);
+    later.observe([pc("local", undefined)], title);
+    expect(storage.getItem("ovis:pane-carried:")).toBeNull();
+    expect(later.unsent()).toEqual([]);
   });
 
   it("leaves the stored state alone in a page that is behind another tab, and keeps that page's own typing for recovery", () => {
@@ -136,7 +248,6 @@ describe("pane state per herdr lifetime", () => {
     behind.observe([pc("local", "herdr-a")], title);
     expect(behind.paneStorage.getItem(DRAFT)).toBeNull();
     behind.paneStorage.setItem(DRAFT, "typed while behind");
-    // nor does a herdr it reaches on its way take the state of the one the other tab is on
     behind.observe([pc("local", "herdr-b")], title);
     expect(storage.getItem(DRAFT)).toBe("for herdr-c's pane");
     behind.observe([pc("local", "herdr-c")], title);
@@ -164,7 +275,6 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.observe([pc("local", undefined)], title);
     pending.keepUnconfirmed("w1:p1", "deploy the fix");
     expect(pending.read("w1:p1")).toMatchObject([{ text: "deploy the fix", state: "uncertain" }]);
-    // the composer is empty and the row is in this page alone: a reload keeps the text in recovery
     const reloaded = page(storage);
     const after = new PendingMessageStore(() => reloaded.paneStorage, reloaded);
     reloaded.observe([pc("local", undefined)], title);
@@ -172,7 +282,6 @@ describe("pane state per herdr lifetime", () => {
     expect(reloaded.unsent().map(({ machine_id, pane_id, pane_title, kind, text }) => ({ machine_id, pane_id, pane_title, kind, text }))).toEqual([
       { machine_id: "local", pane_id: "w1:p1", pane_title: "api", kind: "pending", text: "deploy the fix" },
     ]);
-    // the PC's server names its herdr later: the page's row goes to recovery, where its text already is
     lifetimes.observe([pc("local", "herdr-a")], title);
     expect(pending.read("w1:p1")).toEqual([]);
     expect(lifetimes.unsent().map(({ text }) => text)).toEqual(["deploy the fix"]);
@@ -188,7 +297,6 @@ describe("pane state per herdr lifetime", () => {
     pendingB.keepUnconfirmed("w1:p1", "yes");
     expect(a.unsent()).toHaveLength(3);
     pendingA.removeCopy("w1:p1", pendingA.read("w1:p1")[0]!.id);
-    // tab B's row and the older record still have their text after a reload
     const reloaded = page(storage);
     reloaded.observe([pc("local", undefined)], title);
     expect(reloaded.unsent().map(({ text }) => text)).toEqual(["yes", "yes"]);
@@ -203,17 +311,14 @@ describe("pane state per herdr lifetime", () => {
     pending.keepUnconfirmed("w1:p1", "yes");
     pending.keepUnconfirmed("w1:p1", "yes");
     pending.keepUnconfirmed("w1:p2", "no");
-    // the same words sent twice are two messages: one record each
     expect(lifetimes.unsent().map(({ pane_id, text }) => `${pane_id}=${text}`).sort()).toEqual(["w1:p1=yes", "w1:p1=yes", "w1:p2=no"]);
     const [first, second] = pending.read("w1:p1");
     pending.removeCopy("w1:p1", first!.id);
     expect(lifetimes.unsent().map(({ pane_id, text }) => `${pane_id}=${text}`).sort()).toEqual(["w1:p1=yes", "w1:p2=no"]);
     pending.removeCopy("w1:p1", second!.id);
     expect(lifetimes.unsent().map(({ pane_id, text }) => `${pane_id}=${text}`)).toEqual(["w1:p2=no"]);
-    // a copy that went with its row was never discarded in Recover unsent text: nothing there offers it back
     expect(lifetimes.undoable()).toEqual([]);
 
-    // storage that refuses the row on a stored PC: the row is in this page alone, its text in recovery
     const full = new MemoryStorage();
     const refusing = page(full);
     const unsaved = new PendingMessageStore(() => refusing.paneStorage, refusing);
@@ -259,7 +364,6 @@ describe("pane state per herdr lifetime", () => {
     storage.refuse = "ovis:pending:";
     pending.keepUnconfirmed("w1:p1", "first");
     expect(lifetimes.unsent().map(({ text }) => text)).toEqual(["first"]);
-    // storage has room again: the next message's write saves the whole list, the first row with it
     storage.refuse = null;
     pending.keepUnconfirmed("w1:p1", "second");
     expect(lifetimes.unsent()).toEqual([]);
@@ -281,12 +385,10 @@ describe("pane state per herdr lifetime", () => {
     ahead.observe([pc("local", "herdr-a")], title);
     ahead.observe([pc("local", "herdr-b")], title);
     ahead.paneStorage.setItem(DRAFT, "for herdr-b's pane");
-    // a fresh tab handed an older roster: it keeps to the page, herdr-b's text stays where it is
     const stale = page(storage);
     stale.observe([pc("local", "herdr-a")], title);
     expect(storage.getItem(DRAFT)).toBe("for herdr-b's pane");
     expect(stale.paneStorage.getItem(DRAFT)).toBeNull();
-    // a tab that missed herdr-b, once the tab that saw it is gone, still follows herdr-c
     stale.observe([pc("local", "herdr-c")], title);
     expect(stale.stored("local")).toBe(true);
     expect(stale.unsent().map(({ text }) => text)).toEqual(["for herdr-b's pane"]);
@@ -305,7 +407,6 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.paneStorage.getItem("ovis:view:w1:p1")).toBe("chat");
     expect(storage.getItem("ovis:pane-lifetime:local")).toBe("herdr-a");
     expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`).sort()).toEqual(["held:echo ", "message:typed before this release"]);
-    // a reload on the same herdr finds the record: nothing more leaves the panes
     const reloaded = page(storage);
     reloaded.observe([pc("local", "herdr-a")], title);
     reloaded.paneStorage.setItem(DRAFT, "typed after");
@@ -338,7 +439,6 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.paneStorage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
     expect(lifetimes.paneStorage.getItem("ovis:terminal-line:w1:p2")).toBeNull();
     expect(lifetimes.unsent().map(({ text }) => text).sort()).toEqual(["for herdr a's pane", "typed meanwhile", "typed while unproven"]);
-    // a late read naming herdr a is stale
     lifetimes.observe([pc("local", "herdr-a")], title);
     expect(lifetimes.generation("local")).toBe("herdr-b");
   });
@@ -353,12 +453,10 @@ describe("pane state per herdr lifetime", () => {
     expect(drafts.begin(DRAFT, "deploy")).toBe(true);
     const send = drafts.sendOf(DRAFT);
     lifetimes.observe([pc("local", "herdr-b")], title);
-    // the new pane's box is free, and what is typed there is its own
     expect(drafts.read(DRAFT).sending).toBe(false);
     drafts.set(DRAFT, "deploy new target");
     expect(drafts.begin(DRAFT, "deploy new target")).toBe(true);
     const next = drafts.sendOf(DRAFT);
-    // the earlier herdr's acknowledgement and end arrive late
     expect(drafts.settle(DRAFT, "deploy", send)).toBeNull();
     drafts.end(DRAFT, send);
     expect(drafts.read(DRAFT)).toEqual({ text: "deploy new target", sending: true });
@@ -394,7 +492,6 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.paneStorage.setItem("ovis:view:w1:p1", "chat");
     lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p2", "typed here");
     storage.refuse = null;
-    // meanwhile another tab, whose storage took the record, kept its own line for that pane under the same herdr
     storage.setItem("ovis:pane-lifetime:local", "herdr-a");
     storage.setItem("ovis:terminal-line:w1:p2", "typed in another tab");
     lifetimes.observe([pc("local", "herdr-a", [pane("w1:p1", "api"), pane("w1:p2", "web")])], title);
@@ -412,7 +509,6 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.runtimeSwitched("local");
     lifetimes.observe([pc("local", "herdr-core")], title);
     lifetimes.paneStorage.setItem(DRAFT, "typed on core p1");
-    // switched back in place: the TUI's snapshot is no stale read
     lifetimes.runtimeSwitched("local");
     lifetimes.observe([pc("local", "herdr-tui")], title);
     expect(lifetimes.generation("local")).toBe("herdr-tui");
@@ -423,7 +519,6 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.observe([pc("local", "herdr-core")], title);
     expect(lifetimes.generation("local")).toBe("herdr-core");
     expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
-    // neither text is lost: both wait in recovery
     expect(lifetimes.unsent().map(({ text }) => text).sort()).toEqual(["typed on core p1", "typed on herdr p1"]);
   });
 
@@ -434,7 +529,6 @@ describe("pane state per herdr lifetime", () => {
     for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-tui")], title);
     for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-core")], title);
     other.paneStorage.setItem(DRAFT, "core draft");
-    // the page that switched back clears the history; the other hears of it as a storage event
     clicked.runtimeSwitched("local");
     other.storageChanged("ovis:pane-lifetimes-retired:local");
     for (const lifetimes of [clicked, other]) lifetimes.observe([pc("local", "herdr-tui")], title);
@@ -449,12 +543,10 @@ describe("pane state per herdr lifetime", () => {
     device.observe([pc("local", "herdr-tui")], title);
     device.observe([pc("local", "herdr-core")], title);
     device.paneStorage.setItem(DRAFT, "for core");
-    // another device switched back: this one's health names herdr's TUI again before its roster does
     device.runtimeChanged("local");
     device.observe([pc("local", "herdr-tui")], title);
     expect([device.generation("local"), device.stored("local"), device.paneStorage.getItem(DRAFT)]).toEqual(["herdr-tui", true, null]);
     device.paneStorage.setItem(DRAFT, "for tui");
-    // kept in storage, so a reload still has it
     expect(page(storage).paneStorage.getItem(DRAFT) ?? storage.getItem(DRAFT)).toBe("for tui");
     expect(device.unsent().map(({ text }) => text)).toEqual(["for core"]);
   });
@@ -465,7 +557,6 @@ describe("pane state per herdr lifetime", () => {
     device.observe([pc("local", "herdr-tui")], title);
     device.observe([pc("local", "herdr-core")], title);
     device.paneStorage.setItem(DRAFT, "core draft");
-    // the TUI's snapshot first, taken for a stale read; then the health read names the TUI
     device.observe([pc("local", "herdr-tui")], title);
     device.runtimeChanged("local");
     expect([device.generation("local"), device.paneStorage.getItem(DRAFT)]).toEqual(["herdr-tui", null]);
@@ -477,10 +568,8 @@ describe("pane state per herdr lifetime", () => {
     const lifetimes = page(storage);
     lifetimes.observe([pc("local", "herdr-a")], title);
     lifetimes.paneStorage.setItem(DRAFT, "for herdr a's pane");
-    // the PC's connection names the new herdr first (lib/machineSession.ts), without titles
     lifetimes.observe([pc("local", "herdr-b")]);
     lifetimes.paneStorage.setItem(DRAFT, "for herdr b's pane");
-    // then a roster read before the replacement arrives
     lifetimes.observe([pc("local", "herdr-a")], title);
     expect(lifetimes.generation("local")).toBe("herdr-b");
     expect(lifetimes.stored("local")).toBe(true);
@@ -550,13 +639,11 @@ it("keeps a discarded draft restorable in place for the undo window, then drops 
   const target = lifetimes.unsent().find((item) => item.id === "qa-2")!;
   expect(target.text).toBe("draft 2");
 
-  // Discard: three drafts stay, the fourth waits in place for Undo
   lifetimes.discard(target.id);
   expect(lifetimes.unsent()).toHaveLength(3);
   expect(storage.getItem("ovis:unsent:qa-2")).toBeNull();
   expect(lifetimes.undoable().map(({ id, text }) => ({ id, text }))).toEqual([{ id: "qa-2", text: "draft 2" }]);
 
-  // Undo inside the window: the same record, under the same id, is back
   clock.advance(UNSENT_UNDO_WINDOW_MS - 1);
   expect(lifetimes.undoable()).toHaveLength(1);
   expect(lifetimes.restore(target.id)).toBe(true);
@@ -566,7 +653,6 @@ it("keeps a discarded draft restorable in place for the undo window, then drops 
   expect(restored).toEqual(target);
   expect(lifetimes.unsent()).toHaveLength(4);
 
-  // Discard with no Undo: once the window has passed, exactly three drafts are left and nothing restores the fourth
   lifetimes.discard(target.id);
   const changes: number[] = [];
   lifetimes.subscribe(() => changes.push(lifetimes.undoable().length));
@@ -579,7 +665,6 @@ it("keeps a discarded draft restorable in place for the undo window, then drops 
   expect(lifetimes.unsent().map((item) => item.id)).toEqual(["qa-4", "qa-3", "qa-1"]);
   expect(storage.getItem("ovis:unsent:qa-2")).toBeNull();
 
-  // text that went into a message box is removed at once, with no Undo
   lifetimes.discard("qa-3", 0);
   expect(lifetimes.undoable()).toEqual([]);
   expect(clock.pending()).toBe(0);

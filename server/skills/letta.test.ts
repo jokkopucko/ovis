@@ -32,7 +32,6 @@ it("lists the rows of Letta Code 0.34.44's own menu, with its hidden commands ke
 it("puts only the commands that open one of Letta's own screens under Terminal commands", () => {
   const byName = new Map(paneCommands("letta", null, temp()).map((command) => [command.name, command]));
   for (const name of ["agents", "skills", "memory", "resume", "connect", "login", "mcp", "pin", "feedback"]) expect(terminalCommand(byName.get(name)!), name).toBeTrue();
-  // Chat answers Letta's model picker from a card
   expect(terminalCommand(byName.get("model")!)).toBeFalse();
   expect(byName.get("model")!.forms).toEqual([{ match: "bare", interaction: "dialog", dialog: "letta-model" }]);
   // these print their answer rather than open a screen
@@ -54,7 +53,6 @@ it("lists the user's and the project's skills by Letta's names, the project's wi
   skill(join(home, ".letta", "skills", "shout"), "name: shout\ndescription: model only\nuser-invocable: \"FALSE\"");
   skill(join(home, ".letta", "skills", "clash"), "name: model\ndescription: named like a builtin");
   skill(join(cwd, ".agents", "skills", "review"), "name: review\ndescription: project review");
-  // nested below another skill's folder, and one right in the root with no name: Letta lists both
   skill(join(home, ".letta", "skills", "review", "deeper"), "description: below a skill");
   mkdirSync(join(home, ".letta", "skills"), { recursive: true });
   writeFileSync(join(home, ".letta", "skills", "SKILL.md"), "---\ndescription: right in the root\n---\nBody\n");

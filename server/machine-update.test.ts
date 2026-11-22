@@ -11,8 +11,6 @@ import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
 import { RemoteResponseTooLarge } from "./remote-json.ts";
 
-// Real setup/approval/verification with a loopback identity endpoint and a fake SSH host.
-// No bundle is downloaded and no real process or user's herdr is touched.
 describe("approved bridge replacement", () => {
   async function scenario(options: { identity?: Record<string, unknown>; unauthorized?: boolean; replacementProtocol?: number; initialBundle?: string; replacementBundle?: string; reconnect?: boolean; updateAgain?: boolean; repeatBundle?: string; repeatIdentity?: Record<string, unknown>; initialProtocol?: number; onlyFirst?: boolean; oversizedIdentity?: boolean } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-bridge-replacement-"));
@@ -69,7 +67,6 @@ describe("approved bridge replacement", () => {
             if (path === "/api/bridge") {
               operations.push(`verify:${descriptor.pid}`);
               if (descriptor.pid === 4243) replacementChecks++;
-              // a valid identity behind more whitespace than an identity may take
               if (options.oversizedIdentity && descriptor.pid === 4242) return new Response(`{${" ".repeat(64 * 1024)}${JSON.stringify({ ...descriptor, socket_id: "fixture:1", herdr: { version: "0.9.3", protocol: 22 } }).slice(1)}`);
               return Response.json({ ...descriptor, socket_id: "fixture:1", herdr: { version: "0.9.3", protocol: 22 }, ...(descriptor.pid === 4242 ? options.identity : replacementChecks > 1 ? { ...(options.repeatBundle ? { bundle_version: options.repeatBundle } : {}), ...options.repeatIdentity } : {}) });
             }
@@ -195,8 +192,6 @@ describe("approved bridge replacement", () => {
   });
 
 
-  // the descriptor is what the bridge wrote; the identity it answers with is what runs. A newer
-  // bridge is never this app's to replace, whichever of the two says so
   it("never stops a bridge whose live identity is newer, even when its descriptor looks older", async () => {
     const { result, operations } = await scenario({ identity: { bridge_protocol: BRIDGE_PROTOCOL, bundle_version: String(Number(REMOTE_BUNDLE_VERSION) + 1) } });
     expect(result).toMatchObject({ phase: "failed", action_required: "bridge_conflict" });

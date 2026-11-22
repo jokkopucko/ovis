@@ -1,18 +1,6 @@
 /**
- * How much the file routes hold up the rest of the server: the latency of an unrelated request
- * (`/api/health?scope=bridge`, probed every few milliseconds from another process) and the server's
- * event-loop lag while file requests run, and those requests' own latency (#790).
- *
- *   bun scripts/bench-file-access.ts [--runs 7] [--slow-root <folder on a slow mount>] [--cases <regex>] [--json <out>]
- *
  * The server runs in a child process (`createServer`, port 0, a mkdtemp state folder, no token)
  * against a stand-in herdr socket that answers `pane.get` alone, so nothing touches a real herdr.
- * `--slow-root` names a folder on a mount that answers slowly (a FUSE passthrough that waits
- * before each call) holding `notes`, a 2 MB `clip.bin` and a `tree/` of folders; with it, the
- * stat, name-lookup, project-icon and streaming cases also run there. A `project/` there with a
- * `.claude/skills` and `.claude/commands` adds a commands case (#2254): a Claude pane in that project
- * whose home's `.claude/skills` and `.claude/commands` link to the project's, so its scan walks the
- * slow folders twice, as the reporter's did. `--cases` runs only the cases whose name matches.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +39,6 @@ function probeWorker(): void {
   };
 }
 
-/** The child: the server, and a second listener that reports the loop lag it saw. */
 async function serve(): Promise<void> {
   const { createServer } = await import("../server/index.ts");
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-bench-state-"));
@@ -80,9 +67,7 @@ async function bench(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-bench-files-"));
   const fixtures = makeFixtures(root);
   const cwds = new Map<string, string>();
-  /** panes that run an agent (the commands case), by pane id */
   const agents = new Map<string, string>();
-  // the server's home: its `.claude` folders link into the slow project, when there is one
   const home = join(root, "home");
   mkdirSync(join(home, ".claude"), { recursive: true });
   const slowProject = slowRoot === null ? null : join(slowRoot, "project");
@@ -199,7 +184,6 @@ async function probeOnce(base: string): Promise<number> {
   return performance.now() - started;
 }
 
-/** The prober's next answer. */
 function answer<T>(worker: Worker): Promise<T> {
   return new Promise((done) => worker.addEventListener("message", (event) => done(event.data as T), { once: true }));
 }
@@ -212,8 +196,7 @@ async function measure(prober: Worker, base: string, lagPort: number, url: () =>
   const begun = performance.now();
   const heavy = await Promise.all(Array.from({ length: concurrency }, async () => {
     const response = await fetch(`${base}${url()}`);
-    // taken in and dropped a chunk at a time, never held whole
-    for await (const _chunk of response.body!) { /* drained */ }
+    for await (const _chunk of response.body!) {}
     if (!response.ok && response.status !== 404) throw new Error(`file request answered ${response.status}`);
     return performance.now() - begun;
   }));

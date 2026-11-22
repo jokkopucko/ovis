@@ -42,7 +42,6 @@ export function parseHerdrProfiles(text: string): HerdrMachineProfile[] {
   });
 }
 
-/** the same port by its number ("022" is 22); an omitted one matches only another omitted one */
 export function samePort(a: SshTarget["port"], b: SshTarget["port"]): boolean {
   return a === undefined || b === undefined ? a === b : Number(a) === Number(b);
 }

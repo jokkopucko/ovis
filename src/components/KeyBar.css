@@ -1,35 +1,17 @@
-/*
- * Touch key bar under the terminal (KeyBar.tsx): the keys a soft keyboard has
- * no room for. Hidden on fine-pointer desktops, shown on coarse pointers and
- * narrow viewports. A key never takes focus (KeyBar.tsx cancels pointerdown and
- * mousedown), so the soft keyboard stays up and xterm's textarea keeps every
- * keystroke; the row (.key-bar-row) scrolls sideways when the keys outgrow the viewport, and the
- * edge that hides more keys fades out (KeyBar.tsx sets data-overflow-start/end). The More keys
- * toggle stays pinned at the bar's end, out of the scroll. Expanded (.is-expanded), the bar is a
- * grid of two rows: the second row of keys over the scrolling row, and the arrow pad's inverted T
- * at their right-hand end.
- */
-
 .key-bar {
-  /* a key's drawn height: the bar's height less room above and below it, so the keys sit evenly in
-     the bar instead of meeting its rule and the screen's edge; each key still takes a
-     --touch-target tap through its invisible expander (.key::before) */
   --key-h: calc(var(--keybar-h) - 3 * var(--space-1));
   display: none;
   flex: none;
   align-items: stretch;
   gap: var(--space-1);
   height: var(--keybar-h);
-  /* the keys stand off the pane's edges rather than against its border */
   padding: 0 var(--space-2);
   border-top: var(--hairline) solid var(--border);
   background: var(--bg-panel);
 }
 
-/* the keys that scroll: the fixed controls and the saved keys */
 .key-bar,
 .key-bar-row {
-  /* the fade's width at an edge with keys out of view */
   --keybar-fade: var(--space-6);
   --keybar-fade-start: 0px;
   --keybar-fade-end: 0px;
@@ -56,8 +38,6 @@
   align-self: center;
 }
 
-/* a mask rather than a painted overlay: the fade is the bar's own colours in every palette, it
-   needs no element over the scroller, and it is static, so reduced motion has nothing to stop */
 .key-bar[data-overflow-start],
 .key-bar[data-overflow-end],
 .key-bar-row[data-overflow-start],
@@ -81,9 +61,6 @@
   --keybar-fade-end: var(--keybar-fade);
 }
 
-/* the bar at the bottom of the screen (KeyBar.tsx) keeps clear of the home indicator, though
-   less than the whole safe area: the bar's own padding around its keys is part of that room,
-   as the composer's is (Composer.css) */
 .key-bar.is-at-screen-bottom {
   height: calc(var(--keybar-h) + max(0px, env(safe-area-inset-bottom, 0px) - var(--space-2)));
   padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--space-2)));
@@ -95,8 +72,6 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  /* the touch target's width; a wider cap (Shift, Enter) grows the key, never shrinks it. Its
-     height is drawn at --key-h and reaches the touch target through the expander below */
   min-width: var(--touch-target);
   height: var(--key-h);
   padding: 0 var(--space-1);
@@ -118,8 +93,6 @@
     border-color var(--dur-fast) var(--ease-out);
 }
 
-/* the key's --touch-target tap area: measured from the key's padding box, inside its hairline
-   edge, so the edge is counted out (as CommandPalette.css's filter chips) */
 .key::before {
   content: "";
   position: absolute;
@@ -136,9 +109,6 @@
   margin-inline: var(--space-1);
 }
 
-/* what Paste needs, said in the bar's own row after its fixed controls, which start with the Input
-   line key it names (KeyBar.tsx), beside the other keys for a moment: never painted over the
-   terminal's output. Two lines fit the key's height */
 .key-bar-note {
   flex: 0 0 auto;
   max-width: 8.5rem;
@@ -150,7 +120,6 @@
   overflow-wrap: break-word;
 }
 
-/* hover only where a pointer can hover: a tapped key must not stay lit */
 @media (hover: hover) {
   .key:hover {
     background: var(--bg-hover);
@@ -165,8 +134,6 @@
   font-weight: var(--fw-selected, var(--fw-semibold));
 }
 
-/* a modifier held past the next key (tapped twice) is filled and underlined, as a keyboard's
-   Caps Lock is told from a Shift held for one letter; held for one key it has the accent edge only */
 .key.is-locked {
   background: var(--accent-tint);
 }
@@ -192,36 +159,26 @@
   }
 }
 
-/* a key shows its press in its own colours, not with the dim other buttons take (styles.css) */
 .key:active {
   opacity: 1;
 }
 
-/* the bar scrolls sideways and so clips what overflows it: the ring is drawn inside the key */
 .key:focus-visible {
   outline-offset: calc(var(--ring-offset) * -1);
 }
 
-/* a key with nothing to send to or to show the keyboard for (offline, held, ended, a composition)
-   says so by its dim glyph; the keyboard control that refuses a tap is live (aria-disabled, so the
-   press keeps the focus and the composition) and reads the same */
 .key:disabled,
 .key[aria-disabled="true"] {
   color: var(--text-dim);
   cursor: default;
 }
 
-/* a refused tap is no press: the key stays at rest */
 .key[aria-disabled="true"]:active {
   background: transparent;
   border-color: var(--border);
   color: var(--text-dim);
 }
 
-/* Expanded: two rows on a grid. The second row and the scrolling row share the width the arrow
-   pad's three columns leave; Up and the toggle stand over Down and Right. Each row is a touch
-   target tall, so the keys' expanders meet without overlapping, and the keys keep the compact
-   bar's room above and below them */
 .key-bar.is-expanded {
   --keybar-pad-block: calc(1.5 * var(--space-1) - (var(--touch-target) - var(--key-h)) / 2);
   grid-template-columns: minmax(0, 1fr) repeat(3, var(--touch-target));
@@ -236,7 +193,6 @@
   padding-bottom: calc(var(--keybar-pad-block) + max(0px, env(safe-area-inset-bottom, 0px) - var(--space-2)));
 }
 
-/* over the scrolling row and the arrow pad's Left: six keys that narrow rather than scroll */
 .key-bar-second-row {
   display: flex;
   grid-column: 1 / 3;
@@ -276,9 +232,6 @@
   }
 }
 
-/* A cover screen or the smallest phones: the pinned toggle would push ^C out of the first view, so
-   the compact bar scrolls as one row with the toggle at its end (KeyBar.tsx measures whichever
-   element scrolls) */
 @media (max-width: 359px) {
   .key-bar:not(.is-expanded) {
     align-items: center;

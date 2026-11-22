@@ -9,7 +9,6 @@ const repo = join(import.meta.dir, "..");
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
 
-/** A checkout of its own holding only xterm's patched source, so the test never touches the repo's cache. */
 function checkout(): string {
   const root = mkdtempSync(join(tmpdir(), "herdr-build-xterm-test-"));
   made.push(root);
@@ -25,7 +24,6 @@ const written = (dir: string): { content: string; ino: bigint; mtimeNs: bigint }
 };
 
 describe("buildXtermSource", () => {
-  // a build reading the directory another build returned must never see a module half rewritten (#2021)
   it("hands a later build the finished directory without writing into it again", () => {
     const root = checkout();
     const first = buildXtermSource(root);
@@ -63,12 +61,10 @@ describe("buildXtermSource", () => {
     expect(written(buildXtermSource(root)).content).toContain("export class UnicodeService");
   }, 60_000);
 
-  // a source edited after hashing must not be published under the key of the source it replaced (#2148)
   it("compiles the source it hashed, even when the file changes while TypeScript reads", () => {
     const root = checkout();
     const file = join(root, "node_modules/@xterm/xterm/src", `${module}.ts`);
     const readFile = ts.sys.readFile;
-    // the first file TypeScript reads comes after the hashing: change the module right then
     ts.sys.readFile = (path, encoding) => {
       ts.sys.readFile = readFile;
       appendFileSync(file, "\nexport const changedForTest = 1;\n");
@@ -81,7 +77,6 @@ describe("buildXtermSource", () => {
       ts.sys.readFile = readFile;
     }
     expect(written(first).content).not.toContain("changedForTest");
-    // the source as it is now is built under a key of its own
     const second = buildXtermSource(root);
     expect(second).not.toBe(first);
     expect(written(second).content).toContain("changedForTest");
@@ -109,7 +104,6 @@ describe("buildXtermSource", () => {
     const root = checkout();
     const cache = join(root, "node_modules/.cache/herdr-xterm");
     const writeFile = ts.sys.writeFile;
-    // what another build that took this staging directory for abandoned would do to it
     ts.sys.writeFile = (path, ...rest) => {
       writeFile(path, ...rest);
       if (path.endsWith(`${module}.js`)) rmSync(path);
@@ -136,7 +130,6 @@ describe("buildXtermSource", () => {
   it("removes the staging directories killed builds left behind, not one a build may still write", () => {
     const root = checkout();
     const cache = join(root, "node_modules/.cache/herdr-xterm");
-    // a process that has exited: its build was killed before it could clean up
     const dead = Bun.spawnSync([process.execPath, "-e", ""]).pid;
     const staging = (pid: number | "", suffix: string, minutesAgo: number) => {
       const name = `0123456789abcdef.tmp-${pid === "" ? "" : `${pid}-`}${suffix}`;
@@ -146,7 +139,6 @@ describe("buildXtermSource", () => {
       return name;
     };
     staging(dead, "Ab12Cd", 30);
-    // from before staging names carried a pid
     staging("", "Xy98Zw", 30);
     const running = staging(process.pid, "Ef34Gh", 30);
     // a dead-looking pid may be a build in another pid namespace: a fresh directory is still in use

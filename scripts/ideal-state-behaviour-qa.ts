@@ -1,17 +1,10 @@
 /**
- * Behaviour probes for the ideal-state checks the design gate (scripts/design-gate-qa.ts) cannot see in
- * a still page, run on the demo build (scripts/ideal-state-behaviour-harness.ts):
- *
  *   bun scripts/ideal-state-behaviour-qa.ts [--only IS-007,IS-042]
  *
  * One probe per check prints `PASS|FAIL|NA IS-0xx <measured value>`; the exit code is 1 when any probe
  * fails. NA names what the demo cannot stage without a product change. A check the owner decided to leave
  * as it is (OWNER_ROWS) is still measured and prints `OWNER IS-0xx <measured value> (<decision file>)`,
  * which fails nothing unless its probe itself breaks.
- *
- * Nothing waits a set time to synchronise: each step waits for the state it needs, with a deadline.
- * Time itself is the behaviour in two probes: IS-016 moves a fake page clock on 30 minutes, and
- * IS-092 watches a hidden tab for 10 seconds.
  */
 import type { Page } from "playwright-core";
 import { KO } from "../src/lib/i18n.ko.ts";
@@ -19,7 +12,6 @@ import { panes, startDemo, type Demo } from "./ideal-state-behaviour-harness.ts"
 import { probeIdleState } from "./ideal-state-idle.ts";
 
 type Verdict = { status: "PASS" | "FAIL" | "NA"; value: string; broke?: true };
-/** Checks the owner kept as they are, with the file that records why. */
 const OWNER_ROWS: Readonly<Record<string, string>> = { "IS-016": "owner-decisions-added.md" };
 const label = (text: string): string => KO[text] ?? text;
 const verdict = (pass: boolean, value: string): Verdict => ({ status: pass ? "PASS" : "FAIL", value });
@@ -37,12 +29,10 @@ const probe = (page: Page) => page.evaluate.bind(page);
 const finishTurn = (page: Page) => page.evaluate(() => (window as unknown as { __probe: { finishTurn(): void } }).__probe.finishTurn());
 const setStatus = (page: Page, pane: string, status: string) => page.evaluate(([id, to]) => (window as unknown as { __probe: { status(p: string, s: string): void } }).__probe.status(id, to), [pane, status] as const);
 const rowState = (page: Page, pane: string) => page.locator(`.agent-item[data-pane="${pane}"] .agent-row-state [class*="badge-"]`).first();
-/** The agent rows drawn now, top to bottom, and where the hovered one sits: what a reorder under the pointer would move. */
 const drawnAgents = (page: Page, hovered: string) => probe(page)((pane) => ({
   order: [...document.querySelectorAll<HTMLElement>(".agent-item[data-pane]")].filter((row) => row.getBoundingClientRect().height > 0).map((row) => row.dataset["pane"]!),
   top: Math.round(document.querySelector(`.agent-item[data-pane="${pane}"]`)!.getBoundingClientRect().top),
 }), hovered);
-/** In-page: run `act` (a click), then count the ms until `done` holds on a drawn frame; -1 past 2 s. */
 const timed = (page: Page, act: string, done: string) => probe(page)(async ([actSelector, doneSelector]) => {
   const start = performance.now();
   (document.querySelector(actSelector) as HTMLElement).click();
@@ -95,7 +85,6 @@ const PROBES: Record<string, (demo: Demo) => Promise<Verdict>> = {
       await page.locator(`${current} .work-block.is-live .work-block-elapsed`).waitFor();
       const before = await rowState(page, panes.api).getAttribute("class");
       await page.clock.fastForward(`${SILENT_MINUTES}:00`);
-      // the live block counts from the turn's start: past the jump once the page drew the new time
       await page.waitForFunction((minutes) => Number(/(\d+)분/.exec(document.querySelector(".pane-frame.is-current .work-block.is-live .work-block-elapsed")?.textContent ?? "")?.[1] ?? 0) >= minutes, SILENT_MINUTES, { polling: 100 });
       const row = await rowState(page, panes.api).getAttribute("class");
       const tab = await page.locator(".header-tabs .tab-strip-item.is-active .tab-strip-dot").getAttribute("data-status");
@@ -146,7 +135,6 @@ const PROBES: Record<string, (demo: Demo) => Promise<Verdict>> = {
     } finally { await context.close(); }
   },
   "IS-076": async (demo) => {
-    // a malformed turn is dropped by the client, never thrown: the build's crash hook (src/lib/crashProbe.ts) throws in the pane instead
     const { context, page } = await demo.open({ pane: panes.api, query: "&crash=pane", ready: ".error-state" });
     try {
       const message = page.locator(".error-state").filter({ hasText: label("This pane can't be shown.") }).first();

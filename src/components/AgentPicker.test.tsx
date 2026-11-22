@@ -9,7 +9,6 @@ const agents = [{ kind: "codex", label: "Codex" }, { kind: "claude", label: "Cla
 const render = (props: Partial<AgentPickerProps>): string =>
   renderToStaticMarkup(createElement(AgentPicker, { agents, value: "", labelledBy: "agent", onChange: () => {}, ...props }));
 const mark = (agent: string): string => renderToStaticMarkup(createElement(AgentMark, { agent, size: 16 }));
-/** the name the closed picker shows: its text, without the icons' drawing */
 const shownName = (markup: string): string => markup.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, "");
 
 describe("AgentPicker", () => {
@@ -35,7 +34,6 @@ describe("AgentPicker", () => {
 describe("AgentPicker's Add another agent row", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
-  // the trigger's box, for the list's fixed placement under it
   const node = { getBoundingClientRect: () => ({ left: 0, top: 0, bottom: 40, width: 300 }), contains: () => true };
 
   beforeEach(() => {

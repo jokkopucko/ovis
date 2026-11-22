@@ -9,6 +9,13 @@
  */
 export const CHAT_KO: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 채팅을 사용할 수 없습니다. 터미널을 열어 작업 상태와 도구 호출을 확인하세요.",
+  "Not in the conversation. If the agent showed an error, it is in the terminal.": "대화에 기록되지 않았습니다. 에이전트가 오류를 보였다면 터미널에 있습니다.",
+  "Not in the conversation. If {agent} showed an error, it is in the terminal.": "대화에 기록되지 않았습니다. {agent}이(가) 오류를 보였다면 터미널에 있습니다.",
+  "{agent} has not recorded a conversation Ovis can find for this pane yet. Before the first message this is normal; if it stays, use the terminal.": "{agent}이(가) 이 창에서 Ovis가 찾을 수 있는 대화를 아직 기록하지 않았습니다. 첫 메시지 전에는 정상입니다. 계속 이렇다면 터미널을 쓰세요.",
+  "Ovis can't read {agent} conversations yet. Use the terminal to work with it.": "Ovis는 아직 {agent} 대화를 읽지 못합니다. 터미널에서 작업하세요.",
+  "Ovis couldn't find or read the file {agent} keeps this conversation in. Use the terminal.": "Ovis가 {agent}이(가) 이 대화를 담아 두는 파일을 찾거나 읽지 못했습니다. 터미널을 쓰세요.",
+  "{agent} chat needs herdr's {agent} integration, which is not installed on this PC. Settings → Agents shows the command that installs it; then start {agent} again in this pane.": "{agent} 채팅에는 herdr의 {agent} 통합이 필요한데 이 PC에 설치되어 있지 않습니다. 설정 → 에이전트에 설치 명령이 있습니다. 설치한 뒤 이 창에서 {agent}을(를) 다시 시작하세요.",
+  "herdr has not said which folder this pane is in, so Ovis can't find its conversation. Use the terminal.": "herdr가 이 창의 폴더를 알려주지 않아 Ovis가 대화를 찾을 수 없습니다. 터미널을 쓰세요.",
   "Chat read timed out.": "대화 읽기 시간이 초과되었습니다.",
   "Thinking…": "생각 중…",
   "Updates paused — waiting for the agent's next activity": "업데이트 일시 중지 — 에이전트의 다음 활동을 기다리는 중",
@@ -44,6 +51,7 @@ export const CHAT_KO: Record<string, string> = {
   "Couldn't load earlier messages — retry": "이전 메시지를 불러오지 못했습니다. 다시 시도",
   "Earlier messages": "이전 메시지",
   "beginning of conversation": "대화의 시작",
+  "Show a terminal output preview": "터미널 출력 미리보기 열기",
   "Conversation unavailable — show a terminal output preview": "대화를 읽을 수 없습니다. 터미널 출력 미리보기 열기",
   "No conversation yet — say something below": "아직 대화가 없습니다. 아래에 말을 걸어 보세요",
   "New messages": "새 메시지",

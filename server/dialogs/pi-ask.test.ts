@@ -4,14 +4,13 @@ import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
 import fixtures from "../fixtures/pi-ask-2.13.9.json";
 
 // Actual rpiv-ask-user-question 2.13.9 rendering in a fake Pi TUI, with fictional questions.
-// No model, terminal, or Herdr session is started. Cursor APC sequences are removed as in pane.read.
+// Cursor APC sequences are removed as in pane.read.
 const footer = "\n────────────────────────────────────────\nC:\\project (main)\n0.0%/215k (auto)                 some-model • medium\n";
 const read = (name: keyof typeof fixtures) => parseInteractivePrompt("pi", fixtures[name] + footer);
 const labels = ["允许结构化单元格", "只允许普通单值"];
 
 describe("Pi rpiv ask questionnaires", () => {
   test("reads a real inline pane whose Pi footer follows the hint without another rule", () => {
-    // Captured from a synthetic question; paths, model and usage are fictionalized.
     const screen = readFileSync(new URL("../fixtures/pi-ask-inline-pane.txt", import.meta.url), "utf8");
     const prompt = parseInteractivePrompt("pi", screen);
     expect(prompt).not.toBeNull();
@@ -129,7 +128,6 @@ describe("Pi rpiv ask questionnaires", () => {
     expect(review.body).toBeNull();
     expect(review.answers?.[0]?.answer).toBe("允许结构化单元格");
     expect(review.options.map(option => option.label)).toEqual(["Submit answers", "Cancel"]);
-    // the bridge's title and question go as keys; pi's own rows stay as drawn, and the id is main's
     expect(review.own_text).toEqual({ title: { key: "Review your answers" }, question: { key: "Submit these answers?" } });
     expect(review.id).toBe("ba1bee6d9951");
     expect(answerKeys(review, { option_index: 0 })).toEqual([{ keys: ["enter"] }]);

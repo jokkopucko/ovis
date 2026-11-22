@@ -6,14 +6,11 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A long press on a chat reply's link in the Android app (MarkdownLinkMenu.tsx), on the unmodified
-// app over the demo's fixture transport, at phone width: the sheet's Copy link, Open link (the same
-// window a tap opens) and Share link, and what must stay as it was: a tap opens the link, a press on
-// other words and a mouse's menu open nothing, a swipe from a link scrolls, and a browser (no
-// Capacitor bridge) keeps its own menu. A desktop Chromium turns no held touch into a contextmenu,
+// A desktop Chromium turns no held touch into a contextmenu,
 // so each long press is the touch-typed contextmenu the Android WebView sends for one (checked on
-// an emulator in the PR). With UI_EVIDENCE_DIR set it captures the sheet. Loopback only; no herdr.
+// an emulator in the PR). Loopback only; no herdr.
 const app = mkdtempSync(join(tmpdir(), "herdr-link-menu-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 
@@ -25,12 +22,10 @@ const { chromium } = (await import(playwrightCore)) as typeof import("playwright
 const PANE = panes.flaky;
 const HREF = "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/";
 const WORDS = "the idempotency draft";
-// an address Markdown links but no URL parser takes
 const MALFORMED = "http://127.0.0.1:99999/";
 const README = `# Payments\n\nThe header is in [the draft](${HREF}).\n`;
 const at = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
 const filler = (n: number): string => Array.from({ length: n }, (_, i) => `Step ${i + 1} reads the stored response and checks the key before it answers.`).join("\n\n");
-/** The flaky pane's conversation as this script serves it: a named link, a bare one, and enough text to scroll. */
 const TURNS = [
   { role: "user", ts: at(30), parts: [{ kind: "text", text: "Which spec covers retried payments?" }] },
   { role: "assistant", ts: at(29), end_ts: at(28), parts: [{ kind: "text", text: filler(8) }] },
@@ -38,11 +33,6 @@ const TURNS = [
   { role: "assistant", ts: at(19), end_ts: at(18), parts: [{ kind: "text", text: `Read [${WORDS}](${HREF}) first.\n\nIt names the header, and plain words here stay selectable.\n\nThe repository is https://github.com/example/payments for the code.\n\nThe local mirror was ${MALFORMED} once.` }] },
 ];
 
-/**
- * In front of the demo: the flaky pane's conversation is TURNS, README.md is a Markdown file
- * holding a link (the demo has no files), and every contextmenu that reached the window is
- * recorded with whether the page cancelled it (window.linkMenus).
- */
 const harness = `<script>(() => {
   window.linkMenus = [];
   window.addEventListener("contextmenu", (event) => window.linkMenus.push({ prevented: event.defaultPrevented, pointerType: event.pointerType }));
@@ -79,7 +69,6 @@ async function open(browser: Browser, origin: string, url: string, setup: Setup,
   await context.addInitScript(([paneId, { android, share, language }]) => {
     localStorage.setItem(`ovis:view:${paneId}`, "chat");
     if (language) localStorage.setItem("ovis:settings", JSON.stringify({ language }));
-    // the app's WebView as Capacitor's bridge tells it (lib/nativeApp.ts); a browser has none
     if (android) (window as unknown as { Capacitor: unknown }).Capacitor = { isNativePlatform: () => true, getPlatform: () => "android" };
     const shared: unknown[] = [];
     (window as unknown as { shared: unknown[] }).shared = shared;
@@ -95,7 +84,6 @@ async function open(browser: Browser, origin: string, url: string, setup: Setup,
   return { context, page, errors };
 }
 
-/** The Android WebView's long press at the middle of `selector`'s first line: a touch contextmenu on what is under it. Answers whether the page cancelled it. */
 const longPress = (page: Page, selector: string, text: string, pointerType = "touch"): Promise<boolean> => page.evaluate(([target, words, type]) => {
   const node = [...document.querySelectorAll<HTMLElement>(target)].find((element) => element.textContent?.includes(words));
   if (!node) throw new Error(`nothing at ${target} with "${words}"`);
@@ -106,7 +94,6 @@ const longPress = (page: Page, selector: string, text: string, pointerType = "to
   return !under.dispatchEvent(new PointerEvent("contextmenu", { bubbles: true, cancelable: true, composed: true, pointerType: type, isPrimary: true, clientX: x, clientY: y }));
 }, [selector, text, pointerType] as const);
 
-/** The sheet as it rests: its slide-in (sheet-in, styles.css) has ended, so a capture shows all of it. */
 const sheetAtRest = (page: Page): Promise<void> => page.locator(".row-sheet").evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished)).then(() => undefined));
 
 const sheetItems = (page: Page): Promise<string[]> => page.locator(".row-sheet .row-sheet-item .row-sheet-label").allTextContents();
@@ -119,17 +106,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${harness}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   origin = `http://127.0.0.1:${server.port}`;
   url = `${origin}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
@@ -139,7 +116,6 @@ try {
       const link = ".chat-turn-agent .markdown a";
       const words = ".chat-turn-agent .markdown p";
 
-      // the Android app: the sheet, its title and address, and what each item does
       {
         const { context, page, errors } = await open(browser, origin, url, { android: true });
         try {
@@ -155,7 +131,6 @@ try {
           assert.equal(await page.evaluate(() => navigator.clipboard.readText()), HREF, "Copy link puts the address on the clipboard, not the words");
           console.log("PASS android: a long press on a link opens Copy link / Open link; Copy link copies the address");
 
-          // Open link opens what a tap opens: the address in a new window (a phone has no web panel)
           assert.equal(await longPress(page, link, WORDS), true);
           const opened = page.waitForEvent("popup");
           await page.locator(".row-sheet-item", { hasText: "Open link" }).tap();
@@ -166,14 +141,12 @@ try {
           assert.equal(await page.locator(".row-sheet").count(), 0, "a tap opens no sheet");
           console.log("PASS android: Open link opens the address as a tap does, and a tap still opens the link");
 
-          // a bare address: its host is the title, which would only cut the address, and the address is whole under it
           assert.equal(await longPress(page, link, "github.com/example"), true);
           assert.equal(await page.locator(".row-sheet-title").textContent(), "github.com");
           assert.equal(await page.locator(".row-sheet-detail").textContent(), "https://github.com/example/payments", "a bare address shows whole under its host");
           await page.locator(".row-sheet-cancel").tap();
           await page.locator(".row-sheet").waitFor({ state: "detached" });
 
-          // an address no URL parser takes still gets its sheet, titled by itself, and the app stays up
           assert.equal(await longPress(page, link, MALFORMED), true);
           await page.locator(".row-sheet").waitFor();
           assert.equal(await page.locator(".row-sheet-title").textContent(), MALFORMED, "a malformed address is its own title");
@@ -189,7 +162,6 @@ try {
           assert.equal(await longPress(page, link, WORDS, "mouse"), false, "the contextmenu Android ends a dragged selection with is not the link's");
           assert.equal(await page.locator(".row-sheet").count(), 0, "neither opens the sheet");
 
-          // a swipe that starts on a link scrolls the chat and opens nothing
           const transcript = page.locator(".chat-view-virtual, .chat-view").first();
           const before = await transcript.evaluate((node) => node.scrollTop);
           const box = (await page.locator(link, { hasText: WORDS }).boundingBox())!;
@@ -210,7 +182,6 @@ try {
         }
       }
 
-      // where the WebView can share, Share link hands the address to the share sheet
       {
         const { context, page, errors } = await open(browser, origin, url, { android: true, share: true, language: "ko" });
         try {
@@ -228,7 +199,6 @@ try {
         }
       }
 
-      // a link in a file preview, which is a dialog on a phone: the sheet is drawn over it and its items take the tap
       {
         const { context, page, errors } = await open(browser, origin, `${url}&file=README.md`, { android: true }, ".file-viewer .markdown a");
         try {
@@ -249,7 +219,6 @@ try {
         }
       }
 
-      // a phone's browser (Chrome, Safari) keeps its own link menu: the page takes nothing
       {
         const { context, page, errors } = await open(browser, origin, url, { android: false });
         try {

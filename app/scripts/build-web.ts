@@ -24,7 +24,7 @@ writeFileSync(errorPage, errorHtml.replace(link, `<style>${readFileSync(join(www
 const appUrl = process.env["OVIS_APP_URL"];
 if (appUrl) {
   let parsed: URL | null = null;
-  try { parsed = new URL(appUrl); } catch { /* reported below */ }
+  try { parsed = new URL(appUrl); } catch {}
   if (parsed?.protocol !== "https:" || parsed.origin !== appUrl) throw new Error(`OVIS_APP_URL must be an https origin with no path, such as https://app.ovis.sh: ${appUrl}`);
   const shellJs = join(www, "shell.js");
   const constant = 'export const APP_ORIGIN = "https://app.ovis.sh";';
@@ -33,12 +33,12 @@ if (appUrl) {
   writeFileSync(shellJs, script.replace(constant, `export const APP_ORIGIN = ${JSON.stringify(appUrl)};`));
 }
 
-if (process.env["OVIS_APP_ACCOUNT"] === "1") {
+if (process.env["OVIS_APP_ACCOUNT"] === "0") {
   const shellJs = join(www, "shell.js");
-  const constant = "export const ACCOUNT_SIGN_IN = false;";
+  const constant = "export const ACCOUNT_SIGN_IN = true;";
   const script = readFileSync(shellJs, "utf8");
   if (!script.includes(constant)) throw new Error("shell.js no longer declares ACCOUNT_SIGN_IN the way build-web.ts replaces it");
-  writeFileSync(shellJs, script.replace(constant, "export const ACCOUNT_SIGN_IN = true;"));
+  writeFileSync(shellJs, script.replace(constant, "export const ACCOUNT_SIGN_IN = false;"));
 }
 
 const demo = join(www, "demo");

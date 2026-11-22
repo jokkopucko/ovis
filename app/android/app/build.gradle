@@ -7,8 +7,8 @@ android {
         applicationId "sh.ovis.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 7
-        versionName "1.0"
+        versionCode 14
+        versionName "1.0.6"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -52,6 +52,10 @@ android {
             }
         }
     }
+    // the instrumented SSH tests (SshFixtureTest) read the same test-only keys as the JVM tests
+    sourceSets {
+        androidTest.assets.srcDirs += ['src/test/resources']
+    }
     buildTypes {
         release {
             if (uploadProperties && !uploadProblem) signingConfig signingConfigs.release
@@ -74,6 +78,8 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     implementation "androidx.webkit:webkit:$androidxWebkitVersion"
+    // SSH PCs (SshLink): ConnectBot's SSH library, BSD-3-Clause
+    implementation "org.connectbot:sshlib:2.2.51"
     testImplementation "junit:junit:$junitVersion"
     // android.jar's org.json throws in JVM unit tests; PCStore reads /api/health's JSON with it
     testImplementation "org.json:json:20240303"

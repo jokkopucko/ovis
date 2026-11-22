@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ovis-tui <ovis-tui@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 03:52:30 +0900
+Subject: [PATCH 4/7] fix(embed): drop input queued before a failed open, under
+ the recovery policy
+
+Keys typed while the first attach was opening were queued; when that open failed, the retry (a resumed open) flushed them after its first paint with no action of the user's. Under the policy a resumed spawn now drops queued human input with the usual notice.
+---
+ .../src/app/pane/discard_on_recovery_tests.rs | 31 +++++++++++++++++++
+ crates/hc-tui/src/app/pane/lifecycle.rs       |  3 ++
+ crates/hc-tui/src/app/pane/recovery_policy.rs | 23 ++++++++++++++
+ 3 files changed, 57 insertions(+)
+
+diff --git a/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs b/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs
+index 362021e..d5a5637 100644
+--- a/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs
++++ b/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs
+@@ -51,3 +51,34 @@ async fn without_the_policy_a_key_typed_while_the_wire_is_down_still_queues() {
+     assert!(pane.key(&key('x')));
+     assert_eq!(pane.input_backlog().0, 1);
+ }
++
++#[tokio::test]
++async fn under_the_policy_keys_typed_before_a_failed_first_open_never_reach_the_retry() {
++    let (mut pane, mut rx, mut accept) = rig();
++    pane.set_discard_input_on_recovery(true);
++    pane.want(Some(spec(Role::Active)));
++    let (mut core, first) = timeout(T, accept.recv()).await.unwrap().unwrap();
++    assert!(!first.resumed);
++    // typed while the first open is on its way: queued, as without the policy
++    assert!(pane.key(&key('a')));
++    core.serve_hello().await;
++    let req = core.read_request().await;
++    core.send(
++        &hc_proto::frame::Frame::data(
++            0,
++            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":req["id"],"error":{"code":-32000,"message":"closed","data":{"kind":"closed","hint":"gone"}}}))
++                .unwrap(),
++        )
++        .encode(),
++    )
++    .await;
++    step(&mut pane, &mut rx).await;
++    pane.fire_retry(Instant::now() + Duration::from_secs(999));
++    assert!(pane.take_input_rejection().is_some());
++    assert_eq!(pane.input_backlog().0, 0);
++    let mut second = serve(&mut accept, true).await;
++    step_until_live(&mut pane, &mut rx).await;
++    paint(&mut pane, &mut rx, &mut second, b"back").await;
++    pane.key(&key('b'));
++    assert_eq!(read_kind(&mut second, CH, Kind::Data).await.payload, b"b");
++}
+diff --git a/crates/hc-tui/src/app/pane/lifecycle.rs b/crates/hc-tui/src/app/pane/lifecycle.rs
+index 282e3cc..0013c30 100644
+--- a/crates/hc-tui/src/app/pane/lifecycle.rs
++++ b/crates/hc-tui/src/app/pane/lifecycle.rs
+@@ -11,6 +11,9 @@ impl Pane {
+     /// dead wire are never replayed; `Key`/`Paste` items re-encode
+     /// under the fresh post-paint VT.
+     pub(super) fn spawn(&mut self, spec: Spec, resumed: bool, attempts: u32) {
++        if resumed {
++            self.drop_input_before_recovery();
++        }
+         // All visible panes share an event channel. A wire identity is unique
+         // across panes and reincarnations, including retired observer events.
+         static NEXT_ROUTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+diff --git a/crates/hc-tui/src/app/pane/recovery_policy.rs b/crates/hc-tui/src/app/pane/recovery_policy.rs
+index 02e939a..40578c9 100644
+--- a/crates/hc-tui/src/app/pane/recovery_policy.rs
++++ b/crates/hc-tui/src/app/pane/recovery_policy.rs
+@@ -30,6 +30,29 @@ impl Pane {
+             }
+     }
+ 
++    /// Under the policy, a reopen after a failure starts with no human
++    /// input: keys typed while the first open was on its way, or before
++    /// the wire ended, would otherwise reach the terminal after its
++    /// first paint with no action of the user's.
++    pub(super) fn drop_input_before_recovery(&mut self) {
++        if !self.discard_on_recovery {
++            return;
++        }
++        let dropped = self
++            .pending
++            .iter()
++            .filter(|item| !matches!(item, Pending::Control(_)))
++            .count();
++        if dropped == 0 {
++            return;
++        }
++        self.pending
++            .retain(|item| matches!(item, Pending::Control(_)));
++        self.pending_bytes = 0;
++        self.dropped_input += dropped as u64;
++        self.input_rejection = Some("Terminal is reconnecting: this input was not sent".into());
++    }
++
+     #[cfg(test)]
+     pub(crate) fn set_discard_input_on_recovery(&mut self, on: bool) {
+         self.discard_on_recovery = on;

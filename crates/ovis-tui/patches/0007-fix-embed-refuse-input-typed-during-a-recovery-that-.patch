@@ -1,0 +1,234 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ovis-tui <ovis-tui@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 08:31:18 +0900
+Subject: [PATCH 7/7] fix(embed): refuse input typed during a recovery that
+ still waits in the reader queue
+
+The reader's events and the pane's run on separate channels: a paste read while a terminal recovered could reach the app after the recovered screen's paint had released input, and be sent. Under the input policy a recovered wire's first paint now tells the app, which refuses the keys, text, pastes and mouse input still queued from the reader, with the reconnect notice, and handles everything else as usual.
+---
+ crates/hc-tui/src/app/embed.rs                | 22 ++++++++++++
+ .../hc-tui/src/app/mod_tests/blind_input.rs   | 35 +++++++++++++++++++
+ crates/hc-tui/src/app/mod_tests/mod.rs        |  1 +
+ .../src/app/pane/discard_on_recovery_tests.rs | 22 ++++++++++++
+ crates/hc-tui/src/app/pane/events.rs          |  5 +++
+ crates/hc-tui/src/app/pane/mod.rs             |  4 +++
+ crates/hc-tui/src/app/pane/recovery_policy.rs | 19 ++++++++++
+ crates/hc-tui/src/app/runtime.rs              |  3 ++
+ 8 files changed, 111 insertions(+)
+ create mode 100644 crates/hc-tui/src/app/mod_tests/blind_input.rs
+
+diff --git a/crates/hc-tui/src/app/embed.rs b/crates/hc-tui/src/app/embed.rs
+index 99ad35b..7ea2dd8 100644
+--- a/crates/hc-tui/src/app/embed.rs
++++ b/crates/hc-tui/src/app/embed.rs
+@@ -4,6 +4,28 @@
+ use super::*;
+ 
+ impl App {
++    /// After a recovered terminal's first paint under the input policy,
++    /// keys, text, pastes and mouse input still waiting in the reader's
++    /// queue were typed while the terminal was down: they are refused like
++    /// it and never sent. Anything else waiting there is handled as usual.
++    pub(super) fn drop_input_typed_blind(&mut self, events: &mut mpsc::Receiver<UiEvent>) {
++        if !self.pane.take_recovered_paint() {
++            return;
++        }
++        let mut dropped = 0;
++        while let Ok(event) = events.try_recv() {
++            match event {
++                UiEvent::Key(_) | UiEvent::Text(_) | UiEvent::Paste(_) | UiEvent::Mouse(_) => {
++                    dropped += 1;
++                }
++                other => self.on_input(other, self.area.0),
++            }
++        }
++        if dropped > 0 {
++            self.pane.refuse_blind_input(dropped);
++        }
++    }
++
+     /// Every pane made from now on starts with this recovery policy.
+     pub fn discard_input_on_recovery(on: bool) {
+         pane::default_discard_input_on_recovery(on);
+diff --git a/crates/hc-tui/src/app/mod_tests/blind_input.rs b/crates/hc-tui/src/app/mod_tests/blind_input.rs
+new file mode 100644
+index 0000000..899b759
+--- /dev/null
++++ b/crates/hc-tui/src/app/mod_tests/blind_input.rs
+@@ -0,0 +1,35 @@
++// Added by Ovis (https://github.com/devswha/ovis) for programs that embed this client.
++use super::*;
++
++#[tokio::test]
++async fn input_queued_before_a_recovered_paint_is_refused_and_the_rest_still_handled() {
++    let mut app = app_with_spaces(&[("t1", "work")]);
++    app.pane.set_discard_input_on_recovery(true);
++    app.pane.mark_recovered_paint();
++    let (tx, mut events) = mpsc::channel(8);
++    tx.send(UiEvent::Paste(b"typed blind".to_vec()))
++        .await
++        .unwrap();
++    tx.send(UiEvent::Text("x".into())).await.unwrap();
++    tx.send(UiEvent::Resize { cols: 91, rows: 33 })
++        .await
++        .unwrap();
++    app.drop_input_typed_blind(&mut events);
++    assert!(events.try_recv().is_err());
++    assert_eq!(app.area, (91, 33));
++    assert!(app.pane.take_input_rejection().is_some());
++    assert_eq!(app.pane.input_backlog().0, 0);
++}
++
++#[tokio::test]
++async fn without_a_recovered_paint_queued_input_is_left_for_the_loop() {
++    let mut app = app_with_spaces(&[("t1", "work")]);
++    app.pane.set_discard_input_on_recovery(true);
++    let (tx, mut events) = mpsc::channel(8);
++    tx.send(UiEvent::Paste(b"typed now".to_vec()))
++        .await
++        .unwrap();
++    app.drop_input_typed_blind(&mut events);
++    assert!(matches!(events.try_recv(), Ok(UiEvent::Paste(_))));
++    assert!(app.pane.take_input_rejection().is_none());
++}
+diff --git a/crates/hc-tui/src/app/mod_tests/mod.rs b/crates/hc-tui/src/app/mod_tests/mod.rs
+index ce2c489..d5402b6 100644
+--- a/crates/hc-tui/src/app/mod_tests/mod.rs
++++ b/crates/hc-tui/src/app/mod_tests/mod.rs
+@@ -1,5 +1,6 @@
+ // Modified by Ovis (https://github.com/devswha/ovis): the solo-pane tests.
+ //! Read-only application tests and shared fixtures.
++mod blind_input;
+ mod cases_1;
+ mod cases_2;
+ mod endpoint_nav;
+diff --git a/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs b/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs
+index d5a5637..a4705c3 100644
+--- a/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs
++++ b/crates/hc-tui/src/app/pane/discard_on_recovery_tests.rs
+@@ -44,6 +44,28 @@ async fn under_the_policy_nothing_typed_during_a_recovery_reaches_the_recovered_
+     assert_eq!(read_kind(&mut second, CH, Kind::Data).await.payload, b"d");
+ }
+ 
++#[tokio::test]
++async fn under_the_policy_only_a_recovered_wire_s_first_paint_tells_the_app() {
++    let (mut pane, mut rx, mut accept) = rig();
++    pane.set_discard_input_on_recovery(true);
++    pane.want(Some(spec(Role::Active)));
++    let mut first = serve(&mut accept, true).await;
++    step_until_live(&mut pane, &mut rx).await;
++    paint(&mut pane, &mut rx, &mut first, b"ready").await;
++    assert!(!pane.take_recovered_paint());
++    drop(first);
++    while !matches!(pane.state, State::Down { .. }) {
++        step(&mut pane, &mut rx).await;
++    }
++    pane.fire_retry(Instant::now() + Duration::from_secs(5));
++    let mut second = serve(&mut accept, true).await;
++    step_until_live(&mut pane, &mut rx).await;
++    assert!(!pane.take_recovered_paint());
++    paint(&mut pane, &mut rx, &mut second, b"back").await;
++    assert!(pane.take_recovered_paint());
++    assert!(!pane.take_recovered_paint());
++}
++
+ #[tokio::test]
+ async fn without_the_policy_a_key_typed_while_the_wire_is_down_still_queues() {
+     let (mut pane, _, _) = rig();
+diff --git a/crates/hc-tui/src/app/pane/events.rs b/crates/hc-tui/src/app/pane/events.rs
+index 0dd8278..0f24c14 100644
+--- a/crates/hc-tui/src/app/pane/events.rs
++++ b/crates/hc-tui/src/app/pane/events.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): an embedder's recovery policy.
+ //! Pane event handling: attach-actor reports, stream output in wire
+ //! order, failure/retry parking, and the writer wake paths.
+ use super::*;
+@@ -206,6 +207,10 @@ impl Pane {
+                     {
+                         live.await_paint = false;
+                         live.paint_tail.clear();
++                        // input already waiting in the app's queue was typed before this screen
++                        if live.resumed && self.discard_on_recovery {
++                            self.recovered_paint = true;
++                        }
+                         if vt.size() != Ok(live.core_grid)
+                             && let Err(error) = vt.resize(live.core_grid.0, live.core_grid.1)
+                         {
+diff --git a/crates/hc-tui/src/app/pane/mod.rs b/crates/hc-tui/src/app/pane/mod.rs
+index 3b14da6..2cf14d6 100644
+--- a/crates/hc-tui/src/app/pane/mod.rs
++++ b/crates/hc-tui/src/app/pane/mod.rs
+@@ -263,6 +263,9 @@ pub struct Pane {
+     dropped_input: u64,
+     /// An embedder's policy: see `recovery_policy`.
+     discard_on_recovery: bool,
++    /// Under that policy, a recovered wire painted its first screen since
++    /// the app last asked (`take_recovered_paint`).
++    recovered_paint: bool,
+     /// The probed outer-terminal facts: seeded into every fresh VT so
+     /// `CellColor::Default` and palette entries resolve against the
+     /// host's real defaults rather than the VT's built-ins.
+@@ -335,6 +338,7 @@ impl Pane {
+             pending_bytes: 0,
+             dropped_input: 0,
+             discard_on_recovery: recovery_policy::default_policy(),
++            recovered_paint: false,
+             host: HostFacts::default(),
+             initial: None,
+             pending_bells: 0,
+diff --git a/crates/hc-tui/src/app/pane/recovery_policy.rs b/crates/hc-tui/src/app/pane/recovery_policy.rs
+index 40578c9..dfc184d 100644
+--- a/crates/hc-tui/src/app/pane/recovery_policy.rs
++++ b/crates/hc-tui/src/app/pane/recovery_policy.rs
+@@ -53,6 +53,25 @@ impl Pane {
+         self.input_rejection = Some("Terminal is reconnecting: this input was not sent".into());
+     }
+ 
++    /// Whether a recovered wire painted its first screen under the policy
++    /// since the last call: input the app had queued by then was typed
++    /// while the terminal was down.
++    pub(crate) fn take_recovered_paint(&mut self) -> bool {
++        std::mem::take(&mut self.recovered_paint)
++    }
++
++    /// `count` inputs the app dropped for that reason: refused like input
++    /// typed while the wire is down, with the same notice.
++    pub(crate) fn refuse_blind_input(&mut self, count: u64) {
++        self.dropped_input += count;
++        self.input_rejection = Some("Terminal is reconnecting: this input was not sent".into());
++    }
++
++    #[cfg(test)]
++    pub(crate) fn mark_recovered_paint(&mut self) {
++        self.recovered_paint = true;
++    }
++
+     #[cfg(test)]
+     pub(crate) fn set_discard_input_on_recovery(&mut self, on: bool) {
+         self.discard_on_recovery = on;
+diff --git a/crates/hc-tui/src/app/runtime.rs b/crates/hc-tui/src/app/runtime.rs
+index 7bbada6..2e24217 100644
+--- a/crates/hc-tui/src/app/runtime.rs
++++ b/crates/hc-tui/src/app/runtime.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): input typed while a terminal recovered.
+ // Derived from herdr src/client/shell/input.rs and composition.rs (Apache-2.0).
+ // Modified by Ovis (https://github.com/devswha/ovis): a narrow screen's solo pane.
+ use super::*;
+@@ -233,6 +234,7 @@ impl App {
+                     ev = self.pane_rx.recv() => {
+                         if let Some(ev) = ev {
+                             self.pane_event(ev, Instant::now());
++                            self.drop_input_typed_blind(events);
+                         }
+                     },
+                     _ = tokio::time::sleep_until(deadline.into()) => {
+@@ -264,6 +266,7 @@ impl App {
+                     ev = self.pane_rx.recv() => {
+                         if let Some(ev) = ev {
+                             self.pane_event(ev, Instant::now());
++                            self.drop_input_typed_blind(events);
+                         }
+                     },
+                 }

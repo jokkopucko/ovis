@@ -4,28 +4,34 @@
  * as a worktree. One made on a repository's folder has no `worktree`, and it is where the first
  * worktree starts: each is asked once whether git answers for it. A refusal (4xx) is an answer and
  * is kept; a failure to ask is not, so that workspace keeps what was known of it and is asked again
- * when the set changes or the PC comes back. The answers are per PC and shared by every reader of
- * that PC (the sidebar, the palette, App), so each asks git once and all offer the same items.
+ * when the set changes (its order is no change) or the PC comes back. The answers are per PC and
+ * shared by every reader of that PC (the sidebar, the palette, App), so each asks git once and all
+ * offer the same items. They are one herdr's: a snapshot of another reads none of them.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { ApiError } from "./api.ts";
 
 const answers = new Map<string, Map<string, boolean>>();
 const asking = new Map<string, Promise<void>>();
-/** bumped as a PC's answers are dropped: an answer to a question asked before then is not kept */
 const rounds = new Map<string, number>();
 const listeners = new Set<() => void>();
 /** the herdr each PC's answers came from (the snapshot's `herdr_lifetime`): another may give a workspace id to another folder */
 const lifetimes = new Map<string, string | undefined>();
 /** herdr's connection failing mid-call, which the bridge answers as a 404 (server/http.ts): no refusal, so asked again */
 const NOT_ANSWERED = new Set(["closed", "socket_error", "bad_frame", "cancelled"]);
-/** the mounted readers of each PC: its answers go with the last one, and the next asks again */
 const readers = new Map<string, number>();
+const unanswered = new Map<string, { asked: string; ids: Set<string> }>();
+const NONE: ReadonlySet<string> = new Set();
 
 function told(): void {
   for (const listener of [...listeners]) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
 function answersOf(machineId: string): Map<string, boolean> {
@@ -34,27 +40,34 @@ function answersOf(machineId: string): Map<string, boolean> {
   return known;
 }
 
-/** a repository's main checkout: herdr's own mark, else git's answer for an unmarked workspace */
-export function worktreesStartHere(machineId: string, workspace: WorkspaceInfo): boolean {
+function answersFrom(machineId: string, lifetime: string | undefined): ReadonlyMap<string, boolean> | undefined {
+  return lifetimes.get(machineId) === lifetime ? answers.get(machineId) : undefined;
+}
+
+export function worktreesStartHere(machineId: string, workspace: WorkspaceInfo, lifetime: string | undefined): boolean {
   if (workspace.worktree) return !workspace.worktree.is_linked_worktree;
-  return answers.get(machineId)?.get(workspace.workspace_id) === true;
+  return answersFrom(machineId, lifetime)?.get(workspace.workspace_id) === true;
 }
 
 function dropAnswers(machineId: string): void {
   answers.delete(machineId);
+  unanswered.delete(machineId);
   rounds.set(machineId, (rounds.get(machineId) ?? 0) + 1);
 }
 
-/** one question per workspace and round: a question of a dropped round answers nobody, so the next round asks its own */
 function ask(machineId: string, workspaceId: string, listWorktrees: (workspace: string) => Promise<unknown>): Promise<void> {
   const round = rounds.get(machineId) ?? 0;
   const key = `${machineId}\n${round}\n${workspaceId}`;
   const running = asking.get(key);
   if (running) return running;
-  const kept = (answer: boolean): void => { if ((rounds.get(machineId) ?? 0) === round) answersOf(machineId).set(workspaceId, answer); };
+  const current = (): boolean => (rounds.get(machineId) ?? 0) === round;
+  const kept = (answer: boolean): void => { if (current()) answersOf(machineId).set(workspaceId, answer); };
   const question = listWorktrees(workspaceId).then(
     () => kept(true),
-    (error: unknown) => { if (error instanceof ApiError && error.status < 500 && !NOT_ANSWERED.has(error.code ?? "")) kept(false); },
+    (error: unknown) => {
+      if (error instanceof ApiError && error.status < 500 && !NOT_ANSWERED.has(error.code ?? "")) kept(false);
+      else if (current()) unanswered.get(machineId)?.ids.add(workspaceId);
+    },
   ).finally(() => { if (asking.get(key) === question) asking.delete(key); });
   asking.set(key, question);
   return question;
@@ -73,14 +86,17 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
   offered: boolean;
   listWorktrees: (workspace: string) => Promise<unknown>;
 }): { repositoryWorkspaces: ReadonlySet<string>; notCheckout: (workspaceId: string) => void } {
-  const unmarked = (snapshot?.workspaces ?? []).filter((workspace) => !workspace.worktree).map((workspace) => workspace.workspace_id).join("\n");
+  const unmarked = [...new Set((snapshot?.workspaces ?? []).filter((workspace) => !workspace.worktree).map((workspace) => workspace.workspace_id))].sort().join("\n");
   const asked = !online || unmarked === "" || watching || !offered ? null : unmarked;
   const lifetime = snapshot?.herdr_lifetime;
+  const shown = useRef(NONE);
   const read = useCallback((): ReadonlySet<string> => {
-    const known = answers.get(machineId);
-    return new Set(asked === null || !known ? [] : asked.split("\n").filter((id) => known.get(id) === true));
-  }, [machineId, asked]);
-  const [repositoryWorkspaces, setRepositoryWorkspaces] = useState<ReadonlySet<string>>(() => new Set());
+    const known = answersFrom(machineId, lifetime);
+    const next = asked === null || !known ? [] : asked.split("\n").filter((id) => known.get(id) === true);
+    if (next.length !== shown.current.size || !next.every((id) => shown.current.has(id))) shown.current = new Set(next);
+    return shown.current;
+  }, [machineId, asked, lifetime]);
+  const repositoryWorkspaces = useSyncExternalStore(subscribe, read, read);
   useEffect(() => {
     readers.set(machineId, (readers.get(machineId) ?? 0) + 1);
     return () => {
@@ -92,29 +108,21 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
     };
   }, [machineId]);
   useEffect(() => {
-    const publish = (): void => setRepositoryWorkspaces((current) => {
-      const next = read();
-      return next.size === current.size && [...next].every((id) => current.has(id)) ? current : next;
-    });
-    listeners.add(publish);
-    return () => { listeners.delete(publish); };
-  }, [read]);
-  useEffect(() => {
     if (asked === null) {
-      // what was known, and every question still out, is dropped: the PC is asked afresh when it comes back
       dropAnswers(machineId);
       told();
       return;
     }
-    // another herdr: what the last one answered, and its questions still out, are for its workspaces
     if (lifetimes.has(machineId) && lifetimes.get(machineId) !== lifetime) dropAnswers(machineId);
     lifetimes.set(machineId, lifetime);
     const known = answersOf(machineId);
     const ids = asked.split("\n");
     for (const id of [...known.keys()]) if (!ids.includes(id)) known.delete(id);
+    let record = unanswered.get(machineId);
+    if (record?.asked !== asked) unanswered.set(machineId, record = { asked, ids: new Set() });
+    const failed = record.ids;
     told();
-    // each answer is shown as it comes: one slow question holds back none of the others
-    for (const id of ids.filter((id) => !known.has(id))) void ask(machineId, id, listWorktrees).then(told);
+    for (const id of ids.filter((id) => !known.has(id) && !failed.has(id))) void ask(machineId, id, listWorktrees).then(told);
   }, [machineId, asked, lifetime, listWorktrees]);
   const notCheckout = useCallback((workspaceId: string) => {
     answersOf(machineId).set(workspaceId, false);

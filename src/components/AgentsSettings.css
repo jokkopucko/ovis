@@ -1,4 +1,3 @@
-/* Settings → Agents (AgentsSettings): a row per agent of the PC, other accounts, installs, plan limits */
 .agents-head {
   display: flex;
   align-items: center;
@@ -19,8 +18,6 @@
   justify-content: center;
 }
 
-/* a read under way: aria-disabled, so a press keeps the focus on the button, and it reads as a
-   disabled .btn does (styles.css) */
 .btn.agents-check-again[aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
@@ -49,7 +46,6 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* the row's head: one toggle (mark, name, state, defaults, chevron), and the one action it may have */
 .agents-summary {
   display: flex;
   align-items: center;
@@ -165,7 +161,6 @@
   transform: rotate(180deg);
 }
 
-/* the open row lines up under the name, past the mark */
 .agents-details {
   display: flex;
   flex-direction: column;
@@ -215,7 +210,6 @@
   margin: var(--space-2) 0 0;
 }
 
-/* Other accounts' groups sit under their own heading: no divider over each */
 [data-section="other-accounts"] > .usage-provider {
   padding-top: 0;
   border-top: 0;
@@ -231,8 +225,6 @@
   display: none;
 }
 
-/* Install another agent: shut until asked, then the setup guide's tiles (AgentTile.css); its line is
-   drawn as a page's More settings line is (SettingsControls.css .settings-fold) */
 .agents-more > summary {
   display: inline-flex;
   align-items: center;
@@ -301,7 +293,6 @@
   }
 }
 
-/* what New tab starts the agent with, on its row */
 .agents-defaults {
   flex: 0 1 auto;
   min-width: 0;
@@ -312,7 +303,6 @@
   white-space: nowrap;
 }
 
-/* herdr's install command for a session resume, beside its Copy */
 .settings-integration-action {
   display: flex;
   align-items: center;

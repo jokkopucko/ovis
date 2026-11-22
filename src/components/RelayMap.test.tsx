@@ -92,7 +92,6 @@ describe("the connection map", () => {
     expect(wires(html)["MacBook"]).toBe("live");
     expect(html).toContain("Fastest PC handshake · 42 ms");
     expect(html).not.toContain("Fastest PC handshake · 68 ms");
-    // Both diagram and route-list tooltips show known last-seen <time> and explicit unknown last-seen
     expect(count(html, /<time[^>]*dateTime="2026-11-07T00:00:00Z"[^>]*title="[^"]+"/g)).toBe(4);
     expect(count(html, /<span class="relay-map-tooltip-seen">Last seen: unknown<\/span>/g)).toBe(2);
   });
@@ -188,7 +187,6 @@ describe("the connection map", () => {
     expect(edges["Desk PC"]?.x).toBe(layout.me.x + layout.me.r);
     expect(edges["Desk PC"]?.y).toBe(layout.me.y);
     expect(edges["MacBook"]?.via).toBe("hub");
-    // the regional hub still carries MacBook, so its wire is live; the words say the way
     expect(html).toMatch(/class="relay-map-edge" data-wire="live" data-hub="wss:\/\/relay-ap\.ovis\.sh"/);
     expect(html).toContain("Same network · 4 ms");
     expect(html).toContain("relay-ap.ovis.sh · 62 ms");
@@ -196,7 +194,6 @@ describe("the connection map", () => {
     const routes = html.slice(html.indexOf('<ol class="relay-map-routes"'));
     expect(count(routes, /class="relay-map-route" data-route="direct"/g)).toBe(1);
     expect(routes.indexOf("Desk PC")).toBeLessThan(routes.indexOf("relay-ap.ovis.sh"));
-    // once as its own route, not again in its relay's fan
     expect(count(routes, /data-pc-id="Desk PC"/g)).toBe(1);
     expect(count(routes, /data-pc-state=/g)).toBe(4);
   });
@@ -212,7 +209,6 @@ describe("the connection map", () => {
     expect(count(html, /<small class="relay-map-hop-note">Needs update<\/small>/g)).toBe(1);
     expect(html).toContain("Mac mini · Needs approval · ");
     expect(html).toContain("Build box · Needs update · Update Ovis on it · ");
-    // the group word stays where it names the group: the legend and the figure's summary
     const legend = /<ul class="relay-map-legend"[^>]*>([\s\S]*?)<\/ul>/.exec(html)?.[1] ?? "";
     expect(legend).toContain("Needs you");
     expect(html.replace(legend, "").replace(/aria-label="[^"]*"/g, "")).not.toContain("Needs you");
@@ -225,7 +221,6 @@ describe("the connection map", () => {
     expect(html).toContain(`title="${longName}"`);
     expect(clip(longName)).toBe("Workstation on the…");
     expect(placeLabel({ x: 100, y: 100, r: 18, side: "right" }, 2).anchor).toBe("start");
-    // PF-7: each hub's host is one pill span holding the host text whole, in the diagram and in the route list, so the only width it can take is its own (the capture matrix measures it unclipped at 1440)
     const pills = [...html.matchAll(/<span class="pill relay-map-host">([^<]*)<\/span>/g)].map(([, host]) => host);
     expect(pills).toEqual(["relay.ovis.sh", "relay.ovis.sh"]);
     expect(html).not.toMatch(/relay-map-host[^>]*title=/);
@@ -249,13 +244,11 @@ describe("the connection map", () => {
     const [boxTitle, boxWord] = nodeOf("Old box");
     expect(boxWord).toBe("Needs update");
     expect(boxTitle).toStartWith("Old box · Needs update · Update Ovis on it · Tailscale · 18 ms · Last seen");
-    // the glyph and the wire follow: ready and live for the reached PC, direct from this device; the unanswered one stays offline and off
     expect(new RegExp('data-pc-node="Home server"[\\s\\S]*?<svg class="status-dot" data-state="ready"').test(html)).toBe(true);
     expect(wires(html)).toEqual({ "Home server": "live", "Old box": "live", "Dark box": "off" });
     expect(html).toMatch(/data-pc="Home server"[^>]*data-via="direct"/);
     const routes = html.slice(html.indexOf('<ol class="relay-map-routes"'));
-    // both answered directly, so both are routes of their own before the relay; the unanswered PC stays behind its hub as Offline
-    expect([...routes.matchAll(/<small class="relay-map-hop-note">([^<]+)<\/small>/g)].map(([, word]) => word)).toEqual(["Needs update", "Same network · 4 ms", "Offline"]);
+    expect([...routes.matchAll(/<small class="relay-map-hop-note">([^<]+)<\/small>/g)].map(([, word]) => word)).toEqual(["Needs update", "Same network · 4 ms", "Machine offline"]);
     expect(/data-pc-id="Home server"[^>]*title="([^"]+)"/.exec(routes)?.[1]).not.toContain("Offline");
   });
 });

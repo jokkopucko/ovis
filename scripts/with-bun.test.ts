@@ -99,7 +99,6 @@ describe.skipIf(process.platform === "win32")("Unix Bun discovery", () => {
     expect(result.out.trim()).toBe("1.4.2");
   });
 
-  /** PATH as the launcher leaves it. */
   async function searched(overrides: Record<string, string | undefined> = {}) {
     return (await run(["/bin/sh", "-c", `. "$1" && printf %s "$PATH"`, "sh", join(import.meta.dir, "bun-path.sh")], overrides)).out;
   }
@@ -114,7 +113,6 @@ describe.skipIf(process.platform === "win32")("Unix Bun discovery", () => {
     const dir = join(home, "with space");
     mkdirSync(dir);
     mkdirSync(join(home, "wide"));
-    // a relative name, an empty entry, and a pattern that names both directories if it is expanded
     expect(await searched({ WITH_BUN_EXTRA_DIRS: `scripts::${home}/w*:${dir}` })).toBe(`${tools}:${dir}`);
   });
 
@@ -185,7 +183,6 @@ describe.skipIf(process.platform === "win32")("Unix Bun discovery", () => {
     const env = { PATH: `${tools}:${utils}`, WITH_BUN_EXTRA_DIRS: outer };
     const brew = await run(["/bin/sh", preflight], { ...env, OVIS_TEST_BREW_PREFIXES: prefix });
     expect(brew.out).toContain("Update it with: brew upgrade bun");
-    // the same link outside every Homebrew prefix keeps Bun's own update
     const other = await run(["/bin/sh", preflight], { ...env, OVIS_TEST_BREW_PREFIXES: join(home, "elsewhere") });
     expect(other.out).toContain("Update it with: bun upgrade");
   });
@@ -198,14 +195,12 @@ describe.skipIf(process.platform === "win32")("Unix Bun discovery", () => {
       manifest[section].filter(entry => entry.platforms?.includes("linux") && entry.command[1] !== "scripts/preflight.sh"
         && entry.command[0] !== "herdr").map(entry => entry.command));
     expect(commands).toEqual([
-      ["sh", "scripts/with-bun.sh", "install"],
-      ["sh", "scripts/with-bun.sh", "run", "build"],
-      ["sh", "scripts/with-bun.sh", "scripts/pty-sidecar.ts", "install"],
-      ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "start"],
-      ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "start"],
-      ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "stop"],
-      ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "status"],
-      ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "phone-setup"],
+      ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "install"],
+      ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "start"],
+      ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "start"],
+      ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "stop"],
+      ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "status"],
+      ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "phone-setup"],
     ]);
     for (const command of commands) {
       const result = await run(command);
@@ -214,8 +209,7 @@ describe.skipIf(process.platform === "win32")("Unix Bun discovery", () => {
     }
     expect(manifest.build.filter(entry => entry.platforms?.includes("windows")).map(entry => entry.command)).toEqual([
       ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/preflight.ps1"],
-      ["bun", "install"],
-      ["bun", "run", "build"],
+      ["bun", "scripts/plugin-launch.ts", "install"],
     ]);
   });
 });

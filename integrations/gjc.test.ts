@@ -255,16 +255,13 @@ it("rejects the same malformed record shapes in the publisher and server", async
     { ...existing, session: { ...existing.session, id: "main", path, cwd: homeDir, extra: true } },
     { ...existing, session: { id: "main", path: "relative.jsonl", cwd: homeDir } },
   ]) {
-    // Given an otherwise live lease with a malformed shape.
     writeFileSync(join(directory, "4312.json"), JSON.stringify(malformed));
     const pub = publisher(homeDir, { processStartedAt: () => malformed.processStartedAt });
     const main = context(manager(path));
     try {
-      // When the server reads it and the publisher checks the competing lease.
       const binding = readGjcNativeBinding(homeDir, 4312, 200_000);
       await pub.lifecycle("session_start", main);
 
-      // Then neither accepts it: the server rejects it and publishing replaces it.
       expect(binding).toBeNull();
       expect(recordAt(homeDir, 4312).instanceId).toBe("instance-main");
     } finally { await pub.shutdown(main); }
@@ -272,7 +269,6 @@ it("rejects the same malformed record shapes in the publisher and server", async
 });
 
 it("replaces another publisher's lease exactly when the server expires it", async () => {
-  // Given another publisher whose lease has just reached its expiry boundary.
   const homeDir = home();
   const path = session(homeDir, "project-a", "main.jsonl");
   const directory = join(homeDir, ".gjc", "agent", "herdr-web-ui");
@@ -284,11 +280,9 @@ it("replaces another publisher's lease exactly when the server expires it", asyn
   const pub = publisher(homeDir);
   const main = context(manager(path));
   try {
-    // When the server checks expiry and the publisher tries to publish.
     const expired = readGjcNativeBinding(homeDir, 4312, 200_000);
     await pub.lifecycle("session_start", main);
 
-    // Then both treat the competing lease as expired.
     expect(expired).toBeNull();
     expect(recordAt(homeDir, 4312)).toMatchObject({ instanceId: "instance-main", sequence: 1 });
   } finally { await pub.shutdown(main); }

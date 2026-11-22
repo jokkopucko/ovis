@@ -24,7 +24,8 @@ if (existsSync(vendor)) {
   if (code !== 0) process.exit(code);
 }
 
-for (const args of [[], ["-p", "tsconfig.tools.json"]]) {
+// tui/ has a project of its own without the DOM library: the terminal screen must not need it.
+for (const args of [[], ["-p", "tsconfig.tools.json"], ["-p", "tui/tsconfig.json"]]) {
   const child = Bun.spawn([process.execPath, "--bun", "tsc", "--noEmit", ...args], {
     env, stdin: "inherit", stdout: "inherit", stderr: "inherit",
   });

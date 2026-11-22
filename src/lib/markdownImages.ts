@@ -8,7 +8,6 @@ export const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
 export type MarkdownImagePreview = { kind: "inline"; url: string; name: string }
   | { kind: "too-large"; size: number; downloadUrl: string } | { kind: "unavailable" };
 
-/** Decode an eligible local image target once, leaving relative paths relative. */
 function localImageTarget(src: string): string | null {
   const target = src.trim().replace(/[?#].*$/s, "");
   if (target === "" || target.startsWith("//")) return null;
@@ -25,7 +24,6 @@ function localImageTarget(src: string): string | null {
   return path;
 }
 
-/** Resolve file-preview images from their Markdown document, never from the pane cwd. */
 export function markdownImagePath(src: string, markdownPath: string): string | null {
   let path = localImageTarget(src);
   if (path === null) return null;
@@ -43,11 +41,6 @@ export function markdownImagePath(src: string, markdownPath: string): string | n
   return `/${parts.join("/")}`;
 }
 
-/**
- * Stat before loading. A null document path delegates relative targets to the pane's file API.
- * The inline URL stays a
- * server path, which ReservedImage resolves once; the download link is used as it is, so it is resolved here.
- */
 export async function markdownImagePreview(
   src: string,
   markdownPath: string | null,
@@ -63,7 +56,6 @@ export async function markdownImagePreview(
       ? { kind: "too-large", size: info.size, downloadUrl: await serverResourceUrl(fileUrl(info.path, true)) }
       : { kind: "inline", url: fileUrl(info.path, false), name: info.name };
   } catch (error) {
-    // A missing file may still be being written. Other rejected files remain ordinary links.
     const status = error !== null && typeof error === "object" && "status" in error ? error.status : null;
     const retryable = status === null || status === 404 || status === 408 || status === 429 || (typeof status === "number" && status >= 500);
     if (markdownPath === null && retryable) return { kind: "unavailable" };

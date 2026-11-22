@@ -1,5 +1,3 @@
-/* The load of one PC under its name (MachineStats.tsx): three small meters in a row that open into
-   the numbers. Everything is neutral until a figure is high; then that figure alone turns red. */
 .machine-stats {
   padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
   font-size: var(--fs-xs);
@@ -8,8 +6,6 @@
 
 .machine-stats-summary {
   display: flex;
-  /* the bars share one line even when a narrow sidebar puts a percent under its label, and that line sits
-     in the middle of the row (a wrapping flex line is placed by align-content; the meters never wrap) */
   flex-wrap: wrap;
   align-content: center;
   align-items: flex-end;
@@ -37,7 +33,6 @@
   .machine-stats-summary { min-height: var(--side-row); }
 }
 
-/* label and percent on one line, the percent under the label where they do not fit side by side */
 .stats-meter {
   display: flex;
   flex-wrap: wrap;
@@ -49,7 +44,6 @@
   row-gap: 3px;
 }
 
-/* a label wider than the narrowest sidebar's meter is cut, never drawn over its neighbour */
 .stats-meter-label { min-width: 0; max-width: 100%; overflow: hidden; color: var(--text-dim); text-overflow: ellipsis; white-space: nowrap; }
 .stats-meter-value { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
 .stats-meter.is-high .stats-meter-value { color: var(--status-blocked); }

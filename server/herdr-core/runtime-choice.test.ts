@@ -32,7 +32,6 @@ it("reads the PC's traces from files alone", () => {
   mkdirSync(join(root, "Applications", "Herdr.app"), { recursive: true });
   expect(runtimeTraces({ env, home, platform: "darwin", systemAppDirs: [join(root, "Applications")] }).appInstalled).toBe(true);
   rmSync(join(root, "Applications"), { recursive: true });
-  // a HERDR_SOCKET left from another session hides no TUI running at the default socket
   touch(join(home, ".config", "herdr", "herdr.sock"));
   expect(runtimeTraces({ env: { ...env, HERDR_SOCKET: join(root, "gone.sock") }, home, platform: "linux" }).tuiRunning).toBe(true);
   rmSync(join(home, ".config", "herdr", "herdr.sock"));
@@ -81,13 +80,10 @@ it("keeps herdr wherever herdr's TUI left a trace, without looking for hc", asyn
     expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
     rmSync(trace);
   }
-  // a herdr OVIS_HERDR_BIN names outside those places is the TUI Ovis runs
   touch(join(root, "opt", "herdr"));
   expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_HERDR_BIN: join(root, "opt", "herdr") }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
-  // a config HERDR_CONFIG_PATH names is herdr's TUI too
   touch(join(root, "etc", "herdr.toml"));
   expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, HERDR_CONFIG_PATH: join(root, "etc", "herdr.toml") }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
-  // a bare name is found on PATH, as the spawn finds it
   touch(join(root, "bin", "custom-herdr"));
   chmodSync(join(root, "bin", "custom-herdr"), 0o755);
   expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, PATH: join(root, "bin"), OVIS_HERDR_BIN: "custom-herdr" }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
@@ -96,14 +92,12 @@ it("keeps herdr wherever herdr's TUI left a trace, without looking for hc", asyn
 
 it("chooses herdr-core on a PC with no TUI, a verified hc and the Herdr app or its running core", async () => {
   const { home, state, env, touch, root } = scratch();
-  // neither the app nor a core: nothing is looked for
   let looked = 0;
   const find = async () => { looked += 1; return core; };
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr" });
   expect(looked).toBe(0);
   mkdirSync(join(home, ".local", "share", "herdr-app"), { recursive: true });
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr-core", source: "detected" });
-  // the app, but no hc that answers --version as herdr-core's
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find: async () => null })).toMatchObject({ runtime: "herdr" });
   rmSync(join(home, ".local", "share", "herdr-app"), { recursive: true });
   touch(join(root, "run", "herdr-core", "test.sock"));
@@ -117,7 +111,6 @@ it("never chooses herdr-core by itself on Windows or where it is not served", as
   for (const platform of ["win32", "freebsd"] as const) {
     expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform, find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
   }
-  // where herdr-core is not served, not from a saved choice either, which a state folder carried over from another PC may hold
   saveRuntime(state, 7, { runtime: "herdr-core", previous: null });
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "freebsd", find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
 });
@@ -139,9 +132,29 @@ it("takes OVIS_RUNTIME first, then the choice saved in Settings, then the PC's f
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr-core", source: "saved" });
   expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_RUNTIME: "herdr" }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "env" });
   await expect(chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_RUNTIME: "tmux" }, home, platform: "linux", find })).rejects.toThrow(/OVIS_RUNTIME=tmux/);
-  // a saved file Ovis cannot read is no choice
   writeFileSync(join(state, "runtime-7.json"), "{ not json");
   expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
+});
+
+it("takes alt-runtime only from OVIS_RUNTIME or the saved choice, never from the PC's facts", async () => {
+  const { home, state, env } = scratch();
+  mkdirSync(join(home, ".local", "share", "herdr-app"), { recursive: true });
+  const find = async () => core;
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "herdr-core", source: "detected" });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_RUNTIME: "alt-runtime" }, home, platform: "linux", find })).toMatchObject({ runtime: "alt-runtime", source: "env" });
+  saveRuntime(state, 7, { runtime: "alt-runtime", previous: "herdr-core" });
+  expect(readSavedRuntime(state, 7)).toEqual({ runtime: "alt-runtime", previous: "herdr-core" });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "linux", find })).toMatchObject({ runtime: "alt-runtime", source: "saved" });
+});
+
+it("knows alt-runtime as a switch target, and refuses it while this Ovis cannot start it", () => {
+  const { home, state, env, touch } = scratch();
+  touch(join(home, ".config", "herdr", "config.toml"));
+  const service = runtimeService({ stateDir: state, port: 7, serving: "herdr", source: "detected", env, core: () => ({ version: "0.1.17", session: "test", running: false }), restart: () => { throw new Error("no restart"); }, platform: "linux", managed: true, systemAppDirs: [] });
+  expect(service.facts().switch_to).toBe("herdr-core");
+  expect(service.request("alt-runtime")).toMatchObject({ ok: false, status: 409, code: "runtime_unavailable" });
+  expect(readSavedRuntime(state, 7)).toBeNull();
+  expect(service.switching?.()).toBe(false);
 });
 
 it("keeps each port's choice to itself, and a failed switch from the PC's facts goes back to the facts", async () => {
@@ -156,10 +169,8 @@ it("keeps each port's choice to itself, and a failed switch from the PC's facts 
 });
 
 it("takes a launcher that does not say it restarts on a switch for no launcher", () => {
-  // an older supervisor a release fell back to sets OVIS_MANAGED but would ignore the request
   expect(runtimeLock({ OVIS_MANAGED: "1" }, "linux", undefined, true)).toBe("unmanaged");
   expect(runtimeLock({ OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1" }, "linux", undefined, true)).toBeNull();
-  // and without the launcher's IPC channel there is nobody to ask
   expect(runtimeLock({ OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1" }, "linux", undefined, false)).toBe("unmanaged");
 });
 
@@ -168,7 +179,6 @@ it("locks the switch when OVIS_RUNTIME decides, the server has no launcher, or h
   expect(runtimeLock({}, "linux", false)).toBe("unmanaged");
   expect(runtimeLock({}, "freebsd", true)).toBe("platform");
   expect(runtimeLock({}, "darwin", true)).toBeNull();
-  // Windows serves herdr-core too: Settings switches there
   expect(runtimeLock({}, "win32", true)).toBeNull();
 });
 
@@ -189,11 +199,8 @@ it("switches only to a runtime the PC has, saves it with the one it replaces, an
   expect(service.switching?.()).toBe(false);
   expect(service.request("herdr-core")).toEqual({ ok: true });
   expect(restarts).toHaveLength(1);
-  // a move asked for now is refused: the server is restarting
   expect(service.switching?.()).toBe(true);
-  // the launcher is told which saved choice to put back if the start on it fails
   expect(readSavedRuntime(state, 7)).toEqual({ runtime: "herdr-core", previous: "herdr", id: restarts[0], previous_detected: true });
-  // the restart is under way: a second switch waits for the server that comes next
   expect(service.request("herdr-core")).toMatchObject({ ok: false, code: "runtime_switching" });
   expect(restarts).toHaveLength(1);
 });
@@ -227,13 +234,11 @@ it("saves no switch over a start the launcher has not taken yet, which it may st
 it("puts back only the choice the failed switch saved, never a later one", () => {
   const { state } = scratch();
   saveRuntime(state, 7, { runtime: "herdr-core", previous: "herdr", id: "first" });
-  // another server sharing this state folder saved its own choice since
   saveRuntime(state, 7, { runtime: "herdr", previous: "herdr-core", id: "second" });
   expect(restoreRuntime(state, 7, "first")).toBe(false);
   expect(readSavedRuntime(state, 7)).toEqual({ runtime: "herdr", previous: "herdr-core", id: "second" });
   expect(restoreRuntime(state, 7, "second")).toBe(true);
   expect(readSavedRuntime(state, 7)).toEqual({ runtime: "herdr-core", previous: null });
-  // nothing to go back to: the choice stays
   expect(restoreRuntime(state, 7, "second")).toBe(false);
   expect(JSON.parse(readFileSync(join(state, "runtime-7.json"), "utf8"))).toEqual({ runtime: "herdr-core", previous: null });
 });

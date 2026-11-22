@@ -1,10 +1,5 @@
 import type { PlanStep } from "../../shared/protocol.ts";
 
-/**
- * A plan's steps by wave: a step comes one wave after the last of the steps it waits on, so a
- * wave's steps can run side by side. Order inside a wave is the plan's own. A wait that loops
- * back is not followed.
- */
 export function planWaves(steps: readonly PlanStep[]): PlanStep[][] {
   const byId = new Map(steps.map((step) => [step.id, step]));
   const level = new Map<string, number>();

@@ -15,7 +15,6 @@ describe("dropletAllows", () => {
     expect(dropletAllows({ input: true, done: "long" }, "done", 1_000)).toBe(false);
     expect(dropletAllows({ input: true, done: "long" }, "done", LONG_TURN_MS)).toBe(true);
     expect(dropletAllows({ input: true, done: "always" }, "working", null)).toBe(false);
-    // what a blocked agent says it waits for picks the choice that applies
     expect(dropletAllows({ input: true, done: "off", permission: false }, "blocked", null, "permission")).toBe(false);
     expect(dropletAllows({ input: false, done: "off", permission: true }, "blocked", null, "permission")).toBe(true);
   });
@@ -78,7 +77,6 @@ describe("endedTurn", () => {
 
 describe("flickVelocity", () => {
   it("does not count a hold before the flick", () => {
-    // held for a second, then 15px up in 20ms: 0.015 px/ms over the whole press
     const samples = [{ y: 100, t: 0 }, { y: 100, t: 1_000 }, { y: 92, t: 1_010 }];
     expect(flickVelocity(samples, 85, 1_020)).toBe(-0.75);
   });
@@ -134,7 +132,6 @@ describe("seedStatuses", () => {
     seedStatuses(known, roster(["p1", "idle"]), turns, 0);
     seedStatuses(known, roster(["p1", "working"]), turns, 1_000);
     expect(known.get("p1")).toBe("working");
-    // the event that follows is no change
     expect(trackTurn(turns.started, "p1", known.get("p1"), "working", 1_200)).toBeNull();
     expect(trackTurn(turns.started, "p1", "working", "done", 4_000)).toBe(3_000);
   });
@@ -142,10 +139,8 @@ describe("seedStatuses", () => {
   it("catches up after lost events: a pane the roster shows back at work waits anew, which is news", () => {
     const known = new Map<string, AgentStatus>([["p1", "blocked"]]);
     const turns = { started: new Map<string, number>([["p1", 0]]), lasted: new Map<string, number>() };
-    // answered while no event arrived: the roster is all that says so
     seedStatuses(known, roster(["p1", "working"]), turns, 5_000);
     expect(shouldNotifyStatus(known.get("p1"), "blocked")).toBe(true);
-    // and one it shows at rest has ended its turn
     seedStatuses(known, roster(["p1", "idle"]), turns, 9_000);
     expect(known.get("p1")).toBe("idle");
     expect(turns.started.has("p1")).toBe(false);
@@ -177,7 +172,6 @@ describe("seedStatuses", () => {
     const known = new Map<string, AgentStatus>();
     seedStatuses(known, [...roster(["p1", "blocked"]), { id: "pc-2", snapshot: { panes: [{ pane_id: "p1", agent_status: "working" as AgentStatus }] } }]);
     expect(known.size).toBe(2);
-    // p1 closed on this PC; the other PC is offline and lists nothing
     seedStatuses(known, [{ id: "local", snapshot: { panes: [] } }, { id: "pc-2", snapshot: null }]);
     expect(known.size).toBe(0);
     seedStatuses(known, roster(["p1", "idle"]));

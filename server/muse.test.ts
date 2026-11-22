@@ -13,7 +13,6 @@ import type { ConversationPart, HerdrPane, SessionSnapshot } from "../shared/pro
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
 const fixture = readFileSync(join(import.meta.dir, "fixtures", "muse", "session.jsonl"), "utf8");
 const recorded = readFileSync(join(import.meta.dir, "fixtures", "muse", "recorded-1.4.13.jsonl"), "utf8");
-/** The sessions the two logs belong to: a log is read in a folder named after its session. */
 const FICTION = "00000000-0000-7000-8000-000000000001";
 const RECORDED = "01a17441-bc95-7e23-b488-988dceb829cd";
 const fiction = (log: string) => parseMuseTranscript(log, FICTION);
@@ -41,7 +40,6 @@ describe("Muse session log", () => {
     // run/started repeats the prompt; only the accepted intent is the user's message
     expect(prompt!.parts).toEqual([{ kind: "text", text: "Count the lines in notes.txt" }]);
     expect(work!.parts[1]).toEqual({ kind: "text", text: "Counting the lines now.", phase: "commentary" });
-    // the run's completed end makes its last answer final
     expect(work!.parts.at(-1)).toEqual({ kind: "text", text: "notes.txt has 3 lines.", phase: "final_answer" });
     const tools = work!.parts.filter((part): part is Tool => part.kind === "tool");
     expect(tools.map((tool) => [tool.name, tool.summary, tool.output.slice(0, 50), tool.error ?? false])).toEqual([
@@ -66,7 +64,6 @@ describe("Muse session log", () => {
     const batch = lines.find((line) => line.includes('"call_01"') && line.includes("tool_result_batch_committed"))!;
     const tools = fiction(batch).flatMap((turn) => turn.parts).filter((part): part is Tool => part.kind === "tool");
     expect(tools.map((tool) => [tool.name, tool.output])).toEqual([["Tool output", "3 notes.txt\n"], ["Tool output", "one\ntwo\nthree\n"]]);
-    // without an id, a long result is cut with nothing to fetch the rest by
     const unnamed = fiction(batch.replace('"tool_call_id":"call_01"', '"tool_call_id":""').replace("3 notes.txt", "x".repeat(5000)))
       .flatMap((turn) => turn.parts).find((part): part is Tool => part.kind === "tool")!;
     expect([unnamed.output.length < 5000, unnamed.output_ref, unnamed.output_size]).toEqual([true, undefined, undefined]);
@@ -78,7 +75,6 @@ describe("Muse session log", () => {
     const end = lines.findIndex((line) => line.includes('"terminal":"completed"'));
     expect(last(lines.slice(0, end))).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
     expect(last([...lines.slice(0, end), lines[end]!.replace('"terminal":"completed"', '"terminal":"failed"')])).toEqual({ kind: "text", text: "notes.txt has 3 lines." });
-    // a run that ends on progress prose or on a tool has no answer to mark
     const commentary = lines.find((line) => line.includes('"phase":"commentary"'))!;
     expect(last([lines[2]!, commentary, lines[end]!])).toEqual({ kind: "text", text: "Counting the lines now.", phase: "commentary" });
     const call = lines.find((line) => line.includes("assistant_tool_calls_committed"))!;
@@ -109,7 +105,6 @@ describe("Muse session log", () => {
     expect(museToolOutput(path, "call_05")).toBe(Array.from({ length: 1200 }, (_, n) => `${n + 1}\n`).join(""));
     expect(museToolOutput(path, "call_03")).toBe("cat: missing.txt: No such file or directory\n");
     expect(museToolOutput(path, "call_99")).toBeNull();
-    // Show all is bounded as for every other agent
     const batch = lines.find((line) => line.includes('"call_02"') && line.includes("tool_result_batch_committed"))!;
     appendFileSync(path, batch.replace('"call_02"', '"call_big"').replace("one\\ntwo\\nthree\\n", "x".repeat(2_000_001)));
     expect(transcriptToolOutput("muse-transcript", path, "call_big")).toBe(`${"x".repeat(2_000_000)}\n… trimmed`);
@@ -122,10 +117,8 @@ describe("Muse session log", () => {
     const elsewhere = join(root, "elsewhere");
     const away = join(root, "away");
     mkdirSync(elsewhere);
-    // the same records and length: only the result's bytes tell the logs apart
     writeFileSync(join(elsewhere, "session.jsonl"), fixture.replace("cat: missing.txt: No such", "cat: FOREIGN.txt: No such"));
     expect(transcriptToolOutput("muse-transcript", path, "call_03")).toBe("cat: missing.txt: No such file or directory\n");
-    // the path names the pane's own log when the lookup begins; its open meets the other folder
     let swaps = 0;
     const real = fs.openSync;
     const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
@@ -165,11 +158,9 @@ describe("Muse session log", () => {
       ["read_file", "notes.txt", "Read text file `notes.txt`.\n1|Garden plan\n2|- plant tomatoes in May\n3|- water every other day", false],
       ["bash", "Run greet script", "hello from greet\n", false],
       ["bash", "List missing folder", "ls: missing-folder: No such file or directory\n", true],
-      // the call the user declined at the approval prompt
       ["bash", "Delete greet script", "tool denied: approval aborted\nThe user rejected this action. Don't retry it unless they ask.", true],
       ["bash", "Count lines in notes", "       3 notes.txt\n", false],
     ]);
-    // `/model` switched muse-spark-1.3 to muse-spark-1.2 before the last prompt
     const lines = recorded.split("\n");
     const switched = lines.findIndex((line) => line.includes('"command":"/model"'));
     expect([museModel(lines.slice(0, switched).join("\n"), null), museModel(recorded, null)]).toEqual(["muse-spark-1.3", "muse-spark-1.2"]);
@@ -177,7 +168,6 @@ describe("Muse session log", () => {
     const page = transcriptPage("muse-transcript", path);
     expect([page.turns, page.metadata.model]).toEqual([turns, "muse-spark-1.2"]);
     expect(museToolOutput(path, "call_01a1744243497078923c0e3306f4900d")).toBe("ls: missing-folder: No such file or directory\n");
-    // Muse ended the session on exit; until then it was live
     expect(museSessionLive(path)).toBe(false);
     writeFileSync(path, `${lines.slice(0, -2).join("\n")}\n`);
     expect(museSessionLive(path)).toBe(true);
@@ -187,7 +177,6 @@ describe("Muse session log", () => {
     const log = (name: string) => readFileSync(join(import.meta.dir, "fixtures", "muse", `recorded-1.4.13-${name}.jsonl`), "utf8");
     const brief = (turns: ReturnType<typeof real>) => turns.map((turn) => [turn.role,
       turn.parts.map((part) => part.kind === "tool" ? `tool:${part.name}` : part.kind === "text" && part.phase !== "commentary" ? part.text : part.kind)]);
-    // the picture is an `asset` block beside the words; `@shed.txt` was sent as the words `shed.txt`
     expect(brief(parseMuseTranscript(log("main"), "01a17b25-1a12-79d2-85c7-c69a93734997"))).toEqual([
       ["user", ["[Image #1]  What color is this picture? Answer in one word."]],
       ["assistant", ["text", "tool:read_file", "text", "tool:bash", "tool:bash", "tool:bash", "thinking", "Green"]],
@@ -220,36 +209,28 @@ describe("Muse session log", () => {
     const line = (mark: string) => recorded.split("\n").find((candidate) => candidate.includes(mark))!;
     const prompt = line('"runtime.user_intent.accepted"');
     const cut = prompt.slice(0, prompt.indexOf('"model_messages"'));
-    // the fictional log's compaction, as a record of the recorded session
     const compaction = fixture.split("\n").find((candidate) => candidate.includes('"context_compaction_installed"'))!.replace(FICTION, RECORDED);
     const refused = [
-      // another log version, a line that is no Muse record, or a whole line cut short
       prompt.replace('{"schema_version":1,', '{"schema_version":2,'),
       "not a record",
       cut,
-      // a record or a run event those builds do not write, or a renamed one
       line('"payload_type":"command.invoked"').replace('"command.invoked"', '"command.invoked_v2"'),
       line('"assistant_message_committed"').replace('"assistant_message_committed"', '"assistant_message_final"'),
       line('"assistant_message_committed"').replace('"kind":"run"', '"kind":"later"'),
-      // a record the reader takes, in another shape
       prompt.replace('"model_messages":[', '"model_messages":"moved","messages":['),
       prompt.replace('"model_messages":[{"content":[{"kind":"text"', '"model_messages":[{"content":[{"kind":"video"'),
       line('"assistant_tool_calls_committed"').replaceAll('"name":', '"tool_name":'),
       line('"tool_result_batch_committed"').replaceAll('"text":', '"output":'),
       compaction.replace('"summary_text"', '"handoff_text"'),
       compaction.replace('"text":', '"summary":'),
-      // a record of another session: its turns are not this pane's
       prompt.replace(RECORDED, FICTION),
     ];
     for (const added of refused) expect(() => real(`${recorded}${added}\n`), added.slice(0, 80)).toThrow(MuseUnavailable);
     expect(real(`${recorded}${compaction}\n`).at(-1)!.parts[0]!.kind).toBe("compact");
-    // a renamed record in the recording itself, rather than Chat without its answers
     expect(() => real(recorded.replaceAll('"assistant_message_committed"', '"assistant_message_final"'))).toThrow(MuseUnavailable);
-    // a last line Muse is still writing is skipped until it is whole
     expect(real(`${recorded}${cut}`)).toEqual(real(recorded));
     const path = logAt(RECORDED, `${recorded}${refused[3]}\n`);
     expect(() => transcriptPage("muse-transcript", path)).toThrow(ConversationUnavailable);
-    // the log of another session in this session's folder: no turn and no tool output of it
     const other = logAt(FICTION, recorded);
     expect(() => transcriptPage("muse-transcript", other)).toThrow(ConversationUnavailable);
     expect(museToolOutput(other, "call_01a1744243497078923c0e3306f4900d")).toBeNull();
@@ -258,7 +239,6 @@ describe("Muse session log", () => {
   test("a log rewritten in place that also grew is read again, under another history id", () => {
     const path = logAt(RECORDED, recorded);
     const before = transcriptPage("muse-transcript", path);
-    // the first prompt, settled before the last, takes words of the same length, and a record follows
     const rewritten = recorded.replaceAll("tell me in one sentence", "tell me in two sentence");
     expect(rewritten.length).toBe(recorded.length);
     writeFileSync(path, `${rewritten}${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`);
@@ -279,20 +259,16 @@ describe("Muse session log", () => {
       expect(transcriptPage("muse-transcript", path).history_id).toBe(before.history_id);
       for (const [bytes] of hash.mock.calls) digested += (bytes as Uint8Array).length;
     } finally { hash.mockRestore(); }
-    // every byte at least once (main hashed with SHA-256 instead), and the last chunk of the window
-    // read before again only as far as that read went
     expect(digested).toBeGreaterThanOrEqual(readFileSync(path).length);
     expect(digested).toBeLessThanOrEqual(readFileSync(path).length + 64 * 1024);
   });
 
   test("a window read that opens another file than the one stat saw keeps no digest of it", () => {
     const path = logAt(RECORDED, recorded);
-    // the same length, other bytes: what a file put in the log's place between its stat and the window's open holds
     const other = join(root, "other.jsonl");
     writeFileSync(other, recorded.replaceAll("tell me in one sentence", "tell me in two sentence"));
     const open = fs.openSync;
     let replaced = false;
-    // a cold read's first open of the log by number flags is its window's
     const opens = spyOn(fs, "openSync").mockImplementation(((...[file, ...rest]: Parameters<typeof fs.openSync>) => {
       if (!replaced && file === path && typeof rest[0] === "number") { replaced = true; return open(other, ...rest); }
       return open(file, ...rest);
@@ -301,7 +277,6 @@ describe("Muse session log", () => {
     try { before = transcriptPage("muse-transcript", path); } finally { opens.mockRestore(); }
     expect(replaced).toBe(true);
     appendFileSync(path, `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`);
-    // a plain append: no digest of the other file stands in for the log's own window
     expect(transcriptPage("muse-transcript", path).history_id).toBe(before.history_id);
   });
 
@@ -333,16 +308,13 @@ describe("Muse session log", () => {
     const path = logAt(RECORDED, recorded);
     const before = transcriptPage("muse-transcript", path);
     const name = `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`;
-    // past the window and the up to 64 KiB its start can go back to a chunk boundary
     appendFileSync(path, name.repeat(Math.ceil((16 * 1024 * 1024 + 64 * 1024 + 1) / name.length)));
     const grown = transcriptPage("muse-transcript", path);
     expect(grown.history_id).not.toBe(before.history_id);
-    // appends that slide the window past a chunk, then one that does not, keep the history
     appendFileSync(path, name.repeat(Math.ceil(64 * 1024 / name.length) + 1));
     expect(transcriptPage("muse-transcript", path).history_id).toBe(grown.history_id);
     appendFileSync(path, name);
     expect(transcriptPage("muse-transcript", path).history_id).toBe(grown.history_id);
-    // a name changed at the start of the window read last, which the next append slides past
     const log = readFileSync(path);
     const start = Math.floor((log.length - 16 * 1024 * 1024) / (64 * 1024)) * 64 * 1024;
     log.write("neat-tucanb", log.indexOf("neat-tucana", start));
@@ -352,7 +324,6 @@ describe("Muse session log", () => {
 
   test("a rewrite before the first chunk boundary of the newest page is seen", () => {
     const name = `${recorded.split("\n").find((line) => line.includes('"payload_type":"session.name.changed"'))}\n`;
-    // name records of exactly `bytes` bytes in all: the last one's name takes the rest
     const filler = (bytes: number): string => {
       if (bytes === 0) return "";
       const count = Math.floor(bytes / name.length) - 1;
@@ -361,7 +332,6 @@ describe("Muse session log", () => {
     const window = 16 * 1024 * 1024, chunk = 64 * 1024;
     const bytes = Buffer.from(recorded);
     const prompt = bytes.indexOf(recorded.split("\n").find((line) => line.includes('"runtime.user_intent.accepted"') && line.includes("tell me in one sentence"))!);
-    // the last 16 MiB start 2,000 bytes before the first prompt, one byte past a chunk boundary
     let head = (((1 - (prompt - 2000)) % chunk) + chunk) % chunk;
     if (head > 0 && head < name.length) head += chunk;
     const path = logAt(RECORDED, filler(head) + recorded + filler(prompt - 2000 + window - bytes.length));
@@ -369,7 +339,6 @@ describe("Muse session log", () => {
     const before = transcriptPage("muse-transcript", path);
     expect(JSON.stringify(before.turns)).toContain("tell me in one sentence");
     const log = readFileSync(path);
-    // the prompt's text, twice in its record
     for (let at = log.indexOf("one sentence", head + prompt); at >= 0 && at < log.indexOf("\n", head + prompt); at = log.indexOf("one sentence", at)) log.write("two", at);
     writeFileSync(path, Buffer.concat([log, Buffer.from(name)]));
     const after = transcriptPage("muse-transcript", path);
@@ -404,7 +373,6 @@ describe("Muse session binding", () => {
   const END = '{"payload_type":"session.end","payload":{"kind":"session_end"}}\n';
   const ended = `${fixture}${END}`;
   const owner = [{ pid: 4242, startedAt: start }];
-  // a scan that bound nothing stands for 2 s: a test that scans again moves the clock past it
   const later = () => Date.now() + 2000;
 
   test("binds the one live session whose lock names the process", () => {
@@ -441,13 +409,10 @@ describe("Muse session binding", () => {
   test("every resolve scans again: a second live session leaves none, whatever was bound before", () => {
     const first = session("22", id(1), "pid=4242\nhost=fiction\n");
     expect(museSessionFor(root, owner, "fiction")).toBe(first);
-    // as a cold lookup does, which sees two
     const second = session("22", id(2), "pid=4242\nhost=fiction\n");
     expect(museSessionFor(root, owner, "fiction")).toBeNull();
-    // an in-TUI switch ends the log it leaves
     appendFileSync(first, END);
     expect(museSessionFor(root, owner, "fiction", later())).toBe(second);
-    // a process that took the pid later never binds
     expect(museSessionFor(root, [{ pid: 4242, startedAt: start + 3_600_000 }], "fiction", later())).toBeNull();
   });
 
@@ -481,11 +446,9 @@ describe("Muse session binding", () => {
   test("a scan that binds nothing is not repeated for 2 s, except for other processes", () => {
     const now = Date.now();
     expect(museSessionFor(root, owner, "fiction", now)).toBeNull();
-    // a fresh Muse writes its session after the pane is first resolved
     const live = session("22", id(1), "pid=4242\nhost=fiction\n");
     expect(museSessionFor(root, owner, "fiction", now + 1999)).toBeNull();
     expect(museSessionFor(root, owner, "fiction", now + 2000)).toBe(live);
-    // the miss is kept per set of processes: a launcher beside the child is scanned at once
     const child = [{ pid: 4343, startedAt: start }];
     expect(museSessionFor(root, child, "fiction", now)).toBeNull();
     const other = session("22", id(2), "pid=4343\nhost=fiction\n");
@@ -498,7 +461,6 @@ describe("Muse session binding", () => {
     expect(museSessionFor(root, owner, "fiction")).toBeNull();
     rmSync(join(root, "sessions", "2026", "10", "23", id(4097)), { recursive: true });
     expect(museSessionFor(root, owner, "fiction", later())).toBe(live);
-    // nor a folder of more entries than that, sessions or not: it is not listed whole
     for (const name of ["a", "b"]) writeFileSync(join(root, "sessions", "2026", "10", "23", name), "");
     expect(museSessionFor(root, owner, "fiction", later())).toBeNull();
   });

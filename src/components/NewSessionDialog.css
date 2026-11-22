@@ -33,7 +33,6 @@
   overflow-wrap: anywhere;
 }
 
-/* the directory field: the path, and a Browse button beside it */
 .new-session-cwd {
   display: flex;
   gap: var(--space-2);
@@ -49,13 +48,11 @@
   flex: none;
 }
 
-/* one row of three: a short name is shown whole, and only a long one gives way to an ellipsis */
 .new-session-folder-chips-frame {
   position: relative;
   min-width: 0;
 }
 
-/* only the chips that fit are drawn (RecentFolderChips), so the row clips nothing: a focused chip's ring shows whole */
 .new-session-folder-chips {
   display: flex;
   flex-wrap: nowrap;
@@ -63,15 +60,12 @@
 }
 
 .new-session-folder-chips > .new-session-folder-chip { flex: none; }
-/* the first chip gives way when even it and "+N" do not fit */
 .new-session-folder-chips > .new-session-folder-chip:first-child { flex: 0 1 auto; }
 
 .new-session-folder-more {
   font-variant-numeric: tabular-nums;
 }
 
-/* the chips' own widths, measured where nothing sees them (RecentFolderChips): the measuring row
-   is as wide as every chip, so it sits in a clipped box the size of the frame and adds no overflow */
 .new-session-folder-measure-clip {
   position: absolute;
   inset: 0;
@@ -92,7 +86,6 @@
   border-radius: var(--radius-pill);
 }
 
-/* a phone keeps them on one row and swipes it sideways */
 @media (max-width: 640px), (pointer: coarse) {
   .new-session-folder-chips {
     flex-wrap: nowrap;
@@ -116,7 +109,6 @@
   white-space: nowrap;
 }
 
-/* New tab: the folder is the workspace's, shown as a fact in a dashed box, not asked for */
 .new-session-folder {
   display: flex;
   align-items: center;
@@ -153,8 +145,6 @@
   display: none;
 }
 
-/* the launch's own choices, model and effort, side by side at every width: a column is 9rem at least, or half
-   the row on a phone narrower than two of those */
 .new-session-launch {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(9rem, calc((100% - var(--space-3)) / 2)), 1fr));
@@ -171,8 +161,6 @@
   min-width: 0;
 }
 
-/* Ultracode: one line under Model and Effort, the switch, its name and a short note that gives way first;
-   positioned, so its visually hidden description is anchored inside the dialog's scrolling body */
 .new-session-ultracode {
   position: relative;
   display: flex;
@@ -182,7 +170,6 @@
   margin-bottom: var(--space-4);
 }
 
-/* the switch keeps Settings' finger-sized box; its track starts at the fields' left edge */
 .new-session-ultracode .settings-toggle {
   flex: none;
   margin-inline-start: calc(var(--space-1) * -1);
@@ -195,7 +182,6 @@
   cursor: pointer;
 }
 
-/* while the dialog starts the agent, the name reads as disabled as its switch */
 .new-session-ultracode .settings-toggle:disabled + .new-session-ultracode-label {
   color: var(--text-dim);
   cursor: default;
@@ -210,7 +196,6 @@
   white-space: nowrap;
 }
 
-/* the first message: a few lines of the message box's own face and measure, grown by hand */
 .new-session-prompt {
   height: auto;
   min-height: calc(var(--control-h) * 2.5);
@@ -219,7 +204,6 @@
   resize: vertical;
 }
 
-/* the agent's skills in the folder, under the message: pill chips that wrap, three rows at most before they scroll */
 .new-session-skills-field {
   display: flex;
   flex-direction: column;
@@ -233,7 +217,6 @@
   gap: var(--space-2);
   max-height: calc(var(--control-h) * 3 + var(--space-2) * 2);
   overflow-y: auto;
-  /* a focused chip's ring shows whole at the row's edge */
   padding: var(--space-1);
   margin: calc(var(--space-1) * -1);
 }

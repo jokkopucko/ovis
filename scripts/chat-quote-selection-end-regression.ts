@@ -1,13 +1,4 @@
-/**
- * Quote and Comment on a selection that runs past a reply's last word, on the unmodified app over
- * the demo's fixture transport, in a Claude and a Codex chat: a triple-click on the reply's last
- * paragraph (its range ends at the start of what follows the words: the copy row or a work block)
- * and a drag past the last word both offer Quote and Comment, and Quote takes the reply's words
- * alone, never the copy row's labels or time. A selection reaching a user message or another reply
- * still offers nothing. A reply ending in a word its copy row shows (TXT) keeps it. At 1280 with a mouse and at 390 on a touch screen (the range a triple tap
- * or the handles leave). All files and HTTP traffic stay in this disposable, loopback-only app; no
- * herdr session is opened.
- */
+/** All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened. */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +8,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const playwrightCore = "playwright-core";
 const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
@@ -26,10 +18,6 @@ const WAIT = { timeout: 10_000 } as const;
 
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
-/**
- * The last block (a paragraph, a list) of the last reply whose words end just before its copy row (no
- * work block after them): its words, and where a drag starts and goes past its end.
- */
 const lastParagraph = (page: Page) => page.evaluate(() => {
   const paragraph = [...document.querySelectorAll(".chat-turn-agent")].map((turn) => [...turn.children].filter((child) => !child.matches(".chat-turn-meta")).at(-1)).filter((last): last is Element => last?.matches(".markdown") === true && last.textContent!.trim() !== "").at(-1)!.lastElementChild!;
   const rects = [...paragraph.getClientRects()];
@@ -39,7 +27,6 @@ const lastParagraph = (page: Page) => page.evaluate(() => {
   return { words: paragraph.textContent!.trim(), x0: first.left + 1, y0: first.top + first.height / 2, x1: Math.max(...rects.map((rect) => rect.right)) + 40, y1: (last.bottom + below) / 2 };
 });
 
-/** A triple-click (a triple tap's range on a touch screen): the paragraph, up to the start of what follows the reply's words. */
 async function tripleClick(page: Page, mouse: boolean): Promise<void> {
   if (mouse) {
     const box = await lastParagraph(page);
@@ -54,7 +41,6 @@ async function tripleClick(page: Page, mouse: boolean): Promise<void> {
   });
 }
 
-/** A drag from the paragraph's first word past its last one (the handles taken past the reply's end on a touch screen). */
 async function dragPastEnd(page: Page, mouse: boolean): Promise<void> {
   if (mouse) {
     const box = await lastParagraph(page);
@@ -74,10 +60,6 @@ async function dragPastEnd(page: Page, mouse: boolean): Promise<void> {
   });
 }
 
-/**
- * A range from the user's last message, or the reply before the last one, into the last reply's
- * words, or from a reply's words into the work block after them; false: the chat has no such place.
- */
 async function reaching(page: Page, from: "user" | "reply" | "work"): Promise<boolean> {
   return page.evaluate((kind) => {
     const words = (root: Element): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) if ((node as Text).data.trim() !== "") nodes.push(node as Text); return nodes; };
@@ -110,7 +92,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // the Claude chat's last reply ends in a word its copy row also shows (TXT): the quote keeps it
   const gates = `<script>(() => {
     const demo = window.fetch;
     window.fetch = (input, init) => {
@@ -128,17 +109,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -175,7 +146,6 @@ try {
             await select(page, !shape.mobile);
             await frames(page);
             assert.ok((await page.evaluate(() => getSelection()?.toString() ?? "")).includes(words), `${label} ${gesture}: the paragraph is selected`);
-            // a missing offer names where the range ended and what lies between the reply's words and that end
             await page.locator(".selection-offer").waitFor(WAIT).catch(async () => {
               const where = await page.evaluate(() => {
                 const range = getSelection()!.getRangeAt(0);

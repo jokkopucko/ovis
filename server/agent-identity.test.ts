@@ -22,13 +22,11 @@ describe("which agent a pane runs", () => {
     expect(paneAgent({ foreground: ["/home/u/.local/bin/hermes", "chat"] }, "macos")).toBe("hermes");
     expect(paneAgent({ foreground: ["C:\\Users\\u\\AppData\\Roaming\\npm\\letta.cmd"] }, "windows")).toBe("letta");
     expect(paneAgent({ foreground: ["bun", "/opt/x/node_modules/.bin/dsh-tui"] }, "linux")).toBe("dsh-tui");
-    // the interpreter's own options come before the script it runs
     expect(paneAgent({ foreground: ["node", "--enable-source-maps", "--no-warnings", "/home/u/.bin/letta", "--backend", "local"] }, "linux")).toBe("letta");
     expect(paneAgent({ foreground: ["python3", "-u", "/home/u/.local/bin/hermes"] }, "linux")).toBe("hermes");
     expect(paneAgent({ foreground: ["C:\\Program Files\\Claude\\Claude.EXE"] }, "windows")).toBe("claude");
   });
 
-  // a terminal whose platform nothing tells (another machine's, without a folder), or only POSIX's (#3319)
   it("names nothing a platform would decide when it is unknown, and no shim off Windows", () => {
     expect([["claude"], ["node", "/home/u/.bin/letta"], ["cmd"], ["C:\\Users\\u\\letta.cmd"], ["C:\\Program Files\\Claude\\Claude.EXE"]].map((foreground) => paneAgent({ foreground }, null)))
       .toEqual(["claude", "letta", null, null, null]);
@@ -40,28 +38,23 @@ describe("which agent a pane runs", () => {
     expect((["posix", "linux", "macos"] as const).map((platform) => paneAgent({ foreground: ["/home/u/a\\claude"] }, platform))).toEqual([null, null, null]);
     // Windows reads the same word as a folder `a` holding Claude
     expect(paneAgent({ foreground: ["/home/u/a\\claude"] }, "windows")).toBe("claude");
-    // a platform nothing tells: the two readings differ, so it names nobody
     expect(paneAgent({ foreground: ["/home/u/a\\claude"] }, null)).toBeNull();
   });
 
   // hc tells a terminal's own pid and the pid in front of it, never a process start (#3319 review)
   it("names a terminal from its start only while that same process is still in front", () => {
-    // the runtime names no foreground program: the start does, while the pids match
     expect(paneAgent({ foregroundPid: 7, launcher: { argv: ["node", "/home/u/.bin/letta"], pid: 7 } }, "linux")).toBe("letta");
     expect(paneAgent({ foreground: [], foregroundPid: 7, launcher: { argv: ["C:\\Users\\u\\letta.cmd"], pid: 7 } }, "windows")).toBe("letta");
     // a foreground the runtime names wins, even as the same pid: a claude start that exec()ed bash is bash now
     expect(paneAgent({ foreground: ["bash"], foregroundPid: 7, launcher: { argv: ["claude"], pid: 7 } }, "linux")).toBeNull();
     expect(paneAgent({ foreground: ["cmd.exe"], foregroundPid: 7, launcher: { argv: ["C:\\Users\\u\\letta.cmd"], pid: 7 } }, "windows")).toBeNull();
-    // a terminal started as claude that now runs codex: what is in front is no longer that start
     expect(paneAgent({ launcher: { argv: ["claude"], pid: 7 }, foreground: ["codex"], foregroundPid: 9 }, "linux")).toBe("codex");
     expect(paneAgent({ launcher: { argv: ["claude"], pid: 7 }, foreground: ["bash"], foregroundPid: 9 }, "linux")).toBeNull();
-    // no pid in front, or none told for the start: nothing proves the start still runs
     for (const facts of [
       { launcher: { argv: ["claude"], pid: 7 } },
       { launcher: { argv: ["claude"], pid: 7 }, foreground: null, foregroundPid: null },
       { launcher: { argv: ["claude"] }, foregroundPid: 7 },
     ]) expect(paneAgent(facts, "linux")).toBeNull();
-    // the start is a plain shell, still in front: it names no agent
     expect(paneAgent({ launcher: { argv: ["bash"], pid: 7 }, foregroundPid: 7 }, "linux")).toBeNull();
   });
 
@@ -75,7 +68,6 @@ describe("which agent a pane runs", () => {
 
   it("takes OpenCode's session as the one it named that alone carries the terminal's title", () => {
     expect(paneSession("opencode", { named: ["ses_a", "ses_b"], titled: ["ses_b"] })).toEqual({ agent: "opencode", source: "herdr:opencode", kind: "id", value: "ses_b" });
-    // a title two sessions share, one never named, or none settles nothing
     expect(paneSession("opencode", { named: ["ses_a", "ses_b"], titled: ["ses_a", "ses_b"] })).toBeNull();
     expect(paneSession("opencode", { named: ["ses_a"], titled: ["ses_c"] })).toBeNull();
     expect(paneSession("opencode", { named: ["ses_a"] })).toBeNull();

@@ -11,7 +11,6 @@ const CLICK = "\x1b[<0;5;3M\x1b[<0;5;3m";
 /** xterm's answers to a herdr-core attach's questions (focus, colours, cursor colour, DA1), as #2816 saw them typed. */
 const REPLIES = "\x1b[I\x1b]10;rgb:d8d8/d0d0/c3c3\x1b\\\x1b]11;rgb:1818/1616/1313\x1b\\\x1b]12;rgb:f0f0/a8a8/3030\x1b\\\x1b[?1;2c";
 
-/** Hold one keys RPC so the next chord or text waits across attachment transitions. */
 async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "refresh", input = false, text = "queued text", automatic = false) {
   const root = mkdtempSync(join(tmpdir(), "ovis-keys-lifecycle-"));
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: root });
@@ -62,7 +61,6 @@ async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "r
     const owner = await connect();
     owner.send({ type: "attach", pane_id: pane, cols: 80, rows: 24 });
     await until(() => owner.seen.some((frame) => frame.type === "input-ready"));
-    // This peer keeps the same attachment alive when only the sender detaches.
     const peer = leave === "detach" || leave === "reattach" ? await connect() : undefined;
     if (peer) {
       peer.send({ type: "attach", pane_id: pane, cols: 80, rows: 24 });
@@ -73,7 +71,6 @@ async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "r
     owner.send(input ? { type: "input", pane_id: pane, text, ...(automatic ? { automatic: true } : {}) }
       : { type: "keys", pane_id: pane, keys: ["ctrl+alt+shift+left"] });
     if (leave !== "none" && leave !== "refresh") owner.send({ type: "detach", pane_id: pane });
-    // An acknowledged later frame is a barrier: the queued key and detach were handled.
     owner.send({ type: "role", mode: "interact" });
     await until(() => owner.seen.some((frame) => frame.type === "role-ack"));
     if (leave === "reattach" || leave === "refresh") {
@@ -233,14 +230,12 @@ it("refuses a chord sent while its attach is still being looked up, instead of s
     const send = (message: unknown) => socket!.send(JSON.stringify(message));
     send({ type: "attach", pane_id: pane, cols: 80, rows: 24 });
     await until(() => lookupPending);
-    // the chord arrives with a claim but no attachment to belong to yet
     send({ type: "keys", pane_id: pane, keys: ["ctrl+w"] });
     await until(() => seen.some((frame) => frame.type === "error" && frame.pane_id === pane));
     expect(seen.filter((frame) => frame.type === "error").map((frame) => frame.code)).toEqual(["input_not_ready"]);
     expect(calls).toEqual([]);
     release();
     await until(() => seen.some((frame) => frame.type === "input-ready"));
-    // once attached, the same chord goes through its attachment
     send({ type: "keys", pane_id: pane, keys: ["ctrl+right"] });
     await until(() => calls.length === 1);
     expect(calls).toEqual([["ctrl+right"]]);

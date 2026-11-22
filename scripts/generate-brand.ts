@@ -1,17 +1,10 @@
-/**
- * Export the web app's icons and link preview from the Ovis artwork the native apps and ovis.sh
- * already use (docs/brand/README.md), without redrawing it. Requires ffmpeg.
- */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = new URL("..", import.meta.url).pathname;
-/** the sleeping sheep on navy, 1024 px, the app icon of every Ovis app */
 const icon = join(root, "app/assets/icon-only.png");
-/** the same sheep on transparent */
 const sheep = join(root, "app/assets/ovis-sheep.png");
-/** ovis.sh's link preview: the icon above the name, 1200 × 630 */
 const preview = join(root, "ovis-site/assets/og-icon.png");
 const NAVY = "0x2e3a59";
 mkdirSync(join(root, "public/icons"), { recursive: true });

@@ -17,9 +17,7 @@ import { CONTEXT_STALE_MS, contextDirectorySafe, contextFilename, contextProfile
 export interface StatuslinePayload {
   /** when the file was last written: the status line renders on activity, so an idle pane's is old */
   readAt: number;
-  /** Captured from the rendering CLI's config; absent in older or unidentifiable captures. */
   account: { id: string; label: string | null } | null;
-  /** null when the payload names none */
   fiveHour: StatuslineWindow | null;
   sevenDay: StatuslineWindow | null;
 }
@@ -41,7 +39,6 @@ export const statuslinePath = (home: string): string => join(home, ".herdr", "st
 /** The capture writes a few hundred bytes; a file past this is not one of its readings, and is not read. */
 const MAX_CAPTURE_BYTES = 64 * 1024;
 
-/** The file's text, or null where it is not a regular file of at most MAX_CAPTURE_BYTES. */
 function readCapture(path: string, maxBytes = MAX_CAPTURE_BYTES): string | null {
   // stat first: opening a FIFO left at this path would wait for a writer
   if (!statSync(path).isFile()) return null;
@@ -76,12 +73,10 @@ export function parseStatusline(payload: unknown, readAt: number): StatuslinePay
   const sevenDay = window(limits["seven_day"]);
   const account = record(record(body["_herdr"])["account"]);
   const accountId = text(account["id"]);
-  // a payload with nothing this reader shows is not a reading (an older Claude Code, a stub)
   if (fiveHour === null && sevenDay === null) return null;
   return { account: accountId === null ? null : { id: accountId, label: text(account["label"]) }, readAt, fiveHour, sevenDay };
 }
 
-/** The newest payload under `home`, with reset windows removed even while the file is fresh. */
 export function readStatusline(home: string, now: number = Date.now()): StatuslinePayload | null {
   const path = statuslinePath(home);
   try {
@@ -99,14 +94,11 @@ export function readStatusline(home: string, now: number = Date.now()): Statusli
   }
 }
 
-/** The exact context limit for one Claude session and model, even below 200k tokens.
- * Usage remains the transcript's input/cache total. No subscription or account is required. */
 export function readStatuslineContext(home: string, sessionId: string, model: string | null, transcriptPath: string, now = Date.now()): number | null {
   if (!/^[a-zA-Z0-9-]{1,128}$/.test(sessionId) || model === null) return null;
   try {
     const directory = join(home, ".herdr", "statusline-context");
     if (!contextDirectorySafe(directory)) return null;
-    // Discovery keeps the config-dir spelling; only that directory is canonicalized, not projects.
     const profile = contextProfile(dirname(dirname(dirname(transcriptPath))));
     const capture = readContextFile(join(directory, contextFilename(profile, sessionId)), profile);
     if (capture === null || now - capture.mtimeMs > STALE_MS || capture.mtimeMs - now > 60_000) return null;

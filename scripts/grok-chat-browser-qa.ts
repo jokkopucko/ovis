@@ -1,4 +1,3 @@
-/** Fictional native Grok records -> real server -> existing React chat and output cache. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -51,14 +50,12 @@ try {
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
   await log.locator(".work-row-head").click();
   await log.locator(".chat-tool-more").click();
-  // a long whole output opens folded to its head: its own Show all unfolds it
   await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/FIRST_END/).waitFor();
   appendFileSync(path, output("UPDATED ".repeat(900) + "UPDATED_END"));
   await log.locator(".chat-tool-more").waitFor();
   assert.equal(await log.getByText(/FIRST_END/).count(), 0, "a changed ref must clear React's retained whole output");
   await log.locator(".chat-tool-more").click();
-  // the new output opens folded too, whatever the one before it was
   await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/UPDATED_END/).waitFor();
   appendFileSync(path, output("short replacement"));
@@ -68,7 +65,6 @@ try {
   appendFileSync(path, event({ sessionUpdate: "rewind_marker", target_prompt_index: 0 }, true) + user("Replacement after rewind."));
   await log.getByText("Replacement after rewind.", { exact: true }).waitFor();
   assert.equal(await log.getByText("Fictional Grok answer.", { exact: true }).count(), 0);
-  // The stand-in never reports working. Native events still show activity and open tool rows.
   let promptIndex = 0;
   for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
@@ -81,7 +77,6 @@ try {
     const box = await activity.boundingBox();
     assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, "working status is visible above the composer");
     appendFileSync(path, event({ sessionUpdate: "tool_call", toolCallId: `activity-${promptIndex}`, title: `Activity tool ${promptIndex}`, rawInput: { path: "fiction.txt" } }));
-    // a tool row opens the turn's work block, whose head says Working: the line under it goes
     await log.locator(".work-block.is-live .work-row-head").last().waitFor({ state: "visible" });
     await log.locator(".work-block.is-live .work-block-title", { hasText: "Working…" }).waitFor();
     await activity.waitFor({ state: "detached" });
@@ -98,8 +93,6 @@ try {
   assert.deepEqual(errors, []);
   console.log("PASS Grok native tools, output refresh, rewind, desktop/mobile silent activity and unavailable-chat notice");
 } finally {
-  // Attempt every cleanup even if an earlier one fails. A cleanup error never replaces
-  // the original failure; it is reported and fails a run that otherwise passed.
   const cleanupErrors: unknown[] = [];
   try { await browser?.close(); } catch (error) { cleanupErrors.push(error); }
   try { server?.stop(); } catch (error) { cleanupErrors.push(error); }

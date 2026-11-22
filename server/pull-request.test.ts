@@ -13,7 +13,6 @@ type Answer = { stdout?: string; stderr?: string; code?: number; hold?: boolean 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "ovis-pull-request-")));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** A `gh` stand-in: answers by its first words from scenario.json and records each call's arguments. */
 function fakeGh(scenario: Record<string, Answer>): { gh: string[]; calls: () => string[][] } {
   const dir = mkdtempSync(join(scratch, "gh-"));
   writeFileSync(join(dir, "scenario.json"), JSON.stringify(scenario));

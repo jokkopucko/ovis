@@ -101,7 +101,6 @@ describe("bounded blob resources", () => {
   });
 });
 
-/** This window as a page of the shell whose service worker `worker` controls, for one test. */
 function controlledBy(worker: object, workers: object = { controller: worker }): void {
   Object.defineProperty(navigator, "serviceWorker", { value: workers, configurable: true });
   Object.defineProperty(globalThis, "location", { value: new URL(`https://shell.example/s/${id}/`), configurable: true });
@@ -128,15 +127,12 @@ describe("the service worker resource path", () => {
       postMessage(message: { type: string }, [port]: MessagePort[]) { port?.postMessage({ type: message.type }); },
     });
     const transport = { ...nativeTransport, fetch: async () => new Response("image", { headers: { "content-type": "image/png" } }) };
-    // When
     const url = await relayResourceUrl(transport, id, "/api/fs/file?path=a.png");
-    // Then the page gets a blob, not the worker's scoped URL that serveRelayResources could never answer
     try { expect(url).toStartWith("blob:"); }
     finally { URL.revokeObjectURL(url); }
   });
 
   it("aborts the relay request when its body cannot be handed to the worker", async () => {
-    // Given a window serving the worker's resource requests, where transferring the body fails
     const worker = {};
     let receive: (event: MessageEvent) => void = () => {};
     controlledBy(worker, { controller: worker, addEventListener: (_: string, listener: typeof receive) => { receive = listener; }, removeEventListener() {} });
@@ -147,13 +143,11 @@ describe("the service worker resource path", () => {
     } };
     const stop = serveRelayResources(transport, id, () => true);
     const aborted = deferred<void>();
-    // When the worker asks for a file
     const { port1, port2 } = new MessageChannel();
     receive({ data: { type: "ovis-relay-resource", serverId: id, target: "/api/fs/file?path=a.png", headers: [] }, ports: [port1], source: worker } as unknown as MessageEvent);
     const signal = await bounded(requested.promise);
     signal.addEventListener("abort", () => aborted.resolve(), { once: true });
     if (signal.aborted) aborted.resolve();
-    // Then the relay request is aborted, not left holding its stream slot
     await bounded(aborted.promise);
     port2.close();
     stop();

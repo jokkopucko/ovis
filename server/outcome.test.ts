@@ -336,7 +336,6 @@ const resultReader: DialogReader = {
 
 let readerPaneSequence = 0;
 
-/** A herdr stand-in serving one pane whose screen the test sets; keys sent to it are kept. */
 async function withFakeHerdr(pane: { agent: string; status: string; screen: string; terminal_id?: string; agent_session?: HerdrPane["agent_session"]; pid?: number; argv?: string[]; cwd?: string }, run: (paneId: string, keys: unknown[], processReads: () => number, calls: () => Record<string, number>) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "herdr-outcome-reader-"));
   const socketPath = join(root, "herdr.sock");
@@ -381,7 +380,6 @@ it("correlates Pi's thinking card and session-only commit with bare /thinking, n
   const pane = {
     pane_id: "fixture", workspace_id: "w", tab_id: "t", terminal_id: "fixture-terminal",
     focused: false, revision: 0, agent: "pi", agent_status: "idle", status: "idle", screen: "Ready",
-    // pi holds the pane's input: its cards answer only then
     pid: 2147483646, argv: ["pi"],
   };
   await withFakeHerdr(pane, async (paneId, keys) => {
@@ -465,7 +463,6 @@ describe("session-scoped command outcomes", () => {
         pane.agent_session = { ...session("first-turn"), agent: "codex" };
         expect((await served(paneId)).outcomes).toMatchObject([{ id: command.id, state: "accepted", evidence: [] }]);
         expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
-        // adopted into the session it started, it stays scoped to that session
         pane.agent_session = { ...session("other"), agent: "codex" };
         expect((await served(paneId)).outcomes).toBeUndefined();
       });
@@ -528,7 +525,6 @@ describe("session-scoped command outcomes", () => {
   }
 
   it("reads the pane's processes and the session once per poll while a command's transcript is open", async () => {
-    // a Claude pane in a folder, so the poll resolves its transcript down to Claude's (empty) store
     const store = mkdtempSync(join(tmpdir(), "outcome-claude-store-"));
     const previous = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = store;
@@ -553,8 +549,6 @@ describe("session-scoped command outcomes", () => {
     }
   });
 
-  // the Codex, omp and gjc lookups take the poll's process read too, rather than asking herdr again (#1879); Codex
-  // reads once more right before a screen match may bind a rollout to its processes
   for (const [agent, text, reads] of [["codex", "$imagegen", 2], ["omp", "/context", 1], ["gjc", "/context", 1]] as const) {
     it(`reads a ${agent} pane's processes once per poll while a command's transcript is open`, async () => {
       const store = mkdtempSync(join(tmpdir(), `outcome-${agent}-store-`));
@@ -583,8 +577,6 @@ describe("session-scoped command outcomes", () => {
     });
   }
 
-  // a poll read with no omp in it (none in front, only the shell, or an omp gone since) says nothing of the omp
-  // the pane runs now, which may keep another store than the session herdr still reports
   for (const [label, foreground] of [["no process", []], ["only the shell", [{ pid: 2147483640, argv: ["bash"] }]]] as const) {
     it(`asks for an omp pane's processes again when the poll's read names ${label}`, async () => {
       const pane = { ...target(), agent: "omp", pid: 2147483645, argv: ["omp"], cwd: "/tmp", agent_session: null as HerdrPane["agent_session"] };
@@ -613,7 +605,6 @@ describe("session-scoped command outcomes", () => {
         const earlier = await submit(paneId, pane, "/context");
         await earlier.visibility?.binding;
         if (polled) expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([earlier.id]);
-        // restarted, and herdr still reports the earlier process's session id
         pane.pid++;
         if (polled) expect((await served(paneId)).outcomes).toBeUndefined();
         const fresh = await submit(paneId, pane, "/context");
@@ -627,7 +618,6 @@ describe("session-scoped command outcomes", () => {
     });
   }
 
-  // a new process that truly owns the same session: claude -c, claude --resume, codex resume
   const resumed = async (paneId: string, pane: ReturnType<typeof target> & { pid?: number }) => {
     const earlier = await submit(paneId, pane, "/context");
     await earlier.visibility?.binding;
@@ -654,7 +644,6 @@ describe("session-scoped command outcomes", () => {
     const pane = { ...target(), pid: 2147483645 };
     await withFakeHerdr(pane, async (paneId, _keys, processReads) => {
       const fresh = await resumed(paneId, pane);
-      // past the lag herdr shows for a restarted agent's old id, and past the send's window
       const later = fresh.at + 11 * 60_000;
       const clock = spyOn(Date, "now").mockImplementation(() => later);
       try {
@@ -715,7 +704,6 @@ describe("session-scoped command outcomes", () => {
       bindCommandProcess(paneId, command);
       noteSubmitted(paneId, "$imagegen", command);
       expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
-      // Codex quit before its first turn, and Claude started in the same terminal
       pane.agent = "claude";
       pane.agent_session = session("claude-first");
       expect((await served(paneId)).outcomes).toBeUndefined();
@@ -729,7 +717,6 @@ describe("session-scoped command outcomes", () => {
       await withFakeHerdr(pane, async (paneId) => {
         const command = await submit(paneId, pane, "/context");
         expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
-        // a process it was never bound to cannot replace it
         pane.pid++;
         expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
         pane.agent_session = session("first-turn");
@@ -743,7 +730,6 @@ describe("session-scoped command outcomes", () => {
   it("hides a send whose process cannot be told apart only after two misses in a row", async () => {
     const pane = { ...target(), pid: 2147483645 as number | undefined };
     let bound = false;
-    // no start time at binding; afterwards the pid runs on
     const started = spyOn(processStart, "processStartedAt").mockImplementation(() => bound ? 1000 : null);
     const alive = spyOn(processStart, "processAlive").mockReturnValue(true);
     // macOS takes a live pid as the same process (a pid is handed out again only after the whole range)
@@ -769,7 +755,6 @@ describe("session-scoped command outcomes", () => {
   });
 
   it("keeps a send while its live process is out of the foreground (Ctrl+Z)", async () => {
-    // the test runner stands in for the suspended agent, on every platform; it started before the send
     const pane = { ...target(), pid: process.pid as number | undefined };
     const before = spyOn(processStart, "processStartUpperBoundAsync").mockImplementation(async () => Date.now() - 60_000);
     try {
@@ -940,7 +925,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   });
 
   it("keeps a skill's question linked when only its send's screen looks like a side panel", async () => {
-    // a table's divider through every row of the send's screen passes there for the panel's edge, not on the next screen
     const table = Array.from({ length: 8 }, (_, index) => `${`Task ${index}`.padEnd(40)}\u2502 preserve requirement ${index}`);
     const pane = { agent: "claude", status: "blocked", screen: [...table, "\u276f /review", "\u2610 Dataset", "",
       "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "     Occlusion benchmark.", "  2. YCB-V", "     Household objects.",
@@ -957,8 +941,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   });
 
   it("gives no send a terminal command's question when its echoes were counted without the panel's cut", () => {
-    // the first send's screen shows too few of the panel's rows to be cut, the second's enough: the second's echoes
-    // were counted as drawn, its own echo with the panel's text missed; the later screen is cut
     const edge = (text: string, panel = "") => `${text.padEnd(99)}\u2502${panel}`;
     const top = Array.from({ length: 7 }, (_, index) => edge(`fixture-row-${index}`, index === 0 ? "1 file changed +2" : ""));
     const skill = [{ ...row("review"), source: "skill" as const }];
@@ -979,8 +961,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   });
 
   it("gives a later send no terminal command's question through an echo count inherited from screens read the other way (#2207)", () => {
-    // as above, the second send's echoes were counted as drawn; once the first send's reservation expires, the third's
-    // screens, read alike, are cut, and the second's count would let the third skip its own echo for the next one
     const edge = (text: string, panel = "") => `${text.padEnd(99)}\u2502${panel}`;
     const top = Array.from({ length: 7 }, (_, index) => edge(`fixture-row-${index}`, index === 0 ? "1 file changed +2" : ""));
     const skill = [{ ...row("review"), source: "skill" as const }];
@@ -991,7 +971,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       screen: [...second.screen.split("\n"), edge("\u276f /review"), edge("\u25cf Reviewed again."), edge("third-tail")].join("\n") };
     const question = ["\u2610 Dataset", "", "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "  2. YCB-V",
       "  3. Type something.", "\u2500".repeat(28), "  4. Chat about this", "", "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"];
-    // the third send's own result, then the same command typed in the terminal, which asks
     const later = [...third.screen.split("\n"), edge("\u276f /review"), edge("\u25cf Reviewed a third time."), edge("\u276f /review"),
       ...question.map((line) => edge(line))].join("\n");
     const reservations = new CommandReservations();
@@ -1019,7 +998,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     const readers = registry.readersFor("claude");
     reservations.add(first, readers);
     reservations.add(second, readers);
-    // Claude's own records acknowledge both earlier sends: neither still owes an echo
     const acknowledged = (time: number) => JSON.stringify({ type: "user", timestamp: new Date(time).toISOString(), message: { content: "/review" } });
     first.outcome = commandOutcome("p", first, { now: at + 60_020, transcript: acknowledged(at + 10) });
     second.outcome = commandOutcome("p", second, { now: at + 60_020, transcript: acknowledged(at + 60_010) });
@@ -1087,7 +1065,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         const shown = await served(paneId);
         expect(shown.outcomes?.at(-1)?.state, start).toBe("interaction-required");
         expect(shown.prompt?.options.at(-1)?.label, start).toBe(label);
-        // the switch's drawn state stays with the server
         expect(shown.prompt, start).not.toHaveProperty("claudeUltracode");
         const url = new URL("http://localhost/api/pane/prompt/answer");
         const answered = await handlePromptRequest(new Request(url, { method: "POST",
@@ -1142,11 +1119,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       noteSubmitted(paneId, current.text, current);
       const shown = await served(paneId);
       expect(shown.prompt).toMatchObject({ agent: "claude", title: "Goal active", options: [{ label: "Close" }] });
-      // the route hands over which words are the bridge's own, as keys the client translates (#1482)
       expect(shown.prompt?.own_text).toEqual({ title: { key: "Goal active" }, labels: { 0: { key: "Close" } } });
       expect(shown.outcomes?.at(-1)).toMatchObject({ id: "goal-send", state: "interaction-required" });
       expect(current.dialogId).toBe(shown.prompt!.id);
-      // a form naming another reader's dialog is not waiting on this card
       const other = { ...current, id: "other-send", form: { match: "bare" as const, interaction: "dialog" as const, dialog: "claude-model" }, outcome: undefined, dialogId: undefined };
       noteSubmitted(paneId, other.text, other);
       expect((await served(paneId)).outcomes?.at(-1)).toMatchObject({ id: "other-send", state: "accepted" });
@@ -1403,7 +1378,6 @@ describe("anchored result echo ownership", () => {
     ...resultReader,
     chromeStart: (lines: string[]) => lines.findIndex((line) => line.startsWith("fixture-status:")),
     parse(screen: string) {
-      // The uncut idle input is required evidence that this fixture result finished.
       return screen.includes("\n❯ fixture-input\n") ? resultReader.parse(screen, {
         agent: "hermes", omoAsk: null, omoTrusted: false, omoOpen: [], sent: "/status", working: false,
       }) : null;
@@ -1416,10 +1390,8 @@ describe("anchored result echo ownership", () => {
     expect(outcome(sent(snapshot), { screen, readers: [chromeReader] })).toMatchObject({
       state: "result-observed", evidence: [{ kind: "recognized-result" }], catalog_changed: true,
     });
-    // Without the reader hook, the unchanged chrome remains the anchor at the screen's end.
     expect(outcome(sent(snapshot), { screen, readers })).toMatchObject({ state: "accepted", evidence: [] });
     expect(outcome(sent(snapshot), { screen, readers: [{ ...chromeReader, agents: ["claude"] }, resultReader] }).state).toBe("accepted");
-    // Chrome is per agent, so one registered result reader can provide the shared boundary.
     expect(outcome(sent(snapshot), { screen, readers: [
       { ...chromeReader, id: "fixture-chrome", parse: () => null }, resultReader,
     ] }).state).toBe("result-observed");

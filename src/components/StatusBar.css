@@ -1,4 +1,3 @@
-/* the pane column's bottom line (StatusBar.tsx): one 28px row of quiet facts on the panel's surface */
 .status-bar {
   display: flex;
   align-items: center;

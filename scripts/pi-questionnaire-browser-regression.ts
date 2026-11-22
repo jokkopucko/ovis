@@ -11,7 +11,6 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 
-// Real prompt-card UI, parsed synthetic renderer fixtures, demo-only transport. No daemon/session.
 const app = mkdtempSync(join(tmpdir(), "ovis-questionnaire-browser-"));
 const shots = process.env.PI_QUESTIONNAIRE_SHOTS;
 const single = piQuestionnaireOf("single", fixture.single)!;

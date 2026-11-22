@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { loadSeen, receiveSeen, saveSeen, seenKey, subscribeSeen } from "./seenFinishes.ts";
 
-// A finish this page acknowledged must reach storage again once another tab removed it while no
-// subscriber here listened for storage events (#1539); a subscriber's listener keeps the cache true.
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
 let data: Map<string, string>;
 let writes: number;
@@ -15,7 +13,6 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "window", { configurable: true, value: {
     addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
   } });
-  // a new object each test: the module drops what it cached for another storage
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     get length() { return data.size; }, key: (index: number) => [...data.keys()][index] ?? null,
     getItem: (key: string) => data.get(key) ?? null,

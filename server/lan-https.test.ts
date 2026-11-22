@@ -196,7 +196,7 @@ describe("the LAN HTTPS listener", () => {
   });
 
   it("never lets a LAN peer in as an open install there, while the main listener still does", async () => {
-    // Given: no token and nothing paired, the state in which a LAN request is let in as `open`
+    // Given: no token and nothing paired, the state in which the main listener lets a LAN request in as `open`
     const app = createServer({ ...base, stateDir: tempDir() });
     try {
       const devices = async (lanHttps: boolean) => {
@@ -204,7 +204,6 @@ describe("the LAN HTTPS listener", () => {
         const response = await handleRequest(new Request("https://192.168.1.10:7318/api/devices", { headers: { host: "192.168.1.10:7318" } }), ctx);
         return { status: response!.status, body: await response!.json() };
       };
-      // Then
       expect(await devices(false)).toMatchObject({ status: 200 });
       expect(await devices(true)).toEqual({ status: 401, body: { error: { code: "unauthorized", message: "pair this device, or use the token" } } });
     } finally {

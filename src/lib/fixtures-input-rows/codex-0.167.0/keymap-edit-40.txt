@@ -1,0 +1,16 @@
+
+  Edit Shortcut
+  Cancel · List
+  Current alt-x · Custom root override
+  Config `tui.keymap.list.cancel`
+  Cancel and close selection views.
+
+
+› 1. Replace binding
+  2. Add alternate binding
+  3. Use leader...
+↓
+  Changes write the root `tui.keymap.*`
+  override.
+  enter select · alt+x back
+

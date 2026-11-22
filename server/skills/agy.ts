@@ -90,7 +90,7 @@ export const source: AgentCommandSource = {
       if (!existsSync(path)) return;
       let config: unknown;
       try { config = JSON.parse(readFileSync(path, "utf8")); }
-      catch { return; /* invalid optional registration file */ }
+      catch { return; }
       if (!config || typeof config !== "object" || !("entries" in config) || !Array.isArray(config.entries)) return;
       for (const entry of config.entries) {
         if (!entry || typeof entry !== "object" || typeof entry.path !== "string") continue;

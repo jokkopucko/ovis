@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { PI_ASK_BRIDGE_DIRECTORY, type PiAskBridgeState, type PiBridgeCommands } from "../shared/pi-ask-bridge.ts";
 import type { SlashCommand } from "../shared/protocol.ts";
+import { labelledAgent } from "../shared/supported-agents.ts";
 import { registerCatalogSource } from "./catalog-sources.ts";
 import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { runsAgent } from "./gjc-runtime.ts";
@@ -26,18 +27,16 @@ export const defaultPiSessionDir = (): string =>
   process.env["PI_CODING_AGENT_SESSION_DIR"] || join(piAgentDir(), "sessions");
 
 /**
- * The session an agent named but has not written, or null. pi and omp write their file only
- * once the first answer is in (pi's SessionManager waits for an assistant message), so until
- * then the reported path does not exist. Only an absent `.jsonl` file whose nearest existing
- * ancestor is a directory inside the store, both resolved, counts: nothing is read from it,
- * its display id and canonical prospective path keep equally named sessions distinct.
+ * The session id in the name pi gives a session file (`<time>_<uuid>.jsonl`), or null for any
+ * other name. pi writes the file only once the first answer is in (its SessionManager waits for
+ * an assistant message), so until then the name is the only place to read the id from.
  */
 export function piUnwrittenHeaderId(path: string): string | null {
   return /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/iu.exec(basename(path))?.[1] ?? null;
 }
 
 const PI_EXECUTABLE = /(^|[\\/])pi(?:\.exe|\.[cm]?js)?$/i;
-const PI_NPM_ENTRY = /(^|[\\/])node_modules[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
+export const PI_NPM_ENTRY = /(^|[\\/])node_modules[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
 
 type PiProcess = { pid?: number; name?: string; argv?: readonly string[] | null; cwd?: string | null };
 type PiTranscriptOptions = {
@@ -45,12 +44,10 @@ type PiTranscriptOptions = {
   processes?: readonly PiProcess[];
   environOf?: (pid: number) => readonly string[] | null;
   argvOf?: (pid: number) => readonly string[] | null;
-  /** the pane's foreground once its pi's extension has answered; herdr is asked again by default */
   processesAfter?: () => Promise<readonly PiProcess[] | null>;
   home?: string;
 };
 
-/** True for Pi's binary/script launch forms and the official npm bundle entry. */
 export function isPiProcess(argv: readonly string[]): boolean {
   return runsAgent(argv, PI_EXECUTABLE)
     || /(^|[\\/])(?:bun|node)(?:\.exe)?$/i.test(argv[0] ?? "") && PI_NPM_ENTRY.test(argv[1] ?? "");
@@ -63,10 +60,8 @@ function processArgv(pid: number): readonly string[] | null {
   catch { return null; }
 }
 
-/** A Pi process whose environment could not be read: its agent directory is not known from it. */
 const UNREAD = "\0unread";
 
-/** The bridge's agent directory when `store` (canonical) is the session store inside it, else null. */
 function bridgeAgentDirOwning(store: string): string | null {
   const agentDir = piAgentDir();
   try { return realpathSync(join(agentDir, "sessions")) === store ? agentDir : null; } catch { return null; }
@@ -113,7 +108,6 @@ function ownedSocket(directory: Stats, file: Stats): boolean {
 
 const STATE_READ_MS = 1_000;
 
-/** What the web UI's pi extension (integrations/pi-ask.ts) says on its socket, or null. */
 export async function bridgeState(socket: string, signal?: AbortSignal): Promise<PiAskBridgeState | null> {
   try {
     const timeout = AbortSignal.timeout(STATE_READ_MS);
@@ -190,7 +184,7 @@ export async function piExtensionCommands(
       return [{ name, description: typeof command.description === "string" ? command.description : "", source }];
     });
   } catch {
-    return null; // too slow, or not the extension answering
+    return null;
   }
   // the answer is that pi's: one that left the front while it was asked, or now shares it with
   // another pi, no longer speaks for the pane
@@ -201,7 +195,6 @@ export async function piExtensionCommands(
   return still.length === 1 && still[0]!.pid === pi.pid ? rows : null;
 }
 
-// the scanned prompt templates and skills stay: this source adds only what the running pi registered
 // pi runs an extension command before it expands a prompt template of the same name
 registerCatalogSource({ agent: "pi", owns: [], shadows: true, rows: (pane, _cwd, signal) => piExtensionCommands(pane.pane_id, signal) });
 
@@ -243,7 +236,6 @@ export async function piPaneAgentDirs(
   const argvOf = options.argvOf ?? processArgv;
   const pids: number[] = [];
   const agentDirs = new Set<string>([piAgentDir()]);
-  // the pane's processes could not be read: who is in front is not known
   if (info === null) return { pids: null, agentDirs: [...agentDirs] };
   for (const entry of info?.foreground_processes ?? []) {
     if (typeof entry.pid !== "number") continue;
@@ -278,7 +270,7 @@ export async function piTranscriptPath(
   options: PiTranscriptOptions = {},
 ): Promise<{ path: string; agentDir: string | null; identity: string } | { unwritten: { id: string; path: string } } | null> {
   const agent = options.agent === undefined ? await agentGet(paneId).catch(() => null) : options.agent;
-  if (agent?.agent !== "pi") return null;
+  if (!agent || labelledAgent(agent.agent) !== "pi") return null;
   const session = agent.agent_session;
   const absent = session === undefined || session === null;
   if (!absent && (session.agent !== "pi" || session.source !== "herdr:pi" || session.kind !== "path" || typeof session.value !== "string")) return null;
@@ -312,21 +304,19 @@ export async function piTranscriptPath(
   if (reported === null) return null;
 
   const processStores = new Set<string>();
-  /** each process's agent directory, by its canonical path */
   const agentDirs = new Map<string | null, string | null>();
   for (const process of piProcesses) {
     const resolved = piSessionDirForProcess(process.argv ?? [], environOf(process.pid!), home, process.cwd ?? "");
     if (resolved.kind === "reject") return null;
     processStores.add(resolved.kind === "store" ? resolved.path : sessionDir);
     const agentDir = resolved.kind === "store" ? resolved.agentDir : UNREAD;
-    // one directory named through a link is still one directory
     let canonical = agentDir;
-    if (agentDir !== null) try { canonical = realpathSync(agentDir); } catch { /* absent: no catalog to read */ }
+    if (agentDir !== null) try { canonical = realpathSync(agentDir); } catch { }
     if (!agentDirs.has(canonical)) agentDirs.set(canonical, agentDir);
   }
   const canonicalProcessStores = new Set<string>();
   for (const store of processStores) {
-    try { canonicalProcessStores.add(realpathSync(store)); } catch { /* an absent store holds no session */ }
+    try { canonicalProcessStores.add(realpathSync(store)); } catch { }
   }
   if (canonicalProcessStores.size > 1) return null;
   const canonicalStores = new Set<string>();
@@ -334,7 +324,7 @@ export async function piTranscriptPath(
   // stale report from the bridge's unrelated profile appear valid for this pane.
   const candidateStores = piProcesses.length === 0 ? [sessionDir] : [...canonicalProcessStores];
   for (const store of candidateStores) {
-    try { canonicalStores.add(realpathSync(store)); } catch { /* an absent store holds no session */ }
+    try { canonicalStores.add(realpathSync(store)); } catch { }
   }
   // Preserve default-store behavior on platforms where process_info names only the shell or
   // process environments cannot be read. A custom store is never guessed in those cases.

@@ -22,8 +22,8 @@ describe("POST /api/pane/find", () => {
     const created = await workspaceCreate({ cwd: stateDir, label: "ovis-test-find" });
     workspaceId = created.workspace.workspace_id;
     paneId = created.root_pane.pane_id;
-    // Subscribe before input. The sentinel is assembled at runtime, so the echoed command
-    // cannot satisfy the wait. cat keeps the fixture still rather than racing a shell prompt.
+    // The sentinel is assembled at runtime, so the echoed command
+    // cannot satisfy the wait.
     const ready = herdrRpc("pane.wait_for_output", {
       pane_id: paneId, source: "visible", match: { type: "substring", value: "find_ready_contract" }, timeout_ms: 10000,
     }, undefined, 12000);
@@ -222,7 +222,6 @@ describe("POST /api/pane/find", () => {
       expect((await response.json() as ApiError).error.code).toBe("stale_content");
       expect(moved).toBe(true);
       expect((await paneScrollInfo(paneId, realSocket))?.offset_from_bottom).toBe(10);
-      // The revision remains valid; viewport mapping is independently guarded.
       const motion = await herdrRpc<{ content_revision: number }>("pane.copy_motion", {
         pane_id: paneId, cursor: { row: 0, col: 0 }, motion: "line_end", content_revision: searchRevision,
       }, realSocket);
@@ -242,8 +241,6 @@ describe("POST /api/pane/find", () => {
     const realSocket = herdrSocketPath();
     const oldSocket = process.env.HERDR_SOCKET;
     const proxyPath = join(stateDir, "find-race.sock");
-    // Forward to real herdr and inject output on either side of the final pre-scroll
-    // revision check. The native guard and shared scroll remain real, without sleeps.
     let changed = false;
     const proxy = Bun.listen({
       unix: proxyPath,
@@ -265,7 +262,6 @@ describe("POST /api/pane/find", () => {
                 await output;
               };
               const inject = !changed && request.method === changeAt && request.params.pane_id === paneId;
-              // For scroll, inject AFTER the final revision check, BEFORE herdr applies it.
               if (inject && changeAt === "pane.scroll") await change();
               const result = await herdrRpc(request.method, request.params, realSocket);
               if (inject && changeAt === "pane.copy_search") await change();

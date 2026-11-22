@@ -14,7 +14,6 @@ export const STATUS_FILTERS: readonly PaletteStatusFilter[] = ["all", "blocked",
  */
 export const FILTER_KEYS: Readonly<Record<string, PaletteStatusFilter>> = { a: "all", b: "blocked", w: "working", i: "idle", d: "done" };
 
-/** The local key that picks `filter` while the focus is on the list or the chips, or null (BG has none). */
 export function filterKeyOf(filter: PaletteStatusFilter): string | null {
   return Object.entries(FILTER_KEYS).find(([, value]) => value === filter)?.[0] ?? null;
 }
@@ -36,7 +35,6 @@ export function filterPanesByStatus(panes: readonly HerdrPane[], filter: Palette
   return panes.filter((pane) => paneStatus(pane) === filter);
 }
 
-/** How many panes each chip stands for, counted over the whole roster: a query does not change them. */
 export function statusCounts(panes: readonly HerdrPane[]): Record<PaletteStatusFilter, number> {
   const counts: Record<PaletteStatusFilter, number> = { all: panes.length, blocked: 0, working: 0, idle: 0, done: 0, waiting: 0 };
   for (const pane of panes) {
@@ -49,9 +47,7 @@ export function statusCounts(panes: readonly HerdrPane[]): Record<PaletteStatusF
 export interface PaletteSearchContext {
   tabs?: readonly TabInfo[];
   machineName?: string;
-  /** a linked worktree's branch per workspace id, as useWorktreeBranches reads the inventory */
   branches?: ReadonlyMap<string, { branch: string | null }>;
-  /** names a tab the way the strip and the footer show it ("Tab 2" in the user's language); the module's `t` otherwise */
   t?: Translate;
 }
 
@@ -71,7 +67,6 @@ function tabNames(tabs: readonly TabInfo[], t: Translate): Map<string, string[]>
   return names;
 }
 
-/** One row of the palette's Plugin actions group. */
 export interface OfferedPluginAction {
   plugin: PluginActions;
   action: PluginAction;
@@ -121,11 +116,6 @@ function fuzzyScore(query: string, candidate: string): number | null {
   return 500 - first * 2 - (previous - first) - runs * 12;
 }
 
-/**
- * Whether `candidate` is a match for `query` by the palette's own matcher: the membership alone,
- * never its rank, for a list that keeps its own order (the sidebar's filter, lib/sidebarFilter.ts).
- * A blank query matches everything, as it ranks everything.
- */
 export function matchesQuery(query: string, candidate: string): boolean {
   return fuzzyScore(query, candidate) !== null;
 }
@@ -146,7 +136,6 @@ function searchableText(pane: HerdrPane, workspaceLabel: string, tabNames: reado
   ];
 }
 
-/** Fuzzy pane search across everything visible in a palette row. Ties retain session order. */
 export function scorePanes(query: string, panes: readonly HerdrPane[], workspaces: readonly WorkspaceInfo[], context: PaletteSearchContext = {}): { pane: HerdrPane; score: number }[] {
   if (query.trim().length === 0) return panes.map((pane) => ({ pane, score: 0 }));
   const workspaceLabels = new Map(workspaces.map((workspace) => [workspace.workspace_id, workspace.label]));
@@ -176,13 +165,7 @@ export interface PaletteSection {
   panes: HerdrPane[];
 }
 
-/**
- * One section per workspace, as herdr's Goto picker lists its rows. An unsearched list has its
- * sections in the workspaces' order, the one the sidebar shows and a move in it changes (the pane
- * roster keeps its own order); a workspace the roster does not list comes after them. A ranked
- * list has a section where its first pane stands, best match first, so the top result stays the
- * first row. Rows keep their order inside a section.
- */
+/** One section per workspace, as herdr's Goto picker lists its rows. */
 export function groupByWorkspace(panes: readonly HerdrPane[], workspaces: readonly WorkspaceInfo[], ranked = false): PaletteSection[] {
   const byId = new Map(workspaces.map((workspace) => [workspace.workspace_id, workspace]));
   const sections = new Map<string, PaletteSection>();
@@ -197,14 +180,9 @@ export function groupByWorkspace(panes: readonly HerdrPane[], workspaces: readon
   const list = [...sections.values()];
   if (ranked) return list;
   const order = new Map(workspaces.map((workspace, index) => [workspace.workspace_id, index]));
-  // a stable sort: the workspaces not listed keep their place among themselves
   return list.sort((a, b) => (order.get(a.workspaceId) ?? workspaces.length) - (order.get(b.workspaceId) ?? workspaces.length));
 }
 
-/**
- * The panes the user went to last, newest first, those still in the roster and other than the
- * one open now: an unsearched palette leads with them, before the workspaces.
- */
 export function recentPanes(panes: readonly HerdrPane[], recentIds: readonly string[], selectedPaneId: string | null, limit: number): HerdrPane[] {
   const byId = new Map(panes.map((pane) => [pane.pane_id, pane]));
   const recent: HerdrPane[] = [];

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REVISION } from "../shared/update.ts";
+import { ASSETS } from "./entries.ts";
 
 /**
  * The commit this app's own server build is, where that can be told: OVIS_REVISION where a supervisor runs a release of
@@ -8,7 +9,7 @@ import { REVISION } from "../shared/update.ts";
  * wrote into dist/ beside the server, only when that build was made from a clean tree (dirty: false). Undefined anywhere
  * else (a checkout run by hand may have rebuilt dist/ apart from the server it runs).
  */
-export function buildRevision(root = join(import.meta.dir, ".."), env: Record<string, string | undefined> = process.env): string | undefined {
+export function buildRevision(root = ASSETS, env: Record<string, string | undefined> = process.env): string | undefined {
   // the desktop app is its own staged build: an OVIS_REVISION it inherited from where it was launched is not its own
   if (env["OVIS_DESKTOP_APP"] !== "1") {
     const named = env["OVIS_REVISION"];
@@ -22,5 +23,4 @@ export function buildRevision(root = join(import.meta.dir, ".."), env: Record<st
 
 /** what it was when this server started: a dist/ rebuilt since is not the server that runs */
 const atStart = buildRevision();
-/** This app's build, replaceable in tests. */
 export const appBuild = { revision: (): string | undefined => atStart };

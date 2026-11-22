@@ -1,5 +1,5 @@
 /**
- * The Ovis relay on Cloudflare, at relay.ovis.sh (README.md). The Worker answers `/health` and
+ * The Worker answers `/health` and
  * checks each socket request (core.ts `admit`, rate limits included) before handing it to the
  * Durable Object of its `server_id`, so a refused request never wakes one. The Durable Object
  * holds the room's sockets through the WebSocket Hibernation API: who each socket is lives in its
@@ -16,7 +16,6 @@ import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocke
 import { PASS_OFF, passPolicy, type PassPolicy, type PassResult, type PassSettings } from "./pass.ts";
 import { PairRoom, isPairInfo, parsePairRequest, type PairInfo } from "./pair-room.ts";
 
-/** the part of a Cloudflare server-side WebSocket the relay uses */
 export interface HibernatableSocket {
   send(frame: Frame): void;
   close(code?: number, reason?: string): void;
@@ -24,7 +23,6 @@ export interface HibernatableSocket {
   deserializeAttachment(): unknown;
 }
 
-/** the part of DurableObjectState the relay uses */
 export interface RelayState {
   acceptWebSocket(socket: HibernatableSocket, tags?: string[]): void;
   getWebSockets(tag?: string): HibernatableSocket[];
@@ -42,15 +40,12 @@ export interface RelayState {
 interface DurableObjectStub { fetch(request: Request): Promise<Response> }
 export interface Env extends PassSettings {
   RELAY: { idFromName(name: string): unknown; get(id: unknown): DurableObjectStub };
-  /** Cloudflare's Rate Limiting binding (wrangler.toml), keyed by the connecting address */
   RELAY_LIMITER: RateLimiter;
-  /** the backstop over all addresses together */
   RELAY_GLOBAL_LIMITER: RateLimiter;
   /** keyed by server_id, for a PC whose relay pass holds (core.ts Limiters.perPc); without it and RELAY_PASS_CHECK_LIMITER every PC counts under its address */
   RELAY_PC_LIMITER?: RateLimiter;
   /** keyed by the address: the passes it may have checked before its own limit */
   RELAY_PASS_CHECK_LIMITER?: RateLimiter;
-  /** Workers Analytics Engine dataset for usage counters (wrangler.toml); without it nothing is counted */
   USAGE?: { writeDataPoint(point: { indexes: string[]; blobs: string[]; doubles: number[] }): void };
 }
 
@@ -60,11 +55,9 @@ export interface Env extends PassSettings {
  * reached only through the Worker, so it trusts it and checks no signature again.
  */
 const PASS_CHECKED = "x-ovis-relay-pass-checked";
-/** the key the room's pass authorization is kept under in Durable Object storage */
 const PASS_UNTIL = "pass_until";
 
 let policyCache: { key: string; policy: Promise<PassPolicy> } | undefined;
-/** The pass policy of these settings, read once per isolate. */
 export function policyOf(env: PassSettings): Promise<PassPolicy> {
   const key = JSON.stringify([env.RELAY_PASS_MODE, env.RELAY_PASS_ENFORCE_AT, env.RELAY_PASS_KEYS, env.RELAY_PASS_REVOKED]);
   // settings that do not parse turn passes off rather than stop the relay routing anything
@@ -102,7 +95,6 @@ export const usagePoint = (report: UsageReport) => ({
 const isUsage = (value: unknown) => typeof value === "object" && value !== null
   && ["since", "up", "down"].every((key) => typeof (value as Record<string, unknown>)[key] === "number");
 
-/** the Workers runtime's globals the Durable Object needs (tests put fakes in their place) */
 interface Runtime {
   WebSocketPair: new () => { 0: HibernatableSocket; 1: HibernatableSocket };
   WebSocketRequestResponsePair: new (request: string, response: string) => unknown;
@@ -136,7 +128,6 @@ export class RelayRoom {
   private readonly pairRoom: PairRoom<HibernatableSocket>;
   /** alarm reads and writes, one after another, so a later one never undoes an earlier one */
   private alarmWrites: Promise<void> = Promise.resolve();
-  /** the pass policy and this room's authorization, read before the first event reaches the object */
   private policy: PassPolicy | undefined;
   private passUntil: RoomAuthorization | null = null;
   /** the saved authorization, read once and only for a PC's room while passes are on: off, and pairing rooms, never touch storage */
@@ -173,7 +164,7 @@ export class RelayRoom {
       setInfo: (socket, info) => {
         infos.set(socket, info);
         // a socket whose send just failed may refuse its attachment too; it is being ended either way
-        try { socket.serializeAttachment(info); } catch { /* see above */ }
+        try { socket.serializeAttachment(info); } catch {}
       },
       send: (socket, frame) => {
         try { socket.send(frame); } catch {
@@ -184,7 +175,7 @@ export class RelayRoom {
       },
       close: (socket, code, reason) => {
         // closing a socket that is already closed throws; it is gone either way
-        try { socket.close(code, reason); } catch { /* see above */ }
+        try { socket.close(code, reason); } catch {}
       },
       keepaliveAt: (socket) => state.getWebSocketAutoResponseTimestamp(socket)?.getTime() ?? null,
       usage: (report) => env?.USAGE?.writeDataPoint(usagePoint(report)),
@@ -219,7 +210,7 @@ export class RelayRoom {
       },
       setInfo: (socket, info) => {
         pairInfos.set(socket, info);
-        try { socket.serializeAttachment(info); } catch { /* being ended either way */ }
+        try { socket.serializeAttachment(info); } catch {}
       },
       send: (socket, frame) => {
         try { socket.send(frame); } catch { queueMicrotask(() => this.pairRoom.end(socket, CLOSE.GOING_AWAY, "relay send failed")); }
@@ -250,12 +241,10 @@ export class RelayRoom {
     return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
   }
 
-  /** clients this instance closed 1012 because the frames held for them were lost in an eviction */
   get heldFramesLost(): number {
     return this.room.heldFramesLost;
   }
 
-  /** makes sure the alarm fires by `at`: sets it unless one is set sooner */
   private armBy(at: number): Promise<void> {
     // a failed earlier write must not stop every later one
     this.alarmWrites = this.alarmWrites.catch(() => undefined).then(async () => {
@@ -278,7 +267,7 @@ export class RelayRoom {
     // CLOSING until its own timeout (a phone showed itself connected for 17 s) and counts the drop
     // as 1006. The code is echoed when it is 1000 or 3000-4999; any other is answered 1000.
     const echo = code !== undefined && (code === 1000 || (code >= 3000 && code <= 4999));
-    try { socket.close(echo ? code : 1000, echo ? reason ?? "" : ""); } catch { /* already closed */ }
+    try { socket.close(echo ? code : 1000, echo ? reason ?? "" : ""); } catch {}
   }
 
   webSocketError(socket: HibernatableSocket): void {
@@ -313,7 +302,6 @@ export async function handle(request: Request, env: Env): Promise<Response> {
   const headers = new Headers(request.headers);
   headers.delete(PASS_CHECKED);
   if (admitted.pass) headers.set(PASS_CHECKED, JSON.stringify(admitted.pass));
-  // a pairing room's name cannot be a server_id, which is 32 hex digits
   return env.RELAY.get(env.RELAY.idFromName("kind" in admitted ? `pair:${admitted.nameplate}` : admitted.server_id)).fetch(new Request(request, { headers }));
 }
 

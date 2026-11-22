@@ -1,4 +1,3 @@
-/** Actual PTY screenshots of the same Safari event replay against two built clients. */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,8 +35,6 @@ try {
     const results = join(root, "results.json");
     const readyFile = join(root, "ready");
     const capture = join(root, "capture.cjs");
-    // The fixture renders only bytes actually received through the attach stream.
-    // BEL separates cases and is not part of the input under test.
     writeFileSync(capture, String.raw`const fs = require('node:fs');
 const cases = ${JSON.stringify(cases)};
 const results = []; let pending = [];
@@ -129,7 +126,6 @@ process.stdin.on('data', bytes => {
         assert(actual.every(test => test.pass === false), "baseline must fail all five recorded cases");
       }
       await until(async () => (await paneRead({ paneId: pane, source: "visible" })).text.includes("Completed:"), "rendered PTY report must complete");
-      // The visible screen arrives over the attach stream; wait for the rows the page shows (libghostty's or xterm's) to draw it.
       await page.waitForFunction(rows => Array.from(document.querySelectorAll(rows)).some(row => row.textContent?.includes("Completed:")), shownRow());
       await page.locator(".xterm").screenshot({ path: join(output, `safari-ime-${label}.png`) });
       writeFileSync(join(output, `safari-ime-${label}.json`), JSON.stringify({ label, dist: resolve(dist!), cases: actual, wsInput: sent }, null, 2) + "\n");

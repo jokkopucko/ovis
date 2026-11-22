@@ -9,7 +9,6 @@ routes = [{ pattern = "push.ovis.sh", custom_domain = true }]
 [observability]
 enabled = false
 
-# Once a day, delete endpoints unused for ENDPOINT_TTL_SECONDS (worker.ts `expire`).
 [triggers]
 crons = ["17 3 * * *"]
 

@@ -1,0 +1,265 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ovis-tui <ovis-tui@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 01:09:55 +0900
+Subject: [PATCH 3/7] feat(embed): show the focused terminal alone on a narrow
+ screen, on request
+
+With Embed::solo_on_narrow, a screen at or under the mobile width shows the focused tab's focused terminal alone, as a zoom does: a split at phone width leaves each pane too narrow to read. It is local to this client: its projection reads as zoomed, the shared layout document is not written, and a wider screen shows the split again. The default keeps today's layout.
+---
+ crates/hc-tui/src/app/embed.rs                | 49 +++++++++++++++-
+ crates/hc-tui/src/app/init.rs                 |  3 +
+ crates/hc-tui/src/app/mod.rs                  |  7 ++-
+ crates/hc-tui/src/app/mod_tests/mod.rs        |  2 +
+ .../hc-tui/src/app/mod_tests/solo_narrow.rs   | 58 +++++++++++++++++++
+ crates/hc-tui/src/app/runtime.rs              |  2 +
+ crates/hc-tui/src/cli.rs                      |  5 +-
+ crates/hc-tui/src/embed.rs                    |  4 ++
+ 8 files changed, 126 insertions(+), 4 deletions(-)
+ create mode 100644 crates/hc-tui/src/app/mod_tests/solo_narrow.rs
+
+diff --git a/crates/hc-tui/src/app/embed.rs b/crates/hc-tui/src/app/embed.rs
+index 34fcd20..99ad35b 100644
+--- a/crates/hc-tui/src/app/embed.rs
++++ b/crates/hc-tui/src/app/embed.rs
+@@ -1,6 +1,6 @@
+ // Added by Ovis (https://github.com/devswha/ovis) for programs that embed this client.
+ //! An embedding program's requests: what happens to input typed during
+-//! a recovery (`crate::embed::Embed`).
++//! a recovery, and what a narrow screen shows (`crate::embed::Embed`).
+ use super::*;
+ 
+ impl App {
+@@ -8,4 +8,51 @@ impl App {
+     pub fn discard_input_on_recovery(on: bool) {
+         pane::default_discard_input_on_recovery(on);
+     }
++
++    pub fn set_solo_on_narrow(&mut self, on: bool) {
++        self.solo_on_narrow = on;
++    }
++
++    fn wants_solo(&self) -> bool {
++        self.solo_on_narrow && self.area.0 <= self.shell.mobile_width_threshold
++    }
++
++    /// A narrow screen shows the focused tab's focused terminal alone:
++    /// this client's projection reads as zoomed on it. The document is
++    /// not touched, so no other client's view changes.
++    pub(super) fn apply_solo(&mut self) {
++        self.solo_applied = self.wants_solo();
++        if !self.solo_applied {
++            return;
++        }
++        let Some(tab) = self
++            .projection
++            .snapshot
++            .focused_tab_id
++            .as_ref()
++            .and_then(|id| self.projection.layouts.get_mut(id))
++        else {
++            return;
++        };
++        let members = tab
++            .root
++            .as_ref()
++            .map(|root| root.terminals())
++            .unwrap_or_default();
++        if tab.zoomed.is_none() && members.len() > 1 {
++            tab.zoomed = self
++                .focused
++                .clone()
++                .filter(|focused| members.contains(focused))
++                .or_else(|| tab.focused.clone());
++        }
++    }
++
++    /// The screen crossed the mobile width since the projection was
++    /// made: it is made again for the width in hand.
++    pub(super) fn keep_solo_current(&mut self) {
++        if self.solo_applied != self.wants_solo() {
++            self.refresh_projection();
++        }
++    }
+ }
+diff --git a/crates/hc-tui/src/app/init.rs b/crates/hc-tui/src/app/init.rs
+index 01a81c0..fd9f339 100644
+--- a/crates/hc-tui/src/app/init.rs
++++ b/crates/hc-tui/src/app/init.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): an embedder's settings.
+ use super::*;
+ 
+ impl App {
+@@ -43,6 +44,8 @@ impl App {
+             keyboard_locked: false,
+             previous_pane: None,
+             last_focus: None,
++            solo_on_narrow: false,
++            solo_applied: false,
+             dialog: None,
+             dialog_hits: Default::default(),
+             menu: None,
+diff --git a/crates/hc-tui/src/app/mod.rs b/crates/hc-tui/src/app/mod.rs
+index e015c43..1888754 100644
+--- a/crates/hc-tui/src/app/mod.rs
++++ b/crates/hc-tui/src/app/mod.rs
+@@ -1,4 +1,4 @@
+-// Modified by Ovis (https://github.com/devswha/ovis): the embedder's settings.
++// Modified by Ovis (https://github.com/devswha/ovis): a narrow screen's solo pane.
+ //! The interactive client: owns inventory, shared layout, pane connections
+ //! and the draw scheduler. One owner for all
+ //! UI/VT state; the loop awaits input, protocol notifications and
+@@ -180,6 +180,10 @@ pub struct App {
+     keyboard_locked: bool,
+     previous_pane: Option<String>,
+     last_focus: Option<String>,
++    /// An embedder's setting: see `embed::Embed::solo_on_narrow`.
++    solo_on_narrow: bool,
++    /// The projection in hand was made for a narrow screen under that setting.
++    solo_applied: bool,
+     dialog: Option<dialogs::Dialog>,
+     dialog_hits: crate::chrome::dialogs::DialogRender,
+     /// Open right-click context menu — the reference's
+@@ -425,6 +429,7 @@ impl App {
+         }
+ 
+         self.presentation.project(&self.view, &mut self.projection);
++        self.apply_solo();
+         self.update_tab_status(Instant::now());
+         self.update_window_title();
+         // The reference's `apply_active_snapshot` copy arms: pane loss
+diff --git a/crates/hc-tui/src/app/mod_tests/mod.rs b/crates/hc-tui/src/app/mod_tests/mod.rs
+index 7784771..ce2c489 100644
+--- a/crates/hc-tui/src/app/mod_tests/mod.rs
++++ b/crates/hc-tui/src/app/mod_tests/mod.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): the solo-pane tests.
+ //! Read-only application tests and shared fixtures.
+ mod cases_1;
+ mod cases_2;
+@@ -20,6 +21,7 @@ mod narrow;
+ mod page_keys;
+ mod reload;
+ mod review_regressions;
++mod solo_narrow;
+ mod version_badge;
+ 
+ use super::*;
+diff --git a/crates/hc-tui/src/app/mod_tests/solo_narrow.rs b/crates/hc-tui/src/app/mod_tests/solo_narrow.rs
+new file mode 100644
+index 0000000..a1a9476
+--- /dev/null
++++ b/crates/hc-tui/src/app/mod_tests/solo_narrow.rs
+@@ -0,0 +1,58 @@
++// Added by Ovis (https://github.com/devswha/ovis) for programs that embed this client.
++use super::*;
++
++fn split_tab(solo: bool) -> App {
++    let mut app = app_with_spaces(&[("t1", "work"), ("t2", "work")]);
++    app.open_attach = Arc::new(|_| Box::pin(std::future::pending()));
++    app.pane = pane::Pane::new(app.pane_tx.clone(), app.open_attach.clone());
++    app.set_solo_on_narrow(solo);
++    app.focused = Some("t2".into());
++    app.refresh_projection();
++    app
++}
++
++/// One frame at `width`, past the frame cap, and the panes it shows.
++fn drawn_at(app: &mut App, width: u16) -> Vec<String> {
++    let now = Instant::now();
++    app.sched.mark_dirty(now);
++    app.sched.force_due(now);
++    let mut term = Terminal::new(TestBackend::new(width, 24)).unwrap();
++    app.maybe_draw(&mut term, now).unwrap();
++    app.visible_panes()
++}
++
++#[tokio::test]
++async fn a_narrow_screen_shows_the_focused_terminal_of_a_split_alone() {
++    let mut app = split_tab(true);
++    assert_eq!(drawn_at(&mut app, 50), ["t2"]);
++    let surface = ratatui::layout::Rect::new(0, 0, 50, 22);
++    let infos = super::super::pane_geometry::pane_infos(&app, surface);
++    assert_eq!(infos.len(), 1);
++    assert_eq!(infos[0].rect, surface);
++}
++
++#[tokio::test]
++async fn the_solo_pane_follows_the_focus_and_ends_on_a_wide_screen() {
++    let mut app = split_tab(true);
++    assert_eq!(drawn_at(&mut app, 64), ["t2"]);
++    app.focused = Some("t1".into());
++    app.refresh_projection();
++    assert_eq!(app.visible_panes(), ["t1"]);
++    assert_eq!(drawn_at(&mut app, 65), ["t1", "t2"]);
++    assert_eq!(drawn_at(&mut app, 40), ["t1"]);
++}
++
++#[tokio::test]
++async fn the_solo_pane_is_local_and_asks_for_no_layout_edit() {
++    let mut app = split_tab(true);
++    drawn_at(&mut app, 50);
++    // an edit asked for here, with no store to take it, would leave its notice
++    assert!(app.notice.is_none());
++    assert!(app.projection.snapshot.tabs.iter().all(|tab| !tab.zoomed));
++}
++
++#[tokio::test]
++async fn without_the_setting_a_narrow_screen_keeps_its_split() {
++    let mut app = split_tab(false);
++    assert_eq!(drawn_at(&mut app, 50), ["t1", "t2"]);
++}
+diff --git a/crates/hc-tui/src/app/runtime.rs b/crates/hc-tui/src/app/runtime.rs
+index f6074cf..7bbada6 100644
+--- a/crates/hc-tui/src/app/runtime.rs
++++ b/crates/hc-tui/src/app/runtime.rs
+@@ -1,4 +1,5 @@
+ // Derived from herdr src/client/shell/input.rs and composition.rs (Apache-2.0).
++// Modified by Ovis (https://github.com/devswha/ovis): a narrow screen's solo pane.
+ use super::*;
+ 
+ impl App {
+@@ -17,6 +18,7 @@ impl App {
+         // inner rect — no clipped last column, row or cursor.
+         let size = term.size()?;
+         self.area = (size.width, size.height);
++        self.keep_solo_current();
+         let layout = self.shell.layout_config().layout(
+             size.width,
+             size.height,
+diff --git a/crates/hc-tui/src/cli.rs b/crates/hc-tui/src/cli.rs
+index 7143188..1aeb00f 100644
+--- a/crates/hc-tui/src/cli.rs
++++ b/crates/hc-tui/src/cli.rs
+@@ -179,8 +179,8 @@ pub async fn run(endpoint: &Endpoint, env: &Env) -> Result<(), String> {
+     run_embedded(endpoint, env, crate::embed::Embed::default()).await
+ }
+ 
+-/// [`run`] for a program that embeds this client: the same run, under
+-/// `embed`'s policies.
++/// [`run`] for a program that embeds this client: the same run, started
++/// under `embed`'s policies.
+ pub async fn run_embedded(
+     endpoint: &Endpoint,
+     env: &Env,
+@@ -233,6 +233,7 @@ pub async fn run_embedded(
+     let mut app = App::new(watcher, open, live, shell, Arc::new(Probe::default()));
+ 
+     app.set_operations(operations);
++    app.set_solo_on_narrow(embed.solo_on_narrow);
+     // `endpoint_accepts_local_images` client arms: a `--remote`
+     // endpoint, or this client itself running inside an SSH session.
+     app.set_image_paste_context(
+diff --git a/crates/hc-tui/src/embed.rs b/crates/hc-tui/src/embed.rs
+index 0bfa324..b127eac 100644
+--- a/crates/hc-tui/src/embed.rs
++++ b/crates/hc-tui/src/embed.rs
+@@ -7,4 +7,8 @@ pub struct Embed {
+     /// Refuse input typed while a pane's wire recovers, with the usual
+     /// notice, instead of sending it once the wire is back.
+     pub discard_input_on_recovery: bool,
++    /// On a screen at or under the mobile width, show the focused
++    /// terminal of a split tab alone, as a zoom does. Local to this
++    /// client: the shared layout is not written.
++    pub solo_on_narrow: bool,
+ }

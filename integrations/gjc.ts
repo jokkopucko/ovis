@@ -90,7 +90,7 @@ function bindingFromFile(file: string, io: GjcNativeFileSystem): GjcNativeBindin
     return null;
   } finally {
     if (fd !== undefined) {
-      try { io.closeSync(fd); } catch { /* failed reads are treated as absent */ }
+      try { io.closeSync(fd); } catch {}
     }
   }
 }
@@ -117,10 +117,6 @@ function canonicalMainSessionPath(file: unknown, home: string, io: Pick<GjcNativ
   }
 }
 
-/**
- * Publishes only native GJC identity. The injected process, clock, timer and filesystem seams
- * keep lifecycle ordering and lease cleanup deterministic without importing a GJC runtime.
- */
 export function createGjcNativePublisher(options: GjcNativePublisherOptions = {}): GjcNativePublisher {
   const home = resolve(options.home ?? homedir());
   const pid = options.pid ?? process.pid;
@@ -207,14 +203,14 @@ export function createGjcNativePublisher(options: GjcNativePublisherOptions = {}
       publishedIdentity = session;
       hasPublishedIdentity = true;
     } finally {
-      try { io.rmSync(temporary, { force: true }); } catch { /* best-effort removal of our temporary file */ }
+      try { io.rmSync(temporary, { force: true }); } catch {}
     }
   };
 
   const removeOwnBinding = (): void => {
     const record = bindingFromFile(ownFile, io);
     if (record?.pid !== pid || record.processStartedAt !== birth || record.instanceId !== instanceId) return;
-    try { io.rmSync(ownFile, { force: true }); } catch { /* shutdown must not affect the host */ }
+    try { io.rmSync(ownFile, { force: true }); } catch {}
   };
 
   const refresh = async (expectedRevision?: number): Promise<void> => {
@@ -240,7 +236,7 @@ export function createGjcNativePublisher(options: GjcNativePublisherOptions = {}
       if (accessorSession === undefined) return;
       session = accessorSession;
     }
-    try { writeBinding(session, birth, now()); } catch { /* filesystem errors are intentionally harmless */ }
+    try { writeBinding(session, birth, now()); } catch {}
   };
 
   const startTimer = (): void => {

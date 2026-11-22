@@ -4,7 +4,6 @@ import { directSocketFactory, directTailnetSupport, EARLY_SEND_BYTES, EARLY_SEND
 
 const CARRIER = "ws://192.168.0.10:7319/v1/ws?v=1";
 
-/** The plugin as the page sees it: every call recorded, opens answered by the test, events sent by it. */
 function fakePlugin() {
   const calls: { method: string; id?: string; frame?: DirectFrame; code?: number; reason?: string; messages?: number; url?: string }[] = [];
   const opens: { url: string; answer: (id: string) => void; refuse: () => void }[] = [];
@@ -22,7 +21,6 @@ function fakePlugin() {
   return { bridge, calls, opens, emit: (event: DirectEvent) => handler!(event) };
 }
 
-/** Lets the promise callbacks and queued microtasks of the step before run. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("isDirectSocketUrl", () => {
@@ -51,17 +49,14 @@ describe("isDirectSocketUrl", () => {
 
 describe("directTailnetSupport", () => {
   it("says yes only once the plugin answered tailnet, and never waits for an answer", async () => {
-    // Given plugins that answer yes, answer no, have no `features` (reject), or never answer
     const answer = Promise.withResolvers<unknown>();
     const yes = directTailnetSupport(() => answer.promise);
     const no = directTailnetSupport(async () => ({}));
     const missing = directTailnetSupport(async () => { throw new Error("not implemented"); });
     const silent = directTailnetSupport(() => new Promise<never>(() => {}));
-    // When nothing has answered yet, then after the answers
     expect(yes()).toBe(false);
     answer.resolve({ tailnet: true });
     await settle();
-    // Then only the plugin that said tailnet counts
     expect([yes(), no(), missing(), silent()]).toEqual([true, false, false, false]);
   });
 });
@@ -81,7 +76,6 @@ describe("directSocketFactory", () => {
     const received: unknown[] = [];
     socket.onmessage = (event) => received.push(event.data);
     expect(socket.readyState).toBe(0);
-    // sent before the plugin named the socket: they wait, then go in order
     socket.send("hello");
     plugin.opens[0]!.answer("s1");
     await settle();
@@ -99,7 +93,6 @@ describe("directSocketFactory", () => {
     expect(received[0]).toBe("{\"type\":\"assigned\"}");
     expect(received[1]).toBeInstanceOf(ArrayBuffer);
     expect([...new Uint8Array(received[1] as ArrayBuffer)]).toEqual([0, 1, 254, 255]);
-    // the two messages of one turn are taken off the plugin's queue in one call
     expect(plugin.calls.filter((call) => call.method === "ack")).toEqual([{ method: "ack", id: "s1", messages: 2 }]);
   });
 
@@ -161,13 +154,10 @@ describe("directSocketFactory", () => {
     const socket = directSocketFactory(plugin.bridge)(CARRIER);
     const closed: number[] = [];
     socket.onclose = (event) => closed.push(event.code);
-    // Given a socket the plugin has not named yet, sent more than the cap.
     for (const data of sends()) socket.send(data);
     await settle();
-    // Then the page hears it closed, and nothing it sent goes out.
     expect(closed).toEqual([1009]);
     expect(socket.readyState).toBe(3);
-    // When the plugin names it, it is closed there too.
     plugin.opens[0]!.answer("s1");
     await settle();
     expect(plugin.calls.filter((call) => call.method !== "open")).toEqual([{ method: "close", id: "s1", code: 1009, reason: "send queue full" }]);

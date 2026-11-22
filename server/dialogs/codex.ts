@@ -8,7 +8,8 @@ export const CODEX_ASK_HINT_RE = /tab to add notes.*enter to submit (?:answer|al
 
 export const CODEX_ASYNC_ASK_HINT_RE = /(?:enter|return).*submit.*(?:ctrl\s*\+\s*\]|skip)/i;
 
-export const CODEX_CONTINUE_HINT_RE = /press\s+enter\s+to\s+continue/i;
+// "Press enter to continue", and "enter continue · esc skip" under the update menu
+export const CODEX_CONTINUE_HINT_RE = /press\s+enter\s+to\s+continue|^\s*enter\s+continue\s*·\s*esc\s+skip\s*$/i;
 
 // Codex 0.156's queue of questions asked with request_user_input_async, above the main
 // prompt: collapsed ("? 2 questions · 8s" / "alt+↑ to answer") or open on one question
@@ -83,7 +84,6 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
     responder: "codex-question", menuLabels: rows.map((row) => row.label),
     selectedIndex: rows.findIndex((row) => row.selected), checkedOptionIndices: [], customMenuIndex: customIndex,
     rejectWithEscapeIndex: null,
-    // Back and Next come from the hint, which a narrow pane may cut: the same question keeps its id without them
   }, { can_step_back: undefined, can_step_next: undefined });
 }
 
@@ -99,7 +99,6 @@ function parseCodexAsyncQuestion(screen: string): ParsedPrompt | null {
   if (hintIndex < 0) return null;
   const header = findLastIndex(lines.slice(Math.max(0, hintIndex - 48), hintIndex), (line) => CODEX_QUEUE_HEADER_RE.test(cleanLine(line)));
   const top = header < 0 ? Math.max(0, hintIndex - 48) : Math.max(0, hintIndex - 48) + header + 1;
-  // without the header the rows are read from well above: a message sent before can be there too
   const rows = menuRows(lines, top, hintIndex);
   const text = (from: number, to: number) => lines.slice(from, to).map(cleanLine).filter((line) => line && !isDivider(line));
   let position: RegExpMatchArray | null = null;
@@ -185,8 +184,7 @@ function parseCodexApproval(screen: string): ParsedPrompt | null {
  * list. Under `enter default · s session` (`enter apply` on Ultra) the row picks: `s` for this
  * session, Enter to save the pick as the default for every new one. A model with a single
  * reasoning level picks from the first list already. So which key a row takes is only known
- * with the cursor on it: `rowKey` is that key for the row under the cursor now, and an answer
- * takes it from the screen it reads after its moves (the `pick` step).
+ * with the cursor on it.
  *
  * Enter is sent in one list only, the list of models, where a row opens that model's levels.
  * In a list of levels the row that opens a list ("More reasoning…") stands beside rows whose
@@ -208,12 +206,12 @@ const CODEX_MODEL_ROW_RE = /^\s*([❯›>])?\s*(\d+)\.\s+(\S.*)$/;
 /** lines Codex puts under a list's title, at most: what the list is for, a warning */
 const CODEX_MODEL_NOTE_LINES = 2;
 
-/** how far back a footer is looked for, including words split across very narrow lines */
 const CODEX_MODEL_TAIL_LINES = 30;
 
 // Key names a list hint can display, including remapped keys. Restrict the key field so
 // ordinary words before a real footer cannot become a fictitious key name after joining lines.
-const CODEX_LIST_KEY_HINT = String.raw`(?:(?:ctrl|alt|shift|cmd|super)\+)*(?:enter|return|tab|space|esc|escape|backspace|delete|insert|home|end|pageup|pagedown|up|down|left|right|f\d{1,2}|[a-z0-9])`;
+// A chord's parts are joined by `+` in a footer (`alt+x`, Codex 0.167) and by `-` in its keymap and config (`ctrl-g`).
+const CODEX_LIST_KEY_HINT = String.raw`(?:(?:ctrl|alt|shift|cmd|super)[+-])*(?:enter|return|tab|space|esc|escape|backspace|delete|insert|home|end|pageup|pagedown|up|down|left|right|f\d{1,2}|[a-z0-9])`;
 
 const CODEX_MODEL_GUARD_HINT_RE = new RegExp(`^${CODEX_LIST_KEY_HINT}(?:select|default|apply|confirm)·(?:ssession·)?${CODEX_LIST_KEY_HINT}back$`, "i");
 
@@ -239,7 +237,6 @@ function codexModelHeader(lines: string[], first: number, allowPresets = false):
   return (match || (allowPresets && whole === "Select Model")) && notes.length <= CODEX_MODEL_NOTE_LINES ? { title: whole, model: match?.[1], notes } : null;
 }
 
-/** The key a Codex list's footer names for picking the row under the cursor; null for any other footer. */
 function codexModelRowKey(footer: string): AnswerStep | null {
   if (CODEX_MODEL_PICK_HINT_RE.test(footer)) return { text: "s" };
   return CODEX_MODEL_OPEN_HINT_RE.test(footer) ? { keys: [KEY.enter] } : null;
@@ -262,11 +259,102 @@ export function codexModelListWaits(screen: string): boolean {
     const footer = shown.slice(start).map(({ text }) => text).join("").replace(/\s+/g, "");
     if (/^enter(?:default|apply)·ssession·escback$/i.test(footer)) return true;
     if (!CODEX_MODEL_GUARD_HINT_RE.test(footer)) continue;
-    // The generic list footer needs a model header in the block immediately above its rows.
-    // Quick presets are recognized only by this guard, never offered as a readable card.
     const { rows, first, last } = listRows(lines, shown[start]!.index, CODEX_MODEL_ROW_RE, null);
     const intervening = lines.slice(last + 1, shown[start]!.index).some((line) => cleanLine(line) && !isDivider(cleanLine(line)));
     if (rows.length > 0 && !intervening && codexModelHeader(lines, first, true) !== null) return true;
+  }
+  return false;
+}
+
+// One key as a footer of Codex's names it (CODEX_LIST_KEY_HINT), the arrows it draws as signs, the paging keys' short
+// names, `?`, or a Ctrl chord in caret form (`^c`); several keys that do one thing are joined by a slash (`←/→`).
+const CODEX_FOOTER_KEY = String.raw`(?:${CODEX_LIST_KEY_HINT}|[←→↑↓⏎↵?]|pgup|pgdn|\^[a-z])`;
+const CODEX_FOOTER_KEYS = String.raw`${CODEX_FOOTER_KEY}(?:/${CODEX_FOOTER_KEY})*`;
+// what stands between a footer's items: ` · `, a run of spaces (the agents view, /resume), or 0.162's ` or `
+const CODEX_FOOTER_GAP = String.raw`(?:\s+·\s+|\s{2,}|\s+or\s+)`;
+/**
+ * The item of a footer that names the key leaving the screen, whole: `esc back`, `esc cancel`, `esc exit`,
+ * `esc save/close`, `q close`, `^c exit`, 0.162's `esc to go back`. `? / esc close`, under the composer while its
+ * shortcuts are shown, is not one: that key is no item's start there, and the composer still takes what is typed.
+ */
+const CODEX_FOOTER_LEAVES_RE = new RegExp(
+  `(?:^|${CODEX_FOOTER_GAP})(?:press\\s+)?${CODEX_FOOTER_KEYS}\\s+(?:to\\s+)?(?:go\\s+)?(?:back|cancel|close|exit|dismiss|quit|save/close)(?=$|${CODEX_FOOTER_GAP})`, "i");
+/** How a footer's row begins: a key and what it does, or what to type (`Type to find`). A status line begins with its model. */
+const CODEX_FOOTER_STARTS_RE = new RegExp(`^(?:(?:press\\s+)?${CODEX_FOOTER_KEYS}\\s+\\S|type to\\b)`, "i");
+/** Codex's search through the prompts sent before (Ctrl+R): its field is the screen's last row, with no footer. */
+const CODEX_HISTORY_SEARCH_RE = /^(?:reverse|forward)-i-search:/;
+/**
+ * /keymap waiting for the key a shortcut is remapped to: `Press the new key now. Esc cancels.` ends the screen, a
+ * sentence where every other screen has a footer. The Enter after a paste would be taken as the new key.
+ */
+const CODEX_KEY_CAPTURE_RE = /(?:^|\s)esc cancels\.$/i;
+/**
+ * The transcript's prompt browser: Esc in the transcript pager, which Ctrl+T opens with `[tui] fullscreen_transcript =
+ * false` (by default Ctrl+T leaves the composer). Its footer is the screen's last row and begins with a word, not a
+ * key, and Codex shortens it to one row as the pane narrows (0.167.0 to 0.167.2): `Browsing transcript · ↑↓/jk scroll ·
+ * ←→/hl prompts · ^t details · ↵ rewind · esc back` at 90 columns, `Browsing · ↑↓/jk ←→/hl · ↵ rewind · esc` at 50,
+ * `Browsing · esc back` at 30 and `Browsing · esc` at 20. There h, j, k and l move through the prompts, and Enter
+ * rewinds the conversation to the one picked.
+ */
+const CODEX_TRANSCRIPT_RE = /^Browsing(?: transcript)? · (?:.+ · )?esc(?: back)?$/;
+/**
+ * Narrower, the label alone: Codex keeps the first of those forms that fits its footer, the pane less two columns, and
+ * from 15 columns down only `Browsing` does (under 10 nothing does, and no footer is drawn).
+ */
+const CODEX_TRANSCRIPT_LABEL_COLUMNS = 15;
+
+export const CODEX_OWN_SCREEN_MESSAGE = "Codex has one of its own screens open in the terminal; close it there, then send";
+
+/** rows at the end of the screen a footer is looked for in: two rows of keys (/resume), or one a narrow pane wrapped */
+const CODEX_FOOTER_ROWS = 3;
+
+/**
+ * Whether one of Codex's own screens has the pane's input instead of its composer: a list (`/model` and its levels,
+ * `/permissions`, `/review`, `/theme`, `/resume`, `/experimental`, the folder question), a field (`/rename`, the
+ * transcript's Find, the search through earlier prompts), an editor (`/statusline`, `/keymap` and its view that waits
+ * for a new key), the agents view or a pager (`/diff`). herdr reports Codex at rest under each of them, so a chat message would be pasted there: a list
+ * drops the paste, and the Enter that follows takes the row under the cursor (seen on Codex 0.167: it changed the
+ * permission mode, answered the folder question, and under `enter default` would save a model for every new session).
+ *
+ * Each of them ends the screen with a footer of its keys that names the one leaving it (`enter select · esc back`,
+ * `space toggle · ←/→ reorder · enter save · esc cancel`, `? help  esc back  ↑/↓ move  enter open  n new`, `q close`
+ * under a pager's keys). The composer ends the screen with its status line and `← for agents · ? for shortcuts`,
+ * or with the status line alone over a draft, and names no such key. So the footer is looked for in the last rows
+ * of the screen, below the last row Codex marks `›` or `»` (a prompt, its composer, a list's cursor): an answer
+ * quoting a footer stands above the composer. A row counts when it begins as a footer does and holds that item
+ * whole, by itself or with the rows a narrow pane wrapped it onto, and nothing but rows of keys stands under it. The
+ * status line begins with its model, so a thread or a folder named like such an item is not one; a row that goes on
+ * from the one above it (cut at a `·`) is that row's end; and a line of a draft that reads like a footer has the
+ * status line under it.
+ */
+export function codexOwnScreenOpen(screen: string): boolean {
+  const rows = screen.replace(ANSI_RE, "").split(/\r?\n/).map((row) => row.trimEnd());
+  const filled = rows.map((row, at) => ({ text: row.trim(), at })).filter(({ text }) => text !== "");
+  if (filled.length === 0) return false;
+  const end = filled.at(-1)!;
+  if (CODEX_HISTORY_SEARCH_RE.test(end.text)) return true;
+  const browsing = CODEX_TRANSCRIPT_RE.test(end.text) || (end.text === "Browsing" && rows.every((row) => Bun.stringWidth(row) <= CODEX_TRANSCRIPT_LABEL_COLUMNS));
+  // not the end of a status line that a narrow pane cut at a `·`, where a thread or a folder may be named like that
+  // footer: such an end is indented as the status line is. The transcript's footer begins its row, whatever the
+  // transcript's last line ends with, and under the composer (Codex's `prompt_navigation` snapshot) the status line
+  // stands whole over it
+  if (browsing && !(/^\s/.test(rows[end.at]!) && /·$/.test(rows[end.at - 1] ?? ""))) return true;
+  const marked = findLastIndex(rows, (row) => /^[›»](?:\s|$)/.test(row));
+  const tail = filled.filter(({ at }) => at > marked).slice(-CODEX_FOOTER_ROWS);
+  // the sentence a view ends with instead of a footer, as one row or wrapped onto two, the first of them no status
+  // line (which begins with the model and holds a `·`)
+  const ending = tail.slice(-2);
+  if (ending.some((_, from) => !ending[from]!.text.includes("·") && CODEX_KEY_CAPTURE_RE.test(ending.slice(from).map((row) => row.text).join(" ")))) return true;
+  const starts = tail.map(({ text }) => CODEX_FOOTER_STARTS_RE.test(text));
+  for (let first = 0; first < tail.length; first += 1) {
+    if (!starts[first] || /·$/.test(rows[tail[first]!.at - 1] ?? "")) continue;
+    // the row itself, then with the rows under it, joined as a pane wraps a row: at a space, or after a slash
+    for (let last = first; last < tail.length; last += 1) {
+      // a footer ends the screen: under it stand only more rows of keys (/resume has two)
+      if (!starts.slice(last + 1).every(Boolean)) continue;
+      const wrapped = tail.slice(first, last + 1).map((row) => row.text);
+      if (CODEX_FOOTER_LEAVES_RE.test(wrapped.join(" ")) || CODEX_FOOTER_LEAVES_RE.test(wrapped.join(""))) return true;
+    }
   }
   return false;
 }
@@ -276,7 +364,6 @@ function parseCodexModel(screen: string): ParsedPrompt | null {
   const hintIndex = findLastIndex(lines, (_, index) => codexModelRowKey(wrapped(lines, index)) !== null);
   if (hintIndex < 0) return null;
   const { rows, first, last, unread } = listRows(lines, hintIndex, CODEX_MODEL_ROW_RE, null);
-  // the rows end right over their footer, and one of them carries the cursor
   if (unread || rows.length < 2 || rows.filter((row) => row.cursor).length !== 1 || lines.slice(last + 1, hintIndex).some((line) => line.trim() !== "")) return null;
   const header = codexModelHeader(lines, first);
   const names = listNames(rows);
@@ -285,10 +372,7 @@ function parseCodexModel(screen: string): ParsedPrompt | null {
   const selectedIndex = rows.findIndex((row) => row.cursor);
   const footer = codexModelRowKey(wrapped(lines, hintIndex))!;
   const opens = footer.keys !== undefined;
-  // the list of models, where a row opens a model's levels and Enter is its key
   const models = header.title === "Select Model and Effort";
-  // elsewhere a row that only opens a list is left to the terminal: the one Codex names so, and
-  // the one under the cursor when its footer says so
   const offered = rows.flatMap((_, row) => !models && (CODEX_MODEL_MORE_ROW_RE.test(drawn[row]!.label) || (row === selectedIndex && opens)) ? [] : [row]);
   if (offered.length === 0) return null;
   const current = names.findIndex(({ name }) => /\s\(current\)$/.test(name));
@@ -308,12 +392,9 @@ function parseCodexModel(screen: string): ParsedPrompt | null {
     multi_select: false,
     custom_option_index: null,
   }, {
-    // every row drawn, by its list, its number and what it says (the reasoning list of another
-    // model has the same rows): the cursor moves among all of them, offered or not
     responder: "codex-model", menuLabels: rows.map((row, index) => `${header.title}  ${row.number}. ${drawn[index]!.label}  ${drawn[index]!.description ?? ""}`), selectedIndex,
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
     optionSteps: offered.map((row) => [...keySteps(navigationKeys(row - selectedIndex)), { pick: true as const }]),
-    // Enter in the list of models alone; `s` wherever the footer offers it; no key otherwise
     rowKey: opens ? models ? footer : null : footer,
   });
 }

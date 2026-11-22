@@ -1,10 +1,4 @@
 /**
- * The panes whose alerts are off, shared with the other browsers of the server (the
- * `muted_panes` of shared/preferences.ts, through lib/preferencesSync.ts). One list for every
- * channel: push, the in-app alert, the chime and the tab notification all read it
- * (shared/notify-policy.ts paneAlertsMuted). A pane is keyed with its PC, as the alerts key it
- * (`paneStorageId`), so a pane id reused on another PC never inherits the mute.
- *
  * Nothing is kept in this browser: the server's document is the list, so it is null until a
  * document that carries it arrives, and stays null on a server too old to keep one; then no
  * row offers a mute, and no empty list is ever made up and sent.
@@ -18,7 +12,6 @@ export const paneMuteKey = paneStorageId;
 let muted: readonly string[] | null = null;
 const listeners = new Set<() => void>();
 
-/** The shared list as this page last heard it; null while no server has sent one. */
 export function currentPaneMutes(): readonly string[] | null {
   return muted;
 }

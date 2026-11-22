@@ -8,14 +8,12 @@ import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
 
 /**
  * Two web bridges on one herdr (a second install beside the first): herdr gives one of them
- * a terminal's attach. The other waits for it instead of ending the pane, and attaches as
- * soon as the first lets go.
+ * a terminal's attach.
  */
 const rootA = mkdtempSync(join(tmpdir(), "herdr-held-a-"));
 const rootB = mkdtempSync(join(tmpdir(), "herdr-held-b-"));
 const first = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: rootA });
 const second = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: rootB, attachHeldRetryMs: 200 });
-// a short read-race budget, so a wait for the other bridge outlasts it
 const third = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: rootB, attachHeldRetryMs: 200, attachRetryForMs: 300 });
 const workspaces: string[] = [];
 const sockets: WebSocket[] = [];
@@ -73,10 +71,6 @@ async function pane(): Promise<string> {
   return created.root_pane.pane_id;
 }
 
-/**
- * A herdr whose `terminal attach` answers from a script, one line per attempt (the last one
- * repeats); `real` runs the real attach.
- */
 function scriptedHerdr(attempts: string[]): { path: string; attempts: () => number } {
   const real = process.env["OVIS_HERDR_BIN"] || Bun.which("herdr") || "herdr";
   const dir = mkdtempSync(join(rootB, "scripted-herdr-"));
@@ -125,15 +119,12 @@ describe("a terminal another web bridge holds", () => {
       await b.open;
       b.send({ type: "attach", pane_id: paneId, cols: 100, rows: 30 });
       await until(() => b.state.errors.includes("attach_held"), "second bridge told the pane is held");
-      // several retries go by: still waiting, never ended, and told only once
       await Bun.sleep(900);
       expect(b.state.exits).toBe(0);
       expect(b.state.ready).toBe(0);
       expect(b.state.errors.filter((code) => code === "attach_held")).toHaveLength(1);
       expect(b.state.errors).not.toContain("attach_conflict");
-      // the error names its pane: a terminal that moved on to another pane ignores it
       expect(b.state.errorPanes[b.state.errors.indexOf("attach_held")]).toBe(paneId);
-      // the first bridge's attach was left alone
       expect(a.state.exits).toBe(0);
       // nothing is typed through the waiting bridge into a pane the other one has
       b.send({ type: "submit", id: 1, pane_id: paneId, text: "echo held", payload: "echo held" });
@@ -148,18 +139,15 @@ describe("a terminal another web bridge holds", () => {
       await Bun.sleep(500);
       expect(existsSync(marker)).toBe(false);
       expect(b.state.errors.filter((code) => code === "attach_held")).toHaveLength(2);
-      // A's own Enter runs it: the command was there to run
       a.send({ type: "input", pane_id: paneId, text: "\r" });
       await until(() => existsSync(marker), "first bridge runs its own command");
 
-      // the first bridge lets go: the second attaches on its next try
       a.send({ type: "detach", pane_id: paneId });
       await until(() => b.state.resumed === 1, "second bridge attached after the first let go");
       await until(() => b.state.frames > 0, "second bridge paints the terminal");
       expect(b.state.ready).toBe(1);
       expect(b.state.exits).toBe(0);
     } finally {
-      // B's next try must not run another test's scripted herdr
       a.ws.close();
       b.ws.close();
     }
@@ -184,17 +172,14 @@ describe("a terminal another web bridge holds", () => {
       watcher.send({ type: "take-over", pane_id: paneId });
       await until(() => watcher.state.errors.includes("read_only"), "observer refused");
 
-      // the second bridge takes it: it types into the pane now
       b.send({ type: "take-over", pane_id: paneId });
       await until(() => b.state.resumed === 1 && b.state.ready > 0, "second bridge took the pane");
-      // the first bridge waits, its terminal not ended
       await until(() => a.state.errors.includes("attach_held"), "first bridge told the pane is held");
       expect(a.state.exits).toBe(0);
       const marker = join(rootA, "typed-after-take-over");
       b.send({ type: "input", pane_id: paneId, text: `touch '${marker}'\r` });
       await until(() => existsSync(marker), "second bridge types into the pane");
 
-      // and takes it back the same way
       a.send({ type: "take-over", pane_id: paneId });
       await until(() => a.state.resumed === 1, "first bridge took it back");
       await until(() => b.state.errors.filter((code) => code === "attach_held").length === 2, "second bridge waits again");
@@ -211,7 +196,6 @@ describe("a terminal another web bridge holds", () => {
 describe("an attach classified as held", () => {
   it("is only herdr's own refusal: other output gets bounded live-terminal recovery", async () => {
     const paneId = await pane();
-    // the pane itself prints herdr's refusal (a log, say), then the attach fails for another reason
     const herdr = scriptedHerdr([`${HELD.replace("; exit 1", "")}; printf 'more pane output\\r\\n'; sleep 0.5; exit 1`]);
     await withHerdr(herdr.path, async () => {
       const client = connect(third.port, paneId);
@@ -233,7 +217,6 @@ describe("an attach classified as held", () => {
 
   it("gives a read race after the wait its full retry budget", async () => {
     const paneId = await pane();
-    // a read race, a wait for another bridge longer than the read-race budget, a read race, then real
     const herdr = scriptedHerdr([READ_RACE, HELD, HELD, HELD, READ_RACE, "real"]);
     await withHerdr(herdr.path, async () => {
       const client = connect(third.port, paneId);
@@ -251,8 +234,6 @@ describe("an attach classified as held", () => {
 
   it("is not pane output that shows herdr's refusal: a live attach whose screen has it is painted and resumes", async () => {
     const paneId = await pane();
-    // the pane waited for another bridge; its next attach takes, and its screen shows the refusal
-    // (an agent's log, say) with more output after it
     const shown = HELD.replace("; exit 1", "");
     const herdr = scriptedHerdr([HELD, `${shown}; printf 'more pane output\\r\\n'; sleep 10`]);
     await withHerdr(herdr.path, async () => {
@@ -283,7 +264,6 @@ describe("an attach classified as held", () => {
         client.send({ type: "attach", pane_id: paneId, cols: 100, rows: 30 });
         await until(() => herdr.attempts() === 3, "the real attach starts");
         await until(() => client.state.frames > 0, "the real attach paints");
-        // the late refusal neither resumed the pane nor held it a second time
         expect(client.state.resumed).toBe(1);
         expect(client.state.errors).toEqual(["attach_held"]);
         expect(client.state.exits).toBe(0);
@@ -293,7 +273,6 @@ describe("an attach classified as held", () => {
 
   it("keeps the pane held when a refusal's exit is overdue, and tries again instead of resuming", async () => {
     const paneId = await pane();
-    // herdr refuses, then refuses without its exit ever coming, refuses once more, then attaches
     const herdr = scriptedHerdr([HELD, `${HELD.replace("; exit 1", "")}; sleep 10`, HELD, "real"]);
     await withHerdr(herdr.path, async () => {
       const client = connect(third.port, paneId);
@@ -306,7 +285,6 @@ describe("an attach classified as held", () => {
         await Bun.sleep(2_150);
         client.send({ type: "keys", pane_id: paneId, keys: ["Enter"] });
         await until(() => client.state.errors.filter((code) => code === "attach_held").length === 2, "keys refused while held", 5_000);
-        // that try is retired and tried again: only the real attach resumes, and the refusal is never painted
         await until(() => client.state.resumed === 1, "the real attach resumes", 5_000);
         expect(herdr.attempts()).toBe(4);
         await until(() => client.state.frames > 0, "the real attach paints", 5_000);

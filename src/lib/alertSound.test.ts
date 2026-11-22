@@ -4,7 +4,6 @@ import { CHIME_NOTES, playAlertSound, previewAlertSound, recheckAlertSounds, unl
 /** A stand-in AudioContext that starts suspended, as a page's does before any tap or key. */
 const started: number[] = [];
 const startedAt: number[] = [];
-/** the notes stopped before they started: they never sound */
 const cut: number[] = [];
 let disconnected = 0;
 let resumes = 0;
@@ -13,7 +12,6 @@ class FakeAudioContext {
   // "interrupted" is iOS Safari's state after a phone call or a switch away: not in the DOM typings
   state: "suspended" | "running" | "closed" | "interrupted" = "suspended";
   constructor() { made.push(this); }
-  // set by the tests: a real context's clock runs on its own
   currentTime = 0;
   destination = {};
   async resume() { resumes += 1; this.state = "running"; }
@@ -43,7 +41,6 @@ afterAll(() => {
   Object.assign(globalThis, { AudioContext: saved });
 });
 
-/** Lets the chime of the tab's last test end, and forgets what it played. */
 function quiet(): FakeAudioContext {
   const audio = made.at(-1)!;
   audio.currentTime += 10;
@@ -86,7 +83,6 @@ describe("alert sound", () => {
     expect(started).toEqual([]);
     expect(await unlockAlertSound()).toBe(true);
     expect(made.length).toBe(2);
-    // the new context's clock starts again at 0: the old context's chime is not this one's
     playAlertSound("done");
     expect(started).toEqual([...CHIME_NOTES.done]);
   });
@@ -105,7 +101,6 @@ describe("alert sound", () => {
 });
 
 describe("one chime at a time", () => {
-  // a running context of its own, so the suite also runs when it is the only one picked
   beforeAll(async () => { await unlockAlertSound(); });
   beforeEach(() => { quiet(); });
 
@@ -169,17 +164,14 @@ describe("one chime at a time", () => {
     playAlertSound("done");
     const pending = playAlertSound("blocked", () => !muted);
     expect(started).toEqual([...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);
-    // still wanted: asking again changes nothing
     recheckAlertSounds();
     expect(cut).toEqual([]);
-    // the pane is muted after the question was queued and before its notes start
     audio.currentTime += 0.1;
     muted = true;
     recheckAlertSounds();
     expect(cut).toEqual([...CHIME_NOTES.blocked]);
     expect(disconnected).toBe(CHIME_NOTES.blocked.length);
     expect(await pending).toBe(false);
-    // the finish's notes are left as they were, and the next question starts where the finish ends
     playAlertSound("blocked");
     expect(startedAt.at(-2)).toBeCloseTo(now + LENGTH);
   });
@@ -188,11 +180,9 @@ describe("one chime at a time", () => {
     const audio = made.at(-1)!;
     const muted = new Set<string>();
     playAlertSound("done");
-    // B and C each ask while the finish sounds: one question chime tells both
     const b = playAlertSound("blocked", () => !muted.has("B"));
     const c = playAlertSound("blocked", () => !muted.has("C"));
     expect(started).toEqual([...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);
-    // only B is muted before the question starts: C still wants it, so it is not silenced
     audio.currentTime += 0.1;
     muted.add("B");
     recheckAlertSounds();
@@ -225,7 +215,6 @@ describe("one chime at a time", () => {
     muted = true;
     recheckAlertSounds();
     expect(await b).toBe(false);
-    // C asks after B's question was cancelled: it gets a question chime of its own, after the preview
     audio.currentTime += 0.1;
     const c = playAlertSound("blocked");
     expect(started).toEqual([...CHIME_NOTES.done, ...CHIME_NOTES.blocked, ...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);
@@ -251,7 +240,6 @@ describe("one chime at a time", () => {
     previewAlertSound();
     playAlertSound("blocked");
     expect(started).toEqual([...CHIME_NOTES.blocked, ...CHIME_NOTES.done]);
-    // the question has ended and only the preview sounds: a new question is not told by it
     audio.currentTime += LENGTH + 0.01;
     playAlertSound("blocked");
     expect(started).toEqual([...CHIME_NOTES.blocked, ...CHIME_NOTES.done, ...CHIME_NOTES.blocked]);

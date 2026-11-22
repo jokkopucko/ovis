@@ -6,11 +6,9 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings > Appearance > Context left on agent rows (#1305) on the demo roster: what the server
-// says each pane's last request filled (HerdrPane.context) on checkout-api's Claude (40% left),
-// web-dashboard's Codex (15% left) and the OMP agent (no window known). Only this disposable demo
-// fixture is rewritten; no live session is read.
+// Only this disposable demo fixture is rewritten; no live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-context-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const patch = `(() => {
@@ -55,15 +53,7 @@ try {
   writeFileSync(join(app, "sidebar-context.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-context.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -81,19 +71,16 @@ try {
             await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.shell)}`);
             if (phone) {
               await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
-              // the phone's drawer starts with Agents folded
               const toggle = page.locator(".agent-section-toggle");
               if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
             }
             await row(page, panes.api).waitFor();
           };
 
-          // never chosen: the sidebar stays as it is
           await open();
           assert.equal(await page.locator(".agent-list .context-count").count(), 0, "off by default, no row draws a ring");
           const heightOff = (await row(page, panes.api).boundingBox())!.height;
 
-          // turned on for this device
           await page.evaluate(() => localStorage.setItem("ovis:sidebar-context", "true"));
           await open();
           await ring(page, panes.api).waitFor();
@@ -114,7 +101,6 @@ try {
           }, [panes.api, panes.web] as const);
           assert.equal(colors.low, colors.blocked, "red at 20% left or less");
           assert.notEqual(colors.plain, colors.blocked, "plain above it");
-          // the ring sits in the row's status, inside the row, and the row keeps its height
           assert.equal((await row(page, panes.api).boundingBox())!.height, heightOff, "the row keeps its height");
           const inside = await row(page, panes.web).evaluate((item) => {
             const outer = item.getBoundingClientRect();
@@ -127,7 +113,6 @@ try {
             await page.locator(".agents-sidebar").screenshot({ path: join(evidence, `context-ring-${phone ? "390" : "1280"}-${theme}.png`) });
           }
 
-          // a new figure comes with the roster, and a context that goes takes its ring along
           await page.evaluate((pane) => (window as unknown as { __context: { report(paneId: string, context: object | null): void } }).__context.report(pane, { used: 190000, window: 200000 }), panes.api);
           await page.waitForFunction((pane) => document.querySelector(`.agent-list .agent-item[data-pane="${pane}"] .context-count`)?.className === "context-count is-low", panes.api);
           assert.equal((await ring(page, panes.api).textContent())?.trim(), "5%");

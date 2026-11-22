@@ -1,8 +1,6 @@
 name: Mac app
-# Builds Ovis for Mac (app/mac) from a release's tag, signs it with the Developer ID, notarizes and
-# staples it, and attaches it to that release as Ovis.dmg, which https://ovis.sh/Ovis.dmg hands out
-# through releases/latest. Release calls it after publishing (a release made with GITHUB_TOKEN fires
-# no release event, so nothing else would). Run it by hand to give an existing release its dmg.
+# Release calls it after publishing (a release made with GITHUB_TOKEN fires
+# no release event, so nothing else would).
 # Without the signing secrets it skips with a notice; app/mac/README.md lists them.
 on:
   workflow_call:
@@ -24,7 +22,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   gate:
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # it reads the signing secrets (only whether they are set), which Release passes on: GitHub-hosted whatever the
+    # runner variables say (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       ready: ${{ steps.check.outputs.ready }}
@@ -94,7 +94,6 @@ jobs:
           security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
           rm -f "$RUNNER_TEMP/developer-id.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
-          # shellcheck disable=SC2046 # keep the existing keychains, one word each
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^ *[0-9]*) [0-9A-F]* "\(Developer ID Application: [^"]*\)".*$/\1/p' | head -n 1)
           if [ -z "$identity" ]; then
@@ -124,9 +123,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           gh release upload "$RELEASE_TAG" app/mac/build/Ovis.dmg --clobber
-          # Release publishes without marking it latest, so ovis.sh/Ovis.dmg and ovis.sh/Ovis.exe keep the
-          # previous files until this release has both (the Windows app job does the same check); a run
-          # for an older tag leaves the newest release latest
           git fetch --quiet --tags origin
           if [ "$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)" = "$RELEASE_TAG" ] &&
              [ "$(gh release view "$RELEASE_TAG" --json assets --jq '[.assets[].name] | (index("Ovis.dmg") != null and index("Ovis.exe") != null)')" = true ]; then

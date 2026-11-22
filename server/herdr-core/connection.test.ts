@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { legacyName } from "../legacy-env.ts";
-import { spawnHcConnect } from "./connection.ts";
+import { spawnHcConnect } from "./hc-connect.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-hc-connect-env-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -25,11 +25,9 @@ it.skipIf(process.platform === "win32")("runs hc connect without the server's ow
     HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1", HERDR_WORKSPACE_ID: "w1", HERDR_SOCKET_PATH: join(dir, "herdr.sock"), HERDR_AGENT: "claude", HERDR_BIN_PATH: "/usr/bin/herdr" };
   const user = { HC_SOCKET: join(dir, "hc.sock"), XDG_RUNTIME_DIR: join(dir, "run"), LANG: "ko_KR.UTF-8", SSH_AUTH_SOCK: join(dir, "agent.sock"), PATH: process.env["PATH"] ?? "/usr/bin:/bin" };
   const leaked = (env: Record<string, string>) => Object.keys(server).filter((name) => name in env);
-  // as runtime.ts hcEnv() hands it in (OVIS_HC_ENV over this process's env)
   const given = await connectEnv({ ...server, ...user });
   expect(leaked(given)).toEqual([]);
   expect(given).toMatchObject(user);
-  // and with no env given: this process's own, the usual case
   const saved = Object.fromEntries(Object.keys({ ...server, ...user }).map((name) => [name, process.env[name]]));
   Object.assign(process.env, server, user);
   try {

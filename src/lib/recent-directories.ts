@@ -9,7 +9,7 @@ function directoryPath(cwd: string | null | undefined): string | null {
 /**
  * A folder that is no project to start a workspace in: a worktree checkout (herdr makes its own
  * under ~/.herdr/worktrees; `worktrees` names the linked ones a PC has open) or a temporary
- * directory. Recent folders leave these out.
+ * directory.
  */
 export function passingFolder(path: string, worktrees: readonly string[] = []): boolean {
   const lexical = directoryPath(path) ?? path;
@@ -22,7 +22,6 @@ export function passingFolder(path: string, worktrees: readonly string[] = []): 
 
 type DirectoryStorage = Pick<Storage, "getItem" | "setItem">;
 
-/** Store canonical absolute paths from snapshots; ~/ input is captured after the PC resolves it. */
 function absoluteDirectories(values: readonly unknown[]): string[] {
   const paths = values.flatMap((value) => {
     if (typeof value !== "string" || !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u.test(value)) return [];
@@ -33,10 +32,8 @@ function absoluteDirectories(values: readonly unknown[]): string[] {
 }
 
 /**
- * Folder history belongs to a PC, not its live panes. Missing panes never delete history.
- * A folder a workspace was started in goes to the front (`promote`); one only seen in a pane
- * goes behind what is kept. A pane's folder follows every `cd` of its shell, so a folder seen
- * there is somewhere a shell has been, not a project that was opened.
+ * A pane's folder follows every `cd` of its shell, so a folder seen there is somewhere a shell has
+ * been, not a project that was opened.
  */
 export class RecentDirectoryStore {
   private readonly memory = new Map<string, string[]>();
@@ -55,7 +52,7 @@ export class RecentDirectoryStore {
           return paths;
         }
       }
-    } catch { /* Unavailable or malformed browser storage retains this page's history. */ }
+    } catch {}
     return this.memory.get(machineId) ?? [];
   }
 

@@ -14,7 +14,6 @@ function Probe(facts: Facts) {
   return null;
 }
 
-/** what the hook says after these facts are rendered */
 async function render(facts: Facts): Promise<boolean> {
   await act(async () => {
     if (renderer) renderer.update(createElement(Probe, facts));

@@ -5,15 +5,22 @@ import type { PendingPush, PendingPushStore } from "../push.ts";
 export { base64url, ServerIdentityChangedError, sign } from "../../../shared/relay-device.ts";
 export type { RelayDevice } from "../../../shared/relay-device.ts";
 
-/** The version a PC's last admission named, and whether it was older than this shell accepts. */
 export interface ObservedVersion { readonly version: string; readonly outdated: boolean }
-/** A saved PC as this browser keeps it: the shared record plus the version its last admission named (updateFlow.ts). */
 export type EnrollmentState = "pending" | "complete" | "failed";
 export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion; readonly account_enrollment?: { readonly account: string; readonly state: EnrollmentState } };
 
 export interface RelayDeviceStore extends SharedRelayDeviceStore {
   /** Reads and checks `source` in the target's write transaction before applying `change`. */
   update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice, source?: { readonly serverId: string; readonly assert: (current: RelayDevice | undefined) => void }): Promise<RelayDevice>;
+}
+
+/** The store the hosted shell keeps its pairings in. */
+export interface ShellDeviceStore extends RelayDeviceStore {
+  /**
+   * Forgets a PC only while its saved record is still the row `deviceId`, read and deleted in one write transaction:
+   * a Forget or a newer pairing made since (another tab) stands. True when it forgot it.
+   */
+  removeRow(serverId: string, deviceId: string): Promise<boolean>;
 }
 
 export function enrollmentOf(device: RelayDevice, account?: string): EnrollmentState | undefined {
@@ -24,7 +31,6 @@ export function enrollmentOf(device: RelayDevice, account?: string): EnrollmentS
   return value.state === "pending" || value.state === "complete" || value.state === "failed" ? value.state : undefined;
 }
 
-/** The version kept on a saved record, if a well-formed one is there (the record is read back from IndexedDB). */
 export function observedVersionOf(device: RelayDevice): ObservedVersion | undefined {
   if (!("observed_version" in device)) return undefined;
   const value: unknown = device.observed_version;
@@ -32,7 +38,7 @@ export function observedVersionOf(device: RelayDevice): ObservedVersion | undefi
   return typeof value.version === "string" && typeof value.outdated === "boolean" ? { version: value.version, outdated: value.outdated } : undefined;
 }
 
-export const indexedDeviceStore: RelayDeviceStore = {
+export const indexedDeviceStore: ShellDeviceStore = {
   async get(serverId) {
     const db = await openDatabase();
     try {
@@ -67,6 +73,25 @@ export const indexedDeviceStore: RelayDeviceStore = {
       });
     } finally { db.close(); }
   },
+  async removeRow(serverId, deviceId) {
+    const db = await openDatabase();
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const tx = db.transaction(["devices", "pending-push"], "readwrite");
+        const devices = tx.objectStore("devices");
+        let removed = false;
+        const request: IDBRequest<RelayDevice | undefined> = devices.get(serverId);
+        request.onsuccess = () => {
+          if (request.result?.device_id !== deviceId) return;
+          devices.delete(serverId);
+          tx.objectStore("pending-push").delete(serverId);
+          removed = true;
+        };
+        tx.oncomplete = () => resolve(removed);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  },
   async update(serverId, change, source) {
     const db = await openDatabase();
     try {
@@ -96,7 +121,6 @@ export const indexedDeviceStore: RelayDeviceStore = {
   },
 };
 
-/** The subscriptions each PC's worker kept for the shell to register (lib/push.ts registerPendingPush). */
 export const indexedPendingPush: PendingPushStore = {
   async get(serverId) {
     const db = await openDatabase();
@@ -124,10 +148,6 @@ export const indexedPendingPush: PendingPushStore = {
   },
 };
 
-/**
- * The shell's database. Version 2 added `pending-push`, which the worker writes too: public/sw.js
- * openRelayDatabase opens the same name and version with the same stores.
- */
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("ovis-relay", 2);

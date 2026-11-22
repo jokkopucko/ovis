@@ -4,40 +4,25 @@
    change of it resizes the pane for every device on it. The masked input (SecretInput.css) takes
    the line's place the same way. */
 .terminal-input-slot {
-  /* the room under the line's controls; more where the line is the screen's bottom row (below) */
   --terminal-input-pad-bottom: var(--space-1);
   position: relative;
   flex-shrink: 0;
-  /* .terminal-input at one row: its top border, its padding above and below, the field's label and
-     the gap under it, then the taller of the round targets and a one-row .terminal-input-text (same
-     font size, line height, padding and border); the actions' words sit beside the label */
   height: calc(var(--hairline) + var(--space-1) + var(--terminal-input-pad-bottom) + var(--fs-chat) * var(--lh-tight) + var(--space-2)
     + max(var(--touch-target), max(var(--fs-input), var(--fs-xl)) * var(--lh-base) + 2 * var(--space-2) + 2 * var(--hairline)));
 }
 
-/* Settings > Terminal > Fold the key bar (#1531): with the key bar folded the line can be the screen's
-   bottom row (PaneTerminal.tsx measures it), and keeps clear of the home indicator */
 .terminal-input-slot.is-at-screen-bottom {
   --terminal-input-pad-bottom: max(var(--space-2), env(safe-area-inset-bottom, 0px));
 }
 
-/* the masked input stands in on a pane that types straight into the grid: no row is kept */
 .terminal-input-slot.is-empty {
   height: 0;
 }
 
-/* the chat lens keeps the masked input in this slot too (PaneTerminal.tsx), in flow: no box. A
-   terminal command's peek over the chat shows the grid, so the slot is the terminal lens's there */
 .terminal-stack.is-chat:not(.is-peek) > .terminal-input-slot {
   display: contents;
 }
 
-/* the terminal's input line on touch screens (TerminalInput.tsx): one row that grows to four,
-   under its visible label, with an insert button (the text to the prompt, no Enter) and a send
-   button that reads Enter while the line is empty, each named in words above its round target.
-   It hangs from the slot's bottom edge, so it grows upward; the dictation pill floats above it.
-   It reaches the grid's top at most (--terminal-input-room, measured by PaneTerminal.tsx): past
-   that the text scrolls */
 .terminal-input {
   position: absolute;
   right: 0;
@@ -50,8 +35,6 @@
   max-height: var(--terminal-input-room);
   gap: var(--space-2);
   align-items: end;
-  /* the same room under the field and the send button as over them, so they never sit on the key
-     bar's rule (or the screen's edge) below; the sides keep the key bar's --space-2 */
   padding: var(--space-1) var(--space-2) var(--terminal-input-pad-bottom);
   border-top: var(--hairline) solid var(--border);
   background: var(--bg-panel);
@@ -61,9 +44,6 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
-/* with Terminal keys in the line (Settings > Terminal > Fold the key bar) the actions may not fit the
-   narrowest phone beside the field with Attach and the microphone on too: the field keeps a width to type in, and the actions wrap to a
-   second row above their last one (the line grows upward, as a long draft does), Send kept last */
 .terminal-input.has-key-controls {
   grid-template-columns: minmax(min(8rem, 40%), 1fr) minmax(0, auto);
 }
@@ -78,7 +58,6 @@
   min-width: 0;
 }
 
-/* the field's name, above it on the left; the actions' words stand level with it on the right */
 .terminal-input-label {
   grid-column: 1;
   grid-row: 1;
@@ -92,7 +71,6 @@
   grid-row: 2;
 }
 
-/* the same round target as the send button beside it */
 .terminal-input-mic .voice-mic {
   width: var(--touch-target);
   height: var(--touch-target);
@@ -107,7 +85,7 @@
   grid-column: 1;
   grid-row: 2;
   min-height: var(--touch-target);
-  max-height: 100%; /* of its row, which the line's cap above shortens */
+  max-height: 100%;
   padding: var(--space-2) var(--space-3);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
@@ -120,15 +98,13 @@
   resize: none;
 }
 
-/* with Terminal keys in the line (Settings > Terminal > Fold the key bar) the field is narrower on a
-   phone: its placeholder is cut on one row rather than wrapped to a second, which would grow the line */
 .terminal-input.has-key-controls .terminal-input-text::placeholder {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.terminal-input-text:focus {
+.terminal-input-text:focus:not(:focus-visible) {
   outline: none;
   border-color: var(--accent);
 }
@@ -138,8 +114,6 @@
   outline-offset: var(--ring-offset);
 }
 
-/* the two actions, the last grid column from the label's row down: Insert first, Send last at
-   the edge, as the composer's. Each is its words over its round target, one button */
 .terminal-input-actions {
   display: inline-flex;
   grid-column: -2;
@@ -153,7 +127,6 @@
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  /* the label's own gap to the field: the words stand level with the label */
   gap: var(--space-2);
   min-width: var(--touch-target);
   padding: 0;
@@ -215,15 +188,11 @@
   color: var(--text-strong);
 }
 
-/* Terminal keys, first in the line (KeyBar.tsx LineKeysButton): pressed as an armed key while the row is open */
 .terminal-input-keys[aria-pressed="true"] .terminal-input-face {
   border-color: var(--accent);
   color: var(--text-strong);
 }
 
-/* off (an empty line, a send on its way, offline): the face turns to a dashed outline and the words
-   and glyph to the dim text colour, a shape and a colour that both still read at 3:1 or more,
-   rather than a fade */
 .terminal-input-action:disabled {
   color: var(--text-dim);
   cursor: default;
@@ -249,7 +218,6 @@
   line-height: var(--lh-tight);
 }
 
-/* a paste still reading the clipboard: said, not warned */
 .terminal-input-note.is-pending {
   color: var(--text-dim);
 }

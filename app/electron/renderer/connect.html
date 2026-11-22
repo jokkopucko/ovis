@@ -29,6 +29,11 @@
       <button type="button" class="primary" id="retry" hidden data-ko="다시 시도">Try again</button>
       <button type="button" id="logs" data-ko="로그 보기">Show logs</button>
     </div>
+    <!-- a downloaded update, in the app's own words (src/text.ts): also when the server here cannot start -->
+    <div class="update" id="update" role="status" hidden>
+      <span id="update-text"></span>
+      <button type="button" id="update-install"></button>
+    </div>
   </main>
   <script src="connect.js"></script>
 </body>

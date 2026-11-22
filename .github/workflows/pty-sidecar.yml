@@ -1,16 +1,8 @@
 name: Rust PTY host binaries
-# Builds the Rust PTY host (crates/pty-sidecar) that each release ships for Linux and macOS: a static
-# (musl) binary for linux-x64 and linux-arm64, and a universal (arm64 + x86_64), ad-hoc signed one
-# for macOS, plus ovis-pty-sidecar.json (version, the crate's git tree, SHA-256 per platform) and
-# SHA256SUMS. scripts/pty-sidecar.ts install fetches them by package.json's version.
-# Release calls this before it publishes and attaches the files to the release it creates, so a
-# tag never exists without them. pty-sidecar-attach.yml runs it by hand for a release that has none.
-# Building only reads. For Release and the repair run, the attest job then signs each binary's build
-# provenance (gh attestation verify --repo devswha/ovis), so an install can tell the bytes came from
-# this workflow and not only that they match the manifest beside them; a called workflow may not ask
-# for more permissions than its caller grants, so both callers grant id-token and attestations.
-# A pull request touching the host or the PTY code runs the same builds, cargo test, and on Linux
-# the PtySession checks on the built binary.
+# For Release, and for a repair run dispatched from the tag it builds, the attest job then signs each
+# binary's build provenance (gh attestation verify --repo devswha/ovis), so an install can tell the bytes
+# came from this workflow and not only that they match the manifest beside them; a called workflow may
+# not ask for more permissions than its caller grants, so both callers grant id-token and attestations.
 on:
   pull_request:
     paths:
@@ -39,7 +31,7 @@ jobs:
           - { asset: linux-x64, os: ubuntu-24.04 }
           - { asset: linux-arm64, os: ubuntu-24.04-arm }
           - { asset: darwin-universal, os: macos-15 }
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ fromJSON(matrix.os == 'macos-15' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_LABELS || toJSON(matrix.os)) }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,8 +39,11 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        env:
+          HOME: ${{ runner.temp }}/setup-bun-home
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - name: Rust toolchain
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -63,6 +58,7 @@ jobs:
         if: runner.os == 'Linux'
         with:
           node-version: '22'
+          package-manager-cache: false
       - if: runner.os == 'Linux'
         run: bun install --frozen-lockfile
       - name: PtySession on the built binary, beside the Node sidecar
@@ -88,7 +84,8 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pty-sidecar-*

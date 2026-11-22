@@ -329,7 +329,6 @@ describe("gjc discovery", () => {
     expect(commands.every((command) => command.provenance?.verified === true)).toBe(true);
   });
 
-  // a selector, the OAuth selector or a confirmation only some typed forms open
   const SELECTOR_FORMS: Record<string, CommandForm[]> = {
     routing: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "none" }],
     provider: [{ match: "bare", interaction: "terminal" }, { match: { sub: "login" }, interaction: "terminal" }, { match: "other", interaction: "unknown" }],

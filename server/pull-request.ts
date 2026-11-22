@@ -7,7 +7,6 @@ import { PULL_REQUEST_LOG_CHARS, PULL_REQUEST_LOG_LINES, PULL_REQUEST_MAX_COMMEN
   type PullRequestCheck, type PullRequestCheckLog, type PullRequestCheckState, type PullRequestMergeMethod, type PullRequestThread, type PullRequestView } from "../shared/pull-request.ts";
 
 export interface PullRequestOptions {
-  /** the gh command; the one on PATH when absent */
   gh?: readonly string[];
   deadlineMs?: number;
 }
@@ -21,12 +20,10 @@ export class PullRequestError extends Error {
 const DEADLINE_MS = 20_000;
 /** a pull request's JSON with its checks is a few hundred kilobytes at most */
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
-/** a job's log is read in full and only its tail kept */
 const LOG_KEEP_BYTES = 256 * 1024;
 const MAX_STDERR_BYTES = 16 * 1024;
 const OID = /^[0-9a-f]{40}$/;
 const JOB_ID = /^[0-9]{1,20}$/;
-/** a host name as a pull request's address carries it, with an optional port */
 const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?$/;
 const MERGEABLE_STATES = new Set(["clean", "unstable", "has_hooks"]);
 const MERGE_QUEUE_QUERY = "query($owner:String!,$name:String!,$base:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$base){id}}}";
@@ -35,7 +32,6 @@ const PR_FIELDS = "number,title,url,state,isDraft,headRefName,baseRefName,headRe
 const THREAD_PAGES = 10;
 const THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!,$base:String!,$after:String){repository(owner:$owner,name:$name){viewerDefaultMergeMethod mergeQueue(branch:$base){id} pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line comments(first:1){totalCount nodes{author{login} body url}}}}}}}`;
 
-/** gh never prompts, pages, colours or checks for updates here */
 function ghEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
@@ -152,7 +148,6 @@ function threadsOf(connection: Record<string, unknown>): PullRequestThread[] {
 /** `-f`, not `-F`: gh would send a repository named `2048` or `true` as a number or a boolean */
 const repositoryVariables = (owner: string, name: string): string[] => ["-f", `owner=${owner}`, "-f", `name=${name}`];
 
-/** host, owner and name of a pull request's address; null when it is not one */
 function placeOf(url: string | null): { host: string; owner: string; name: string } | null {
   const match = url?.match(/^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/\d+/);
   return match ? { host: match[1]!, owner: match[2]!, name: match[3]! } : null;
@@ -228,7 +223,6 @@ export async function pullRequestLog(cwd: string, jobId: string, host: string, o
   const run = await runGh(cwd, ["api", ...(host === "github.com" ? [] : ["--hostname", host]), `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`], options, true);
   if (run.code !== 0) throw failure(run.stderr, "gh could not read that job's log");
   const lines = run.stdout.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(TIMESTAMP, "").replace(ESCAPES, "").replace(CONTROLS, ""));
-  // the first line of a tail that was cut is a part of one
   if (run.overflow) lines.shift();
   while (lines.length > 0 && lines.at(-1)!.trim() === "") lines.pop();
   let kept = lines.slice(-PULL_REQUEST_LOG_LINES);

@@ -23,10 +23,8 @@ it("preserves ordinary pane output, incomplete diagnostics and diagnostics witho
   expect(tail.push(teardown + "herdr: server shut down: term") + tail.flush(true)).toBe(teardown + "herdr: server shut down: term");
 });
 
-// the bridge's own test: setup is mode switches and cursor styles, maybe cut short (server/index.ts)
 const PREAMBLE = /^(?:\x1b\[(?:\?[\d;]+[hl]|\d* q))*(?:\x1b(?:\[(?:\?[\d;]*|\d+ ?| )?)?)?$/;
 
-/** Feeds reads as the bridge does: each sees what earlier reads already let through. */
 function feed(probes: AttachStartupProbes, reads: string[]): { output: string; replies: string } {
   let output = "";
   let replies = "";

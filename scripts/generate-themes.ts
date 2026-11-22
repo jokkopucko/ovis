@@ -1,25 +1,8 @@
 #!/usr/bin/env bun
 /**
- * Generate the theme data and the static color copies from the theme blocks of src/styles.css,
- * the one place theme colors are authored.
- *
  *   bun run scripts/generate-themes.ts                # write the generated outputs
  *   bun run scripts/generate-themes.ts --check        # fail if a committed output is stale; never writes
  *   bun run scripts/generate-themes.ts --root <dir>   # work on a copy of the repo (tests)
- *
- * Outputs, and why each is written the way it is:
- *
- * - src/lib/themes.generated.ts is written whole: the supported (theme, mode) entries, each with its
- *   declared roles, xterm colors and panel color, so runtime code never parses CSS.
- * - DESIGN.md: only the amber palette and terminal rows between `<!-- BEGIN GENERATED THEMES -->` and
- *   `<!-- END GENERATED THEMES -->`. Everything outside the markers stays handwritten.
- * - index.html `<meta name="theme-color">` and the manifest's theme_color and background_color, in the
- *   default theme's dark colors (DEFAULT_ID, src/lib/themes.ts DEFAULT_THEME): one targeted replacement
- *   each, so the rest of those files keeps its bytes.
- *
- * Every copy fails closed: a missing, repeated or out-of-order marker, or a target found other
- * than exactly once, stops the run with the file and marker named. Output is deterministic (CSS
- * order, no timestamps), and src/styles.css is only ever read.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -35,13 +18,11 @@ export const OUTPUTS = {
   manifest: "public/manifest.webmanifest",
 } as const;
 
-/** src/lib/themes.ts DEFAULT_THEME, kept apart so this script reads no generated module (settings.test.ts holds them equal) */
 export const DEFAULT_ID = "codex";
 
 export const DESIGN_BEGIN = "<!-- BEGIN GENERATED THEMES -->";
 export const DESIGN_END = "<!-- END GENERATED THEMES -->";
 
-/** The amber palette rows of DESIGN.md, in reading order: the role label and its token. */
 const DESIGN_ROWS: readonly (readonly [label: string, token: string])[] = [
   ["Surface/base", "--bg"],
   ["Surface/panel", "--bg-panel"],
@@ -139,9 +120,7 @@ export function renderModule(css: string, blocks = parseThemeBlocks(css), amber 
       `    roles: [${roles.map((role) => JSON.stringify(role)).join(", ")}],`,
       `    terminal: { background: ${color("term-bg")}, foreground: ${color("term-fg")}, cursor: ${color("term-cursor")}, selectionBackground: ${color("term-selection")}${ansi} },`,
       `    bgPanel: ${color("bg-panel")},`,
-      // the page's own surface, which the boot script paints before the stylesheet arrives (src/theme-bootstrap.ts)
       `    bg: ${color("bg")},`,
-      // the few colours Settings' theme cards draw a theme with (SettingsDialog.tsx, ThemeCards)
       `    preview: { elevated: ${color("bg-elevated")}, border: ${color("border")}, text: ${color("text")}, textDim: ${color("text-dim")}, accent: ${color("accent")}, primary: ${color("primary")} },`,
       "  },",
     ].join("\n");
@@ -218,7 +197,6 @@ export function renderIndex(css: string, html: string, theme = resolveTheme(pars
   return output;
 }
 
-/** The keys of the top-level object of valid JSON, decoded, with the span of each value that is a string. */
 function topLevelKeys(json: string): { key: string; value: { start: number; end: number } | null }[] {
   const stringEnd = (at: number): number => {
     let index = at + 1;
@@ -268,7 +246,6 @@ export function renderManifest(css: string, json: string, theme = resolveTheme(p
   });
   let text = json;
   for (const edit of edits.sort((a, b) => b.start - a.start)) text = `${text.slice(0, edit.start)}${edit.value}${text.slice(edit.end)}`;
-  // the targeted edit must leave valid JSON whose other keys are untouched
   const after = JSON.parse(text) as Record<string, unknown>;
   if (JSON.stringify({ ...before, ...values }) !== JSON.stringify(after)) {
     throw new Error(`${OUTPUTS.manifest}: the theme color edit changed more than theme_color and background_color`);

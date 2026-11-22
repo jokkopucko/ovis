@@ -8,8 +8,6 @@ import { herdrRpc, paneSplit, workspaceClose, workspaceCreate } from "./herdr/cl
 import type { RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { createServer } from "./index.ts";
 
-// One herdr workspace in the test session: a Codex the person ended, its conversation in a fictional
-// Codex store, beside an idle Codex whose input line Ovis cannot read. No Codex runs; herdr is told.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-runtime-move-")));
 const SECRET = "test-runtime-move-secret";
 const ENDED = "00000000-0000-4000-8000-000000000002";

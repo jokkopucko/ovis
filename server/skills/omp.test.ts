@@ -227,13 +227,11 @@ describe("omp builtin registry", () => {
   });
 
   it("gives model, switch, handoff and btw their own forms", () => {
-    // a bare /model reaches omp as /switch, whose session-only picker the omp-model card answers
     expect(source.forms?.model).toEqual([{ match: "bare", interaction: "dialog", dialog: "omp-model" }, { match: "other", interaction: "none" }]);
     expect(source.forms?.switch).toEqual(source.forms?.model);
     expect(source.forms?.handoff).toEqual([
       { match: "bare", interaction: "dialog", dialog: "omp-handoff" }, { match: "other", interaction: "dialog", dialog: "omp-handoff" },
     ]);
-    // bare opens the BTW history overlay; a question is answered beside the editor
     expect(source.forms?.btw).toEqual([{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "none" }]);
     expect(source.forms?.modelpreset).toEqual([{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "none" }]);
     expect(source.forms?.move).toEqual([{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }]);

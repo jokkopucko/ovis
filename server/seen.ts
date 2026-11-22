@@ -3,19 +3,11 @@ import { MAX_SEEN, MAX_SEEN_BYTES, mergeSeen, seenFinishBody, seenFinishKey, see
 import { badRequest, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
 
-/**
- * The finishes some browser of this server presented (shared/seen.ts), kept in the state directory
- * beside preferences.json, so a finish read on the phone is read on the desktop too. A change is
- * held, and told, only once it is on disk. A finish of a herdr run this server knows has ended
- * (MachineManager.finishEnded) is never handed out or taken, and the next write leaves it out of the file.
- */
 export class SeenStore {
-  /** insertion order is write order: the first entries are the oldest */
   private readonly finishes = new Map<string, SeenFinish>();
   private readonly path: string;
   private readonly listeners = new Set<(finish: SeenFinish, presented?: SeenPresentation) => void>();
   private readonly presentations = new Set<(finish: SeenFinish) => void>();
-  /** Until this store has replaced the file, a write reads it again first: it may have been damaged or repaired since. */
   private unsettled = true;
 
   /**
@@ -33,11 +25,6 @@ export class SeenStore {
     }
   }
 
-  /**
-   * The finishes on disk, undefined when there is no file. A document that is not a list, or holds
-   * a row that is not a finish, is damaged: the valid rows are used, and the whole file is kept
-   * aside before a write drops the others. Throws when it cannot be read.
-   */
   private readDisk(): { finishes: Map<string, SeenFinish>; damaged: boolean } | undefined {
     const read = readStateDocument(this.path);
     if (read.kind === "missing") return undefined;
@@ -57,12 +44,9 @@ export class SeenStore {
     return [...this.finishes.values()].filter((finish) => !this.over(finish));
   }
 
-  /** `presented`: how the browser presented it (shared/seen.ts SeenPresentation), told with a change and not stored */
   record(finish: SeenFinish, presented?: SeenPresentation): SeenFinish {
-    // answered as sent: a browser that still shows the run that ended has nothing to keep
     if (this.over(finish)) return finish;
     const kept = this.keep(finish, presented);
-    // a pane brought into view is told even when its finish was already read: someone looked again
     if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
     return kept;
   }
@@ -71,8 +55,6 @@ export class SeenStore {
     let base = this.finishes;
     let keepDamaged = false;
     if (this.unsettled) {
-      // the file as it is now, not as it was at start: a repair is kept and the finish merged into
-      // it, and nothing of it is held until the write succeeds
       const disk = this.readDisk();
       if (disk) base = disk.finishes;
       keepDamaged = disk?.damaged ?? false;
@@ -100,7 +82,7 @@ export class SeenStore {
   /**
    * herdr moved a pane of `pc` under a new ID (#1503): what was read under the old ID is read under the new one,
    * each finish under the number the server counts it by there (`renumber`, server/finishes.ts moved), and every
-   * browser is told. The old ID's records stay, as an ended pane's do.
+   * browser is told.
    */
   moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): void {
     if (from === to) return;
@@ -115,7 +97,6 @@ export class SeenStore {
     return () => { this.listeners.delete(listener); };
   }
 
-  /** Every finish a browser presented as `new`, changed or not, after the change listeners. */
   onPresented(listener: (finish: SeenFinish) => void): () => void {
     this.presentations.add(listener);
     return () => { this.presentations.delete(listener); };

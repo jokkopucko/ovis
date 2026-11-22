@@ -1,6 +1,4 @@
-/** Serializes explicit viewport intents without queuing gestures. A newer Find cancels unsent
- * drag offsets, waits for scroll requests already sent, and keeps later drags out until it ends.
- * The pane owns this gate, so a tools effect restart cannot forget an outstanding native write. */
+/** The pane owns this gate, so a tools effect restart cannot forget an outstanding native write. */
 export class ViewportIntentGate {
   private writes = new Set<Promise<unknown>>();
   private search: object | null = null;
@@ -19,7 +17,6 @@ export class ViewportIntentGate {
     return () => { if (this.cancelPendingScroll === cancel) this.cancelPendingScroll = null; };
   }
 
-  /** A refused gesture is dropped, never resumed after Find or a reconnect. */
   scroll<T>(send: () => Promise<T>): Promise<T> | null {
     if (this.search !== null || this.writes.size > 0) return null;
     const request = send();
@@ -32,12 +29,9 @@ export class ViewportIntentGate {
     if (this.search !== null) return null;
     const owner = {};
     this.search = owner;
-    // Set the gate before invoking either UI callback: no gesture can slip between them.
     this.cancelPendingScroll?.();
     this.publish();
     await Promise.allSettled([...this.writes]);
-    // The caller checks that its FindBar still belongs to a mounted, ready pane before sending.
-    // Closing the bar does not release an already-sent Find; its finally releases this claim.
     return () => {
       if (this.search !== owner) return;
       this.search = null;

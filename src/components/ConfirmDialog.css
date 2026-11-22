@@ -19,8 +19,6 @@
   overflow-wrap: anywhere;
 }
 
-/* a confirmation answers the dialog that asked, so it sits above every dialog layer: above Settings raised over a
-   file preview (SettingsDialog.css) and above Connect a device (ConnectPhoneDialog.css), below the palette */
 .modal-scrim:has(> .confirm-dialog) {
   z-index: calc(var(--z-modal) + 4);
 }

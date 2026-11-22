@@ -17,7 +17,6 @@ const TAIL_BYTES = 1024 * 1024;
 const SLUG_RE = /"slug":"([^"]*)"/g;
 const SAFE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-/** The session's plan file and its text, or null when the session has none (or it can't be read). */
 export async function claudePlanFile(transcript: string): Promise<{ path: string; text: string } | null> {
   try {
     const slug = await lastSlug(transcript);

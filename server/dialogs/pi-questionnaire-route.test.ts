@@ -5,21 +5,20 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
-import { handlePromptRequest, promptWaitEnded } from "../prompt.ts";
+import { handlePromptRequest, promptWaitEnded, type PromptRequestOptions } from "../prompt.ts";
 import { socketAddress } from "../herdr/client.ts";
 import fixture from "../fixtures/pi-questionnaire.json";
 import { ANSI_RE } from "./shared.ts";
 
 const screens = fixture.screens;
 
-// A fake RPC endpoint on a unique pipe/socket. Never connects to a real Herdr session.
 async function withPane(initial: string, args: unknown, run: (pane: {
   screen: string; status: string; sent: string[]; visible?: string; scroll: number; onSent?: (key: string) => void;
   bind(args: unknown): void;
   settle(): void;
   append(entry: object): void;
   card(): Promise<InteractivePrompt>; read(): Promise<InteractivePrompt | null>;
-  answer(id: string, choice: object, signal?: AbortSignal): Promise<number>;
+  answer(id: string, choice: object, signal?: AbortSignal, options?: PromptRequestOptions): Promise<number>;
 }) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "ovis-pi-questionnaire-"));
   const endpoint = socketAddress(join(root, "herdr.sock"));
@@ -55,11 +54,11 @@ async function withPane(initial: string, args: unknown, run: (pane: {
       expect(prompt).not.toBeNull();
       return prompt!;
     },
-    answer: async (prompt: string, choice: object, signal?: AbortSignal) => {
+    answer: async (prompt: string, choice: object, signal?: AbortSignal, options?: PromptRequestOptions) => {
       const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
       const response = (await handlePromptRequest(new Request(url, {
         method: "POST", signal, body: JSON.stringify({ pane_id: id, prompt_id: prompt, ...choice }),
-      }), url))!;
+      }), url, options))!;
       return response.status;
     },
   };
@@ -77,7 +76,6 @@ async function withPane(initial: string, args: unknown, run: (pane: {
       if (request.method === "session.snapshot") return reply({ snapshot: { panes: [{ pane_id: id, agent: "pi", agent_status: pane.status, terminal_id: id, focused: false }], layouts: [] } });
       if (request.method === "pane.read") return reply({ read: { text: request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") } });
       if (request.method === "pane.get") return reply({ pane: { pane_id: id, scroll: { offset_from_bottom: pane.scroll } } });
-      // pi holds the pane's input: its key-driven cards answer only then
       if (request.method === "pane.process_info") return reply({ process_info: { foreground_processes: [{ pid: 2147483646, argv: ["pi"] }] } });
       if (request.method === "agent.get") return reply({ agent: nativeCall ? { agent: "pi", agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: session } } : {} });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
@@ -118,7 +116,7 @@ test("questionnaire route navigates actual option cursor and never guesses digit
   });
 });
 
-test("questionnaire free text enters its editor, rereads before text and before submitting", async () => {
+test.each(["editor stays open", "editor closes during the look"])("Pi questionnaire submits typed text only if the %s", async state => {
   await withPane(screens.single, fixture.single, async pane => {
     const card = await pane.card();
     let moves = 0;
@@ -127,8 +125,10 @@ test("questionnaire free text enters its editor, rereads before text and before 
       if (key === "enter") pane.screen = screens["input-empty"];
       if (key === "text:custom response") pane.screen = screens["input-text"];
     };
-    expect(await pane.answer(card.id, { custom_text: "custom response" })).toBe(200);
-    expect(pane.sent).toEqual(["down", "down", "enter", "text:custom response", "enter"]);
+    const closes = state === "editor closes during the look";
+    const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:custom response") pane.screen = "> unsent draft"; };
+    expect(await pane.answer(card.id, { custom_text: "custom response" }, undefined, { beforeKey })).toBe(closes ? 409 : 200);
+    expect(pane.sent).toEqual(["down", "down", "enter", "text:custom response", ...(closes ? [] : ["enter"])]);
   });
 });
 

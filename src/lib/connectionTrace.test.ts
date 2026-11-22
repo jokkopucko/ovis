@@ -6,7 +6,6 @@ import { nativeTransport, setTransport, type Transport } from "./transport.ts";
 const context = () => ({ connection: 1, socket_state: 1, visibility: "visible" as const, online: true });
 // A macrotask turn: every promise continuation of the report has run, whatever its depth.
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-// Every trace a test opens is closed after it, so resumeConnectionTraces() in a later test reaches only its own.
 const opened: ConnectionTrace[] = [];
 const open = (...args: ConstructorParameters<typeof ConnectionTrace>) => { const trace = new ConnectionTrace(...args); opened.push(trace); return trace; };
 afterEach(() => { for (const trace of opened.splice(0)) trace.close(); });

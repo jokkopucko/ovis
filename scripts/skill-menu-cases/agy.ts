@@ -10,7 +10,6 @@ export const commands: SlashCommand[] = [
   { name: "bundled-check", description: "Run a bundled check.", source: "skill", origin: "bundled" },
   { name: "plugin-check", description: "Run the plugin's check.", source: "skill", origin: "plugin" },
 ];
-// The recorded USER_INPUT retains this token after parseAgyTranscript strips its metadata.
 export const turnText = "/probe-skill hello";
 export const chips = ["/probe-skill"];
 

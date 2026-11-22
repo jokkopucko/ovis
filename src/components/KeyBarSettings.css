@@ -208,7 +208,6 @@
   }
 }
 
-/* PhonePreview: a phone in miniature beside a key bar setting */
 .key-bar-phone {
   display: inline-flex;
   flex-direction: column;

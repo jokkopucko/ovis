@@ -1,6 +1,4 @@
-/* Highlighted code (chat code blocks, file viewer). The host sets padding and background. */
 .hl-code {
-  /* the line-number gutter: the last line's digits (set by HighlightedCode) and a gap */
   --hl-gutter: calc(var(--hl-digits, 5) * 1ch + var(--space-3));
   margin: 0;
   overflow-x: auto;
@@ -26,13 +24,11 @@
   counter-reset: line;
 }
 
-/* the room for the gutter is on the code, not the pre, so a host's padding cannot take it */
 .hl-code[data-line-numbers] > code {
   display: block;
   padding-inline-start: var(--hl-gutter);
 }
 
-/* the negative margin hangs the number out into that room: every line, wrapped ones too, starts past it */
 .hl-code[data-line-numbers] .hl-line::before {
   display: inline-block;
   box-sizing: border-box;

@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACTIVE_LATE_DAYS, TELEMETRY_THEME_IDS, telemetrySettings, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
-import { handle, readActive, readEvent, requestCountry, type Env } from "./worker.ts";
+import { ACTIVE_LATE_DAYS, COUNTS_LATE_DAYS, TELEMETRY_COUNTERS, TELEMETRY_SHOWN, TELEMETRY_THEME_IDS, telemetrySettings, type TelemetrySettings, type TelemetryUsage, type TelemetryWidthCounts } from "../shared/telemetry.ts";
+import { handle, readActive, readCounts, readEvent, requestCountry, type Env } from "./worker.ts";
 
 const event = {
   event: "update", install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", version: "0.4.2", previous_version: "0.4.1",
@@ -120,7 +120,6 @@ describe("telemetry receiver", () => {
       { ...settings, statusIndicators: "unknown" },
       { ...settings, terminalWheelSpeed: 11 },
       { ...settings, chatFontSize: "16px" },
-      // the Turkish UI language was removed before any release sent a snapshot
       { ...settings, language: "tr" },
       { ...settings, account: { accountId: "acct-private-42", email: "person@example.com" } },
       { ...settings, fontFamily: { value: "D2Coding" } },
@@ -136,7 +135,6 @@ describe("telemetry receiver", () => {
   test("takes herdr theme ids and the dark/light theme keys, and every older app's snapshot too", async () => {
     const { env, rows } = fakeDb();
     const themed: TelemetrySettings = { ...settings, palette: "tokyo-night", paletteDark: "tokyo-night", paletteLight: "tokyo-night-day", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" };
-    // the exact key set apps before the theme keys send, with their ids and with a herdr id
     for (const valid of [settings, { ...settings, palette: "tokyo-night" }, themed] satisfies TelemetrySettings[]) {
       expect(telemetrySettings(valid)).toEqual(valid);
       expect(readEvent({ ...event, settings: valid }, now)?.settings).toEqual(valid);
@@ -150,9 +148,7 @@ describe("telemetry receiver", () => {
       { ...settings, palette: "not-a-theme" },
       { ...themed, darkTheme: "not-a-theme" },
       { ...themed, lightTheme: null },
-      // removed before any release could send them
       { ...settings, palette: "lilac" },
-      // herdr's terminal theme maps to the web default and is never sent
       { ...settings, paletteDark: "terminal" },
       oneSide,
       { ...themed, unknownSetting: true },
@@ -189,7 +185,6 @@ describe("telemetry receiver", () => {
       expect(migrated.query("SELECT settings, country, changed_settings FROM events").all()).toEqual([{ settings: null, country: null, changed_settings: "theme" }]);
       for (const db of [fresh, migrated]) {
         expect((await send(sqlite(db), { ...event, settings }, "KR")).status).toBe(204);
-        // A replay with different values and country is ignored for the same install/event/version.
         expect((await send(sqlite(db), { ...event, settings: { ...settings, theme: "light" } }, "US")).status).toBe(204);
         expect(db.query("SELECT country, version, settings FROM events WHERE version = '0.4.2'").all()).toEqual([
           { country: "KR", version: "0.4.2", settings: JSON.stringify(settings) },
@@ -203,11 +198,9 @@ describe("telemetry receiver", () => {
       db.exec(schema);
       const env = sqlite(db);
       const other = "7c1d2a90-4b3e-4f5a-8c6d-9e0f1a2b3c4d";
-      // one install heard from before the country was kept, then in two countries; another never named one
       db.exec(`INSERT INTO events (day, event, install_id, version, previous_version, os, arch, install_method) VALUES ('2026-10-08', 'install', '${event.install_id}', '0.4.0', NULL, 'linux', 'x64', 'plugin')`);
       await send(env, { ...event, version: "0.4.1", previous_version: "0.4.0" }, "KR");
       await send(env, event, "US");
-      // a replay from elsewhere is the same event: it is ignored, and the country stays
       await send(env, event, "JP");
       await send(env, { ...event, install_id: other });
       const query = /-- installs per country[^\n]*\n--[^\n]*\n(SELECT[\s\S]+?;)/.exec(readme)![1]!;
@@ -222,7 +215,6 @@ describe("telemetry receiver", () => {
       db.exec(schema);
       const env = sqlite(db);
       const ids = ["11111111-2222-4333-8444-555555555555", "22222222-3333-4444-8555-666666666666", "33333333-4444-4555-8666-777777777777"];
-      // The last non-null snapshot wins, even if a later event has no snapshot; the third install never reports one.
       await send(env, { ...event, install_id: ids[0], version: "0.4.1", previous_version: "0.4.0", settings: { ...settings, theme: "light", density: "compact", wrapCode: true } });
       await send(env, { ...event, install_id: ids[0], version: "0.4.3", previous_version: "0.4.2", settings: null });
       await send(env, { ...event, install_id: ids[1], settings: { ...settings, theme: "dark", density: "comfortable", wrapCode: false } });
@@ -340,13 +332,11 @@ describe("telemetry receiver: active", () => {
       JSON.stringify({ ...active, harnesses: ["cursor"] }),
       JSON.stringify({ ...active, harnesses: ["pi", "claude"] }),
       JSON.stringify({ ...active, event: "install" }),
-      // an install/update event is not an active message
       JSON.stringify(event),
     ]) expect((await handle(postActive(body), env, now)).status).toBe(400);
     expect((await handle(new Request("https://receiver.test/v1/active"), env, now)).status).toBe(405);
     expect((await handle(postActive(JSON.stringify(active), "text/plain"), env, now)).status).toBe(415);
     expect((await handle(postActive(JSON.stringify({ ...active, pad: "x".repeat(9000) })), env, now)).status).toBe(413);
-    // an active message is not an event either
     expect((await handle(post(JSON.stringify(active)), env, now)).status).toBe(400);
     expect(rows).toHaveLength(1);
   });
@@ -355,6 +345,7 @@ describe("telemetry receiver: active", () => {
 
   test("active: readActive takes a message with the day's usage, and an older sender's without it", () => {
     expect(readActive({ ...active, usage }, now)?.usage).toEqual(usage);
+    expect(readActive({ ...active, usage: { ...usage, ingress: ["lan", "portal", "relay"] } }, now)?.usage?.ingress).toEqual(["lan", "portal", "relay"]);
     expect(readActive(active, now)?.usage).toBeNull();
   });
 
@@ -447,17 +438,119 @@ describe("telemetry receiver: active", () => {
     const rowsOf = () => db.query("SELECT day, install_id, version, country, harnesses FROM active ORDER BY day").all();
 
     expect((await send({ ...active, harnesses: ["claude"] }, now, "KR")).status).toBe(204);
-    // later the same day a new kind appears: the row is replaced, and a message without a country keeps it
     expect((await send({ ...active, version: "0.4.3", harnesses: ["claude", "codex"] }, now)).status).toBe(204);
     expect(rowsOf()).toEqual([{ day: "2026-10-08", install_id: event.install_id, version: "0.4.3", country: "KR", harnesses: '["claude","codex"]' }]);
 
     expect((await send({ ...active, day: "2026-10-09", harnesses: [] }, new Date("2026-10-09T10:00:00Z"), "KR")).status).toBe(204);
     expect(rowsOf()).toHaveLength(2);
 
-    // delivered five minutes after midnight, the message is still yesterday's visit
     const other = "7c1d2a90-4b3e-4f5a-8c6d-9e0f1a2b3c4d";
     expect((await send({ ...active, install_id: other, day: "2026-10-09", harnesses: ["pi"] }, new Date("2026-10-10T00:05:00Z"))).status).toBe(204);
     expect(db.query("SELECT day, harnesses FROM active WHERE install_id = ?").all(other)).toEqual([{ day: "2026-10-09", harnesses: '["pi"]' }]);
     expect(db.query("SELECT COUNT(*) AS n FROM events").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("telemetry receiver: counts", () => {
+  const narrow: TelemetryWidthCounts = { counts: { chat_send: 3, view_terminal_by_header: 1, view_terminal_claude: 1 }, shown: ["composer", "view_switch_header"] };
+  const counts = { event: "counts", day: "2026-10-07", install_id: event.install_id, version: "0.5.5", narrow, wide: null };
+  const postCounts = (body: string) => new Request("https://receiver.test/v1/counts", { method: "POST", headers: { "content-type": "application/json" }, body });
+  const sqliteEnv = (db: Database): Env => ({ DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } });
+
+  test("takes a finished day's counts per width, up to COUNTS_LATE_DAYS back, and stores no country", async () => {
+    expect(readCounts(counts, now)).toEqual({ day: "2026-10-07", install_id: event.install_id, version: "0.5.5", narrow, wide: null });
+    const earliest = new Date(now.getTime() - COUNTS_LATE_DAYS * 86_400_000).toISOString().slice(0, 10);
+    expect(readCounts({ ...counts, day: earliest }, now)?.day).toBe(earliest);
+    expect(readCounts({ ...counts, wide: narrow, narrow: null }, now)?.wide).toEqual(narrow);
+    expect(readCounts({ ...counts, narrow: { counts: {}, shown: [] } }, now)?.narrow).toEqual({ counts: {}, shown: [] });
+    const { env, rows } = fakeDb();
+    expect((await handle(from(postCounts(JSON.stringify(counts)), { country: "KR" }), env, now)).status).toBe(204);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.query).toContain("INSERT OR IGNORE INTO counts");
+    expect(rows[0]!.values).toEqual(["2026-10-07", event.install_id, "0.5.5", JSON.stringify(narrow), null]);
+    expect(JSON.stringify(rows)).not.toContain("KR");
+  });
+
+  test("drops a counter, a shown control or a bucket it does not know and keeps the rest of the row", () => {
+    const newer = { counts: { ...narrow.counts, composer_rewind: 2, chat_send_twice: 1, view_chat_cursor: 4 }, shown: ["composer", "future_panel", "view_switch_header", "composer"] };
+    expect(readCounts({ ...counts, narrow: newer }, now)?.narrow).toEqual(narrow);
+    for (const bucket of [0, 5, 1.5, "1", null, -1]) {
+      expect(readCounts({ ...counts, narrow: { ...narrow, counts: { ...narrow.counts, composer_voice: bucket } } }, now)?.narrow).toEqual(narrow);
+    }
+    const unordered = { counts: Object.fromEntries(Object.entries(narrow.counts).reverse()), shown: [...narrow.shown].reverse() };
+    expect(JSON.stringify(readCounts({ ...counts, narrow: unordered }, now)?.narrow)).toBe(JSON.stringify(narrow));
+  });
+
+  test("refuses what is not a counts message, a day outside the window and a day not yet ended", async () => {
+    const { install_id: _id, ...noId } = counts;
+    for (const body of [
+      { ...counts, event: "active" },
+      { ...counts, day: "2026-09-23" },
+      { ...counts, day: "2026-10-09" },
+      { ...counts, day: "2026-10-08" },
+      { ...counts, day: "2026-02-30" },
+      { ...counts, install_id: "me@example.com" },
+      { ...counts, version: "latest" },
+      { ...counts, narrow: { counts: [] , shown: [] } },
+      { ...counts, narrow: { counts: {}, shown: "composer" } },
+      { ...counts, narrow: { counts: {}, shown: [1] } },
+      { ...counts, narrow: { counts: {}, shown: [], pane: "w1:p1" } },
+      { ...counts, narrow: undefined },
+      { ...counts, harnesses: ["claude"] },
+      { ...counts, prompt: "fix the bug" },
+      noId,
+    ]) expect(readCounts(body, now)).toBeNull();
+    const { env, rows } = fakeDb();
+    expect((await handle(postCounts(JSON.stringify({ ...counts, day: "2026-09-23" })), env, now)).status).toBe(400);
+    expect((await handle(postCounts(JSON.stringify(event)), env, now)).status).toBe(400);
+    expect((await handle(new Request("https://receiver.test/v1/counts"), env, now)).status).toBe(405);
+    expect(rows).toEqual([]);
+  });
+
+  test("a day with every counter used and every control shown, at both widths, fits the body limit", async () => {
+    const full: TelemetryWidthCounts = { counts: Object.fromEntries(TELEMETRY_COUNTERS.map((name) => [name, 4])), shown: [...TELEMETRY_SHOWN] };
+    const body = JSON.stringify({ ...counts, install_id: event.install_id, version: "1000.1000.1000-rc.123456789012345678", narrow: full, wide: full });
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThan(8192);
+    const { env, rows } = fakeDb();
+    expect((await handle(postCounts(body), env, now)).status).toBe(204);
+    expect(JSON.parse(rows[0]!.values[3] as string)).toEqual(full);
+  });
+
+  test("against the real table: the first message for a day stands, and the README's share query reads it", async () => {
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    const env = sqliteEnv(db);
+    const yesterday = { ...counts, day: "2026-10-07" };
+    expect((await handle(postCounts(JSON.stringify(yesterday)), env, now)).status).toBe(204);
+    expect((await handle(postCounts(JSON.stringify({ ...yesterday, narrow: { counts: { chat_send: 4 }, shown: [] } })), env, now)).status).toBe(204);
+    const other = "7c1d2a90-4b3e-4f5a-8c6d-9e0f1a2b3c4d";
+    expect((await handle(postCounts(JSON.stringify({ ...yesterday, install_id: other, narrow: { counts: {}, shown: ["composer"] }, wide: { counts: { chat_send: 1 }, shown: [] } })), env, now)).status).toBe(204);
+    expect(db.query("SELECT day, install_id, narrow FROM counts ORDER BY install_id").all()).toEqual([
+      { day: "2026-10-07", install_id: event.install_id, narrow: JSON.stringify(narrow) },
+      { day: "2026-10-07", install_id: other, narrow: JSON.stringify({ counts: {}, shown: ["composer"] }) },
+    ]);
+    const readme = readFileSync(join(import.meta.dir, "README.md"), "utf8");
+    db.exec("UPDATE counts SET day = date('now', '-1 day')");
+    const query = /-- share of installs that used each counter[^\n]*\n--[^\n]*\n(SELECT[\s\S]+?;)/.exec(readme)![1]!;
+    const shares = db.query(query).all().map((row) => Object.values(row as object));
+    expect(shares).toContainEqual(["narrow", "chat_send", 1, 50]);
+    expect(shares).toContainEqual(["narrow", "view_terminal_claude", 1, 50]);
+    expect(shares).toContainEqual(["wide", "chat_send", 1, 100]);
+    expect(shares).toHaveLength(4);
+  });
+
+  test("an existing database takes the counts only after the README's CREATE, keeping its other tables", async () => {
+    const schema = readFileSync(join(import.meta.dir, "schema.sql"), "utf8");
+    const db = new Database(":memory:");
+    db.exec(schema.slice(0, schema.indexOf("-- One row per install and finished UTC day")));
+    db.exec("INSERT INTO active (day, install_id, version, os, arch, install_method, country, harnesses) VALUES ('2026-10-07', '11111111-2222-4333-8444-555555555555', '0.4.20', 'linux', 'x64', 'plugin', 'KR', '[\"claude\"]')");
+    const env = sqliteEnv(db);
+    await expect(handle(postCounts(JSON.stringify(counts)), env, now)).rejects.toThrow(/counts/);
+    const create = readFileSync(join(import.meta.dir, "README.md"), "utf8").match(/"(CREATE TABLE IF NOT EXISTS counts [^"]+)"/)?.[1];
+    expect(create).toBeDefined();
+    db.exec(create!);
+    expect((await handle(postCounts(JSON.stringify(counts)), env, now)).status).toBe(204);
+    expect(db.query("SELECT COUNT(*) AS n FROM active").get()).toEqual({ n: 1 });
+    expect(db.query("SELECT COUNT(*) AS n FROM counts").get()).toEqual({ n: 1 });
   });
 });

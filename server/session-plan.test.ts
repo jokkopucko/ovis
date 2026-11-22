@@ -12,15 +12,12 @@ describe("SessionPlans", () => {
   const pane = (pane_id: string, agent: string, session = "s1"): HerdrPane => ({ pane_id, agent, cwd: "/w", agent_session: { kind: "id", value: session } } as unknown as HerdrPane);
 
   it("initializes an OmO plan from the todo tool answer", async () => {
-    // Given a native session with a synthetic todo answer.
     const f = file("omo.jsonl");
     f.add({ type: "message", timestamp: at(1), message: { role: "toolResult", toolName: "todo", toolCallId: "t1", content: [{ type: "text", text: "Overall: 0/2 done\n  Build:\n    - [ ] Read (in progress)\n    - [ ] Fix" }] } });
     const deps = { claudePath: () => null, codexPath: async () => null, omoPath: () => f.path, onChange: () => {} };
     const plans = new SessionPlans(deps);
-    // When the OmO pane is followed and polled.
     await plans.refresh([pane("omo1", "omo")]);
     plans.poll();
-    // Then both the sidebar summary and plan panel receive the list.
     expect(plans.summaryOf("omo1")).toEqual({ done: 0, total: 2, current: "Read" });
     expect(plans.planOf(pane("omo1", "omo"))?.map((step) => step.label)).toEqual(["Read", "Fix"]);
   });
@@ -37,12 +34,9 @@ describe("SessionPlans", () => {
   };
 
   it("updates OmO progress when another todo answer is appended", async () => {
-    // Given a polled native list.
     const { plans, answer } = await omo();
-    // When one item finishes and the next starts.
     answer("Overall: 1/2 done\n  Build:\n    - [X] Read\n    - [ ] Fix (in progress)");
     plans.poll();
-    // Then progress and step times follow the new answer.
     expect(plans.summaryOf("omo1")).toEqual({ done: 1, total: 2, current: "Fix" });
     expect(plans.planOf(pane("omo1", "omo"))).toMatchObject([
       { label: "Read", status: "completed", started_at: at(1), ended_at: at(2) },
@@ -51,22 +45,16 @@ describe("SessionPlans", () => {
   });
 
   it("retains the completed OmO plan when every task is done", async () => {
-    // Given an initial native list.
     const { plans, answer } = await omo();
-    // When the full answer marks both tasks done.
     answer("Overall: 2/2 done\n  Build:\n    - [X] Read\n    - [X] Fix");
     plans.poll();
-    // Then the sidebar retains a completed count.
     expect(plans.summaryOf("omo1")).toEqual({ done: 2, total: 2, current: null });
   });
 
   it.each(["Todo list is empty.", "Todo list cleared."])("clears OmO progress when the answer says %s", async (empty) => {
-    // Given an existing plan.
     const { plans, answer } = await omo();
-    // When the native list is cleared.
     answer(empty);
     plans.poll();
-    // Then neither surface keeps stale progress.
     expect(plans.summaryOf("omo1")).toBeNull();
     expect(plans.planOf(pane("omo1", "omo"))).toBeNull();
   });
@@ -75,40 +63,30 @@ describe("SessionPlans", () => {
     "Overall: 1/2 done\n  Build:\n    - [X] Read",
     "  Build:\n    - [X] Read\n… trimmed",
   ])("ignores a truncated OmO answer: %s", async (truncated) => {
-    // Given an existing complete plan.
     const { plans, answer } = await omo();
-    // When a cut-short answer is appended.
     answer(truncated);
     plans.poll();
-    // Then its incomplete contents never replace the plan.
     expect(plans.summaryOf("omo1")).toEqual({ done: 0, total: 2, current: "Read" });
   });
 
   it("excludes dropped OmO work while keeping blocked work pending", async () => {
-    // Given an existing plan.
     const { plans, answer } = await omo();
-    // When one task is dropped and one is blocked.
     answer("Overall: 0/2 done\n  Build:\n    - [ ] Read (dropped)\n    - [ ] Fix (blocked: waiting)");
     plans.poll();
-    // Then abandoned work does not inflate completion, and blocked work is not done.
     expect(plans.summaryOf("omo1")).toEqual({ done: 0, total: 1, current: null });
     expect(plans.planOf(pane("omo1", "omo"))?.map((step) => step.status)).toEqual(["pending"]);
   });
 
   it("ignores quoted OmO todos outside a todo tool result", async () => {
-    // Given an existing plan.
     const { plans, answer, f } = await omo();
-    // When prose, an assistant call and another tool quote a different list.
     const text = "  Fake:\n    - [X] Wrong";
     f.add({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "never-answered", name: "todo", arguments: { op: "done" } }, { type: "text", text }] } });
     answer(text, "read");
     plans.poll();
-    // Then the answered todo alone remains authoritative.
     expect(plans.summaryOf("omo1")).toEqual({ done: 0, total: 2, current: "Read" });
   });
 
   it.each(["replaced", "unresolved"])("follows an OmO binding when it becomes %s", async (binding) => {
-    // Given a tracked pane with an unchanged provider session id.
     const old = file("old.jsonl"), next = file("next.jsonl");
     const result = (label: string) => ({ type: "message", message: { role: "toolResult", toolName: "todo", content: [{ type: "text", text: `  Work:\n    - [ ] ${label}` }] } });
     old.add(result("Old work"));
@@ -117,11 +95,9 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, omoPath: () => path, onChange: () => {} });
     await plans.refresh([pane("omo1", "omo")]);
     plans.poll();
-    // When discovery replaces or loses the native binding.
     path = binding === "replaced" ? next.path : null;
     await plans.refresh([pane("omo1", "omo")]);
     plans.poll();
-    // Then the old session is never returned.
     expect(plans.planOf(pane("omo1", "omo"))?.map((step) => step.label) ?? null).toEqual(binding === "replaced" ? ["New work"] : null);
   });
 
@@ -142,7 +118,6 @@ describe("SessionPlans", () => {
   });
 
   it("tells a Claude pane's context as its requests fill it, the main session's only, and clears it with the pane", async () => {
-    // Given a Claude transcript whose last request went past the 200k window.
     const s = claude();
     const changes: [string, PaneContext | null][] = [];
     const plans = new SessionPlans({ claudePath: (id) => id === "p1" ? s.path : null, codexPath: async () => null, onChange: () => {}, onContext: (id, context) => changes.push([id, context]) });
@@ -150,24 +125,20 @@ describe("SessionPlans", () => {
     request(240_000);
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // Then it is told with the 1M window, as the chat's ring reads it.
     expect(changes).toEqual([["p1", { used: 242_000, window: 1_000_000 }]]);
     expect(plans.contextOf("p1")).toEqual({ used: 242_000, window: 1_000_000 });
-    // A subagent's request fills its own context; an unchanged context is not told again.
     request(5_000, { isSidechain: true });
     plans.poll();
     expect(changes).toHaveLength(1);
     request(98_000);
     plans.poll();
     expect(changes.at(-1)).toEqual(["p1", { used: 100_000, window: 1_000_000 }]);
-    // When the pane runs something else, its context goes.
     await plans.refresh([pane("p1", "shell")]);
     expect(changes.at(-1)).toEqual(["p1", null]);
     expect(plans.contextOf("p1")).toBeNull();
   });
 
   it("takes a Claude pane's window from its status line capture, also when the capture comes after the request", async () => {
-    // Given a Claude request under 200k, whose window the transcript does not say.
     const s = claude();
     s.add({ type: "assistant", timestamp: at(1), message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 30_000 } } });
     let captured: number | null = null;
@@ -175,21 +146,17 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => s.path, codexPath: async () => null, onChange: () => {}, claudeWindow: (path, model) => { asked.push([path, model]); return captured; } });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // Then no window is known: the ring would draw nothing.
     expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: null });
-    // When the status line names the window without a transcript append, the next poll tells it.
     captured = 200_000;
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
     expect(asked.at(-1)).toEqual([s.path, "claude-opus-5-5"]);
-    // When /model switches the session, the window is asked for the model it set, as the chat asks.
     s.add({ type: "user", message: { role: "user", content: "<local-command-stdout>Set model to `Sonnet 5.5` for this session only</local-command-stdout>" } });
     plans.poll();
     expect(asked.at(-1)).toEqual([s.path, "claude-sonnet-5-5"]);
   });
 
   it("clears a pane's context as soon as it runs another session, before its transcript is read", async () => {
-    // Given a Claude pane whose context was told.
     const s = claude();
     s.add({ type: "assistant", timestamp: at(1), message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 30_000 } } });
     const changes: [string, PaneContext | null][] = [];
@@ -197,7 +164,6 @@ describe("SessionPlans", () => {
     await plans.refresh([pane("p1", "claude", "A")]);
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
-    // When herdr says the pane runs another session, the old figure goes at once, before any poll.
     await plans.refresh([pane("p1", "claude", "B")]);
     expect(plans.contextOf("p1")).toBeNull();
     expect(changes.at(-1)).toEqual(["p1", null]);
@@ -214,7 +180,6 @@ describe("SessionPlans", () => {
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 3, window: 200_000 });
-    // When the fork is written, the row's figure goes, as the chat's does.
     appendFileSync(f.path, `${lines.slice(fork).join("\n")}\n`);
     plans.poll();
     expect(changes.at(-1)).toEqual(["p1", null]);
@@ -222,7 +187,6 @@ describe("SessionPlans", () => {
   });
 
   it("tells the figure a Claude rewind went back to until the next answer, then that answer's", async () => {
-    // Given two answered prompts.
     const f = file();
     const user = (uuid: string, parentUuid: string | null, content: string) => f.add({ type: "user", uuid, parentUuid, isSidechain: false, message: { role: "user", content } });
     const answer = (uuid: string, parentUuid: string, input: number) => f.add({ type: "assistant", uuid, parentUuid, isSidechain: false, message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: input } } });
@@ -235,16 +199,13 @@ describe("SessionPlans", () => {
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 50_000, window: 200_000 });
-    // A prompt sent on from the last record forks nothing.
     user("u3", "s2", "three");
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 50_000, window: 200_000 });
-    // When a prompt is sent again from the first answer, the second answer's figure goes for the first's, as in the chat.
     user("u4", "a1", "two again");
     plans.poll();
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 10_000, window: null });
     expect(plans.contextOf("p1")).toEqual({ used: 10_000, window: 200_000 });
-    // Then its own answer is the figure.
     answer("a4", "u4", 12_000);
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 12_000, window: 200_000 });
@@ -262,15 +223,12 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {}, claudeWindow: () => 200_000 });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // While the chain's tip hangs from the echo, the answer before it is off the branch, for the chat too.
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toBeUndefined();
     expect(plans.contextOf("p1")).toBeNull();
-    // When a prompt is sent on from the answer, the echo is dropped and its figure is back.
     f.add({ type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: "two" } });
     plans.poll();
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 30_000, window: null });
     expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
-    // When another echo hangs from before that answer and a prompt is sent on from its output, the session forked.
     echo("c2", "u1", "<command-name>/context</command-name>");
     echo("o2", "c2", "<local-command-stdout>ok</local-command-stdout>");
     f.add({ type: "system", subtype: "turn_duration", uuid: "s2", parentUuid: "a1", isSidechain: false });
@@ -281,7 +239,6 @@ describe("SessionPlans", () => {
   });
 
   it("takes a held Claude command's echo as a fork past the most records it keeps, while the chat still does", async () => {
-    // Given an answered prompt, then a /context echo from before the answer and 10,001 records hanging from it in a row.
     const f = file();
     f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
     f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 30_000 } } });
@@ -290,13 +247,11 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {}, claudeWindow: () => 200_000 });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // Then the answer before the echo stays off the branch, as the chat keeps it.
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toBeUndefined();
     expect(plans.contextOf("p1")).toBeNull();
   });
 
   it("keeps the 1M window of an answer when a Claude command's echo is dropped", async () => {
-    // Given a request past 200k, a /context echo from before it, then a prompt sent on from that answer and its answer.
     const f = file();
     f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
     f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 250_000 } } });
@@ -306,13 +261,11 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {} });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // Then the row keeps the window the chat keeps.
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 12_000, window: 1_000_000 });
     expect(plans.contextOf("p1")).toEqual({ used: 12_000, window: 1_000_000 });
   });
 
   it("keeps the 1M window of an answer before the range a Claude fork left", async () => {
-    // Given a request past 200k, a later answer, then a /context echo from before that answer (#3114's transcript).
     const f = file();
     const answer = (uuid: string, parentUuid: string, input: number) => f.add({ type: "assistant", uuid, parentUuid, message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: input } } });
     f.add({ type: "user", uuid: "u0", parentUuid: null, message: { role: "user", content: "u0" } });
@@ -323,16 +276,13 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {} });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // While the tip hangs from the echo, the row tells what the branch had there, as the chat does.
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 250_000, window: 1_000_000 });
     expect(plans.contextOf("p1")).toEqual({ used: 250_000, window: 1_000_000 });
-    // When the conversation goes on from the echo, its requests keep the window the answer before it set.
     answer("a2", "c", 12_000);
     f.add({ type: "user", uuid: "u2", parentUuid: "a2", message: { role: "user", content: "u2" } });
     plans.poll();
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 12_000, window: 1_000_000 });
     expect(plans.contextOf("p1")).toEqual({ used: 12_000, window: 1_000_000 });
-    // And so after a prompt sent again from that answer.
     f.add({ type: "user", uuid: "u3", parentUuid: "a0", message: { role: "user", content: "u3" } });
     answer("a3", "u3", 15_000);
     plans.poll();
@@ -351,11 +301,9 @@ describe("SessionPlans", () => {
     };
     const user = (uuid: string, parentUuid: string | null) => ({ type: "user", uuid, parentUuid, message: { role: "user", content: uuid } });
     const answer = (uuid: string, parentUuid: string, input: number) => ({ type: "assistant", uuid, parentUuid, message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: input } } });
-    // Given a rewind to before a 250k answer, then another to after it: the chat leaves out both answers before the second.
     const nested = [user("u0", null), answer("a0", "u0", 250_000), user("u1", "a0"), answer("a1", "u1", 30_000), user("u2", "u0"), answer("a2", "u2", 10_000), user("u3", "a1")];
     expect(await row(nested)).toEqual({ row: null, chat: null });
     expect(await row([...nested, answer("a3", "u3", 12_000)])).toEqual({ row: { used: 12_000, window: null }, chat: { used: 12_000, window: null } });
-    // Given a /context echo after a 250k answer's prompt, dropped by a prompt sent on from the answer, then a prompt from the echo's output.
     const dropped = [user("u0", null), answer("a0", "u0", 10_000), user("u1", "a0"), answer("a1", "u1", 250_000),
       { type: "system", subtype: "local_command", uuid: "e", parentUuid: "u1", content: "<command-name>/context</command-name>" },
       { type: "system", subtype: "turn_duration", uuid: "o", parentUuid: "e" }, user("u2", "a1"), answer("a2", "u2", 12_000), user("u3", "o")];
@@ -364,7 +312,6 @@ describe("SessionPlans", () => {
   });
 
   it("does not carry the 1M window of an answer a Claude rewind left", async () => {
-    // Given a request past 200k (so in the 1M window), then a prompt sent again from before it, and its answer.
     const f = file();
     f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
     f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 250_000 } } });
@@ -373,13 +320,11 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {} });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // Then the window is not known, as the chat does not know it.
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 10_000, window: null });
     expect(plans.contextOf("p1")).toEqual({ used: 10_000, window: null });
   });
 
   it("tells no Claude figure after a line too long to read, until the next request", async () => {
-    // Given an answered prompt, then a prompt sent again from before it, too long for the reader (a picture).
     const f = file();
     f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
     f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 30_000 } } });
@@ -389,10 +334,8 @@ describe("SessionPlans", () => {
     expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
     f.add({ type: "user", uuid: "u2", parentUuid: null, message: { role: "user", content: [{ type: "text", text: "again" }, { type: "image", source: { type: "base64", media_type: "image/png", data: `iVBORw0KGgo${"A".repeat(9 * 1024 * 1024)}` } }] } });
     plans.poll();
-    // Then the figure goes, as the chat drops the answer the prompt forked away from.
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toBeUndefined();
     expect(plans.contextOf("p1")).toBeNull();
-    // When the next request is answered, it is told.
     f.add({ type: "assistant", uuid: "a2", parentUuid: "u2", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 12_000 } } });
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 12_000, window: 200_000 });
@@ -415,7 +358,6 @@ describe("SessionPlans", () => {
     const a = s.create("One", 1, { activeForm: "Doing one" });
     s.create("Two");
     await plans.refresh([pane("p1", "claude"), pane("p2", "codex"), pane("p3", "shell")]);
-    // a snapshot reads nothing: the poll does
     expect(changes).toEqual([]);
     plans.poll();
     expect(changes).toEqual([["p1", { done: 0, total: 2, current: null }]]);
@@ -426,7 +368,6 @@ describe("SessionPlans", () => {
     expect(changes.at(-1)).toEqual(["p1", { done: 0, total: 2, current: "Doing one" }]);
     expect(changes).toHaveLength(2);
     expect(plans.planOf(pane("p1", "claude"))?.map((step) => step.status)).toEqual(["in_progress", "pending"]);
-    // a Codex pane whose rollout was not found is not asked again at once
     await plans.refresh([pane("p1", "claude"), pane("p2", "codex")]);
     expect(codexLookups).toBe(1);
     await plans.refresh([pane("p1", "shell"), pane("p2", "codex")]);
@@ -477,11 +418,9 @@ describe("SessionPlans", () => {
     s.create("One");
     const plans = new SessionPlans({ claudePath: () => s.path, codexPath: async () => null, onChange: () => {} });
     await plans.refresh([pane("p1", "claude")]);
-    // no poll has read the transcript yet: a request does not read it
     expect(plans.planOf(pane("p1", "claude"))).toBeNull();
     plans.poll();
     expect(plans.planOf(pane("p1", "claude"))?.map((step) => step.label)).toEqual(["One"]);
-    // what was written since, however much, is the next poll's to read
     s.create("Two", 2);
     expect(plans.planOf(pane("p1", "claude"))?.map((step) => step.label)).toEqual(["One"]);
     plans.poll();
@@ -495,9 +434,7 @@ describe("SessionPlans", () => {
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
     expect(plans.planOf(pane("p1", "claude"))?.map((step) => step.label)).toEqual(["One"]);
-    // herdr did not say in time, or no longer has the pane: what was read for it is not told
     expect(plans.planOf(undefined)).toBeNull();
-    // the pane runs another session now, not looked up yet
     expect(plans.planOf(pane("p1", "claude", "s2"))).toBeNull();
   });
 
@@ -506,7 +443,6 @@ describe("SessionPlans", () => {
     const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => f.path, onChange: () => {} });
     await plans.refresh([pane("p2", "codex", "t1")]);
     expect(plans.known(pane("p2", "codex", "t1"))).toBe(true);
-    // the pane runs another session, not looked up yet: the rollout of the one before is not its plan
     expect(plans.known(pane("p2", "codex", "t2"))).toBe(false);
   });
 
@@ -526,7 +462,6 @@ describe("SessionPlans", () => {
   it("reads at most its budget in one poll, and the rest at the next; a request in between reads none of it", () => {
     const big = claude();
     big.create("Far");
-    // past the poll's budget: the plan is told only once the read reaches the end
     big.add({ type: "user", timestamp: at(2), message: { role: "user", content: "x".repeat(33 * 1024 * 1024) } });
     big.create("Near", 3);
     const changes: (PlanSummary | null)[] = [];
@@ -534,7 +469,6 @@ describe("SessionPlans", () => {
     void plans.refresh([pane("p1", "claude")]);
     plans.poll();
     expect(changes).toEqual([]);
-    // the first read is the poll's, in its shared budget: a request does not read on with a budget of its own
     expect(plans.planOf(pane("p1", "claude"))).toBeNull();
     plans.poll();
     expect(changes).toEqual([{ done: 0, total: 2, current: null }]);

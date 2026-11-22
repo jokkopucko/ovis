@@ -13,7 +13,6 @@ import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 const selection = { current: { machineId: "local", paneId: "p1", generation: 0 } satisfies SelectionMark };
 /** herdr's TUI server, and a herdr-core PC, which splits and zooms no pane (lib/machineContext.tsx) */
 const OFFERS = { tui: { split: true, arrange: true }, core: { split: false, arrange: false } };
-/** p1 and p2 split in one tab, p3 alone in another; `zoomed` shows p1 alone */
 const tabLayout = (tab: string, panes: string[], zoomed = false) => ({ tab_id: tab, workspace_id: "w1", focused_pane_id: panes[0]!, zoomed }) as PaneLayoutSnapshot;
 const rosterOf = (zoomed = false) => ({ current: {
   panes: [{ pane_id: "p1", tab_id: "t1" }, { pane_id: "p2", tab_id: "t1" }, { pane_id: "p3", tab_id: "t2" }],
@@ -53,7 +52,6 @@ describe("the split and zoom shortcuts", () => {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     requested = [];
     bodies = [];
-    // Settings gives the split its key: it has none until one is chosen there
     const stored = new Map<string, string>([[SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { "split-right": "l", "zoom-pane": "z" } })]]);
     const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
     const media = { matches: false, addEventListener() {}, removeEventListener() {} };

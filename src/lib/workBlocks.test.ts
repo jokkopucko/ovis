@@ -85,7 +85,6 @@ describe("foldedRequestsMatch", () => {
   it("names the folded row of failed requests a search's match is in, by its first part", () => {
     expect(foldedRequestsMatch(turn, "unauthorized")).toBe(1);
     expect(foldedRequestsMatch(turn, "connection error")).toBe(1);
-    // the error's own prefix, which the row leaves out of each line, is still in that row
     expect(foldedRequestsMatch(turn, "Error: 401")).toBe(1);
     expect(foldedRequestsMatch(turn, "overloaded")).toBe(4);
   });
@@ -94,15 +93,12 @@ describe("foldedRequestsMatch", () => {
     expect(foldedRequestsMatch(turn, "token was renewed")).toBeNull();
     expect(foldedRequestsMatch(turn, "Retrying")).toBeNull();
     expect(foldedRequestsMatch(turn, "nowhere")).toBeNull();
-    // the first match decides, as the search's snippet does: here it is in the answer before the rows
     expect(foldedRequestsMatch({ ...turn, parts: [text("An unauthorized call."), failed("401 unauthorized")] }, "unauthorized")).toBeNull();
-    // a user's words are never a failed request
     expect(foldedRequestsMatch({ role: "user", ts: null, parts: [failed("401 unauthorized")] }, "unauthorized")).toBeNull();
   });
 });
 
 describe("runNames", () => {
-  // what Turn keeps between draws: each part's run name, by part index
   const draw = (parts: ConversationPart[], previous: ReadonlyMap<number, string>) => {
     const runs = turnSegments(parts).flatMap((segment) => segment.kind === "work" ? [segment] : []);
     const names = runNames(runs, new Map(parts.map((part, index) => [part, index])), previous);
@@ -120,7 +116,6 @@ describe("runNames", () => {
     const shown = draw([tool("A"), text(""), tool("B"), text("between"), tool("C")], new Map());
     expect(shown.names).toEqual(["work:0", "work:4"]);
     expect(draw([tool("A"), text("arrived"), tool("B"), text("between"), tool("C")], shown.next).names).toEqual(["work:0", "work:2", "work:4"]);
-    // the run named work:0 now starts at 2; a new run at 0 must not take its name
     expect(draw([tool("new"), text("between"), tool("A")], new Map([[2, "work:0"]])).names).toEqual(["work:0+", "work:0"]);
   });
 });
@@ -137,20 +132,17 @@ describe("workStartsOpen", () => {
   it("folds a settled turn: its answer stays outside the fold", () => {
     expect(workStartsOpen(false, [thinking("hm"), tool("read"), text("looking…"), tool("edit"), text("done")])).toBe(false);
     expect(workStartsOpen(false, [commentary("Checking."), tool("exec_command"), final("All good.")])).toBe(false);
-    // an action after the answer hides no words
     expect(workStartsOpen(false, [commentary("Checking."), tool("exec_command"), final("Done"), tool("cleanup")])).toBe(false);
   });
 
   it("folds a settled turn when an unphased answer is followed by an action because the answer remains visible", () => {
     expect(workStartsOpen(false, [text("The answer"), tool("bash")])).toBe(false);
-    // a todo update after the closing summary is not even counted in the header
     expect(workStartsOpen(false, [tool("read"), text("Here is the full answer."), tool("TodoWrite")])).toBe(false);
   });
 
   it("keeps a settled turn open when it ends in Codex commentary: folding would hide its last text", () => {
     expect(workStartsOpen(false, [tool("exec_command"), commentary("Still investigating")])).toBe(true);
     expect(workStartsOpen(false, [commentary("Checking the second request.")])).toBe(true);
-    // reasoning recorded after the last words does not hide them either
     expect(workStartsOpen(false, [tool("exec_command"), commentary("Still investigating"), thinking("hm")])).toBe(true);
   });
 
@@ -177,7 +169,6 @@ describe("workBlockStartsOpen", () => {
     expect(workBlockStartsOpen({ ...running, waiting: true }, [tool("bash")], false)).toBe(true);
     expect(workBlockStartsOpen(settled, [tool("read"), text("done")], false)).toBe(false);
     expect(workBlockStartsOpen(settled, endsInWords, false)).toBe(true);
-    // a run before the turn's last part: what follows it is still to read
     expect(workBlockStartsOpen({ ...settled, last: false }, endsInWords, false)).toBe(false);
     expect(workBlockStartsOpen({ ...running, live: false, last: false }, [tool("bash")], false)).toBe(false);
   });
@@ -203,7 +194,7 @@ describe("workSummary", () => {
   });
 
   it("leaves todo updates out of the counts", () => {
-    expect(workSummary([tool("TodoWrite"), tool("Edit"), tool("update_plan"), tool("todo_write"), tool("Read")])).toBe("1 edit · 1 file read");
+    expect(workSummary([tool("TodoWrite"), tool("todowrite"), tool("Edit"), tool("update_plan"), tool("todo_write"), tool("Read")])).toBe("1 edit · 1 file read");
   });
 });
 
@@ -248,26 +239,20 @@ it("keeps an approval-blocked assistant turn live, including with a last-activit
 it("does not title a turn that ended on its final answer as running when the agent begins another by itself", async () => {
   const { isLiveWorkTurn } = await import("./workBlocks.ts");
   const answered = { role: "assistant" as const, ts: null, parts: [tool("Glob"), { kind: "text" as const, text: "The subagent is still running.", phase: "final_answer" as const }] };
-  // a background task ended: herdr says working, the new turn has no row yet, and nothing was sent from here
   expect(isLiveWorkTurn(answered, true, "working")).toBe(false);
-  // words that are no final answer yet are the running turn's own
   expect(isLiveWorkTurn({ ...answered, parts: [answered.parts[0]!, { kind: "text" as const, text: "Let me look." }] }, true, "working")).toBe(true);
 });
 
 it("does not title a finished turn as running after a message was sent over it", async () => {
   const { isLiveWorkTurn } = await import("./workBlocks.ts");
   const finished = { role: "assistant" as const, ts: "2026-09-29T00:00:00Z", parts: [], end_ts: "2026-09-29T00:00:06Z" };
-  // sent over it, status already `working`, transcript not yet holding the new message
   expect(isLiveWorkTurn(finished, true, "working", finished)).toBe(false);
   expect(isLiveWorkTurn(finished, true, "blocked", finished)).toBe(false);
-  // a turn without a recorded time is still the one sent over
   const untimed = { ...finished, ts: null };
   expect(isLiveWorkTurn(untimed, true, "working", untimed)).toBe(false);
-  // the turn that answers the message is a different one and is live again, even with the same time
   const next = { ...finished, end_ts: undefined };
   expect(isLiveWorkTurn(next, true, "working", finished)).toBe(true);
   expect(isLiveWorkTurn({ ...untimed }, true, "working", untimed)).toBe(true);
-  // nothing sent over keeps following the status
   expect(isLiveWorkTurn(finished, true, "working", null)).toBe(true);
   expect(isLiveWorkTurn(finished, true, "working")).toBe(true);
 });
@@ -275,9 +260,7 @@ it("does not title a finished turn as running after a message was sent over it",
 it("says the open block waits for the user while the agent is blocked, and only then", async () => {
   const { isWaitingWorkTurn } = await import("./workBlocks.ts");
   expect(isWaitingWorkTurn(true, "blocked")).toBe(true);
-  // a question in Codex's queue: Codex keeps working
   expect(isWaitingWorkTurn(true, "working")).toBe(false);
-  // a settled turn keeps "Worked for …" whatever the pane's status
   expect(isWaitingWorkTurn(false, "blocked")).toBe(false);
   expect(isWaitingWorkTurn(true, undefined)).toBe(false);
 });
@@ -293,7 +276,6 @@ describe("visibleWorkParts", () => {
 
 describe("todoGroups", () => {
   type State = ToolPart["state"];
-  // a Claude TodoWrite: its list is its input; the native id and state as the server sends them
   const write = (id: string | undefined, state: State, todos: unknown = [{ content: "Read", status: "completed" }, { content: "Fix", status: "in_progress" }], output = ""): ToolPart =>
     ({ kind: "tool", name: "TodoWrite", summary: "TodoWrite", input: typeof todos === "string" ? todos : JSON.stringify({ todos }), output,
       ...(id === undefined ? {} : { call_id: id }), ...(state === undefined ? {} : { state }), ...(state === "error" ? { error: true } : {}) });
@@ -323,10 +305,8 @@ describe("todoGroups", () => {
 
   it("keeps the first call's identity through append and replacement", () => {
     const first = only([write("a", "pending"), write("b", "pending")]).id;
-    // the next poll: a new object for every part, results recorded, a third call appended
     expect(only([write("a", "ok"), write("b", "error"), write("c", "pending")]).id).toBe(first);
     expect(only([write("a", "ok"), write("b", "ok")]).id).toBe(first);
-    // the same call id in another turn's row is another run
     expect(only([write("a", "ok"), write("b", "ok")], "other row").id).not.toBe(first);
   });
 

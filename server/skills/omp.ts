@@ -73,7 +73,7 @@ const FORMS: Record<string, CommandForm[]> = {
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 function config(path: string): Record<string, unknown> {
   try { return plainObject(path.endsWith(".json") ? JSON.parse(readFileSync(path, "utf8")) : Bun.YAML.parse(readFileSync(path, "utf8"))); }
-  catch { return {}; /* optional config, including malformed YAML, does not gate discovery */ }
+  catch { return {}; }
 }
 function files(directory: string, recursive = false): string[] {
   const ignore = new SkillIgnore();
@@ -84,7 +84,7 @@ function files(directory: string, recursive = false): string[] {
   }
   for (const dir of ancestors) {
     try { ignore.add(readFileSync(join(dir, ".gitignore"), "utf8"), relative(ancestors[0] ?? directory, dir).split(sep).filter(Boolean).join("/") + (dir === ancestors[0] ? "" : "/")); }
-    catch { /* optional gitignore */ }
+    catch {}
   }
   try {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -95,9 +95,9 @@ function files(directory: string, recursive = false): string[] {
       if (!entry.name.endsWith(".md")) return [];
       if (entry.isFile()) return [path];
       try { return entry.isSymbolicLink() && statSync(path).isFile() ? [path] : []; }
-      catch { return []; /* dangling link */ }
+      catch { return []; }
     });
-  } catch { return []; /* absent or unreadable provider */ }
+  } catch { return []; }
 }
 // Foreign tools whose ~/ config omp treats as opt-in (capability/index.ts FOREIGN_USER_PROVIDERS).
 const FOREIGN_USER_PROVIDERS: ReadonlySet<string> = new Set(["cursor", "codex", "claude", "claude-plugins", "gemini", "opencode", "windsurf", "github"]);
@@ -123,12 +123,11 @@ interface Admitted { readonly raw: string; readonly path: string; readonly field
 function identical(left: Admitted, right: Admitted): boolean {
   try {
     return Bun.deepEquals(left.fields, right.fields) && readSkillText(left.path).replace(FRONTMATTER, "") === readSkillText(right.path).replace(FRONTMATTER, "");
-  } catch { return false; /* unreadable skill */ }
+  } catch { return false; }
 }
 
-/** Stable row identity: the canonical path of the file, the path itself when it cannot be resolved. */
 function canonicalPath(path: string): string {
-  try { return realpathSync(path); } catch { return path; /* vanished between listing and reading */ }
+  try { return realpathSync(path); } catch { return path; }
 }
 
 type Level = "user" | "project";
@@ -313,7 +312,6 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
     if (allBuiltinNames.has(command.name)) return;
     allBuiltinNames.add(command.name); commands.push(command);
   };
-  // File capabilities are provider-prioritized independently of the skill toggles.
   const claudeCommands = [root(claudeDir, "user", "claude"), root(join(cwd, ".claude"), "project", "claude")];
   for (const scope of [...native, ...legacyExtensions, ...claudeCommands, ...legacyMarketplaces, ...agents, ...codex, ...opencode]) {
     if (!providerOn(scope)) continue;
@@ -323,7 +321,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
       const fields = readFrontmatter(path);
       const name = (scope.provider === "codex" || scope.provider === "opencode") && typeof fields?.name === "string" ? fields.name : basename(path, ".md");
       let text: string;
-      try { text = readSkillText(path); } catch { continue; /* unreadable command file */ }
+      try { text = readSkillText(path); } catch { continue; }
       const fallback = description(text);
       const desc = typeof fields?.description === "string" ? fields.description.trim() : fallback.length > 60 ? `${fallback.slice(0, 60)}...` : fallback;
       const command = { name: scope.plugin ? `${scope.plugin}:${name}` : name, description: desc, source: scope.level, id: canonicalPath(path) };
@@ -341,7 +339,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
       const suffix = `(${scope.level}${subdir === "." ? "" : `:${subdir}`})`;
       const fields = readFrontmatter(path);
       let markdown: string;
-      try { markdown = readSkillText(path); } catch { continue; /* unreadable prompt file */ }
+      try { markdown = readSkillText(path); } catch { continue; }
       const fallback = description(markdown);
       const desc = typeof fields?.description === "string" ? fields.description : fallback.length > 60 ? `${fallback.slice(0, 60)}...` : fallback;
       const name = (scope.provider === "github" || scope.provider === "codex") && typeof fields?.name === "string" ? fields.name : basename(path, scope.provider === "github" ? ".prompt.md" : ".md");

@@ -1,10 +1,3 @@
-/**
- * Turns recordings (record.ts) into the README's videos and framed stills, the way screen
- * recorders like Screen Studio do, but from code: every output frame is drawn on a canvas
- * in Chrome — a backdrop, the browser window or phone the app sits in, the recorded frame
- * under an eased camera, and the cursor, clicks and taps from the recorded cues — then
- * piped to ffmpeg. Stills get the same window or phone on a transparent background.
- */
 import { chromium, type Browser, type Page } from "playwright-core";
 import type { Cue, Recording } from "./record.ts";
 import { chromePath } from "../chrome-path.ts";
@@ -15,16 +8,12 @@ const FPS = 30;
 const CAMERA_MS = 900;
 const ease = (s: number): number => (s <= 0 ? 0 : s >= 1 ? 1 : s < 0.5 ? 4 * s * s * s : 1 - (-2 * s + 2) ** 3 / 2);
 
-/** Where everything goes on the canvas, in canvas pixels. `scale` is canvas px per CSS px. */
 interface Layout {
   frame: Frame;
   canvas: { w: number; h: number };
-  /** the window or phone body */
   body: { x: number; y: number; w: number; h: number; r: number };
-  /** where the page's content lands */
   screen: { x: number; y: number; w: number; h: number; r: number };
   scale: number;
-  /** the page's size in CSS px, and the recorded frames' px per CSS px */
   content: { w: number; h: number; dpr: number };
   backdrop: boolean;
 }
@@ -61,7 +50,6 @@ interface State {
   touches: { x: number; y: number; age: number }[];
 }
 
-/** Runs in the compositor page: draws one frame. */
 const PAGE = `<!doctype html><html><body style="margin:0;background:transparent"><canvas id="c"></canvas><script>
 const c = document.getElementById("c"), g = c.getContext("2d");
 const bitmaps = new Map();
@@ -164,10 +152,8 @@ export async function closeCompositor(): Promise<void> {
   shared = null;
 }
 
-/** The camera, cursor and effects at time `t` (seconds since the epoch, as the cues). */
 function stateAt(rec: Recording, t: number, frame: Frame, frameIndex: number): State {
   const cues = rec.cues.filter((cue) => cue.t <= t);
-  // camera: each cue eases from where the camera was when it came
   let from = { zoom: 1, cx: rec.width / 2, cy: rec.height / 2 };
   let target = from;
   let since = -Infinity;
@@ -182,7 +168,6 @@ function stateAt(rec: Recording, t: number, frame: Frame, frameIndex: number): S
     since = cue.t;
   }
   const camera = since === -Infinity ? from : at(t);
-  // cursor: between the last move and the next, so it glides at the output's frame rate
   let cursor: State["cursor"] = null;
   if (frame === "window") {
     const moves = rec.cues.filter((cue): cue is Extract<Cue, { x: number }> => cue.kind === "move" || cue.kind === "down" || cue.kind === "up");
@@ -214,10 +199,6 @@ async function ffmpeg(args: string[], input?: AsyncIterable<Uint8Array>): Promis
   if ((await proc.exited) !== 0) throw new Error(`ffmpeg failed: ${await new Response(proc.stderr).text()}`);
 }
 
-/**
- * The recording as an MP4 in a window or a phone on the backdrop, from `skip` seconds in,
- * holding the last frame `hold` seconds; and the same as a GIF `gifWidth` wide.
- */
 export async function composeVideo(rec: Recording, frame: Frame, out: { mp4: string; gif: string; gifWidth: number }, opts: { skip?: number; hold?: number } = {}): Promise<void> {
   const L = frame === "window"
     ? layout("window", { w: rec.width, h: rec.height }, { canvasW: 1920, canvasH: 1200, scale: 1.25, margin: 0, backdrop: true })
@@ -248,7 +229,6 @@ export async function composeVideo(rec: Recording, frame: Frame, out: { mp4: str
   await page.close();
 }
 
-/** A 2x screenshot in a window or a phone, on a transparent background, as a PNG. */
 export async function composeStill(png: Buffer, frame: Frame, content: { w: number; h: number }, out: string): Promise<void> {
   // drawn at 2 canvas px per CSS px, so the screenshot keeps its 2x pixels
   const L = layout(frame, content, { scale: 2, margin: frame === "window" ? 72 : 64, backdrop: false });

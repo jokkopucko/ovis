@@ -1,7 +1,3 @@
-/**
- * Coalesced measurements wait while the page is hidden, including an already requested frame.
- * They resume in the first visible frame. The caller cancels them on cleanup.
- */
 export function requestShownFrame(callback: FrameRequestCallback): () => void {
   let frame = 0;
   const run: FrameRequestCallback = (at) => {

@@ -5,7 +5,6 @@ import { Ownership, PLUGIN_POLL_MS, runPluginActionToEnd, type PluginRunApi } fr
 
 const answer = (fields: Partial<PluginActionResult>): PluginActionResult => ({ log_id: "plugin-log-1", status: "succeeded", exit_code: 0, output: null, opened_pane_id: null, ...fields });
 const request = { plugin_id: "example.layout", action_id: "apply", pane_id: "w1:p1" };
-/** a wait that passes at once and records what it was asked for */
 const instant = (waits: number[]) => async (ms: number) => { waits.push(ms); };
 
 function api(first: PluginActionResult, later: PluginActionResult[] = []): PluginRunApi & { asked: string[] } {
@@ -68,7 +67,6 @@ describe("Ownership", () => {
       fetchPluginActionStatus: async () => { throw new Error("a run with no owner is not asked about"); },
     };
     const run = runPluginActionToEnd(pcA, request, alive, instant([]));
-    // the user followed a notification to PC B: the palette keyed by PC A is unmounted
     owner.end();
     answerFromA(answer({ opened_pane_id: "w1:p4" }));
     expect(await run).toBeNull();

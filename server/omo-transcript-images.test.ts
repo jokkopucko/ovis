@@ -33,7 +33,6 @@ it("names the picture an omo tool result holds inline, and serves it from the fi
 });
 
 it("serves an omo picture as its page reads the file, past a record on another branch", async () => {
-  // omo's page reads the file in one line, so a record that parents off an earlier one still shows its call's picture
   const path = transcript("forked", [prompt, call, result, { type: "message", id: "u2", parentId: "u1", timestamp: at, message: { role: "user", content: [{ type: "text", text: "again" }] } }]);
   const named = tool(path);
   expect(named !== undefined && named.kind === "tool" && named.images?.[0]?.ref).toBe("pi:call-eval:0");

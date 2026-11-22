@@ -1,0 +1,147 @@
+.browser-panel-address {
+  flex: 1;
+  min-width: 0;
+}
+
+.browser-panel-address .input {
+  width: 100%;
+  height: var(--bar-control-h);
+  font-size: var(--fs-sm);
+}
+
+.browser-panel-holder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.browser-panel-holder.is-held {
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+.browser-panel-refused {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.browser-panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  background: var(--surface-canvas);
+}
+
+.browser-panel-hint {
+  margin: var(--space-6) var(--space-4);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.browser-tabs {
+  /* a grid item of the PC section: no wider than it, so a long title ends in an ellipsis */
+  min-width: 0;
+  padding: var(--space-2) var(--side-gutter) 0;
+}
+
+.browser-tabs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.browser-tabs-list {
+  max-height: calc(var(--control-h) * 6);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.browser-tab-row {
+  position: relative;
+}
+
+.browser-tab-close {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  width: var(--pointer-target);
+  height: var(--pointer-target);
+  transform: translateY(-50%);
+  opacity: 0;
+}
+
+.browser-tab-close svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.browser-tab-row:hover .browser-tab {
+  padding-inline-end: calc(var(--pointer-target) + var(--space-1));
+}
+
+.browser-tab-row:hover .browser-tab-close,
+.browser-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.browser-tab:hover { background: var(--bg-hover); }
+
+.browser-tab[aria-current="true"] {
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+.browser-tab svg {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.browser-tab-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.settings-blocked-sites {
+  flex: none;
+  width: min(22rem, 55%);
+  min-height: calc(var(--control-h) * 3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  resize: vertical;
+}

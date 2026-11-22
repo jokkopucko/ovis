@@ -5,7 +5,6 @@ import { adjacentTabBoundary, drawnTabBoundary, movedTabOrder, tabDropBoundary }
 type Drag = { tabId: string; boundary: number | null };
 type Press = { tabId: string; pointerId: number; element: HTMLElement; x: number; y: number; startX: number; startY: number; started: boolean };
 type Operation = { expected: string | null; settled: boolean; timer?: number };
-/** where a tab dragged out of the strip goes: the pane area opens its pane in a half (lib/paneDrag.ts) */
 export interface TabDragOut {
   start: (tabId: string) => void;
   move: (x: number, y: number) => void;
@@ -15,7 +14,7 @@ export interface TabDragOut {
 }
 
 /**
- * A drag previews only an insertion line. Herdr's next snapshot owns the actual order.
+ * Herdr's next snapshot owns the actual order.
  * `fixed`: the order is not this client's to change (the Herdr app's window lays the PC out,
  * lib/machineContext.tsx AppLayoutContext): no insertion line and no move, as among one tab; a
  * drag can still leave the strip (`outside`).
@@ -66,9 +65,8 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
   }, [owner]);
   useLayoutEffect(() => {
     cancelDrag();
-    // An external create/close/reorder cancels a drag. A sent request still holds the gate
-    // until the order in its answer has been observed. An unrelated snapshot received before
-    // the answer is not an acknowledgement, and must not enable another stale-coordinate move.
+    // An unrelated snapshot received before the answer is not an acknowledgement, and must not enable
+    // another stale-coordinate move.
     const op = operation.current;
     if (op?.settled && key === op.expected) finishOperation(op);
   }, [key, owner]);
@@ -115,7 +113,6 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
     if (!row || !overStrip(held) || current.current.ids.length < 2 || current.current.fixed) return null;
     const items = [...row.querySelectorAll<HTMLElement>(".tab-strip-item")];
     const shown = tabDropBoundary(items.map((item) => item.getBoundingClientRect()), held.x);
-    // a row that leaves tabs out (TabStrip's More) names each drawn tab's place among them all
     const places = items.map((item, index) => Number(item.dataset["tabIndex"] ?? index));
     return drawnTabBoundary(places, shown);
   };
@@ -136,11 +133,10 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
     animation.current = requestAnimationFrame(tick);
   };
   const onPointerDown = (event: PointerEvent<HTMLElement>, tabId: string): void => {
-    // Touch keeps its native swipe scroll; its menu offers the same adjacent moves.
     if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey || !event.isPrimary) return;
     suppressClick.current = false;
     if (operation.current || ((current.current.ids.length < 2 || current.current.fixed) && !current.current.outside)) return;
-    event.preventDefault(); // dragging an inactive tab must not steal terminal or keyboard focus
+    event.preventDefault();
     const element = event.currentTarget;
     press.current = { tabId, pointerId: event.pointerId, element, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, started: false };
     element.setPointerCapture(event.pointerId);

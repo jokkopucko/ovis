@@ -1,6 +1,5 @@
 {
   "scripts/android-ime-regression.ts": 1,
-  "scripts/application-paging-regression.ts": 2,
   "scripts/chat-size-regression.ts": 5,
   "scripts/droplet-regression.ts": 4,
   "scripts/key-bar-hold-repeat-regression.ts": 7,
@@ -14,7 +13,7 @@
   "scripts/terminal-copy-regression.ts": 14,
   "scripts/terminal-input-regression.ts": 8,
   "scripts/terminal-pinch-regression.ts": 5,
-  "scripts/ui-regression.ts": 14,
+  "scripts/ui-regression.ts": 13,
   "server/attach-held.contract.test.ts": 5,
   "server/collector.ts": 1,
   "server/herdr-profile-sync.test.ts": 1,

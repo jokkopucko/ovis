@@ -12,7 +12,6 @@ const face = (status: string): Fake => {
 };
 const settled = (): Promise<void> => new Promise((done) => setTimeout(done, 0));
 
-/** A stand-in FontFaceSet: its faces, and the two events fired by hand. */
 const faceSet = (faces: Fake[]) => {
   const listeners = new Map<string, () => void>();
   let arrivals = 0;
@@ -81,7 +80,6 @@ describe("faces whose arrival is followed", () => {
     later.arrive();
     await settled();
     expect(set.arrivals()).toBe(1);
-    // loaded between two sweeps: no promise of it was followed
     faces.push(face("loaded"), face("error"));
     set.fire("loadingdone");
     expect(set.arrivals()).toBe(2);

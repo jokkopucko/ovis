@@ -14,7 +14,6 @@ import type { RepoDiffTarget } from "../src/lib/repoDiff.ts";
 interface Files { machine: string; paneId: string; directory: string }
 declare global { interface Window { repoDiffQA: { openFiles: (machine: string, paneId: string, directory: string) => void; closeFiles: () => void; settings: (patch: Partial<Settings>) => void; openDiff: (target: RepoDiffTarget) => void } } }
 
-/** The Files dialog, the diff above it and a file above that, wired as App.tsx wires them. */
 function Fixture() {
   const [files, setFiles] = useState<Files | null>(null);
   const { viewing: file, openFile, closeFile } = useFileViewer();

@@ -8,14 +8,13 @@ import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import type { PlanStep, PlanSummary } from "../shared/protocol.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // The plan chip's step in progress (#1040) on the unmodified app over the demo's fixture transport:
 // the Claude pane's plan as the demo keeps it, then every state the chip and its list can be in,
 // pushed as the server would push them (a pane-status frame on the machine events, the roster and
 // the plan answer rewritten alike) in this disposable, loopback-only copy of the demo. No herdr
-// session is opened and nothing is typed. Each state is checked on a phone (390px, touch, 3x) and
-// a desktop window (1440px), dark and light, and in Korean; captures go to UI_EVIDENCE_DIR as
-// plan-chip-<width>-<theme>[-ko][-<state>].png when it is set.
+// session is opened and nothing is typed.
 const app = mkdtempSync(join(tmpdir(), "herdr-plan-chip-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 if (evidence) mkdirSync(evidence, { recursive: true });
@@ -29,7 +28,6 @@ const KO_STEPS: PlanStep[] = [
   { id: "2", label: "멱등 재생 횟수를 세는 지표를 추가하고 기존 요청 지표 옆에 노출하기", active: KO_STEP, status: "in_progress", blocked_by: ["1"], owner: null, started_at: null, ended_at: null },
   { id: "3", label: "지표를 테스트로 덮기", active: null, status: "pending", blocked_by: ["2"], owner: null, started_at: null, ended_at: null },
 ];
-/** a plan long enough for the list to scroll inside its room above the card */
 const MANY: PlanStep[] = Array.from({ length: 16 }, (_, index) => ({
   id: String(index + 1), label: `Step ${index + 1}: ${["trace the request", "count the replay", "store the counter", "expose the metric"][index % 4]}`, active: null,
   status: index < 5 ? "completed" : index === 5 ? "in_progress" : "pending", blocked_by: index === 0 ? [] : [String(index)], owner: null, started_at: null, ended_at: null,
@@ -39,7 +37,6 @@ interface Capture { file: string; width: number; height: number; theme: string; 
 const captures: Capture[] = [];
 const results: Array<Record<string, unknown>> = [];
 
-/** The hook the test drives (window.planChip), installed after the demo's transport. */
 const hook = `<script>(() => {
   const PANE = ${JSON.stringify(PANE)};
   const sockets = new Set();
@@ -126,7 +123,6 @@ const holdTurn = () => {
   }) as typeof window.setTimeout;
   Object.defineProperty(window, "planChipHeld", { value: held });
 };
-/** The turn the captures show is the one the demo opened with: its completion held, never run, its final answer not drawn, the round control still Stop. */
 const turnHeld = async (page: Page, what: string): Promise<void> => {
   const turn = await page.evaluate(() => ({
     held: [...(window as unknown as { planChipHeld: number[] }).planChipHeld],
@@ -148,7 +144,6 @@ const hookOf = (page: Page) => ({
   role: (mode: "interact" | "observe") => page.evaluate((mode) => (window as unknown as { planChip: Hook }).planChip.role(mode), mode),
 });
 
-/** The chip and its row as drawn: one line, the figures whole, nothing over its neighbour, no sideways page scroll. */
 const measure = (page: Page) => page.evaluate(() => {
   const chip = document.querySelector<HTMLElement>(".bg-tasks-toggle");
   const box = (element: Element | null) => { const rect = element?.getBoundingClientRect(); return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null; };
@@ -184,14 +179,12 @@ const measure = (page: Page) => page.evaluate(() => {
 });
 type Row = Awaited<ReturnType<typeof measure>>;
 
-/** The computed type sizes of the chip and, when open, its list: the step adds no size of its own (it inherits the chip's --fs-xs) */
 const fonts = (page: Page) => page.evaluate(() => {
   const size = (selector: string) => { const element = document.querySelector(selector); return element ? getComputedStyle(element).fontSize : null; };
   return { chip: size(".bg-tasks-toggle"), label: size(".bg-tasks-toggle .bg-tasks-label"), figures: size(".bg-tasks-plan"), current: size(".bg-tasks-current"), count: size(".bg-tasks-count"),
     heading: size(".bg-tasks-menu .menu-heading"), stepTitle: size(".bg-tasks-menu .bg-step .bg-task-title"), stepActive: size(".bg-tasks-menu .bg-step-active"), stepMeta: size(".bg-tasks-menu .bg-step .bg-task-meta"), note: size(".bg-tasks-menu .bg-tasks-note") };
 });
 
-/** The chip's real hit rectangle, probed with elementFromPoint outward from its centre: the drawn pill plus the coarse pointer's invisible expander */
 const hitBox = (page: Page) => page.evaluate(() => {
   const chip = document.querySelector<HTMLElement>(".bg-tasks-toggle")!;
   const rect = chip.getBoundingClientRect();
@@ -203,7 +196,6 @@ const hitBox = (page: Page) => page.evaluate(() => {
     coarse: matchMedia("(pointer: coarse)").matches, expander: getComputedStyle(chip, "::before").content !== "none" };
 });
 
-/** What every drawn chip must hold to: one row, the figures whole, nothing pushed over its neighbour or past the page. */
 function oneRow(row: Row, what: string): void {
   assert.ok(row.chip, `${what}: the chip is drawn`);
   assert.ok(row.chip.height <= row.chip.minHeight + 1, `${what}: the chip stays one line: ${JSON.stringify(row.chip)}`);
@@ -225,7 +217,6 @@ const shot = async (page: Page, width: number, theme: string, language: string, 
   const size = page.viewportSize()!;
   captures.push({ file: name, width: size.width, height: size.height, theme, language, state: state ?? "rest" });
 };
-/** Tabs from the message box to the chip: the focus ring the keyboard draws, not a click's */
 const focusChip = async (page: Page): Promise<void> => {
   await page.getByRole("textbox", { name: "Message", exact: true }).focus();
   for (let step = 0; step < 8; step++) {
@@ -242,10 +233,8 @@ const close = async (page: Page): Promise<void> => {
   await page.keyboard.press("Escape");
   await menuOf(page).waitFor({ state: "detached" });
 };
-/** Escape hands the focus back to the chip: the states after it are captured at rest, without the ring */
 const rest = (page: Page) => page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); return new Promise((resolve) => requestAnimationFrame(resolve)); });
 
-/** One browser context: a phone (touch, 3x) or a desktop window, one theme, one language. */
 async function scenario(browser: Browser, width: number, theme: "dark" | "light", language: "en" | "ko", run: (page: Page, touch: boolean) => Promise<void>): Promise<void> {
   const touch = width <= 480;
   const context = await browser.newContext(touch
@@ -282,16 +271,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${hook}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -299,7 +279,6 @@ try {
       for (const width of [390, 1440]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "en", async (page, touch) => {
         const what = `${width}px ${theme}`;
         const hook = hookOf(page);
-        // rest: the demo's plan, its step in progress drawn after the figures and whole in the name
         let row = await measure(page);
         oneRow(row, what);
         assert.equal(row.current?.text, STEP, `${what}: the step in progress is drawn in the chip`);
@@ -320,7 +299,6 @@ try {
           await chipOf(page).hover();
           await shot(page, width, theme, "en", "hover");
         }
-        // keyboard focus: the ring, and the chip still one row
         await focusChip(page);
         row = await measure(page);
         assert.equal(row.chip?.focusVisible, true, `${what}: the chip shows its focus ring from the keyboard`);
@@ -337,7 +315,6 @@ try {
         oneRow(row, `${what} pressed`);
         await shot(page, width, theme, "en", "pressed");
         if (cdp) { await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }); await cdp.detach(); }
-        // open: the list above the card with the plan's steps, the chip pressed
         if (touch) await open(page, touch); else { await page.mouse.up(); await menuOf(page).waitFor(); }
         await menuOf(page).locator(".bg-step").nth(2).waitFor();
         row = await measure(page);
@@ -346,7 +323,6 @@ try {
         await shot(page, width, theme, "en", "open");
         results.push({ what, state: "open", fonts: await fonts(page) });
         await close(page);
-        // a long plan: the list keeps to its room and scrolls to its end
         await hook.answer(MANY);
         await hook.status({ done: 5, total: 16, current: "Step 6: count the replay" }, 0);
         await chipOf(page).filter({ hasText: "5/16" }).waitFor();
@@ -362,7 +338,6 @@ try {
         await close(page);
         await hook.answer(undefined);
         await rest(page);
-        // no step in progress: the figures alone, the chip still at work
         await hook.status({ done: 1, total: 3, current: null }, 0);
         await page.waitForFunction(() => document.querySelector(".bg-tasks-current") === null);
         row = await measure(page);
@@ -371,7 +346,6 @@ try {
         assert.equal(row.chip?.name, "Plan: 1 of 3 done", `${what}: no step, no separator in the name`);
         assert.equal(row.chip?.idle, false);
         await shot(page, width, theme, "en", "empty");
-        // running: the plan moved on, a later step in progress after the new figures
         await hook.status({ done: 2, total: 3, current: "Covering the metric with tests" }, 0);
         await chipOf(page).filter({ hasText: "2/3" }).waitFor();
         row = await measure(page);
@@ -381,9 +355,6 @@ try {
         assert.equal(row.chip?.idle, false);
         await shot(page, width, theme, "en", "running");
         results.push({ what, state: "running", chip: row.chip, current: row.current, plan: row.plan });
-        // only the step's words change, the counts stay: a short step, then the long one beside it (the chip
-        // grows to its cap), and the status row refits, so the model beside the chip is never left cut
-        // (the counts move once with the short step, so the row is fitted with the model whole first)
         await hook.status({ done: 1, total: 3, current: "Test" }, 0);
         await page.waitForFunction(() => document.querySelector(".bg-tasks-current")?.textContent === "Test" && document.querySelector(".bg-tasks-plan")?.textContent === "1/3");
         await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -397,7 +368,6 @@ try {
         const model = await page.locator(".composer-model").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, drawn: element.getBoundingClientRect().width > 1, fit: element.closest(".composer-status")?.getAttribute("data-model") ?? "full" }));
         assert.ok(!model.drawn || model.clientWidth >= model.scrollWidth, `${what}: a step text change alone refits the model label: ${JSON.stringify(model)}`);
         results.push({ what, state: "step-text-only", chip: row.chip, current: row.current, plan: row.plan, model });
-        // every step done: quiet, no step
         await hook.status({ done: 3, total: 3, current: null }, 0);
         await page.locator(".bg-tasks-toggle.is-idle").waitFor();
         row = await measure(page);
@@ -405,7 +375,6 @@ try {
         assert.equal(row.plan?.text, "3/3");
         assert.equal(row.current, null);
         await shot(page, width, theme, "en", "complete");
-        // running again, with background tasks beside the plan: their count joins the row whole
         await hook.status({ done: 1, total: 3, current: STEP }, 2);
         await page.locator(".bg-tasks-count").waitFor();
         row = await measure(page);
@@ -415,7 +384,6 @@ try {
         assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${STEP} · 2 background tasks`);
         await shot(page, width, theme, "en", "tasks");
         results.push({ what, state: "tasks", chip: row.chip, current: row.current, count: row.count });
-        // an unbroken step: cut with an ellipsis, the figures and the count untouched, the name whole
         await hook.status({ done: 1, total: 3, current: LONG }, 2);
         await page.waitForFunction((long) => document.querySelector(".bg-tasks-current")?.textContent === long, LONG);
         row = await measure(page);
@@ -440,7 +408,6 @@ try {
         await menuOf(page).getByRole("status").filter({ hasText: "Couldn't read the plan. Trying again…" }).waitFor();
         await shot(page, width, theme, "en", "error");
         await close(page);
-        // the list answers no plan while the chip still counts one (the server between two reads)
         await hook.answer(null);
         await open(page, touch);
         await menuOf(page).getByText("This session keeps no plan right now", { exact: true }).waitFor();
@@ -459,7 +426,6 @@ try {
         row = await measure(page);
         oneRow(row, `${what} interacting again`);
         assert.equal(row.current?.text, STEP);
-        // the PC offline: its cached plan is not a chip; back online, the chip is back
         await hook.offline(true);
         await chipOf(page).waitFor({ state: "detached" });
         assert.equal(await page.locator(".bg-tasks-toggle").count(), 0, `${what}: an offline PC's cached plan draws no chip`);
@@ -469,14 +435,12 @@ try {
         row = await measure(page);
         oneRow(row, `${what} back online`);
         assert.equal(row.current?.text, STEP);
-        // no plan at all: a Claude pane with nothing running has no chip
         await hook.status(null, 0);
         await chipOf(page).waitFor({ state: "detached" });
         await shot(page, width, theme, "en", "absent");
         await hook.status({ done: 1, total: 3, current: STEP }, 0);
         await chipOf(page).waitFor();
         if (!touch) {
-          // a split beside it: the pane's card narrows to a phone's width and less, and the chip keeps its row
           const status = await page.evaluate(async (pane) => (await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right", focus: false }) })).status, PANE);
           assert.equal(status, 200, `${what}: the demo split the pane`);
           await page.waitForFunction(() => document.querySelectorAll(".pane-frame").length === 2);
@@ -495,7 +459,6 @@ try {
         console.log(`PASS ${what}: the step in the chip at rest, focused, pressed, open and scrolled, without a step, running a later one, complete, with tasks, cut when long, the list's read states, observed, offline and split`);
       });
 
-      // Korean: the chip's words and the agent's own Korean step, unbroken and wrapped in the list
       for (const width of [390, 1440]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "ko", async (page, touch) => {
         const what = `${width}px ${theme} ko`;
         const hook = hookOf(page);
@@ -523,7 +486,6 @@ try {
         console.log(`PASS ${what}: Korean chip words, step, list and an unbroken step`);
       });
 
-      // the narrowest phones: the chip, its figures and the composer's controls still share one row
       for (const width of [320, 360]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "en", async (page, touch) => {
         const what = `${width}px ${theme}`;
         const hook = hookOf(page);

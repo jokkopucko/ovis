@@ -17,7 +17,6 @@ export function wayBackIn(t: Translate, viaPortal: boolean, oidc = false): { row
     : { row: t("Forget this browser's sign-in. Getting back in takes the access token or a pairing code."), confirm: t("Getting back in takes the access token, or a pairing code from the PC: Settings → Devices and PCs there, or the pair command in its terminal.") };
 }
 
-/** Settings → Phone & devices → Devices → Sign out: forget this browser's sign-in, after asking once. */
 export function SignOutRow({ viaPortal, oidc = false, onSignOut, label }: { viaPortal: boolean; oidc?: boolean; onSignOut: () => Promise<void>; /** the row's and its button's name, beside another Sign out on the page */ label?: string }) {
   const t = useT();
   const [confirming, setConfirming] = useState(false);

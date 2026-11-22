@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { NEW_PC_MS, type MyPc } from "../account/myPcs.ts";
 import type { PcStatus } from "./pcStatus.ts";
 import type { DashboardPc } from "./dashboard.ts";
-import { dashboardModel, dashboardPcs, relayHost } from "./dashboard.ts";
+import { dashboardModel, dashboardPcs, dashboardState, relayHost } from "./dashboard.ts";
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
 const GLOBAL = "wss://relay.ovis.sh";
@@ -14,7 +14,6 @@ function pc(server_id: string, state: DashboardPc["state"], relay: string | null
   };
 }
 
-/** A PC new in the directory `ago` ms before NOW that this device can add (it has a join route). */
 function fresh(server_id: string, ago: number): DashboardPc {
   return { ...pc(server_id, "needs-approval"), added_at: new Date(NOW - ago).toISOString(), join: { server_public_key: "k", relay: GLOBAL } };
 }
@@ -61,7 +60,6 @@ describe("dashboardModel counts and filters", () => {
 
 describe("dashboardModel provenance", () => {
   it("says a PC the directory does not list is known to this device alone, and not checked until a check returns", () => {
-    // local mode: myPcs without a directory makes every pairing a "paired" row nobody has vouched for
     const local = { ...pc("qr", "paired"), listed: false };
     const [row] = model([local]).rows;
     expect(row).toMatchObject({ source: "this-device", check: null });
@@ -86,6 +84,41 @@ describe("dashboardModel provenance", () => {
   });
 });
 
+describe("this device's own check of a paired PC", () => {
+  const answered: PcStatus = { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 41 };
+  const nobody: PcStatus = { kind: "offline", reason: "pc" };
+  const unreached: PcStatus = { kind: "offline", reason: "relay" };
+  const turnedAway: PcStatus = { kind: "offline", reason: "refused" };
+
+  // `paired`: the account heard from it lately; `offline`: it confirmed it has not for fifteen minutes (a failed read ages
+  // no row, accountController.ts). An answer beats that Offline, nobody at the relay is Machine offline whatever the account
+  // last heard, and a relay this device could not reach, or that turned it away, says nothing of the PC, so the account's
+  // word stands beside it. A re-check in flight keeps the last finished check's word; before any has finished, the account's
+  // word stands
+  it.each([
+    ["paired", null, "paired"], ["paired", { kind: "checking" }, "paired"], ["paired", answered, "paired"],
+    ["paired", nobody, "offline"], ["paired", unreached, "unreachable"], ["paired", turnedAway, "unreachable"],
+    ["paired", { kind: "checking", previous: nobody }, "offline"], ["paired", { kind: "checking", previous: unreached }, "unreachable"],
+    ["offline", null, "offline"], ["offline", { kind: "checking" }, "offline"], ["offline", answered, "paired"],
+    ["offline", nobody, "offline"], ["offline", unreached, "offline"], ["offline", turnedAway, "offline"],
+    ["offline", { kind: "checking", previous: answered }, "paired"], ["offline", { kind: "checking", previous: unreached }, "offline"],
+  ] as const)("reads a listed PC the account calls %s, checked %j, as %s", (state, check, expected) => {
+    expect(dashboardState({ state, listed: true }, check)).toBe(expected);
+  });
+
+  it("reads a pairing the account does not list by the check alone", () => {
+    expect([null, answered, nobody, unreached].map((check) => dashboardState({ state: "paired", listed: false }, check))).toEqual(["unchecked", "paired", "offline", "unreachable"]);
+  });
+
+  it("puts a PC nobody answered for under Offline and Needs you, and one this device could not reach under Needs you alone: neither is Ready", () => {
+    const m = model([pc("off", "paired"), pc("far", "paired"), pc("up", "paired")], new Map<string, PcStatus>([["off", nobody], ["far", unreached], ["up", answered]]));
+    expect(m.counts).toEqual({ ready: 1, needsYou: 2, offline: 1, paired: 3 });
+    expect([m.filters.ready, m.filters.offline, m.filters.needs]).toEqual([["up"], ["off"], ["far", "off"]]);
+    expect(m.attention.map(({ server_id, reason }) => [server_id, reason])).toEqual([["far", "unreachable"], ["off", "offline"]]);
+    expect(Object.fromEntries(m.map.hubs[0]?.nodes.map((node) => [node.server_id, node.state]) ?? [])).toEqual({ far: "unreachable", off: "offline", up: "paired" });
+  });
+});
+
 describe("dashboardModel urgency", () => {
   it("orders attention by nearest Add expiry, then updates, other approvals and offline, names breaking ties", () => {
     const m = model([
@@ -103,6 +136,12 @@ describe("dashboardModel urgency", () => {
   it("closes the Add window at exactly ten minutes", () => {
     const m = model([fresh("closed", NEW_PC_MS), fresh("open", NEW_PC_MS - 1)]);
     expect(m.attention.map(({ server_id, expiresAt }) => [server_id, expiresAt])).toEqual([["open", NOW + 1], ["closed", null]]);
+  });
+
+  it("offers no Add window to a new PC that already came by the account service: it pulls only once it belongs to the account", () => {
+    const inAccount: DashboardPc = { ...fresh("in-account", 2 * 60_000), last_seen_at: new Date(NOW - 30_000).toISOString() };
+    const m = model([inAccount, fresh("waiting", 2 * 60_000)]);
+    expect(m.attention.map(({ server_id, expiresAt }) => [server_id, expiresAt])).toEqual([["waiting", NOW + 8 * 60_000], ["in-account", null]]);
   });
 
   it("offers no Add window to a new PC without a join route, and puts a PC without a relay under the default one", () => {
@@ -170,7 +209,6 @@ describe("dashboardModel relays and map", () => {
     expect(relayHost("wss://relay-ap.ovis.sh")).toBe("relay-ap.ovis.sh");
     expect(relayHost("wss://relay.example:8443/path")).toBe("relay.example:8443");
     expect(relayHost("not a url")).toBe("not a url");
-    // the map, the strip and the table name one origin alike: a default port is the same relay
     expect(relayHost("wss://relay.example:443")).toBe("relay.example");
   });
 });
@@ -186,7 +224,6 @@ describe("dashboardPcs", () => {
       [{ server_id: "listed", relay: "wss://relay.ovis.sh" }, { server_id: "joinable", relay: "wss://relay-ap.ovis.sh" }],
     );
     expect(relayOf(pcs)).toEqual({ listed: "wss://relay.ovis.sh", joinable: "wss://relay-ap.ovis.sh", qr: "wss://relay.example" });
-    // the rows keep everything myPcs said of them
     expect(pcs.find(({ server_id }) => server_id === "listed")).toMatchObject({ state: "paired", listed: true, paired: true });
   });
 
@@ -197,7 +234,6 @@ describe("dashboardPcs", () => {
       [{ server_id: "paired", relay: null }, { server_id: "unknown", relay: null }],
     );
     expect(relayOf(pcs)).toEqual({ paired: "wss://relay.example", unknown: null });
-    // the model then puts the unknown one under the shell's default relay
     expect(model(pcs).relays.map(({ origin, pcs: ids }) => [origin, ids])).toEqual([["wss://relay.example", ["paired"]], ["wss://relay.ovis.sh", ["unknown"]]]);
   });
 

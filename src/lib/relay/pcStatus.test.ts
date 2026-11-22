@@ -12,7 +12,6 @@ const device = (change: Partial<RelayDevice> = {}): RelayDevice => ({
   server_public_key: "key", relay: "wss://relay-ap.ovis.sh", ...change,
 });
 
-/** A probe answering from a table keyed by where it went (a direct carrier or a relay), recording the order asked. */
 function probes(answers: Record<string, PcProbe>) {
   const asked: string[] = [];
   const probe = async (_offer: unknown, via: { direct: string } | { relay: string }): Promise<PcProbe> => {
@@ -50,8 +49,11 @@ describe("checking a saved PC", () => {
   it("calls the PC offline when the relay has nobody for it, and the relay unreachable when none answers", async () => {
     expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" }, "wss://relay.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "pc" });
     expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({}).probe)).toEqual({ kind: "offline", reason: "relay" });
-    // nobody on the regional relay, and the global one out of reach: the PC is unknown, the relay is the reason
     expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "relay" });
+  });
+
+  it("passes a relay's refusal on as a refusal, not as a relay this device could not reach", async () => {
+    expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({ "wss://relay.example": { kind: "refused" } }).probe)).toEqual({ kind: "offline", reason: "refused" });
   });
 });
 
@@ -72,7 +74,6 @@ describe("the PCs one sweep checks", () => {
     expect(names(sweepOf(all, 0, 3))).toEqual(["a", "b", "c"]);
     expect(names(sweepOf(all, 3, 3))).toEqual(["d", "e", "a"]);
     expect(names(sweepOf(all, 6, 3))).toEqual(["b", "c", "d"]);
-    // within the cap the cursor does not matter
     expect(names(sweepOf(all.slice(0, 2), 7, 3))).toEqual(["a", "b"]);
   });
 });

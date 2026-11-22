@@ -4,7 +4,6 @@
  * fallback card's own question. Each is an English key of the client's dictionaries, with its
  * values in `{placeholders}`: InteractivePrompt.own_text names the key and the values, and the
  * client shows the card in the user's language. Text read off the screen is never one of them.
- * src/lib/i18n.test.ts reads this list as a label map of the composer's part.
  */
 const CARD_TEXT = [
   "Question",

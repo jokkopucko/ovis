@@ -1,14 +1,9 @@
 /**
- * The page says it is loading while the app's script is on its way (#2329): on a slow link the entry
- * module takes seconds, and a page that shows nothing until it runs looks frozen. Per case the entry
- * module is held by a request gate, as a slow link holds it: a loading status must show in the page
- * (index.html's own markup, under the app's Content-Security-Policy), turn once a step, keep still
- * under reduced motion, and be gone once the app has drawn. Its colours are the first frame's theme:
- * a device with no saved theme follows the OS colour scheme, a saved theme wins over it (themeBoot.ts
- * DEFAULT_APPEARANCE). No herdr session and no user state: the demo build on a loopback server on
- * port 0 and a temporary directory, removed at the end.
- *
- * UI_EVIDENCE_DIR=<dir>: also writes a screenshot of each case while the app is held.
+ * Per case the entry module is held by a request gate, as a slow link holds it: a loading status
+ * must show in the page (index.html's own markup, under the app's Content-Security-Policy), turn
+ * once a step, keep still under reduced motion, and be gone once the app has drawn. No herdr
+ * session and no user state: the demo build on a loopback server on port 0 and a temporary
+ * directory, removed at the end.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -32,10 +27,8 @@ const CASES: Case[] = [
   { name: "phone, reduced motion", context: { ...devices["iPhone 14"] }, reducedMotion: true },
   { name: "phone, saved light theme", context: { ...devices["iPhone 14"], colorScheme: "dark" }, settings: { theme: "light" } },
 ];
-/** the theme a case's first frame is on: its saved choice, else the OS scheme it emulates */
 const themeOf = (item: Case): "dark" | "light" => item.settings?.["theme"] === "light" ? "light" : item.settings?.["theme"] === "dark" || item.context.colorScheme === "dark" ? "dark" : "light";
 
-/** the ring's color per case: on the same dark OS, a saved light theme must not draw the unsaved device's dark one */
 const rings = new Map<string, string>();
 let browser: Browser | null = null;
 let server: ReturnType<typeof Bun.serve> | null = null;
@@ -71,13 +64,11 @@ try {
       let release = (): void => undefined;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       await page.route((address) => /\/assets\/index-[\w-]+\.js$/.test(address.pathname), async (route) => { await gate; await route.continue(); });
-      // a face asked for while the app is held downloads beside its script, on the same slow link
       const heldFonts: string[] = [];
       let held = true;
       page.on("request", (request) => { if (held && request.resourceType() === "font") heldFonts.push(request.url()); });
       await page.goto(url, { waitUntil: "commit" });
 
-      // the app's script is held: the page itself must say it is loading, drawn and opaque
       const status = page.locator("#root > [role='status']");
       await status.waitFor({ state: "attached", timeout: 10_000 }).catch(() => {
         throw new Error(`${item.name}: nothing on the page says it is loading while the app's script is on its way`);
@@ -88,7 +79,6 @@ try {
         const box = node.getBoundingClientRect();
         return getComputedStyle(node).opacity === "1" && box.width > 0 && box.height > 0;
       }, undefined, { timeout: 10_000 });
-      // a status is announced by its words, not its name: the ring is decoration
       assert.equal((await status.textContent())?.trim(), "Loading Ovis", `${item.name}: the status says what is loading`);
       assert.equal(await status.locator(".boot-spinner").getAttribute("aria-hidden"), "true", `${item.name}: the ring is hidden from screen readers`);
       const shown = await page.evaluate(() => {
@@ -103,10 +93,8 @@ try {
       assert.ok(shown.spinner, `${item.name}: the status draws a spinner`);
       assert.ok(shown.spinner.width > 0, `${item.name}: the spinner has a size`);
       assert.ok(Math.abs(shown.spinner.center[0]! - shown.window[0]! / 2) <= 2 && Math.abs(shown.spinner.center[1]! - shown.window[1]! / 2) <= 2, `${item.name}: the spinner sits in the middle of the window (${shown.spinner.center.join(",")} in ${shown.window.join("x")})`);
-      // a fast start does not flash it: it shows only after a moment
       assert.equal(shown.show.name, "boot-show", `${item.name}: the status waits before it shows`);
       assert.ok(shown.show.delay >= 300 && shown.show.delay <= 1000, `${item.name}: the status shows after a moment, and within a second (${shown.show.delay} ms)`);
-      // the first frame's theme is the row the app goes on drawing: the saved one, else the OS scheme
       assert.equal(await page.evaluate(() => document.documentElement.dataset["theme"]), themeOf(item), `${item.name}: the page boots on the ${themeOf(item)} theme`);
       rings.set(item.name, shown.spinner.border);
       if (item.reducedMotion) assert.equal(shown.spinner.animation, "none", `${item.name}: under reduced motion the spinner keeps still`);
@@ -122,7 +110,6 @@ try {
 
       assert.deepEqual(heldFonts, [], `${item.name}: the status asks for no font while the app's script is on its way`);
 
-      // the app comes: it draws over the status, which is gone with its first frame
       held = false;
       release();
       await page.locator(".app").first().waitFor({ timeout: 30_000 });

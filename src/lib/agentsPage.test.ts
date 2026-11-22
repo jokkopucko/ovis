@@ -29,7 +29,6 @@ describe("agentsPage", () => {
   });
 
   it("lists under Other accounts the providers no installed agent signs in to, in the order they came", () => {
-    // Cursor has no agent in the catalog; Copilot's agent is not on this PC
     expect(agentsPage({ agents, providers, integrations: [], accountsHere: true }).otherProviders).toEqual(["cursor", "copilot"]);
   });
 
@@ -41,14 +40,12 @@ describe("agentsPage", () => {
 
   it("offers to install only what the PC surely lacks and has a command for", () => {
     const page = agentsPage({ agents: [...agents, row("muse")], providers: [], integrations: [], accountsHere: true });
-    // muse has no install command on Linux
     expect(page.installable.map((agent) => agent.id)).toEqual(["copilot"]);
   });
 
   it("says the PC cannot tell what it has when no agent's install state is known, and offers no Install", () => {
     const unknown: AgentInstallState = { ...missing, installed: null };
     expect(agentsPage({ agents: [row("claude", unknown), row("codex", unknown)], providers: [], integrations: [], accountsHere: false })).toMatchObject({ rows: [], installable: [], installsUnknown: true });
-    // one it can tell about is enough to list what the PC has
     expect(agentsPage({ agents: [row("claude", unknown), row("codex")], providers: [], integrations: [], accountsHere: true }).installsUnknown).toBe(false);
     expect(agentsPage({ agents: [], providers: [], integrations: [], accountsHere: true }).installsUnknown).toBe(false);
   });
@@ -57,8 +54,6 @@ describe("agentsPage", () => {
     const integrations = [integration("claude", "claude"), integration("antigravity_cli", "agy", "outdated"), integration("droid", "droid", "not_installed"), integration("kimi", "kimi", "not_installed", false), integration("codex", "codex", "not_installed"), integration("copilot", "copilot", "not_installed", false), integration("pi", "pi", "current", false)];
     const page = agentsPage({ agents, providers: [], integrations, accountsHere: true });
     expect(page.rows.map((entry) => entry.integration?.target ?? null)).toEqual(["claude", "codex", null, "antigravity_cli"]);
-    // droid is on the PC without a catalog row; pi is gone but its hook is still installed;
-    // kimi and copilot have neither the agent nor the hook, so nothing on the PC is left to show
     expect(page.otherIntegrations.map((entry) => entry.target)).toEqual(["droid", "pi"]);
   });
 });
@@ -73,6 +68,22 @@ describe("signInState", () => {
     expect(signInState("codex", [], true)).toEqual({ kind: "none" });
     expect(signInState("claude", [account("claude", "claude:a")], true)).toEqual({ kind: "signed-in", count: 1, account: "claude:a" });
     expect(signInState("claude", [account("claude", "claude:a"), account("claude", "claude:b", "expired")], true)).toEqual({ kind: "problem", count: 2, problems: 1 });
+  });
+
+  it("takes another tool's record of an account as no sign-in of the agent: it is that tool's", () => {
+    const recorded: ProviderUsage = { ...account("claude", "claude:r"), checked_at: "2026-09-29T12:00:00Z", recorded: { by: "omp", stale: false, signed_in: false } };
+    expect(signInState("claude", [recorded], true)).toEqual({ kind: "none" });
+    expect(signInState("claude", [recorded], true, "secret-tool")).toEqual({ kind: "unreadable", command: "secret-tool" });
+    expect(signInState("claude", [account("claude", "claude:a"), recorded], true)).toEqual({ kind: "signed-in", count: 1, account: "claude:a" });
+    expect(signInState("claude", [account("claude", "claude:a", "expired"), recorded], true)).toEqual({ kind: "problem", count: 1, problems: 1 });
+  });
+
+  it("keeps counting this PC's own sign-in while another tool's record stands in for its numbers", () => {
+    const standIn = (problem: ProviderUsage["problem"] = null): ProviderUsage =>
+      ({ ...account("claude", "claude:a", problem), checked_at: "2026-09-29T12:00:00Z", recorded: { by: "omp", stale: false, signed_in: true } });
+    expect(signInState("claude", [standIn()], true)).toEqual({ kind: "signed-in", count: 1, account: "claude:a" });
+    expect(signInState("claude", [standIn("expired")], true)).toEqual({ kind: "problem", count: 1, problems: 1 });
+    expect(signInState("claude", [standIn("rate_limited"), account("claude", "claude:b")], true)).toEqual({ kind: "problem", count: 2, problems: 1 });
   });
 
   it("names the missing command rather than no sign-in when the server could not look", () => {

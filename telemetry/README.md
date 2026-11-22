@@ -19,6 +19,21 @@ A second table, `active`, holds one row per install and UTC day the app was open
 the app was installed, the terminal runtime, the country, and `harnesses`, a JSON array of the kinds of coding agents
 running that day, from the fixed list `TELEMETRY_HARNESSES` in `shared/telemetry.ts` (any other
 agent is `other`). A later message for the same day replaces the version and the harnesses.
+A third table, `counts`, holds one row per install and UTC day that has ended, for apps since notice
+version 6, which says so (`POST /v1/counts`): the day, the random install ID, the app's version that day, and
+`narrow` and `wide`, the day's use of the app's controls in a window at most 640px wide and in a
+wider one: for each fixed counter name used that day (`TELEMETRY_COUNTERS` in `shared/telemetry.ts`,
+such as `chat_send` or `view_terminal_claude`), a bucket (1: 1-2 times, 2: 3-9, 3: 10-29, 4: 30 or
+more), and the fixed names of the controls shown that day (`TELEMETRY_SHOWN`). It carries no country,
+OS or agent kinds: join `active` on the day and install. The first message for a day stands, and a
+name the Worker does not know is dropped while the rest of the row is kept. No row for a day the
+install was active means its counts are unknown (an older app, the notice not seen, or not sent yet:
+the Worker takes a day up to `COUNTS_LATE_DAYS`, 14, back).
+A day's row is what the PC had when it sent the day: five minutes (`COUNTS_SETTLE_MS`) after the day's
+UTC midnight, or at the first start or visit after that, longer than a page holds its counts (a minute).
+A batch held past that, by a tab frozen across midnight, is kept on the PC but not sent while the same
+server runs; after a restart it goes in a second message for the day, which the Worker ignores, or it is
+dropped once the day is too old to send.
 The Worker itself never reads the sender's address or any header other than the content type, and
 Workers Logs are off (`wrangler.toml`), so no request log keeps the address either.
 
@@ -72,8 +87,30 @@ bunx wrangler d1 execute herdr-web-ui-telemetry --remote --command "ALTER TABLE 
 bunx wrangler d1 execute herdr-web-ui-telemetry --remote --command "ALTER TABLE active ADD COLUMN runtime TEXT CHECK (runtime IS NULL OR runtime IN ('herdr', 'herdr-core'))"
 ```
 
+Then create the `counts` table, before deploying a Worker that writes it (an app since notice
+version 6 sends a finished day's counts; that Worker's insert fails without the table):
+
+```sh
+bunx wrangler d1 execute herdr-web-ui-telemetry --remote --command "CREATE TABLE IF NOT EXISTS counts (day TEXT NOT NULL, install_id TEXT NOT NULL, version TEXT NOT NULL, narrow TEXT CHECK (narrow IS NULL OR json_valid(narrow)), wide TEXT CHECK (wide IS NULL OR json_valid(wide)), PRIMARY KEY (day, install_id)); CREATE INDEX IF NOT EXISTS counts_day ON counts (day);"
+```
+
 These ALTERs preserve historical rows; their newly added `settings` value remains `NULL` and is
-not inferred from old data. After the database is ready, deploy the Worker and then release the
+not inferred from old data.
+
+A Worker change goes to staging first: the `staging` environment in `wrangler.toml` is the same
+Worker with a database of its own, `herdr-web-ui-telemetry-staging`, at
+`https://herdr-web-ui-telemetry-staging.<account>.workers.dev`, which no app sends to. Post the new
+message there and read it back before deploying to production. On a new account, create that
+database once, put its `database_id` in `[[env.staging.d1_databases]]` in `wrangler.toml`, and apply
+the schema; then deploy:
+
+```sh
+bunx wrangler d1 create herdr-web-ui-telemetry-staging   # a new account only
+bunx wrangler d1 execute herdr-web-ui-telemetry-staging --env staging --remote --file schema.sql   # a new staging database only
+bunx wrangler deploy --env staging
+```
+
+After the database is ready and staging took the change, deploy the Worker and then release the
 app version that sends snapshots:
 
 ```sh
@@ -95,9 +132,22 @@ name: installs already send to that address, and a D1 database cannot be renamed
 ## Reading the counts
 
 After `bunx wrangler login` from `telemetry/`, run
-`bun scripts/telemetry-report.ts --out <file.md>` from the repository root. It runs the weekly installs, DAU, WAU, MAU,
-agent-kind and country queries below, plus daily actives per country for the last 28 days, and
-writes them as one report. The script selects `telemetry/` as Wrangler's working directory.
+`bun scripts/telemetry-report.ts --out ~/telemetry-report.md` from the repository root (write it outside the tree:
+it holds counts no one has published; `telemetry-report*.md` and `*.html` at the root are ignored by git for a
+slip). It runs the weekly installs, DAU, WAU, MAU, agent-kind and country queries below, plus daily actives per
+country for the last 28 days and the last 7 finished days' button counts, and writes them as one report;
+`--html <file.html>` also writes them as one page with the shares drawn as bars. For the button counts, per width:
+
+- the share of installs that used each counter, with `of`, the installs it is a share of, counted in the same
+  statement: under about ten installs a share is noise, and over one install it reads 100%;
+- the middle install's day on the days it used the counter: each install first gets one value, the lower middle of
+  its ranges on those days (a recorded day it did not use it is not one of them), then the middle install is taken, so a few heavy installs do not carry it; only ranges are sent and none is
+  averaged, so when the two middle installs differ both ranges are named (`1-2 .. 30+`);
+- the controls shown, and chat/terminal switches by kind of agent: an install runs an agent there when that day's
+  active message or its own switch counts name it, and switched when its counts hold a switch on that agent's panes;
+  `shell` (a pane with no agent) shows switches alone (`-` for running), since no visit names it.
+
+The queries of one run share one cut-off day, worked out once, so a run across UTC midnight still agrees with itself. The script selects `telemetry/` as Wrangler's working directory.
 For the individual queries below, stay in `telemetry/`:
 
 ```sh
@@ -134,6 +184,15 @@ GROUP BY way.value ORDER BY installs DESC, ingress;
 SELECT day, COUNT(*) AS installs, SUM(json_extract(usage, '$.prompt_answers')) AS prompt_answers,
   SUM(json_extract(usage, '$.alerts_delivered')) AS alerts_delivered, SUM(json_extract(usage, '$.alerts_opened')) AS alerts_opened
 FROM active WHERE usage IS NOT NULL GROUP BY day ORDER BY day;
+-- share of installs that used each counter at least once in the last 7 finished days, per width, among
+-- installs that sent counts at that width; a bucket's lower bound is 1, 3, 10 or 30 uses that day
+SELECT width, item.key AS counter, COUNT(DISTINCT c.install_id) AS installs,
+  ROUND(100.0 * COUNT(DISTINCT c.install_id) / (SELECT COUNT(DISTINCT install_id) FROM counts WHERE day >= date('now', '-7 days') AND day < date('now') AND (CASE width WHEN 'narrow' THEN narrow ELSE wide END) IS NOT NULL), 1) AS percent
+FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w
+JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL
+CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS item
+WHERE c.day >= date('now', '-7 days') AND c.day < date('now')
+GROUP BY width, counter ORDER BY width, installs DESC, counter;
 -- installs per version they last reported
 SELECT version, COUNT(*) FROM (SELECT install_id, MAX(version) AS version FROM events GROUP BY install_id) GROUP BY version ORDER BY version;
 -- OS, architecture and install method

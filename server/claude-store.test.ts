@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rename
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment, windowsShellClaude } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, hintedClaudeConfigDir, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment, windowsShellClaude } from "./claude-store.ts";
 import { procStartTime } from "./darwin-process.ts";
 import type { ProcessRow } from "./windows-processes.ts";
 
@@ -42,7 +42,6 @@ describe("isClaudeProcess", () => {
   it("knows the native build, whose process is titled Claude", () => {
     expect(isClaudeProcess({ name: "2.1.302", argv0: "Claude", argv: ["Claude"] })).toBe(true);
     expect(isClaudeProcess({ name: "Claude Helper", argv: ["/Applications/Claude.app/Contents/MacOS/Claude Helper"] })).toBe(false);
-    // one field alone is not that shape
     expect(isClaudeProcess({ name: "2.1.302", argv0: "Claude", argv: ["Other"] })).toBe(false);
     expect(isClaudeProcess({ name: "2.1.302", argv0: "Other", argv: ["Claude"] })).toBe(false);
     // the native build as herdr reports it run from its lowercase `claude` launcher: the executable match
@@ -79,7 +78,6 @@ describe("claudeProcessSession", () => {
     expect(await claudeProcessSession(home, process.pid)).toBe(SESSION);
   });
 
-  // the test process stands in for the pane's Claude; its own CLAUDE_CONFIG_DIR would name another store
   it.skipIf(!NATIVE || Boolean(process.env["CLAUDE_CONFIG_DIR"]))("reads the session a pane's one Claude process records, which /clear rewrites (#540)", async () => {
     const home = nativeRecord();
     const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
@@ -88,7 +86,6 @@ describe("claudeProcessSession", () => {
     const path = join(home, ".claude", "sessions", `${process.pid}.json`);
     writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
     expect(await claudeForegroundSession([claude], home)).toBe(cleared);
-    // control: no single Claude process, no session
     expect(await claudeForegroundSession([], home)).toBeNull();
     expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
     expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
@@ -170,7 +167,6 @@ describe("a claude attach pane's job (#1645)", () => {
     expect(claudeAttachArgs(["/home/me/.local/bin/claude", "attach", JOB])).toEqual(first(JOB));
     expect(claudeAttachArgs(["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js", "attach", JOB])).toEqual(first(JOB));
     expect(claudeAttachArgs(["C:\\Program Files\\nodejs\\node.exe", "C:\\npm\\cli.js", "attach", JOB])).toEqual(first(JOB));
-    // part of an id, or of a name only when nothing follows it
     expect(claudeAttachArgs(["claude", "attach", "dc56"])).toEqual(first("dc56"));
     expect(claudeAttachArgs(["claude", "attach", "release notes"])).toEqual(first("release notes"));
     expect(claudeAttachArgs(["claude", "attach", "release", "notes"])).toEqual(first("release", false));
@@ -183,13 +179,11 @@ describe("a claude attach pane's job (#1645)", () => {
     for (const after of [["--verbose"], ["--setting-sources"], ["-d", "api,hooks"], ["--debug", "api"], ["--debug", "api", "notes"], ["-d", "--verbose"], ["--model", "opus"]]) {
       expect(claudeAttachArgs(["claude", "attach", "release", ...after])).toEqual(first("release", false));
     }
-    // root options before it, each with the values it takes
     expect(claudeAttachArgs(["claude", "--model", "opus", "attach", JOB])).toEqual(behind);
     expect(claudeAttachArgs(["claude", "--model=opus", "--dangerously-skip-permissions", "attach", JOB])).toEqual(behind);
     expect(claudeAttachArgs(["claude", "--add-dir", "a", "b", "--verbose", "attach", JOB])).toEqual(behind);
     expect(claudeAttachArgs(["claude", "--debug", "--verbose", "attach", JOB])).toEqual(behind);
     expect(claudeAttachArgs(["claude", "-r", "./resumed.js", "attach", JOB])).toEqual(behind);
-    // an option's value that reads `attach` is no attach
     expect(claudeAttachArgs(["claude", "--add-dir", "a", "attach", JOB])).toBeNull();
     expect(claudeAttachArgs(["claude", "--debug", "attach", JOB])).toBeNull();
     expect(claudeAttachArgs(["claude", "-r", "attach", JOB])).toBeNull();
@@ -201,7 +195,6 @@ describe("a claude attach pane's job (#1645)", () => {
     }
     expect(claudeAttachArgs(["claude", "--exec", "x", "attach", JOB])).toBeNull();
     expect(claudeAttachArgs(["claude", "--", "attach", JOB])).toBeNull();
-    // a prompt, help, or no argument
     expect(claudeAttachArgs(["claude", "prompt", "attach", JOB])).toBeNull();
     expect(claudeAttachArgs(["claude", "attach", "--help"])).toBeNull();
     expect(claudeAttachArgs(["claude", "attach", ""])).toBeNull();
@@ -220,9 +213,7 @@ describe("a claude attach pane's job (#1645)", () => {
       createdAt: CREATED, updatedAt: CREATED, ...state,
     }));
   };
-  /** When the clients below started, after every job made at CREATED. */
   const STARTED = Date.parse("2020-01-10T00:00:00.000Z");
-  // each client below runs only while it is looked up; afterwards its pid is another, later process's
   let pid = 5_000_000;
   const live = new Set<number>();
   const opened = async (dir: string, ref: string, byName = true, started: number | null = STARTED) => {
@@ -241,7 +232,6 @@ describe("a claude attach pane's job (#1645)", () => {
     expect(await opened(dir, "dc56")).toBe(JOB);
     expect(await opened(dir, "dc5")).toBeNull();
     expect(await opened(dir, "0bad")).toBeNull();
-    // a whole id is the job, read off its own state
     expect(await opened(dir, "0badc0de")).toBe("0badc0de");
     expect(await opened(join(dir, "missing"), "dc56")).toBeNull();
   });
@@ -250,18 +240,15 @@ describe("a claude attach pane's job (#1645)", () => {
     const dir = store();
     job(dir, JOB, { name: "Release notes draft" });
     job(dir, "aaaa2222", { name: "Fix login page", intent: "fix the page" });
-    // a job folder Claude has not written a state into yet
     mkdirSync(join(dir, "jobs", "bbbb3333"));
     expect(await opened(dir, "release")).toBe(JOB);
     expect(await opened(dir, "  Release Notes Draft ")).toBe(JOB);
     expect(await opened(dir, "login page")).toBe("aaaa2222");
-    // task text alone names no job, and neither does a name with something after it
     expect(await opened(dir, "the page")).toBeNull();
     expect(await opened(dir, "release", false)).toBeNull();
     // text that can start an id is never part of a name
     job(dir, "cccc4444", { name: "cafe" });
     expect(await opened(dir, "cafe")).toBeNull();
-    // two names, or a name and the task text of a job still going
     job(dir, "dddd5555", { name: "Release v2" });
     expect(await opened(dir, "release")).toBeNull();
     rmSync(join(dir, "jobs", "dddd5555"), { recursive: true });
@@ -270,7 +257,6 @@ describe("a claude attach pane's job (#1645)", () => {
       [{ state: "done", tempo: "idle" }, JOB],
       [{ state: "failed", tempo: "idle" }, JOB],
       [{ state: "stopped", tempo: "active" }, null],
-      // a job that is done but wakes again is not over
       [{ state: "done", tempo: "idle", routine: "nightly" }, null],
       [{ state: "done", tempo: "idle", selfWake: true }, null],
       [{ state: "done", tempo: "idle", inFlight: { tasks: 0, queued: 0, kinds: ["session_cron"] } }, null],
@@ -302,18 +288,14 @@ describe("a claude attach pane's job (#1645)", () => {
     expect(await opened(dir, "release")).toBe(JOB);
     job(dir, "dc56ffff", { createdAt: later });
     expect(await opened(dir, "dc56")).toBe(JOB);
-    // the job it opened was renamed or removed since: the later one is still not it
     rmSync(join(dir, "jobs", JOB), { recursive: true });
     expect(await opened(dir, "release")).toBeNull();
     expect(await opened(dir, "dc56")).toBeNull();
     job(dir, JOB, { name: "Release notes" });
     expect(await opened(dir, "release")).toBe(JOB);
-    // a client whose start cannot be told might have opened a job since renamed
     expect(await opened(dir, "release", true, null)).toBeNull();
     expect(await opened(dir, "dc5643", true, null)).toBeNull();
-    // a whole id needs no finding
     expect(await opened(dir, JOB, true, null)).toBe(JOB);
-    // a later job whose state cannot be read might be older: it counts
     job(dir, "dc56ffff", "{");
     expect(await opened(dir, "dc56")).toBeNull();
   });
@@ -322,12 +304,10 @@ describe("a claude attach pane's job (#1645)", () => {
     const dir = store();
     job(dir, JOB, { name: "Release notes draft" });
     expect(await opened(dir, "release")).toBe(JOB);
-    // that job might be named by it too: Claude may read what this cannot
     job(dir, "aaaa2222", "{");
     expect(await opened(dir, "release")).toBeNull();
     job(dir, "aaaa2222", JSON.stringify({ name: "Other", output: "x".repeat(256 * 1024) }));
     expect(await opened(dir, "release")).toBeNull();
-    // an id still opens it
     expect(await opened(dir, "dc56")).toBe(JOB);
   });
 
@@ -353,18 +333,15 @@ describe("a claude attach pane's job (#1645)", () => {
     const client = { ref: "release", behindOptions: false, byName: true };
     const at = (started: number) => async () => started;
     expect(await claudeAttachedJob(dir, 4_242_424, client, at(STARTED))).toBe(JOB);
-    // Claude found its job once, as it started
     job(dir, JOB, { name: "Changelog" });
     job(dir, "aaaa2222", { name: "Release v2" });
     expect(await claudeAttachedJob(dir, 4_242_424, client, at(STARTED))).toBe(JOB);
-    // another client with the same argument, or another process with the same pid, finds what Claude would find now
     expect(await claudeAttachedJob(dir, 4_242_425, client, at(STARTED))).toBe("aaaa2222");
     expect(await claudeAttachedJob(dir, 4_242_424, client, at(STARTED + 60_000))).toBe("aaaa2222");
     forgetClaudeSessions();
     expect(await claudeAttachedJob(dir, 4_242_424, client, at(STARTED))).toBe("aaaa2222");
   });
 
-  // the clients that came and went left their pids to later processes: only a start that moved tells them gone
   it("keeps a live client's job however many other clients come and go", async () => {
     const dir = store();
     job(dir, JOB, { name: "Release notes draft" });
@@ -388,12 +365,9 @@ describe("a claude attach pane's job (#1645)", () => {
       starts.set(other, STARTED);
       expect(await claudeAttachedJob(dir, other, client, startOf, () => true)).toBe(JOB);
     }
-    // all 256 still run: a new client is not remembered, and keeps its terminal
     expect(await claudeAttachedJob(dir, 1000, client, startOf, () => true)).toBeNull();
-    // starts that cannot be read now tell nothing
     for (let other = 1; other <= 256; other++) starts.set(other, null);
     expect(await claudeAttachedJob(dir, 1001, client, startOf, () => true)).toBeNull();
-    // pid 7 now runs another process: that client is gone
     starts.set(7, STARTED + 60_000);
     expect(await claudeAttachedJob(dir, 1002, client, startOf, () => true)).toBe(JOB);
   });
@@ -403,7 +377,6 @@ describe("a claude attach pane's job (#1645)", () => {
     job(dir, JOB, { name: "Release notes draft" });
     const client = { ref: "release", behindOptions: false, byName: true };
     for (let other = 1; other <= 256; other++) expect(await claudeAttachedJob(dir, other, client, async () => STARTED, () => true)).toBe(JOB);
-    // a new client prunes; its read of pid 1's start answers only when the test says
     const later = STARTED + 60_000;
     let asked: () => void = () => {};
     const askedForPid1 = new Promise<void>((resolve) => { asked = resolve; });
@@ -411,32 +384,27 @@ describe("a claude attach pane's job (#1645)", () => {
     const pid1Start = new Promise<number>((resolve) => { answer = resolve; });
     const pruning = claudeAttachedJob(dir, 9999, client, async (of) => { if (of !== 1) return STARTED; asked(); return await pid1Start; }, () => true);
     await askedForPid1;
-    // meanwhile pid 1 runs a later client, which opens the job named so now
     job(dir, JOB, { name: "Changelog" });
     job(dir, "aaaa2222", { name: "Release v2" });
     expect(await claudeAttachedJob(dir, 1, client, async () => later, () => true)).toBe("aaaa2222");
     job(dir, "aaaa2222", { name: "Blog" });
     answer(later);
     expect(await pruning).toBeNull();
-    // that later client's job is still the one it opened
     expect(await claudeAttachedJob(dir, 1, client, async () => later, () => true)).toBe("aaaa2222");
   });
 
   it("shows the session of the job an attach client opened, and none for any other process", async () => {
     const dir = store();
     const started = `${JOB}-6228-4376-a66c-ad9820b26f37`;
-    // this test process stands in for the client: its jobs were made before it started
     job(dir, JOB, { name: "Release notes draft", sessionId: started, resumeSessionId: SESSION });
     job(dir, "aaaa2222", { name: "Shell", command: "sleep 100", sessionId: undefined });
     expect(await claudeAttachSession(dir, process.pid, ["claude", "attach", "release"])).toEqual({ session: SESSION });
     expect(await claudeAttachSession(dir, process.pid, ["claude", "attach", JOB])).toEqual({ session: SESSION });
-    // a shell-command job, or no job found: an attach client showing no session
     expect(await claudeAttachSession(dir, process.pid, ["claude", "attach", "aaaa"])).toEqual({ session: null });
     expect(await claudeAttachSession(dir, process.pid, ["claude", "attach", "nothing"])).toEqual({ session: null });
     expect(await claudeAttachSession(dir, process.pid, ["claude", "--resume", SESSION])).toBeNull();
   });
 
-  // the test process stands in for the client; its own CLAUDE_CONFIG_DIR would name another store
   it.skipIf(Boolean(process.env["CLAUDE_CONFIG_DIR"]))("pins queued input to the session of the job an attach client opened (#1876)", async () => {
     const home = mkdtempSync(join(tmpdir(), "ovis-claude-attach-home-"));
     roots.push(home);
@@ -444,7 +412,6 @@ describe("a claude attach pane's job (#1645)", () => {
     job(dir, JOB, { sessionId: `${JOB}-6228-4376-a66c-ad9820b26f37`, resumeSessionId: SESSION });
     const client = { pid: process.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
     expect(await claudeForegroundSession([client], home)).toBe(SESSION);
-    // a job with no session (a shell command) pins none, as does a client not alone in the pane
     job(dir, JOB, { command: "sleep 100", sessionId: undefined });
     expect(await claudeForegroundSession([client], home)).toBeNull();
     expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
@@ -497,7 +464,6 @@ describe("a claude attach pane's job (#1645)", () => {
     }
     writeFileSync(statePath(dir), "{");
     expect(await claudeJobSession(dir, JOB)).toBeNull();
-    // too large to be a job's state, even when its session comes first
     writeFileSync(statePath(dir), JSON.stringify({ sessionId: SESSION, output: "x".repeat(256 * 1024) }));
     expect(await claudeJobSession(dir, JOB)).toBeNull();
     expect(await claudeJobSession(dir, "0badc0de")).toBeNull();
@@ -508,7 +474,6 @@ describe("a claude attach pane's job (#1645)", () => {
     writeFileSync(statePath(dir), JSON.stringify({ sessionId: SESSION }));
     const opened = spyOn(fsPromises, "open").mockImplementation(async () => { throw Object.assign(new Error("EIO: i/o error, open"), { code: "EIO" }); });
     try {
-      // the pane keeps its terminal rather than the conversation route answering an error
       expect(await claudeJobSession(dir, JOB)).toBeNull();
       expect(opened).toHaveBeenCalled();
     } finally { opened.mockRestore(); }
@@ -585,10 +550,8 @@ describe("claudeTranscriptFile", () => {
     const { home: dir, projects } = home();
     const started = transcript(projects, claudeProjectDir("/w/started-here"));
     expect(await claudeTranscriptFile(dir, SESSION, ["/w/moved-on", null, "/w/started-here"])).toBe(started);
-    // neither cwd names the project (Claude started elsewhere, or named it another way)
     renameSync(join(projects, claudeProjectDir("/w/started-here")), join(projects, "-some-other-name"));
     expect(await claudeTranscriptFile(dir, SESSION, ["/w/moved-on"])).toBe(join(projects, "-some-other-name", `${SESSION}.jsonl`));
-    // a remembered file that has gone is looked up again, not answered
     rmSync(join(projects, "-some-other-name"), { recursive: true });
     expect(await claudeTranscriptFile(dir, SESSION, ["/w/moved-on"])).toBeNull();
   });
@@ -606,13 +569,11 @@ describe("claudeTranscriptFile", () => {
     chmodSync(projects, 0o000);
     try { await expect(claudeTranscriptFile(dir, SESSION, [])).rejects.toThrow(); }
     finally { chmodSync(projects, 0o700); }
-    // an unreadable project beside the one holding the session: the session is still found
     const hit = transcript(projects, "-readable");
     mkdirSync(join(projects, "-locked"));
     chmodSync(join(projects, "-locked"), 0o000);
     try { expect(await claudeTranscriptFile(dir, SESSION, [])).toBe(hit); }
     finally { chmodSync(join(projects, "-locked"), 0o700); }
-    // and without a hit, the unreadable project is reported, not called missing
     forgetClaudeSessions();
     rmSync(hit);
     chmodSync(join(projects, "-locked"), 0o000);
@@ -659,7 +620,6 @@ describe("claudeTranscriptFile", () => {
       { type: "user", message: { content: "Newer prompt" } },
     ].map((entry) => JSON.stringify(entry)).join("\n"));
     expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"])).toBe(original);
-    // a newer turn whose keys are escaped is a newer turn all the same (#2130)
     writeFileSync(original, [
       JSON.stringify({ type: "continued-in", sessionId: SESSION, continuedInSessionId: other }),
       JSON.stringify({ type: "user", message: { content: "Newer prompt" } }).replace('"type"', '"\\u0074ype"'),
@@ -690,7 +650,6 @@ describe("claudeTranscriptFile", () => {
       const job = join(folder, `${BG}.jsonl`);
       writeFileSync(job, JSON.stringify({ type: "user", message: { content: "real conversation prompt" } }));
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"])).toBe(job);
-      // the same records written with a space after each colon (#2130)
       const original = join(folder, `${SESSION}.jsonl`);
       writeFileSync(original, readFileSync(original, "utf8").replaceAll('":', '": '));
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"])).toBe(job);
@@ -745,7 +704,6 @@ describe("claudeTranscriptFile", () => {
       writeFileSync(job, "{}");
       const state = join(dir, ".claude", "jobs", "8b80137e");
       mkdirSync(state, { recursive: true });
-      // larger than a job's state: not read to agree
       writeFileSync(join(state, "state.json"), JSON.stringify({ linkScanPath: job, output: "x".repeat(256 * 1024) }));
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"])).toBe(original);
       rmSync(join(state, "state.json"));
@@ -784,7 +742,6 @@ describe("claudeTranscriptFile", () => {
       const { dir, folder } = setup();
       const branch = branched(folder, BRANCH, SESSION);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), BRANCH)).toBe(branch);
-      // a branch of that branch, as a second /branch writes it
       const deeper = branched(folder, DEEPER, BRANCH);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), DEEPER)).toBe(deeper);
     });
@@ -797,17 +754,14 @@ describe("claudeTranscriptFile", () => {
       const branch = branched(folder, BRANCH, SESSION);
       const proofs = new Map<string, string>();
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), BRANCH, proofs)).toBe(branch);
-      // the branch was told by its own head, read apart from any tail: it falls back to the outcome read's exact stat
       expect(proofs.has(branch)).toBe(false);
     });
 
     it("keeps the reported session when the live one is no branch of it (control)", async () => {
       const { dir, projects, folder, original } = setup();
       const store = join(dir, ".claude");
-      // the same session, as after /resume back to it; or none known
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, SESSION)).toBe(original);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, null)).toBe(original);
-      // a session that was never branched, one branched from another session, and a branch in another project
       branched(folder, OTHER, null);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, OTHER)).toBe(original);
       branched(folder, BRANCH, OTHER);
@@ -815,7 +769,6 @@ describe("claudeTranscriptFile", () => {
       mkdirSync(join(projects, "-elsewhere"));
       branched(join(projects, "-elsewhere"), DEEPER, SESSION);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, DEEPER)).toBe(original);
-      // a live session with no transcript yet
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, "77777777-7777-4777-8777-777777777777")).toBe(original);
     });
 
@@ -846,7 +799,6 @@ describe("claudeTranscriptFile", () => {
       mkdirSync(join(projects, claudeProjectDir("/w/first")));
       branched(join(projects, claudeProjectDir("/w/first")), CONTINUED, null);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/first", "/w/project"], join(dir, ".claude"), BRANCH)).toBe(beside);
-      // control: a reported transcript that is no checked branch keeps looking its continuation up by cwd first
       expect(await claudeTranscriptFile(dir, BRANCH, ["/w/first", "/w/project"], join(dir, ".claude")))
         .toBe(join(projects, claudeProjectDir("/w/first"), `${CONTINUED}.jsonl`));
     });
@@ -854,10 +806,9 @@ describe("claudeTranscriptFile", () => {
     it("reads a first record whose keys are escaped as the record it is (#2130)", async () => {
       const { dir, folder, original } = setup();
       const path = join(folder, `${BRANCH}.jsonl`);
-      // the first user record names no parent; only a later one claims SESSION
       const first = JSON.stringify({ type: "user", message: { content: "hi" }, sessionId: BRANCH }).replace('"type"', '"\\u0074ype"');
       writeFileSync(path, `${first}\n${JSON.stringify({ type: "user", message: { content: "again" }, sessionId: BRANCH, forkedFrom: { sessionId: SESSION } })}\n`);
-      expect(JSON.parse(first).type).toBe("user"); // control: the record is a user record
+      expect(JSON.parse(first).type).toBe("user");
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), BRANCH)).toBe(original);
     });
 
@@ -866,10 +817,8 @@ describe("claudeTranscriptFile", () => {
       const store = join(dir, ".claude");
       const path = join(folder, `${BRANCH}.jsonl`);
       const write = (...entries: Record<string, unknown>[]) => writeFileSync(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-      // metadata before the conversation names the parent; the conversation does not
       write({ type: "file-history-snapshot", forkedFrom: { sessionId: SESSION } }, { type: "user", message: { content: "hi" }, sessionId: BRANCH });
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(original);
-      // a first record of another session's
       forgetClaudeSessions();
       write({ type: "user", message: { content: "hi" }, sessionId: OTHER, forkedFrom: { sessionId: SESSION } });
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(original);
@@ -880,7 +829,6 @@ describe("claudeTranscriptFile", () => {
       const store = join(dir, ".claude");
       const branch = branched(folder, BRANCH, OTHER);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(original);
-      // the same inode, written again from the start
       branched(folder, BRANCH, SESSION, "Reply with exactly the word ALPHA, again");
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(branch);
     });
@@ -892,10 +840,8 @@ describe("claudeTranscriptFile", () => {
       const record = JSON.stringify({ type: "user", message: { content: "Prompt" }, sessionId: BRANCH, forkedFrom: { sessionId: SESSION } });
       writeFileSync(branch, record);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(original);
-      // a first prompt larger than the read: its forkedFrom comes after the message
       branched(folder, BRANCH, SESSION, "x".repeat(1024 * 1024 + 1));
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(original);
-      // once the line is whole, it is followed
       writeFileSync(branch, `${record}\n`);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(branch);
     });
@@ -928,7 +874,6 @@ describe("claudeTranscriptFile", () => {
       written(folder, CHILD, "sdk-cli");
       const own = written(folder, OWN, "cli");
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(own);
-      // its newest record decides: once the session is used interactively again, the report stands
       appendFileSync(join(folder, `${CHILD}.jsonl`), JSON.stringify({ type: "user", message: { content: "again" }, sessionId: CHILD, entrypoint: "cli" }) + "\n");
       forgetClaudeSessions();
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(join(folder, `${CHILD}.jsonl`));
@@ -936,10 +881,8 @@ describe("claudeTranscriptFile", () => {
 
     it("never takes the live session from another project", async () => {
       const { home: dir, projects } = home();
-      // the pane's project holds no transcript of the live id; another project does
       written(join(projects, claudeProjectDir("/w/other")), OWN, "cli");
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
-      // beside a print-mode report too: only the report's own folder is looked in
       const reported = written(join(projects, claudeProjectDir("/w/project")), CHILD, "sdk-cli");
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(reported);
     });
@@ -956,20 +899,16 @@ describe("claudeTranscriptFile", () => {
     it("keeps the answer it gave when the PID record tells nothing better (control)", async () => {
       const { home: dir, projects } = home();
       const folder = join(projects, claudeProjectDir("/w/project"));
-      // no PID record, or one with no transcript either: the report has not written its first message yet
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), null)).toBeNull();
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
-      // an interactive report stands, as after a /resume back to it
       const reported = written(folder, CHILD, "cli");
       written(folder, OWN, "cli");
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(reported);
-      // print mode beside print mode: neither is told apart
       const { home: other, projects: otherProjects } = home();
       const otherFolder = join(otherProjects, claudeProjectDir("/w/project"));
       const printed = written(otherFolder, CHILD, "sdk-cli");
       written(otherFolder, OWN, "sdk-cli");
       expect(await claudeTranscriptFile(other, CHILD, ["/w/project"], STORE(other), OWN)).toBe(printed);
-      // a record that names no entrypoint is no print mode
       const { home: plain, projects: plainProjects } = home();
       const plainFolder = join(plainProjects, claudeProjectDir("/w/project"));
       mkdirSync(plainFolder, { recursive: true });
@@ -1040,7 +979,6 @@ describe("a Claude process's store source", () => {
     for (const child of children.splice(0)) { child.kill(); await child.exited; }
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
-  // alive until the test ends it: it waits on a stdin nothing writes to, and says it is ready first
   const KEEP_ALIVE = "process.stdin.resume(); console.log('ready')";
   const standIn = async (env: Record<string, string>) => {
     const child = Bun.spawn([process.execPath, "-e", KEEP_ALIVE], { env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", ...env }, stdin: "pipe", stdout: "pipe" });
@@ -1055,7 +993,6 @@ describe("a Claude process's store source", () => {
     expect(await processClaudeSource(await standIn({ CLAUDE_CONFIG_DIR: store }))).toEqual({ state: "override", dir: store });
     expect(await processClaudeSource(await standIn({ CLAUDE_CONFIG_DIR: "" }))).toEqual({ state: "override", dir: "" });
     expect(await processClaudeSource(await standIn({}))).toEqual({ state: "absent" });
-    // the same text inside another variable's value is that variable's, not an export
     expect(await processClaudeSource(await standIn({ NOTE: `example CLAUDE_CONFIG_DIR=${store}` }))).toEqual({ state: "absent" });
   });
 
@@ -1068,9 +1005,7 @@ describe("a Claude process's store source", () => {
     };
     const lookalike = "NOTE=example CLAUDE_CONFIG_DIR=/Users/u/.claude-work";
     expect(procArgsEnvironment(answer(2, ["claude", "--resume", "PATH=/usr/bin", lookalike, "", "junk"]))).toEqual(["PATH=/usr/bin", lookalike]);
-    // an argument naming the variable stays an argument
     expect(procArgsEnvironment(answer(2, ["claude", "CLAUDE_CONFIG_DIR=/x", "HOME=/Users/u"]))).toEqual(["HOME=/Users/u"]);
-    // cut short: fewer arguments than argc, or an entry with no end
     expect(procArgsEnvironment(answer(3, ["claude"]))).toBeNull();
     expect(procArgsEnvironment(new Uint8Array([1, 0, 0, 0, 0x2f, 0x62, 0]).subarray(0, 6))).toBeNull();
   });
@@ -1080,7 +1015,6 @@ describe("a Claude process's store source", () => {
     const home = tempDir();
     const environments: (string | null)[] = [];
     const environment = spyOn(darwinProcess, "environment").mockImplementation(() => environments.shift() ?? null);
-    // the live chat's reading stays ps's: it answers nothing here
     const spawned = spyOn(Bun, "spawn").mockImplementation((() => ({ stdout: new Response("").body, exited: Promise.resolve(0), kill: () => {} })) as unknown as typeof Bun.spawn);
     try {
       const read = async (environ: string | null) => { forgetClaudeSessions(); environments.push(environ); return processClaudeSource(4242, ["claude"], home, "darwin"); };
@@ -1088,7 +1022,6 @@ describe("a Claude process's store source", () => {
       expect(await read(`PATH=/usr/bin\0CLAUDE_CONFIG_DIR=\0HOME=${home}`)).toEqual({ state: "override", dir: "" });
       // NOTE="example CLAUDE_CONFIG_DIR=<store>", which `ps -E` prints as if it were an export: nothing exported
       expect(await read(`PATH=/usr/bin\0NOTE=example CLAUDE_CONFIG_DIR=${store}\0HOME=${home}`)).toEqual({ state: "absent" });
-      // another user's process, or one gone: no proof
       expect(await read(null)).toEqual({ state: "unreadable" });
     } finally { environment.mockRestore(); spawned.mockRestore(); }
   });
@@ -1096,7 +1029,6 @@ describe("a Claude process's store source", () => {
   it.skipIf(process.platform !== "linux")("herdr's launch source is the environment of the server on its socket", async () => {
     const root = tempDir();
     const store = tempDir();
-    // a stand-in herdr server: listens on its socket, then says it is ready, alive until the test ends it
     const server = async (socket: string, env: Record<string, string>) => {
       const child = Bun.spawn([process.execPath, "-e", `Bun.listen({ unix: ${JSON.stringify(socket)}, socket: { data() {} } }); ${KEEP_ALIVE}`], { env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", ...env }, stdin: "pipe", stdout: "pipe" });
       children.push(child);
@@ -1107,12 +1039,10 @@ describe("a Claude process's store source", () => {
     // the pane's shell may have dropped the variable: herdr's own environment is what a new tab gets
     expect(await herdrLaunchSource(join(root, "exported.sock"))).toEqual({ state: "override", dir: store });
     expect(await herdrLaunchSource(join(root, "none.sock"))).toEqual({ state: "absent" });
-    // no server on the socket: no proof
     expect(await herdrLaunchSource(join(root, "nobody.sock"))).toEqual({ state: "unreadable" });
   });
 
   it("herdr-core's launch source is its core process's environment, not this server's", async () => {
-    // a stand-in /proc: the core's environment exports a store, this server's does not
     const proc = tempDir();
     const store = tempDir();
     mkdirSync(join(proc, "41"));
@@ -1121,9 +1051,7 @@ describe("a Claude process's store source", () => {
     writeFileSync(join(proc, "42", "environ"), "PATH=/usr/bin\0");
     expect(await processLaunchSource(41, "linux", proc, {})).toEqual({ state: "override", dir: store });
     expect(await processLaunchSource(42, "linux", proc, { CLAUDE_CONFIG_DIR: store })).toEqual({ state: "absent" });
-    // the core gone: no proof
     expect(await processLaunchSource(43, "linux", proc, {})).toEqual({ state: "unreadable" });
-    // macOS reads the core's own environment too, not this server's
     const environment = spyOn(darwinProcess, "environment").mockImplementation((pid: number) => pid === 41 ? `CLAUDE_CONFIG_DIR=${store}\0` : null);
     try {
       expect(await processLaunchSource(41, "darwin", proc, {})).toEqual({ state: "override", dir: store });
@@ -1132,7 +1060,6 @@ describe("a Claude process's store source", () => {
   });
 
   it("macOS and Windows take the bridge server's own environment for the one a new tab inherits", async () => {
-    // herdr's environment cannot be found there: none exported to the bridge is none for the new tab
     const store = tempDir();
     for (const platform of ["darwin", "win32"]) {
       expect(await herdrLaunchSource("/nowhere.sock", platform, "/proc", {})).toEqual({ state: "absent" });
@@ -1142,7 +1069,6 @@ describe("a Claude process's store source", () => {
   });
 
   it.skipIf(process.platform === "win32")("reads herdr's environment once per listening socket", async () => {
-    // a /proc of its own: herdr (pid 77) holds the listening socket's inode
     const proc = tempDir();
     const socket = "/run/herdr.sock";
     const table = (inode: number) => `Num RefCount Protocol Flags Type St Inode Path\n0000: 00000002 00000000 00010000 0001 01 ${inode} ${socket}\n`;
@@ -1152,7 +1078,6 @@ describe("a Claude process's store source", () => {
     symlinkSync("socket:[4100]", join(proc, "77", "fd", "3"));
     writeFileSync(join(proc, "77", "environ"), "HOME=/home/u\0PATH=/usr/bin\0");
     expect(await herdrLaunchSource(socket, "linux", proc)).toEqual({ state: "absent" });
-    // the same socket: the answer is kept, with no walk of the processes (herdr's own is gone from this /proc)
     rmSync(join(proc, "77"), { recursive: true });
     expect(await herdrLaunchSource(socket, "linux", proc)).toEqual({ state: "absent" });
     // a restarted herdr listens on a new socket: read again
@@ -1161,13 +1086,11 @@ describe("a Claude process's store source", () => {
   });
 
   it.skipIf(!NATIVE)("unreadable Claude environment is not a proven absent override", async () => {
-    // a process that is gone (its environment cannot be read) and a named store that is not a directory
     const gone = Bun.spawn([process.execPath, "-e", "0"]);
     await gone.exited;
     expect(await processClaudeSource(gone.pid, ["gone"])).toEqual({ state: "unreadable" });
     expect(await processClaudeSource(await standIn({ CLAUDE_CONFIG_DIR: join(tempDir(), "missing") }))).toEqual({ state: "unreadable" });
     expect(await processClaudeSource(await standIn({ CLAUDE_CONFIG_DIR: "relative/store" }))).toEqual({ state: "unreadable" });
-    // neither lists the default store in its place, and the live chat still reads both as no override
     expect(await claudeStoreOf({ state: "unreadable" }, tempDir(), {})).toBeNull();
     expect(await processClaudeConfigDir(gone.pid, ["gone"])).toBeNull();
   });
@@ -1188,7 +1111,6 @@ describe("a Claude process's store source", () => {
     delete process.env["HOME"];
     process.env["USERPROFILE"] = profile;
     try {
-      // elsewhere USERPROFILE means nothing: the store stays where it was without HOME
       Object.defineProperty(process, "platform", { value: "linux" });
       expect((await claudeStoreOf(null, undefined, {}))?.dir).toBe(".claude");
       Object.defineProperty(process, "platform", { value: "win32" });
@@ -1206,15 +1128,12 @@ describe("a Claude process's store source", () => {
     const implicit = await claudeStoreOf({ state: "absent" }, home, {});
     const explicit = await claudeStoreOf({ state: "override", dir: join(home, ".claude") }, home, {});
     const empty = await claudeStoreOf({ state: "override", dir: "" }, home, {});
-    // one directory, three ways of choosing it: each lists ~/.claude, each resumes as it was chosen
     expect([implicit?.dir, explicit?.dir, empty?.dir]).toEqual([join(home, ".claude"), join(home, ".claude"), join(home, ".claude")]);
     expect([implicit?.env, explicit?.env, empty?.env]).toEqual([null, { CLAUDE_CONFIG_DIR: join(home, ".claude") }, { CLAUDE_CONFIG_DIR: "" }]);
     expect(new Set([implicit?.key, explicit?.key, empty?.key]).size).toBe(3);
-    // one folder all the same: one place, where both would write one transcript
     expect(new Set([implicit?.place, explicit?.place, empty?.place]).size).toBe(1);
     expect(implicit?.place).not.toBe(implicit?.key);
     for (const key of [implicit?.key, explicit?.key, empty?.key]) expect(key).toMatch(/^[0-9a-f]{24}$/);
-    // the key names the store, not the path: another spelling of the same directory is the same key
     symlinkSync(join(home, ".claude"), join(home, "link"));
     expect((await claudeStoreOf({ state: "override", dir: join(home, "link") }, home, {}))?.key).toBe(explicit?.key);
     expect(explicit?.key).not.toContain(home);
@@ -1223,8 +1142,7 @@ describe("a Claude process's store source", () => {
 
 describe("a Windows Claude's store", () => {
   // Windows lets no one read another process's environment: the store is the one holding the
-  // live PID record. These run anywhere, with the process table handed in (windows-native.test.ts
-  // checks the real one).
+  // live PID record.
   const PID = 4242;
   const STARTED = 1_791_384_794_216;
   // what Claude writes: FILETIME, 100 ns since 1601, with the part of a millisecond the table drops
@@ -1294,7 +1212,6 @@ describe("a Windows Claude's store", () => {
     const dir = home();
     const second = join(dir, ".claude-second");
     const cwd = "D:\\work\\my app";
-    // the same session id under the same project in both stores: only the PID record tells them apart
     transcript(join(dir, ".claude"), cwd);
     const own = transcript(second, cwd);
     record(second);
@@ -1355,7 +1272,6 @@ describe("a Windows Claude's store", () => {
     record(join(dir, ".claude"));
     record(join(dir, ".claude-copy"));
     await expect(storeOf(dir)).rejects.toBeInstanceOf(AmbiguousClaudeStore);
-    // and asks again: the copy may be removed
     rmSync(join(dir, ".claude-copy"), { recursive: true });
     expect(await storeOf(dir)).toBe(join(dir, ".claude"));
   });
@@ -1392,7 +1308,6 @@ describe("a Windows Claude's store", () => {
     const dir = home();
     record(join(dir, ".claude"));
     expect(await processClaudeSource(PID, [CLAUDE_EXE], dir, "win32", table)).toEqual({ state: "store", dir: join(dir, ".claude") });
-    // how it was chosen cannot be told: none exported reaches ~/.claude again, the default setup's Resume
     const store = await claudeStoreOf({ state: "store", dir: join(dir, ".claude") }, dir, {});
     expect(store?.env).toBeNull();
     expect(store?.dir).toBe(join(dir, ".claude"));
@@ -1411,7 +1326,6 @@ describe("a Windows Claude's store", () => {
     const work = join(dir, ".claude-work");
     record(work);
     expect(await claudeRecordOnlyIn(dir, PID, work, "win32", table)).toBe(true);
-    // cp -r ~/.claude-work ~/.claude while it ran: the same live record in both
     record(join(dir, ".claude"));
     expect(await claudeRecordOnlyIn(dir, PID, work, "win32", table)).toBe(false);
     expect(await claudeRecordOnlyIn(dir, PID, join(dir, ".claude"), "win32", table)).toBe(false);
@@ -1441,7 +1355,6 @@ describe("a Windows Claude's store", () => {
     symlinkSync(join(dir, "elsewhere", "sessions", `${PID}.json`), join(dir, ".claude", "sessions", `${PID}.json`));
     expect(await claudeRecordOnlyIn(dir, PID, work, "win32", table)).toBe(false);
     expect(await processClaudeSource(PID, [CLAUDE_EXE], dir, "win32", table)).toEqual({ state: "ambiguous" });
-    // the live chat's reading is unchanged: a record it cannot read names no session
     expect(await claudeProcessSession(dir, PID, join(dir, ".claude"), "win32", table)).toBeNull();
   });
 
@@ -1454,8 +1367,7 @@ describe("a Windows Claude's store", () => {
 });
 
 describe("the Claude under a Windows pane's shell", () => {
-  // herdr and herdr-core name only the shell in front on Windows, so the process table answers. These
-  // run anywhere, with the table handed in.
+  // herdr and herdr-core name only the shell in front on Windows, so the process table answers.
   const SHELL = 6100;
   const LAUNCHER = 6200;
   const INNER = 6300;
@@ -1501,7 +1413,6 @@ describe("the Claude under a Windows pane's shell", () => {
     const dir = home();
     record(join(dir, ".claude"), INNER);
     expect(await windowsShellClaude(SHELL, async () => chain, dir)).toEqual([{ pid: INNER, argv: [CLAUDE_EXE, "--permission-mode", "auto"] }]);
-    // in another store Claude may use
     const other = home();
     record(join(other, ".claude-work"), INNER);
     expect(await pids(other)).toEqual([INNER]);
@@ -1520,9 +1431,7 @@ describe("the Claude under a Windows pane's shell", () => {
     const dir = home();
     const attach = row(LAUNCHER, SHELL, CLAUDE_EXE, `"${CLAUDE_EXE}" attach dc5643bd`, STARTED - 1_000);
     record(join(dir, ".claude"), INNER);
-    // an attach client the shell started, with a recorded Claude below it
     expect(await pids(dir, [chain[0]!, attach, chain[3]!])).toEqual([LAUNCHER]);
-    // a launcher whose children are an attach client and a recorded Claude: neither can be told the one in front
     const attached = row(6700, LAUNCHER, CLAUDE_EXE, `"${CLAUDE_EXE}" attach dc5643bd`, STARTED + 1_000);
     expect(await pids(dir, [...chain, attached])).toEqual([INNER, 6700]);
   });
@@ -1534,7 +1443,6 @@ describe("the Claude under a Windows pane's shell", () => {
       const dir = home();
       record(join(dir, ".claude"), nested.pid, STARTED + 3_000);
       writeFileSync(join(dir, ".claude", "sessions", `${INNER}.json`), left);
-      // the launcher hands over to the session's Claude, which keeps its own place whatever its record says
       expect(await pids(dir, rows)).toEqual([INNER]);
     }
   });
@@ -1559,8 +1467,6 @@ describe("the Claude under a Windows pane's shell", () => {
     const dir = home();
     expect(await pids(dir)).toEqual([LAUNCHER]);
     expect(await pids(dir, [...chain, beside])).toEqual([LAUNCHER, BESIDE]);
-    // the record a finished process left at the number the session's Claude has now: that Claude
-    // is still the one the launcher started, and its store check finds no live session in it
     record(join(dir, ".claude"), INNER, STARTED - 10_000);
     expect(await pids(dir)).toEqual([INNER]);
     expect(await paneClaudeSource([{ pid: INNER, argv: [CLAUDE_EXE] }], dir, "win32", async () => chain)).toEqual({ state: "unreadable" });
@@ -1617,7 +1523,6 @@ describe("the Claude under a Windows pane's shell", () => {
       expect(await paneClaudeSource(found, dir, "win32", async () => chain)).toEqual({ state: "ambiguous" });
       expect(opened).toHaveBeenCalledWith(unreadable, expect.anything());
     } finally { opened.mockRestore(); }
-    // a store copied while Claude ran: the process stands, and its store stays one that cannot be told
     const copy = home();
     record(join(copy, ".claude"), INNER);
     record(join(copy, ".claude-copy"), INNER);
@@ -1648,5 +1553,27 @@ describe("claudeSessionTempDir", () => {
     expect(await claudeSessionTempDir(transcript, [root], uid! + 1)).toBeNull();
     expect(await claudeSessionTempDir("/home/u/.claude/projects/-home-u-project/notes.jsonl", [root], uid)).toBeNull();
     expect(await claudeSessionTempDir(transcript, [root], undefined)).toBeNull();
+  });
+});
+
+// a sandbox wrapper's hint names the store of the Claude it runs outside the pane's job (#3931)
+describe.skipIf(process.platform !== "linux")("hintedClaudeConfigDir", () => {
+  it("takes the store the hinted processes name, and none while a live process's environment cannot be read", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claude-hint-"));
+    try {
+      const store = join(root, "store");
+      mkdirSync(store);
+      const gone = Bun.spawn(["true"]);
+      await gone.exited;
+      const hinted = 4_000_000;
+      mkdirSync(join(root, "proc", String(hinted)), { recursive: true });
+      writeFileSync(join(root, "proc", String(hinted), "environ"), `PATH=/usr/bin\0HERDR_AGENT=claude\0CLAUDE_CONFIG_DIR=${store}\0`);
+      const proc = join(root, "proc");
+      expect(await hintedClaudeConfigDir([{ pid: hinted }, { pid: gone.pid }], proc)).toBe(store);
+      // this test's own process is alive and has no environ in the fake /proc: it may carry another store
+      await expect(hintedClaudeConfigDir([{ pid: hinted }, { pid: process.pid }], proc)).rejects.toBeInstanceOf(AmbiguousClaudeStore);
+      await expect(hintedClaudeConfigDir([{ pid: process.pid }], proc)).rejects.toBeInstanceOf(AmbiguousClaudeStore);
+      expect(await hintedClaudeConfigDir([{ pid: gone.pid }], proc)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

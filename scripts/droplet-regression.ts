@@ -5,11 +5,6 @@ import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 
-/**
- * In-app alerts on a phone-sized page: real herdr status changes reach the open app, which
- * drops a card for a pane other than the open one (and none for the open one). A tap opens
- * that pane; a flick up or its close button puts one away; one left alone goes by itself.
- */
 export async function checkDroplet(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-droplet-"));
   const workspaces: string[] = [];
@@ -48,7 +43,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
       await report(pane, "blocked");
     };
 
-    // the open pane: the user is looking at it already
     await block(openPane);
     await Bun.sleep(1_200);
     assert.equal(await droplet.count(), 0, "no in-app alert for the pane already open");
@@ -58,7 +52,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     await card.waitFor({ state: "visible" });
     assert.match((await card.getAttribute("aria-label")) ?? "", /\bINPUT\b/);
     assert.equal(await droplet.getAttribute("data-kind"), "blocked");
-    // the compact drop and expanded card clear both native UI and header controls
     await Bun.sleep(1_000);
     const box = (await card.boundingBox())!;
     const clearance = await page.evaluate(() => {
@@ -68,7 +61,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     });
     assert.ok(Math.abs(box.y - clearance) <= 2, `card top ${box.y}, clearance ${clearance}`);
     assert.ok(Math.abs(box.x + box.width / 2 - 195) <= 1, `card centre ${box.x + box.width / 2}`);
-    // the phone layout's card: one line, as wide as its text, and the shape under it the same width
     assert.ok(box.height === 44 && box.width < 300, `phone card ${box.width}x${box.height}`);
     const shape = (await page.locator(".droplet-blob").boundingBox())!;
     assert.ok(Math.abs(shape.width - box.width) <= 1, `shape width ${shape.width}, card width ${box.width}`);
@@ -90,7 +82,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     assert.equal(await selected(), otherPane, "a tap opens the pane it is about");
     console.log("PASS an in-app alert drops in for another pane, and a tap opens it");
 
-    // a flick up puts it away, and opens nothing
     await report(openPane, "idle");
     await block(openPane);
     await card.waitFor({ state: "visible", timeout: 5_000 });
@@ -104,7 +95,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     assert.equal(await selected(), otherPane, "a flick up opens nothing");
     console.log("PASS a flick up puts an in-app alert away");
 
-    // its close button puts it away, and opens nothing
     await report(openPane, "idle");
     await block(openPane);
     await card.waitFor({ state: "visible", timeout: 5_000 });
@@ -113,7 +103,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     assert.equal(await selected(), otherPane, "the close button opens nothing");
     console.log("PASS the close button puts an in-app alert away");
 
-    // left alone, it goes by itself
     await report(openPane, "idle");
     await block(openPane);
     await card.waitFor({ state: "visible" });
@@ -123,7 +112,6 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     assert.ok(lasted > 3_500 && lasted < 6_000, `stayed ${lasted}ms`);
     console.log("PASS an in-app alert goes by itself");
 
-    // Settings has no In the app switch any more: an older version's stored "off" is ignored
     await page.evaluate(() => {
       const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}");
       localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, alertInApp: false }));

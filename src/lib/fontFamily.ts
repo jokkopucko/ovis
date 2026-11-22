@@ -1,10 +1,3 @@
-/**
- * The terminal and chat font families the user types in Settings: a comma-separated list in
- * fallback order, like VS Code's `editor.fontFamily`. The list goes in front of the built-in
- * fonts, never in place of them, so a typo or a font missing on this device falls back as if
- * nothing had been typed.
- */
-
 // Symbols Nerd Font Mono is the app's own (PaneTerminal.css) and covers only the private use
 // area, so it never sizes a cell: it draws the Nerd Font icons a prompt or `ls` replacement
 // prints, which no system font has and Safari will not take from a font the user installed.
@@ -33,12 +26,10 @@ const TERMINAL_TEXT_FONTS =
   `${MONO_FONT}, "JetBrains Mono", "Fira Code", "D2Coding", Menlo, Monaco, "Cascadia Mono", Consolas, "Noto Sans Mono CJK KR", ${HANGUL_FONT}, monospace, "Malgun Gothic"`;
 export const TERMINAL_FONT_STACK = `${SYMBOLS_FONT}, ${TERMINAL_TEXT_FONTS}`;
 
-/** the chat's own stack: --font-ui in src/styles.css */
 const CHAT_FONT_STACK = "var(--font-ui)";
 
 export const FONT_FAMILY_MAX_CHARS = 200;
 
-/** How long a font change waits for its faces before the grid is measured with whatever loaded. */
 export const FONT_LOAD_TIMEOUT_MS = 3000;
 
 // what could close the declaration or the style element, escape, or hide in the value
@@ -79,19 +70,16 @@ export function sanitizeFontFamily(value: unknown): string {
   return family;
 }
 
-/** The xterm `fontFamily`: the icon font, the user's list, then the built-in text fonts. */
 export function terminalFontStack(family: string): string {
   const chosen = sanitizeFontFamily(family);
   return chosen === "" ? TERMINAL_FONT_STACK : `${SYMBOLS_FONT}, ${chosen}, ${TERMINAL_TEXT_FONTS}`;
 }
 
-/** The width of PROBE_TEXT in a `font-family` list: as the page draws it, and as a canvas measures it. */
 export interface FontWidths {
   drawn(family: string): number;
   measured(family: string): number;
 }
 
-// narrow and wide Latin, a digit and Hangul: any text face changes the width of some of them
 const PROBE_TEXT = "mmmmmmmmmmlli1WW가나다";
 const PROBE_SIZE = "32px";
 // a monospaced face can match monospace's Latin to the pixel, never serif's as well
@@ -101,7 +89,6 @@ const GENERIC_FAMILIES = new Set(["monospace", "serif", "sans-serif", "cursive",
 
 let pageWidths: FontWidths | undefined;
 
-/** This page's measurements, each made once: null without a document to measure in. */
 function browserFontWidths(): FontWidths | null {
   if (pageWidths) return pageWidths;
   const context = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
@@ -170,7 +157,6 @@ export function openingFontStack(stack: string, fonts: Pick<FontFaceSet, "check"
   return fonts.check(`13px ${MONO_FONT}`, "M") ? stack : stack.split(",").map((name) => name.trim()).filter((name) => name !== MONO_FONT).join(", ");
 }
 
-/** Settles once, when a terminal's first font is set: the face it was waited for within loadFontStack's bound, or the fallback. */
 export interface FontSettled {
   readonly done: boolean;
   readonly settled: Promise<void>;
@@ -195,11 +181,9 @@ export async function monoFaceArrived(sizePx: number): Promise<void> {
   try {
     await fonts.load(`${sizePx}px ${MONO_FONT}`, "M");
   } catch {
-    /* a face that fails leaves the fallback, as measured */
   }
 }
 
-/** The chat body's `font-family`, or null to keep the UI font. */
 export function chatFontStack(family: string): string | null {
   const chosen = sanitizeFontFamily(family);
   return chosen === "" ? null : `${chosen}, ${CHAT_FONT_STACK}`;
@@ -228,7 +212,6 @@ export async function loadFontStack(stack: string, sizePx: number, timeoutMs = F
       new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
     ]);
   } catch {
-    /* the grid is measured with the fallback, as for a font that is not installed */
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

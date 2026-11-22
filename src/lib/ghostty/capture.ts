@@ -5,13 +5,6 @@ import type { GhosttyOverlay } from "./overlay.ts";
 /** bytes held for libghostty while its module loads: a herdr-core history replay fits many times over */
 const HELD_BYTES_MAX = 32 * 1024 * 1024;
 
-/**
- * libghostty draws every terminal, from its mount: every byte xterm is
- * given is held from the first one, so libghostty, loaded once the server has listed its features,
- * starts from the same screen and history xterm has, on herdr-core and herdr's own server alike. A
- * module that fails to load, or more held bytes than HELD_BYTES_MAX, leave the terminal to xterm.
- * Returns the release for the terminal's unmount.
- */
 export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement): () => void {
   let held: (string | Uint8Array)[] | null = [];
   let heldBytes = 0;
@@ -38,7 +31,6 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   }) as Terminal["write"];
   term.write = holdingWrite;
   term.reset = () => {
-    // what came before a reset is gone from the screen too
     if (held) { held.length = 0; heldBytes = 0; }
     reset();
   };
@@ -47,7 +39,6 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   const decide = (): void => {
     if (decided || stopped || !socket.featuresListed()) return;
     decided = true;
-    // the hold ends only inside the overlay, in the same task its own takes over: no byte falls between
     const takeBacklog = (): (string | Uint8Array)[] | null => {
       if (stopped || !held) return null;
       const backlog = held;

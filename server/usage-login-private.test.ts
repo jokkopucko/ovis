@@ -12,8 +12,7 @@ import { UsageLoginService } from "./usage-login.ts";
 
 /**
  * A sign-in the browser follows runs through the server's private PTY host, never in a
- * herdr pane, so no other device can read its sign-in address or the code typed into it. The stand-in CLIs
- * print what the real ones printed (server/fixtures/usage-login/*.pty) and read a pasted code like Claude's.
+ * herdr pane, so no other device can read its sign-in address or the code typed into it.
  */
 const root = mkdtempSync(join(tmpdir(), "usage-login-private-"));
 const bin = join(root, "bin");
@@ -31,7 +30,6 @@ beforeAll(() => {
   const system = usage.systemUsageContext();
   keychain = spyOn(usage, "systemUsageContext").mockReturnValue({ ...system, keychain: async () => ({ status: "missing" }) });
   mkdirSync(bin);
-  // --help answers what the real ones list; a login prints its recorded screen, then waits as the real one does
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 case "$*" in *--help*) echo "login"; exit 0;; esac
 echo "\${CLAUDE_CONFIG_DIR:-default}" > "${receipt("claude-home")}"
@@ -57,7 +55,6 @@ afterEach(async () => {
   for (const spy of spies.splice(0)) spy.mockRestore();
 });
 
-/** herdr is never asked for a tab, a workspace or a key: each call fails the test that made it. */
 function noHerdr(): string[] {
   const asked: string[] = [];
   for (const name of ["tabCreate", "workspaceCreate", "paneSendText", "paneSendKeys", "paneRead", "sessionSnapshot"] as const) {
@@ -66,7 +63,6 @@ function noHerdr(): string[] {
   return asked;
 }
 
-/** the cookie each started login set, sent back as the browser that started it does (undefined: that cookie; null: none) */
 const jar = new Map<string, string>();
 const cookieOf = (login: unknown, cookie: string | null | undefined): Record<string, string> => {
   const sent = cookie === undefined ? jar.get(String(login)) : cookie;
@@ -97,7 +93,6 @@ async function within<T>(promise: Promise<T>): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 
-/** Subscribe before reading so output between the read and the wait cannot be lost. */
 async function promptWhen(service: UsageLoginService, login: string, until: (prompt: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
   for (;;) {
     const changed = service.changed(login);

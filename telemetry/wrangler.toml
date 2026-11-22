@@ -12,3 +12,13 @@ binding = "DB"
 database_name = "herdr-web-ui-telemetry"
 # from `wrangler d1 create herdr-web-ui-telemetry` (README.md); an id, not a secret
 database_id = "5cbb96eb-11e1-466c-a811-d1abbeea3980"
+
+# A copy with a database of its own to try a Worker change on before production (README.md):
+# `bunx wrangler deploy --env staging` answers at herdr-web-ui-telemetry-staging, which no app sends to.
+[env.staging.observability]
+enabled = false
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "herdr-web-ui-telemetry-staging"
+database_id = "d67ca6d4-48a6-4d64-8ee3-02f0131adf22"

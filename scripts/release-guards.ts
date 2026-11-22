@@ -1,11 +1,4 @@
 /**
- * What a release forgets when nobody remembers it: the remote PC bundle, the telemetry Worker and
- * the release metadata. A tree is a release when its package.json version has no `v<version>` tag
- * yet. In CI that is only the change that bumps the version against `--base` (the release PR and
- * main's push of its merge): main keeps the untagged version until the Release run, and the PRs
- * merged meanwhile neither own the release nor can fix it, so they pass. The Release run checks the
- * whole tree again, server changes merged in that window included.
- *
  *   bun scripts/release-guards.ts --base <sha>      CI (ci.yml, Fast checks): a remote-vN tag may still be unpublished
  *   bun scripts/release-guards.ts --release X.Y.Z   release.yml preflight: remote-vN must be published from this tree,
  *                                                   its manifest and archives downloadable, not only tagged
@@ -23,18 +16,11 @@ import { discard, readCappedJson, REMOTE_LIMITS, RemoteResponseInvalid, RemoteRe
 const root = resolve(import.meta.dir, "..");
 const MACHINES = "shared/machines.ts";
 
-/**
- * What scripts/build-remote-bundle.ts packs from this tree: server/, shared/ and integrations/ without tests,
- * node_modules (bun.lock, patches/) and the builder's own pins. dist/ is left out: a bridge's page
- * is never opened, the connection server's is. Docs and test fixtures are copied but never run.
- */
-export const BUNDLE_PATHSPECS = ["server", "shared", "integrations", "patches", "bun.lock", "scripts/build-remote-bundle.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar"];
+export const BUNDLE_PATHSPECS = ["server", "shared", "integrations", "patches", "bun.lock", "scripts/build-remote-bundle.ts", "scripts/server-artifact.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar"];
 export const bundleInput = (path: string): boolean => BUNDLE_PATHSPECS.some((spec) => path === spec || path.startsWith(`${spec}/`))
   && !path.endsWith(".test.ts") && !path.endsWith(".md") && !path.startsWith("server/fixtures/");
-/** The Linux bundles carry the bun that builds them (process.execPath), so its pin in this workflow is a bundle input too. */
 export const BUNDLE_WORKFLOW = ".github/workflows/remote-bundles.yml";
 export const bunPins = (workflow: string): string => [...workflow.matchAll(/bun-version:\s*(\S+)/g)].map((match) => match[1]).join(" ");
-/** package.json's fields that decide node_modules; its version changes in every release and decides nothing */
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "patchedDependencies", "overrides", "trustedDependencies"];
 export const dependencies = (packageJson: string): string => {
   const parsed = JSON.parse(packageJson) as Record<string, unknown>;
@@ -48,17 +34,12 @@ export const bundleVersion = (machines: string): string => {
 };
 
 export interface BundleFacts {
-  /** REMOTE_BUNDLE_VERSION in this tree */
   version: number;
-  /** N of every remote-vN tag */
   published: number[];
-  /** bundle inputs that differ between the remote-v<version> tag and this tree; null when that tag does not exist */
   changed: string[] | null;
-  /** the Release run: the bundle this tree names must already be published */
   publishing: boolean;
 }
 
-/** Why this release would ship a remote bundle that does not match its own server, or none at all. */
 export function bundleProblems({ version, published, changed, publishing }: BundleFacts): string[] {
   const latest = Math.max(0, ...published);
   const next = Math.max(version, latest) + 1;
@@ -71,16 +52,14 @@ export function bundleProblems({ version, published, changed, publishing }: Bund
   return [`The remote bundle's inputs changed since remote-v${version} (${shown}), so remote PCs would keep the old server. Raise REMOTE_BUNDLE_VERSION in ${MACHINES} from ${version} to ${next} in the release PR (or, when it already merged, in a follow-up PR); after it merges, push remote-v${next} on the merged commit and wait for the Remote PC bundles workflow before running Release (docs/development.md#releasing).`];
 }
 
-/** The manifest a remote PC downloads its bundle by (bundleManifestSource in server/remote-bundle.ts). */
 export const manifestUrl = (version: number): string => `https://github.com/devswha/ovis/releases/download/remote-v${version}/manifest.json`;
-/** Every platform server/remote-bundle.ts installs a bundle on; the Remote PC bundles workflow publishes all of them. */
 export const BUNDLE_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"];
 export type Get = (url: string, init: RequestInit) => Promise<Response>;
 
 /**
  * Why remote-v<version>, tagged, is not published yet: the Remote PC bundles workflow uploads the
  * manifest and the archives only after building and testing them, so a Release run started in
- * between would ship an app whose remote PCs find no bundle. Reads what remote PCs read.
+ * between would ship an app whose remote PCs find no bundle.
  */
 export async function publishedProblems(version: number, get: Get = fetch): Promise<string[]> {
   const url = manifestUrl(version);
@@ -99,7 +78,6 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
   const answer = await read(url);
   if (typeof answer === "string") return [`remote-v${version} is tagged but not published: ${answer}. ${wait}`];
   let manifest: { version?: unknown; assets?: Record<string, { url?: unknown; sha256?: unknown } | undefined> } | null;
-  // read the way remote PCs read it: at most REMOTE_LIMITS.bundleManifest bytes
   try { manifest = await readCappedJson<typeof manifest>(answer, REMOTE_LIMITS.bundleManifest); } catch (error) {
     const why = error instanceof RemoteResponseTooLarge ? "is larger than remote PCs accept" : error instanceof RemoteResponseInvalid ? "is not JSON" : `could not be read (${(error as Error).message})`;
     return [`remote-v${version} is not published: ${url} ${why}. ${wait}`];
@@ -139,7 +117,6 @@ export async function publishedProblems(version: number, get: Get = fetch): Prom
   return unreachable.length > 0 ? [`remote-v${version} is not published: ${unreachable.join("; ")}. ${wait}`] : [];
 }
 
-/** The deployed Worker's source: telemetry/worker.ts and the shared schema it validates with, which is all it bundles. */
 export const WORKER_SOURCES = ["telemetry/worker.ts", "shared/telemetry.ts"];
 export const DEPLOYED_FILE = "telemetry/deployed.json";
 export const workerFingerprint = (sources: string[]): string => {
@@ -154,7 +131,6 @@ export function workerProblems(current: string, deployed: string | undefined): s
   return [`${WORKER_SOURCES.join(" or ")} changed since the Worker was last deployed (${DEPLOYED_FILE}). The deployed Worker refuses a settings snapshot with a key or value it does not know, so this release's events would be lost. Any edit to those files counts, comments and client-only exports included; a redeploy that changes nothing is the expected cost. Deploy the Worker first (telemetry/README.md: database columns, then \`bunx wrangler deploy\` from telemetry/), then run \`bun scripts/release-guards.ts --worker-deployed\` and commit ${DEPLOYED_FILE} in the release PR (or a follow-up PR when it already merged).`];
 }
 
-/** Release metadata (version sources, CHANGELOG section, patch notes in every language) as the Release run reads it. */
 export function metadataProblems(read: (path: string) => string, version: string): string[] {
   try {
     releaseNotes(version, version, read("herdr-plugin.toml"), read("CHANGELOG.md"), read(SUMMARIES_FILE));
@@ -170,16 +146,10 @@ function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
 }
 
 export interface Verdict {
-  /** null when the tree is not a release */
   version: string | null;
   problems: string[];
 }
 
-/**
- * Every problem of the release at `cwd`'s HEAD; `publishing` is the Release run itself. `base` is the
- * commit CI compares with: when it already carries this version, HEAD is a change merged between a
- * release PR and its Release run, not the release, and passes. A base that cannot be read is ignored.
- */
 export function check(cwd: string, publishing: boolean, base?: string): Verdict {
   const read = (path: string) => readFileSync(join(cwd, path), "utf8");
   const version = (JSON.parse(read("package.json")) as { version: string }).version;
@@ -217,11 +187,9 @@ export function check(cwd: string, publishing: boolean, base?: string): Verdict 
   };
 }
 
-/** The Release run's verdict: check() of the tree, and a remote-vN that is tagged must also be downloadable. */
 export async function releaseCheck(cwd: string, get: Get = fetch): Promise<Verdict> {
   const verdict = check(cwd, true);
   const bundle = Number(bundleVersion(readFileSync(join(cwd, MACHINES), "utf8")));
-  // an untagged bundle is already a problem of check(); a tag alone is not a published bundle
   if (git(cwd, "rev-parse", "-q", "--verify", `refs/tags/remote-v${bundle}`).ok) verdict.problems.push(...await publishedProblems(bundle, get));
   return verdict;
 }

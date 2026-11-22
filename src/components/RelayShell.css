@@ -1,10 +1,3 @@
-/*
- * The hosted shell's screens (RelayShell.tsx, RelayShellScreens.tsx): the sign-in is one centred
- * 368px (--relay-signin-w) unboxed column on --bg; pairing and recovery screens sit in a bordered
- * panel card of the same width. Only tokens from the styles.css :root block; buttons and fields use
- * the system's .btn and .input primitives.
- */
-
 .relay-shell-screen {
   display: grid;
   place-items: center;
@@ -28,12 +21,16 @@
   border-radius: var(--radius-md);
 }
 
-/* Sign-in is an unboxed 368px column directly on --bg: no card border, no panel background, no padding */
 .relay-shell-screen > .relay-shell.account-centered {
   padding: 0;
   background: transparent;
   border: 0;
   border-radius: 0;
+}
+
+.relay-shell-signin > .sheep-mascot {
+  align-self: center;
+  margin-bottom: var(--space-4);
 }
 
 .relay-shell-mark {
@@ -53,12 +50,128 @@
   overflow-wrap: anywhere;
 }
 
-.relay-shell-signin-title {
-  margin: 0 0 var(--space-6);
+.relay-shell-screen.relay-shell-plain {
+  place-items: stretch center;
+  padding-top: max(var(--space-8), 10dvh);
+}
+
+.relay-shell-plain > .relay-shell {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  text-align: center;
+}
+
+/* the app's mark, small and centred, as the screen's one picture */
+.relay-shell-plain .relay-shell-mark {
+  width: calc(var(--space-6) * 2);
+  height: calc(var(--space-6) * 2);
+  margin: 0 auto var(--space-4);
+  border-radius: var(--radius-lg);
+}
+
+/* two lines of one size: what Ovis is, then what this screen asks, quieter */
+.relay-shell-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0;
   font-size: var(--fs-display);
   font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-display);
+  letter-spacing: var(--tracking-tight);
   line-height: var(--lh-tight);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.relay-shell-hero-quiet {
+  color: var(--text-dim);
+}
+
+/* the sign-in: the two lines over the buttons, then one quiet line and the way past it, small */
+.relay-shell-signin-hero {
+  margin-bottom: var(--space-6);
+}
+
+.relay-shell-first-time {
+  margin: var(--space-4) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+.relay-shell-no-account {
+  align-self: center;
+  margin-top: var(--space-5);
+}
+
+.relay-shell-pair-signin {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.relay-shell-pair-signin .account-sign-in {
+  margin-top: var(--space-5);
+}
+
+.relay-shell-pair-signin .account-providers,
+.relay-shell-plain .relay-shell-actions {
+  gap: var(--space-2);
+}
+
+.relay-shell-plain .relay-shell-actions {
+  margin-top: var(--space-5);
+}
+
+/* every way in weighs the same: one height, one radius, the card colour and a hairline; the mark at the start edge */
+.relay-shell-plain .account-provider {
+  height: calc(var(--touch-target) + var(--space-1));
+  min-height: calc(var(--touch-target) + var(--space-1));
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-cta);
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+@media (hover: hover) {
+  .relay-shell-plain .account-provider:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+    color: var(--text-strong);
+  }
+}
+
+.relay-shell-agreement {
+  margin: var(--space-5) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text-dim);
+  text-align: center;
+  text-wrap: balance;
+}
+
+.relay-shell-agreement a {
+  color: var(--accent);
+}
+
+/* the way out: one small grey link at the foot of the page */
+.relay-shell-plain .relay-shell-actions.relay-shell-quiet {
+  align-items: center;
+  margin-top: auto;
+  padding-top: var(--space-6);
+}
+
+.relay-shell-plain .relay-shell-quiet .btn {
+  width: auto;
+  min-height: var(--touch-target);
+  padding-inline: var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  background: transparent;
+  border-color: transparent;
 }
 
 .relay-shell-copy {
@@ -69,7 +182,6 @@
   text-wrap: pretty;
 }
 
-/* the saved PCs: one row each, the whole row the link, a hairline between rows */
 .relay-shell-pcs {
   margin: var(--space-2) 0 var(--space-4);
   padding: 0;
@@ -134,7 +246,6 @@
   margin: var(--space-4) 0 0;
 }
 
-/* a PC below the shell's minimum version: its steps to update, each command copyable whole */
 .relay-shell-more {
   margin-top: var(--space-3);
 }
@@ -183,7 +294,6 @@
   color: var(--text-dim);
 }
 
-/* the six digits to compare with the PC's screen: the pairing code's size, in two groups of three */
 .relay-shell-digits {
   margin: var(--space-4) 0;
   font-family: var(--font-mono);
@@ -195,7 +305,6 @@
   color: var(--text-strong);
 }
 
-/* a key that is not the PC's: the two ids, one above the other, the PC's first */
 .relay-shell-keys {
   margin: var(--space-4) 0 0;
   padding: var(--space-3);
@@ -213,7 +322,6 @@
   margin: var(--space-1) 0 var(--space-3);
 }
 
-/* Pair with a code / typed digits: visible label and .input field */
 .relay-shell-code-form {
   margin-top: var(--space-3);
   display: flex;
@@ -252,12 +360,8 @@
   outline-offset: var(--ring-offset);
 }
 
-/* the ID a typed code found, in the groups the PC draws it in under its code */
 .relay-shell-code-id {
   margin: var(--space-4) 0;
 }
 
-/* under the hairline: the QR route ghost button */
-.relay-shell-sign-in-links {
-  margin: 0;
-}
+.relay-add-manage { display: block; margin-top: var(--space-4); text-align: center; }

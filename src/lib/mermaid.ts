@@ -1,11 +1,8 @@
-// Mermaid, one chunk the chat loads with the first diagram it draws
-// (MermaidDiagram in components/Markdown.tsx): most replies have none.
 import mermaid from "mermaid";
 
 let theme: "dark" | "default" | null = null;
 let serial = 0;
 
-/** Draws `source` as SVG markup; rejects when it is not a valid diagram. */
 export async function renderMermaid(source: string, dark: boolean): Promise<string> {
   const wanted = dark ? "dark" : "default";
   if (theme !== wanted) {

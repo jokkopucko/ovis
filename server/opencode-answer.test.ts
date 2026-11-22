@@ -12,7 +12,6 @@ import type { OpenCodeFormInfo } from "./opencode-service.ts";
 const deferred = <T>() => Promise.withResolvers<T>();
 let serial = 0;
 
-/** Real HTTP and RPC boundaries, but only fixture state; each delayed reply has an explicit gate. */
 async function fixture(run: (f: {
   forms: OpenCodeFormInfo[];
   session: string | null;
@@ -27,7 +26,6 @@ async function fixture(run: (f: {
   readResponse(): Promise<Response>;
   read(): Promise<InteractivePrompt>;
   answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal): Promise<Response>;
-  /** answers handlePromptRequest counted as reaching the agent (onAnswered) */
   counted: { answers: number };
 }) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "opencode-answer-"));
@@ -79,7 +77,6 @@ async function fixture(run: (f: {
   const service = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(request) {
-      // the identity check: the process service.json names answers at its URL
       if (request.method === "GET" && new URL(request.url).pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: root } });
       if (request.method === "GET") {
         const listing = f.listing;
@@ -132,14 +129,12 @@ describe("OpenCode answer ordering", () => {
       await fixture(async (f) => {
         f.forms[0]!.fields.length = 1;
         const prompt = await f.read();
-        // a refused answer reached nothing, so it is not counted
         expect((await f.answer({ ...prompt, id: `${prompt.id}-stale` }, { custom_text: "answered" })).status).toBe(409);
         expect(f.counted.answers).toBe(0);
         expect((await f.answer(prompt, { custom_text: "answered" })).status).toBe(200);
         expect(f.replies).toHaveLength(1);
         expect(f.counted.answers).toBe(1);
       });
-      // the card's read and its answer both asked, and each asked for Windows too (opencode-service.test.ts)
       expect(asked.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(asked.mock.calls.every((call) => call[2]?.onWindows === true)).toBe(true);
     } finally {
@@ -342,6 +337,26 @@ describe("OpenCode answer ordering", () => {
     });
   });
 
+  it("sends no key when the lookup right before the key is overtaken by another session", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      const prompt = await f.read();
+      expect(prompt.fallback).toBe(true);
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      f.listing = async () => {
+        f.listing = async () => { entered.resolve(); await release.promise; return Response.json([]); };
+        return Response.json([]);
+      };
+      const answering = f.answer(prompt, { option_index: prompt.options.findIndex((option) => option.label === "Enter") });
+      await entered.promise;
+      f.session = "ses_fixture02";
+      await f.read();
+      release.resolve();
+      expect((await answering).status).toBe(409);
+    });
+  });
+
   it("does not return an empty card for a lookup superseded by another session", async () => {
     await fixture(async (f) => {
       await f.read();
@@ -418,7 +433,6 @@ describe("OpenCode answer ordering", () => {
       expect((await f.answer(await f.read(), { custom_text: "revised first" })).status).toBe(200);
       expect((await f.read()).default_custom_text).toBe("not submitted yet");
       expect(f.replies).toEqual([]);
-      // a saved step and a step back reach nothing upstream: no answer is counted
       expect(f.counted.answers).toBe(0);
     });
   });

@@ -3,11 +3,6 @@ import type { AgentStatus, HerdrPane, PaneContext, PlanSummary, SessionSnapshot 
 const samePlan = (a: PlanSummary | undefined, b: PlanSummary | undefined): boolean =>
   a === b || (a !== undefined && b !== undefined && a.done === b.done && a.total === b.total && a.current === b.current);
 
-/**
- * Merges a pushed `pane-status` into the last snapshot so the sidebar badge updates
- * instantly; the debounced /api/session refetch that follows brings the derived
- * workspace/tab rollups back in line. Pure: returns the same object when nothing changed.
- */
 export function applyPaneStatus(snapshot: SessionSnapshot, paneId: string, status: AgentStatus, background?: number, waiting = false, plan?: PlanSummary | null, finishId?: number, finishEpoch?: string, context?: PaneContext | null, changedAt?: number): SessionSnapshot {
   const epochChanged = snapshot.finish_epoch !== finishEpoch;
   let paneChanged = epochChanged;
@@ -17,7 +12,6 @@ export function applyPaneStatus(snapshot: SessionSnapshot, paneId: string, statu
       const { finish_id: _finish, ...rest } = pane;
       return rest;
     }
-    // a frame that says nothing of background tasks, the plan or the context leaves them as they were; every frame says whether the pane waits
     const tasks = background === undefined ? pane.background_tasks : background > 0 ? background : undefined;
     const progress = plan === undefined ? pane.plan : plan ?? undefined;
     const filled = context === undefined ? pane.context : context ?? undefined;

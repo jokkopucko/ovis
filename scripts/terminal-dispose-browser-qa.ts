@@ -102,7 +102,6 @@ try {
     // and neither path may
     assert.deepEqual(result.errors, [], JSON.stringify(result));
     if (mode === "deferred") {
-      // ordered after xterm's pending frame and the task it schedules: still alive until both have run
       assert.equal(result.disposedBeforeFrames, 0, "deferred disposal ran before xterm's pending frame");
       assert.equal(result.disposedAfterFrames, 0, "deferred disposal ran before the task after xterm's frame");
       assert.equal(result.stdinDisabled, true);

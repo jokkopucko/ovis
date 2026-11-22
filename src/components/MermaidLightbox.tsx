@@ -1,8 +1,3 @@
-/**
- * A diagram over the whole screen, fitted to it. The wheel or a pinch zooms at the pointer, a drag
- * pans, a double-click toggles fit and 2x, and the bar and the keys (+ - 0, arrows) do the same.
- * Escape and the close button leave.
- */
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Minus, Plus, Scan, X } from "lucide-react";
@@ -13,19 +8,16 @@ import { useT } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 
-// the view model is shared with ImageLightbox, which zooms a chat picture the same way
 export const MIN_ZOOM = 0.5;
 export const MAX_ZOOM = 16;
 export const STEP = 1.25;
 export const PAN_STEP = 80;
 
-/** `scale` 1 is the diagram fitted to the stage; `x`/`y` move it in stage pixels. */
 export interface View { scale: number; x: number; y: number }
 export const FIT: View = { scale: 1, x: 0, y: 0 };
 
 const clamp = (value: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 
-/** Zooms by `factor` keeping the stage point (px, py) still. */
 export function zoomAt(view: View, factor: number, px: number, py: number): View {
   const scale = clamp(view.scale * factor);
   const k = scale / view.scale;
@@ -101,7 +93,6 @@ export function MermaidLightbox({ svg, src, onClose }: ({ svg: string; src?: und
       const other = [...held.entries()].find(([id]) => id !== event.pointerId)![1];
       const was = Math.hypot(before.x - other.x, before.y - other.y);
       const now = Math.hypot(after.x - other.x, after.y - other.y);
-      // the pinch zooms about the midpoint and carries it along as it moves
       const mid = { x: (after.x + other.x) / 2 - box.left, y: (after.y + other.y) / 2 - box.top };
       const shift = { x: (after.x - before.x) / 2, y: (after.y - before.y) / 2 };
       if (was > 0) setView((v) => { const z = zoomAt(v, now / was, mid.x, mid.y); return { ...z, x: z.x + shift.x, y: z.y + shift.y }; });

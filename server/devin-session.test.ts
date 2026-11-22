@@ -111,7 +111,6 @@ describe("Devin kernel session lock", () => {
     twoLocks.setLock("another-session", 51, "9");
     twoLocks.lists.set("/proc/200/fd", ["8", "9"]);
     expect(missing(twoLocks)).toBeFalse();
-    // an unreadable child may hold another lock: never a proof from the readable one alone
     const unreadChild = fixture();
     unreadChild.texts.set("/proc/100/task/101/children", "200 300");
     expect(missing(unreadChild)).toBeTrue();

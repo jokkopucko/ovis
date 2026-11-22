@@ -19,7 +19,6 @@ function fixture(platform: string) {
   return { directory, manifest, bytes, sha256 };
 }
 
-/** `value` as JSON of `total` bytes, pulled one 64 KiB chunk at a time, with a receipt of how far it was read */
 function served(value: unknown, total: number, status = 200) {
   const json = JSON.stringify(value);
   const receipt = { sent: 0, cancelled: false };
@@ -47,7 +46,6 @@ describe("remote bundle sources", () => {
     let next = served(manifest, 1024 * 1024);
     const release = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => next.response, { preconnect: fetch.preconnect }));
     try {
-      // exactly 1 MiB is a manifest; the cached bundle answers without a download
       expect((await bundleFile("linux-x64", new AbortController().signal, options)).path).toBe(join(cacheDir, `${sha256}.tgz`));
       next = served(manifest, 1024 * 1024 + 1);
       await expect(bundleFile("linux-x64", new AbortController().signal, options)).rejects.toBeInstanceOf(RemoteResponseTooLarge);
@@ -61,7 +59,7 @@ describe("remote bundle sources", () => {
   it("installs each Mac architecture from local manifests without a published release", async () => {
     for (const platform of ["darwin-arm64", "darwin-x64"]) {
       const { directory, manifest, bytes, sha256 } = fixture(platform);
-      const options = { directory, manifest: "" }; // Explicitly test automatic discovery, independent of the test runner's environment.
+      const options = { directory, manifest: "" };
       expect(await bundleManifestSource(platform, options)).toBe(manifest);
       const asset = await bundleFile(platform, new AbortController().signal, options);
       expect(readFileSync(asset.path)).toEqual(bytes);
@@ -102,7 +100,6 @@ describe("remote bundle sources", () => {
 
   it("reuses a cached release bundle by checksum and never trusts a changed one", async () => {
     const { directory, manifest, bytes, sha256 } = fixture("linux-x64");
-    // an unreachable release URL: only the cache can answer
     writeFileSync(manifest, JSON.stringify({ version: REMOTE_BUNDLE_VERSION, assets: { "linux-x64": { url: "https://bundles.invalid/bundle.tgz", sha256 } } }));
     const cacheDir = join(directory, "cache"); mkdirSync(cacheDir);
     writeFileSync(join(cacheDir, `${sha256}.tgz`), bytes);

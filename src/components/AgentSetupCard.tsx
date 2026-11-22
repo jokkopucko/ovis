@@ -9,24 +9,14 @@ import { AgentMark } from "./AgentMark.tsx";
 import "./AgentSetupCard.css";
 
 export interface AgentSetupCardProps {
-  /** the agent, as GET /api/agent-catalog answered it for `machineId` */
   agent: AgentCatalogRow;
   machineId?: string;
-  /** a step to start from (tests, the demo's screenshots); the card moves on from it */
   initial?: SetupStep;
-  /** shows the tab an install or sign-in runs in */
   onOpenTerminal: (paneId: string) => void;
-  /** the agent is ready: start it */
   onStart: () => void;
-  /** told each step the card moves to */
   onStep?: (step: SetupStep) => void;
 }
 
-/**
- * One agent's setup in two steps, Install then Sign in, on one card: each step runs the PC's own
- * official command in a terminal tab the user can open, and installed is decided by reading the
- * catalog again, never by how the tab ended.
- */
 export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart, onStep }: AgentSetupCardProps) {
   const t = useT();
   const { step, dispatch, pending, install, signIn } = useAgentSetup({ agent, machineId, initial, onStep });

@@ -7,7 +7,6 @@ export class RelayResourceTooLargeError extends Error {
   constructor() { super("Relay resource exceeds 64 MiB"); this.name = "RelayResourceTooLargeError"; }
 }
 
-/** Bound even a chunked response with no Content-Length, cancelling as soon as it exceeds the cap. */
 export async function relayResourceBlob(response: Response): Promise<Blob> {
   if (!response.ok) {
     await response.body?.cancel();
@@ -93,10 +92,7 @@ export async function relayResourceUrl(transport: Transport, serverId: string, p
     ? new Blob([blob], { type: "application/octet-stream" }) : blob);
 }
 
-/**
- * Only our controlling worker can ask this window to use its channel. Each request owns its
- * abort controller until the transferred stream ends or is cancelled by the worker/browser.
- */
+/** Only our controlling worker can ask this window to use its channel. */
 export function serveRelayResources(transport: Transport, serverId: string, connected: () => boolean): () => void {
   const workers = typeof navigator === "undefined" ? undefined : navigator.serviceWorker;
   if (!workers) return () => {};
@@ -117,7 +113,6 @@ export function serveRelayResources(transport: Transport, serverId: string, conn
       const value = received.get(name);
       if (value !== null) headers.set(name, value);
     }
-    // A live channel answers selection immediately; a slow disk is not an absent window.
     port.postMessage({ available: true });
     void transport.fetch(data.target, { headers, signal: abort.signal }).then((response) => {
       const allowed: readonly string[] = RESPONSE_HEADERS;

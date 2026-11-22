@@ -1,4 +1,3 @@
-/** The real artifact chip, API and composer styles, with an isolated HTTP fixture. */
 import { createRoot } from "react-dom/client";
 import { Artifacts } from "../src/components/Artifacts.tsx";
 import { SettingsProvider } from "../src/lib/settings.ts";

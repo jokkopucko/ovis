@@ -5,17 +5,12 @@
  * composer.
  */
 
-/** How far a finger must travel down the transcript before the keyboard goes away. */
 export const DISMISS_DRAG_PX = 32;
 
-/** lib/viewport.ts sets data-keyboard while a touch device has a text field focused. */
 export function keyboardUp(): boolean {
   return typeof document !== "undefined" && document.documentElement.hasAttribute("data-keyboard");
 }
 
-/**
- * Reference height for keyboard occlusion, retaining the unobstructed viewport unless the window resized.
- */
 export function keyboardViewportReference(
   height: number,
   large: number,
@@ -26,7 +21,6 @@ export function keyboardViewportReference(
   // Chrome resizes-content can shrink 100lvh along with the keyboard. With a
   // typing field (or a keyboard already up), a visual viewport filling the
   // shortened layout is not evidence that the unobstructed window resized.
-  // A split view's separate visual inset still lets its new height replace it.
   const resizedWindow = remembered && large < remembered.large && height <= large && large - height <= large * 0.2
     && (!keyboardActive || height < layout);
   return Math.max(large, resizedWindow ? 0 : remembered?.height ?? 0, layout);
@@ -35,10 +29,7 @@ export function keyboardViewportReference(
 /**
  * Whether the soft keyboard holds the terminal's grid: the keyboard takes the bottom of the screen,
  * not the pane, so a fit to what is left above it would size the shared pty to that strip and
- * reflow every other viewer of the pane twice per keyboard (#1045). A host that only lost height
- * under the keyboard keeps its grid and pans; a host whose width changed (a rotation) refits even
- * under the keyboard, and a host with no keyboard over it always does. `fittedWidth` is the host's
- * width at its last fit, null before the first: that first fit waits for the keyboard to go too.
+ * reflow every other viewer of the pane twice per keyboard (#1045).
  */
 export function keyboardHoldsGrid(keyboard: boolean, width: number, fittedWidth: number | null): boolean {
   return keyboard && (fittedWidth === null || width === fittedWidth);
@@ -61,12 +52,10 @@ function dismissKeyboard(): void {
   if (active instanceof HTMLElement) active.blur();
 }
 
-/** A drag that reads older messages (finger moving down, mostly vertical) puts the keyboard away. */
 export function dragDismisses(dx: number, dy: number): boolean {
   return dy >= DISMISS_DRAG_PX && dy > Math.abs(dx);
 }
 
-/** Taps on controls, links or text being selected do what they do; any other tap reads. */
 export function tapDismisses(target: EventTarget | null, selection: string): boolean {
   if (selection.length > 0) return false;
   const element = target as Element | null;
@@ -74,7 +63,6 @@ export function tapDismisses(target: EventTarget | null, selection: string): boo
   return element.closest("a, button, input, textarea, select, summary, label, [role='button'], [contenteditable='true']") === null;
 }
 
-/** A scroller between the touched element and the node (both included) that a drag down would first scroll back up. */
 export function scrolledDown(target: unknown, node: { scrollTop: number }): boolean {
   for (let at = target as { scrollTop?: number; parentElement?: unknown } | null; at != null; at = at.parentElement as typeof at) {
     if ((at.scrollTop ?? 0) > 0) return true;
@@ -83,11 +71,6 @@ export function scrolledDown(target: unknown, node: { scrollTop: number }): bool
   return node.scrollTop > 0;
 }
 
-/**
- * Wires the tap and the drag onto a scrolling transcript; returns the cleanup.
- * `atTopOnly` is for a scroller that is not the transcript (the prompt card): there a drag down
- * first scrolls its own text back up, and puts the keyboard away only once nothing is left to scroll.
- */
 export function dismissKeyboardOn(node: HTMLElement, { atTopOnly = false }: { atTopOnly?: boolean } = {}): () => void {
   let start: { x: number; y: number } | null = null;
   const onTouchStart = (event: TouchEvent): void => {
@@ -95,7 +78,6 @@ export function dismissKeyboardOn(node: HTMLElement, { atTopOnly = false }: { at
     if (atTopOnly && scrolledDown(event.target, node)) { start = null; return; }
     // a drag that starts on a text selection moves its handles; it is not a request to read
     const selecting = (window.getSelection()?.toString() ?? "").length > 0;
-    // a field in the transcript (a prompt card's own answer) keeps its keyboard while a finger drags on it
     const onField = (event.target as Element | null)?.closest?.("input, textarea, select, [contenteditable='true']") != null;
     start = event.touches.length === 1 && touch && keyboardUp() && !selecting && !onField ? { x: touch.clientX, y: touch.clientY } : null;
   };

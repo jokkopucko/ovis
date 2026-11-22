@@ -22,14 +22,10 @@ const portalAddress = "https://herdr-portal-test-0123.relay.example";
 const token = "portal-browser-test-token";
 const watchToken = randomBytes(32).toString("hex");
 const relayRequests: string[] = [];
-/** every `portal expose` the stand-in ran writes its pid here: a relaunch adds one, a third never comes */
 const exposeLog = join(root, "expose.log");
 const exposed = (): number[] => existsSync(exposeLog) ? readFileSync(exposeLog, "utf8").trim().split("\n").map(Number) : [];
-/** the relay question a relaunch asks waits here, so every device can be seen recovering */
 let relayHold: { asked: () => void; released: Promise<void> } | null = null;
-/** lets a held relay question go; the cleanup calls it too, so a failed run never leaves it waiting */
 let releaseRelay: (() => void) | undefined;
-/** the event, or a failure naming it once `ms` pass without it */
 const within = <T>(event: Promise<T>, ms: number, what: string): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no ${what} within ${ms} ms`)), ms); });
@@ -55,7 +51,6 @@ const remoteAccess = {
 const portalFetchPage = async (context: BrowserContext): Promise<void> => {
   await context.route("**/api/access", (route) => route.fulfill({ json: remoteAccess }));
 };
-/** Portal is on Add a connection's Phones and devices tab: Settings → Devices and PCs → Add a connection → Phones and devices. */
 const openPhoneSettings = async (page: Page): Promise<void> => {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await page.locator(".settings-dialog").waitFor({ timeout: 10_000 });
@@ -63,10 +58,11 @@ const openPhoneSettings = async (page: Page): Promise<void> => {
   await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }).click();
   const connect = settingsOf(page);
   await connect.waitFor({ timeout: 10_000 });
-  // an owner's PC window opens on SSH; a window with one way only (a watching device without the relay) has no tabs
-  const devicesTab = connect.locator('.connect-tabs [data-tab="devices"]');
+  const devicesTab = connect.locator('.connect-ways [data-tab="devices"]');
   if (await devicesTab.count() > 0) await devicesTab.click();
   await connect.locator('[data-tab-panel="devices"]').waitFor({ timeout: 10_000 });
+  const local = connect.locator('.connect-devices-ways [data-way="local"]');
+  if (await local.count() > 0) await local.click();
 };
 const settingsOf = (page: Page) => page.getByRole("dialog", { name: "Add a connection", exact: true });
 const reopenPhoneSettings = async (page: Page): Promise<void> => {
@@ -88,10 +84,8 @@ try {
     'case "$1" in',
     "  version) printf '%s\\n' 'v2.6.1' ;;",
     "  expose)",
-    // the status asks which sign-ins this Portal offers: that is a question, not a service
     "    [ \"$2\" = --help ] && exit 0",
     "    trap 'exit 0' TERM",
-    // the stand-in's way to end on its own, as a crashed Portal would
     "    trap 'exit 3' USR1",
     // Portal writes its identity file before it serves; a relaunch requires it unchanged
     "    id=''; previous=''; for arg in \"$@\"; do [ \"$previous\" = --identity-path ] && id=\"$arg\"; previous=\"$arg\"; done",
@@ -125,7 +119,7 @@ try {
     hostname: "127.0.0.1",
     stateDir,
     token,
-    tailscaleOwner: null,
+    tailscaleOwner: null, accountOpensAll: true,
     tailscaleServeOnly: false,
     portal,
     usage: new UsageService(undefined, []),
@@ -151,8 +145,13 @@ try {
   await ownerPage.getByLabel("Access token", { exact: true }).fill(token);
   await ownerPage.getByRole("button", { name: "Unlock", exact: true }).click();
   await ownerPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
-  const ownerAuth = await ownerPage.evaluate(async () => (await (await fetch("/api/health?scope=bridge")).json()).auth);
-  assert.deepEqual(ownerAuth, { required: false, authenticated: true, via: "token", role: "drive" }, "the UI token login receives the owner role");
+  const ownerAuth = () => ownerPage.evaluate(async () => (await (await fetch("/api/health?scope=bridge")).json()).auth);
+  const tokenOwner = { required: false, authenticated: true, via: "token", role: "drive" };
+  assert.deepEqual(await ownerAuth(), tokenOwner, "an unbound token owner drives without a Step 2 lock hint");
+  server.context.services.devices.bindByService("acct_portal_fixture");
+  assert.deepEqual(await ownerAuth(), { ...tokenOwner, own_window: true }, "binding the same PC enables its own-window hint");
+  assert.equal(server.context.services.devices.clearAccountBinding("unlisted", "account"), true);
+  assert.deepEqual(await ownerAuth(), tokenOwner, "leaving the account restores the unbound portal fixture");
 
   await openPhoneSettings(ownerPage);
   const ownerSettings = settingsOf(ownerPage);
@@ -186,7 +185,6 @@ try {
   await watchStop.waitFor({ timeout: 10_000 });
   assert.equal(await watchStop.isDisabled(), true, "a watch-only device cannot stop a running Portal");
 
-  // the serving Portal ends on its own: the server starts it again once, on the same relay and identity
   const savedPid = (): number => (JSON.parse(readFileSync(join(stateDir, "portal", "state.json"), "utf8")) as { pid: number }).pid;
   const crashed = savedPid();
   const relayAsked = new Promise<void>((asked) => {
@@ -194,7 +192,6 @@ try {
   });
   process.kill(crashed, "SIGUSR1");
   await within(relayAsked, 15_000, "relay question from the relaunch");
-  // the panel follows a running Portal every 15 s: reopening asks at once
   await reopenPhoneSettings(ownerPage);
   await reopenPhoneSettings(watchPage);
   const ownerRecovering = settingsOf(ownerPage).getByRole("status").filter({ hasText: "Recovering…" });
@@ -215,7 +212,6 @@ try {
   assert.deepEqual(exposed(), [crashed, replacement], "one relaunch: two Portal processes for the operation");
   console.log("PASS Portal recovery: a serving Portal that ended on its own showed Recovering… on every device, then its address again");
 
-  // the replacement ends on its own too: no third Portal, an error every device can read
   process.kill(replacement, "SIGUSR1");
   const phaseDeadline = Date.now() + 15_000;
   while ((await ownerPage.evaluate(async () => (await (await fetch("/api/portal")).json() as PortalStatus).phase)) !== "error") {
@@ -270,8 +266,6 @@ try {
   assert.deepEqual(pageErrors, [], "the Portal settings pages have no browser errors");
   console.log("PASS Portal browser flow: token login, ready/start/address/stop, error recovery, and watch-only controls");
 
-  // Fixture answers: a recovering Portal on both devices, then the server unreachable mid-recovery,
-  // then an older server with no Portal route. The browser never starts Portal on its own.
   const recoveringFixture = {
     supported: true, version: "v2.6.1", min_version: "v2.6.1", usable: true, phase: "recovering",
     relay: "https://relay.example", url: null, blocked: null, error: null, output: `INF service ready at ${portalAddress}:443`,
@@ -298,22 +292,19 @@ try {
     assert.equal(await settings.getByRole("button", { name: "Stop", exact: true }).isEnabled(), who === "owner", `${who}: Stop follows the device's role while recovering`);
     assert.equal(await settings.getByRole("link", { name: portalAddress, exact: true }).count(), 0, `${who}: no address while recovering`);
   }
-  // the server goes away mid-recovery: the last answer stays, and it has no address to present as live
   const offlinePoll = ownerPage.waitForEvent("requestfailed", { predicate: (request) => new URL(request.url()).pathname === "/api/portal", timeout: 10_000 });
   answer = "offline";
   await offlinePoll;
   const offlineSettings = settingsOf(ownerPage);
   await offlineSettings.getByRole("status").filter({ hasText: "Recovering…" }).waitFor({ timeout: 10_000 });
   assert.equal(await offlineSettings.getByRole("link", { name: portalAddress, exact: true }).count(), 0, "no cached address is shown while the server is unreachable");
-  // an older server answers without the route: a freshly opened panel hides the section, and the rest of the page works
   answer = "older";
   for (const page of [ownerPage, watchPage]) {
     const asked = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/portal" && response.status() === 404, { timeout: 10_000 });
     await reopenPhoneSettings(page);
     await asked;
     const settings = settingsOf(page);
-    // drawn: its first section, or for a window that can use none of them, its one line
-    await settings.locator('[data-tab-panel="devices"]').locator(":scope > .connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
+    await settings.locator('[data-tab-panel="devices"]').locator(".connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
     assert.equal(await settings.locator('section[aria-label="Portal"]').count(), 0, "an older server offers no Portal on Phones and devices");
     assert.equal(await settings.locator("#portal-relay").count(), 0, "an older server's page offers no relay");
   }
@@ -322,7 +313,6 @@ try {
   assert.deepEqual(pageErrors, [], "the fixture Portal pages have no browser errors");
   console.log("PASS Portal recovering fixtures: owner Stop, watch-only disabled, offline mid-recovery without a stale address, older server hidden");
 
-  // The invite's read-only bearer link still needs keyboard focus, using the global theme ring.
   const inviteFixture = {
     ...recoveringFixture, version: "v2.7.3", phase: "running", url: portalAddress,
     auth: { method: "credential", allow: [], issuer: null, client_id: null },
@@ -389,8 +379,7 @@ try {
   await blockedPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
   await openPhoneSettings(blockedPage);
   const blockedSettings = settingsOf(blockedPage);
-  // a Portal that cannot start here is left out of the sheet, not explained
-  await blockedSettings.locator('[data-tab-panel="devices"]').locator(":scope > .connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
+  await blockedSettings.locator('[data-tab-panel="devices"]').locator(".connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
   assert.equal(await blockedSettings.locator('section[aria-label="Portal"]').count(), 0, "a Portal that needs a configured token is not offered");
   assert.equal(await blockedSettings.getByRole("button", { name: "Start", exact: true }).count(), 0, "Portal Start is unavailable without a configured token");
   assert.deepEqual(pageErrors, [], "the token-required page has no browser errors");

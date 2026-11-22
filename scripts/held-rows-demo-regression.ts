@@ -7,15 +7,13 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// The held messages' fold, on the unmodified app over the demo's fixture transport: the demo's
-// "web" pane has an approval card open, which is what folds the rows. All files and HTTP traffic
-// stay in this disposable, loopback-only app; no herdr session is opened.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-held-rows-demo-"));
 
 let batch = 0;
-/** A stored queue, as lib/messageQueue.ts writes it; ids are never reused, as in the app. */
 const stored = (texts: string[]): string => {
   batch += 1;
   return JSON.stringify({ version: 1, messages: texts.map((text, index) => ({ id: `b${batch}m${index}`, text })) });
@@ -48,14 +46,12 @@ const heldOf = (page: Page): Promise<Held> => page.evaluate(() => {
 });
 
 const select = async (page: Page, pane: string): Promise<void> => {
-  // the same row click the sidebar gets, without moving the focus the way a real click would
   const row = page.locator(`.pane-select[title^="${pane} —"]`).first();
   await row.waitFor({ state: "attached" });
   await row.evaluate((node: HTMLElement) => node.click());
   await page.locator(`.pane-select[title^="${pane} —"][aria-current="true"]`).first().waitFor({ state: "attached" });
 };
 
-/** Another tab wrote this pane's queue. */
 const writeQueue = (page: Page, pane: string, value: string): Promise<void> => page.evaluate(([key, next]) => {
   localStorage.setItem(key, next);
   window.dispatchEvent(new StorageEvent("storage", { key, newValue: next, storageArea: localStorage }));
@@ -66,8 +62,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // The demo takes every message. This answers a submit as a pane that refused it would, so that
-  // a held row is seen with its "Not sent" line.
   const refuse = `<script>(() => {
     const Demo = window.WebSocket;
     window.refuseSubmits = false;
@@ -87,17 +81,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${refuse}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = (pane: string): string => `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(pane)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -131,7 +115,6 @@ try {
           assert.equal(folded.expanded, "false");
           assert.equal(folded.rows, 2, "folded rows stay mounted");
           assert.equal(folded.listHeight, 0);
-          // the count is said once: the section's hidden "Queued messages (2)" is not in the button's name
           assert.equal(folded.toggleText, "Held until the agent is ready · 2 messages");
           assert.match(folded.heading, /^Queued messages \(2\)/);
           console.log("PASS an open approval card folds the held rows into a button named by the caption alone");
@@ -148,7 +131,6 @@ try {
           await page.evaluate(() => { (window as unknown as { refuseSubmits: boolean }).refuseSubmits = false; });
           console.log("PASS a refused Send now keeps the message, shows its error and leaves no inert button");
 
-          // the error outlives its message: discarding that message must give the fold back
           await page.getByRole("button", { name: "Discard" }).first().click();
           await toggle.waitFor();
           assert.equal((await heldOf(page)).errors.length, 0);
@@ -159,7 +141,6 @@ try {
           assert.equal(closed.listHeight, 0);
           console.log("PASS discarding the failed message lets the rows fold again");
 
-          // an emptied list forgets that it was open
           await toggle.click();
           await page.getByRole("button", { name: "Discard" }).first().click();
           await page.locator(".composer-queue").waitFor({ state: "detached" });
@@ -168,7 +149,6 @@ try {
           assert.equal((await heldOf(page)).expanded, "false", "a new list under the same prompt starts folded");
           console.log("PASS a list that was emptied and filled again starts folded");
 
-          // focus in another pane's row does not open this pane's rows
           await select(page, panes.omp);
           await page.locator(".composer-queue-text").first().focus();
           assert.equal((await heldOf(page)).toggle, false, "a ready list is never folded");
@@ -177,7 +157,6 @@ try {
           assert.equal((await heldOf(page)).expanded, "false");
           console.log("PASS switching panes from a held row does not open the other pane's rows");
 
-          // the prompt is answered elsewhere while focus is on the button: focus goes to the list
           await toggle.focus();
           await page.evaluate(async (pane) => {
             const prompt = ((await (await fetch(`/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`)).json()) as { prompt: { id: string } }).prompt;
@@ -203,7 +182,6 @@ try {
           await page.getByRole("button", { name: "Send now" }).first().click();
           await page.locator(".composer-queue-item .composer-queue-error").waitFor();
           await page.evaluate(() => { (window as unknown as { refuseSubmits: boolean }).refuseSubmits = false; });
-          // back in the pane, the error alone holds the rows open: the user never opened them here
           await select(page, panes.omp);
           await page.locator(".composer-queue.is-ready").waitFor();
           await select(page, panes.web);
@@ -212,7 +190,6 @@ try {
           const second = page.locator(".composer-queue-text").nth(1);
           await second.focus();
           await page.keyboard.type("edited ");
-          // another tab discards the failed message: the row being edited keeps its id, and its place
           await page.evaluate((key) => {
             const queue = JSON.parse(localStorage.getItem(key)!) as { version: number; messages: { id: string; text: string }[] };
             const next = JSON.stringify({ ...queue, messages: queue.messages.slice(1) });
@@ -228,7 +205,6 @@ try {
           assert.equal(await page.locator(".composer-queue-text").inputValue(), "edited second held");
           console.log("PASS a row being edited stays in sight when another tab discards the failed message");
 
-          // focus on this pane's button says nothing about the pane the user moves to
           await toggle.focus();
           await select(page, panes.omp);
           await page.locator(".composer-queue.is-ready").waitFor();
@@ -242,7 +218,6 @@ try {
       }
 
       {
-        // a touch screen gives the next pane's message box no focus: nothing else may take it there
         const { page, errors, close } = await open({ [panes.web]: stored(["first held"]), [panes.omp]: stored(["infra held"]) }, panes.web, true);
         try {
           assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true);
@@ -273,7 +248,6 @@ try {
           await page.goto(`${url(panes.web)}&demo_security=watch`);
           await page.locator(".conn-live").waitFor({ state: "attached" });
           await page.locator(".terminal-stack.is-chat").waitFor();
-          // the watch-only composer is drawn: the held rows, drawn with it, would be there too
           await page.locator(".composer-text[disabled]").waitFor({ state: "attached" });
           assert.equal(await page.getByRole("button", { name: "Send now" }).count(), 0, "a watch-only view offers no Send now for a held message");
           assert.equal(await page.locator(".composer-queue").count(), 0, "nor the held rows, as an acknowledged observe mode shows them");
@@ -283,7 +257,6 @@ try {
       }
 
       {
-        // each row's hidden label scrolls with the list: it must not grow the pane's own overflow
         const { page, errors, close } = await open({ [panes.omp]: stored(Array.from({ length: 30 }, (_, index) => `held ${index + 1}`)) }, panes.omp);
         try {
           assert.equal(await page.locator(".composer-queue-text").count(), 30);

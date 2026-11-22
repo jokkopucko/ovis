@@ -34,7 +34,6 @@ function enumOf(source: ts.SourceFile, name: string): Record<string, number> {
   }));
 }
 
-/** The text of a class method's body, whitespace folded. */
 function methodBody(node: ts.ClassDeclaration, name: string): string {
   const method = node.members.find((member): member is ts.MethodDeclaration =>
     ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.name.text === name);

@@ -7,11 +7,10 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A phone shows a split tab one pane at a time and keeps the others mounted behind it (#819). The
-// pty is shared with every device, so a hidden pane must not size it: a PC drawing the split would
-// see that pane at the phone's size. Shown again, the pane fits the phone and takes the pty. On the
-// unmodified app over the demo's fixture transport: no herdr session is opened.
+// The pty is shared with every device, so a hidden pane must not size it: a PC drawing the split would
+// see that pane at the phone's size.
 const app = mkdtempSync(join(tmpdir(), "herdr-phone-split-grid-demo-"));
 
 interface Frame { type: string; pane_id: string; cols?: number; rows?: number; keep_size?: boolean }
@@ -31,7 +30,6 @@ const layout = async (page: Page, path: string, body: Record<string, unknown>): 
 const sent = (page: Page): Promise<void> => page.evaluate(() => { (window as unknown as Recorded).sent = []; });
 const lastOf = async (page: Page, pane: string, type: string): Promise<Frame | undefined> => (await frames(page, pane)).filter((frame) => frame.type === type).at(-1);
 
-/** Drops the socket the way a network change does: the app reconnects and attaches every pane it holds again. */
 async function reconnect(page: Page, panesHeld: string[]): Promise<Frame[]> {
   await sent(page);
   await page.evaluate(() => (window as unknown as Recorded).recordedSockets.at(-1)!.close());
@@ -40,7 +38,6 @@ async function reconnect(page: Page, panesHeld: string[]): Promise<Frame[]> {
   return page.evaluate(() => (window as unknown as Recorded).sent);
 }
 
-/** Two fingers spread on the shown terminal; `during` runs while they are still down. */
 async function pinchAcross(context: BrowserContext, page: Page, pane: string, during: () => Promise<void>): Promise<void> {
   const box = (await page.locator(`.pane-frame[data-layout-pane="${pane}"] .pane-terminal`).boundingBox())!;
   const cx = box.x + box.width / 2;
@@ -55,7 +52,6 @@ async function pinchAcross(context: BrowserContext, page: Page, pane: string, du
   await cdp.detach();
 }
 
-/** Opens the tab's other pane from the menu that lists its panes, by script: the fingers of a pinch may still be down. A phone's header lists the tabs, so its More carries them; a wider screen's tab has its own menu. */
 async function showOther(page: Page, pane: string): Promise<void> {
   const menu = await page.locator(".tab-strip-menu").count() > 0 ? ".tab-strip-menu" : ".header-more-button";
   await page.locator(menu).evaluate((node) => (node as HTMLElement).click());
@@ -85,21 +81,14 @@ try {
     window.WebSocket = Recorded;
   })();</script>`;
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${record}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
       await context.addInitScript(() => {
         if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal" }));
+      if (!localStorage.getItem("ovis:phone-tabs")) localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
       });
       const page = await context.newPage();
       const errors: string[] = [];
@@ -109,7 +98,6 @@ try {
       const made = await layout(page, "/api/pane/split", { pane_id: panes.shell, direction: "right", focus: true });
       assert.ok(made.pane?.pane_id, JSON.stringify(made));
       await page.locator(".pane-frame.is-hidden").waitFor({ state: "attached" });
-      // the split tab shows one pane on the phone, the other mounted behind it; the phone turns
       const shell = await page.locator(".pane-frame.is-hidden").getAttribute("data-layout-pane") as string;
       const sibling = await page.locator(".pane-frame:not(.is-hidden)").getAttribute("data-layout-pane") as string;
       await page.locator(shownRows(`.pane-frame:not(.is-hidden)[data-layout-pane="${sibling}"]`)).waitFor();
@@ -120,7 +108,6 @@ try {
       await page.waitForTimeout(1_000); // fixed wait: no resize frame may be sent for the hidden pane
       assert.deepEqual(await frames(page, shell), [], "the hidden pane sends no resize");
 
-      // turned back (a short screen draws no strip for a lone tab), the tab's menu leads to the shell
       await page.setViewportSize({ width: 390, height: 844 });
       await page.waitForFunction((id) => (window as unknown as Recorded).sent.filter((frame) => frame.pane_id === id && frame.type === "resize").at(-1)?.cols! < 60, sibling, { timeout: 10_000 });
       await page.waitForTimeout(1_000); // fixed wait: no resize frame may be sent for the still hidden pane
@@ -128,13 +115,11 @@ try {
 
       const phoneGrid = (await lastOf(page, sibling, "resize"))!;
 
-      // a reconnect attaches the hidden pane at the size the pty has, and the shown one at its own
       let again = await reconnect(page, [shell, sibling]);
       assert.equal(again.find((frame) => frame.pane_id === shell && frame.type === "attach")?.keep_size, true, `the hidden pane reattaches keeping the pty's size: ${JSON.stringify(again)}`);
       assert.notEqual(again.find((frame) => frame.pane_id === sibling && frame.type === "attach")?.keep_size, true, "the shown pane reattaches at its own size");
       assert.deepEqual(again.filter((frame) => frame.pane_id === shell && frame.type === "resize"), [], "nor does the reconnect resize the hidden pane");
 
-      // shown again, the shell fits the phone and takes the pty, at the shown pane's grid
       await sent(page);
       await page.locator(".header-more-button").tap();
       const sheet = page.getByRole("dialog");
@@ -147,12 +132,10 @@ try {
       await page.waitForTimeout(1_000); // fixed wait: the pane now behind may not send a resize
       assert.equal(await lastOf(page, sibling, "resize"), undefined, "the pane gone behind it sends no resize");
 
-      // the roles swapped: a reconnect now keeps the size of the other pane's pty
       again = await reconnect(page, [shell, sibling]);
       assert.equal(again.find((frame) => frame.pane_id === sibling && frame.type === "attach")?.keep_size, true, `the pane now hidden reattaches keeping the pty's size: ${JSON.stringify(again)}`);
       assert.notEqual(again.find((frame) => frame.pane_id === shell && frame.type === "attach")?.keep_size, true, "the pane now shown reattaches at its own size");
 
-      // a pinch that ends after its pane went behind the other one saves the font and sizes no pty
       await sent(page);
       await pinchAcross(context, page, shell, async () => {
         await showOther(page, sibling);

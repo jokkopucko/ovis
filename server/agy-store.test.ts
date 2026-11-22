@@ -1,15 +1,20 @@
-import { expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HerdrPane } from "../shared/protocol.ts";
 import {
+  agyFreshSession,
   isAgyProcessName,
   resetWindowsScanCacheForTest,
+  resolveAgyStore,
   type RestartManagerApi,
   windowsHeldPaths,
   windowsHolders,
   windowsLockCandidates,
 } from "./agy-store.ts";
+import * as herdr from "./herdr/client.ts";
 
 it("expires singleton evidence and reconciles a newer ambiguous scan", async () => {
   resetWindowsScanCacheForTest();
@@ -23,7 +28,6 @@ it("expires singleton evidence and reconciles a newer ambiguous scan", async () 
     expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A"]);
     both = true;
     now = 6_000;
-    // Another pane completes a scan before the original pane resolves again.
     await windowsHeldPaths(4243, holders, candidates);
     expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A", "B"]);
     now = 12_000;
@@ -61,7 +65,6 @@ it("keeps each unresolved pid's backoff while other panes scan in between", asyn
   try {
     const scans: number[] = [];
     const holders = (path: string) => { if (path === "A") scans.push(now); return []; };
-    // two panes without a lock poll in turn every six seconds
     for (now = 0; now <= 120_000; now += 6_000) await windowsHeldPaths(now % 12_000 === 0 ? 4242 : 4243, holders, () => ["A", "B"]);
     expect(scans.length).toBeLessThan(15);
   } finally { Date.now = realNow; }
@@ -70,7 +73,6 @@ it("keeps each unresolved pid's backoff while other panes scan in between", asyn
 it("proves nothing from a scan whose owners moved before they were confirmed", async () => {
   resetWindowsScanCacheForTest();
   let bCalls = 0, moved = false;
-  // the pid holds A and B; B's hold moves to C after the pass read C and before B is confirmed
   const holders = (path: string) => {
     if (path === "B" && ++bCalls === 2) moved = true;
     return path === "A" || (path === "B" && !moved) || (path === "C" && moved) ? [4242] : [];
@@ -87,13 +89,11 @@ it("backs off a pid whose lock keeps changing hands during every scan", async ()
   try {
     const scans: number[] = [];
     let bCalls = 0;
-    // A stays held; B answers held and then free, so every pass sees its owners move
     const holders = (path: string) => {
       if (path === "A") scans.push(now);
       return path === "A" || (path === "B" && ++bCalls % 2 === 1) ? [4242] : [];
     };
     for (now = 0; now <= 120_000; now += 6_000) expect(await windowsHeldPaths(4242, holders, () => ["A", "B"])).toEqual([]);
-    // the 5, 10, 20, 40, 60 second schedule, read on a six-second poll
     expect([...new Set(scans)]).toEqual([0, 6_000, 18_000, 42_000, 84_000]);
   } finally { Date.now = realNow; }
 });
@@ -109,7 +109,6 @@ for (const recovery of ["a new lock file", "another pane's scan"]) {
       let paths = ["A", "B"];
       const holders = (path: string) => moving && path === "A" ? (++aCalls % 2 ? [4242] : []) : path === active ? [4242] : [];
       const candidates = () => paths;
-      // the moving lock pushes the pid's backoff up to its 60-second cap
       for (now of [0, 5_000, 15_000, 35_000, 75_000]) expect(await windowsHeldPaths(4242, holders, candidates)).toEqual([]);
       moving = false;
       now = 76_000;
@@ -154,7 +153,6 @@ it("does not accept singleton evidence from an overflowing candidate listing", a
       writeFileSync(join(root, "presence", `00000000-0000-4000-8000-${i.toString().padStart(12, "0")}.lock`), "");
     }
     const candidates = () => windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root);
-    // The pid holds the first and last entries; a truncated scan sees only the first.
     const names = readdirSync(join(root, "presence"));
     const held = [join(root, "presence", names[0]!), join(root, "presence", names.at(-1)!)];
     const holders = (path: string) => held.includes(path) ? [4242] : [];
@@ -175,9 +173,7 @@ for (const ambiguous of [false, true]) {
         if (path === "A") scans.push(now);
         return ambiguous ? [4242] : [];
       };
-      // A poll every six seconds, driven entirely by the controlled clock.
       for (now = 0; now <= 204_000; now += 6_000) await windowsHeldPaths(4242, holders, candidates);
-      // Ambiguous results confirm each held path after each scan as well.
       expect([...new Set(scans)]).toEqual([0, 6_000, 18_000, 42_000, 84_000, 144_000, 204_000]);
     } finally { Date.now = realNow; }
   });
@@ -208,7 +204,6 @@ for (const ambiguous of [false, true]) {
       now = 18_000;
       await windowsHeldPaths(4243, holders, candidates);
       expect(calls).toBeGreaterThan(afterChange);
-      // With no directory change, retries remain bounded rather than stopping discovery forever.
       now = 80_000;
       const beforeDeadline = calls;
       await windowsHeldPaths(4242, holders, candidates);
@@ -328,10 +323,8 @@ it("discovers a newly held lock after overlapping callers when TTL expires", asy
   expect(res2).toEqual([lock2]);
   expect(candidateCalls).toBe(1);
 
-  // New lock acquired by pid3:
   activeHolders = { [lock1]: [pid1], [lock2]: [pid2], [lock3]: [pid3] };
 
-  // At +6 seconds, TTL expires: a new scan must run and discover lock3
   const realNow = Date.now;
   try {
     Date.now = () => realNow() + 6_000;
@@ -379,4 +372,225 @@ it("retries and reallocates when RmGetList returns ERROR_MORE_DATA (234) with gr
   const holders = windowsHolders("C:\\path\\presence\\test.lock", mockApi);
   expect(holders).toEqual([4242, 4243]);
   expect(callIndex).toBe(3);
+});
+
+function processInfoAnswers() {
+  type Answer = () => herdr.ProcessInfo | Promise<herdr.ProcessInfo>;
+  let queue: Answer[] = [];
+  let asked = 0;
+  const names = (pids: number[], argv = ["agy"]): Answer => () => ({ pane_id: "agy-pane", foreground_processes: pids.map((pid) => ({ pid, name: "agy", argv })) });
+  const spy = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => {
+    asked += 1;
+    const answer = queue.shift();
+    if (!answer) throw new Error("fixture: herdr was asked more often than it answers");
+    return await answer();
+  });
+  return { names, answers: (...next: Answer[]) => { queue = next; asked = 0; }, asked: () => asked, restore: () => spy.mockRestore() };
+}
+
+const UNUSED_START_SCREEN = [
+  "       ▄▀▀▄         Antigravity CLI 1.4.4",
+  "      ▀▀▀▀▀▀        user@example.test (Demo plan    )",
+  "     ▀▀▀▀▀▀▀▀       Gemini 3.8 Flash (High)",
+  "    ▄▀▀     ▀▀▄      /tmp/project",
+  "   ▄▀▀       ▀▀▄",
+  "",
+  " ────────────────────────────────────────",
+  " >",
+  " ────────────────────────────────────────",
+  " ? for shortcuts   Gemini 3.8 Flash · high",
+].join("\n");
+
+function standInAgy(first: string | null, next: string) {
+  const script = `
+    const fs = require('node:fs');
+    let held = process.env.AGY_LOCK ? fs.openSync(process.env.AGY_LOCK, 'r') : null;
+    process.stdout.write('up\\n');
+    process.stdin.on('data', () => {
+      if (held !== null) fs.closeSync(held);
+      held = fs.openSync(process.env.AGY_NEXT_LOCK, 'r');
+      process.stdout.write('moved\\n');
+    });`;
+  const child = Bun.spawn([process.execPath, "-e", script], {
+    stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, AGY_LOCK: first ?? "", AGY_NEXT_LOCK: next },
+  });
+  const said = child.stdout.getReader();
+  const says = async (): Promise<string> => new TextDecoder().decode((await said.read()).value);
+  return {
+    child, says,
+    take: async (): Promise<string> => {
+      child.stdin.write("next\n");
+      await child.stdin.flush();
+      return says();
+    },
+  };
+}
+
+it.skipIf(process.platform === "win32")("answers a store only while the pane still names the process whose locks it reads", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-recheck-")));
+  const session = "00000000-0000-4000-8000-000000000001";
+  const next = "00000000-0000-4000-8000-000000000002";
+  const lock = (id: string) => join(root, "presence", `${id}.lock`);
+  const transcript = (id: string) => join(root, "brain", id, ".system_generated", "logs", "transcript_full.jsonl");
+  mkdirSync(join(root, "presence"));
+  for (const id of [session, next]) writeFileSync(lock(id), "");
+  const { child: agy, says, take } = standInAgy(lock(session), lock(next));
+  const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
+  const { names, answers, asked, restore } = processInfoAnswers();
+  try {
+    expect(await says()).toBe("up\n");
+    answers(names([agy.pid]), names([agy.pid]));
+    expect(await resolveAgyStore(pane)).toMatchObject({ root, session, pid: agy.pid, path: transcript(session) });
+    expect(asked()).toBe(2);
+    for (const now of [[process.pid], [agy.pid, process.pid], []]) {
+      answers(names([agy.pid]), names(now));
+      expect(await resolveAgyStore(pane)).toBeNull();
+      expect(asked()).toBe(2);
+    }
+    for (const first of [[], [agy.pid, process.pid]]) {
+      answers(names(first));
+      expect(await resolveAgyStore(pane)).toBeNull();
+      expect(asked()).toBe(1);
+    }
+    answers(names([agy.pid], ["agy", "--continue"]));
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+    expect(asked()).toBe(1);
+    answers(names([process.pid]), names([process.pid]));
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(2);
+    answers(names([agy.pid]), names([agy.pid]));
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+    expect(asked()).toBe(2);
+    let moved = "";
+    answers(names([agy.pid]), async () => {
+      moved = await take();
+      return names([agy.pid])();
+    });
+    expect(await resolveAgyStore(pane)).toMatchObject({ root, session: next, pid: agy.pid, path: transcript(next) });
+    expect(moved).toBe("moved\n");
+    expect(asked()).toBe(2);
+    answers(names([agy.pid]), async () => {
+      agy.kill();
+      await agy.exited;
+      return names([agy.pid])();
+    });
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(2);
+    expect(agy.killed).toBe(true);
+    answers(names([agy.pid]));
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(1);
+  } finally {
+    restore();
+    agy.kill();
+    await agy.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane still names the process that holds no lock", async () => {
+  const screen = UNUSED_START_SCREEN;
+  const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-greeting-")));
+  const lock = join(root, "presence", "00000000-0000-4000-8000-000000000003.lock");
+  mkdirSync(join(root, "presence"));
+  writeFileSync(lock, "");
+  const { child: idle, says, take } = standInAgy(null, lock);
+  const { names, answers, asked, restore } = processInfoAnswers();
+  try {
+    expect(await says()).toBe("up\n");
+    answers(names([process.pid]), names([process.pid]));
+    expect(await agyFreshSession(pane, screen)).toStartWith(`unwritten:agy:agy-pane:${process.pid}:`);
+    expect(asked()).toBe(2);
+    answers(names([idle.pid]), names([idle.pid]));
+    expect(await agyFreshSession(pane, screen)).toStartWith(`unwritten:agy:agy-pane:${idle.pid}:`);
+    for (const now of [names([process.pid + 1]), names([process.pid], ["agy", "--continue"])]) {
+      answers(names([process.pid]), now);
+      expect(await agyFreshSession(pane, screen)).toBeNull();
+      expect(asked()).toBe(2);
+    }
+    let moved = "";
+    answers(names([idle.pid]), async () => {
+      moved = await take();
+      return names([idle.pid])();
+    });
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(moved).toBe("moved\n");
+    expect(asked()).toBe(2);
+    answers(names([idle.pid]), async () => {
+      idle.kill();
+      await idle.exited;
+      return names([idle.pid])();
+    });
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(asked()).toBe(2);
+    expect(idle.killed).toBe(true);
+    answers(names([idle.pid]));
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(asked()).toBe(1);
+  } finally {
+    restore();
+    idle.kill();
+    await idle.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform !== "linux")("reads a process's locks last, between two reads of its start identity that must agree, and after herdr's second answer", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-order-")));
+  const session = "00000000-0000-4000-8000-000000000004";
+  const lock = join(root, "presence", `${session}.lock`);
+  mkdirSync(join(root, "presence"));
+  writeFileSync(lock, "");
+  const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
+  const order: string[] = [];
+  const steps = ["ask", "identity", "ask", "locks", "identity"];
+  let reused = false;
+  const { readFileSync, opendirSync } = fs;
+  const spies = [
+    spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      const read = readFileSync(...args);
+      if (args[0] !== `/proc/${process.pid}/stat`) return read;
+      order.push("identity");
+      if (!reused || order.filter((step) => step === "identity").length < 2) return read;
+      // the start time is field 22 of the line, the 20th after the command's closing bracket
+      const stat = String(read);
+      const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+      fields[19] = String(BigInt(fields[19]!) + 1n);
+      return `${stat.slice(0, stat.lastIndexOf(") ") + 2)}${fields.join(" ")}`;
+    }) as typeof fs.readFileSync),
+    spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => {
+      if (args[0] === `/proc/${process.pid}/fd`) order.push("locks");
+      return opendirSync(...args);
+    }) as typeof fs.opendirSync),
+  ];
+  const { names, answers, restore } = processInfoAnswers();
+  const ask = () => { order.push("ask"); return names([process.pid])(); };
+  let held: number | null = null;
+  try {
+    answers(ask, ask);
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toStartWith(`unwritten:agy:agy-pane:${process.pid}:`);
+    expect(order).toEqual(steps);
+    reused = true;
+    order.length = 0;
+    answers(ask, ask);
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+    expect(order).toEqual(steps);
+    reused = false;
+    held = fs.openSync(lock, "r");
+    order.length = 0;
+    answers(ask, ask);
+    expect(await resolveAgyStore(pane)).toMatchObject({ root, session, pid: process.pid });
+    expect(order).toEqual(steps);
+    reused = true;
+    order.length = 0;
+    answers(ask, ask);
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(order).toEqual(steps);
+  } finally {
+    restore();
+    for (const spy of spies) spy.mockRestore();
+    if (held !== null) fs.closeSync(held);
+    rmSync(root, { recursive: true, force: true });
+  }
 });

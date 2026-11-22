@@ -26,12 +26,10 @@ it("the demo relabels automatic tab names by place and leaves custom numeric nam
     await post("/api/tab/close", { tab_id: `${workspace}:t1` });
     assert.deepEqual(await labels(workspace), ["t2=1", "t3=2", "t4=3"]);
 
-    // an explicit numeric name is a name: it survives the tab before it closing
     await post("/api/tab/rename", { tab_id: `${workspace}:t4`, label: "3" });
     await post("/api/tab/close", { tab_id: `${workspace}:t2` });
     assert.deepEqual(await labels(workspace), ["t3=1", "t4=3"]);
 
-    // a tab closed through its last pane is forgotten: a named tab made afterwards keeps its name
     await post("/api/tab/create", { workspace_id: workspace });
     const after = (await (await demo.fetch("/api/session")).json()).snapshot;
     const unnamed = after.tabs.filter((tab: any) => tab.workspace_id === workspace).at(-1).tab_id as string;
@@ -57,7 +55,6 @@ it("the demo relabels automatic tab names by place and leaves custom numeric nam
   }
 });
 
-/** A tab moved to another workspace leaves no ID behind: its agent, the open tab it leaves and herdr's focus follow it. */
 it("the demo moves a one-pane tab to another workspace without stale tab or workspace IDs", async () => {
   const saved = new Map(["window", "location", "PushManager"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   try {
@@ -72,7 +69,6 @@ it("the demo moves a one-pane tab to another workspace without stale tab or work
     const demo = (globalThis as any).window;
     const post = async (url: string, body: unknown) => (await demo.fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
     const session = async () => (await (await demo.fetch("/api/session")).json()).snapshot;
-    // every tab or workspace the snapshot names is one it holds
     const consistent = (snap: any) => {
       const tabs = new Set(snap.tabs.map((tab: any) => tab.tab_id));
       const workspaces = new Set(snap.workspaces.map((workspace: any) => workspace.workspace_id));
@@ -105,12 +101,10 @@ it("the demo moves a one-pane tab to another workspace without stale tab or work
     const unnamed = (await session()).tabs.filter((tab: any) => tab.workspace_id === from).at(-1).tab_id as string;
     const placed = await post("/api/tab/move-to-workspace", { tab_id: unnamed, workspace_id: to });
     assert.equal((await session()).tabs.find((tab: any) => tab.tab_id === placed.tab_id).label, "3");
-    // and goes on being named by its place: a tab closed before it renumbers it
     const before3 = (await session()).tabs.filter((tab: any) => tab.workspace_id === to);
     await post("/api/tab/close", { tab_id: before3[0].tab_id });
     assert.equal((await session()).tabs.find((tab: any) => tab.tab_id === placed.tab_id).label, "2");
 
-    // the last tab takes its workspace with it
     await post("/api/tab/move-to-workspace", { tab_id: `${from}:t2`, workspace_id: to });
     const emptied = await session();
     consistent(emptied);
@@ -123,7 +117,6 @@ it("the demo moves a one-pane tab to another workspace without stale tab or work
   }
 });
 
-/** A tab started on a history row's resume shows that session, as herdr reports it; a launch's other arguments name none. */
 it("the demo reads a resumed session from an agent's own resume flag, never from other launch arguments", async () => {
   const saved = new Map(["window", "location", "PushManager"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   try {
@@ -142,7 +135,6 @@ it("the demo reads a resumed session from an agent's own resume flag, never from
       const made = await post("/api/tab/create", { workspace_id: workspace, agent: { kind, args } });
       return (await (await demo.fetch("/api/session")).json()).snapshot.panes.find((pane: any) => pane.pane_id === made.pane_id).agent_session;
     };
-    // the arguments a history row resumes by, as the history dialog starts them
     const resumeArgs = async (agent: string) => {
       const rows = (await (await demo.fetch(`/api/sessions/history?workspace_id=${encodeURIComponent(workspace)}&agent=${agent}`)).json()).sessions;
       return { id: rows[0].id as string, args: (rows[0].resume.argv as string[]).slice(1) };
@@ -156,7 +148,6 @@ it("the demo reads a resumed session from an agent's own resume flag, never from
     const codex = await resumeArgs("codex");
     assert.deepEqual(codex.args, ["resume", codex.id]);
     assert.equal((await session("codex", codex.args))?.value, codex.id);
-    // another agent's resume flag is not this one's
     assert.equal(await session("codex", claude.args), null);
   } finally {
     for (const [key, descriptor] of saved) {

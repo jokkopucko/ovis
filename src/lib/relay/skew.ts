@@ -1,15 +1,3 @@
-/**
- * Which side of a relay connection is behind, from what the PC's WELCOME says about itself
- * (shared/relay-mux.ts). Pure, so the policy is tested without a browser; lib/relay/shell.tsx acts
- * on the answer and components/RelayShell.tsx shows it.
- *
- * - another `relay_protocol`: the two cannot talk at all, a hard stop (`needs-update`);
- * - a server below MIN_SERVER_VERSION: the PC must update first (`pc-outdated`), from the shell
- *   when its install is managed;
- * - a server newer than the shell: this page is a stale cache, reloaded once onto the new shell;
- * - anything else connects. A server at the shell's own version always does: it is built from the
- *   same source, which is what an unreleased checkout reports until its release raises the version.
- */
 import { MIN_SERVER_VERSION, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 
 export type RelaySkew = "ok" | "protocol-mismatch" | "pc-outdated" | "server-newer";
@@ -44,7 +32,6 @@ export function relaySkew({ server, shellVersion, minServerVersion = MIN_SERVER_
   if (server.relayProtocol !== relayProtocol) return "protocol-mismatch";
   const ours = parseVersion(shellVersion);
   const theirs = parseVersion(server.version);
-  // a version the shell cannot read is not one it knows to support
   if (theirs === null) return "pc-outdated";
   const configured = parseVersion(minServerVersion);
   if (configured === null) throw new Error(`MIN_SERVER_VERSION is not a version: ${minServerVersion}`);
@@ -60,7 +47,6 @@ export interface ReloadMemory {
 }
 
 const RELOAD_KEY = "ovis:relay-skew-reloads";
-/** Pairs remembered per tab; past this the oldest is forgotten, so the receipt stays small. */
 const RELOAD_PAIRS = 16;
 
 function reloaded(memory: ReloadMemory): string[] {

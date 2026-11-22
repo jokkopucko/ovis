@@ -4,16 +4,15 @@
  * runs, and the approximate place the account service saw its request come from (Cloudflare's
  * country and city, never the address).
  */
+import { ACCOUNT_LABEL_MAX } from "./account-records.ts";
 
 export const ACCOUNT_OSES = ["ios", "android", "macos", "windows", "linux", "chromeos"] as const;
 export type AccountOs = (typeof ACCOUNT_OSES)[number];
 
-/** A system the account service knows, or null: it keeps any other value as unknown. */
 export const accountOsOf = (value: unknown): AccountOs | null => ACCOUNT_OSES.find((os) => os === value) ?? null;
 
 export const ACCOUNT_OS_NAMES: Readonly<Record<AccountOs, string>> = { ios: "iOS", android: "Android", macos: "macOS", windows: "Windows", linux: "Linux", chromeos: "ChromeOS" };
 
-/** The system a process runs on, from Node's `process.platform`. */
 export function accountOsOfPlatform(platform: string): AccountOs | null {
   switch (platform) {
     case "darwin": return "macos";
@@ -28,7 +27,6 @@ export interface AccountPlace { readonly country: string | null; readonly city: 
 
 export interface AccountAsker extends AccountPlace { readonly os: AccountOs | null }
 
-/** "Seoul, South Korea" in `language`; the country alone without a city; null without a country. */
 export function placeName(language: string, place: AccountPlace): string | null {
   if (place.country === null) return null;
   const country = new Intl.DisplayNames([language], { type: "region" }).of(place.country) ?? place.country;
@@ -46,7 +44,7 @@ const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 export function accountLabel(text: string): string {
   let label = "";
   for (const char of text.replace(/[\p{Cc}\p{Cs}]/gu, " ").replace(BIDI_CONTROLS, "").replace(/\s+/g, " ").trim()) {
-    if (label.length + char.length > 48) break;
+    if (label.length + char.length > ACCOUNT_LABEL_MAX) break;
     label += char;
   }
   return label.trim();

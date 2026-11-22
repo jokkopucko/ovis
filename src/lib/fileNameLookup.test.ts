@@ -5,7 +5,6 @@ import { createFileNameLookup } from "./fileNameLookup.ts";
 
 const failure = (status: number, code: string | null = status === 404 ? "not_found" : null) => new ApiError("/api/fs/stat", status, "no", code);
 let scopes = 0;
-/** a lookup of its own: answers are kept per PC, pane and folder, so each test asks in a fresh one */
 function lookup({ stat, folder = () => Promise.reject(failure(400)), remote = false, turn = 1, scope = `test-${++scopes}` }: {
   stat: (name: string) => Promise<unknown>; folder?: (name: string) => Promise<unknown>; remote?: boolean; turn?: number; scope?: string;
 }) {
@@ -82,7 +81,6 @@ describe("a bare name in a code span", () => {
     const before = lookup({ stat, turn: 1 });
     expect(await before.names.ask("notes.md")).toBe(false);
     exists = true;
-    // the same turn keeps the miss
     const same = lookup({ stat, turn: 1, scope: before.scope });
     expect(same.names.known("notes.md")).toBe(false);
     expect(await same.names.ask("notes.md")).toBe(false);
@@ -91,7 +89,6 @@ describe("a bare name in a code span", () => {
     expect(after.names.known("notes.md")).toBeUndefined();
     expect(await after.names.ask("notes.md")).toBe(true);
     expect(after.asked).toEqual(["notes.md"]);
-    // a name found stays found into the next turn
     const next = lookup({ stat, turn: 3, scope: before.scope });
     expect(next.names.known("notes.md")).toBe(true);
     expect(await next.names.ask("notes.md")).toBe(true);
@@ -104,7 +101,6 @@ describe("a bare name in a code span", () => {
     const before = lookup({ stat, turn: 1 });
     const first = before.names.ask("notes.md");
     await Promise.resolve();
-    // the agent writes the file and its turn ends before the first answer comes
     const after = lookup({ stat, turn: 2, scope: before.scope });
     const second = after.names.ask("notes.md");
     await Promise.resolve();
@@ -141,7 +137,6 @@ describe("a bare name in a code span", () => {
       for (let step = 0; step < 3; step++) { jest.advanceTimersByTime(10_000); await Promise.resolve(); await Promise.resolve(); }
       expect(await Promise.all(waiting)).toEqual(Array(12).fill(true));
       expect(asked).toHaveLength(4);
-      // the PC answers at last: the slots go to names asked from then on
       while (stuck.length > 0) { stuck.shift()!(); await Promise.resolve(); await Promise.resolve(); }
       expect(await names.ask("later.slice")).toBe(false);
       expect(asked).toContain("later.slice");

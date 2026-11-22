@@ -12,7 +12,6 @@ describe("clampSidebarWidth", () => {
   it("never lets the sidebar take more than half of a narrow window", () => {
     expect(sidebarMaxWidth(800)).toBe(400);
     expect(clampSidebarWidth(480, 800)).toBe(400);
-    // a window too narrow for the rule still gets the smallest sidebar, not less
     expect(clampSidebarWidth(480, 300)).toBe(SIDEBAR_MIN_WIDTH);
   });
 });

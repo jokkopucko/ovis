@@ -11,14 +11,12 @@ export function startFakeCLIProxy(key = "test-management-key") {
   const sessions = new Map<string, { provider: string; status: string }>();
   const calls: { path: string; body: unknown; authorization: string | null }[] = [];
   let sequence = 0;
-  /** the next /credentials request waits here: `arrived` resolves when it comes, `release` answers it */
   let held: { arrive: () => void; gate: Promise<void> } | null = null;
   const holdCredentials = () => {
     const arrived = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
     held = { arrive: arrived.resolve, gate: gate.promise };
     return { arrived: arrived.promise, release: gate.resolve };
   };
-  /** the same for the next account read (/requests/api-call) */
   let heldRead: { arrive: () => void; gate: Promise<void> } | null = null;
   const holdRead = () => {
     const arrived = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();

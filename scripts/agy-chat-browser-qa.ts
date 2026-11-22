@@ -1,4 +1,3 @@
-/** Fictional Agy steps -> real reader/API -> desktop and mobile activity feedback. */
 import "./test-herdr.ts";
 import { Database } from "bun:sqlite";
 import assert from "node:assert/strict";
@@ -6,6 +5,7 @@ import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
+import { resolveAgyStore } from "../server/agy-store.ts";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import { SLEEP } from "./fixtures/sleep.ts";
@@ -24,8 +24,8 @@ db.exec("PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY)");
 let index = 0;
 const add = (type: string, content = "", extra = {}) => {
   const step_index = index++;
-  db.query("INSERT INTO steps VALUES (?)").run(step_index);
   appendFileSync(path, JSON.stringify({ step_index, type, content, status: "DONE", ...extra }) + "\n");
+  db.query("INSERT INTO steps VALUES (?)").run(step_index);
 };
 const executable = join(root, "agy");
 copyFileSync(SLEEP, executable); chmodSync(executable, 0o755);
@@ -38,8 +38,9 @@ try {
   const pane = created.root_pane.pane_id;
   await herdrRpc("pane.send_text", { pane_id: pane, text: `${executable} 600 3<${lock}\n` });
   for (const deadline = Date.now() + 10_000;;) {
-    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "agy") break;
-    if (Date.now() > deadline) throw new Error("fictional Agy process did not start");
+    const active = (await sessionSnapshot()).panes.find((p) => p.pane_id === pane);
+    if (active?.agent === "agy" && (await resolveAgyStore(active))?.session === session) break;
+    if (Date.now() > deadline) throw new Error("fictional Agy process did not hold the fixture's presence lock");
     await Bun.sleep(50);
   }
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null });
@@ -51,11 +52,14 @@ try {
   await page.addInitScript(id => localStorage.setItem(`ovis:view:${id}`, "chat"), pane);
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   const log = page.locator(`.pane-frame[data-layout-pane="${pane}"]`).getByRole("log");
+  const nativeLog = log.and(page.locator('[data-conversation-source="agy-transcript"]'));
+  await nativeLog.waitFor();
   const activity = log.locator(".chat-activity");
   for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
     add("USER_INPUT", `Fictional task at width ${viewport.width}`);
     add("EPHEMERAL_MESSAGE", "hidden context");
+    await log.getByText(`Fictional task at width ${viewport.width}`, { exact: true }).waitFor();
     await log.locator(".chat-activity", { hasText: "Working…" }).waitFor();
     assert.notEqual((await sessionSnapshot()).panes.find(p => p.pane_id === pane)?.agent_status, "working");
     const box = await activity.boundingBox();
@@ -63,7 +67,6 @@ try {
     add("PLANNER_RESPONSE", "", { tool_calls: [{ name: "view_file", args: { AbsolutePath: "/fiction.txt" } }] });
     await log.locator(".work-block.is-live .work-row-head").last().waitFor({ state: "visible" });
     add("GENERIC", "Fictional tool result");
-    // the open work block's head says Working now: the line under it goes
     await log.locator(".work-block.is-live .work-block-title", { hasText: "Working…" }).waitFor();
     await activity.waitFor({ state: "detached" });
     if (viewport.width === 390 && process.env.UI_EVIDENCE_DIR) {
@@ -80,14 +83,19 @@ try {
   }
   const rewind = index;
   add("USER_INPUT", "Remove this active prompt");
+  const removedPrompt = log.getByText("Remove this active prompt", { exact: true });
+  await removedPrompt.waitFor();
   await activity.waitFor();
   db.query("DELETE FROM steps WHERE idx >= ?").run(rewind);
   await activity.waitFor({ state: "detached" });
-  assert.equal(await log.getByText("Remove this active prompt", { exact: true }).count(), 0);
+  await removedPrompt.waitFor({ state: "detached" });
+  assert.equal(await removedPrompt.count(), 0);
+  await nativeLog.getByText("Fictional task at width 390", { exact: true }).waitFor();
   db.exec("DROP TABLE steps");
-  await log.getByText("Antigravity chat is unavailable. Open Terminal to see activity and tool calls.", { exact: true }).waitFor();
+  await log.locator(".chat-unavailable-reason").getByText(/couldn't find or read the file .* keeps this conversation in/u).waitFor();
+  assert.equal(await log.getByText("Antigravity chat is unavailable. Open Terminal to see activity and tool calls.", { exact: true }).count(), 0);
   assert.deepEqual(errors, []);
-  console.log("PASS Agy desktop/mobile native activity, live tools, completion, late results, rewind and unavailable-chat notice");
+  console.log("PASS Agy desktop/mobile native activity, live tools, completion, late results, rewind and unavailable-chat reason");
 } finally {
   const errors: unknown[] = [];
   try { await browser?.close(); } catch (error) { errors.push(error); }

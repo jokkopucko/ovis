@@ -13,7 +13,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { KeyId } from "./KeyId.tsx";
-import { formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
+import { askToJoinReason, formatAbsoluteTime, formatProbeLine, localStateWord, outOfReachReason, outOfReachWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
@@ -32,15 +32,13 @@ export interface RelayPcDetailsProps {
   readonly onOpenPc?: (pc: MyPc) => void;
   readonly onOpenSheet?: (pc: MyPc, mode: "new" | "join") => void;
   readonly onForget?: (serverId: string) => Promise<void> | void;
-  /** Check now: this PC alone, never the fleet's rotating sweep */
   readonly onCheckPc?: (serverId: string) => void;
 }
 
+/** Why this device's check got no answer, where the State row does not say it already (a PC that needs an update). */
 function checkCauseText(check: PcStatus | null, t: ReturnType<typeof useT>): string | null {
   if (check === null || check.kind !== "offline") return null;
-  return check.reason === "pc"
-    ? t("The PC is off, or Ovis is not running on it.")
-    : t("The relay did not answer. Check this device's network.");
+  return outOfReachReason({ displayState: check.reason === "pc" ? "offline" : "unreachable", last_seen_at: null, check }, t);
 }
 
 export function RelayPcDetails({
@@ -61,7 +59,7 @@ export function RelayPcDetails({
   const panel = useRef<HTMLElement>(null);
 
   // The confirmation is portalled to <body>, so its trap alone leaves the dashboard behind it reachable: the dashboard
-  // goes inert while it is up, as RelayShell's sheets make it. Cancel's focus hand-back waits for this to lift.
+  // goes inert while it is up, as RelayShell's sheets make it.
   useLayoutEffect(() => {
     const behind = confirmForget ? panel.current?.closest<HTMLElement>(".relay-dash") ?? panel.current : null;
     if (!behind) return;
@@ -87,27 +85,32 @@ export function RelayPcDetails({
       case "unchecked": return localStateWord(pc.check, t);
       case "needs-approval": return t("Needs approval");
       case "needs-update": return t("Needs update");
-      case "offline": return t("Offline");
+      case "offline": case "unreachable": return outOfReachWord(pc.displayState, t);
       case "paired":
         if (mode === "local" || !pc.listed) return localStateWord(pc.check, t);
         return pc.linked || pc.enrollment === "failed" ? t("Ready") : t("Ready · not in the account yet");
     }
   })();
 
+  const joinReason = !updating && pc.state === "needs-approval" && !fresh ? askToJoinReason(pc, t) : null;
+  const away = updating ? null : outOfReachReason(pc, t, now);
   const stateReason = updating
     ? null
+    : away !== null ? away
     : pc.state === "needs-update"
       ? t("Update Ovis on it")
       : pc.state === "needs-approval"
         ? fresh
-          ? t("{name} is new in your account. Type the number it shows on its own screen to add it.", { name: pc.name })
-          : pc.join !== undefined && pc.added_at !== null
-            ? t("Add window closed · an account member must approve")
-            : t("{name} has not approved this device yet.", { name: pc.name })
+          ? t("{name} is new in your account. Choose Add.", { name: pc.name })
+          : joinReason ?? t("{name} has not approved this device yet.", { name: pc.name })
         : null;
 
   const probeLine = formatProbeLine(pc.check, t) ?? t("Not checked");
-  const probeCause = checkCauseText(pc.check, t);
+  // State already says why when this device's own last check is what it shows: a PC this device could not reach, or one
+  // the relay had nobody for. An account-offline PC whose check reached no relay, or was turned away, keeps that cause here
+  const settled = pc.check?.kind === "checking" ? pc.check.previous ?? null : pc.check;
+  const stateSaysCheck = pc.displayState === "unreachable" || (pc.displayState === "offline" && settled?.kind === "offline" && settled.reason === "pc");
+  const probeCause = away !== null && stateSaysCheck ? null : checkCauseText(pc.check, t);
 
   const lastSeenFull = pc.last_seen_at !== null
     ? formatAbsoluteTime(pc.last_seen_at) + " (" + lastSeen(pc.last_seen_at, now) + ")"
@@ -145,7 +148,7 @@ export function RelayPcDetails({
             <dd>
               <span className="relay-pc-details-value">{stateLabel}</span>
               {pc.enrollment === "failed" && <small className="relay-pc-details-sub">{t("Account setup is incomplete.")}</small>}
-              {stateReason !== null && <small className="relay-pc-details-sub">{stateReason}</small>}
+              {stateReason !== null && <small className="relay-pc-details-sub" {...(joinReason !== null ? { "data-reason": "join" } : {})}>{stateReason}</small>}
             </dd>
           </div>
 

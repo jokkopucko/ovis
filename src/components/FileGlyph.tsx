@@ -14,17 +14,11 @@ const FILE_GLYPHS: Record<FileIconKind, LucideIcon> = {
 const FOLDER_GLYPHS: Record<FolderIconKind, LucideIcon> = { folder: Folder, git: FolderGit };
 
 export interface FileGlyphProps {
-  /** the entry's name, or a path, whose last part names it */
   name: string;
   kind?: "file" | "directory";
   className?: string;
 }
 
-/**
- * The glyph a list draws before an entry's name (lib/fileIcons.ts decides which), hidden from
- * assistive tech since the name beside it says the same. The row's CSS sizes and colors it, as it
- * does any other lucide glyph; `data-kind` names the kind for a style or a script that reads it.
- */
 export function FileGlyph({ name, kind = "file", className }: FileGlyphProps) {
   const [Glyph, glyphKind] = kind === "directory" ? folderGlyph(name) : fileGlyph(name);
   return <Glyph aria-hidden="true" className={className} data-kind={glyphKind} />;

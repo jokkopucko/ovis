@@ -1,4 +1,3 @@
-/** Run against SSH_TEST_KEEP=1's fixture. Delays real requests, never mocks APIs. */
 import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,12 +36,11 @@ async function select(name: string) {
   await page.getByRole("button", { name: "Chat", exact: true }).click();
   await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
 }
-/** Add PC from Add a connection's SSH tab (a phone opens the sheet on Phones and devices): an address typed, then Add */
 async function addPcOverSsh() {
   const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
-  await sheet.locator('.connect-tabs [data-tab="ssh"]').click();
-  await sheet.getByLabel("Or type an SSH address", { exact: true }).fill("qa@pc.invalid");
-  await sheet.locator(".connect-ssh-form").getByRole("button", { name: "Add", exact: true }).click();
+  await sheet.locator('.connect-tabs [data-tab="direct"]').click();
+  await sheet.getByLabel("Address or SSH", { exact: true }).fill("qa@pc.invalid");
+  await sheet.locator(".connect-ssh-form").getByRole("button", { name: "Connect", exact: true }).click();
 }
 const composer = page.getByRole("textbox", { name: "Message", exact: true });
 let releaseUpload = () => {};
@@ -65,7 +63,6 @@ try {
   await page.route(`**/api/machines/${a}/pane/image`, async (route) => { uploads.push(route.request().url()); await gate; await route.continue(); });
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1kAAAAASUVORK5CYII=", "base64");
   await page.locator('input[type="file"]').setInputFiles([{ name: "first.png", mimeType: "image/png", buffer: png }, { name: "second.png", mimeType: "image/png", buffer: png }]);
-  // attached files upload in parallel (#864), so both picked files are in flight at once
   for (let i = 0; i < 100 && uploads.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
   assert.equal(uploads.length, 2);
   await select("QA second PC");
@@ -79,8 +76,7 @@ try {
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   assert.deepEqual(inputs.at(-1), { machine: b, pane: paneId });
   await select("QA remote");
-  // SSH_TEST_KEEP creates a loopback fixture with a private remoteHome. Give its
-  // owned pane a foreground agent/byte recorder so queue acceptance is server-side.
+  // SSH_TEST_KEEP creates a loopback fixture with a private remoteHome.
   assert.match(fixture.root, /\/herdr-ssh-qa-[^/]+$/);
   assert.equal(fixture.remoteHome, join(fixture.root, "remote"));
   const program = join(fixture.remoteHome, "claude"); copyFileSync(process.execPath, program); chmodSync(program, 0o755);
@@ -134,7 +130,6 @@ try {
   assert.equal(await page.locator(".composer-queue-text").count(), 0);
   await select("QA remote");
   assert.equal(await page.locator(".composer-queue-text").inputValue(), "HELD_A_MUST_NOT_SEND");
-  // with the prompt dock open the held rows are folded behind their caption (#466): open it first
   const heldToggle = page.locator(".composer-queue-toggle");
   if (await heldToggle.count() && await heldToggle.getAttribute("aria-expanded") !== "true") await heldToggle.click();
   await page.getByRole("button", { name: "Discard", exact: true }).click();
@@ -144,7 +139,6 @@ try {
   await page.getByRole("button", { name: "New workspace on QA second PC", exact: true }).click();
   const create = page.getByRole("dialog", { name: "New workspace · QA second PC", exact: true });
   await create.waitFor(); await create.getByRole("button", { name: "Close dialog", exact: true }).click();
-  // Add PC lives in Settings → Devices and PCs → Add a connection → SSH: a typed address opens it filled in, and Settings closes
   await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
   await openSettingsPage(page, "Devices and PCs");
   await page.getByRole("dialog", { name: "Settings", exact: true }).getByRole("button", { name: "Add a connection", exact: true }).click();
@@ -169,7 +163,6 @@ try {
   await page.screenshot({ path: join(evidence, "mobile-add-pc-light.png") });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
   await page.getByRole("button", { name: "Close PC setup" }).click();
-  // Settings closed the drawer when it opened, and Add PC closed Settings: open the drawer again
   await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
   await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });

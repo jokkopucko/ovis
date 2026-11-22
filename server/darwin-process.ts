@@ -5,18 +5,15 @@
  */
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
-/** libSystem's sysctl(3) and devname(3), opened once, on macOS only. */
 let libSystem: ReturnType<typeof openLibSystem> | undefined;
 
 function openLibSystem() {
-  // a system library's C functions: nothing native of node's is loaded into Bun
   return dlopen("/usr/lib/libSystem.B.dylib", {
     sysctl: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
     devname: { args: [FFIType.i32, FFIType.u16], returns: FFIType.cstring },
   }).symbols;
 }
 
-/** sysctl(3) for `name`, into `out`: the answer's length, or null when the call failed. */
 export function sysctlCall(): (name: Int32Array, out: Uint8Array) => number | null {
   const symbols = libSystem ??= openLibSystem();
   return (name, out) => {
@@ -39,7 +36,6 @@ const E_TDEV_OFFSET = 572;
 /** dev_t's NODEV: the process has no controlling terminal (`ps` prints `??`). */
 const NODEV = -1;
 
-/** The controlling terminal's device in a kern.proc.pid answer, or null when it has none. */
 export function procTerminalDevice(answer: Uint8Array): number | null {
   if (answer.byteLength < E_TDEV_OFFSET + 4) return null;
   const device = new DataView(answer.buffer, answer.byteOffset, answer.byteLength).getInt32(E_TDEV_OFFSET, true);
@@ -53,10 +49,8 @@ const P_COMM_OFFSET = 243;
 const P_COMM_SIZE = 17;
 const E_PPID_OFFSET = 560;
 const E_PGID_OFFSET = 564;
-/** the most processes one group's read takes in: a terminal's foreground job, not a whole PC */
 const GROUP_MAX = 256;
 
-/** One process in a kern.proc answer: its pid, parent, group and command name (`p_comm`). */
 function procEntry(answer: Uint8Array, at: number): { pid: number; parent: number; group: number; name: string } {
   const view = new DataView(answer.buffer, answer.byteOffset + at, KINFO_PROC_SIZE);
   const comm = answer.subarray(at + P_COMM_OFFSET, at + P_COMM_OFFSET + P_COMM_SIZE);
@@ -69,10 +63,7 @@ function procEntry(answer: Uint8Array, at: number): { pid: number; parent: numbe
   };
 }
 
-/**
- * The processes of `pid`'s process group (CTL_KERN, KERN_PROC, KERN_PROC_PGRP), each with its parent
- * and command name; null when `pid` runs no longer or the group cannot be read whole.
- */
+/** sysctl CTL_KERN, KERN_PROC, KERN_PROC_PGRP */
 export function darwinProcessGroup(pid: number): { pid: number; parent: number; name: string }[] | null {
   const own = kinfoProc(pid);
   if (own === null || own.byteLength < KINFO_PROC_SIZE) return null;
@@ -130,7 +121,6 @@ export function darwinStartTime(pid: number): bigint | null {
   return answer === null ? null : procStartTime(answer);
 }
 
-/** A character device's name under /dev (`ttys003`), or null when it has none. */
 function deviceName(device: number): string | null {
   const symbols = libSystem ??= openLibSystem();
   const name = symbols.devname(device, 0o020000); // S_IFCHR
@@ -140,8 +130,7 @@ function deviceName(device: number): string | null {
 /**
  * The process's controlling terminal under /dev (`ttys003`, as `ps -o tty=` prints it) and its start
  * in ms, both from one kinfo_proc: two reads could describe two processes when the PID is reused
- * between them. Null when no such process runs or it has no terminal. `read` and `name` stand in for
- * the kernel in tests.
+ * between them.
  */
 export function darwinTerminal(
   pid: number,

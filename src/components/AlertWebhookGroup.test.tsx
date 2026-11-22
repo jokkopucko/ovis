@@ -6,7 +6,6 @@ import type { AlertWebhookView } from "../../shared/alert-webhook.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 
-// Settings → Alerts → Also send to, with a saved ntfy destination whose server refuses the next save (G-010).
 
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | undefined;
@@ -84,7 +83,6 @@ describe("a saved destination's alert switch", () => {
     await act(async () => { view.switchOf("Needs input").props.onClick(); });
     await settle();
     expect(puts).toHaveLength(1);
-    // the server still holds input=false: the switch says so, the refusal is on the line, and the saved line yields to it
     expect(view.switchOf("Needs input").props["aria-checked"]).toBe(false);
     expect(view.text()).toContain("the destination answered 500");
     expect(view.text()).not.toContain("Saved on this PC");

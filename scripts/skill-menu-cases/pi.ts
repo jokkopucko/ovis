@@ -11,7 +11,6 @@ export const agent = "pi";
 const SKILLS: Record<string, { description: string; origin: "user" }> = {
   "pdf-tools": { origin: "user", description: "Extracts text and tables from PDF files with pdftotext and pdfplumber. Use when a PDF is attached or named; never for scanned pages, which need OCR first." },
   "docs-release": { origin: "user", description: "Writes the docs site's release notes from merged PRs. Use when cutting a docs release; never for the app's own changelog." },
-  // one sentence with no full stop, too long for the row: nothing is cut from the text, the row cuts it, and the tooltip still holds it
   "preview-deploy": { origin: "user", description: "Builds the docs site, deploys it to a throwaway preview host and posts the address on the pull request it was asked from, then tears the host down once that pull request closes" },
 };
 export const commands: SlashCommand[] = [
@@ -42,7 +41,6 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     assert.deepEqual(headings, ["Built in", "User", "Your skills", "Terminal commands"], "pi's builtins, the person's template, their skills and the terminal commands under their own headings");
     await menuFits("E");
     await rowsBrief("E");
-    // the skills end the list: the capture shows their heading, icons and rows after the last builtins
     await menu.evaluate((node) => { node.scrollTop = node.scrollHeight; });
     await capture();
     log(`  ${rows.length} rows, skills: ${rows.filter((row) => row.startsWith("skill:")).join(", ")}`);
@@ -71,7 +69,6 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     const turn = page.locator(".chat-turn-user").last();
     await turn.locator(".chat-bubble-body").filter({ hasText: "please run" }).waitFor();
     await turn.scrollIntoViewIfNeeded();
-    // the matcher arrives with the pane's command list: a bounded wait, not a fixed one
     const drawn = await turn.locator(".markdown-skill").first().waitFor({ timeout: 5_000 }).then(() => true, () => false);
     const state = await chipGeometry();
     await capture();

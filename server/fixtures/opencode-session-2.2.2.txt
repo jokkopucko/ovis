@@ -1,0 +1,39 @@
+
+  ┃
+  ┃  hello there
+  ┃
+
+     ⚠ Retrying in 4s · attempt 5 · ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+     Build · Big Pickle
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Big Pickle OpenCode
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝■■■■■■ esc interrupt                                                           shift+tab agents  ctrl+p commands

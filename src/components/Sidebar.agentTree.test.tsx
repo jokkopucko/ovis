@@ -14,7 +14,6 @@ const workspace = (id: string, tabs: number): WorkspaceInfo =>
   ({ workspace_id: id, label: id, active_tab_id: `${id}:t1`, number: 1, tab_count: tabs, pane_count: 1, focused: false, agent_status: "idle", worktree: null });
 const pane = (id: string, workspaceId: string, tab: string, extra: Partial<PaneInfo> = {}): PaneInfo =>
   ({ pane_id: id, workspace_id: workspaceId, tab_id: `${workspaceId}:${tab}`, terminal_id: `${id}:term`, revision: 1, focused: false, agent_status: "idle", ...extra });
-// api: a Claude and a shell in its first tab, a Codex named "review" in its second; web: one pi
 const snapshot: SessionSnapshot = {
   protocol: 22, version: "test", layouts: [], agents: [],
   workspaces: [workspace("api", 2), workspace("web", 1)],
@@ -57,7 +56,6 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
     pinsBefore = currentSidebarPins();
     setSidebarPins([]);
-    // an online roster asks git whether each workspace is a checkout: these are not
     fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not a repository" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
   });
 
@@ -78,7 +76,6 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
         createElement(Sidebar, { snapshot: shown, online, selectedPaneId, actions }))));
     });
   }
-  /** each workspace drawn and the agents listed under it, as [workspace, ...agent panes] */
   const tree = () => renderer!.root.findAll((node) => node.type === "li" && typeof node.props["data-workspace"] === "string").map((row) =>
     [row.props["data-workspace"] as string, ...row.findAll((node) => node.type === "li" && typeof node.props["data-agent-pane"] === "string").map((agent) => agent.props["data-agent-pane"] as string)]);
   const agentButton = (paneId: string): ReactTestInstance => renderer!.root.find((node) => node.type === "li" && node.props["data-agent-pane"] === paneId).findByType("button");
@@ -99,9 +96,7 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     expect(text(agentButton("api:claude"))).toContain("fix login");
     expect(agentButton("api:claude").findAll((node) => node.props.className === "workspace-agent-place").map(text)).toEqual(["Tab 1"]);
     expect(agentButton("api:codex").findAll((node) => node.props.className === "workspace-agent-title").map(text)).toEqual(["review"]);
-    // its state in the trailing cell, as the workspace row's
     expect(agentButton("api:codex").findAll((node) => node.props["data-status"] !== undefined).map((node) => node.props["data-status"])).toEqual(["blocked"]);
-    // the lone tab of web is not named
     expect(agentButton("web:pi").findAll((node) => node.props.className === "workspace-agent-place")).toEqual([]);
     await act(async () => agentButton("api:codex").props.onClick());
     expect(selected).toEqual(["api:codex"]);
@@ -146,7 +141,6 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     expect(api.props.className).toContain("has-selected-agent");
     expect(agentButton("api:codex").props["aria-current"]).toBe("true");
     expect(agentButton("api:claude").props["aria-current"]).toBeUndefined();
-    // a shell selected is the workspace row's own: no agent row takes the fill
     await act(async () => renderer!.unmount());
     await draw({ selectedPaneId: "api:shell" });
     expect(renderer!.root.find((node) => node.type === "li" && node.props["data-workspace"] === "api").props.className).not.toContain("has-selected-agent");
@@ -159,6 +153,65 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     const context = (paneId: string) => renderer!.root.find((node) => node.type === "li" && node.props["data-agent-pane"] === paneId).props.className as string;
     expect(context("api:codex")).not.toContain("is-filter-context");
     expect(context("web:pi")).toContain("is-filter-context");
+  });
+
+  const rowOf = (id: string): ReactTestInstance => renderer!.root.find((node) => node.type === "li" && node.props["data-workspace"] === id);
+  const selectOf = (id: string): ReactTestInstance => rowOf(id).find((node) => node.props.className === "pane-select workspace-select");
+  const key = (target: ReactTestInstance, name: string) => act(async () => target.props.onKeyDown({ key: name, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } }));
+
+  it("folds a workspace's agents from its row, opening nothing, and keeps the fold on this device per PC (#3771)", async () => {
+    stored.set("ovis:sidebar-agent-tree", "true");
+    await draw({ selectedPaneId: "api:codex" });
+    expect(selectOf("api").props["aria-expanded"]).toBe(true);
+    await act(async () => selectOf("api").props.onClick());
+    expect(selected).toEqual([]);
+    expect(tree()).toEqual([["api"], ["web", "web:pi"]]);
+    expect(selectOf("api").props["aria-expanded"]).toBe(false);
+    expect(rowOf("api").props.className).toContain("has-selected-agent");
+    expect(selectOf("api").findAll((node) => node.props["data-status"] !== undefined).map((node) => node.props["data-status"])).toEqual(["blocked"]);
+    expect(rowOf("api").findAll((node) => node.props.className === "workspace-fold-count").map(text)).toEqual(["+2"]);
+    expect(JSON.parse(stored.get("ovis:workspace-agents-folded:local")!)).toEqual(["api"]);
+    await act(async () => renderer!.unmount());
+    await draw({ selectedPaneId: "api:codex" });
+    expect(tree()).toEqual([["api"], ["web", "web:pi"]]);
+    await key(selectOf("api"), "ArrowLeft");
+    expect(tree()).toEqual([["api"], ["web", "web:pi"]]);
+    await key(selectOf("api"), "ArrowRight");
+    expect(tree()).toEqual([["api", "api:claude", "api:codex"], ["web", "web:pi"]]);
+    await key(selectOf("web"), "Enter");
+    expect(tree()).toEqual([["api", "api:claude", "api:codex"], ["web"]]);
+    await key(selectOf("web"), " ");
+    expect(tree()).toEqual([["api", "api:claude", "api:codex"], ["web", "web:pi"]]);
+    expect(selected).toEqual([]);
+    expect(JSON.parse(stored.get("ovis:workspace-agents-folded:local")!)).toEqual([]);
+  });
+
+  it("opens a workspace with no agent under it as today, and every row with the setting off", async () => {
+    const shells: SessionSnapshot = { ...snapshot, workspaces: [...snapshot.workspaces, workspace("ops", 1)], tabs: [...snapshot.tabs, { tab_id: "ops:t1", workspace_id: "ops", label: "1", number: 1, pane_count: 1, focused: false, agent_status: "idle" }], panes: [...snapshot.panes, pane("ops:shell", "ops", "t1")] };
+    stored.set("ovis:sidebar-agent-tree", "true");
+    await draw({ shown: shells });
+    expect(selectOf("ops").props["aria-expanded"]).toBeUndefined();
+    await act(async () => selectOf("ops").props.onClick());
+    expect(selected).toEqual(["ops:shell"]);
+    await act(async () => renderer!.unmount());
+    stored.set("ovis:sidebar-agent-tree", "false");
+    stored.set("ovis:workspace-agents-folded:local", JSON.stringify(["api"]));
+    await draw({ shown: shells });
+    expect(selectOf("api").props["aria-expanded"]).toBeUndefined();
+    await act(async () => selectOf("api").props.onClick());
+    expect(selected).toEqual(["ops:shell", "api:claude"]);
+  });
+
+  it("opens a folded workspace for the filter's time when it matches one of its agents", async () => {
+    stored.set("ovis:sidebar-agent-tree", "true");
+    stored.set("ovis:workspace-agents-folded:local", JSON.stringify(["api", "gone"]));
+    await draw({ online: false, selectedPaneId: "web:pi", filter: sidebarFilter("review", machines, { machineId: "local", paneId: "web:pi" }, (words) => words) });
+    expect(tree()).toEqual([["api", "api:codex"], ["web", "web:pi"]]);
+    await act(async () => renderer!.unmount());
+    await draw();
+    expect(tree()).toEqual([["api"], ["web", "web:pi"]]);
+    await act(async () => selectOf("web").props.onClick());
+    expect(JSON.parse(stored.get("ovis:workspace-agents-folded:local")!).sort()).toEqual(["api", "web"]);
   });
 
   it("draws an offline PC's agents without a state and does not open them", async () => {

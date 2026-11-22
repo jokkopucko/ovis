@@ -36,7 +36,6 @@ function snapshot(): number {
   return revision;
 }
 
-// every display mode an installed app can run in; browser and unknown modes are a plain tab
 const INSTALLED_DISPLAY_MODES = ["standalone", "minimal-ui", "window-controls-overlay", "tabbed", "unframed"].map((mode) => `(display-mode: ${mode})`);
 const FULLSCREEN_DISPLAY = "(display-mode: fullscreen)";
 
@@ -45,12 +44,11 @@ export interface InstalledStateInput {
   iosStandalone: boolean;
   installedByEvent: boolean;
   relatedInstalled: boolean;
-  /** the verdict last returned, kept while fullscreen hides which window this is */
   previous: boolean;
 }
 
-/** Whether this page runs as an installed app. Fullscreen (F11, the macOS green button) reports no
- * window mode of its own, so it keeps the previous verdict instead of guessing from the display mode. */
+/** Fullscreen (F11, the macOS green button) reports no window mode of its own, so it keeps the
+ * previous verdict instead of guessing from the display mode. */
 export function installedState(input: InstalledStateInput): boolean {
   const signalled = input.iosStandalone || input.installedByEvent || input.relatedInstalled;
   if (input.matches(FULLSCREEN_DISPLAY)) return input.previous || signalled;
@@ -62,7 +60,6 @@ function isStandalone(): boolean {
   const iosNavigator = navigator as Navigator & { standalone?: boolean };
   lastInstalled = installedState({
     matches: (query) => window.matchMedia?.(query).matches === true,
-    // the iOS app (app/) and Ovis for Mac (app/mac) are this client installed, as a home-screen app is
     iosStandalone: iosNavigator.standalone === true || inNativeApp() || inMacApp(),
     installedByEvent,
     relatedInstalled,
@@ -151,7 +148,6 @@ export interface InstallPromptState {
   canInstall: boolean;
   installed: boolean;
   install(): Promise<void>;
-  /** what to tell the user when there is no prompt to show */
   help: string;
 }
 
@@ -169,7 +165,6 @@ export function useInstallPrompt(): InstallPromptState {
   return { canInstall: pendingPrompt !== null && !installed, installed, install, help: currentInstallHelp() };
 }
 
-/** Whether the page runs in the installed app's own window (isAppWindow), kept current. */
 export function useAppWindow(): boolean {
   useSyncExternalStore(subscribe, snapshot, snapshot);
   return isAppWindow();

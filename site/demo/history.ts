@@ -1,4 +1,3 @@
-/** Fictional, in-memory terminal history for the demo transport only. */
 import type { PaneFindMatch, PaneFindRequest, PaneFindResponse, PaneScrollInfo } from "../../shared/protocol.ts";
 import { herdrWidthProvider } from "../../src/lib/terminalWidths.ts";
 
@@ -87,7 +86,6 @@ export class DemoHistory {
     this.setOffset(this.offset);
     return true;
   }
-  /** Editing the prompt and running a pretend command are real changes to this demo history. */
   setPrompt(text: string): void {
     this.lines[this.lines.length - 1] = text;
     this.layout = this.reflow(); this.revision += 2; this.offset = 0;

@@ -30,7 +30,31 @@ function show(status) {
   document.getElementById("retry").hidden = !failed;
 }
 
+function showUpdate(update) {
+  document.getElementById("update").hidden = update === null;
+  if (update === null) return;
+  document.getElementById("update-text").textContent = update.text;
+  document.getElementById("update-install").textContent = update.action;
+}
+
 document.getElementById("retry").addEventListener("click", () => desktop.retry());
 document.getElementById("logs").addEventListener("click", () => desktop.showLogs());
 desktop.onStatus(show);
 void desktop.status().then(show);
+
+const install = document.getElementById("update-install");
+install.addEventListener("click", () => {
+  // answered when Ovis keeps running (a .deb's password prompt cancelled), so it may be pressed again; also when a
+  // .deb installed, a moment before Ovis quits
+  install.disabled = true;
+  const again = () => { install.disabled = false; };
+  window.ovisUpdate.install().then(again, again);
+});
+let updateTold = false;
+window.ovisUpdate.onChange((update) => {
+  updateTold = true;
+  showUpdate(update);
+});
+void window.ovisUpdate.current().then((update) => {
+  if (!updateTold) showUpdate(update);
+});

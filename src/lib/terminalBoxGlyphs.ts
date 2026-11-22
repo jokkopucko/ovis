@@ -7,24 +7,11 @@
  * and a phone's font draws the heavy forms `━ ┃ ╋` like the light ones, or as `- | +` (#289).
  * xterm's own fix for this (custom glyphs) exists only in its canvas and WebGL renderers.
  *
- * So each such character becomes a cell-sized box whose lines are painted as backgrounds in
- * the text colour, edge to edge: a line is a rectangle from the cell's edge to its centre,
- * and what a junction joins decides how far past the centre it reaches. The character stays
- * in the DOM, unpainted, and copy reads xterm's buffer as before.
- *
- * Covered: U+2500-257F but the three diagonals, which no rectangle draws, and the block
- * elements U+2580-259F.
+ * The character stays in the DOM, unpainted, and copy reads xterm's buffer as before.
  */
 
-/** One painted rectangle, in px from the cell's top left; `alpha` below 1 is a shade. */
 export interface BoxRect { x: number; y: number; w: number; h: number; alpha?: number }
-/**
- * A quarter circle joining two half lines (the rounded corners): `x` is the left edge of
- * the upright it runs into, `y` the top edge of the line across, `right` and `down` which
- * way those lines leave.
- */
 export interface BoxArc { x: number; y: number; r: number; t: number; right: boolean; down: boolean }
-/** A shape painted by a gradient of its own over the box `x`,`y`,`w`,`h` (Powerline's arrows and half circles). */
 export interface BoxShape { x: number; y: number; w: number; h: number; image: string }
 export interface BoxDrawing { rects: BoxRect[]; arcs: BoxArc[]; shapes?: BoxShape[] }
 
@@ -33,10 +20,6 @@ type Weight = 0 | 1 | 2 | 3;
 /** left, right, up, down */
 type Arms = readonly [Weight, Weight, Weight, Weight];
 
-/**
- * U+2500-257F as `LRUD` arm weights; `h`/`v` + dashes + weight for the dashed lines, `a` +
- * the two arms of a rounded corner, `x` for the diagonals (left to the font).
- */
 const LINES = (
   "1100 2200 0011 0022 h31 h32 v31 v32 h41 h42 v41 v42 0101 0201 0102 0202 " + // 2500
   "1001 2001 1002 2002 0110 0210 0120 0220 1010 2010 1020 2020 0111 0211 0121 0112 " + // 2510
@@ -58,12 +41,10 @@ const QUADRANTS = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14];
  */
 const POWERLINE_FIRST = 0xe0b0;
 const POWERLINE_LAST = 0xe0b7;
-/** half the width of an outlined arrow's or half circle's line */
 const OUTLINE = 0.75;
 
 function powerlineShapes(code: number, w: number, h: number): BoxShape[] {
   const fill = (to: string) => `linear-gradient(to ${to},currentColor 50%,transparent 50%)`;
-  // a band along the line between the two corners the 50% line of the gradient joins
   const line = (to: string) => `linear-gradient(to ${to},transparent calc(50% - ${OUTLINE}px),currentColor calc(50% - ${OUTLINE}px),currentColor calc(50% + ${OUTLINE}px),transparent calc(50% + ${OUTLINE}px))`;
   const half = (image: (to: string) => string, top: string, bottom: string): BoxShape[] => [
     { x: 0, y: 0, w, h: h / 2, image: image(top) },
@@ -102,10 +83,6 @@ export function boxStrokes(fontSize: number): { light: number; heavy: number } {
   return { light, heavy: light * 3 };
 }
 
-/**
- * What to paint for `char` in a cell of `w` by `h` px; null for a character that is not
- * drawn here.
- */
 export function boxDrawing(char: string, w: number, h: number, fontSize: number): BoxDrawing | null {
   const code = char.codePointAt(0) ?? 0;
   const { light, heavy } = boxStrokes(fontSize);
@@ -119,7 +96,6 @@ export function boxDrawing(char: string, w: number, h: number, fontSize: number)
     const t = spec[2] === "2" ? heavy : light;
     const across = spec[0] === "h";
     const length = across ? w : h;
-    // each dash leaves a quarter of its share as the gap after it, a pixel at least
     const share = length / dashes;
     const gap = Math.max(1, share / 4);
     const rects: BoxRect[] = [];
@@ -161,18 +137,11 @@ function blockRects(code: number, w: number, h: number): BoxRect[] {
   return rects;
 }
 
-/**
- * The rectangles of a junction. Each arm runs from its edge towards the centre and `reach`es
- * past it by what it joins: half the width of a line it crosses, the far line of a double
- * corner, or short of the centre where a double line turns away from it.
- */
 function lineRects(arms: Arms, w: number, h: number, light: number, heavy: number): BoxRect[] {
   const [left, right, up, down] = arms;
-  // a double line is two light ones, their centres this far from the cell's
   const offset = light;
   const width = (weight: Weight): number => (weight === 2 ? heavy : weight === 0 ? 0 : light);
   const rects: BoxRect[] = [];
-  /** one arm: `along` its direction the cell is `length` long, `across` it `breadth` wide */
   const arm = (weight: Weight, opposite: Weight, before: Weight, after: Weight, length: number, breadth: number, toStart: boolean, place: (from: number, to: number, at: number, t: number) => BoxRect): void => {
     if (weight === 0) return;
     const crossed = Math.max(before === 3 ? 0 : width(before), after === 3 ? 0 : width(after));
@@ -242,9 +211,8 @@ function joined(rects: readonly BoxRect[]): BoxRect[] {
 }
 
 /**
- * A run of drawn characters side by side as one drawing, `w` apart. Cells are a fraction of a
- * pixel wide, so a line painted cell by cell showed a seam at every cell; here the pieces of a
- * line that touch end to end become one rectangle.
+ * Cells are a fraction of a pixel wide, so a line painted cell by cell showed a seam at every cell;
+ * here the pieces of a line that touch end to end become one rectangle.
  */
 export function boxRun(drawings: readonly BoxDrawing[], w: number): BoxDrawing {
   const rects: BoxRect[] = [];
@@ -261,18 +229,13 @@ export function boxRun(drawings: readonly BoxDrawing[], w: number): BoxDrawing {
 
 const px = (value: number): string => `${Math.round(value * 1000) / 1000}px`;
 
-/** Where a drawing's coordinates land in the element: the identity, or a snap to the screen's pixels. */
 export interface BoxPlacement { x: (value: number) => number; y: (value: number) => number }
 const AS_DRAWN: BoxPlacement = { x: (value) => value, y: (value) => value };
 
 /**
- * Edges on whole device pixels, counted from the grid and not from the element. The browser
- * paints each element from its own pixel-snapped corner, so the same column's line fell on
- * one device pixel in a row where it was a cell of its own and on the next in a row where it
- * was the fifteenth cell of a run, and an upright jogged from row to row. `left` and `top` are
- * where the run's first cell starts in the grid, `origin` where its painted layer starts.
- * All of it is counted inside the grid, so a row drawn after the grid was panned lands on
- * the same pixels of the grid as the rows drawn before.
+ * The browser paints each element from its own pixel-snapped corner, so the same column's line fell
+ * on one device pixel in a row where it was a cell of its own and on the next in a row where it was
+ * the fifteenth cell of a run, and an upright jogged from row to row.
  */
 export function pixelPlacement(left: number, top: number, originX: number, originY: number, ratio: number): BoxPlacement {
   return {
@@ -281,14 +244,11 @@ export function pixelPlacement(left: number, top: number, originX: number, origi
   };
 }
 
-/** The drawing as one CSS `background`, painted in the element's own text colour. */
 export function boxBackground(drawing: BoxDrawing, place: BoxPlacement = AS_DRAWN): string {
   const layers: string[] = [];
   for (const arc of drawing.arcs) {
     const inner = arc.r - arc.t / 2;
     const outer = arc.r + arc.t / 2;
-    // from the lines as placed, so the arc ends on them: its centre is a radius from each line's middle,
-    // and the layer is the square between that centre and the corner the lines would have made
     const side = arc.r + arc.t / 2;
     const x = place.x(arc.x) + (arc.right ? 0 : arc.t - side);
     const y = place.y(arc.y) + (arc.down ? 0 : arc.t - side);
@@ -303,7 +263,6 @@ export function boxBackground(drawing: BoxDrawing, place: BoxPlacement = AS_DRAW
     const colour = rect.alpha === undefined ? "currentColor" : `color-mix(in srgb,currentColor ${Math.round(rect.alpha * 100)}%,transparent)`;
     const x = place.x(rect.x);
     const y = place.y(rect.y);
-    // both edges are placed, so a line keeps one width wherever it falls
     layers.push(`linear-gradient(${colour},${colour}) ${px(x)} ${px(y)}/${px(place.x(rect.x + rect.w) - x)} ${px(place.y(rect.y + rect.h) - y)} no-repeat`);
   }
   return layers.join(",");

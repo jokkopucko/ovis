@@ -17,21 +17,18 @@ import { join, parse, resolve, sep } from "node:path";
  * own folder for what stays on this PC, which only this user and the administrators can reach.
  * Not %TEMP%: TEMP can name a folder other accounts write to (C:\Temp, or C:\Windows\Temp for a
  * service), where another account could make this folder first and, a file being named by its
- * text's hash, swap hooks into it between the check below and Claude Code's read. Not the server's
- * state dir (defaultStateDir, %USERPROFILE%\.config\ovis): createServer's `stateDir` stops at
- * index.ts, so the create routes would have to pass it down, and the default one goes wherever
- * OVIS_STATE_DIR or XDG_CONFIG_HOME point. A file holds only the JSON a launch already put on
- * Claude Code's command line (the dialog's is {"ultracode":true}). Claude Code keeps what it read
- * from it at start (2.1.311 pins a settings file's content), so one removed later costs nothing and
- * the next launch writes it again. The space in the folder's name has PowerShell quote the path for
- * a `.cmd` agent it starts, so a profile folder holding `&` (`R&D`) reaches it whole and herdr-core's
- * start takes it (powershellNativeArgs, #3084).
+ * text's hash, swap hooks into it between the check below and Claude Code's read. A file holds only
+ * the JSON a launch already put on Claude Code's command line (the dialog's is {"ultracode":true}).
+ * Claude Code keeps what it read from it at start (2.1.311 pins a settings file's content), so one
+ * removed later costs nothing and the next launch writes it again. The space in the folder's name
+ * has PowerShell quote the path for a `.cmd` agent it starts, so a profile folder holding `&`
+ * (`R&D`) reaches it whole and herdr-core's start takes it (powershellNativeArgs, #3084).
  */
 export function claudeSettingsDir(env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
   return join(env["LOCALAPPDATA"] || join(home, "AppData", "Local"), "ovis", "claude settings");
 }
 
-/** Whether Claude Code reads a `--settings` value as JSON rather than as a file's path: its own test. */
+/** Claude Code's own test for reading a `--settings` value as JSON rather than as a file's path. */
 const inlineJson = (value: string): boolean => {
   const trimmed = value.trim();
   return trimmed.startsWith("{") && trimmed.endsWith("}");
@@ -51,7 +48,6 @@ export function settingsFileArgs(args: readonly string[], write: (json: string) 
       break;
     }
     if (arg === "--settings" && at + 1 < args.length) {
-      // the flag's value is the flag's own, a "--" there included: it is not read again as an argument
       const value = args[++at]!;
       rewritten.push(arg, inlineJson(value) ? write(value) : value);
     }

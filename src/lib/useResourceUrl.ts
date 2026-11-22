@@ -2,17 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getTransport, serverResourceUrl } from "./transport.ts";
 
-/** A resolved address, or why it could not be had (`url` stays null then). */
 export interface ResourceUrlState {
   readonly url: string | null;
   readonly error: unknown;
 }
 
 /**
- * The address to give the browser for a server path (lib/transport.ts). The native transport
- * answers at once with the path itself; a transport that answers later leaves it null meanwhile,
- * and one that refuses leaves it null with the refusal in `error`, so a caller can show a failure.
- * data:, blob: and other origins' URLs come back as they are.
  * Change `retry` only when the caller has authorized another load of a failed resource.
  */
 export function useResourceUrlState(path: string | null, retry = 0): ResourceUrlState {

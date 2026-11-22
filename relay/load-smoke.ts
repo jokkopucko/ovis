@@ -1,10 +1,3 @@
-/**
- * Load smoke for the relay: `bun relay/load-smoke.ts --pcs 200 --clients 4 [--frames 50] [--url ws://host:port]`.
- * Without --url it starts the Bun relay in this process. Each PC opens its control socket, then
- * its clients one after another with a data socket each; then every client and every data socket
- * send --frames random binary frames at once. It prints frames sent and received each way, and
- * exits 1 unless every frame arrived, byte for byte and in order.
- */
 import { startBunRelay } from "./bun.ts";
 import { equalBytes, establish, newServer, openPair, within, type Peer } from "./relay-test-client.ts";
 
@@ -33,7 +26,6 @@ const frame = () => crypto.getRandomValues(new Uint8Array(1 + Math.floor(Math.ra
 
 const totals = { up: { sent: 0, received: 0, mismatched: 0 }, down: { sent: 0, received: 0, mismatched: 0 } };
 
-/** sends `frames` frames from one end and checks each at the other, in order */
 async function stream(from: Peer, to: Peer, tally: { sent: number; received: number; mismatched: number }) {
   const sent = Array.from({ length: frames }, frame);
   for (const bytes of sent) { from.socket.send(bytes); tally.sent++; }

@@ -1,7 +1,3 @@
-/**
- * The panes whose prompt a connection follows without attaching them (`prompt-watch`): one PromptMonitor for the
- * server reads each pane while any connection watches it, and tells those connections `prompt-changed`.
- */
 import type { ClientMessage } from "../../shared/protocol.ts";
 import { sessionSnapshot } from "../herdr/client.ts";
 import { PromptMonitor, type PromptReader } from "../prompt-monitor.ts";
@@ -47,7 +43,6 @@ export function createPromptWatch({ clients, read }: { clients: Set<Client>; rea
           return;
         }
         watches.add(message.pane_id);
-        // a pane others already watch was read before: this watcher is told what they were, as its first read
         const current = monitor.current(message.pane_id);
         if (current !== undefined) send(client, { type: "prompt-changed", pane_id: message.pane_id, signature: current });
         else monitor.watch(message.pane_id);

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { PreferenceStore } from "../../server/preferences.ts";
-/** a document saved at least once, which names its state folder */
 const named = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 import { type PreferencesChange, type SharedPreferences } from "../../shared/preferences.ts";
 import { DEFAULT_SETTINGS, SettingsProvider, sanitizeSettings, useSettings, type Settings } from "./settings.ts";
@@ -14,11 +13,6 @@ import { currentPaneMutes, setPaneMutes } from "./paneMutes.ts";
 import { usePreferencesSync } from "./preferencesSync.ts";
 import type { UserError } from "./userError.ts";
 
-const deadlineTimer = globalThis.setTimeout;
-const clearDeadline = globalThis.clearTimeout;
-
-// Keep React, the provider, the hook and its API functions real. Only the network and DOM
-// boundaries are stand-ins: PUTs go through a real on-disk store, not a canned answer.
 describe("preferences sync real send path", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let dir: string;
@@ -26,33 +20,26 @@ describe("preferences sync real send path", () => {
   let records: Map<string, string>;
   let oldServer: boolean;
   let releaseAnswer: (() => Promise<void>) | undefined;
+  let releaseGet: (() => Promise<void>) | undefined;
   let renderers: ReactTestRenderer[];
   let clients: Client[];
   let revisions: number[];
   let answers: number;
-  /** the next PUT's answer when the server refuses it, in its error envelope; stored nothing */
   let refuse: Response | null;
-  /** every PUT's answer while set: a write error that persists, or a request that never reaches the PC */
   let refusing: (() => Response | Promise<Response>) | null;
-  /** the waits the hook has set and not yet cleared or run, with their length */
   let waits: Map<unknown, number>;
-  /** what the next render passes as `enabled` */
   let syncEnabled: boolean;
   let refusals: number;
-  /** every PUT body in the order it was sent, refused or not */
   let bodies: PreferencesChange[];
   let answerListeners: Set<() => void>;
-  /** the page's own events (pagehide, visibilitychange) */
   let pageEvents: EventTarget;
-  /** whether each PUT asked to outlive the page */
   let keepalives: boolean[];
-  /** the bodies the PUTs carried, in order */
   let sent: PreferencesChange[];
-  /** an older server: no theme sides, no mute list and no state folder id in what it keeps or answers */
   const dropNewKeys = ({ muted_panes: _muted, state_id: _id, ...doc }: SharedPreferences): SharedPreferences => ({
     ...doc, settings: Object.fromEntries(Object.entries(doc.settings).filter(([key]) => key !== "darkTheme" && key !== "lightTheme")),
   });
   interface Client {
+    known: boolean;
     settings: Settings;
     rendered: { id: string; mode: string };
     update: (patch: Partial<Settings>) => void;
@@ -64,7 +51,6 @@ describe("preferences sync real send path", () => {
     resubscribed: () => void;
     disconnected: () => void;
     closed: () => void;
-    /** render again, with `syncEnabled` as it is now */
     rerender: () => void;
   }
 
@@ -100,12 +86,12 @@ describe("preferences sync real send path", () => {
       addEventListener: pageEvents.addEventListener.bind(pageEvents),
       removeEventListener: pageEvents.removeEventListener.bind(pageEvents),
     } });
-    // the stylesheet is loaded: its theme blocks own the page surface (applyToDocument)
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: (name: string) => (name === "--bg" ? "#12100e" : "") }) });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
     oldServer = false;
     releaseAnswer = undefined;
+    releaseGet = undefined;
     renderers = [];
     clients = [];
     revisions = [];
@@ -116,16 +102,17 @@ describe("preferences sync real send path", () => {
     bodies = [];
     sent = [];
     answerListeners = new Set();
-    // the mute list is page state (lib/paneMutes.ts): each test opens as a page that has heard none
     setPaneMutes(null);
-    // and the pins are this browser's own, with none it knew the server to hold
     setSidebarPins([]);
     store.subscribe((doc) => {
       revisions.push(doc.revision);
       for (const client of clients) client.receive(oldServer ? dropNewKeys(doc) : doc);
     });
     const fetchPreferences = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      if (init?.method !== "PUT") return Response.json(oldServer ? dropNewKeys(store.get()) : store.get());
+      if (init?.method !== "PUT") {
+        if (releaseGet) await releaseGet();
+        return Response.json(oldServer ? dropNewKeys(store.get()) : store.get());
+      }
       bodies.push(JSON.parse(String(init.body)));
       keepalives.push(init.keepalive === true);
       if (refuse !== null || refusing !== null) {
@@ -162,18 +149,18 @@ describe("preferences sync real send path", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** a page of a browser opening; `again` keeps what an earlier page of the same browser stored */
   async function open(raw: object = DEFAULT_SETTINGS, again = false): Promise<Client> {
     if (!again) records.clear();
     records.set("ovis:settings", JSON.stringify(raw));
     const unmounted = () => { throw new Error("not mounted"); };
-    const client: Client = { settings: sanitizeSettings(raw), rendered: { id: "amber", mode: "dark" }, update: unmounted, receive: unmounted, saveError: null, paused: false, retrying: false, retry: unmounted, resubscribed: unmounted, disconnected: unmounted, closed: unmounted, rerender: unmounted };
+    const client: Client = { known: false, settings: sanitizeSettings(raw), rendered: { id: "amber", mode: "dark" }, update: unmounted, receive: unmounted, saveError: null, paused: false, retrying: false, retry: unmounted, resubscribed: unmounted, disconnected: unmounted, closed: unmounted, rerender: unmounted };
     function Probe() {
       const context = useSettings();
       client.settings = context.settings;
       client.rendered = context.resolvedEntry;
       client.update = context.update;
       const sync = usePreferencesSync(syncEnabled);
+      client.known = sync.known;
       client.receive = sync.receive;
       client.saveError = sync.saveError;
       client.paused = sync.paused;
@@ -196,11 +183,35 @@ describe("preferences sync real send path", () => {
   async function windows(count = 1): Promise<void> {
     for (let index = 0; index < count; index++) await act(async () => { jest.advanceTimersByTime(600); });
   }
-  function nextAnswer(): Promise<void> {
+  // bun's fake timers stop every timer and clock, a setTimeout kept from before them too, so a wait is bounded in
+  // turns of the event loop: what is waited for here follows from promises alone, before the loop turns once
+  function bounded(message: string, listen: (arrived: () => void) => () => void): Promise<void> {
     return new Promise((resolve, reject) => {
-      const timer = deadlineTimer(() => { answerListeners.delete(done); reject(new Error("preferences answer did not arrive")); }, 2_000);
-      const done = () => { clearDeadline(timer); answerListeners.delete(done); resolve(); };
-      answerListeners.add(done);
+      let turns = 0;
+      let waiting = true;
+      const stop = listen(() => { waiting = false; stop(); resolve(); });
+      const turn = (): void => {
+        if (!waiting) return;
+        if (++turns > 100) { stop(); reject(new Error(message)); } else setImmediate(turn);
+      };
+      setImmediate(turn);
+    });
+  }
+  function nextAnswer(): Promise<void> {
+    return bounded("preferences answer did not arrive", (arrived) => {
+      answerListeners.add(arrived);
+      return () => answerListeners.delete(arrived);
+    });
+  }
+  function nextAbsorbed(): Promise<void> {
+    // the answer is taken in once its pins are stored; React draws nothing before this act ends
+    const storage = window.localStorage;
+    return bounded("the answer's pins were not stored", (arrived) => {
+      const { setItem, removeItem } = storage;
+      const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") arrived(); };
+      storage.setItem = (key, value) => { setItem(key, value); told(key); };
+      storage.removeItem = (key) => { removeItem(key); told(key); };
+      return () => { storage.setItem = setItem; storage.removeItem = removeItem; };
     });
   }
   async function send(): Promise<void> {
@@ -210,7 +221,6 @@ describe("preferences sync real send path", () => {
   const seed = { theme: "dark", palette: "tokyo-night", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" };
 
   it.each(["dark", "light"] as const)("takes a restarted legacy-only %s palette in a fresh client without corrective PUTs", async (theme) => {
-    // Create valid old-format bytes without normalizing a new-format write, then restart.
     store.set({ settings: { palette: "catppuccin" } });
     store.set({ settings: { theme } });
     store = new PreferenceStore(dir);
@@ -229,6 +239,20 @@ describe("preferences sync real send path", () => {
     expect(store.get().revision).toBe(2);
     expect(revisions).toEqual([]);
     expect(answers).toBe(0);
+  });
+
+  it("says the server's settings are known only once they were read, so a stale copy here is not taken for them", async () => {
+    store.set({ settings: { showUsage: false } });
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const client = await open({ ...DEFAULT_SETTINGS, showUsage: true });
+    expect(client.known).toBe(false);
+    expect(client.settings.showUsage).toBe(true);
+    const absorbed = nextAbsorbed();
+    await act(async () => { gate.resolve(); await absorbed; });
+    releaseGet = undefined;
+    expect(client.known).toBe(true);
+    expect(client.settings.showUsage).toBe(false);
   });
 
   it("keeps a migrated device-local System pair on upgrade without a correcting PUT (h3)", async () => {
@@ -272,7 +296,6 @@ describe("preferences sync real send path", () => {
   });
 
   it.each(["pagehide", "visibilitychange"])("sends a change at once, to outlive the page, on %s", async (type) => {
-    // Given a change made here, still inside the send delay.
     const client = await open();
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
 
@@ -280,7 +303,6 @@ describe("preferences sync real send path", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     await act(async () => { pageEvents.dispatchEvent(new Event(type)); });
 
-    // Then the change went out without waiting, in a request that survives the page.
     expect(keepalives).toEqual([true]);
     expect(store.get().settings.showUsage).toBe(!DEFAULT_SETTINGS.showUsage);
     await windows(3);
@@ -288,7 +310,6 @@ describe("preferences sync real send path", () => {
   });
 
   it("sends an edit made while a save is on its way when the page goes", async () => {
-    // Given a save on its way, and a second edit made before its answer.
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
     const client = await open();
@@ -296,10 +317,8 @@ describe("preferences sync real send path", () => {
     await windows();
     await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
 
-    // When the page goes before that answer.
     await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
 
-    // Then both edits go out at once in a request that outlives the page.
     expect(keepalives).toEqual([false, true]);
     expect(bodies[1]?.settings).toMatchObject({ showUsage: !DEFAULT_SETTINGS.showUsage, showThinking: !DEFAULT_SETTINGS.showThinking });
     await act(async () => { gate.resolve(); });
@@ -307,7 +326,6 @@ describe("preferences sync real send path", () => {
   });
 
   it("sends a change once when the page is hidden and then goes, and nothing when it shows again", async () => {
-    // Given a change made here, still inside the send delay.
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
     const client = await open();
@@ -317,13 +335,11 @@ describe("preferences sync real send path", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); pageEvents.dispatchEvent(new Event("pagehide")); });
 
-    // Then one request went out.
     expect(keepalives).toEqual([true]);
     const answered = nextAnswer();
     await act(async () => { gate.resolve(); await answered; });
     releaseAnswer = undefined;
 
-    // And a page shown again sends nothing more.
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); });
     await windows(3);
@@ -334,7 +350,6 @@ describe("preferences sync real send path", () => {
     ["sends it again", false],
     ["takes a newer value saved elsewhere instead", true],
   ] as const)("when the request on the way out of a reload is lost, the reloaded page %s", async (_name, savedElsewhere) => {
-    // Given a switch turned on and saved, then off again just before a reload whose request on the way out is lost.
     const on = !DEFAULT_SETTINGS.showUsage;
     const client = await open();
     await act(async () => { client.update({ showUsage: on }); });
@@ -348,11 +363,9 @@ describe("preferences sync real send path", () => {
     expect(store.get().settings.showUsage).toBe(on);
     if (savedElsewhere) store.set({ settings: { showUsage: on } });
 
-    // When the page comes back in the same tab.
     const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
     await windows(3);
 
-    // Then the value it went with is the server's and the page's, unless another browser saved the setting since.
     expect(store.get().settings.showUsage).toBe(savedElsewhere ? on : !on);
     expect(reloaded.settings.showUsage).toBe(savedElsewhere ? on : !on);
   });
@@ -363,6 +376,37 @@ describe("preferences sync real send path", () => {
     await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); pageEvents.dispatchEvent(new Event("visibilitychange")); });
     await windows(3);
     expect(bodies).toEqual([]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("sends and carries an edit made just before the page goes, %s", async (_name, drawn) => {
+    const on = !DEFAULT_SETTINGS.showUsage;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { client.update({ showUsage: on }); });
+
+    await act(async () => {
+      if (!drawn) client.update({ showUsage: on });
+      pageEvents.dispatchEvent(new Event("pagehide"));
+    });
+
+    expect(bodies.map((body) => [body.settings.darkTheme, body.settings.showUsage])).toEqual([["gruvbox", on]]);
+    expect(JSON.parse(window.sessionStorage.getItem("ovis:preferences-unsent")!).settings).toMatchObject({ darkTheme: "gruvbox", showUsage: on });
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a pick taken back as its send wait ends, %s, is not sent", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "tokyo-night" });
+      jest.advanceTimersByTime(600);
+    });
+
+    await windows(3);
+    expect(bodies).toEqual([]);
+    expect(store.get().revision).toBe(1);
   });
 
   it("sends a new dark choice once and another client takes it (i)", async () => {
@@ -413,10 +457,347 @@ describe("preferences sync real send path", () => {
     expect(revisions).toEqual([1, 2]);
   });
 
+  it("keeps an edit whose page has not drawn it yet when the answer to the save on its way lands", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await windows();
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+    expect(client.settings.darkTheme).toBe("gruvbox");
+    await send();
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a pick %s that the save's answer already holds gives way to a newer save held behind it", async (_name, drawn) => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    // this tab first hears about gruvbox in the answer to its unrelated PUT
+    clients.pop();
+    store.set({ settings: { darkTheme: "gruvbox" } });
+    clients.push(client);
+    await act(async () => { client.update({ showThinking: true }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "tokyo-night" } }); });
+
+    if (drawn) await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+    expect(client.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual([undefined]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it("a tab takes a save's value from the server while the tab that sent it has already stored a newer pick", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const a = await open();
+    const b = await open();
+    // a's event stream brings the save after b's next pick, as a real one does
+    clients.splice(clients.indexOf(a), 1);
+    await act(async () => { b.update({ darkTheme: "catppuccin" }); });
+    await windows();
+    await act(async () => { b.update({ darkTheme: "gruvbox" }); });
+    const answered = nextAnswer();
+    await act(async () => { gate.resolve(); await answered; });
+    releaseAnswer = undefined;
+    clients.push(a);
+
+    await act(async () => { a.receive(store.get()); });
+    expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["catppuccin", "gruvbox"]);
+    await windows(3);
+
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["catppuccin", "gruvbox"]);
+    expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
+  });
+
+  it("a save answered after its page's settings tree is gone leaves what another tab stored since", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+
+    let pick: (patch: Partial<Settings>) => void = () => { throw new Error("not mounted"); };
+    function OtherTab() {
+      pick = useSettings().update;
+      return null;
+    }
+    await act(async () => { renderers.push(create(createElement(SettingsProvider, null, createElement(OtherTab)))); });
+    await act(async () => { pick({ darkTheme: "gruvbox" }); });
+    const storedTheme = (): unknown => JSON.parse(records.get("ovis:settings")!).darkTheme;
+    expect(storedTheme()).toBe("gruvbox");
+
+    const absorbed = nextAbsorbed();
+    await act(async () => { gate.resolve(); await absorbed; });
+    releaseAnswer = undefined;
+    expect(storedTheme()).toBe("gruvbox");
+  });
+
+  it("a return to the value on its way, not drawn yet, gives way to a newer save held behind the answer, as it does once drawn", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await windows();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      client.update({ darkTheme: "tokyo-night" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+
+    expect(client.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+  });
+
+  it("a reloaded page keeps an edit it has not drawn yet when the answer to the change it sent again lands", async () => {
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    await windows();
+    expect(keepalives).toEqual([true, false]);
+    expect(bodies[1]?.settings).toMatchObject({ darkTheme: "tokyo-night" });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      reloaded.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+    expect(reloaded.settings.darkTheme).toBe("gruvbox");
+    await send();
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
+  it.each([
+    ["holds that setting", "drawn", true, true],
+    ["holds that setting", "not drawn yet", true, false],
+    ["lacks that setting", "drawn", false, true],
+    ["lacks that setting", "not drawn yet", false, false],
+  ] as const)("a reloaded page whose first document %s sends its carried change again after a return to it, %s", async (_doc, _name, held, drawn) => {
+    store.set({ settings: held ? { darkTheme: "catppuccin" } : { showThinking: true } });
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { reloaded.update({ darkTheme: "tokyo-night" }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) reloaded.update({ darkTheme: "tokyo-night" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseGet = undefined;
+
+    expect(reloaded.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a first page that returns to its own value before the first document, %s, takes the server's value and sends nothing", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "catppuccin" } });
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const client = await open({ ...DEFAULT_SETTINGS, darkTheme: "tokyo-night" });
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "tokyo-night" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseGet = undefined;
+
+    expect(client.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent).toEqual([]);
+  });
+
+  /** A page that goes with `edit` unsent, its request on the way out lost, and comes back in the same tab: the reloaded page's first document waits for `first`. */
+  async function reloadCarrying(edit: Partial<Settings>, boot: object = DEFAULT_SETTINGS): Promise<{ reloaded: Client; first: () => Promise<void> }> {
+    const client = await open(boot);
+    await act(async () => { client.update(edit); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    const first = async (): Promise<void> => {
+      const absorbed = nextAbsorbed();
+      gate.resolve();
+      await absorbed;
+      releaseGet = undefined;
+    };
+    return { reloaded, first };
+  }
+  /** each step drawn before the next, or all of them before React draws once: the two must end the same */
+  async function inOrder(drawn: boolean, steps: (() => void | Promise<void>)[]): Promise<void> {
+    if (drawn) for (const step of steps) await act(async () => { await step(); });
+    else await act(async () => { for (const step of steps) await step(); });
+  }
+  const orders = [["each drawn before the next", true], ["all before one render", false]] as const;
+
+  it.each(orders)("a reloaded page keeps a return to its carried change when another browser's save follows a first document that lacks the setting, %s", async (_name, drawn) => {
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      first,
+      () => { store.set({ settings: { darkTheme: "catppuccin" } }); },
+    ]);
+
+    expect(reloaded.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it.each(orders)("a reloaded page that returns to its carried change only after its first document gives way to another browser's save, %s", async (_name, drawn) => {
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "gruvbox" }),
+      first,
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      () => { store.set({ settings: { darkTheme: "catppuccin" } }); },
+    ]);
+
+    expect(reloaded.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent).toEqual([]);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+  });
+
+  it.each(orders)("a reloaded page whose carried change another browser saved as it was sends nothing, and takes the save after that, %s", async (_name, drawn) => {
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      first,
+      () => { store.set({ settings: { darkTheme: "tokyo-night" } }); },
+    ]);
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    expect(reloaded.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent).toEqual([]);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+  });
+
+  it.each(orders)("a reloaded page keeps a return to its carried change through three documents and an edit between them, %s", async (_name, drawn) => {
+    const on = !DEFAULT_SETTINGS.showUsage;
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      first,
+      () => reloaded.update({ showUsage: on }),
+      () => { store.set({ settings: { showThinking: false } }); },
+      () => { store.set({ settings: { darkTheme: "catppuccin" } }); },
+    ]);
+
+    expect([reloaded.settings.darkTheme, reloaded.settings.showThinking, reloaded.settings.showUsage]).toEqual(["tokyo-night", false, on]);
+    await windows(3);
+    expect(sent.map((body) => [body.settings.darkTheme, body.settings.showUsage])).toEqual([["tokyo-night", on]]);
+    expect(store.get().settings).toMatchObject({ darkTheme: "tokyo-night", showUsage: on, showThinking: false });
+  });
+
+  it.each(orders)("a reloaded page whose first document holds no settings sends its carried change again after a return to it, %s", async (_name, drawn) => {
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [() => reloaded.update({ darkTheme: "tokyo-night" }), first]);
+
+    expect(reloaded.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it.each(orders)("a reloaded page that left its carried theme mode sends the mode alone when its first document holds only an old palette, %s", async (_name, drawn) => {
+    store.set({ settings: { palette: "catppuccin" } });
+    const { reloaded, first } = await reloadCarrying({ theme: "light" }, { ...DEFAULT_SETTINGS, theme: "system", darkTheme: "catppuccin", lightTheme: "tokyo-night" });
+
+    await inOrder(drawn, [() => reloaded.update({ theme: "system" }), first]);
+
+    await windows(3);
+    expect(sent.map((body) => body.settings)).toEqual([{ theme: "system" }]);
+    expect(store.get().settings).toEqual({ theme: "system", palette: "catppuccin" });
+  });
+
+  it("keeps pins and a mute this tab has not drawn yet when another browser's document lands, and sends them", async () => {
+    store.set({ settings: {}, pins: ["local:w1:p1"] });
+    const client = await open();
+    expect([currentSidebarPins(), currentPaneMutes()]).toEqual([["local:w1:p1"], []]);
+
+    await act(async () => {
+      setSidebarPins(["local:w1:p1", "local:w1:p2"]);
+      setPaneMutes(["w1:p1"]);
+      store.set({ settings: { showThinking: true } });
+    });
+
+    expect(client.settings.showThinking).toBe(true);
+    expect([currentSidebarPins(), currentPaneMutes()]).toEqual([["local:w1:p1", "local:w1:p2"], ["w1:p1"]]);
+    await send();
+    expect(store.get()).toMatchObject({ pins: ["local:w1:p1", "local:w1:p2"], muted_panes: ["w1:p1"], settings: { showThinking: true } });
+  });
+
   it("says in plain words that the server cannot save, and clears it once the retried change lands", async () => {
     const client = await open();
     expect(client.saveError).toBeNull();
-    // server/preferences.ts: its state folder refused the write
     refuse = Response.json({ error: { code: "preferences_unwritable", message: "EACCES: permission denied, open '/state/preferences.json.7.tmp'" } }, { status: 500 });
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await send();
@@ -424,7 +805,6 @@ describe("preferences sync real send path", () => {
     expect(answers).toBe(0);
     expect(store.get().revision).toBe(0);
     expect(client.saveError).toEqual({ message: "The server cannot save settings: check that its state folder is writable.", detail: "EACCES: permission denied, open '/state/preferences.json.7.tmp'" });
-    // the change goes out again after the wait (RETRY_MS) and lands
     await act(async () => { jest.advanceTimersByTime(5_000); });
     await send();
     expect(answers).toBe(1);
@@ -438,16 +818,12 @@ describe("preferences sync real send path", () => {
     oldServer = true;
     const client = await open();
     await windows(3);
-    // no list in the document: none here, and none made up for the server
     expect(currentPaneMutes()).toBeNull();
     expect(answers).toBe(0);
-    // a change of something else goes out without a list
     await act(async () => { client.update({ showThinking: true }); });
     await send();
-    // (the pins ride along with the first change, as they always have)
     expect(sent).toEqual([{ settings: { showThinking: true }, pins: [] }]);
     expect(currentPaneMutes()).toBeNull();
-    // the server is upgraded: its next document carries the list, and the page offers mutes from then on
     oldServer = false;
     await act(async () => { store.set({ settings: { theme: "light" } }); });
     await windows(3);
@@ -461,36 +837,29 @@ describe("preferences sync real send path", () => {
     const client = await open();
     await windows(3);
     expect(currentPaneMutes()).toEqual(["w1:p1"]);
-    // the server is replaced by one that keeps no list (a downgrade): its next, newer document has none
     oldServer = true;
     await act(async () => { store.set({ settings: { theme: "light" } }); });
     await windows(3);
     expect(revisions).toEqual([1, 2]);
-    // the mutes stand down: no row offers a mute, and no channel holds an alert back for one
     expect(currentPaneMutes()).toBeNull();
     expect(answers).toBe(0);
-    // a later change of something else carries no made-up list
     await act(async () => { client.update({ showThinking: true }); });
     await send();
-    // (the pins ride along with the first change, as they always have)
     expect(sent).toEqual([{ settings: { showThinking: true }, pins: [] }]);
     expect(currentPaneMutes()).toBeNull();
   });
 
   it("a page opened again keeps a pin another client removed meanwhile removed, instead of sending its own back", async () => {
-    // a server that already shares pins
     store.set({ settings: {}, pins: [] });
     await open();
     await windows();
     await act(async () => { setSidebarPins(["local:t1"]); });
     await send();
     expect(store.get().pins).toEqual(["local:t1"]);
-    // the page goes; meanwhile the pin is removed elsewhere (another browser, or the Herdr app)
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
     store.set({ settings: {}, pins: [] });
     const before = sent.length;
-    // the same browser opens again, its own copy still holding the old pin
     await open(DEFAULT_SETTINGS, true);
     await windows(3);
     expect(store.get().pins).toEqual([]);
@@ -506,7 +875,6 @@ describe("preferences sync real send path", () => {
     await send();
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
-    // the server starts over with a fresh state folder
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
@@ -526,7 +894,6 @@ describe("preferences sync real send path", () => {
     await send();
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
-    // the server starts over with a fresh state folder, and gets a pin from elsewhere first
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
@@ -539,7 +906,6 @@ describe("preferences sync real send path", () => {
     expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
   });
 
-  // the new server's saves from elsewhere reach the revision this browser kept (2), or pass it
   for (const saves of [2, 3]) it(`a page opened again on a server started over whose saves reached revision ${saves} keeps its own pins too`, async () => {
     store.set({ settings: {}, pins: [] });
     await open();
@@ -549,7 +915,6 @@ describe("preferences sync real send path", () => {
     expect(store.get().revision).toBe(2);
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
-    // the server starts over with a fresh state folder, and another device saves there meanwhile
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
@@ -571,7 +936,6 @@ describe("preferences sync real send path", () => {
     await send();
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
-    // the server starts over with a fresh state folder on a release that names none, and holds the pin at revision 3
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
@@ -580,12 +944,10 @@ describe("preferences sync real send path", () => {
     store = new PreferenceStore(dir);
     store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
     oldServer = true;
-    // the same browser opens there and takes its document as what the server holds
     await open(DEFAULT_SETTINGS, true);
     await windows();
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
-    // the server is upgraded, and another device removes the pin: that save names the folder
     oldServer = false;
     store.set({ settings: {}, pins: [] });
     const client = await open(DEFAULT_SETTINGS, true);
@@ -598,7 +960,6 @@ describe("preferences sync real send path", () => {
   it("mute survives restart and another browser", async () => {
     const a = await open();
     await windows();
-    // the fresh store's empty list arrived with the GET: the first mute is a change of it
     expect(currentPaneMutes()).toEqual([]);
     await act(async () => { setPaneMutes(["w1:p1"]); });
     await send();
@@ -608,7 +969,6 @@ describe("preferences sync real send path", () => {
     expect(a.saveError).toBeNull();
     await windows(3);
     expect(revisions).toEqual([1]);
-    // the server restarts, and a browser that has heard nothing opens: it takes the list, and sends nothing
     store = new PreferenceStore(dir);
     expect(store.get().muted_panes).toEqual(["w1:p1"]);
     store.subscribe((doc) => { revisions.push(doc.revision); for (const client of clients) client.receive(doc); });
@@ -618,7 +978,6 @@ describe("preferences sync real send path", () => {
     expect(currentPaneMutes()).toEqual(["w1:p1"]);
     expect(answers).toBe(1);
     expect(revisions).toEqual([1]);
-    // an unmute there reaches the store, and every page hears the document
     await act(async () => { setPaneMutes([]); });
     await send();
     expect(sent.at(-1)).toEqual({ settings: {}, muted_panes: [] });
@@ -630,25 +989,21 @@ describe("preferences sync real send path", () => {
     [403, "forbidden"],
     [404, "not_found"],
   ] as const)("clears a save error when the server stops accepting saves with %s", async (status, code) => {
-    // Given a client with an unconfirmed save error.
     const client = await open();
     refuse = Response.json({ error: { code: "preferences_unwritable" } }, { status: 500 });
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await send();
     expect(client.saveError).not.toBeNull();
 
-    // When its next save receives this terminal refusal.
     refuse = Response.json({ error: { code } }, { status });
     await act(async () => { jest.advanceTimersByTime(5_000); });
     await send();
-    // Then the refusal was sent and the previous error clears.
     expect(refusals).toBe(2);
     expect(refuse).toBeNull();
     expect(client.saveError).toBeNull();
   });
 
   const unwritable = () => Response.json({ error: { code: "preferences_unwritable", message: "EACCES: permission denied" } }, { status: 500 });
-  /** the first failed save, then the automatic ones after each RETRY_MS wait, until `count` have failed */
   async function failSaves(count: number): Promise<void> {
     await send();
     for (let index = 1; index < count; index++) {
@@ -656,7 +1011,6 @@ describe("preferences sync real send path", () => {
       await send();
     }
   }
-  /** several RETRY_MS waits, each followed by a send window, with what each wakes settled between */
   async function longWait(): Promise<void> {
     for (let index = 0; index < 4; index++) {
       await act(async () => { jest.advanceTimersByTime(5_000); });
@@ -681,7 +1035,6 @@ describe("preferences sync real send path", () => {
     expect(client.saveError?.message).toBe("The server cannot save settings: check that its state folder is writable.");
     expect(client.settings.darkTheme).toBe("tokyo-night");
 
-    // Retry starts one more round, which lands, and the count starts over
     refusing = null;
     await act(async () => { client.retry(); });
     expect(client.retrying).toBe(true);
@@ -734,7 +1087,6 @@ describe("preferences sync real send path", () => {
     refusing = null;
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
-    // a second press while the first is on its way starts no second chain
     await act(async () => { client.retry(); });
     await windows();
     expect(client.retrying).toBe(true);
@@ -748,7 +1100,6 @@ describe("preferences sync real send path", () => {
     const answered = nextAnswer();
     await act(async () => { gate.resolve(); await answered; });
     releaseAnswer = undefined;
-    // the answer confirms what was sent, not the edit made meanwhile: the status stays until that lands
     expect(client.settings.lightTheme).toBe("catppuccin");
     expect(client.saveError).not.toBeNull();
     await send();
@@ -765,12 +1116,10 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await failSaves(3);
     expect(client.paused).toBe(true);
-    // an ordinary document from the event stream, at the revision already held, resumes nothing
     await act(async () => { client.receive(store.get()); });
     await longWait();
     expect(refusals).toBe(3);
 
-    // the stream reopened: the server sends the same document as it opens, and one new round begins
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     expect(client.paused).toBe(false);
     await failSaves(3);
@@ -785,6 +1134,248 @@ describe("preferences sync real send path", () => {
     expect(answers).toBe(1);
     expect(client.saveError).toBeNull();
     expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it("takes the server's value on a read-only device even when a local pick has not rendered", async () => {
+    const client = await open();
+    refuse = Response.json({ error: { code: "forbidden" } }, { status: 403 });
+    await act(async () => { client.update({ showThinking: true }); });
+    await send();
+    expect(refusals).toBe(1);
+
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      store.set({ settings: { darkTheme: "tokyo-night" } });
+    });
+
+    expect(client.settings.darkTheme).toBe("tokyo-night");
+    await windows();
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("a device's first refusal as read-only takes a document held behind it over a pick not drawn yet", async () => {
+    const gate = Promise.withResolvers<void>();
+    refusing = () => gate.promise.then(() => Response.json({ error: { code: "forbidden" } }, { status: 403 }));
+    const client = await open();
+    await act(async () => { client.update({ showThinking: true }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "tokyo-night" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    refusing = null;
+
+    expect(client.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("a pick refused while another browser's newer value was held behind it gives way to that value, and is not sent again", async () => {
+    const gate = Promise.withResolvers<void>();
+    refusing = () => gate.promise.then(() => Response.json({ error: { code: "preferences_unwritable" } }, { status: 500 }));
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => { gate.resolve(); await absorbed; });
+    refusing = null;
+
+    expect(client.settings.darkTheme).toBe("catppuccin");
+    await act(async () => { jest.advanceTimersByTime(5_000); });
+    await windows(3);
+    expect(bodies).toHaveLength(1);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+    expect(client.saveError).toBeNull();
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick about to go again gives way to a newer save, %s, that lands as its wait ends", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await send();
+    await act(async () => { jest.advanceTimersByTime(5_000); });
+    if (drawn) await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    await act(async () => {
+      if (!drawn) store.set({ settings: { darkTheme: "catppuccin" } });
+      jest.advanceTimersByTime(600);
+    });
+
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["catppuccin", "catppuccin", 1]);
+  });
+
+  it.each([["held behind the refused save", true], ["after the refusal", false]] as const)("a refused mute gives way to the list another browser saved since, %s", async (_name, heldBehind) => {
+    store.set({ settings: {}, muted_panes: [] });
+    const client = await open();
+    const elsewhere = (): void => { store.set({ settings: {}, muted_panes: ["w1:p2"] }); };
+    if (heldBehind) {
+      const gate = heldRefusal();
+      await act(async () => { setPaneMutes(["w1:p1"]); });
+      await windows();
+      await act(async () => { elsewhere(); });
+      const absorbed = nextAbsorbed();
+      await act(async () => { gate.resolve(); await absorbed; });
+      refusing = null;
+    } else {
+      refuse = unwritable();
+      await act(async () => { setPaneMutes(["w1:p1"]); });
+      await send();
+      await act(async () => { elsewhere(); });
+    }
+
+    expect([currentPaneMutes(), client.saveError]).toEqual([["w1:p2"], null]);
+    await longWait();
+    expect([bodies.map((body) => body.muted_panes), store.get().muted_panes]).toEqual([[["w1:p1"]], ["w1:p2"]]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a return to a refused pick, %s when the refusal lands, still gives way to a newer save and is not sent again", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" }, pins: [] });
+    const client = await open();
+    const gate = heldRefusal();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    expect(bodies).toHaveLength(1);
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    // held behind the save: it changes no setting
+    await act(async () => { store.set({ settings: {}, pins: ["local:w1:p1"] }); });
+
+    if (drawn) await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    refusing = null;
+    expect([client.settings.darkTheme, client.saveError !== null]).toEqual(["gruvbox", true]);
+
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["catppuccin", "catppuccin", 1]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick taken back, %s, and then picked again is a new edit: it shows no save error and goes over a save another browser makes next", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    if (drawn) await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "tokyo-night" });
+      client.update({ darkTheme: "gruvbox" });
+    });
+    expect(client.saveError).toBeNull();
+
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
+  });
+
+  it.each([
+    ["drawn", true, false],
+    ["not drawn yet, the mute last", false, false],
+    ["not drawn yet, the pin last", false, true],
+  ] as const)("a refused pin and mute taken back, %s, and then made again are new edits: they show no save error and go over a list another browser saves next", async (_name, drawn, pinLast) => {
+    store.set({ settings: {}, pins: ["local:w1:p1"] });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { setSidebarPins(["local:w1:p1", "local:w1:p2"]); setPaneMutes(["w1:p1"]); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    // the last of the two to go back is the one that leaves nothing unsent
+    const takeBack = (): void => {
+      if (pinLast) setPaneMutes([]);
+      setSidebarPins(["local:w1:p1"]);
+      if (!pinLast) setPaneMutes([]);
+    };
+    if (drawn) await act(async () => { takeBack(); });
+    await act(async () => {
+      if (!drawn) takeBack();
+      setSidebarPins(["local:w1:p1", "local:w1:p2"]);
+      setPaneMutes(["w1:p1"]);
+    });
+    expect(client.saveError).toBeNull();
+
+    await act(async () => { store.set({ settings: {}, pins: ["local:w1:p9"], muted_panes: ["w1:p9"] }); });
+    await longWait();
+    expect(store.get().pins).toEqual(["local:w1:p1", "local:w1:p2"]);
+    expect([...store.get().muted_panes!].sort()).toEqual(["w1:p1", "w1:p9"]);
+    expect([currentSidebarPins(), [...currentPaneMutes()!].sort()]).toEqual([["local:w1:p1", "local:w1:p2"], ["w1:p1", "w1:p9"]]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick that gives way to a newer save, %s, leaves no save error over the edit made next", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    if (drawn) await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await act(async () => {
+      if (!drawn) store.set({ settings: { darkTheme: "catppuccin" } });
+      client.update({ darkTheme: "kanagawa" });
+    });
+    expect(client.saveError).toBeNull();
+
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["kanagawa", "kanagawa", 2]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a pick made again after its refused save gave way to a newer save held behind it, that refusal %s, is sent", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    const gate = heldRefusal();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    const absorbed = nextAbsorbed();
+    if (drawn) await act(async () => { gate.resolve(); await absorbed; });
+    await act(async () => {
+      if (!drawn) { gate.resolve(); await absorbed; }
+      client.update({ darkTheme: "gruvbox" });
+    });
+    refusing = null;
+
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["gruvbox", "gruvbox", 2]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick taken back leaves no save error when a newer save was held behind it and another change, %s, lands with the refusal", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" }, pins: [] });
+    const client = await open();
+    const gate = heldRefusal();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    expect(bodies).toHaveLength(1);
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    if (drawn) await act(async () => { client.update({ density: "compact" }); });
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ density: "compact" });
+      gate.resolve();
+      await absorbed;
+    });
+    refusing = null;
+
+    await longWait();
+    expect([client.settings.darkTheme, client.settings.density, store.get().settings.darkTheme, bodies.length]).toEqual(["catppuccin", "compact", "catppuccin", 1]);
+    expect(client.saveError).toBeNull();
   });
 
   it("Retry never bypasses a watching device or an older server", async () => {
@@ -807,7 +1398,6 @@ describe("preferences sync real send path", () => {
     expect([bodies.length, older.saveError, older.retrying]).toEqual([2, null, false]);
   });
 
-  /** a refusal the server gives only once `gate` is resolved: the request is on its way until then */
   function heldRefusal(): ReturnType<typeof Promise.withResolvers<void>> {
     const gate = Promise.withResolvers<void>();
     refusing = () => gate.promise.then(unwritable);
@@ -821,7 +1411,6 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await windows();
     expect(bodies.length).toBe(1);
-    // back to what the server holds before the refusal arrives: nothing is unsent any more
     await act(async () => { client.update({ darkTheme: DEFAULT_SETTINGS.darkTheme }); });
     await act(async () => { gate.resolve(); });
     await act(async () => {});
@@ -856,7 +1445,6 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.rerender(); });
     await act(async () => { gate.resolve(); });
     await act(async () => {});
-    // the answer is still read: the change stays unconfirmed here
     expect(client.saveError).not.toBeNull();
     expect(retryWaits()).toEqual([]);
     await longWait();
@@ -878,13 +1466,11 @@ describe("preferences sync real send path", () => {
     expect(retryWaits()).toEqual([5_000]);
     await act(async () => { client.disconnected(); });
     expect(retryWaits()).toEqual([]);
-    // an edit made while the stream is down stays here and is not sent either
     await act(async () => { client.update({ lightTheme: "catppuccin" }); });
     await longWait();
     expect([refusals, client.paused, client.saveError !== null]).toEqual([1, false, true]);
     expect(client.settings.lightTheme).toBe("catppuccin");
 
-    // the user's Retry still goes once, and its refusal sets no wait while the stream is down
     await act(async () => { client.retry(); });
     await send();
     expect([refusals, client.retrying]).toEqual([2, false]);
@@ -907,7 +1493,6 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await send();
     expect(client.saveError).not.toBeNull();
-    // the automatic retry is on its way when the user presses Retry
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
     await act(async () => { jest.advanceTimersByTime(5_000); });
@@ -920,7 +1505,6 @@ describe("preferences sync real send path", () => {
     releaseAnswer = undefined;
     expect([client.saveError, client.retrying]).toEqual([null, false]);
 
-    // that answer confirmed everything: the Retry is used up, so an edit made once the stream is lost stays here
     await act(async () => { client.disconnected(); });
     await act(async () => { client.update({ darkTheme: "gruvbox" }); });
     await longWait();
@@ -943,13 +1527,11 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.disconnected(); client.retry(); });
     await act(async () => { gate.resolve(); });
     await act(async () => {});
-    // the Retry still owes its own send: it goes in the next send window, not after a wait
     expect([refusals, client.retrying]).toEqual([2, true]);
     expect(retryWaits()).toEqual([]);
     await send();
     expect([refusals, client.retrying]).toEqual([3, false]);
     expect(retryWaits()).toEqual([]);
-    // and then it is used up: a later edit stays here while the stream is lost
     await act(async () => { client.update({ lightTheme: "catppuccin" }); });
     await longWait();
     expect([bodies.length, client.paused]).toEqual([3, false]);
@@ -964,7 +1546,6 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.disconnected(); });
     await act(async () => { gate.resolve(); });
     await act(async () => {});
-    // the answer is still read: the change stays unconfirmed here
     expect(client.saveError).not.toBeNull();
     expect(retryWaits()).toEqual([]);
     await longWait();
@@ -977,7 +1558,6 @@ describe("preferences sync real send path", () => {
     expect(store.get().settings.darkTheme).toBe("tokyo-night");
   });
 
-  /** the paused saves' longer waits that are set and not yet cleared or run */
   const pauseWaits = () => [...waits.values()].filter((ms) => ms >= 60_000);
 
   it("a stream the browser gave up on holds back only a refused change: what is unsent goes, its refusal shows with Retry, and it goes again once the new stream opens", async () => {
@@ -992,12 +1572,10 @@ describe("preferences sync real send path", () => {
     await send();
     expect(refusals).toBe(1);
     expect([client.saveError?.message, client.paused]).toEqual(["The server cannot save settings: check that its state folder is writable.", false]);
-    // refused, it waits for App's new stream: until that opens, this page cannot hear another browser's save
     expect(retryWaits()).toEqual([]);
     refusing = null;
     await longWait();
     expect(bodies.length).toBe(1);
-    // App's new stream opens with the server's document, then the change goes once and lands
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     await send();
     expect([bodies.length, answers, client.saveError]).toEqual([2, 1, null]);
@@ -1005,7 +1583,6 @@ describe("preferences sync real send path", () => {
     await longWait();
     expect(bodies.length).toBe(2);
 
-    // closed again: a refused change still goes at once on the user's Retry
     refusing = unwritable;
     await act(async () => { client.closed(); });
     await act(async () => { client.update({ lightTheme: "catppuccin" }); });
@@ -1026,7 +1603,6 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await failSaves(3);
     expect([client.paused, pauseWaits()]).toEqual([true, [60_000]]);
-    // an edit made while paused waits too, and joins the next send
     await act(async () => { client.update({ lightTheme: "catppuccin" }); });
     await act(async () => { jest.advanceTimersByTime(58_000); });
     await windows();
@@ -1051,7 +1627,6 @@ describe("preferences sync real send path", () => {
     expect(store.get().settings).toMatchObject({ darkTheme: "tokyo-night", lightTheme: "catppuccin" });
   });
 
-  /** this client's change refused three times (the theme's sides and a pin), on a server that already shares pins */
   async function pausedWithPin(): Promise<Client> {
     await act(async () => { setSidebarPins(["pc:w2:p3"]); });
     store.set({ settings: {}, pins: ["pc:w2:p3"] });
@@ -1065,12 +1640,10 @@ describe("preferences sync real send path", () => {
 
   it("a newer value another browser saves while a refused change is paused wins here, and the change sent later leaves it", async () => {
     const client = await pausedWithPin();
-    // another browser saves its own dark theme and pins; the event stream brings them at once
     await act(async () => { store.set({ settings: { darkTheme: "gruvbox" }, pins: ["pc:w2:p3", "pc:w2:p4"] }); });
     expect(client.settings.darkTheme).toBe("gruvbox");
     expect(client.saveError).not.toBeNull();
     refusing = null;
-    // much later the stream reopens: what goes is only what nobody changed elsewhere
     await act(async () => { jest.advanceTimersByTime(30_000); });
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     await send();
@@ -1078,8 +1651,6 @@ describe("preferences sync real send path", () => {
     expect(store.get()).toMatchObject({ settings: { darkTheme: "gruvbox", lightTheme: "catppuccin" }, pins: ["pc:w2:p3", "pc:w2:p4"] });
     expect([client.saveError, client.paused]).toEqual([null, false]);
 
-    // once a save lands, a change made here goes over what arrives before it is sent, as always (even
-    // one back to the value refused before)
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await act(async () => { store.set({ settings: { darkTheme: "kanagawa" } }); });
     expect(client.settings.darkTheme).toBe("tokyo-night");
@@ -1090,12 +1661,10 @@ describe("preferences sync real send path", () => {
   it("a refused change resent when the event stream reopens never overwrites what another browser saved while it was lost", async () => {
     const client = await pausedWithPin();
     await act(async () => { client.disconnected(); });
-    // the stream is down: another browser's save does not reach this one
     clients.splice(clients.indexOf(client), 1);
     store.set({ settings: { darkTheme: "gruvbox" }, pins: ["pc:w2:p3", "pc:w2:p4"] });
     expect(client.settings.darkTheme).toBe("tokyo-night");
     refusing = null;
-    // it reopens: the server's document, sent as it opens, comes before the resent change
     clients.push(client);
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     await send();
@@ -1107,9 +1676,7 @@ describe("preferences sync real send path", () => {
 
   it("a paused change whose longer wait ends while the stream is closed waits for the new stream's opening document, and gives way to what another browser saved meanwhile", async () => {
     const client = await pausedWithPin();
-    // the server restarts behind a proxy: the stream is lost, then the reconnect's 502 closes it
     await act(async () => { client.disconnected(); client.closed(); });
-    // it is back, and another browser saves before App's new stream opens here: this page does not hear it
     clients.splice(clients.indexOf(client), 1);
     refusing = null;
     store.set({ settings: { darkTheme: "gruvbox" }, pins: ["pc:w2:p3", "pc:w2:p4"] });
@@ -1135,7 +1702,6 @@ describe("preferences sync real send path", () => {
     clients.splice(clients.indexOf(client), 1);
     refusing = null;
     store.set({ settings: { darkTheme: "gruvbox" } });
-    // later, before the stream reopens, the user picks again: that pick is the newest
     await act(async () => { jest.advanceTimersByTime(20_000); });
     await act(async () => { client.update({ darkTheme: "kanagawa" }); });
     clients.push(client);
@@ -1147,7 +1713,6 @@ describe("preferences sync real send path", () => {
 
   it("a pick made here after a save whose answer was lost stays when the reopened stream brings that save's own value", async () => {
     const client = await open();
-    // the PC stores the change, but the network drops with its answer, and the event stream with it
     clients.splice(clients.indexOf(client), 1);
     refusing = () => { store.set(bodies.at(-1)!); refusing = null; throw new TypeError("Failed to fetch"); };
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
@@ -1167,7 +1732,6 @@ describe("preferences sync real send path", () => {
   it("an edit made while a save is on its way stays when the server stored that save but its answer was lost", async () => {
     const client = await open();
     const gate = Promise.withResolvers<void>();
-    // the server stores it (its document is held here while the request is on its way), then the answer is lost
     refusing = () => { store.set(bodies.at(-1)!); refusing = null; return gate.promise.then(() => { throw new TypeError("Failed to fetch"); }); };
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await windows();
@@ -1176,7 +1740,6 @@ describe("preferences sync real send path", () => {
     await act(async () => { gate.resolve(); });
     await act(async () => {});
     expect([client.settings.darkTheme, client.saveError !== null]).toEqual(["kanagawa", true]);
-    // the newer pick is what is unsent now: it goes once the settings rest
     await send();
     expect([bodies.length, store.get().settings.darkTheme, client.settings.darkTheme, client.saveError]).toEqual([2, "kanagawa", "kanagawa", null]);
   });

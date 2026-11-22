@@ -10,12 +10,9 @@ const ansi = (name: "first-selected" | "second-selected" | "third-selected" | "a
 const narrow = (name: "first-selected" | "accepted") => readFileSync(join(import.meta.dir, "fixtures", `opencode-autocomplete-2.0.32-ansi-narrow-${name}.ansi`), "utf8");
 const withoutDropdown = (screen: string) => screen.split("\n").filter((line) => !/^ *┃ .* ┃$/u.test(line.replace(/\u001b\[[0-9;:]*m/gu, "").trimEnd())).join("\n");
 const AGENT = "                      ┃  Build · MiniMax M3.1 Flash Free OpenCode";
-/** input drawn in the padding's own colour (255), so Tab's separator looks like the padding */
 const samePadding = (screen: string) => screen.replaceAll("\u001b[38;2;238;238;238m", "\u001b[38;2;255;255;255m");
 const MODEL_ONLY = " \u2503 MiniMax M3.1 Flash Free";
-/** the recorded accept, for the second skill row instead */
 const acceptedTwo = () => ansi("accepted").replace("@effect", "@effect-two");
-/** a recorded box with `@effect-two` typed in the input row (the rows as recorded) */
 const typedTwo = (screen: string) => screen.split("\n").map((line) => /┃ {2}@effect$/u.test(line.replace(/\u001b\[[0-9;:]*m/gu, "").trimEnd()) ? line.replace("@effect", "@effect-two") : line).join("\n");
 const acceptedVariation = (kind: string) => {
   const screen = ansi("accepted");
@@ -23,13 +20,11 @@ const acceptedVariation = (kind: string) => {
   if (kind === "bordered content") return `┃ unrelated content ┃\n${screen}`;
   return screen.replace(/\u001b\[1m/gu, "");
 };
-/** a pane whose screen is the n-th read's; writes are logged as before */
 function reads(screens: (read: number, writes: string[]) => string): SkillAttachIo & { writes: string[] } {
   let read = 0;
   return pane((writes) => screens(read++, writes));
 }
 
-/** A scripted pane: what each write did, and the screen it shows next; time moves only when waited on. */
 function pane(screens: (writes: string[]) => string): SkillAttachIo & { writes: string[] } {
   const writes: string[] = [];
   let clock = 0;
@@ -43,7 +38,6 @@ function pane(screens: (writes: string[]) => string): SkillAttachIo & { writes: 
   };
 }
 
-/** The recorded screen may lag the input; Tab changes the simulated input independently. */
 function simulatedInput(screen: (now: number) => string, afterTab: string, before = ansi("first-selected")): SkillAttachIo & { writes: string[]; input: () => string; entered: () => boolean } {
   let input = "";
   let entered = false;
@@ -73,7 +67,6 @@ describe("skillRowSelected", () => {
   it("reads the selected row from the recorded screen's colours", () => {
     expect([skillRowSelected(ansi("first-selected"), "effect"), skillRowSelected(ansi("first-selected"), "effect-two")]).toEqual([true, false]);
     expect([skillRowSelected(ansi("second-selected"), "effect"), skillRowSelected(typedTwo(ansi("second-selected")), "effect-two")]).toEqual([false, true]);
-    // the file row is selected: neither skill is
     expect([skillRowSelected(ansi("third-selected"), "effect"), skillRowSelected(typedTwo(ansi("third-selected")), "effect-two")]).toEqual([false, false]);
     expect(skillRowSelected(ansi("closed"), "effect")).toBe(false);
   });
@@ -120,9 +113,7 @@ describe("skillRowSelected", () => {
   });
 
   it.each(["narrow", "wide"] as const)("refuses the box without the recorded input area under it (%s)", (width) => {
-    // no blank border line between the box and the input row
     expect(skillRowSelected(mutate(width, (lines, row) => { lines.splice(row + 3, 1); }), "effect")).toBe(false);
-    // no prompt bottom edge under the input area
     expect(skillRowSelected(mutate(width, (lines) => { for (const [index, line] of lines.entries()) if (line.includes("╹")) lines[index] = ""; }), "effect")).toBe(false);
   });
 
@@ -155,10 +146,8 @@ describe("skillAccepted", () => {
   });
 
   it("accepts a styled token across a resize during Tab, whichever row names no agent", () => {
-    // wide before Tab, narrow model-only row after it; and the reverse
     expect(skillAccepted(narrow("accepted"), "effect", AGENT)).toBe(true);
     expect(skillAccepted(ansi("accepted"), "effect", MODEL_ONLY)).toBe(true);
-    // two rows that both name an agent are still compared
     expect(skillAccepted(ansi("accepted").replace("Build", "Plan "), "effect", AGENT)).toBe(false);
   });
 
@@ -172,9 +161,7 @@ describe("skillAccepted", () => {
   });
   it("sees an attached skill only as the recorded accept draws it", () => {
     expect(skillAccepted(ansi("accepted"), "effect", AGENT)).toBe(true);
-    // a plain typed @effect after the attached one: the last token is not attached
     expect(skillAccepted(ansi("closed"), "effect", AGENT)).toBe(false);
-    // the box still open, or the key switched the agent
     expect(skillAccepted(ansi("first-selected"), "effect", AGENT)).toBe(false);
     expect(skillAccepted(ansi("accepted").replace("Build", "Plan "), "effect", AGENT)).toBe(false);
   });
@@ -372,7 +359,6 @@ describe("typeWithSkills", () => {
   });
 
   it("types Tab's padding-coloured space once when a model-only wait ends on a blank redraw", async () => {
-    // the attached token shows while the row names no agent; the deadline read finds no prompt at all
     const io = simulatedInput((now) => now >= OPENCODE_SKILL_ACCEPT_WAIT_MS ? "" : samePadding(narrow("accepted")), "@effect ", samePadding(ansi("first-selected")));
     const result = await typeWithSkills("@effect go", ["effect"], () => true, io, async () => {});
     expect(io.input()).toBe("@effect go");
@@ -455,7 +441,6 @@ describe("typeWithSkills", () => {
   });
 
   it("records a skill as not attached when the screen after the key does not show it attached", async () => {
-    // the token stayed plain, with the same agent
     const io = pane((writes) => writes.at(-1) === "text:@effect" ? ansi("first-selected") : writes.at(-1) === `keys:${OPENCODE_SKILL_ACCEPT_KEY}` ? withoutDropdown(ansi("first-selected")) : "");
     expect(await typeWithSkills("@effect apply it", ["effect"], () => true, io, async () => {})).toMatchObject({ attached: [], missed: ["effect"] });
   });

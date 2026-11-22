@@ -5,8 +5,6 @@ import type { FrameGate, InputRowState } from "./inputRow.ts";
 import type { Translate } from "./i18n.ts";
 import { usePeekReturn, type PeekReturnDeps } from "./usePeekReturn.ts";
 
-// The real hook, fed whole frames through its own onInputRowFrame, with the recognizer's answer set
-// by the test: a screen the agent opened over its row outside a peek ended by hand (#1552).
 type Hook = ReturnType<typeof usePeekReturn>;
 type Props = { agent: string; agentStatus: string; chatMounted: boolean };
 

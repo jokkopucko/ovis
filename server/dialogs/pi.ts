@@ -32,14 +32,11 @@ const uncounted = (words: string[]): string[] => {
   return last ? [...words.slice(0, -1), last] : words.slice(0, -1);
 };
 
-/** the first line is the dialog's own; what follows is a confirm's message, or more of a wrapped line */
 const ownLine = (words: string[]): string => words[0] ?? "";
 const restOf = (words: string[]): string | undefined => words.length > 1 ? words.slice(1).join(" ") : undefined;
 
-/** the line pi types an answer into */
 const PI_INPUT_LINE_RE = /^[\u203a>\u276f]+\s*(.*)$/;
 
-/** `/model` types a filter into this line, then lists what is left under it */
 const PI_MODEL_FILTER_RE = /^[\u203a>\u276f]\s*$/;
 
 const PI_MODEL_DEFAULT_RE = /\s*\u00b7\s*default$/;
@@ -64,7 +61,6 @@ function piDialogRows(lines: string[], hintIndex: number): { rows: { line: strin
   const rows: { line: string; cursor: boolean }[] = [];
   let index = hintIndex - 1;
   while (index >= 0 && !cleanLine(lines[index]!)) index -= 1;
-  // read upwards, so the wrapped rest of a row is met before the row it belongs to
   let rest: string[] = [];
   for (; index >= 0; index -= 1) {
     const raw = lines[index]!.replace(ANSI_RE, "");
@@ -74,11 +70,11 @@ function piDialogRows(lines: string[], hintIndex: number): { rows: { line: strin
     rows.unshift({ line: [line, ...rest].join(" "), cursor: /^[\u2192\u276f\u279c]\s*\S/.test(line) });
     rest = [];
   }
-  // lines one column in with no row over them are not a wrapped option: they stand as they are,
-  // for the caller to refuse (the slash palette's own first line, for one)
+  // lines one column in with no row over them are not a wrapped option (the slash palette's own
+  // first line, for one): they stand as rows without the cursor, which a first read refuses; a
+  // `moved` read keeps them as options, and the answer route then finds the card's id changed
   rows.unshift(...rest.map((line) => ({ line, cursor: false })));
   const title: string[] = [];
-  // the run of lines right over the rows' blank: past the next blank is whatever the pane showed before
   for (; index >= 0 && title.length < 8; index -= 1) {
     if (isDivider(lines[index]!)) break;
     const line = cleanLine(lines[index]!);
@@ -182,10 +178,8 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
   // and the read before its Enter looks where it stands (the answer route)
   const cursor = block.rows.findIndex((row) => row.cursor);
   if (moved ? cursor < 0 : cursor !== 0) return null;
-  // Yes/No reads as a confirmation; anything else is a question asked among its options
   const labels = rows.map((row) => row[2]!.trim());
   const confirming = labels.length === 2 && /^yes\b/i.test(labels[0]!) && /^no\b/i.test(labels[1]!);
-  // a select has a title alone: a second line is the rest of it, wrapped
   const text = (words: string[]) => confirming
     ? { title: ownLine(words), question: restOf(words) ?? ownLine(words) }
     : { title: "", question: words.join(" ") };

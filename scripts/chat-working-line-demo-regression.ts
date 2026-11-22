@@ -7,24 +7,19 @@ import panes from "../site/demo/fixtures/panes.json";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// The chat's Working line, on the unmodified app over the demo's fixture transport: the demo's
-// "api" Claude pane works, and the "flaky" one rests on a finished turn, to which the script adds
-// turns as a transcript gains them. All files and HTTP traffic stay in this disposable,
-// loopback-only app; no herdr session is opened.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-working-line-demo-"));
 
 interface Frame {
   loading: boolean;
-  /** "Working…" heads and lines under the rows, outside any turn */
   footer: string[];
   rows: number;
-  /** the last row's work blocks: live or done, open or folded, and their title */
   lastBlocks: string[];
   lastRow: string;
 }
 
-/** Records one pane's chat, from now and at each frame where it changed, until `stop` returns the frames. */
 const record = (page: Page, pane: string): Promise<void> => page.evaluate((id) => {
   const frames: Frame[] = [];
   const shown = (node: Element): boolean => (node as HTMLElement).getClientRects().length > 0;
@@ -52,11 +47,9 @@ const stop = (page: Page): Promise<Frame[]> => page.evaluate(() => {
   delete w.workingFrames;
   return frames;
 });
-/** two painted frames: whatever a state change draws is on screen by then */
 const painted = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 const status = (page: Page, pane: string, value: "working" | "idle" | "done"): Promise<void> => page.evaluate(([id, next]) =>
   (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id!, next!), [pane, value]);
-/** The pane's transcript gains these turns after its own, and the app is told it changed. */
 const addTurns = (page: Page, pane: string, turns: ConversationTurn[]): Promise<void> => page.evaluate(([id, added]) => {
   const w = window as unknown as { addedTurns: Record<string, unknown>; conversationChanged(pane: string): void };
   w.addedTurns[id as string] = added;
@@ -68,8 +61,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Holds one pane's conversation reads until the script releases them, as a slow first read would.
-  // Adds turns to a pane's conversation, and tells the app of the change as the server's socket does.
   const hold = `<script>(() => {
     const demo = window.fetch;
     const held = [];
@@ -101,17 +92,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${hold}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = (pane: string): string => `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(pane)}&view=chat`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -121,12 +102,13 @@ try {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
         for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
       }, [panes.api, panes.flaky, panes.omp]);
+      // the first check reads the Claude pane's running turn: it stays at work, or on a slow runner the
+      // demo ends it (4.5s in) before the check comes
+      await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
 
-      // A pane switch to a working Claude pane, whose first read is slow: the chat is loading, and
-      // the running turn's own head comes with its rows. A head drawn before them goes when they land.
       await page.goto(url(panes.omp));
       await page.locator(`.pane-frame[data-layout-pane="${panes.omp}"] [data-chat-row]`).first().waitFor();
       await page.evaluate((id) => { (window as unknown as { holdConversation: string }).holdConversation = id; }, panes.api);
@@ -206,9 +188,6 @@ try {
         "no Working head stands under the answer while the status catches up with it");
       console.log("PASS a turn's answer drawn 300 ms before the pane rests has no Working head under it");
 
-      // The agent works on by itself long enough for its head to show, and its next turn is read in
-      // already finished, while herdr still says working. The wait runs again for that new turn: no
-      // head stands under its answer either.
       const answeredTurns: ConversationTurn[] = [asked, { role: "assistant", ts: answeredAt, parts: [
         { kind: "tool", name: "Bash", summary: "ls shelves", input: JSON.stringify({ command: "ls shelves" }), output: "a b c", call_id: "shelves", state: "ok" },
         { kind: "text", text: "There are three shelves.", phase: "final_answer" },
@@ -272,9 +251,6 @@ try {
         "no Working head stands under an answer while a status lag outlasts the wait");
       console.log("PASS an answer drawn 1.5 s before the pane rests has no Working head under it");
 
-      // An approval answered: the turn's answer is drawn while herdr still says blocked, then working
-      // for longer than the head's wait, then the pane rests. Waiting on the user is no rest under the
-      // answer, so no head of a next turn shows under it.
       const shelved: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "Shelve the atlas." }] };
       const shelvedBefore = [...atlasTurns, dusted, { role: "assistant" as const, ts: "2026-11-04T09:01:00.000Z", parts: [{ kind: "text" as const, text: "Shelf c is dusted.", phase: "final_answer" as const }] }];
       await addTurns(page, panes.flaky, [...shelvedBefore, shelved]);
@@ -325,7 +301,6 @@ try {
       await status(page, panes.flaky, "done");
       await painted(page);
       await addTurns(page, panes.flaky, [...bookTurns, counting]);
-      // the new turn's row, open or folded: its header counts the command
       await page.waitForFunction((id) => [...document.querySelectorAll(`.pane-frame[data-layout-pane="${id}"] [data-chat-row]`)].at(-1)?.textContent?.includes("1 command") === true, panes.flaky);
       await painted(page);
       await addTurns(page, panes.flaky, [...bookTurns, { ...counting, parts: [...counting.parts, { kind: "text", text: "There are forty books.", phase: "final_answer" }] }]);
@@ -336,7 +311,6 @@ try {
         "the turn stays at work until its answer is drawn");
       console.log("PASS a turn whose answer is read after herdr rests stays at work until the answer is drawn");
 
-      // a rest with no answer to come (a turn stopped from the terminal): the turn ends within the wait
       await addTurns(page, panes.flaky, [...bookTurns.slice(0, -1), { role: "user", ts: null, parts: [{ kind: "text", text: "Stop here." }] }]);
       await status(page, panes.flaky, "working");
       await flaky.getByText("Stop here.", { exact: true }).waitFor();

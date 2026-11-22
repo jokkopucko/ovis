@@ -46,7 +46,6 @@ async function events(response: Response): Promise<VoiceEvent[]> {
   return (await response.text()).split("\n").filter(Boolean).map((line) => JSON.parse(line) as VoiceEvent);
 }
 
-/** an SSE answer cut at fixed byte offsets: mid-line and mid-character */
 function sse(events: unknown[], cuts: number[]): Response {
   const bytes = new TextEncoder().encode(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
   const bounds = [0, ...cuts, bytes.length];

@@ -10,7 +10,6 @@ import { handlePaneRequest } from "../pane-routes.ts";
  * A Chat send to a Claude Code pane whose rewind dialog is open (recorded, 2.1.304, 40 columns): herdr
  * still reports the agent idle, and the dialog shows no input box. On a Summarize row the confirm step
  * is an add-context field: a message typed there, and its Enter, would start "Summarize from here".
- * The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
  */
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
@@ -87,7 +86,6 @@ it("refuses text sent over HTTP to a Claude Code pane while its rewind dialog is
   };
   expect(await post("/api/pane/input", { pane_id: "w:p1", text: "hello from chat\r" })).toEqual([409, { error: expect.objectContaining({ code: "rewind_dialog_open" }) }]);
   expect(typed()).toEqual([]);
-  // Esc from the terminal's keys is how the user leaves the dialog
   expect((await post("/api/pane/keys", { pane_id: "w:p1", keys: ["esc"] }))[0]).toBe(200);
   expect(typed().map((call) => call.method)).toEqual(["pane.send_keys"]);
 });

@@ -7,7 +7,6 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_KO: Record<string, string> = {
-  "Next": "다음",
   "Next question": "다음 질문",
   "Edit queued message": "대기 중인 메시지 편집",
   "Sent to Pi · waiting for transcript": "Pi로 보냄 · 대화 기록을 기다리는 중",
@@ -18,8 +17,10 @@ export const COMPOSER_KO: Record<string, string> = {
   "Update this PC to use masked input.": "비밀번호 입력창을 사용하려면 이 PC의 앱을 업데이트하세요.",
   "Check the terminal before entering the secret again.": "다시 입력하기 전에 터미널의 상태를 확인하세요.",
   "Sent directly to this terminal. Never saved as a draft or queued.": "이 터미널로 바로 보냅니다. 초안이나 전송 대기열에 저장하지 않습니다.",
+  "This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.": "이 PC의 앱이 업데이트되지 않았습니다. 입력한 내용은 프롬프트가 아직 있는지 확인하지 않고 터미널로 보냅니다.",
   "Only the first {count} of {total} files were taken.": "파일 {total}개 중 앞의 {count}개만 가져왔습니다.",
   "Not sent: the page that started this agent left before it was ready. Send it now or discard it.": "보내지 않음: 이 에이전트를 시작한 페이지가 준비되기 전에 떠났습니다. 지금 보내거나 버리세요.",
+  "Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.": "보내지 않음: omp가 시작되는 동안 터미널에 입력이 있었습니다. 터미널의 입력 줄을 확인한 뒤 이 메시지를 보내세요.",
   "Not sent: the agent started for this message has ended. Review the message before sending it.": "보내지 않음: 이 메시지를 위해 시작한 에이전트가 종료되었습니다. 보내기 전에 메시지를 확인하세요.",
   "Not sent: the pane's terminal or agent session changed. Review the message before sending it again.": "보내지 않음: 패널의 터미널이나 에이전트 세션이 바뀌었습니다. 다시 보내기 전에 메시지를 확인하세요.",
   "Skip question": "질문 건너뛰기",
@@ -71,6 +72,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "Remove {file}": "{file} 제거",
   "Message": "메시지",
   "Attach": "첨부",
+  "Waiting for omp to start…": "omp가 시작되기를 기다리는 중…",
   "Next turn": "다음 차례",
   "Waits for Send now": "지금 보내기를 누르면 보냅니다",
   "Discard saved copy": "저장된 사본 버리기",
@@ -82,6 +84,8 @@ export const COMPOSER_KO: Record<string, string> = {
   "Not sent: this view only watches the pane.": "보내지 않음: 이 화면은 패널을 보기만 합니다.",
   "Not sent: Claude Code's input box in the terminal is not empty. Send or clear it there, then send this message.": "보내지 않음: 터미널의 Claude Code 입력란이 비어 있지 않습니다. 그곳에서 보내거나 지운 뒤 이 메시지를 보내세요.",
   "Not sent: Hermes' input in the terminal is not empty. Send or clear it there, then send this message.": "보내지 않았습니다: 터미널의 Hermes 입력칸이 비어 있지 않습니다. 터미널에서 보내거나 지운 다음 이 메시지를 보내세요.",
+  "Not sent: the agent's input box in the terminal holds text typed there. Send or clear it there, then send this message.": "보내지 않았습니다: 터미널의 에이전트 입력칸에 입력한 글자가 있습니다. 터미널에서 보내거나 지운 다음 이 메시지를 보내세요.",
+  "Not sent: Claude Code's input box in the terminal holds a paste or image it folded, whose lines are not shown here, so it cannot be sent over. Send or clear it there, then send this message.": "보내지 않았습니다: 터미널의 Claude Code 입력칸에 접힌 붙여넣기나 이미지가 있어 그 줄이 여기 보이지 않으므로 그 위로 보낼 수 없습니다. 터미널에서 보내거나 지운 다음 이 메시지를 보내세요.",
   "Not sent: Claude Code's input box in the terminal already holds “{draft}”.": "보내지 않음: 터미널의 Claude Code 입력란에 이미 입력된 내용이 있습니다(“{draft}”).",
   "Clear it and send": "지우고 보내기",
   "Send it": "그대로 보내기",
@@ -239,12 +243,12 @@ export const COMPOSER_KO: Record<string, string> = {
   "Question {n}": "질문 {n}",
   "Tab switched OpenCode's agent from {from} to {to}. Nothing more was typed. Check the terminal before sending again.": "Tab 키로 OpenCode 에이전트가 {from}에서 {to}(으)로 바뀌었습니다. 더 이상 입력하지 않았습니다. 다시 보내기 전에 터미널을 확인하세요.",
   "OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.": "OpenCode가 다른 스킬을 첨부했습니다. 채팅 텍스트는 여기에 남아 있습니다. 다시 보내기 전에 터미널을 확인하세요.",
-  // quoting a selection into the composer (lib/chatQuote.ts)
+  "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.": "Grok 대기열에서 먼저 대기 중인 {count}개 뒤에 있습니다. 그 메시지들이 보내진 뒤에 보냅니다. 더 이상 누르지 않았습니다. 이 사본은 확인용으로 여기에 남으며 다시 보내지 않습니다.",
+  "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.": "Grok 대기열에 있습니다. Grok의 차례가 되면 보냅니다. 더 이상 누르지 않았습니다. 이 사본은 확인용으로 여기에 남으며 다시 보내지 않습니다.",
   "Quote": "인용",
   "Quote it in your message": "메시지에 인용",
   "Selection": "선택한 텍스트",
   "Too long to quote: shorten the message or the selection.": "인용하기에 너무 깁니다. 메시지나 선택을 줄이세요.",
-  // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "답변에 코멘트",
   "Add a comment": "코멘트 추가",
   "1 comment waiting": "코멘트 1개 대기 중",

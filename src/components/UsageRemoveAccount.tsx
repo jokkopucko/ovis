@@ -3,7 +3,7 @@ import { Trash2 } from "lucide-react";
 import type { ProviderUsage } from "../../shared/protocol.ts";
 import { ApiError, removeUsageAccount, restoreUsageAccount } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { PROVIDER_NAME, usageName } from "../lib/usage.ts";
+import { PROVIDER_NAME, RECORDER_NAME, usageName } from "../lib/usage.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 
 /** Forget a list entry, not a CLI credential: Restore under Removed from Ovis, or its next followed sign-in, brings it back. */
@@ -17,7 +17,9 @@ export function UsageRemoveAccount({ usage }: { readonly usage: ProviderUsage })
       <Trash2 aria-hidden="true" />
     </button>
     {confirm && <ConfirmDialog title={t("Remove {name}?", { name })}
-      body={t("Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.")}
+      body={usage.recorded?.signed_in === false
+        ? t("Remove this account from Ovis? {tool} keeps its record of it, and Restore under Removed from Ovis brings it back.", { tool: RECORDER_NAME[usage.recorded.by] })
+        : t("Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.")}
       confirmLabel={t("Remove")} onClose={() => setConfirm(false)} onConfirm={async () => {
         const parent = trigger.current?.closest<HTMLElement>("[data-section]");
         await removeUsageAccount(usage.key);
@@ -28,7 +30,6 @@ export function UsageRemoveAccount({ usage }: { readonly usage: ProviderUsage })
   </>;
 }
 
-/** One provider's accounts removed from Ovis that this PC still lists, each with Restore. */
 export function UsageRemovedAccounts({ removed }: { readonly removed: readonly ProviderUsage[] }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
@@ -38,7 +39,6 @@ export function UsageRemovedAccounts({ removed }: { readonly removed: readonly P
   const restore = async (usage: ProviderUsage): Promise<void> => {
     setBusy(true);
     setError(null);
-    // the row goes once the list is read again: the provider's section keeps the focus
     const parent = list.current?.closest<HTMLElement>("[data-section]");
     try {
       await restoreUsageAccount(usage.key);

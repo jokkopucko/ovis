@@ -75,7 +75,7 @@ export function usePairFromAddress({ locked, pairCode, auth, consumePairCode, on
     if (locked !== false || pairCode === "" || auth?.via === "device") return;
     const code = consumePairCode();
     if (code === "") return;
-    pairDevice(code, deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0)).then(() => { onPaired(); return loadHealth(); }).catch(() => { /* the gate, if any, reports it */ });
+    pairDevice(code, deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0)).then(() => { onPaired(); return loadHealth(); }).catch(() => {});
   }, [locked, pairCode, auth, consumePairCode, onPaired, loadHealth]);
 }
 

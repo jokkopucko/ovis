@@ -10,7 +10,6 @@ describe("chatIsBlank", () => {
     expect(chatIsBlank(blank)).toBe(true);
   });
 
-  // also the moment a changed history is read again: ChatView drops its turns and is loading until the answer
   test("a loading conversation is not", () => {
     expect(chatIsBlank({ ...blank, loaded: false })).toBe(false);
   });
@@ -33,7 +32,6 @@ describe("chatIsBlank", () => {
     expect(chatIsBlank({ ...blank, prompt: true })).toBe(false);
   });
 
-  // the newest record alone can fill a page's byte budget: no turn on it, and pages above it
   test("a newest page with no turns under pages not read yet is not", () => {
     expect(chatIsBlank({ ...blank, older: true })).toBe(false);
   });
@@ -87,11 +85,9 @@ describe("showsGreeting", () => {
   test("two messages on their way settle one by one: a refused one does not undo the other", () => {
     const both = afterSend(afterSend(shown.memory));
     expect(both.pending).toBe(2);
-    // the first is refused while the second is still on its way: the greeting stays away
     const refused = afterSettled(both, false, "h1");
     expect(showsGreeting({ ...shown, memory: refused })).toBe(false);
     expect(showsGreeting({ ...shown, memory: afterSettled(refused, true, "h1") })).toBe(false);
-    // in the other order too, and with both refused it comes back
     expect(showsGreeting({ ...shown, memory: afterSettled(afterSettled(both, true, "h1"), false, "h1") })).toBe(false);
     expect(showsGreeting({ ...shown, memory: afterSettled(refused, false, "h1") })).toBe(true);
   });
@@ -224,7 +220,6 @@ describe("greetingFits", () => {
 
 describe("roomOverComposer", () => {
   test("from the stack's top to the input card of the lifted composer", () => {
-    // a 400px stack, a 110px composer lifted 110px, its card 30px below its top
     expect(roomOverComposer(400, 110, composerLift(400, 110, 70), 30)).toBe(210);
   });
 

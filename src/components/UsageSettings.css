@@ -11,9 +11,11 @@
 .usage-provider .usage-provider-heading { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-strong); font-weight: var(--fw-medium); }
 .usage-account-identity { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: var(--space-1); padding-block: var(--space-2); }
 .usage-account-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--text-dim); font-size: var(--fs-xs); }
+.usage-account-fact { display: inline-block; }
 .usage-account-status { display: inline-flex; align-items: center; gap: var(--space-1); }
 .usage-account-status::before { content: ""; width: var(--space-1); height: var(--space-1); border-radius: var(--radius-pill); background: var(--status-done); }
 .usage-account-status.has-problem::before { background: var(--status-blocked); }
+.usage-account-status.is-recorded::before { background: var(--text-dim); }
 .usage-removed { display: flex; flex-direction: column; gap: var(--space-2); }
 .usage-removed-title { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); font-weight: var(--fw-medium); }
 .usage-removed .usage-accounts-account { color: var(--text); font-size: var(--fs-sm); }

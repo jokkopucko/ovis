@@ -3,7 +3,6 @@ import { sessionSnapshot } from "./herdr/client.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import type { OpenCodePromptEntry } from "./dialogs/shared.ts";
 
-/** Owned by one server; reads cannot overwrite progress made after they started. */
 export class OpenCodePromptState {
   readonly entries = new Map<string, OpenCodePromptEntry>();
   private snapshotIssued = 0;
@@ -23,8 +22,6 @@ export class OpenCodePromptState {
       this.latestSnapshot = snapshot;
     }
     if (!this.latestSnapshot || issued === this.snapshotApplied) return snapshot;
-    // Only native OpenCode drafts need this ordering. Other agents' screen readers keep the
-    // snapshot that accompanies their own read, including a newer status in a delayed reply.
     const nativeIds = new Set([...snapshot.panes, ...this.latestSnapshot.panes]
       .filter((pane) => pane.agent === "opencode").map((pane) => pane.pane_id));
     return { ...snapshot, panes: [

@@ -1,9 +1,3 @@
-/*
- * The relay dashboard (RelayDashboard.tsx): a 240px sticky sidebar on --bg-panel beside a
- * 1280px-capped main column on --bg. At 768px and under, one column with a sticky glass top bar
- * (--header-h + safe area) and a fixed 5-item bottom tab bar (--tabbar-h + safe area).
- */
-
 .relay-dash-screen {
   display: grid; min-height: 100dvh; min-height: var(--app-height, 100dvh); background: var(--bg);
 }
@@ -11,8 +5,6 @@
 .relay-dash {
   display: grid; grid-template-columns: var(--relay-sidebar-w) minmax(0, 1fr); min-width: 0;
 }
-
-/* ---- sidebar ---- */
 
 .relay-dash-side {
   background: var(--bg-panel); border-right: var(--hairline) solid var(--divider);
@@ -95,8 +87,6 @@
 .relay-dash-foot .account-link { margin-top: 0; text-align: start; }
 .relay-dash-foot .account-fineprint { margin-top: 0; }
 
-/* ---- the page ---- */
-
 .relay-dash-main, .relay-dash-pcs-list { min-width: 0; }
 
 .relay-dash-content {
@@ -116,8 +106,6 @@
 }
 
 .relay-dash-title:focus, .relay-dash-title:focus-visible { outline: none; }
-
-/* ---- section headings & view stack ---- */
 
 .relay-dash-h {
   margin: var(--space-6) 0 var(--space-3); font-size: var(--fs-xs); font-weight: var(--fw-medium);
@@ -142,8 +130,6 @@
 
 .relay-dash-account-box { display: flex; flex-direction: column; gap: var(--space-3); }
 .relay-dash-account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-
-/* ---- relay inventory & PCs split ---- */
 
 .relay-dash-relays {
   display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; font-size: var(--fs-sm); color: var(--text);
@@ -177,8 +163,6 @@
   .relay-dash-pcs-split.is-selected { grid-template-columns: minmax(0, 1fr) var(--relay-detail-w); }
 }
 
-/* Below 1100px the details replace the list as a full view (RelayDashboard.tsx, IS-TABLE-08). Their heading takes the
-   focus and shows no ring, as the page title does not: it is not interactive. */
 .relay-dash-pcs-split > .relay-pc-details { scroll-margin-top: var(--space-4); }
 
 .relay-dash-pcs-split .relay-pc-details-title:focus, .relay-dash-pcs-split .relay-pc-details-title:focus-visible { outline: none; }
@@ -192,8 +176,6 @@
 @media (pointer: coarse) {
   .relay-dash-nav-item { min-height: var(--touch-target); }
 }
-
-/* ---- a phone (768px and under) ---- */
 
 html:lang(ja) .relay-dash { word-break: auto-phrase; }
 

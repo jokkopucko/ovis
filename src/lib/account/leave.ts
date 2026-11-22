@@ -70,7 +70,8 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   try { await service.signOut(); }
   catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
   // the account's PCs tombstone this key: never sign in with it again (a kept pairing holds its own copy of the key)
-  await options.accountStore.clear((current) => !sameSignIn(current, session));
+  // unsent blocks stay: only the service's answer takes one away (S32-1)
+  await options.accountStore.clear((current) => !sameSignIn(current, session), { unsent: () => true });
   return { remove, unconfirmed };
 }
 
@@ -98,7 +99,6 @@ export async function removeFromAccount(options: {
   await rememberDevice(options.accountStore, remove);
   // a PC applies the remove only where this device is a member: pairings that PC confirmed for this account
   const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki && device.account === session.account).map((device) => device.server_id));
-  // the PC in view first: it answers at once, whatever the account service does next
   if (options.here) {
     // the PC answers every record's outcome with 200: a refusal there is a failure here
     const answer = await (await post(options.here, "/api/account/records", { records: [remove] })).json() as { results?: { outcome?: string; code?: string }[] };
@@ -111,7 +111,6 @@ export async function removeFromAccount(options: {
   const failed: string[] = [];
   for (let start = 0; start < reached.length; start += 32) {
     const batch = reached.slice(start, start + 32);
-    // a refused or failed post leaves those PCs to be named, not the whole disconnect undone
     try { await options.service.postRecord(batch, remove); } catch { failed.push(...batch); }
   }
   // not reached: listed PCs this device is not a member of, linked PCs the account does not list, and failed posts

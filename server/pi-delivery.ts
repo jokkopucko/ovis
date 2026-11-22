@@ -7,15 +7,10 @@ import { skillPromptMessage } from "./skill-activity.ts";
 import { piMessage, record, resultText } from "./transcript-records.ts";
 
 export interface PiDeliveryAnchor {
-  /** Exact path resolved from the live Pi session. */
   path: string;
-  /** Device/inode of an already-written session, or null while Pi has not created it yet. */
   file: string | null;
-  /** Pi session-header id, where the file already has one. */
   session: string | null;
-  /** Active leaf immediately before Ovis pressed Enter. */
   leaf: string | null;
-  /** Exact complete-line append boundary and a digest of its bounded, byte-exact tail. */
   size: number;
   prefix: string;
   /** Wall-clock time of this capture, taken before Ovis pressed Enter. Pi stamps a user message
@@ -27,14 +22,12 @@ export interface PiDeliveryAnchor {
 export interface PiDeliveryCandidate {
   id: string;
   text: string;
-  /** The pane's catalog listed this `/name` as a prompt template when it was sent. */
   template?: boolean;
   anchor: PiDeliveryAnchor;
 }
 
 export type PiReceiptReservation<Owner extends object> = { readonly owner: Owner; active: boolean };
 
-/** Per-connection retained receipts and synchronous reservations across every pane. */
 export class PiReceiptCapacity<Owner extends object> {
   private readonly retained = new Map<Owner, number>();
   private readonly reserved = new Map<Owner, number>();
@@ -73,7 +66,6 @@ type PiSkillSend = { name: string; request: string };
 type BranchEntry = { id: string; parent: string | null; role: string; text: string; skill?: PiSkillSend; at: number | null; start: number; end: number };
 const TAIL_BYTES = 64 * 1024;
 const MAX_APPEND_BYTES = 32 * 1024 * 1024;
-/** Permanent for this anchor: retrying cannot shrink its append or retained history. */
 class PiDeliveryBudgetExceeded extends Error {}
 /** A writer may pause between chunks without changing stat during this capture attempt. */
 class PiDeliveryIncomplete extends Error {}
@@ -83,7 +75,7 @@ const fileId = (path: string): string | null => {
   catch { return null; }
 };
 
-/** Positioned reads are bounded independently of the transcript's cumulative size.
+/**
  * Pi owns an append-only log: inode, header, exact boundary tails and parent links attest
  * continuation. This is not an integrity checksum for arbitrary edits to older history. */
 function bytesAt(fd: number, start: number, length: number): Buffer {
@@ -96,7 +88,6 @@ function bytesAt(fd: number, start: number, length: number): Buffer {
   }
   return bytes;
 }
-/** A short digest of the bounded tail, so a waiting receipt does not hold the tail's bytes. */
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 const EMPTY_TAIL = digest(Buffer.alloc(0));
 function tailAt(fd: number, end: number): string {
@@ -201,7 +192,6 @@ function piSkillExpansion(text: string): PiSkillSend | undefined {
   return request === undefined ? undefined : { name: name!, request };
 }
 
-/** Read just the final complete record, not the old branch or the shared tree index. */
 function lastEntry(fd: number, size: number): BranchEntry {
   if (size === 0 || bytesAt(fd, size - 1, 1)[0] !== 0x0a) throw new PiDeliveryIncomplete("Partial Pi entry");
   let start = size - 1;
@@ -220,7 +210,6 @@ function lastEntry(fd: number, size: number): BranchEntry {
 
 type AppendState = { scanned: number; tail: string; entries: BranchEntry[] };
 const appends = new WeakMap<PiDeliveryAnchor, AppendState>();
-/** Only new complete records are parsed. A torn final line waits for its newline. */
 function appended(fd: number, size: number, anchor: PiDeliveryAnchor): AppendState {
   const previous = appends.get(anchor) ?? { scanned: anchor.size, tail: anchor.prefix, entries: [] };
   if (size < previous.scanned || tailAt(fd, previous.scanned) !== previous.tail) throw new Error("Pi append changed");
@@ -244,7 +233,6 @@ function appended(fd: number, size: number, anchor: PiDeliveryAnchor): AppendSta
 
 export type PiDeliveryCapture = { anchor: PiDeliveryAnchor | null; retry: boolean };
 
-/** Try once to capture Pi's active transcript position, distinguishing a concurrent write from an unreadable transcript. */
 export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = false, expectedSession?: string): PiDeliveryCapture {
   const at = Date.now();
   let fd: number | undefined;
@@ -266,12 +254,10 @@ export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = fals
   } finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/** Capture the exact active Pi transcript position before Ovis types Enter. */
 export function capturePiDeliveryAnchor(path: string, allowMissing = false, expectedSession?: string): PiDeliveryAnchor | null {
   return capturePiDeliveryAnchorAttempt(path, allowMissing, expectedSession).anchor;
 }
 
-/** Retry incomplete records and snapshots invalidated by a concurrent write. Unreadable transcripts fail at once. */
 export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing = false, expectedSession?: string,
   capture: typeof capturePiDeliveryAnchorAttempt = capturePiDeliveryAnchorAttempt,
   // fixed wait: bounded backoff lets an in-flight Pi append settle before retrying its snapshot
@@ -333,7 +319,6 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
         : undefined;
       const later = candidates.slice(index + 1);
       const claims = first ? later.filter((next) => piRecordOf(next.text, first)).length : 0;
-      // a later Ovis send's record after it: Pi moved on past this send
       const passed = first && chain.find((entry) => entry.start >= first.start && fresh(entry) && !consumedEntries.has(key(entry))
         && later.some((next) => piRecordOf(next.text, entry)));
       const own = same.find(fresh);
@@ -356,10 +341,6 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       else if (earlier) ambiguous.push(candidate.id);
       else break;
       const used = (match ?? earlier)!;
-      // Earlier-stamped copies a match passes over are accounted for by it: they cannot make a
-      // later receipt ambiguous in a later reconciliation, whose scan starts over. One stamped no
-      // earlier than a later same-text receipt's capture (a clock set back between captures) may be
-      // that receipt's own record, so it stays.
       const laterCapture = Math.min(...candidates.slice(index + 1)
         .filter((later) => later.text === candidate.text).map((later) => later.anchor.at));
       for (const entry of same) {
@@ -375,8 +356,6 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
     for (const key of matchedEntries) consumedEntries.add(key);
     return { consumed, changed, ...(ambiguous.length ? { ambiguous } : {}), retry: false };
   } catch (error) {
-    // No partial matches were committed. Conservatively settle the whole candidate batch:
-    // FIFO correlation cannot safely cross the receipt whose bounded history is unavailable.
     if (error instanceof PiDeliveryBudgetExceeded) return { consumed: [], changed: [], unavailable: candidates.map((candidate) => candidate.id), retry: false };
     return { consumed: [], changed: [], retry: true };
   }

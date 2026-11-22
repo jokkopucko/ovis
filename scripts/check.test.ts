@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { CI_NODE_MAJOR, DESK_WAIT_MS, HOST_LIMITS, MAX_LOCK_PORT, MAX_RUNS_LIMIT, acquire, acquireWaiting, takeTicket, ticketDesk, ticketPorts, applyHostLimits, checkoutIdentity, describeGroup, describeHolders, endGroup, isolate, lock, lockPort, maxRuns, needsLock, plan, processStart, sanitizeCommand, takeoverLock, stopSessions, teardown, waitSeconds, warnNodeVersionMismatch } from "./check.ts";
+import { CI_NODE_MAJOR, DESK_WAIT_MS, HOST_LIMITS, MAX_LOCK_PORT, MAX_RUNS_LIMIT, acquire, acquireWaiting, takeTicket, ticketDesk, ticketPorts, applyHostLimits, checkoutIdentity, describeGroup, describeHolders, endGroup, holdFile, isolate, lock, lockPort, maxRuns, needsLock, plan, processStart, sanitizeCommand, slotsDir, takeoverLock, stopSessions, teardown, waitSeconds, warnNodeVersionMismatch } from "./check.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -34,12 +34,13 @@ function freePortRange(count: number): number {
     try {
       for (let index = 0; base + index <= ticketPorts(base, count, count).at(-1)!; index++) held.push(Bun.listen({ hostname: "127.0.0.1", port: base + index, socket: { data() {} } }));
       return base;
-    } catch { /* taken: another base */ } finally {
+    } catch {} finally {
       for (const listener of held) listener.stop(true);
     }
   }
   throw new Error("no free port range");
 }
+const SLOTS_DIR_ENV = ["CHECK_SLOTS_DIR", "CHECK_SLOTS_MAX_RUNS"];
 const git = (cwd: string, ...args: string[]): void => {
   const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
@@ -84,11 +85,7 @@ describe("check environment", () => {
 
   it("acquires every slot and the admission port at the highest CHECK_LOCK_PORT it accepts", async () => {
     const base = lockPort({ CHECK_LOCK_PORT: String(MAX_LOCK_PORT) });
-    // the queue's last ticket port is the highest one a run uses
     expect(ticketPorts(base, MAX_RUNS_LIMIT, MAX_RUNS_LIMIT).at(-1)).toBe(65535);
-    // the most slots a run can ask for, so the admission port is the highest slot-range port acquire() uses.
-    // CI's runners share one loopback: a checkout of this run's own, and a wait, let two runs of
-    // this test meet at the top range without refusing each other
     const top = { slots: MAX_RUNS_LIMIT, scan: MAX_RUNS_LIMIT, pid: process.pid, checkout: `/top-${process.pid}` };
     const held = await acquireWaiting({ ...top, base }, { waitMs: 10_000, pollMs: 20 });
     if (!("release" in held)) throw new Error(`the top lock range is held on this PC: ${describeHolders(held.holders)}`);
@@ -161,10 +158,8 @@ describe("isolate", () => {
       if (process.platform !== "win32") {
         for (const name of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "OVIS_STATE_DIR"]) expect(statSync(first.env[name]!).mode & 0o777).toBe(0o700);
       }
-      // one integration file at a time unless asked otherwise
       expect(first.env["HERDR_TEST_SHARDS"]).toBe("1");
       expect(isolate({ HERDR_TEST_SHARDS: "4" }, scratch()).env["HERDR_TEST_SHARDS"]).toBe("4");
-      // the browsers of a run draw the English copy the scripts assert, whatever the desktop's language
       expect(isolate({ LANGUAGE: "ko:en_AU:en" }, scratch()).env["LANGUAGE"]).toBe("en_US:en");
     } finally {
       const dir = join(first.env["XDG_CONFIG_HOME"]!, "..");
@@ -195,7 +190,6 @@ describe("isolate", () => {
 });
 
 describe("lock", () => {
-  /** a port nothing listens on: asked of the system, then given back */
   const freePort = async (): Promise<number> => {
     const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     const port = probe.port;
@@ -251,10 +245,6 @@ describe("slots", () => {
   const release = (result: Awaited<ReturnType<typeof acquire>> | Awaited<ReturnType<typeof lock>>): void => {
     if ("release" in result) result.release();
   };
-  /**
-   * The wait between a waiting run's rounds, driven by the test: `asleep` resolves once the run is
-   * between rounds, and `wake` lets it ask again. No timer runs.
-   */
   const stepper = () => {
     let asleep = Promise.withResolvers<void>();
     let wake = Promise.withResolvers<void>();
@@ -264,7 +254,6 @@ describe("slots", () => {
       wake: () => { asleep = Promise.withResolvers(); const woken = wake; wake = Promise.withResolvers(); woken.resolve(); },
     };
   };
-  /** the slot range and the queue's ticket ports above it, for slots/scan of 3 */
   const queueRange = () => freeRange(3);
 
   it("takes the first free slot when another checkout holds an earlier one", async () => {
@@ -288,7 +277,6 @@ describe("slots", () => {
       const refused = await acquire({ slots: 2, scan: 3, base, pid: 222, checkout: "/b" });
       expect(refused).toEqual({ refused: "busy", holders: [{ port: base, heldBy: 111, checkout: "/a" }, { port: base + 1, heldBy: 333, checkout: "/c" }] });
       expect(describeHolders((refused as { holders: Parameters<typeof describeHolders>[0] }).holders)).toBe(`port ${base}: pid 111 in /a; port ${base + 1}: pid 333 in /c`);
-      // what it refused it does not keep: the third port is still free
       const third = await lock(base + 2, 444);
       expect("release" in third).toBe(true);
       release(third);
@@ -304,7 +292,6 @@ describe("slots", () => {
     try {
       const refused = await acquire({ slots: 2, scan: 3, base, pid: 222, checkout: "/mine" });
       expect(refused).toEqual({ refused: "same-checkout", holders: [{ port: base + 2, heldBy: 111, checkout: "/mine" }] });
-      // the slot it took on the way is given back
       const first = await lock(base, 333);
       expect("release" in first).toBe(true);
       release(first);
@@ -353,7 +340,6 @@ describe("slots", () => {
       const fastBeside = await acquire({ slots: 0, scan: 3, base, checkout: "/same", checkoutLock });
       try { expect(fastBeside).toMatchObject({ refused: "same-checkout" }); }
       finally { release(fastBeside); }
-      // another checkout's fast run is no business of this one
       const elsewhere = await acquire({ slots: 0, scan: 3, base, checkout: "/other", checkoutLock: join(scratch(), "checkout.lock") });
       try { expect(elsewhere).toMatchObject({ port: null }); }
       finally { release(elsewhere); }
@@ -362,7 +348,6 @@ describe("slots", () => {
 
   it("admits a run that takes no slot while another run holds the admission port", async () => {
     const base = await freeRange(3);
-    // base + max(slots, scan): the port a herdr-backed run holds while it is admitted
     const admitting = await lock(base + 3, 111, "/admitting");
     if (!("release" in admitting)) throw new Error("the admission port was free");
     try {
@@ -408,7 +393,6 @@ describe("slots", () => {
     const marker = `${checkoutLock}.check-lock`;
     writeFileSync(marker, JSON.stringify({ pid: Number(finished.stdout.trim()), checkout: "/dead" }));
     const script = fileURLToPath(new URL("./check.ts", import.meta.url));
-    // a run that took the lock and is killed before it lets go, as a SIGKILL mid-takeover would leave it
     const holder = Bun.spawn([process.execPath, "-e", `const { takeoverLock } = await import(${JSON.stringify(script)}); const lock = await takeoverLock(process.env.MARKER, JSON.stringify({ pid: process.pid, checkout: "/taking-over" })); console.log("release" in lock ? "HELD" : "NOT HELD"); setInterval(() => {}, 1000);`], {
       env: { ...process.env, MARKER: marker }, stdout: "pipe", stderr: "inherit",
     });
@@ -439,11 +423,9 @@ describe("slots", () => {
     const finished = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
     expect(finished.status).toBe(0);
     const marker = `${checkoutLock}.check-lock`;
-    // what a run killed right after linking its reclaim leaves: both files name a pid that is gone
     const stale = JSON.stringify({ pid: Number(finished.stdout.trim()), checkout: "/dead" });
     writeFileSync(marker, stale);
     writeFileSync(`${marker}.reclaim`, stale);
-    // two runs on other lock bases, as two checks started at once would be
     const firstBase = await freeRange(3);
     let secondBase = await freeRange(3);
     while (Math.abs(firstBase - secondBase) <= 3) secondBase = await freeRange(3);
@@ -474,8 +456,10 @@ describe("slots", () => {
     const checkoutLock = join(scratch(), "checkout.lock");
     const marker = `${checkoutLock}.check-lock`;
     // a parent that never reaps its child: the child exits at once, and the parent's SIGCHLD, which the
-    // kernel sends as the child becomes a zombie, says so
-    const parent = spawn("perl", ["-MPOSIX", "-e", '$| = 1; $SIG{CHLD} = sub { print "ZOMBIE\\n" }; my $pid = fork() // die "fork: $!"; POSIX::_exit(0) unless $pid; print "PID $pid\\n"; POSIX::pause() while 1;'], { stdio: ["ignore", "pipe", "inherit"] });
+    // kernel sends as the child becomes a zombie, says so. The signal is held back until the parent waits
+    // for it: one that lands between the parent's last look for signals and its wait is seen by neither,
+    // and the parent would wait for ever without a word
+    const parent = spawn("perl", ["-MPOSIX", "-e", '$| = 1; POSIX::sigprocmask(POSIX::SIG_BLOCK, POSIX::SigSet->new(POSIX::SIGCHLD)); $SIG{CHLD} = sub { print "ZOMBIE\\n" }; my $pid = fork() // die "fork: $!"; POSIX::_exit(0) unless $pid; print "PID $pid\\n"; POSIX::sigsuspend(POSIX::SigSet->new) while 1;'], { stdio: ["ignore", "pipe", "inherit"] });
     try {
       let said = "";
       const heard = new Promise<void>((resolve, reject) => {
@@ -499,7 +483,6 @@ describe("slots", () => {
     const base = await freeRange(3);
     const checkoutLock = join(scratch(), "checkout.lock");
     const marker = `${checkoutLock}.check-lock`;
-    // a run killed between linking its draft into place and removing it, whose pid is this one's now
     writeFileSync(marker, JSON.stringify({ pid: process.pid, checkout: "/killed", start: "an-earlier-start" }));
     linkSync(marker, `${marker}.${process.pid}.draft`);
     const result = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
@@ -519,7 +502,6 @@ describe("slots", () => {
   });
 
   it("names no start rather than failing when the boot id cannot be read", () => {
-    // a directory where the boot id should be: reading it fails, whoever runs the test
     expect(processStart(process.pid, "linux", scratch())).toBeNull();
   });
 
@@ -529,12 +511,10 @@ describe("slots", () => {
     const marker = `${checkoutLock}.check-lock`;
     const started = processStart(process.pid);
     expect(started).not.toBeNull();
-    // the same pid, honoured while it is the process that wrote the claim
     writeFileSync(marker, JSON.stringify({ pid: process.pid, checkout: "/old", start: started }));
     const honoured = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
     try { expect(honoured).toMatchObject({ refused: "same-checkout", holders: [{ heldBy: process.pid, checkout: "/old" }] }); }
     finally { release(honoured); }
-    // a claim left by a run that is gone, its pid since given to this process
     writeFileSync(marker, JSON.stringify({ pid: process.pid, checkout: "/old", start: `${started}-earlier` }));
     const reused = await acquire({ slots: 0, scan: 3, base, checkout: "/mine", checkoutLock });
     try {
@@ -573,7 +553,6 @@ describe("slots", () => {
       });
       await Promise.all(ready);
       for (const child of children) child.stdin.write("GO");
-      // the winner holds until both have answered, so the loser always meets a live claim
       const outcomes = await Promise.all(readers.map(async (reader, index) => {
         while (!/RESULT .*\n/.test(output[index] ?? "")) {
           const { value, done } = await within(reader.read(), 5_000, `cross-base contender ${index} gave no result in round ${round}`);
@@ -588,12 +567,11 @@ describe("slots", () => {
         const stderr = await new Response(child.stderr).text();
         expect(await within(child.exited, 5_000, `cross-base contender timed out in round ${round}`), stderr).toBe(0);
       }));
-      // either contender may win; exactly one must
       expect({ outcomes: outcomes.sort(), bases }).toEqual({ outcomes: ["held", "same-checkout"], bases });
     }
   });
 
-  it("tells runners that share a loopback apart although they check out to one path", async () => {
+  it("tells runners that share the slots apart although they check out to one path", async () => {
     const base = await freeRange(3);
     const path = "/w/herdr-web-ui/herdr-web-ui";
     expect(checkoutIdentity(path, {})).toBe(path);
@@ -635,7 +613,6 @@ describe("slots", () => {
     const busy = await lock(base, 111, "/a");
     try {
       let waits = 0;
-      // the clock moves only between rounds, by the poll interval: three rounds fit in the wait, whatever the PC's load
       let clock = 0;
       const late = await acquireWaiting({ slots: 1, scan: 3, base, pid: 222, checkout: "/b" }, {
         waitMs: 60, pollMs: 20, onWait: () => { waits += 1; }, now: () => clock, sleep: async (ms) => { clock += ms; },
@@ -654,11 +631,9 @@ describe("slots", () => {
     const base = await queueRange();
     const holder = await lock(base, 111, "/a");
     const waiter = stepper();
-    // a run that found the PC busy, now between two rounds of its wait
     const waiting = acquireWaiting({ slots: 1, scan: 3, base, pid: 222, checkout: "/b" }, { waitMs: 60_000, now: () => 1_000, sleep: waiter.sleep });
     await waiter.asleep();
     release(holder);
-    // the slot is free, and a run that arrives now would take it ahead of the one that waited
     const ticket = ticketPorts(base, 1, 3)[0]!;
     expect(await acquire({ slots: 1, scan: 3, base, pid: 333, checkout: "/c" }))
       .toEqual({ refused: "busy", holders: [{ port: ticket, heldBy: 222, checkout: "/b", queuedAt: 1_000 }] });
@@ -666,7 +641,6 @@ describe("slots", () => {
     const admitted = await waiting;
     try {
       expect(admitted).toMatchObject({ port: base });
-      // its place in the queue went with it: only the slot it now holds keeps the newer run out
       expect(await acquire({ slots: 1, scan: 3, base, pid: 333, checkout: "/c" }))
         .toEqual({ refused: "busy", holders: [{ port: base, heldBy: 222, checkout: "/b" }] });
     } finally {
@@ -678,7 +652,6 @@ describe("slots", () => {
     const base = await queueRange();
     const holder = await lock(base, 111, "/a");
     const [first, second] = [stepper(), stepper()];
-    // the earlier run takes the higher ticket port, so the order can only come from the time
     const lowest = await lock(ticketPorts(base, 1, 3)[0]!, 999, "/filler");
     const earlier = acquireWaiting({ slots: 1, scan: 3, base, pid: 201, checkout: "/first" }, { waitMs: 60_000, now: () => 1_000, sleep: first.sleep });
     await first.asleep();
@@ -688,12 +661,9 @@ describe("slots", () => {
     expect((await acquire({ slots: 1, scan: 3, base, pid: 203, checkout: "/probe" }))).toMatchObject({
       refused: "busy", holders: [{ port: ticketPorts(base, 1, 3)[1], queuedAt: 1_000 }, { port: ticketPorts(base, 1, 3)[0], queuedAt: 2_000 }],
     });
-    // as the later run sees it, from its lower port: only the earlier run is ahead, its place being
-    // by time, not by port
     expect(await acquire({ slots: 1, scan: 3, base, pid: 202, checkout: "/second", retry: true, ticket: { at: 2_000, port: ticketPorts(base, 1, 3)[0]! } }))
       .toEqual({ refused: "busy", holders: [{ port: ticketPorts(base, 1, 3)[1], heldBy: 201, checkout: "/first", queuedAt: 1_000 }] });
     release(holder);
-    // the later run asks first, finds the slot free, and still lets the earlier one go first
     second.wake();
     await second.asleep();
     first.wake();
@@ -711,7 +681,6 @@ describe("slots", () => {
 
   it("leaves the admission port to the head of the queue: a run behind it never takes the port", async () => {
     const base = await queueRange();
-    // the admission port is held, as by the head of the queue in the middle of its own round
     const admissionPort = base + 3;
     const head = await takeTicket({ base, slots: 1, scan: 3, at: 1_000, pid: 201, checkout: "/head" });
     const admission = await lock(admissionPort, 201, "/head");
@@ -721,10 +690,8 @@ describe("slots", () => {
       // not by the port; were it to hold the port while it looked, the head could not get in
       expect(await acquire({ slots: 1, scan: 3, base, pid: 202, checkout: "/behind", ticket: behind!.ticket }))
         .toEqual({ refused: "busy", holders: [{ port: head!.ticket.port, heldBy: 201, checkout: "/head", queuedAt: 1_000 }] });
-      // a run that just arrived holds no place yet: it meets its claims first, then the port
       expect(await acquire({ slots: 1, scan: 3, base, pid: 203, checkout: "/new" }))
         .toEqual({ refused: "busy", holders: [{ port: admissionPort, heldBy: 201, checkout: "/head" }] });
-      // one that waits without a ticket (every ticket was held) stays off the port too
       expect(await acquire({ slots: 1, scan: 3, base, pid: 204, checkout: "/overflow", retry: true }))
         .toMatchObject({ refused: "busy", holders: [{ port: head!.ticket.port, heldBy: 201 }, { port: behind!.ticket.port, heldBy: 202 }] });
     } finally {
@@ -750,7 +717,6 @@ describe("slots", () => {
 
   it("does not wait on a ticket port whose listener keeps talking, ticket-like or not", async () => {
     const base = await queueRange();
-    // one says a ticket's first word and then trickles, one chatters: neither ever closes
     const talkers = ["ticket\n", "hello\n"].map((first, index) => {
       const server = createServer((socket) => {
         socket.on("error", () => undefined);
@@ -764,7 +730,6 @@ describe("slots", () => {
     });
     try {
       await Promise.all(talkers.map((server) => new Promise((resolve) => server.once("listening", resolve))));
-      // neither is a waiting run, so the slot is this run's, and the lookup ended on its own
       const admitted = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b" });
       expect(admitted).toMatchObject({ port: base });
       release(admitted);
@@ -792,12 +757,9 @@ describe("slots", () => {
 
   it("takes places one run at a time: a run waits for the ticket desk, then takes the next place", async () => {
     const base = await queueRange();
-    // another run looking at the places taken, about to take its own: a desk that stays taken past
-    // the wait leaves the run without a place for this round
     const other = await lock(ticketDesk(base, 1, 3), 501, "/other");
     try {
       expect(await takeTicket({ base, slots: 1, scan: 3, at: 900, pid: 502, checkout: "/mine", deskWaitMs: 0 })).toBeNull();
-      // one that frees the desk while this run waits for it lets it take its place in the same round
       const waiting = takeTicket({ base, slots: 1, scan: 3, at: 900, pid: 502, checkout: "/mine", deskWaitMs: 60_000 });
       release(other);
       const mine = await waiting;
@@ -806,7 +768,6 @@ describe("slots", () => {
     } finally {
       release(other);
     }
-    // once it has its place, the next run takes one after it, whatever its clock says
     const first = await takeTicket({ base, slots: 1, scan: 3, at: 1_000, pid: 501, checkout: "/other" });
     const next = await takeTicket({ base, slots: 1, scan: 3, at: 900, pid: 502, checkout: "/mine" });
     try {
@@ -828,7 +789,6 @@ describe("slots", () => {
     let monotonic = 0;
     const looks = spyOn(performance, "now").mockImplementation(() => (monotonic += DESK_WAIT_MS / 30));
     try {
-      // a wait of 1 ms, far shorter than the desk's own: the desk stays taken, and the run gives up within its wait
       const held = await acquireWaiting({ slots: 1, scan: 3, base, pid: 222, checkout: "/b" }, { waitMs: 1, now: () => clock, sleep: async (ms) => { clock += ms + 1; } });
       expect(held).toMatchObject({ refused: "busy" });
       expect(looks).toHaveBeenCalled();
@@ -843,7 +803,6 @@ describe("slots", () => {
   it("keeps the order when the clock steps back: a later place still comes after every waiting one", async () => {
     const base = await queueRange();
     const earlier = await takeTicket({ base, slots: 1, scan: 3, at: 1_000, pid: 401, checkout: "/earlier" });
-    // the clock was set back between the two
     const later = await takeTicket({ base, slots: 1, scan: 3, at: 900, pid: 402, checkout: "/later" });
     try {
       expect(later!.ticket.at).toBeGreaterThan(earlier!.ticket.at);
@@ -869,11 +828,8 @@ describe("slots", () => {
     waiter.wake();
     expect(await late).toMatchObject({ refused: "busy" });
     release(holder);
-    // out of time, it left no place behind to hold the next run back
     const next = await acquire({ slots: 1, scan: 3, base, pid: 333, checkout: "/c" });
     expect(next).toMatchObject({ port: base });
-    // every ticket port taken: a run still waits, and is served when the slot frees
-    // one after another: the ticket desk takes one run at a time
     const tickets: Awaited<ReturnType<typeof takeTicket>>[] = [];
     for (const _ of ticketPorts(base, 1, 3)) tickets.push(await takeTicket({ base, slots: 1, scan: 3, at: 500, pid: 444, checkout: "/queued" }));
     expect(tickets.every((ticket) => ticket !== null)).toBe(true);
@@ -927,11 +883,33 @@ describe("slots", () => {
     expect(() => maxRuns(bad, 32)).toThrow("CHECK_MAX_RUNS");
   });
 
+  it("takes the run limit from CHECK_SLOTS_MAX_RUNS where the launcher keeps the slots in a directory, never from what it left for an older check.ts", () => {
+    const sentence = "taken from /check-slots on this runner: merge main into the branch";
+    const host: Record<string, string | undefined> = { CHECK_MAX_RUNS: "3", CHECK_HOST_MAX_RUNS: sentence, CHECK_SLOTS_DIR: "/check-slots", CHECK_SLOTS_MAX_RUNS: "6", CHECK_HOST_TEST_SHARDS: "8" };
+    applyHostLimits(host);
+    expect(host).toMatchObject({ CHECK_MAX_RUNS: "6", HERDR_TEST_SHARDS: "8" });
+    const unnamed: Record<string, string | undefined> = { CHECK_MAX_RUNS: "3", CHECK_HOST_MAX_RUNS: sentence, CHECK_SLOTS_DIR: "/check-slots" };
+    applyHostLimits(unnamed);
+    expect(maxRuns(unnamed, 32)).toBe(3);
+    const before: Record<string, string | undefined> = { CHECK_MAX_RUNS: "3", CHECK_HOST_MAX_RUNS: sentence };
+    applyHostLimits(before);
+    expect(() => maxRuns(before, 32)).toThrow(`CHECK_MAX_RUNS must be a whole number from 1 to 8, not "${sentence}"`);
+    const plain: Record<string, string | undefined> = { CHECK_MAX_RUNS: "3", CHECK_SLOTS_MAX_RUNS: "6" };
+    applyHostLimits(plain);
+    expect(maxRuns(plain, 32)).toBe(3);
+  });
+
+  it("takes its slots in CHECK_SLOTS_DIR, unless the run names a lock range of its own", () => {
+    expect(slotsDir({})).toBeUndefined();
+    expect(slotsDir({ CHECK_SLOTS_DIR: "" })).toBeUndefined();
+    expect(slotsDir({ CHECK_SLOTS_DIR: "/check-slots" })).toBe("/check-slots");
+    expect(slotsDir({ CHECK_SLOTS_DIR: "/check-slots", CHECK_LOCK_PORT: "" })).toBe("/check-slots");
+    expect(slotsDir({ CHECK_SLOTS_DIR: "/check-slots", CHECK_LOCK_PORT: "50000" })).toBeUndefined();
+  });
+
   it("applies a CI host's limits before a run takes a slot", () => {
-    // the workflow's 3 is valid; only the host's 12, applied by main(), stops the run, before any herdr starts
     const env: Record<string, string | undefined> = { ...process.env, CHECK_MAX_RUNS: "3", CHECK_HOST_MAX_RUNS: "12" };
-    delete env["CHECK_DIR"];
-    delete env["CHECK_REPORT"];
+    for (const name of ["CHECK_DIR", "CHECK_REPORT", ...SLOTS_DIR_ENV]) delete env[name];
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "run", "--", "true"], {
       env, encoding: "utf8", timeout: 30_000,
     });
@@ -1049,7 +1027,6 @@ describe("slots", () => {
     const first = await acquire({ slots: 0, scan: 3, base, checkout: "/first", reports: [link] });
     try {
       expect("release" in first).toBe(true);
-      // Simulate persistReport replacing the symlink with a regular file
       rmSync(link);
       writeFileSync(link, '{"replaced": true}');
       const second = await acquire({ slots: 0, scan: 3, base, checkout: "/second", reports: [link] });
@@ -1098,7 +1075,6 @@ describe("slots", () => {
       const refused = await acquire({ slots: 2, scan: 3, base, checkout: "/mine" });
       try { expect(refused).toEqual({ refused: "busy", holders: [{ port: base, heldBy: 111 }] }); }
       finally { release(refused); }
-      // the candidate slot it took while asking is free again
       const next = await lock(base + 1, 222, "/other");
       expect("release" in next).toBe(true);
       if ("release" in next) next.release();
@@ -1119,7 +1095,6 @@ describe("slots", () => {
   });
 });
 
-/** Resolves once `stream` has said `text`, whenever it says it, before or after the call. */
 const listen = (stream: Readable): ((text: string) => Promise<void>) => {
   let said = "";
   const waiting: { text: string; resolve: () => void }[] = [];
@@ -1130,17 +1105,342 @@ const listen = (stream: Readable): ((text: string) => Promise<void>) => {
   return (text) => new Promise((resolve) => { if (said.includes(text)) resolve(); else waiting.push({ text, resolve }); });
 };
 const errno = (code: string): Error => Object.assign(new Error(`${code} (fixture)`), { code });
-/** Settles as `promise` does, or fails naming `what` (and `detail()`) once `ms` pass without it. */
 const within = <T>(promise: Promise<T>, ms: number, what: string, detail: () => string = () => ""): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} within ${ms} ms ${detail()}`.trim())), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 };
-/** A process's state and parent, for a failure that names where a lifecycle stopped. */
 const processState = (pid: number): string => {
   try { return readFileSync(`/proc/${pid}/status`, "utf8").split("\n").filter((line) => /^(?:State|PPid):/.test(line)).join(", "); }
   catch (error) { return `pid ${pid}: ${(error as NodeJS.ErrnoException).code ?? "no /proc"}`; }
 };
+
+// The lock files a self-hosted runner's launcher makes for its containers (run.sh start_slots): an
+// empty file for each port of a lock range. flock(2) is called in glibc: Linux only, as the runners are.
+describe.skipIf(process.platform !== "linux")("slots in a directory (CHECK_SLOTS_DIR)", () => {
+  const checkScript = fileURLToPath(new URL("./check.ts", import.meta.url));
+  const slotFiles = (): { dir: string; base: number } => {
+    const dir = scratch();
+    const base = freePortRange(3);
+    for (let port = base; port <= ticketPorts(base, 3, 3).at(-1)!; port++) writeFileSync(join(dir, String(port)), "");
+    return { dir, base };
+  };
+  const release = (result: Awaited<ReturnType<typeof acquire>> | Awaited<ReturnType<typeof lock>>): void => {
+    if ("release" in result) result.release();
+  };
+
+  it("holds a slot's file as it holds its port: one run in, the holder named, free again once released", async () => {
+    const { dir, base } = slotFiles();
+    const first = await lock(base, 111, "/a-checkout-with-a-long-name", dir);
+    expect("release" in first).toBe(true);
+    expect(await lock(base, 222, "/b", dir)).toEqual({ heldBy: 111, checkout: "/a-checkout-with-a-long-name" });
+    const port = await lock(base, 333);
+    expect("release" in port).toBe(true);
+    release(port);
+    release(first);
+    // a second release is none: it must never close a file the run opened since
+    release(first);
+    const next = await lock(base, 22, "/b", dir);
+    expect("release" in next).toBe(true);
+    expect(await lock(base, 333, "/c", dir)).toEqual({ heldBy: 22, checkout: "/b" });
+    release(next);
+    expect(readFileSync(join(dir, String(base)), "utf8")).toBe("22\n/b");
+    const again = await acquire({ slots: 2, scan: 3, base, pid: 444, checkout: "/b", dir });
+    expect(again).toMatchObject({ port: base });
+    release(again);
+  });
+
+  it("is free again once the run that held it is killed, also while a program that run started lives on", async () => {
+    const { dir, base } = slotFiles();
+    // the run starts a program that outlives it, as a herdr server or a test's process may: what the
+    // run's lock file is open in would go on holding the lock
+    const holder = Bun.spawn([process.execPath, "-e", `const { lock } = await import(${JSON.stringify(checkScript)}); await lock(${base}, 111, "/a", ${JSON.stringify(dir)}); const child = Bun.spawn(["sleep", "120"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }); console.log("HELD " + child.pid + " "); setInterval(() => {}, 1000);`], { stdout: "pipe" });
+    let child = 0;
+    try {
+      const reader = holder.stdout.getReader();
+      let said = "";
+      while (!/HELD \d+ /.test(said)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("the holder ended before it held the lock");
+        said += new TextDecoder().decode(value);
+      }
+      child = Number(/HELD (\d+) /.exec(said)![1]);
+      expect(await lock(base, 222, "/b", dir)).toEqual({ heldBy: 111, checkout: "/a" });
+      holder.kill("SIGKILL");
+      await holder.exited;
+      expect(() => process.kill(child, 0)).not.toThrow();
+      const next = await lock(base, 222, "/b", dir);
+      expect("release" in next).toBe(true);
+      release(next);
+    } finally {
+      holder.kill("SIGKILL");
+      if (child > 0) try { process.kill(child, "SIGKILL"); } catch {}
+    }
+  });
+
+  it.skipIf(!Bun.which("flock"))("reads a file another run is only looking at as held by no run, and never as its own", async () => {
+    const { dir, base } = slotFiles();
+    const file = join(dir, String(base));
+    // a run asking who holds the file has it shared for a moment; here, for as long as the test needs
+    // (--no-fork: the lock stays with the one process the test ends)
+    const looking = Bun.spawn(["flock", "--shared", "--no-fork", file, "sh", "-c", "echo LOOKING; exec sleep 120"], { stdout: "pipe" });
+    try {
+      const reader = looking.stdout.getReader();
+      let said = "";
+      while (!said.includes("LOOKING")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("flock ended before it held the file");
+        said += new TextDecoder().decode(value);
+      }
+      expect(await lock(base, 222, "/b", dir)).toEqual({ heldBy: Number.NaN });
+      expect(readFileSync(file, "utf8")).toBe("");
+    } finally {
+      looking.kill("SIGKILL");
+      await looking.exited;
+    }
+    const next = await lock(base, 222, "/b", dir);
+    expect("release" in next).toBe(true);
+    release(next);
+  });
+
+  it("never hands a held lock file to a program the run starts", async () => {
+    const { dir, base } = slotFiles();
+    const file = realpathSync(join(dir, String(base)));
+    const held = await lock(base, 111, "/a", dir);
+    try {
+      const open = readdirSync("/proc/self/fd").filter((fd) => { try { return readlinkSync(`/proc/self/fd/${fd}`) === file; } catch { return false; } });
+      expect(open).toHaveLength(1);
+      // close-on-exec, by the file's own flags: not by how this Bun starts a program
+      const flags = Number.parseInt(/^flags:\s*(\d+)/m.exec(readFileSync(`/proc/self/fdinfo/${open[0]}`, "utf8"))![1]!, 8);
+      expect(flags & 0o2000000).toBe(0o2000000);
+    } finally {
+      release(held);
+    }
+  });
+
+  it("refuses when every slot's file is held and names each holder, takes the first one freed, and leaves the admission file", async () => {
+    const { dir, base } = slotFiles();
+    const first = await lock(base, 111, "/a", dir);
+    const second = await lock(base + 1, 333, "/c", dir);
+    try {
+      const refused = await acquire({ slots: 2, scan: 3, base, pid: 222, checkout: "/b", dir });
+      expect(refused).toEqual({ refused: "busy", holders: [{ port: base, heldBy: 111, checkout: "/a" }, { port: base + 1, heldBy: 333, checkout: "/c" }] });
+      release(first);
+      const mine = await acquire({ slots: 2, scan: 3, base, pid: 222, checkout: "/b", dir });
+      try {
+        expect(mine).toMatchObject({ port: base });
+        expect(await acquire({ slots: 2, scan: 3, base, pid: 444, checkout: "/d", dir }))
+          .toEqual({ refused: "busy", holders: [{ port: base, heldBy: 222, checkout: "/b" }, { port: base + 1, heldBy: 333, checkout: "/c" }] });
+        release(second);
+        expect(await acquire({ slots: 2, scan: 3, base, pid: 555, checkout: "/b", dir }))
+          .toEqual({ refused: "same-checkout", holders: [{ port: base, heldBy: 222, checkout: "/b" }] });
+      } finally {
+        release(mine);
+      }
+      const admission = await lock(base + 3, 201, "/head", dir);
+      try {
+        expect(await acquire({ slots: 2, scan: 3, base, pid: 222, checkout: "/b", dir }))
+          .toEqual({ refused: "busy", holders: [{ port: base + 3, heldBy: 201, checkout: "/head" }] });
+      } finally {
+        release(admission);
+      }
+    } finally {
+      release(first);
+      release(second);
+    }
+  });
+
+  it("keeps the queue in the ticket files: places in the order taken, one run at the desk at a time", async () => {
+    const { dir, base } = slotFiles();
+    const earlier = await takeTicket({ base, slots: 1, scan: 3, at: 1_000, pid: 401, checkout: "/earlier", dir });
+    const later = await takeTicket({ base, slots: 1, scan: 3, at: 900, pid: 402, checkout: "/later", dir });
+    try {
+      expect(earlier!.ticket).toEqual({ at: 1_000, port: ticketPorts(base, 1, 3)[0]! });
+      expect(later!.ticket).toEqual({ at: 1_001, port: ticketPorts(base, 1, 3)[1]! });
+      expect(await acquire({ slots: 1, scan: 3, base, pid: 403, checkout: "/new", dir })).toEqual({
+        refused: "busy",
+        holders: [{ port: earlier!.ticket.port, heldBy: 401, checkout: "/earlier", queuedAt: 1_000 }, { port: later!.ticket.port, heldBy: 402, checkout: "/later", queuedAt: 1_001 }],
+      });
+      const admission = await lock(base + 3, 201, "/head", dir);
+      expect(await acquire({ slots: 1, scan: 3, base, pid: 402, checkout: "/later", retry: true, ticket: later!.ticket, dir }))
+        .toEqual({ refused: "busy", holders: [{ port: earlier!.ticket.port, heldBy: 401, checkout: "/earlier", queuedAt: 1_000 }] });
+      release(admission);
+      const desk = await lock(ticketDesk(base, 1, 3), 501, "/other", dir);
+      expect(await takeTicket({ base, slots: 1, scan: 3, at: 2_000, pid: 502, checkout: "/mine", deskWaitMs: 0, dir })).toBeNull();
+      release(desk);
+      const head = await acquire({ slots: 1, scan: 3, base, pid: 401, checkout: "/earlier", retry: true, ticket: earlier!.ticket, dir });
+      expect(head).toMatchObject({ port: base });
+      earlier!.release();
+      expect(await acquire({ slots: 1, scan: 3, base, pid: 403, checkout: "/new", dir }))
+        .toEqual({ refused: "busy", holders: [{ port: later!.ticket.port, heldBy: 402, checkout: "/later", queuedAt: 1_001 }] });
+      release(head);
+    } finally {
+      earlier?.release();
+      later?.release();
+    }
+  });
+
+  it.skipIf(!Bun.which("flock"))("counts a held ticket file its run has not written yet as a run ahead in line", async () => {
+    const { dir, base } = slotFiles();
+    const port = ticketPorts(base, 1, 3)[0]!;
+    const taking = Bun.spawn(["flock", "--exclusive", "--no-fork", join(dir, String(port)), "sh", "-c", "echo TAKEN; exec sleep 120"], { stdout: "pipe" });
+    try {
+      const reader = taking.stdout.getReader();
+      let said = "";
+      while (!said.includes("TAKEN")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("flock ended before it held the file");
+        said += new TextDecoder().decode(value);
+      }
+      const refused = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir });
+      expect(refused).toEqual({ refused: "busy", holders: [{ port, heldBy: Number.NaN, queuedAt: Number.NEGATIVE_INFINITY }] });
+      expect(describeHolders((refused as { holders: Parameters<typeof describeHolders>[0] }).holders)).toBe(`port ${port}: a run taking its place in line`);
+    } finally {
+      taking.kill("SIGKILL");
+      await taking.exited;
+    }
+    const next = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir });
+    expect(next).toMatchObject({ port: base });
+    release(next);
+  });
+
+  it("names a holder in one line of text, whatever another job wrote in a file it holds", async () => {
+    const { dir, base } = slotFiles();
+    const [first, second] = ticketPorts(base, 1, 3);
+    // any job may write in a file another run holds: a line break would start a workflow command in this job's log
+    const forged = holdFile(dir, first!, "ticket\n1000\n1\nfirst\n::add-mask::VISIBLE\nx\u001b[2K");
+    const late = holdFile(dir, second!, "ticket\n99999999999999999999\n2\n/late");
+    try {
+      const refused = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir });
+      const told = describeHolders((refused as { holders: Parameters<typeof describeHolders>[0] }).holders);
+      expect(told).toBe(`port ${first}: pid 1 in first\\x0a::add-mask::VISIBLE\\x0ax\\x1b[2K, waiting since 1970-01-01T00:00:01.000Z; port ${second}: pid 2 in /late, waiting since a time it cannot say`);
+    } finally {
+      forged!.release();
+      late!.release();
+    }
+  });
+
+  it("waits in the directory's queue for a held slot's file, and takes it once its holder lets go", async () => {
+    const { dir, base } = slotFiles();
+    const holder = await lock(base, 111, "/a", dir);
+    let told: unknown = null;
+    let seen: unknown = null;
+    let rounds = 0;
+    const result = await acquireWaiting({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir }, {
+      waitMs: 60_000,
+      now: () => 1_000,
+      onWait: (holders) => { told = holders; },
+      sleep: async () => {
+        // this clock stands still: a run still waiting once the slot is free would wait for ever, and no test timeout ends that
+        if (++rounds > 1) throw new Error("the run still waits after the holder let go");
+        seen = await acquire({ slots: 1, scan: 3, base, pid: 333, checkout: "/c", dir });
+        release(holder);
+      },
+    });
+    try {
+      expect(told).toEqual([{ port: base, heldBy: 111, checkout: "/a" }]);
+      expect(seen).toEqual({ refused: "busy", holders: [{ port: ticketPorts(base, 1, 3)[0]!, heldBy: 222, checkout: "/b", queuedAt: 1_000 }] });
+      expect(result).toMatchObject({ port: base });
+    } finally {
+      release(result);
+    }
+  });
+
+  it("fails where the directory lacks a file, and takes no port instead", async () => {
+    const dir = scratch();
+    const base = freePortRange(3);
+    await expect(acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir })).rejects.toThrow("ENOENT");
+    await expect(takeTicket({ base, slots: 1, scan: 3, at: 1_000, pid: 222, checkout: "/b", dir })).rejects.toThrow("ENOENT");
+    const port = await lock(base, 333);
+    expect("release" in port).toBe(true);
+    release(port);
+    const fast = await acquire({ slots: 0, scan: 3, base, pid: 222, checkout: "/b", dir });
+    expect(fast).toEqual({ release: expect.any(Function), port: null });
+  });
+
+  /** The write of an answer in a volume with room for `room` bytes in all, as the runners' has for 1 MiB: where the files hold more, nothing is written. */
+  const volume = (dir: string, room: number) => (fd: number, text: string): void => {
+    const used = readdirSync(dir).reduce((sum, name) => sum + statSync(join(dir, name)).size, 0);
+    if (used + Buffer.byteLength(text) > room) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    writeSync(fd, text, 0);
+  };
+
+  it("takes back the room of what a job that is gone left written: with none for its answer, a run empties every file no run holds and holds its own", async () => {
+    const { dir, base } = slotFiles();
+    const full = join(dir, String(ticketPorts(base, 3, 3).at(-1)!));
+    writeFileSync(full, "x".repeat(5_000));
+    writeFileSync(join(dir, String(base + 1)), "999\n/gone");
+    writeFileSync(join(dir, "note"), "kept");
+    const held = holdFile(dir, base, "111\n/a", volume(dir, 4_096));
+    expect(held).not.toBeNull();
+    expect(statSync(full).size).toBe(0);
+    expect(readFileSync(join(dir, String(base + 1)), "utf8")).toBe("");
+    expect(readFileSync(join(dir, "note"), "utf8")).toBe("kept");
+    expect(await lock(base, 222, "/b", dir)).toEqual({ heldBy: 111, checkout: "/a" });
+    const other = await lock(base + 1, 333, "/c", dir);
+    expect("release" in other).toBe(true);
+    release(other);
+    held!.release();
+  });
+
+  it("empties no file a run holds, and holds nothing where what a job that still runs wrote leaves no room", async () => {
+    const { dir, base } = slotFiles();
+    const name = "x".repeat(3_000);
+    const filler = await lock(base + 1, 999, name, dir);
+    writeFileSync(join(dir, String(base + 2)), "888\n/gone");
+    expect(() => holdFile(dir, base, "111\n/a", volume(dir, 2_048))).toThrow(`no room in ${dir} for the lock file ${base}, also after emptying every file no run holds`);
+    expect(readFileSync(join(dir, String(base + 2)), "utf8")).toBe("");
+    expect(await lock(base + 1, 222, "/b", dir)).toEqual({ heldBy: 999, checkout: name });
+    release(filler);
+    expect(statSync(join(dir, String(base + 1))).size).toBe(3_004);
+    const next = holdFile(dir, base, "222\n/b", volume(dir, 2_048));
+    expect(next).not.toBeNull();
+    expect(statSync(join(dir, String(base + 1))).size).toBe(0);
+    next!.release();
+  });
+
+  it.skipIf(!Bun.which("flock"))("empties a file another run is only looking at, under a shared lock of its own", async () => {
+    const { dir, base } = slotFiles();
+    const file = join(dir, String(base + 1));
+    writeFileSync(file, "x".repeat(5_000));
+    const looking = Bun.spawn(["flock", "--shared", "--no-fork", file, "sh", "-c", "echo LOOKING; exec sleep 120"], { stdout: "pipe" });
+    try {
+      const reader = looking.stdout.getReader();
+      let said = "";
+      while (!said.includes("LOOKING")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("flock ended before it held the file");
+        said += new TextDecoder().decode(value);
+      }
+      const held = holdFile(dir, base, "111\n/a", volume(dir, 4_096));
+      expect(held).not.toBeNull();
+      expect(statSync(file).size).toBe(0);
+      held!.release();
+    } finally {
+      looking.kill("SIGKILL");
+      await looking.exited;
+    }
+  });
+
+  it("lets go of a file it took and could not write in", async () => {
+    const { dir, base } = slotFiles();
+    writeFileSync(join(dir, String(base + 1)), "999\n/gone");
+    const failing = (...codes: string[]) => {
+      let writes = 0;
+      return { write: (): void => { const code = codes[writes++]!; throw Object.assign(new Error(`${code}: write`), { code }); }, writes: () => writes };
+    };
+    const broken = failing("EIO");
+    expect(() => holdFile(dir, base, "111\n/a", broken.write)).toThrow(/^EIO: write$/);
+    expect(broken.writes()).toBe(1);
+    expect(readFileSync(join(dir, String(base + 1)), "utf8")).toBe("999\n/gone");
+    const later = failing("ENOSPC", "EIO");
+    expect(() => holdFile(dir, base, "111\n/a", later.write)).toThrow(/^EIO: write$/);
+    expect(later.writes()).toBe(2);
+    const next = await lock(base, 222, "/b", dir);
+    expect("release" in next).toBe(true);
+    release(next);
+  });
+});
 
 describe("endGroup", () => {
   it.skipIf(process.platform === "win32")("waits for a leaderless group until its descendant exits", async () => {
@@ -1152,8 +1452,6 @@ describe("endGroup", () => {
     const leader = `const { spawn } = require("node:child_process"); spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "inherit" }).unref();`;
     const parent = spawn(process.execPath, ["-e", leader], { detached: true, stdio: ["pipe", "pipe", "inherit"] });
     const group = parent.pid!;
-    // Every step of the lifecycle is an event, subscribed before it can happen, and each has a
-    // deadline that names the step it stopped at: a hang becomes a failure that says where.
     const leaderExited = new Promise<void>((resolve) => parent.once("exit", () => resolve()));
     // the descendant holds the pipe's last writer once the leader is gone: its end is the descendant's exit
     const outputEnded = new Promise<void>((resolve) => { parent.stdout!.once("end", () => resolve()); parent.stdout!.once("close", () => resolve()); });
@@ -1168,7 +1466,6 @@ describe("endGroup", () => {
       let released = false;
       let reapDeadline = Number.POSITIVE_INFINITY;
       const outcome = await endGroup(group, "SIGTERM", {
-        // endGroup's clock stands still: only the descendant's exit ends the wait, never SIGKILL
         now: () => 0,
         wait: async () => {
           if (!released) {
@@ -1189,7 +1486,7 @@ describe("endGroup", () => {
       expect(() => process.kill(-group, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
     } finally {
       parent.stdin!.destroy();
-      try { process.kill(-group, "SIGKILL"); } catch { /* already gone */ }
+      try { process.kill(-group, "SIGKILL"); } catch {}
     }
   }, 70_000);
 
@@ -1202,7 +1499,6 @@ describe("endGroup", () => {
       wait: async (ms) => { clock += ms; },
     });
     expect(outcome).toEqual({ pgid: 4242, result: "surviving", signals: ["SIGTERM", "SIGKILL"], cause: "still running after SIGKILL" });
-    // TERM first; KILL only once the 5 s grace has passed; then probes until the 2 s kill grace has
     const sent = calls.filter(([, signal]) => signal !== 0);
     expect(sent.map(([, signal]) => signal)).toEqual(["SIGTERM", "SIGKILL"]);
     const killAt = sent[1]![0];
@@ -1293,13 +1589,10 @@ describe("teardown", () => {
     expect(failed).toEqual({ failures: ["stop exploded"], retained: isolation.dir });
     expect(isAbsolute(failed.retained!)).toBe(true);
     expect(readFileSync(evidence, "utf8")).toBe("left behind");
-    // a process group that did not end keeps it too, although every stop worked
     expect(await teardown([() => undefined], isolation, ["step process group 1 did not end"])).toEqual({ failures: [], retained: isolation.dir });
-    // a removal that fails is a failure of its own, and names what is left
     expect(await teardown([], { dir: isolation.dir, remove: () => { throw new Error("EBUSY (fixture)"); } }))
       .toEqual({ failures: [`could not remove ${isolation.dir}: EBUSY (fixture)`], retained: isolation.dir });
     expect(existsSync(evidence)).toBe(true);
-    // nothing failed: the implicit directory goes
     expect(await teardown([() => undefined], isolation)).toEqual({ failures: [], retained: null });
     expect(existsSync(isolation.dir)).toBe(false);
   });
@@ -1307,14 +1600,11 @@ describe("teardown", () => {
 
 describe("check CLI teardown", () => {
   const checkScript = fileURLToPath(new URL("./check.ts", import.meta.url));
-  // two sessions with a socket each, as a herdr server leaves them, and a file of the command's
   const sessionsCommand = 'for s in fx-1 fx-2; do mkdir -p "$XDG_CONFIG_HOME/herdr/sessions/$s" && : > "$XDG_CONFIG_HOME/herdr/sessions/$s/herdr.sock"; done; echo kept > "$OVIS_STATE_DIR/evidence.txt"';
   type Report = { status: string; exitCode: number; errors: string[]; verification: { status: string }; evidence: { retained: string[] }; steps: { name: string; status: string }[] };
-  /** A repository to check, and a herdr stand-in that records each stop and fails it when asked: no real herdr is involved. */
   const fixture = (stopFails: boolean) => {
     const root = scratch();
     const script = join(root, "check.ts");
-    // Failed-stop cases stand in for sessions whose sockets still answer after stop returns.
     writeFileSync(script, `import { main } from ${JSON.stringify(checkScript)};\nawait main({ probeSession: async () => {} });\n`);
     const herdr = join(root, "herdr");
     writeFileSync(herdr, '#!/bin/sh\ncase "$1" in --version) echo "herdr 0.9.3"; exit 0;; esac\necho "$2" >> "$STUB_LOG"\nif [ -n "$STUB_STOP_FAIL" ]; then echo "cannot stop $2" >&2; exit 1; fi\nrm -f "$XDG_CONFIG_HOME/herdr/sessions/$2/herdr.sock"\n');
@@ -1342,7 +1632,7 @@ describe("check CLI teardown", () => {
     // A runner host's own limits (CHECK_HOST_*, from its env file) outrank CHECK_MAX_RUNS in the
     // check: left in, they would set these throwaway runs' slot count to the host's, not the 8 asked
     // for here (#1875).
-    for (const name of ["CHECK_DIR", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH", "HERDR_TEST_LIVE", ...Object.keys(HOST_LIMITS)]) delete env[name];
+    for (const name of ["CHECK_DIR", "GITHUB_EVENT_NAME", "GITHUB_EVENT_PATH", "HERDR_TEST_LIVE", ...Object.keys(HOST_LIMITS), ...SLOTS_DIR_ENV]) delete env[name];
     const stops = (): string[] => existsSync(join(root, "stops.log")) ? readFileSync(join(root, "stops.log"), "utf8").split("\n").filter(Boolean).sort() : [];
     const report = (path = join(cwd, ".check", "report.json")): Report => JSON.parse(readFileSync(path, "utf8")) as Report;
     const isolated = (stdout: string): string => /config and state in (\S+)/.exec(stdout)?.[1] ?? "";
@@ -1372,6 +1662,25 @@ describe("check CLI teardown", () => {
     expect(existsSync(join(named, ".check-lock"))).toBe(false);
   }, 420_000);
 
+  it.skipIf(process.platform !== "linux")("takes its slot in CHECK_SLOTS_DIR as a self-hosted runner's launcher names it, stops where a file is missing, and keeps a lock range of its own", () => {
+    const { cwd, runCheck } = fixture(false);
+    const dir = scratch();
+    for (let port = 41737; port <= ticketPorts(41737, MAX_RUNS_LIMIT, MAX_RUNS_LIMIT).at(-1)!; port++) writeFileSync(join(dir, String(port)), "");
+    const probe = `"${process.execPath}" -e 'const { lock } = await import(process.env.CHECK_SCRIPT); console.log("SLOT " + JSON.stringify(await lock(41737, 1, "/probe", process.env.CHECK_SLOTS_DIR)));'`;
+    const held = runCheck(probe, { CHECK_LOCK_PORT: undefined, CHECK_SLOTS_DIR: dir, CHECK_SCRIPT: checkScript, RUNNER_NAME: "runner-7" });
+    expect(held.status).toBe(0);
+    expect(held.stdout).toContain(`"checkout":${JSON.stringify(`runner-7:${realpathSync(cwd)}`)}}`);
+    expect(held.stdout).toMatch(/SLOT \{"heldBy":\d+,/);
+    const empty = scratch();
+    const stopped = runCheck("echo RAN", { CHECK_LOCK_PORT: undefined, CHECK_SLOTS_DIR: empty });
+    expect(stopped.status).toBe(1);
+    expect(stopped.stderr).toContain("could not acquire the check lock");
+    expect(stopped.stdout).not.toContain("RAN");
+    const own = runCheck("echo RAN", { CHECK_SLOTS_DIR: empty });
+    expect(own.status).toBe(0);
+    expect(own.stdout).toContain("RAN");
+  }, 420_000);
+
   it.skipIf(process.platform === "win32")("fails a zero-exit command when teardown fails", () => {
     const { stops, report, isolated, runCheck } = fixture(true);
     const result = runCheck(sessionsCommand);
@@ -1382,7 +1691,6 @@ describe("check CLI teardown", () => {
     expect(failed).toMatchObject({ status: "failure", exitCode: 1, verification: { status: "unknown" }, evidence: { retained: [dir] } });
     expect(failed.steps.find((step) => step.name === "run")?.status).toBe("success");
     expect(failed.errors.some((error) => error.startsWith("teardown: could not stop herdr session fx-1") && error.includes("fx-2"))).toBe(true);
-    // every stop was tried, and what they left is where the run said
     expect(stops()).toEqual(["fx-1", "fx-2"]);
     expect(isAbsolute(dir)).toBe(true);
     expect(result.stderr).toContain(dir);
@@ -1421,26 +1729,23 @@ describe("check CLI teardown", () => {
   it.skipIf(process.platform === "win32")("ends what a zero-exit command left running with its output closed", () => {
     const { cwd, report, isolated, runCheck } = fixture(false);
     const pidFile = join(cwd, "..", "left.pid");
-    // the command exits 0 at once; what it started runs on in its process group, its output closed
     const result = runCheck(`${sessionsCommand}; tail -f /dev/null </dev/null >/dev/null 2>&1 & echo $! > "$LEFT_PID"`, { LEFT_PID: pidFile });
     const left = Number(readFileSync(pidFile, "utf8"));
     try {
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("ended processes left running in step process group");
-      // ended (and reaped) before the run removed what the process could have been using
       expect(() => process.kill(left, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
       expect(existsSync(isolated(result.stdout))).toBe(false);
       const ended = report();
       expect(ended).toMatchObject({ status: "success", exitCode: 0, errors: [], evidence: { retained: [] } });
       expect(ended.steps.find((step) => step.name === "run")).toMatchObject({ status: "success", reason: "ended processes the command left running" });
     } finally {
-      try { process.kill(left, "SIGKILL"); } catch { /* already gone */ }
+      try { process.kill(left, "SIGKILL"); } catch {}
     }
   }, 210_000);
 
   it.skipIf(process.platform === "win32")("finalizes an interrupted run whose step group cannot be stopped", async () => {
     const { cwd, env, report, isolated } = fixture(false);
-    // Only this check's groups are denied, as if the step ran as another user.
     const deny = join(cwd, "..", "deny-groups.ts");
     writeFileSync(deny, `import { main } from ${JSON.stringify(checkScript)};\nawait main({ kill() { throw Object.assign(new Error("EPERM (fixture)"), { code: "EPERM" }); } });\n`);
     // A listener survives even when the checker closes stdin; only our explicit cleanup ends it.
@@ -1455,7 +1760,6 @@ describe("check CLI teardown", () => {
       await within(saw("GROUP "), 150_000, "the command did not start");
       group = Number(/GROUP (\d+)/.exec(stdout)?.[1]);
       check.kill("SIGINT");
-      // the run ends with its code although the step it could not stop never settles
       expect(await within(exited, 30_000, "the interrupted run did not finish")).toBe(130);
       expect(() => process.kill(-group, 0)).not.toThrow();
       const dir = isolated(stdout);
@@ -1475,7 +1779,6 @@ describe("check CLI teardown", () => {
   it.skipIf(process.platform === "win32")("bounds interrupted draining when an escaped process holds stdout", async () => {
     const { cwd, env, report, isolated } = fixture(false);
     const script = join(cwd, "..", "drain-timeout.ts");
-    // Advance only the interrupted-drain deadline when it is armed, not a polling delay.
     writeFileSync(script, `import { main } from ${JSON.stringify(checkScript)};\nawait main({ scheduleDrainTimeout(expire, ms) { if (ms !== 9000) throw new Error("unexpected drain budget"); queueMicrotask(expire); return () => {}; } });\n`);
     const pidFile = join(cwd, "..", "escaped.pid");
     const holder = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() { return new Response(); } }); console.log("ESCA" + "PED " + process.pid);`;
@@ -1498,7 +1801,6 @@ describe("check CLI teardown", () => {
       expect(report().errors).toEqual([`teardown: ${failure}`]);
       expect(stderr).toContain(failure);
       expect(existsSync(dir)).toBe(true);
-      // Its group escaped the check's ownership and is still holding the inherited stdout.
       expect(() => process.kill(-Number(readFileSync(pidFile, "utf8")), 0)).not.toThrow();
     } finally {
       check.kill("SIGKILL");
@@ -1512,8 +1814,6 @@ describe("check CLI teardown", () => {
   it.skipIf(process.platform === "win32")("fails and retains evidence when a zero-exit step group survives KILL", () => {
     const { cwd, env, report, isolated } = fixture(false);
     const survive = join(cwd, "..", "survive-groups.ts");
-    // Simulate an unkillable owned group without leaving a real unkillable process on the PC.
-    // Both grace periods advance through the same clock/wait seam as the unit tests.
     writeFileSync(survive, `import { main } from ${JSON.stringify(checkScript)};\nlet clock = 0;\nawait main({ kill() {}, now: () => clock, wait: async (ms) => { clock += ms; } });\n`);
     const result = spawnSync(process.execPath, [survive, "run", "sh", "-c", sessionsCommand], { cwd, env, encoding: "utf8", timeout: 200_000 });
     const dir = isolated(result.stdout);
@@ -1531,7 +1831,6 @@ describe("check CLI teardown", () => {
   it.skipIf(process.platform === "win32")("shares a pending group termination with an interrupt", () => {
     const { cwd, env, report, isolated } = fixture(false);
     const script = join(cwd, "..", "overlapping-stop.ts");
-    // Deliver SIGINT while normal teardown is awaiting its first probe, not after it settles.
     writeFileSync(script, `import { main } from ${JSON.stringify(checkScript)};
 let clock = 0;
 let interrupted = false;
@@ -1683,7 +1982,6 @@ describe("check CLI", () => {
     mkdirSync(actionlintDirectory, { recursive: true });
     writeFileSync(join(actionlintDirectory, "actionlint"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(actionlintDirectory, "actionlint"), 0o755);
-    // a live run of this checkout (this test's own process stands in for it) holds the checkout claim
     const marker = join(cwd, "node_modules", ".cache", "check", "checkout.lock.check-lock");
     mkdirSync(join(cwd, "node_modules", ".cache", "check"), { recursive: true });
     const holder = JSON.stringify({ pid: process.pid, checkout: "/the-other-run" });
@@ -1694,10 +1992,8 @@ describe("check CLI", () => {
     const result = spawnSync(process.execPath, [fileURLToPath(new URL("./check.ts", import.meta.url)), "fast"], { cwd, env, encoding: "utf8", timeout: 30_000 });
 
     expect(result.status).toBe(1);
-    // refused, not crashed: the refusal names the holder's pid and checkout
     expect(result.stderr).toContain(String(process.pid));
     expect(result.stderr).toContain("/the-other-run");
-    // refused before any step and before a report: the claim is the only file under the check cache
     expect(existsSync(join(cwd, "ran"))).toBe(false);
     expect(readdirSync(join(cwd, "node_modules", ".cache", "check"))).toEqual(["checkout.lock.check-lock"]);
     expect(readFileSync(marker, "utf8")).toBe(holder);
@@ -1718,7 +2014,6 @@ describe("check CLI", () => {
         "generate:themes": noOp,
         typecheck: noOp,
         build: 'node -e "const fs=require(\'node:fs\');fs.mkdirSync(\'dist\',{recursive:true});fs.writeFileSync(\'dist/index.html\',\'fixture\')"',
-        // the unit tests pass, but edit a tracked file while the check runs
         "test:unit": 'node -e "require(\'node:fs\').writeFileSync(\'tracked.txt\',\'after\')"',
       },
     }));
@@ -1738,7 +2033,6 @@ describe("check CLI", () => {
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as { steps: { status: string }[]; errors: string[] };
     expect(report.steps.every((step) => step.status === "success")).toBe(true);
     expect(report.errors).toEqual(["source changed during the check; verification was invalidated"]);
-    // the start line names the report on stdout; the failure's reason and the report come last, on stderr
     const said = result.stderr.split("\n");
     expect(said).toContain("check: source changed during the check; verification was invalidated");
     expect(said).toContain(`check: report ${reportPath}`);

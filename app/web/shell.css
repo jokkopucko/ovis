@@ -1,24 +1,77 @@
-/* The app's own pages (connect, error): the client's dark theme colours (src/styles.css). */
 :root { color-scheme: dark; --bg: #12100e; --panel: #181613; --input: #1c1916; --border: #2d2924; --text: #d8d0c3; --dim: #9b9183; --strong: #f2ebdf; --primary: #f0a830; --primary-text: #1b1407; --danger: #ff7b70; }
+/* the app's own screens (index.html) follow the phone's light mode; error.html stays dark */
+:root.screens { color-scheme: light dark; }
+@media (prefers-color-scheme: light) {
+  :root.screens { --bg: #eeeae2; --panel: #faf8f3; --input: #fffdf9; --border: #dcd4c6; --text: #2a251f; --dim: #685e52; --strong: #16120d; --primary: #8c5000; --primary-text: #fffdf9; --danger: #8f1d1d; }
+}
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -apple-system, system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
 main { max-width: 32rem; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 2.5rem) 1.25rem calc(env(safe-area-inset-bottom) + 2rem); }
 h1 { color: var(--strong); font-size: 1.75rem; margin: 0 0 .25rem; }
-h1 .logo { display: block; height: 54px; width: auto; margin-bottom: .75rem; }
 h2 { color: var(--dim); font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin: 2rem 0 .5rem; }
 p { margin: 0 0 1rem; color: var(--dim); }
-label { display: block; color: var(--strong); font-weight: 600; margin-bottom: .4rem; }
 input { width: 100%; font: inherit; color: var(--strong); background: var(--input); border: 1px solid var(--border); border-radius: .6rem; padding: .75rem .85rem; }
 input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 button { font: inherit; border-radius: .6rem; padding: .75rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--strong); cursor: pointer; }
 button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); font-weight: 600; }
 .row { display: flex; gap: .6rem; margin-top: .75rem; }
 .row > button { flex: 1; }
-.hint { font-size: .85rem; margin: .5rem 0 0; }
-code { font: .85em ui-monospace, monospace; color: var(--text); }
-.error { color: var(--danger); min-height: 1.45em; margin: .5rem 0 0; }
+.error { color: var(--danger); margin: .5rem 0 0; }
+.error:empty { display: none; }
+.status { display: flex; align-items: center; gap: .6rem; color: var(--text); }
+.status:has(#status-text:not(:empty)) { margin-top: .5rem; }
+.status [hidden] { display: none; }
+.status #status-text { flex: 1; overflow-wrap: anywhere; }
+.status button { flex: none; padding: .5rem .85rem; }
+.spinner { flex: none; width: 1.1rem; height: 1.1rem; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 ul { list-style: none; margin: 0; padding: 0; }
 li { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; }
 li .open { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 li .forget { flex: none; color: var(--dim); }
+li.manage-row { display: block; }
+.manage { background: var(--panel); border: 1px solid var(--border); border-radius: .6rem; padding: .75rem; }
+.manage p { margin: 0 0 .4rem; color: var(--text); overflow-wrap: anywhere; }
+.manage p.key { font: .8em ui-monospace, monospace; color: var(--dim); }
+.manage .actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; }
+.manage button { padding: .5rem .75rem; font-size: .9rem; }
+.manage input { margin-bottom: .5rem; }
+.manage .check { display: flex; gap: .5rem; align-items: flex-start; font-weight: 400; color: var(--text); }
+.manage .check input { width: auto; margin: .3rem 0 0; }
+.manage .said:empty { margin: 0; padding: 0; } /* stays in the page: a live region that appears with its text is not announced */
+code.key, pre.command { display: block; white-space: pre-wrap; word-break: break-all; background: var(--input); border: 1px solid var(--border); border-radius: .4rem; padding: .5rem .6rem; margin: 0 0 .5rem; user-select: all; -webkit-user-select: all; }
+pre.command { font: .85em ui-monospace, monospace; color: var(--strong); }
+pre.command[hidden] { display: none; }
 a { color: var(--primary); }
+
+/* the app's own screens (index.html): the sign-in, Add a PC and an address, one at a time (connect.js show) */
+main.first { display: flex; flex-direction: column; min-height: 100dvh; }
+main.first[hidden] { display: none; }
+#sign-in { padding-top: calc(env(safe-area-inset-top) + 4rem); }
+#sign-in .sheep { display: block; align-self: center; width: 76px; height: 76px; margin-bottom: 1.5rem; }
+#sign-in h1 { display: flex; flex-direction: column; align-items: center; margin: 0 0 1.5rem; font-size: 1.6rem; line-height: 1.3; text-align: center; letter-spacing: -.01em; }
+#sign-in h1 .quiet { color: var(--dim); }
+.providers { display: flex; flex-direction: column; gap: .75rem; }
+.provider { position: relative; display: flex; align-items: center; justify-content: center; min-height: 3rem; border-radius: .75rem; background: var(--panel); font-size: 1.05rem; }
+.provider[hidden] { display: none; }
+.provider svg { position: absolute; left: 1rem; width: 1.25rem; height: 1.25rem; }
+#sign-in .note { margin: 1rem 0 0; font-size: .9rem; text-align: center; }
+main.first .link { align-self: center; margin-top: 1.5rem; padding: .6rem .75rem; border: 0; background: none; color: var(--dim); font-size: .95rem; }
+main.first .back { display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0; border-radius: 50%; background: none; color: var(--dim); }
+button:focus:not(:focus-visible) { outline: none; }
+main.first .back[hidden] { display: none; }
+#add, #address-screen { padding-top: calc(env(safe-area-inset-top) + 1rem); }
+#add .badge { display: grid; place-items: center; width: 5rem; height: 5rem; margin-top: 1.5rem; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); }
+main.first h1.step { margin: 1.25rem 0 1.75rem; font-size: 1.4rem; }
+.ways { display: flex; flex-direction: column; gap: .8rem; }
+.way[hidden] { display: none; }
+.way { display: flex; align-items: center; gap: 1rem; min-height: 4.9rem; padding: 1rem; border-radius: .75rem; text-align: left; }
+.way-icon { display: grid; place-items: center; flex: none; width: 2.5rem; height: 2.5rem; border-radius: .6rem; background: var(--bg); }
+.way-icon svg { width: 1.25rem; height: 1.25rem; }
+.way-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.way-title { font-weight: 700; }
+.way .sub { color: var(--dim); font-size: .9rem; }
+.way .chevron { flex: none; width: 1.1rem; height: 1.1rem; color: var(--dim); }
+#address-screen form { display: flex; flex-direction: column; gap: .75rem; }
+#feedback { margin-top: 1rem; }

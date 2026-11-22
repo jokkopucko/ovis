@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { HC as DESKTOP_HC, HC_VERSION as DESKTOP_HC_VERSION } from "../../app/electron/scripts/runtimes.ts";
 import { HC_RELEASE, installHc, type HcRelease } from "./install.ts";
 
-// A stand-in herdr-core in a release-shaped archive: it answers `--version` as hc does and nothing else.
 describe.skipIf(process.platform === "win32")("installing herdr-core for the move", () => {
   let root: string;
   let home: string;

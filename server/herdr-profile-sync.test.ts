@@ -368,7 +368,6 @@ describe("automatic herdr machine inheritance", () => {
     const log = spyOn(console, "error").mockImplementation(() => {});
     cleanups.push(() => log.mockRestore());
     let reads = 0;
-    // The watch's own timer says whether a failing cleanup backs polling off; elapsed time would also fail on a busy worker.
     const timers = spyOn(globalThis, "setTimeout");
     cleanups.push(() => timers.mockRestore());
     manager.watchHerdrProfiles(async () => {

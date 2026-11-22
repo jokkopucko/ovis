@@ -26,7 +26,6 @@ afterEach(async () => {
 });
 
 it("closes a diff's file docked over a file that holds the page count onto that file, not past it (#3095)", async () => {
-  // Given file A docked over two stacked pages (its entry holds their count), with a diff opened over it.
   const events = new EventTarget();
   const entries: Array<{ key: string; state: unknown }> = [
     { key: "pane", state: null },
@@ -34,7 +33,6 @@ it("closes a diff's file docked over a file that holds the page count onto that 
     { key: "a", state: { "ovis:file-preview": { path: "/r/a.md", machineId: "local", paneId: "p1", presentation: "panel" }, "ovis:web-panel-below": 1 } },
   ];
   let index = 2;
-  // a docked file gives the focus back to what opened it on closing: nothing had it here
   Object.defineProperty(globalThis, "document", { configurable: true, value: { activeElement: null } });
   Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
   const traverseTo = mock((_key: string) => ({ committed: Promise.resolve(undefined) }));
@@ -63,16 +61,13 @@ it("closes a diff's file docked over a file that holds the page count onto that 
   };
   await act(async () => { panels.openDiff(diff); });
 
-  // When the diff's file docks in the diff's place (App: releaseDiff, then openFile replacing the entry) and closes.
   await act(async () => { panels.releaseDiff(); panels.openFile({ path: "/r/b.md", paneId: "p1", machineId: "local" }, true); });
   await act(async () => { panels.closeFile(); });
 
-  // Then the close goes back one entry, onto file A, and not past it onto the page.
   expect(traverseTo).toHaveBeenCalledWith("a");
 });
 
 it("closes a diff over a copy of its entry (a sheet's, after a reload) back past both (#3101)", async () => {
-  // Given a diff's entry and, over it, the copy a phone sheet left on reload, which counts one more under it.
   const diff = {
     machineId: "local", paneId: "p1", directory: "/r", path: "b.md", oldPath: null,
     scope: "workspace" as const, base: null, head: null, comparison: null,
@@ -97,15 +92,12 @@ it("closes a diff over a copy of its entry (a sheet's, after a reload) back past
   }
   await act(async () => { renderer = create(createElement(Probe)); });
 
-  // When the diff closes.
   await act(async () => { panels.closeDiff(); });
 
-  // Then the close goes back to the pane, not onto the diff's own entry.
   expect(traverseTo).toHaveBeenCalledWith("pane");
 });
 
 it("keeps Files and the diff open without replacing history when the traversal rejects", async () => {
-  // Given a docked report owning an entry, with Files and a diff opened over it.
   const events = new EventTarget();
   let state: unknown = { "ovis:web-panel": { url: "http://localhost:3000/report" } };
   const replaceState = mock((next: unknown) => { state = next; });
@@ -139,7 +131,6 @@ it("keeps Files and the diff open without replacing history when the traversal r
   replaceState.mockClear();
   pushState.mockClear();
 
-  // When the Navigation API rejects the pending step instead of committing it.
   const opening = panels.openDiffFile({ path: "file.ts", paneId: "p1", machineId: "local" });
   const error = new DOMException("Traversal cancelled", "AbortError");
   const rejected = opening.then(() => null, (reason: unknown) => reason);
@@ -147,7 +138,6 @@ it("keeps Files and the diff open without replacing history when the traversal r
   expect(panels.filesOpen).toBe(true);
   await act(async () => { traversal.reject(error); expect(await rejected).toBe(error); });
 
-  // Then the caller receives the failure and no file takes over an unknown history entry.
   expect(panels.filesOpen).toBe(true);
   expect(panels.diffViewing).toEqual(diff);
   expect(panels.viewing).toBeNull();

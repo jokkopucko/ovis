@@ -9,7 +9,6 @@ describe("the bounds of a read answer", () => {
     const releases = Array.from({ length: RELEASES_LIMIT + 10 }, (_, i) => ({ version: `0.${i}.0`, date: null, notes: "- r" }));
     const read = readUpdateNotes({ revision: "abc", releases, omitted: 2 });
     expect(read.releases.length).toBe(RELEASES_LIMIT);
-    // the ones past the cap are counted with the sender's own count, and a second read adds nothing
     expect(read.omitted).toBe(12);
     expect(readUpdateNotes(JSON.parse(JSON.stringify(read))).omitted).toBe(12);
     expect(readInstalledNotes({ revision: "abc", version: "1.0.0", previous_version: "0.9.0", installed_at: null, releases, omitted: 0 })).toMatchObject({ omitted: 10 });
@@ -70,9 +69,7 @@ describe("what the notes are asked for", () => {
   it("is another when the commit, the release's version or the running build moves", () => {
     const keys = [offered,
       { ...offered, latest_revision: "c".repeat(40) },
-      // a second tag on the same commit: its changelog has both sections
       { ...offered, latest_version: "0.5.0" },
-      // an older build restored under the same offer: one more release lies between
       { ...offered, current_revision: "d".repeat(40), current_version: "0.3.8" },
       { ...offered, current_version: null }].map(notesOffer);
     expect(new Set(keys).size).toBe(keys.length);
@@ -188,7 +185,6 @@ describe("what the last update brought", () => {
 
   it("is announced before the first check, and gives the line to a newer release once one is known", () => {
     expect(announcesUpdate({ ...running, latest_revision: null }, installed, null, at)).toBe(true);
-    // also during a check, which reports nothing available while it runs
     expect(announcesUpdate({ ...running, latest_revision: "c".repeat(40) }, installed, null, at)).toBe(false);
   });
 
@@ -222,18 +218,14 @@ describe("the reload a tab is offered", () => {
     const checkout = "c".repeat(40);
     const status = { current_revision: "b".repeat(40), served_revision: checkout };
     expect(reloadReason(checkout, status, false, false)).toBe("restart");
-    // a part that failed to load needs the reload all the same: the restart line comes after it
     expect(reloadReason(checkout, status, false, true)).toBe("incomplete");
-    // pulled without a build: the server still serves its own build, so a reload does help
     expect(reloadReason(app, status, false, false)).toBe("updated");
-    // the server runs what the tab is: nothing to do, whatever the checkout is
     expect(reloadReason(checkout, { current_revision: checkout, served_revision: checkout }, false, false)).toBeNull();
     expect(reloadReason(checkout, { current_revision: "b".repeat(40), served_revision: null }, false, false)).toBe("updated");
     expect(reloadReason(checkout, status, true, false)).toBeNull();
   });
 
   it("is offered for a part of the app that failed to load, where no commit can be compared", () => {
-    // an unmanaged server, a server older than the status, a build outside Git, a rebuild of the same commit
     expect(reloadReason(app, { current_revision: null }, false, true)).toBe("incomplete");
     expect(reloadReason(app, null, false, true)).toBe("incomplete");
     expect(reloadReason(null, { current_revision: "b".repeat(40) }, false, true)).toBe("incomplete");

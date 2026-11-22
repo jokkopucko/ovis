@@ -9,6 +9,8 @@ import { chromePath } from "./chrome-path.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { AgentStatus, ConversationResponse, ServerMessage } from "../shared/protocol.ts";
+import { openLens } from "./header-lens.ts";
+import { serveDemo } from "./demo-server.ts";
 
 declare global {
   interface Window {
@@ -19,29 +21,20 @@ declare global {
       block(paneId: string, kind: "loading" | "failed" | "held" | "unattached" | "files"): void;
       unblock(): void;
       blockedReads: number;
-      /** conversation reads answered, per pane: a read for a new finish has reached the app */
       reads: Record<string, number>;
-      /** older turns put ahead of a pane's demo chat, so it is long enough to scroll away from its end */
       pad(paneId: string, turns: number): void;
       frame(message: ServerMessage): void;
       conversation(paneId: string, response: ConversationResponse): void;
       replay(paneId: string, ready: boolean, data: string, readyAfter?: boolean): void;
-      /** the next attach of a pane joins an attachment that lost its stream: as the server sends it, no readiness, the screen from before */
       recoveringReplay(paneId: string, data: string): void;
-      /** the pane's next attaches go unanswered, as an attach that has not taken yet */
       hold(paneId: string): void;
-      /** attaches sent, per pane */
       attaches: Record<string, number>;
-      /** the roster gives the pane a new terminal, as herdr replacing it under the same pane */
       replaceTerminal(paneId: string): Promise<void>;
-      /** the roster says herdr could not restore the pane; null: it is restored */
       unrestored(paneId: string | null): Promise<void>;
     };
   }
 }
 
-// Test-owned roster overrides survive a reload, unlike the demo's module-local state.
-// Both HTTP reads and SSE rosters carry them; the app and its storage code stay unmodified.
 function installSidebarFixture(): void {
   const key = "sidebar-regression:roster";
   const stored = sessionStorage.getItem(key);
@@ -102,8 +95,6 @@ function installSidebarFixture(): void {
           ? new Response(null, { status: 304, headers: { etag: conversation.etag } })
           : Response.json(conversation.response, { headers: { etag: conversation.etag } });
       } else if (finish?.status === "done" && response.ok) {
-        // A synthetic new finish needs a synthetic new completed turn too. Explicit
-        // conversation overrides above deliberately retain old answers for race tests.
         const body = await response.json() as ConversationResponse;
         const last = body.turns.at(-1);
         if (last?.role === "assistant") {
@@ -161,7 +152,6 @@ function installSidebarFixture(): void {
           return;
         }
         if (message.type === "attach" && replay) {
-          // The corrected registry reports its readiness before a retained replay.
           const frames = [
             { type: "input-ready", pane_id: message.pane_id, ready: replay.ready },
             { type: "pty-data", pane_id: message.pane_id, data: replay.data },
@@ -191,8 +181,6 @@ function installSidebarFixture(): void {
         get: () => (event: MessageEvent<string>) => {
           const body = JSON.parse(event.data);
           if (body.type === "machines") body.machines = patch(body.machines);
-          // This fixture represents one server across reloads. Its events and HTTP snapshots
-          // must share the same epoch, including the demo's own timed status changes.
           if (body.type === "machine-message" && body.message.type === "pane-status") {
             body.message.finish_epoch = `sidebar-fixture:${body.machine_id}:1`;
             const forced = state.finishes[body.message.pane_id];
@@ -235,24 +223,18 @@ function installSidebarFixture(): void {
   };
 }
 
-// Settings → Agents order (Activity) and the Agents list's pins, on the unmodified app over the
-// demo's fixture transport, whose agents carry herdr's state_change_seq and bump it on every state
-// change. The demo's Claude pane finishes by itself 4.5s in (site/demo/transport.ts), and a message
-// sent from a chat runs for 2.4s and then finishes. All files and HTTP traffic stay in this
-// disposable, loopback-only app; no herdr session is opened.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-activity-demo-"));
 
-const API = "Idempotent payments";        // claude, working, finishes by itself
-const WEB = "Guard the export button";    // codex, blocked
-const INFRA = "Plan the config file";     // omp, idle: the agent a message is sent from
+const API = "Idempotent payments";
+const WEB = "Guard the export button";
+const INFRA = "Plan the config file";
 const AGENTS_HERDR_ORDER = [API, WEB, "Fix the flaky retry test", INFRA, "Ship the retry flag", "Draft the changelog"];
-// the list on one line (the default): the waiting agent leads, the rest keep herdr's order
 const AGENTS_LIST_ORDER = [WEB, ...AGENTS_HERDR_ORDER.filter((title) => title !== WEB)];
 
 const agents = (page: Page) => page.locator(".agents-sidebar .agent-item");
 const agentTitles = (page: Page) => agents(page).locator(".agent-title").allTextContents();
 const agent = (page: Page, title: string) => agents(page).filter({ has: page.locator(".agent-title", { hasText: title }) });
-/** waits until xterm has parsed the text and nothing is queued or in flight, so a later check cannot pass by timing */
 const outputParsed = (page: Page, text: string) => page.waitForFunction((expected) => {
   const host = document.querySelector(".pane-frame.is-current .pane-terminal");
   if (!host || !("outputProbe" in host) || typeof host.outputProbe !== "function") return false;
@@ -262,6 +244,10 @@ const outputParsed = (page: Page, text: string) => page.waitForFunction((expecte
 const waitStatus = (page: Page, title: string, status: string) => agent(page, title).locator(`.sidebar-status[data-status="${status}"]`).waitFor({ timeout: 10_000 });
 const waitAgentAt = (page: Page, index: number, title: string) => page.waitForFunction(([at, name]) =>
   [...document.querySelectorAll(".agents-sidebar .agent-item .agent-title")][at as number]?.textContent === name, [index, title] as const, { timeout: 5_000 });
+const drawerAtRest = (page: Page) => page.waitForFunction(() => {
+  const drawer = document.querySelector("#workspace-drawer.is-open");
+  return drawer !== null && drawer.getBoundingClientRect().left === 0 && drawer.getAnimations().length === 0;
+});
 
 async function withPage(browser: Browser, settings: object, run: (page: Page) => Promise<void>, mobile = false): Promise<void> {
   const context = await browser.newContext({
@@ -271,13 +257,11 @@ async function withPage(browser: Browser, settings: object, run: (page: Page) =>
   try {
     await context.addInitScript((stored) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat", ...stored }));
-      // idle agents are picked here: the one-line list folds them under its resting line, opened on this device as its toggle keeps it
       localStorage.setItem("ovis:agents-resting-open", "1");
     }, settings);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    // the shell pane is on screen, so the demo's own finish happens out of sight
     try {
       await page.goto(`${url}?pane=${encodeURIComponent(panes.shell)}`);
       await page.locator(".conn-live").waitFor({ state: "attached" });
@@ -307,17 +291,7 @@ try {
   writeFileSync(join(app, "sidebar-fixture.js"), `(${installSidebarFixture.toString()})();`);
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./sidebar-fixture.js"></script>\n    <script type="module"'));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
 
   try {
@@ -365,13 +339,12 @@ try {
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "input-ready", pane_id: id, ready: false }), panes.omp);
           await agent(page, API).locator(".agent-select").click();
           await page.evaluate((id) => {
-            // Also accept the previous bridge's replay-before-ready order on resume.
             window.sidebarFixture.replay(id, true, "quiet recovered replay\r\n", true);
             window.sidebarFixture.block(id, "loading");
             return window.sidebarFixture.finish(id, "done", 103);
           }, panes.omp);
           await agent(page, INFRA).locator(".agent-select").click();
-          await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
+          await openLens(page, "terminal");
           await waitStatus(page, INFRA, "idle");
           await page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]").waitFor();
           assert.equal(await page.locator(".pane-frame.is-current .terminal-stack").evaluate((node, previous) => node === previous, retained), true,
@@ -415,7 +388,6 @@ try {
       }
       if (!finishCase || finishCase === "recovering-joiner") {
         await withPage(browser, {}, async (page) => {
-          // a page that first opens the pane while its attachment is recovering gets only the screen from before
           await page.evaluate((id) => {
             window.sidebarFixture.recoveringReplay(id, "previous answer\r\n");
             window.sidebarFixture.block(id, "loading");
@@ -423,7 +395,7 @@ try {
           }, panes.omp);
           await waitStatus(page, INFRA, "done");
           await agent(page, INFRA).locator(".agent-select").click();
-          await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
+          await openLens(page, "terminal");
           const content = page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]");
           await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
           await outputParsed(page, "previous answer\r\n");
@@ -439,21 +411,18 @@ try {
       }
       if (!finishCase || finishCase === "recovering-restored") {
         await withPage(browser, {}, async (page) => {
-          // the recovery wait is the pane's: a terminal that left its pane and attaches it afresh is told again
           await page.evaluate((id) => {
             window.sidebarFixture.recoveringReplay(id, "previous answer\r\n");
             window.sidebarFixture.block(id, "loading");
           }, panes.omp);
           await agent(page, INFRA).locator(".agent-select").click();
-          await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
+          await openLens(page, "terminal");
           const content = page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]");
           await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
           await outputParsed(page, "previous answer\r\n");
           assert.equal(await content.count(), 0, "the recovering pane's replay is not its current screen");
-          // herdr could not restore the pane: its terminal shows no pane
           await page.evaluate((id) => window.sidebarFixture.unrestored(id), panes.omp);
           await page.locator(".pane-frame.is-current").getByText("held by the fixture").waitFor();
-          // restored, its attachment recovered meanwhile: the replay comes before readiness and nothing after it
           await page.evaluate(async (id) => {
             window.sidebarFixture.replay(id, true, "restored screen\r\n", true);
             await window.sidebarFixture.unrestored(null);
@@ -464,17 +433,15 @@ try {
       }
       if (!finishCase || finishCase === "recovering-replaced") {
         await withPage(browser, {}, async (page) => {
-          // the pane's attach has not been answered yet
           await page.evaluate((id) => {
             window.sidebarFixture.hold(id);
             window.sidebarFixture.block(id, "loading");
           }, panes.omp);
           await agent(page, INFRA).locator(".agent-select").click();
-          await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
+          await openLens(page, "terminal");
           const content = page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]");
           await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
           await page.waitForFunction((id) => (window.sidebarFixture.attaches[id] ?? 0) > 0, panes.omp);
-          // the attach joins a recovering attachment, and herdr replaces the pane's terminal before that join's replay comes
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "output-recovering", pane_id: id }), panes.omp);
           const attaches = await page.evaluate((id) => window.sidebarFixture.attaches[id] ?? 0, panes.omp);
           await page.evaluate((id) => window.sidebarFixture.replaceTerminal(id), panes.omp);
@@ -482,7 +449,6 @@ try {
           await page.evaluate((id) => window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "previous answer\r\n", replay: true }), panes.omp);
           await outputParsed(page, "previous answer\r\n");
           assert.equal(await content.count(), 0, "the recovering join's late replay is still the screen from before");
-          // the new attach joins the attachment, which recovered meanwhile: its replay is the current screen
           await page.evaluate((id) => {
             window.sidebarFixture.frame({ type: "pty-data", pane_id: id, data: "current screen\r\n", replay: true });
             window.sidebarFixture.frame({ type: "input-ready", pane_id: id });
@@ -623,7 +589,7 @@ try {
       if (!finishCase || finishCase === "drawer") {
         await withPage(browser, {}, async (page) => {
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}&sidebar=shown`);
-          await page.locator(".sidebar.is-open").waitFor();
+          await drawerAtRest(page);
           await page.locator(".agents-sidebar .agent-section-toggle").tap();
           await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.omp);
           await waitStatus(page, INFRA, "working");
@@ -637,7 +603,14 @@ try {
             mkdirSync(evidence, { recursive: true });
             await page.screenshot({ path: join(evidence, "finish-drawer-phone.png") });
           }
-          await page.locator('button[aria-controls="workspace-drawer"]').tap();
+          const scrim = page.locator(".scrim.is-open");
+          const outside = await scrim.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return { x: rect.right - 8, y: rect.top + rect.height / 2 };
+          });
+          await page.waitForFunction(({ x, y }) => document.elementFromPoint(x, y)?.matches(".scrim.is-open"), outside);
+          await page.touchscreen.tap(outside.x, outside.y);
+          await page.locator("#workspace-drawer.is-open").waitFor({ state: "detached" });
           await agent(page, INFRA).locator('.sidebar-status[data-status="idle"]').waitFor({ state: "attached" });
         }, true);
         console.log("PASS a phone drawer covering the selected pane preserves both DONE dots until uncovered");
@@ -645,17 +618,24 @@ try {
       if (!finishCase || finishCase === "hidden-composer") {
         await withPage(browser, {}, async (page) => {
           await page.evaluate(({ a, b }) => window.sidebarFixture.split(b, a), { a: panes.omp, b: panes.api });
+          // This case owns the sibling's finish. The demo's timed finish can claim it first.
+          await page.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}`);
           await page.getByRole("textbox", { name: "Message", exact: true }).fill("/");
           await page.locator(".menu.composer-menu").waitFor();
-          // The same tab keeps the first pane mounted. Selecting through its real sidebar
-          // handler avoids navigating/reloading, which would silently discard the popup.
+          // Selecting through its real sidebar handler avoids navigating/reloading, which would silently discard the popup.
           await agent(page, API).locator(".agent-select").evaluate((button: HTMLElement) => button.click());
           const hidden = page.locator(`[data-layout-pane="${panes.omp}"].is-hidden`);
           await hidden.waitFor({ state: "attached" });
           assert.equal(await hidden.locator(".menu.composer-menu").count(), 1);
           await page.locator(`[data-layout-pane="${panes.api}"]:not(.is-hidden)`).waitFor();
-          await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 2), panes.api);
+          const answer: ConversationResponse = { source: "claude-transcript", history_id: "visible-sibling", turns: [
+            { role: "assistant", ts: "2026-10-19T00:00:00Z", parts: [{ kind: "text", text: "The visible sibling finished.", phase: "final_answer" }] },
+          ] };
+          await page.evaluate(({ id, answer }) => {
+            window.sidebarFixture.conversation(id, answer);
+            return window.sidebarFixture.finish(id, "done", 2);
+          }, { id: panes.api, answer });
           await page.waitForFunction((id) => [...document.querySelectorAll("[data-pane-content]")].some((node) => {
             const key = JSON.parse(node.getAttribute("data-pane-content") ?? "null");
             return key?.[1] === id && key[5] === 2;
@@ -716,7 +696,6 @@ try {
           await waitStatus(page, API, "done");
           assert.equal(await agent(page, INFRA).locator(".agent-select").getAttribute("aria-current"), null,
             "reload does not reopen the finish to acknowledge it again");
-          // A storage-loss control proves READY above came from the record, not the demo or selection.
           await page.evaluate(() => {
             for (const key of Object.keys(localStorage)) if (key.startsWith("ovis:finish:")) localStorage.removeItem(key);
           });
@@ -731,8 +710,6 @@ try {
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}`);
           await page.locator(".conn-live").waitFor({ state: "attached" });
           await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.omp);
-          // A deep-linked file mounts the real full-screen viewer even when the demo cannot
-          // serve its contents. It covers the selected pane until the user dismisses it.
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}&file=${encodeURIComponent("/tmp/finish.txt")}`);
           await page.locator(".file-viewer").waitFor();
           await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 101), panes.omp);
@@ -759,11 +736,9 @@ try {
           await page.evaluate((id) => window.sidebarFixture.pad(id, 30), panes.omp);
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}`);
           await page.locator(".chat-turn").first().waitFor();
-          // the phone's drawer is closed: its rows are in the page, not on screen
           const statusIs = (status: string) => agent(page, INFRA).locator(`.sidebar-status[data-status="${status}"]`).waitFor({ state: "attached", timeout: 10_000 });
           await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.omp);
           await statusIs("working");
-          // Reading older turns: the end, where this finish's answer lands, is out of view.
           const log = page.getByRole("log");
           const room = await log.evaluate((node) => [node.scrollHeight, node.clientHeight, node.className, document.querySelectorAll(".chat-turn").length]);
           assert.ok((room[0] as number) - (room[1] as number) > 200, `the fixture chat must be long enough to scroll away: ${JSON.stringify(room)}`);
@@ -771,12 +746,12 @@ try {
           await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
           if (arrival === "restore") {
             const height = await log.evaluate((node) => node.scrollHeight * 3 + 2000);
-            await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
+            await openLens(page, "terminal");
             await page.setViewportSize({ width: 390, height });
             await page.evaluate(() => document.addEventListener("scroll", (event) => {
               if (event.target instanceof Element && event.target.matches('[role="log"]')) event.stopImmediatePropagation();
             }, true));
-            await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
+            await openLens(page, "chat");
             await page.locator(".chat-turn").first().waitFor();
             await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 101), panes.omp);
             await statusIs("idle");
@@ -789,8 +764,6 @@ try {
           const before = await page.evaluate((id) => window.sidebarFixture.reads[id] ?? 0, panes.omp);
           await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 101), panes.omp);
           await statusIs("done");
-          // The read for this finish has come back and two frames have drawn it: without the
-          // reading-position gate, the finish would be recorded by now.
           await page.waitForFunction(([id, count]) => (window.sidebarFixture.reads[id as string] ?? 0) > (count as number), [panes.omp, before] as const);
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
           const key = `ovis:finish:local:${encodeURIComponent("sidebar-fixture:local:1")}:${encodeURIComponent(panes.omp)}`;
@@ -798,8 +771,6 @@ try {
             "a finish whose end is scrolled out of view is not recorded as seen");
           assert.equal(await agent(page, INFRA).locator(".sidebar-status").getAttribute("data-status"), "done");
           if (arrival === "resize") {
-            // Grow the actual scroll owner until all content fits. scrollTop remains zero,
-            // so this supplies ResizeObserver/layout evidence without a scroll event.
             const height = await log.evaluate((node) => {
               // Browsers/list anchoring can emit a zero-offset scroll during resize.
               // Suppress delivery before React so this case must work without that signal.
@@ -817,8 +788,6 @@ try {
             assert.equal(await log.getAttribute("data-unexpected-scroll"), null, "geometry alone proves the fully visible chat");
             return;
           }
-          // Hold the browser scroll operation, preserving the virtual list's async contract.
-          // A requested jump is not proof that its deferred destination was ever shown.
           await log.evaluate((node) => {
             node.scrollTo({ top: 0, behavior: "instant" });
             node.dispatchEvent(new Event("scroll"));
@@ -843,8 +812,6 @@ try {
             mkdirSync(evidence, { recursive: true });
             await page.screenshot({ path: join(evidence, "finish-deferred-jump-desktop.png") });
           }
-          // A newer minimap request supersedes the pending jump. Releasing scroll interception
-          // must not restore that old jump's claim of presentation.
           await page.locator(".chat-minimap-tick").first().click();
           await log.evaluate((node) => {
             Reflect.deleteProperty(node, "scrollTo");
@@ -854,7 +821,6 @@ try {
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
           assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null,
             "a superseded jump leaves the finish unread");
-          // Back at the end, the answer is in view: now it reads as seen.
           await page.getByRole("button", { name: "New messages", exact: true }).click();
           await statusIs("idle");
           assert.ok(await log.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop <= 1),
@@ -866,20 +832,15 @@ try {
         console.log("PASS a chat read away from its end keeps the finish unread until the end is in view");
       }
       if (!finishCase) {
-      // Workspace menus no longer mix in pane operations; header More keeps pane movement.
-      // herdr's order in a flat list, each row naming its own workspace, with its row and its ⋯
       await withPage(browser, {}, async (page) => {
         assert.deepEqual(await agentTitles(page), AGENTS_LIST_ORDER);
         assert.match(await agent(page, API).locator(".agent-context").textContent() ?? "", /checkout-api/, "a row names its workspace");
-        // a desktop draws no row ⋯: a right-click or the context-menu key opens the menu
         assert.equal(await agent(page, API).getByRole("button").count(), 1, "a desktop row is its selector alone");
         assert.equal(await page.locator(".row-menu-toggle:visible").count(), 0, "no row ⋯ on a desktop");
         assert.equal(await page.locator(".agents-sidebar .agent-list-pinned").count(), 0, "no pinned list without pins");
       });
       console.log("PASS the Agents list is flat, in herdr's order, each row a selector with no ⋯ on a desktop");
 
-      // a pane's plan: the composer's chip shows how far it got and opens its steps, as the background
-      // tasks do; the header carries no plan of its own
       for (const mobile of [false, true]) {
         await withPage(browser, {}, async (page) => {
           await page.goto(`${url}?pane=${encodeURIComponent(panes.api)}`);
@@ -900,11 +861,9 @@ try {
       }
       console.log("PASS a pane's plan opens from the composer's chip, as a list of steps, on a desktop and a phone");
 
-      // A repository pin hoists only its own row; its worktrees stay outside the card and fixed.
       for (const mobile of [false, true]) {
         await withPage(browser, {}, async (page) => {
           if (mobile) await page.locator('button[aria-controls="workspace-drawer"]').tap();
-          // the repository's row opens the shell tab the page starts on, so it is found by its workspace
           const head = page.locator(`.workspace-group[data-workspace="${panes.api.split(":")[0]}"] > .workspace-header .workspace-select`);
           const headId = await head.evaluate((row) => row.closest(".workspace-group")?.getAttribute("data-workspace"));
           assert.ok(headId);
@@ -943,7 +902,6 @@ try {
           const evidence = process.env["UI_EVIDENCE_DIR"];
           if (evidence) {
             mkdirSync(evidence, { recursive: true });
-            // Let the compositor present the menu's removal before taking the optional capture.
             await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
             await page.screenshot({ path: join(evidence, `pin-repository-${mobile ? "phone" : "desktop"}.png`) });
           }
@@ -967,7 +925,6 @@ try {
       }
       console.log("PASS a repository pin keeps only its row in the card; its worktrees stay outside, fixed and ordered, and regroup on unpin, on desktop and phone");
 
-      // herdr's order before and after a finish; a right-click pins an agent; an opened DONE reads as ready (#1279)
       await withPage(browser, {}, async (page) => {
         const selected = await page.evaluate(() => sessionStorage.getItem("ovis:selection"));
         await page.locator(".header-more-button").focus();
@@ -976,7 +933,7 @@ try {
         await workspace.click({ button: "right", position: { x: 32, y: bounds.height / 2 } });
         const menu = page.getByRole("menu", { name: "checkout-api", exact: true });
         await menu.waitFor();
-        assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"], "right-click on a repository uses its group scope");
+        assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"], "right-click on a repository uses its group scope");
         const opened = (await menu.boundingBox())!;
         assert.ok(Math.abs(opened.x - bounds.x - 32) <= 1 && Math.abs(opened.y - bounds.y - bounds.height / 2) <= 1, "the menu opens at the pointer");
         assert.equal(await page.evaluate(() => sessionStorage.getItem("ovis:selection")), selected, "right-click leaves the selected pane alone");
@@ -985,10 +942,9 @@ try {
         await workspace.focus();
         await contextMenuKey(page);
         await menu.waitFor();
-        assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"], "the context-menu key and right-click have identical items");
+        assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"], "the context-menu key and right-click have identical items");
         await page.keyboard.press("Escape");
         const pins = () => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:sidebar-agent-pins") ?? "[]") as string[]);
-        // a pinned workspace leaves its place for a card at the top of its PC's list, and returns unpinned
         const workspaceTitles = () => page.locator(".machine-workspaces .workspace-name").allTextContents();
         const herdrOrder = await workspaceTitles();
         const infraWorkspace = page.locator(`.workspace-select[data-pane="${panes.omp}"]`);
@@ -1000,7 +956,6 @@ try {
         const infraName = await infraWorkspace.locator(".workspace-name").textContent();
         assert.deepEqual(await pinnedWorkspaces.locator(".workspace-name").allTextContents(), [infraName], "the pinned workspace stands in the card");
         assert.deepEqual(await workspaceTitles(), [infraName, ...herdrOrder.filter((title) => title !== infraName)], "the rest keep herdr's order");
-        // it is moved within its card (the pin order), not out of it: workspace-touch-reorder-demo-regression.ts
         assert.equal(await infraWorkspace.getAttribute("draggable"), "true", "a pinned workspace can be dragged within its card");
         assert.ok((await pins()).includes(`local:workspace:${await infraWorkspace.evaluate((row) => row.closest(".workspace-group")?.getAttribute("data-workspace"))}`), "the pin is saved with the agents'");
         await infraWorkspace.click({ button: "right" });
@@ -1009,7 +964,6 @@ try {
         assert.deepEqual(await workspaceTitles(), herdrOrder, "unpinned, it returns to herdr's order");
         const agentRow = agent(page, API);
         const agentSelect = agentRow.locator(".agent-select");
-        // pin an agent that is not first from its right-click menu: it moves to the top, and nothing is selected
         const infraSelect = agent(page, INFRA).locator(".agent-select");
         await page.locator(".header-more-button").focus();
         await infraSelect.click({ button: "right" });
@@ -1025,12 +979,10 @@ try {
         await page.locator(".conn-live").waitFor({ state: "attached" });
         await agents(page).first().waitFor({ state: "attached" });
         assert.equal((await agentTitles(page))[0], INFRA, "the pin survives a reload");
-        // the keyboard's context-menu key opens the same menu, now with Unpin
         await infraSelect.focus();
         await contextMenuKey(page);
         await agentMenu.waitFor();
         assert.deepEqual(await agentMenu.getByRole("menuitem").allTextContents(), ["Unpin agent"], "a pinned agent's menu offers Unpin");
-        // the menu focuses its first item on the next frame: Enter goes to it once it has the focus
         await page.waitForFunction(() => document.activeElement?.textContent === "Unpin agent", undefined, { timeout: 5_000 });
         await page.keyboard.press("Enter");
         await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:sidebar-agent-pins") ?? "[]").length === 0);
@@ -1038,7 +990,6 @@ try {
         assert.deepEqual(await agentTitles(page), AGENTS_LIST_ORDER, "unpin restores the source order");
         assert.equal(await infraSelect.evaluate((button) => document.activeElement === button), true, "focus returns to the row as it moves back");
         assert.equal(await page.locator(".row-menu, .row-sheet").count(), 0, "the menu closes after its item runs");
-        // pinned, an agent stands first, in a list named Pinned under the Agents head alone
         await agentSelect.click({ button: "right" });
         const apiMenu = page.getByRole("menu", { name: API, exact: true });
         await apiMenu.waitFor();
@@ -1053,7 +1004,6 @@ try {
         assert.deepEqual(await agentTitles(page), AGENTS_LIST_ORDER);
         console.log("PASS workspace right-click scope, pointer anchor and focus; the context-menu key opens the same menu; a workspace pins into a card and returns to herdr's order; an agent pins and unpins from its right-click menu and the key");
         await waitStatus(page, API, "done");
-        // the classic style's unread-finish dot stays drawn on the compact rows
         assert.ok(await agent(page, API).locator('.sidebar-status[data-status="done"] .sidebar-status-dot').isVisible(), "an unread finish keeps its dot");
         assert.deepEqual(await agentTitles(page), AGENTS_LIST_ORDER, "a finish does not move an agent");
         await agentSelect.click();
@@ -1068,25 +1018,30 @@ try {
       console.log("PASS the Agents list keeps herdr's order through a finish, and an opened DONE reads as ready");
 
       await withPage(browser, {}, async (page) => {
-        const drawerToggle = page.locator('button[aria-controls="workspace-drawer"]');
+        const drawerToggle = page.locator("#drawer-toggle");
         await drawerToggle.tap();
+        await drawerAtRest(page);
         const agentToggle = page.locator(".agents-sidebar .agent-section-toggle");
         assert.equal(await agentToggle.getAttribute("aria-expanded"), "false", "the phone's Agents section still starts folded");
         await agentToggle.tap();
         const agentRow = agent(page, API);
         const agentSelect = agentRow.locator(".agent-select");
         await agentSelect.waitFor();
-        // the ⋯ shows on touch, where a long press opens no menu: its sheet pins the agent
         const more = agentRow.getByRole("button", { name: `More for ${API}`, exact: true });
         assert.ok(await more.isVisible(), "the ⋯ is visible on touch");
         await more.tap();
         const sheet = page.getByRole("dialog", { name: API, exact: true });
-        await sheet.waitFor();
+        await page.waitForFunction(() => {
+          const sheet = document.querySelector(".row-sheet");
+          return sheet !== null && sheet.getAnimations().length === 0;
+        });
         await sheet.getByRole("button", { name: "Pin agent" }).tap();
         await page.waitForFunction((key) => JSON.parse(localStorage.getItem("ovis:sidebar-agent-pins") ?? "[]").includes(key), `local:${panes.api}`);
         await sheet.waitFor({ state: "detached" });
+        const pinnedSelect = agentSelect.and(page.locator(".agent-list-pinned .agent-select"));
+        await pinnedSelect.waitFor();
         assert.deepEqual(await page.locator(".agents-sidebar .agent-list-pinned .agent-title").allTextContents(), [API], "the pinned row stands in the pinned list");
-        await agentSelect.tap();
+        await pinnedSelect.tap();
         await page.waitForFunction((paneId) => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "{}").pane_id === paneId, panes.api, { timeout: 5_000 });
         assert.equal(await agentSelect.getAttribute("aria-current"), "true", "a tap still selects the agent");
         assert.equal(await page.locator(".row-menu, .row-sheet").count(), 0, "a tap opens no agent action sheet");
@@ -1098,11 +1053,9 @@ try {
         assert.equal((await agentTitles(page))[0], WEB, "the blocked agent is pinned on top");
         assert.match(await agent(page, WEB).locator(".agent-context").textContent() ?? "", /export-guard/, "a row names its workspace");
 
-        // the demo's Claude pane finishes out of sight: it rises under the blocked one, and keeps its dot
         await waitStatus(page, API, "done");
         await waitAgentAt(page, 1, API);
 
-        // a message sent from an agent takes it to the top while it runs ...
         await agent(page, INFRA).locator(".agent-select").click();
         // Rows keep their order while the pointer is over Agents; leave it before checking activity order.
         await page.locator(".composer-text").click();
@@ -1110,20 +1063,16 @@ try {
         await page.locator(".composer-text").press("Enter");
         await waitStatus(page, INFRA, "working");
         await waitAgentAt(page, 1, INFRA);
-        // ... and keeps it there when it finishes while another pane is open, with its dot
         await page.locator(".machine-workspaces .workspace-select", { hasText: "flaky-retry-test" }).first().click();
         await waitStatus(page, INFRA, "done");
         assert.equal((await agentTitles(page))[1], INFRA, "the agent just worked in stays on top after it finishes");
 
-        // opening it here reads it: its DONE draws as ready, and stays so once another pane is open
-        // and after a reload (the record is this browser's)
         await agent(page, INFRA).locator(".agent-select").click();
         await page.waitForFunction((paneId) => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "{}").pane_id === paneId, panes.omp, { timeout: 5_000 });
         await waitStatus(page, INFRA, "idle");
         assert.equal((await agentTitles(page))[1], INFRA, "reading a finish does not move it");
         await page.locator(".machine-workspaces .workspace-select", { hasText: "flaky-retry-test" }).first().click();
         await waitStatus(page, INFRA, "idle");
-        // a later finish not looked at gets its dot again
         await agent(page, INFRA).locator(".agent-select").click();
         await page.locator(".composer-text").fill("One more check");
         await page.locator(".composer-text").press("Enter");
@@ -1133,8 +1082,6 @@ try {
       });
       console.log("PASS Activity pins blocked and follows recency; an opened DONE reads as ready after switching until the next finish");
 
-      // the demo keeps its agent template after its last agent closes (#529 review): a workspace
-      // made in an emptied demo still lists its agent with herdr's counter
       await withPage(browser, { agentOrder: "activity" }, async (page) => {
         const made = await page.evaluate(async () => {
           const post = (path: string, body: object) => fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });

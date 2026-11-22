@@ -91,7 +91,7 @@ namespace Ovis
             {
                 Directory.Delete(Path.GetDirectoryName(Paths.InstalledExe));
             }
-            catch (IOException) { } // not empty: something else lives there, leave it
+            catch (IOException) { }
         }
 
         private static void CreateShortcut()

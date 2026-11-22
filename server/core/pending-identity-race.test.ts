@@ -17,11 +17,6 @@ afterEach(() => { mock.restore(); });
 
 type PendingFrame = Extract<ServerMessage, { type: "pending-messages" }>;
 
-// The agent in front is replaced while a check's read is awaited: the read answers for the process that was there,
-// and the message must not go to the one that came (#1986 gate G1). Birth read 2 is the check before the paste, birth
-// read 6 the check before Enter (3 to 5 are the starts the last checks before the paste compare), screen read 2
-// the screen that check reads before the paste, and the catalog the paste is prepared with after that check; each is
-// held open until the replacement is in place.
 it.each([
   { hold: "birth", call: 2, label: "the birth read before the paste", writes: [] as string[], state: "held" },
   { hold: "birth", call: 6, label: "the birth read before Enter", writes: ["paste 41001"] as string[], state: "uncertain" },
@@ -102,11 +97,8 @@ it.each([
   // the window left (herdr cannot compare and write in one step): a switch during the process read that closes the
   // last check before the paste reaches the paste, and the check before Enter withholds the Enter
   { when: "after check", to: "B", misses: 0, label: "the process read that closes the last check before the paste", writes: ["paste"] as string[], state: "uncertain" },
-  // another Claude process comes to the front while the last session check reads the one before it, which, still
-  // alive, still names session A: herdr is asked once more what is in front after the session is read
   { when: "replaced before paste", to: "A", misses: 0, label: "the last session read before the paste, to another process", writes: [] as string[], state: "held" },
   { when: "replaced before Enter", to: "A", misses: 0, label: "the last session read before Enter, to another process", writes: ["paste"] as string[], state: "uncertain" },
-  // the check before Enter read the session first; its screen and card reads awaited after it
   { when: "enter", to: "B", misses: 0, label: "the screen read before Enter, to a readable session", writes: ["paste"] as string[], state: "uncertain" },
   { when: "enter", to: null, misses: 0, label: "the screen read before Enter, to an unreadable session", writes: ["paste"] as string[], state: "uncertain" },
   { when: "enter", to: "A", misses: 1, label: "the screen read before Enter, unreadable for one read (control)", writes: ["paste", "Enter"] as string[], state: "removed" },
@@ -116,8 +108,6 @@ it.each([
   let misses = 0;
   const sessionReads = spyOn(claudeStore, "claudeForegroundSession").mockImplementation(async () => {
     if (boxReads >= 3 && !pasted) checked = true;
-    // the session read that closes the check: before the paste, the first after Claude's input box; before Enter,
-    // the one after the check's own identity read
     const closing = when === "replaced before paste" ? boxReads >= 3 && !pasted && ++lookups === 1
       : when === "replaced before Enter" && pasted && ++lookups === 2;
     if (closing) foreground = [{ pid: 41002, name: "claude", argv: ["claude"] }];
@@ -130,7 +120,6 @@ it.each([
   let boxReads = 0;
   let lookups = 0;
   let foreground = [{ pid: 41001, name: "claude", argv: ["claude"] }];
-  /** a session read after Claude's input box, before the paste */
   let checked = false;
   const afterCheck = (): void => { if (when === "after check" && checked && !pasted && session === "A") switchSession(); };
   spyOn(client, "paneProcessInfo").mockImplementation(async () => {
@@ -139,10 +128,8 @@ it.each([
   });
   let afterPaste = 0;
   spyOn(client, "paneRead").mockImplementation(async () => {
-    // read 1 is the queueing's, read 2 the check's screen, read 3 Claude's input box (freeClaudeBox) after the check
     afterCheck();
     if (!pasted && ++boxReads === 3 && when === "box") switchSession();
-    // the first read after the paste is the screen the check before Enter reads
     if (when === "enter" && pasted && ++afterPaste === 1) switchSession();
     return { text: "" } as Awaited<ReturnType<typeof client.paneRead>>;
   });
@@ -177,7 +164,6 @@ it.each([
   });
 
   await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
-  // queued for session A, as the pane's Claude named it then
   expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "queued" }]);
   expect(sessionReads).toHaveBeenCalled();
   pane.agent_status = "idle";

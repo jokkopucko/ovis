@@ -7,7 +7,6 @@ const REPORT_ENV = ["-e", `process.stdout.write("TOKEN_PRESENT=" + Object.protot
   + " SOCKET=[" + process.env.HERDR_SOCKET_PATH + "] TERM=[" + process.env.TERM + "]")`];
 const fixtureToken = () => `herdr-web-token-fixture-${crypto.randomUUID()}`;
 
-/** Runs REPORT_ENV through a PtySession with a fixture bridge token in this process's env, capturing the sidecar's spawn options. */
 async function reportThroughSession(env: Record<string, string>) {
   const parentToken = fixtureToken();
   const previous = process.env["OVIS_TOKEN"];
@@ -181,7 +180,7 @@ describe("PtySession", () => {
       const deadline = Date.now() + 5000;
       while (!stopped && Date.now() < deadline) await Bun.sleep(10);
       expect(stopped).toBe(true);
-      await Bun.sleep(150); // allow the already-read pipe tail to arrive
+      await Bun.sleep(150);
       const pausedBytes = bytes;
       await Bun.sleep(200);
       expect(bytes).toBe(pausedBytes);

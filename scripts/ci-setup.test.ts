@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { topLevelTerms, workflowAndActionFiles, workflowFileProblems } from "./shell-workflow-rules.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const action = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as {
@@ -16,12 +17,9 @@ type Workflow = { jobs?: Record<string, { uses?: string; steps?: Step[] }>; runs
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const actionName = (uses: string) => uses.slice(0, uses.lastIndexOf("@"));
-const actionFiles = [
-  ...readdirSync(join(root, ".github/workflows")).filter((name) => name.endsWith(".yml")).map((name) => `.github/workflows/${name}`),
-  ".github/actions/setup-ci/action.yml",
-];
+// every workflow and action GitHub loads; a `.yaml` file or another spelling fails the test below instead of being skipped
+const actionFiles = workflowAndActionFiles().filter((path) => (path.startsWith(".github/workflows/") && path.endsWith(".yml")) || path.endsWith("/action.yml"));
 
-/** What is wrong with the action references of one workflow or composite action, step by step. */
 function auditActions(file: string, text: string) {
   const doc = Bun.YAML.parse(text) as Workflow;
   const problems: string[] = [];
@@ -108,7 +106,6 @@ describe.skipIf(process.platform === "win32")("prepared CI tools", () => {
   }
 });
 
-/** Runs scripts/ci-seed-bun-cache.sh with the host's cache at `seed` (when it is given) and the job's at `<dir>/w/.ci-cache/bun`. */
 function seedBunCache(prepare: (seed: string) => void = () => {}) {
   const dir = mkdtempSync(join(tmpdir(), "ci-seed-bun-"));
   const seed = join(dir, "host/bun/current");
@@ -178,8 +175,9 @@ describe("CI cache contract", () => {
     const save = action.runs.steps.find((step) => step.name === "Cache Bun dependencies")!;
     const restore = action.runs.steps.find((step) => step.name === "Restore Bun dependencies (read-only)")!;
     expect(action.inputs.cache!.default).toBe("save");
-    expect(save.if).toContain("inputs.cache != 'restore'");
-    expect(restore.if).toContain("inputs.cache == 'restore'");
+    // a top-level && term: a mode comparison inside an || would let the step run under any mode
+    expect(topLevelTerms(save.if!)).toContain("inputs.cache == 'save'");
+    expect(topLevelTerms(restore.if!)).toContain("inputs.cache == 'restore'");
     expect(actionName(restore.uses!)).toBe("actions/cache/restore");
     expect(restore.with).toEqual(save.with);
     const canary = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/omp-question-compat.yml"), "utf8")) as {
@@ -203,7 +201,17 @@ describe("CI cache contract", () => {
     const names = action.runs.steps.map((step) => step.name);
     const seed = names.indexOf("Seed Bun cache from the runner host");
     expect(seed).toBeGreaterThan(names.indexOf("Select workspace-local Bun cache"));
-    expect(action.runs.steps[seed]!.if).toBe("runner.environment == 'self-hosted'");
+    // the Linux runners' image only: the self-hosted Mac has no host cache
+    expect(action.runs.steps[seed]!.if).toBe("runner.environment == 'self-hosted' && runner.os == 'Linux'");
+  });
+
+  it("checks the prepared image on every self-hosted Linux runner, and sets up Bun elsewhere outside the runner account's home", () => {
+    const named = (name: string) => action.runs.steps.find((step) => step.name === name)!;
+    expect(named("Verify prepared self-hosted tools").if).toBe("runner.environment == 'self-hosted' && runner.os == 'Linux'");
+    const setupBun = action.runs.steps.filter((step) => step.uses && actionName(step.uses) === "oven-sh/setup-bun");
+    expect(setupBun.map((step) => step.if)).toEqual(["runner.environment != 'self-hosted'", "runner.environment == 'self-hosted' && runner.os != 'Linux'"]);
+    // setup-bun writes $HOME/.bun/bin: on the self-hosted Mac that is a person's account, so the job's temp folder stands in
+    expect(setupBun[1]!.env).toEqual({ HOME: "${{ runner.temp }}/setup-bun-home" });
   });
 
   it("does not transfer dependency or browser caches over the prepared image", () => {
@@ -258,6 +266,9 @@ describe("action pins and checkout credentials", () => {
   });
 
   it("pins every external action to a full commit SHA and keeps local actions and workflows relative", () => {
+    // a workflow or action GitHub loads under another spelling (`.yaml`), or behind a symlink, would escape this audit: it fails instead
+    expect(workflowFileProblems()).toEqual([]);
+    expect(actionFiles).toContain(".github/actions/setup-ci/action.yml");
     const names = new Set<string>();
     for (const file of actionFiles) {
       const text = readFileSync(join(root, file), "utf8");
@@ -268,7 +279,7 @@ describe("action pins and checkout credentials", () => {
       "actions/attest-build-provenance",
       "actions/cache", "actions/cache/restore", "actions/checkout", "actions/deploy-pages", "actions/download-artifact",
       "actions/setup-node", "actions/upload-artifact", "actions/upload-pages-artifact",
-      "contributor-assistant/github-action", "oven-sh/setup-bun",
+      "oven-sh/setup-bun",
     ]);
     const dependabot = Bun.YAML.parse(readFileSync(join(root, ".github/dependabot.yml"), "utf8")) as {
       updates: Array<{ "package-ecosystem": string; directories: string[] }>;

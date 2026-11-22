@@ -9,7 +9,6 @@ import type { ClaudeArtifact } from "../../shared/protocol.ts";
 const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
-// the device's stored settings: the chip is off until Settings → Chat → Composer turns it on
 let stored: string | null = "true";
 
 beforeEach(() => {
@@ -61,7 +60,6 @@ test("shows the chip for a session's pages once Settings turns the Artifacts chi
 });
 
 test("discovers published pages after an empty initial lookup without a status change", async () => {
-  // The HTTP boundary answers empty until discovery completes; the component and machine API are real.
   let pages: ClaudeArtifact[] = [];
   jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ artifacts: pages }), globalThis.fetch));
   await act(async () => { renderer = create(pane()); });
@@ -71,7 +69,6 @@ test("discovers published pages after an empty initial lookup without a status c
     expect(renderer?.toJSON()).toBeNull();
   }
 
-  // Complete discovery, then explicitly fire the client's next scheduled lookup. No elapsed-time wait.
   pages = [{ url: "https://claude.ai/artifact/fixture", title: "Fixture", at: null }];
   await act(async () => { jest.runOnlyPendingTimers(); });
   expect(renderer?.root.findAllByType("button")).toHaveLength(1);

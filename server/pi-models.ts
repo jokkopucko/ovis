@@ -130,25 +130,20 @@ export function readRegularText(path: string): string | null {
     const buffer = Buffer.alloc(Math.min(stat.size, MAX_CATALOG_BYTES) + 1);
     let length = 0;
     for (let count = 1; count > 0 && length < buffer.length; length += count) count = readSync(fd, buffer, length, buffer.length - length, null);
-    // a file that grew past its stat since is read again once its signature moves
     return length > stat.size ? null : buffer.subarray(0, length).toString("utf8");
   } catch { return null; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/**
- * Each catalog file read once per change: a conversation is re-read on every poll, so the files
- * are only stat'ed there, and read and parsed again when their mtime or size moves.
- */
 const cache = new Map<string, { signature: string; byProvider: Catalog | null }>();
 
-/** A catalog file's models by provider, or null when the file is absent or not a catalog. */
 function readCatalog(path: string, parseCatalog: (parsed: unknown) => Catalog | null): Catalog | null {
   let signature: string;
   try {
     const stat = statSync(path);
     if (!stat.isFile()) return null;
-    signature = `${stat.mtimeMs}:${stat.size}`;
+    // as catalogVersion reads it, so the chat's live cache and this one see the same edits
+    signature = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
   } catch { return null; }
   const cached = cache.get(path);
   if (cached !== undefined && cached.signature === signature) return cached.byProvider;
@@ -201,29 +196,44 @@ export function piAgentDir(env: NodeJS.ProcessEnv = process.env): string {
   return typeof dir === "string" && dir.length > 0 ? (dir === "~" || dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : dir) : join(homedir(), ".pi", "agent");
 }
 
+const CATALOGS: { name: string; parse: (p: unknown) => Catalog | null }[] = [
+  { name: "models.json", parse: modelsJsonCatalog },
+  { name: "commandcode-models.json", parse: commandCodeCatalog },
+  { name: "models-store.json", parse: modelsStoreCatalog },
+];
+
+/**
+ * A catalog file as it is now: a window resolved under another version may be another number. ctime
+ * is in it because a chmod that makes the file readable again changes nothing else. A catalog that
+ * cannot be stat'ed (a link loop, no permission) counts as absent, as readCatalog reads it.
+ */
+export function catalogVersion(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+  } catch { return "-"; }
+}
+
+export function piCatalogVersion(agentDir = piAgentDir()): string {
+  return CATALOGS.map(({ name }) => catalogVersion(join(agentDir, name))).join("|");
+}
+
 /**
  * The window a model runs in, by the provider that served it. Both parts are asked for:
  * two providers can offer the same model id at different windows, and a session records
  * which of them answered. Consults every on-disk catalog pi keeps, in order.
  */
 export function piContextWindow(model: string, provider: string | null, agentDir = piAgentDir()): number | null {
-  const files: { path: string; parse: (p: unknown) => Catalog | null }[] = [
-    { path: join(agentDir, "models.json"), parse: modelsJsonCatalog },
-    { path: join(agentDir, "commandcode-models.json"), parse: commandCodeCatalog },
-    { path: join(agentDir, "models-store.json"), parse: modelsStoreCatalog },
-  ];
-  for (const file of files) {
-    const catalog = readCatalog(file.path, file.parse);
+  for (const file of CATALOGS) {
+    const catalog = readCatalog(join(agentDir, file.name), file.parse);
     if (catalog === null) continue;
     // an exact provider match only: a model id a second provider also serves, at another
     // window, must not borrow the first one's number
     const byId = provider === null ? undefined : catalog.get(provider);
     if (byId === undefined) continue;
     if (byId.has(model)) return byId.get(model) ?? null;
-    // provider present but model absent here: a later catalog may still list it
   }
   return null;
 }
 
-/** The cache is process-wide; tests point it at another directory. */
 export function forgetPiModels(): void { cache.clear(); }

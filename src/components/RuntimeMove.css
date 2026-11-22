@@ -18,7 +18,6 @@
   font-size: var(--fs-xs);
 }
 
-/* the plan's note leads, over the list (G-104) */
 .runtime-move-note:first-child {
   margin: 0 0 var(--space-3);
 }
@@ -37,7 +36,6 @@
   overflow-wrap: anywhere;
 }
 
-/* workspace > tab > pane, nested as the sidebar nests them: indents, no boxes */
 .runtime-move-tree,
 .runtime-move-tree ul,
 .runtime-move-list {
@@ -111,7 +109,6 @@
   flex: 0 0 auto;
 }
 
-/* End all and move now, asked once more: the danger button's own tint and ink */
 .runtime-move-confirm {
   margin: var(--space-2) 0 0;
   padding: var(--space-2) var(--space-3);
@@ -136,7 +133,6 @@
   overflow-wrap: anywhere;
 }
 
-/* the verdict as words: one ink per tone, on its own tint; the status tokens of the sidebar's badges */
 .runtime-move-tag {
   flex: 0 0 auto;
   padding: 0 var(--space-2);
@@ -171,7 +167,6 @@
   background: var(--status-blocked-tint);
 }
 
-/* the four steps of a move: the ones done checked and dim, the one under way strong with its count */
 .runtime-move-steps {
   display: flex;
   flex-direction: column;
@@ -195,7 +190,6 @@
   font-weight: var(--fw-medium);
 }
 
-/* every step keeps the check's slot, so the words line up whether or not it is drawn */
 .runtime-move-mark {
   display: inline-flex;
   flex: 0 0 auto;
@@ -217,7 +211,6 @@
   font-variant-numeric: var(--font-numeric);
 }
 
-/* a phone: the tag goes under the pane's words, so neither is cut short */
 @media (max-width: 480px) {
   .runtime-move-pane {
     flex-wrap: wrap;

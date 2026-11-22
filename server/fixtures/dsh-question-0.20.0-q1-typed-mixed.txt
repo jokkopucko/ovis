@@ -1,0 +1,39 @@
+
+                                            ██████ ██████ ██████ ██████ ██████ ██████ ██████ ██  ██
+                                            █▓  █▓ █▓     █▓     █▓  █▓ ▓▓     █▓     █▓     █▓ █▓
+                                            █▓  █▓ █████  █████  ████▓▓  ▓████ █████  █████  ███
+                        ▄▀▄       ▄         █▓  █▓ █▓     █▓     █▓         █▓ █▓     █▓     █▓ ██
+                        ▀▀▀▀▄  ▄▄▀▀▀        ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓     ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓  ▓▓
+        ▄▄▄▄▄▄▄▄▄       ▀▀▀▀▀▀▀▀▀▀▀▀
+      ▄▀▀▀▀▀▀▀▀▀▀▀▀▄▄     ▀▀▀▀▀▀▀▀▀         ██  ██   ████   ██████  ██  ██  ██████  ██████  ██████
+    ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄  ▄▀▀▀▀▀            █▓  █▓  █▓  ██  █▓  █▓  ███ █▓  █▓      ▓▓      ▓▓
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀            █████▓  █████▓  █████▓  █▓ ██▓  █████    ▓████   ▓████
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀             █▓  █▓  █▓  █▓  █▓ ▓▓   █▓  █▓  █▓          █▓      █▓
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀              ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓▓▓▓▓  ▓▓▓▓▓▓  ▓▓▓▓▓▓
+     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀               deepseek-flash · Max effort
+       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄              ~/work
+          ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀              Tip: Ctrl+L clears and force-redraws a garbled screen · /tips more tips
+
+          Explore the uncharted!
+
+  ❯ Ask me now.
+
+  🌕 Checking with you · 7s · ↑ 10 · ↓ 0 tokens
+
+    ─────────────────────────────────────────────▾  📋 Question 1/1   ─────────────────────────────────────────────
+
+    ◈ Choose Approach
+    Which headless approach should I build?
+
+     ○ Device + WebDriverAgent (Recommended)
+       Uses iphone172 and the MacBook; no App Attest workaround, no ToS risk, durable.
+     ○ Dev API + Firebase token
+       No hardware, but depends on an unprotected staging API.
+
+    ❯✎ Custom     ：用WDA方案先在真机上跑通，然后把预发环境的接口当作夜间任务的后备，手机离线时自动切换，两条路径
+       answer       都记日志，这样两周后可以比较哪条更稳定一些。
+
+    Type answer · Ctrl+V paste · Enter submit · ↑ back to options · Esc cancel · Ctrl+K to fold / click the header
+                                                                                                       123/1.0M 0.0%
+   deepseek-flash · max · cache 0.0% · ≈¥0.00 idle · work                                        ctx 0.0% (123/1.0m)
+   esc to interrupt

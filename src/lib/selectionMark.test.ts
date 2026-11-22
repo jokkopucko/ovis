@@ -18,8 +18,6 @@ describe("selectionStill", () => {
     expect(selectionStill(start, start)).toBe(true);
     expect(selectionStill(start, markSelection(start, "local", "w1:p2"))).toBe(false);
     expect(selectionStill(start, markSelection(start, "office", "w1:p1"))).toBe(false);
-    // a split asked on p1, p2 opened while herdr answered, then p1 again: the user moved on,
-    // so the new pane is not opened over what they came back to
     const back = markSelection(markSelection(start, "local", "w1:p2"), "local", "w1:p1");
     expect(back).toEqual({ machineId: "local", paneId: "w1:p1", generation: 2 });
     expect(selectionStill(start, back)).toBe(false);

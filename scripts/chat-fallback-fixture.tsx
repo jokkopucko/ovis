@@ -6,18 +6,17 @@ import { SettingsProvider } from "../src/lib/settings.ts";
 import type { AgentStatus, ConversationMetadata } from "../shared/protocol.ts";
 declare global { interface Window { chatFallbackQA: {
   pane: (pane: string) => void; refresh: () => void; agent: (agent: string | null) => void; status: (status: AgentStatus | undefined) => void;
-  /** the metadata the chat last forwarded for a pane, as the composer's model pill receives it */
   metadata: (pane: string) => ConversationMetadata | null | undefined;
-  /** whether the chat listens to its terminal's output, and that output arriving */
+  forwarded: () => number;
   listening: () => boolean; output: () => void;
-  /** resolves once `check` holds, checked again on each forwarded metadata and listener change */
   until: (check: () => boolean) => Promise<void>;
 } } }
 const metadata = new Map<string, ConversationMetadata | null>();
+let forwarded = 0;
 let terminalOutput: (() => void) | null = null;
 const waiting = new Set<() => void>();
 const changed = (): void => { for (const wake of [...waiting]) wake(); };
-const onMetadata = (pane: string, value: ConversationMetadata | null): void => { metadata.set(pane, value); changed(); };
+const onMetadata = (pane: string, value: ConversationMetadata | null): void => { metadata.set(pane, value); forwarded += 1; changed(); };
 const onTerminalOutput = (listener: (() => void) | null): void => { terminalOutput = listener; changed(); };
 function Fixture() {
   const [agent, setAgent] = useState<string | null>("codex");
@@ -27,7 +26,7 @@ function Fixture() {
   const [status, setStatus] = useState<AgentStatus | undefined>(undefined);
   window.chatFallbackQA = {
     pane: setPane, agent: setAgent, status: setStatus, refresh: () => setRefresh((key) => key + 1),
-    metadata: (id) => metadata.get(id), listening: () => terminalOutput !== null, output: () => terminalOutput?.(),
+    metadata: (id) => metadata.get(id), forwarded: () => forwarded, listening: () => terminalOutput !== null, output: () => terminalOutput?.(),
     until: (check) => new Promise<void>((resolve) => {
       const wake = () => { if (check()) { waiting.delete(wake); resolve(); } };
       waiting.add(wake);

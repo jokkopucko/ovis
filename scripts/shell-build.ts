@@ -9,19 +9,13 @@
  * no code of its own: `_redirects` answers every such path with the one index.html, the manifest
  * and the worker (200 rewrites, the address stays), and `_headers` carries the policy the PC's
  * server would send, derived from it (server/static.ts `shellContentSecurityPolicy`).
- *
- * The shell is told apart from the server-served build by one meta, `<meta name="ovis-shell"
- * content="relay">`, which only this mode writes: without it the client is the native one and
- * nothing here runs (src/lib/shellMode.ts).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Plugin } from "vite";
-import { pagePolicy } from "../server/file-view.ts";
-import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy } from "../server/static.ts";
 import { REGIONAL_APPS } from "../shared/relay-regions.ts";
+import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE, IMMUTABLE_CACHE, pagePolicy, REVALIDATE, shellContentSecurityPolicy } from "../shared/web-policy.ts";
 
-/** Vite's `--mode` that builds the shell; the build's output directory. */
 export const SHELL_MODE = "shell";
 export const SHELL_OUT_DIR = "dist-shell";
 
@@ -29,11 +23,6 @@ export const SHELL_META = '<meta name="ovis-shell" content="relay" />';
 
 const MANIFEST_LINK = /<link rel="manifest" href="\/manifest\.webmanifest(\?[^"]*)?"/;
 
-/**
- * index.html as the shell: the meta that names the mode, and the manifest named relative to the
- * page, so a PC's page at `/s/<id>/` installs from `/s/<id>/manifest.webmanifest` (its own scope)
- * and the front page from `/manifest.webmanifest`.
- */
 /**
  * The account metas the shell is built with: `ovis-account-service`, account.ovis.sh unless
  * OVIS_ACCOUNT_SERVICE_URL names another https origin (none when it is `off` or not https, and the
@@ -47,6 +36,11 @@ export function accountMetas(env: Record<string, string | undefined>): string[] 
   return [`<meta name="ovis-account-service" content="${origin}" />`, ...(providers.length > 0 ? [`<meta name="ovis-account-providers" content="${providers.join(",")}" />`] : [])];
 }
 
+/**
+ * index.html as the shell: the meta that names the mode, and the manifest named relative to the
+ * page, so a PC's page at `/s/<id>/` installs from `/s/<id>/manifest.webmanifest` (its own scope)
+ * and the front page from `/manifest.webmanifest`.
+ */
 export function shellIndexHtml(html: string, env: Record<string, string | undefined> = {}): string {
   if (!MANIFEST_LINK.test(html)) throw new Error("index.html must link /manifest.webmanifest for the shell to make it relative");
   const linked = html.replace(MANIFEST_LINK, (_, query: string | undefined) => `<link rel="manifest" href="manifest.webmanifest${query ?? ""}"`);
@@ -60,13 +54,12 @@ export function shellIndexHtml(html: string, env: Record<string, string | undefi
 /**
  * The shell's manifest, from the app's: `id`, `start_url` and `scope` relative to the manifest's
  * own address, so at `/s/<id>/manifest.webmanifest` every PC is an app of its own scope (and the
- * front page, at `/manifest.webmanifest`, the origin's). Everything else, icons included, stays.
+ * front page, at `/manifest.webmanifest`, the origin's).
  */
 export function shellManifest(manifest: string): string {
   return `${JSON.stringify({ ...JSON.parse(manifest) as Record<string, unknown>, id: "./", start_url: "./", scope: "./" }, null, 2)}\n`;
 }
 
-/** The phone apps' id: the Android package and the iOS bundle (app/capacitor.config.json). */
 export const APP_ID = "sh.ovis.app";
 
 /**
@@ -80,8 +73,9 @@ export const ANDROID_APP_FINGERPRINTS = [
   "BD:49:0B:C8:3D:3F:22:C8:55:9E:57:60:C4:7D:71:63:7D:34:22:92:95:82:C9:B4:05:E3:E6:79:AD:8E:29:C6",
 ];
 
+const APPLE_TEAM_ID = "5987KT43TJ";
 /** The iOS app as Apple names it in a Universal Link: the Apple team, then the bundle id. */
-export const IOS_APP_ID = `5987KT43TJ.${APP_ID}`;
+export const IOS_APP_ID = `${APPLE_TEAM_ID}.${APP_ID}`;
 
 /**
  * The files that let the phone apps open a PC's page on app.ovis.sh (a pairing link tapped in a
@@ -100,7 +94,6 @@ export function appLinkFiles(): Record<string, string> {
   };
 }
 
-/** Where the hosted shell's render host for a PC's rendered pages answers (todo 17's page); only its policy is reserved here. */
 export const RENDER_PATH = "/s/:id/~render";
 
 /**
@@ -124,7 +117,8 @@ export function shellRedirects(): string {
  * Pages `_headers`: the shell's policy on everything, the render host's own policy on its path
  * (the first is detached there: Pages joins a header set twice with a comma), and the caching
  * rules the PC's server applies (server/static.ts): hashed assets for good, the shell, the worker
- * and the manifest revalidated on every load, under a PC's scope too.
+ * and the manifest revalidated on every load, under a PC's scope too. A hashed asset the deployment
+ * lacks is a 404 (MISSING_ASSET_PAGE), never the page under the assets' year-long caching.
  */
 export function shellHeaders(): string {
   return [
@@ -148,10 +142,26 @@ export function shellHeaders(): string {
 }
 
 /**
- * The same site for Caddy, for a copy of the shell served beside a regional relay
- * (relay/shell-mirror.ts keeps `<root>` current): the rewrites of shellRedirects() and the headers
- * of shellHeaders(), from the same sources. `bun scripts/shell-caddy.ts <site> [root]` prints it.
+ * `assets/404.html`: without a 404.html on its way up from the path, Pages answers a missing file
+ * with index.html as a 200, and under /assets/ that page took the assets' year-long immutable caching.
+ * A phone that asked for a file between two deployments then kept the page as that stylesheet or
+ * script: the browser refuses it (nosniff), so the shell failed to load on every start, for a year.
+ * With this page Pages answers 404, and drops any Cache-Control on a 404 for `no-store`, so the next
+ * load asks again. Only /assets/ has it: every other path keeps the page as before.
  */
+export const MISSING_ASSET_PAGE = "assets/404.html";
+
+/**
+ * The shell's hashed files are named with ten characters of their hash where the build's default has
+ * eight, so none takes an address 0.5.8's shell served: a phone that got the page for one of those
+ * (MISSING_ASSET_PAGE) keeps it for a year, and an unchanged file would otherwise keep its name.
+ */
+export const SHELL_FILE_NAMES = {
+  entryFileNames: "assets/[name]-[hash:10].js",
+  chunkFileNames: "assets/[name]-[hash:10].js",
+  assetFileNames: "assets/[name]-[hash:10][extname]",
+} as const;
+
 export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): string {
   if (!/^[a-z0-9.-]+$/.test(site) || !/^\/[\w./-]+$/.test(root)) throw new Error("not a site address or a folder");
   const scope = "^/s/[0-9a-f]{32}";
@@ -166,9 +176,13 @@ export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): 
     `\t@worker path_regexp worker ${scope}/sw\\.js$`,
     `\t@revalidate path / /index.html /sw.js /manifest.webmanifest /s/*`,
     `\t@hidden path /_headers /_redirects`,
+    `\t@asset {\n\t\tpath /assets/*\n\t\tfile\n\t}`,
+    `\t@missingasset {\n\t\tpath /assets/*\n\t\tnot file\n\t}`,
     `\theader @notrender Content-Security-Policy "${shellContentSecurityPolicy(Object.values(REGIONAL_APPS))}"`,
     `\theader @render Content-Security-Policy "${pagePolicy(null)}"`,
-    `\theader /assets/* Cache-Control "${IMMUTABLE_CACHE}"`,
+    // only a file there is pinned for a year: a missing one is file_server's 404, asked for again (MISSING_ASSET_PAGE)
+    `\theader @asset Cache-Control "${IMMUTABLE_CACHE}"`,
+    `\theader @missingasset Cache-Control "no-store"`,
     `\theader @revalidate Cache-Control "${REVALIDATE}"`,
     // as Pages answers it: the first script on app.ovis.sh compares this copy's build with its own
     `\theader /build.json Access-Control-Allow-Origin "*"`,
@@ -185,13 +199,23 @@ export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): 
   ].join("\n");
 }
 
-/** The files the shell build writes beside Vite's output. */
 export function shellFiles(manifest: string): Record<string, string> {
   return {
     "render.html": `<!doctype html><html><head><meta charset="utf-8"><title>Ovis</title></head><body><script>
 function render(event) {
   if (event.source !== parent || event.data?.type !== "ovis-render" || typeof event.data.html !== "string") return;
   removeEventListener("message", render);
+  if (event.data.scripts !== true) {
+    // The page's scripts are off until the person asks for them: it is drawn in a frame of its own that runs
+    // none. That frame keeps this document's policy, so the page's styles, pictures and fonts draw as they do
+    // with scripts.
+    const page = document.createElement("iframe");
+    page.setAttribute("sandbox", "");
+    page.srcdoc = event.data.html;
+    page.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0";
+    document.body.replaceChildren(page);
+    return;
+  }
   document.open();
   document.write(event.data.html);
   document.close();
@@ -200,18 +224,19 @@ addEventListener("message", render);
 parent.postMessage({ type: "ovis-render-ready" }, "*");
 </script></body></html>`,
     "manifest.webmanifest": shellManifest(manifest),
+    [MISSING_ASSET_PAGE]: "<!doctype html><title>Not found</title><p>Not found</p>\n",
     _redirects: shellRedirects(),
     _headers: shellHeaders(),
     ...appLinkFiles(),
   };
 }
 
-/** The Vite plugin for `--mode shell`: the meta in the page, the relative manifest, and the Pages files in the output. */
 export function shellBuild(): Plugin {
   let manifest = "";
   return {
     name: "shell-build",
     apply: "build",
+    config: () => ({ build: { rollupOptions: { output: SHELL_FILE_NAMES } }, worker: { rollupOptions: { output: SHELL_FILE_NAMES } } }),
     configResolved(config) {
       const path = join(config.root, "public", "manifest.webmanifest");
       if (!existsSync(path)) throw new Error("public/manifest.webmanifest is missing: the shell derives its manifest from it");

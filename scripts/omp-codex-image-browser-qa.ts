@@ -1,6 +1,4 @@
-/** omp's and Codex's pictures end to end in Chrome, from their recorded sessions: parsed page -> prompt,
- * work line or row -> the real image endpoint's bytes -> a decoded <img>. omp's pictures live in its
- * blob store and load with the line; a Codex tool's load only once its row is opened. */
+/** omp's pictures live in its blob store and load with the line; a Codex tool's load only once its row is opened. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,12 +27,10 @@ const pasted = { type: "message", id: "p1c7u2e0", parentId: "16568bb3", timestam
 const answered = { type: "message", id: "a9e1c3b5", parentId: "p1c7u2e0", timestamp: "2026-10-26T08:53:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "The same red square." }], stopReason: "stop", timestamp: 1793004782000 } };
 writeFileSync(ompPath, fixture("omp-pictures-18.8.7-session.jsonl").toString("utf8") + [pasted, answered].map((row) => JSON.stringify(row)).join("\n") + "\n");
 
-// codex-cli 0.163.0's rollout as recorded: view_image through the exec tool
 const codexHome = join(root, "codex");
 mkdirSync(codexHome, { recursive: true });
 const codexPath = join(root, "rollout-2026-10-26T18-01-48-01a17771-c993-7f01-9f21-0e02bad40fd0.jsonl");
 writeFileSync(codexPath, fixture("codex-pictures-0.163.0-rollout.jsonl"));
-// the prompt's attachment, `-i shot.png` in the session's directory
 const codexCwd = join(root, "codex-pictures");
 mkdirSync(codexCwd, { recursive: true });
 const attached = /"image_url":"data:image\/png;base64,([A-Za-z0-9+/=]+)"/.exec(readFileSync(codexPath, "utf8"))![1]!;
@@ -74,7 +70,6 @@ async function open(conversation: ConversationResponse, viewport: { width: numbe
   return view;
 }
 
-/** Closes a page opened with `open`, once it threw nothing. */
 async function close(view: Page): Promise<void> {
   assert.deepEqual(pageErrors.get(view), [], "the page threw nothing");
   await view.context().close();
@@ -92,7 +87,6 @@ try {
       return new Response(Buffer.from(attached, "base64"), { headers: { "content-type": "image/png" } });
     }
     if (url.pathname === "/api/pane/conversation/image") {
-      // answered by the endpoint's own readers, from the files as the agents wrote them
       const ref = url.searchParams.get("ref") ?? "";
       served.push(ref);
       const image = ref.startsWith("codex-tool:") ? await codexToolImage(codexPath, ref, codexHome)
@@ -108,7 +102,6 @@ try {
   const evidence = process.env["UI_EVIDENCE_DIR"];
   if (evidence) mkdirSync(evidence, { recursive: true });
 
-  // omp: three prompts with a picture (the last only a picture) and a `read` that returned one
   const omp = page("omp-transcript", ompPath);
   assert.ok(!JSON.stringify(omp).includes("blob:sha256"), "the page carries refs, never omp's blob refs or bytes");
   const ompView = await open(omp, { width: 1200, height: 800 });
@@ -121,7 +114,6 @@ try {
   assert.equal(sizes.length, 3);
   assert.ok(sizes.every(([width, height]) => width! > 1 && width === height), `Chrome decoded omp's WebP from the blob store: ${JSON.stringify(sizes)}`);
   console.log(`PASS omp prompt pictures, a picture-only prompt its own turn, decoded from the blob store (${JSON.stringify(sizes[0])})`);
-  // the read's picture is on its folded work line: omp's refs are pi's, which the browser keeps
   assert.equal(await ompView.locator(".work-block-head").first().getAttribute("aria-expanded"), "false");
   const ompLine = ompView.locator(".work-block-line .work-images");
   assert.equal(await ompLine.count(), 1);
@@ -138,14 +130,12 @@ try {
   await close(ompView);
   console.log("PASS omp's read picture on its folded work line, decoded, and opens the viewer");
 
-  // Codex: the exec tool's picture loads only once its row is opened (its refs are served no-store)
   const codex = page("codex-transcript", codexPath);
   assert.ok(!JSON.stringify(codex).includes("iVBORw0KGgo"), "the page carries refs, never the picture's bytes");
   const codexView = await open(codex, { width: 1200, height: 800 });
   await codexView.getByText("Blue").waitFor();
   assert.deepEqual(await decoded(codexView, ".chat-turn-user .chat-user-images img"), [[32, 32]], "the prompt's attachment, as before");
   const before = served.length;
-  // folded, the page holds no element that could fetch the tool's picture, so none is fetched later
   assert.equal(await codexView.locator(".work-block-line .work-images").count(), 0, "a Codex picture stays off the folded line");
   assert.equal(await codexView.locator('img[src*="codex-tool%3A"]').count(), 0, "no picture element asks for the tool's picture while its row is folded");
   assert.equal(served.filter((ref) => ref.startsWith("codex-tool:")).length, 0, "nothing was fetched while the row is folded");
@@ -158,7 +148,6 @@ try {
   await close(codexView);
   console.log("PASS a Codex tool's picture loads once its row is opened, decoded from the endpoint's bytes");
 
-  // Composer uploads are plain @paths in the transcript, including spaces in an iCloud cwd.
   const mentioned: ConversationResponse = { source: "codex-transcript", history_id: "fixture", cursor: null, turns: [
     { role: "user", ts: null, parts: [{ kind: "text", text: `@${mentionedPath} Can you check this image?` }] },
     { role: "assistant", ts: null, parts: [{ kind: "text", text: "A blue square." }] },
@@ -179,7 +168,6 @@ try {
   assert.ok(mentionedReads.length >= 2);
   console.log("PASS spaced attachment paths decode and open the image viewer at desktop and phone widths");
 
-  // a phone: the same prompts and line fit the screen
   const phone = await open(omp, { width: 390, height: 844 }, true);
   await phone.getByText("The same red square.").waitFor();
   const phoneSizes = await decoded(phone, ".chat-turn-user .chat-user-images img");

@@ -21,7 +21,6 @@ const file = (entries: unknown[]) => {
   writeFileSync(path, entries.map((line) => JSON.stringify(line)).join("\n") + "\n");
   return path;
 };
-/** What the chat shows, across every page: the conversation is what a reader can reach. */
 const shown = (path: string) => {
   const turns: string[] = [];
   let page = transcriptPage("pi-transcript" as never, path);
@@ -61,8 +60,6 @@ describe("pi's entry tree", () => {
       assistant("a-live", "u2", "the answer in play"),
     ]);
     const branch = branchOf(path)!;
-    // ranges merge when consecutive, so this is [session] then [u2, a-live]: u1 and
-    // a-gone sit between the session and the branch and are read by neither
     expect(branch).toHaveLength(2);
     expect(shown(path)).toEqual(["user:the retried question", "assistant:the answer in play"]);
     expect(shown(path).join(" ")).not.toContain("abandoned");
@@ -77,12 +74,10 @@ describe("pi's entry tree", () => {
     ]);
     const before = transcriptPage("pi-transcript" as never, path);
     expect(shown(path)).toEqual(["user:question", "assistant:first answer"]);
-    // the leaf moves back to the prompt and a new answer is written beside the old one
     appendFileSync(path, JSON.stringify(assistant("a2", "u1", "second answer")) + "\n");
     const after = transcriptPage("pi-transcript" as never, path);
-    expect(after.history_id).not.toBe(before.history_id); // same file, same inode: only the tree knows
+    expect(after.history_id).not.toBe(before.history_id);
     expect(shown(path)).toEqual(["user:question", "assistant:second answer"]);
-    // a cursor held from the branch that was navigated away from cannot page the new one
     expect(() => transcriptPage("pi-transcript" as never, path, { before: before.cursor! })).toThrow();
   });
 
@@ -97,9 +92,6 @@ describe("pi's entry tree", () => {
   });
 
   it("tells two /tree moves apart when their branches share every range but the last", () => {
-    // one file, the leaf moved twice. Both states read the merged head plus one tail that
-    // starts at a different byte; only that start separates them, and the tail's end is
-    // what grows with appends, so the layout counts starts and non-final ends.
     const path = file([
       entry("s", null, { type: "session", version: 3, id: "s", cwd: root }),
       user("u1", "s", "question"),
@@ -108,12 +100,10 @@ describe("pi's entry tree", () => {
     appendFileSync(path, JSON.stringify(assistant("a2", "u1", "the second")) + "\n");
     const second = transcriptPage("pi-transcript" as never, path);
     expect(shown(path)).toEqual(["user:question", "assistant:the second"]);
-    // /tree back to the prompt again, and a third answer beside the other two
     appendFileSync(path, JSON.stringify(assistant("a3", "u1", "the third")) + "\n");
     const third = transcriptPage("pi-transcript" as never, path);
     expect(shown(path)).toEqual(["user:question", "assistant:the third"]);
     expect(third.history_id).not.toBe(second.history_id);
-    // the page held from the branch that was navigated away from no longer pages this one
     expect(() => transcriptPage("pi-transcript" as never, path, { before: second.cursor! })).toThrow();
   });
 
@@ -123,7 +113,7 @@ describe("pi's entry tree", () => {
     const scanned = first.scanned;
     appendFileSync(path, JSON.stringify(assistant("a1", "u1", "two")) + "\n");
     const next = piEntryIndex(path)!;
-    expect(next).toBe(first); // the same index, extended
+    expect(next).toBe(first);
     expect(next.scanned).toBeGreaterThan(scanned);
     expect(next.entries.map((e) => e.id)).toEqual(["s", "u1", "a1"]);
   });
@@ -138,19 +128,19 @@ describe("pi's entry tree", () => {
 
   it("stops at a parent it cannot find instead of inventing the head of the branch", () => {
     const path = file([user("u2", "missing-parent", "a turn whose parent never appears"), assistant("a2", "u2", "answer")]);
-    expect(branchOf(path)).toHaveLength(1); // u2 and a2, merged; nothing above the unknown id
+    expect(branchOf(path)).toHaveLength(1);
     expect(shown(path)).toEqual(["user:a turn whose parent never appears", "assistant:answer"]);
   });
 
   it("ignores the header and entries without an id, and keeps the last of a repeated id", () => {
     const path = file([
-      { type: "session", version: 3, id: "s", cwd: root }, // no parentId: not a node
+      { type: "session", version: 3, id: "s", cwd: root },
       user("u1", null, "only prompt"),
       assistant("u1", "u1", "an id reused"),
     ]);
     const branch = branchOf(path)!;
-    expect(branch).toHaveLength(1); // the repeat wins, and its parent is itself: the walk stops
-    expect(piEntryIndex(path)!.entries.map((e) => e.id)).toEqual(["s", "u1", "u1"]); // indexed twice, resolved once
+    expect(branch).toHaveLength(1);
+    expect(piEntryIndex(path)!.entries.map((e) => e.id)).toEqual(["s", "u1", "u1"]);
   });
 
   it("holds nothing to show for an empty file", () => {
@@ -169,7 +159,6 @@ describe("pi's entry tree", () => {
       call("a1", "u1", "call-1"),
       result("r1", "a1", "call-1", "the first output, kept"),
       assistant("a2", "r1", "the answer in play"),
-      // a question, then a /tree back to a2 that drops it and its tool call
       user("u2", "a2", "the question a /tree dropped"),
       call("a3", "u2", "call-2"),
       result("r2", "a3", "call-2", "the output a /tree dropped"),
@@ -177,7 +166,6 @@ describe("pi's entry tree", () => {
       call("a4", "u3", "call-3"),
       result("r3", "a4", "call-3", "the newest output"),
     ]);
-    // the leaf is r3: s, u1, a1, r1, a2, u3, a4, r3. u2 and its call never appear.
     expect(shown(path)).toEqual(["user:list the files", "assistant:the answer in play", "user:what about the other folder"]);
     expect(transcriptToolOutput("pi-transcript" as never, path, "call-1")).toBe("the first output, kept");
     expect(transcriptToolOutput("pi-transcript" as never, path, "call-3")).toBe("the newest output");
@@ -197,8 +185,6 @@ describe("pi's abandoned paths", () => {
       user("u1", "s", "first"),
       assistant("a1", "u1", "answer one"),
     ]);
-    // zero and unreadable are different answers: one is every session no /tree touched, the other
-    // is a tree this reader cannot vouch for, and only the second is worth warning about
     expect(piAbandonedTurns(path, statSync(path).size)).toEqual({ count: 0, branches: 0, summary: null });
   });
 
@@ -210,14 +196,10 @@ describe("pi's abandoned paths", () => {
       user("u2", "s", "the retried question"),
       assistant("a-live", "u2", "the answer in play"),
     ]);
-    // one place you navigated away from, holding two turns: the label has to say "a branch" and
-    // not "branches", which a count of turns alone cannot tell it
     expect(piAbandonedTurns(path, statSync(path).size)).toEqual({ count: 2, branches: 1, summary: null });
   });
 
   it("counts the branches separately from the turns they hold", () => {
-    // two abandoned paths of different lengths: 1281 turns somewhere and a 2-turn dead end read
-    // nothing alike, and a label that only knows the turn count calls both "a branch"
     const path = file([
       entry("s", null, { type: "session", version: 3, id: "s", cwd: root }),
       user("u1", "s", "asked"),
@@ -228,8 +210,8 @@ describe("pi's abandoned paths", () => {
       assistant("a3", "u3", "answer three"),
     ]);
     const abandoned = piAbandonedTurns(path, statSync(path).size);
-    expect(abandoned?.branches).toBe(2); // u1's path and u2's path, both left behind by u3's
-    expect(abandoned?.count).toBe(4); // and the head they share is still counted once
+    expect(abandoned?.branches).toBe(2);
+    expect(abandoned?.count).toBe(4);
   });
 
   it("counts the turns a branch left behind, on both sides of the live path", () => {
@@ -240,7 +222,6 @@ describe("pi's abandoned paths", () => {
       user("u2", "s", "the retried question"),
       assistant("a-live", "u2", "the answer in play"),
     ]);
-    // u1 and a-gone are not ancestors of a-live; pi keeps them, the chat shows only the branch
     expect(piAbandonedTurns(path, statSync(path).size)).toEqual({ count: 2, branches: 1, summary: null });
   });
 
@@ -250,7 +231,7 @@ describe("pi's abandoned paths", () => {
     // abandoned paths, rather than live entries with abandoned children, reports it as a branch in
     // every session there has ever been, and the label then says that to the reader
     const path = file([
-      entry("session", null, { type: "session", version: 3, cwd: root }), // orphan: nothing links to it
+      entry("session", null, { type: "session", version: 3, cwd: root }),
       entry("m1", null, { type: "model_change", provider: "p", modelId: "m" }),
       user("u1", "m1", "the question"),
       assistant("a-gone", "u1", "the abandoned answer"),
@@ -261,19 +242,14 @@ describe("pi's abandoned paths", () => {
   });
 
   it("never counts turns without a branch to count them on", () => {
-    // the label names a branch whenever it holds turns, so a count with no branch behind it would
-    // say "a branch" while the reader counted none. A path whose parent id never appears is damaged
-    // rather than branched: piBranchSegments calls a walk it cannot complete "not invented", and
-    // the same reader stays quiet about turns it cannot place on a path instead of naming one
     const orphaned = file([
       entry("s", null, { type: "session", version: 3, cwd: root }),
-      user("u1", "MISSING", "the question"), // its parent never appears in the file
+      user("u1", "MISSING", "the question"),
       assistant("a-gone", "u1", "the abandoned answer"),
       user("u2", "s", "the retried question"),
       assistant("a-live", "u2", "the answer in play"),
     ]);
     expect(piAbandonedTurns(orphaned, statSync(orphaned).size)).toEqual({ count: 0, branches: 0, summary: null });
-    // a real branch beside a detached one is still reported, and only its own turns are counted
     const both = file([
       entry("s", null, { type: "session", version: 3, cwd: root }),
       user("u1", "MISSING", "detached question"),
@@ -287,10 +263,6 @@ describe("pi's abandoned paths", () => {
   });
 
   it("counts no branch in a file with no links to walk", () => {
-    // an append-only journal of the same record shape — every entry parentless — has no branch in it
-    // to have navigated away from. Treating its last line as the leaf would call every earlier turn
-    // abandoned: three turns on a branch the file never had, the exact false sentence this reader
-    // exists not to say. Zeros, not null: the tree walked fine, it simply holds no branches
     const journal = file([
       entry("s", null, { type: "session", version: 3, cwd: root }),
       user("u1", null, "one"),
@@ -309,16 +281,15 @@ describe("pi's abandoned paths", () => {
     // reader who had navigated to the root was told nothing about what they left behind
     const atRoot = file([
       entry("s", null, { type: "session", version: 3, cwd: root }),
-      user("u1", null, "the first question"), // a path that begins at the root
+      user("u1", null, "the first question"),
       assistant("a-gone", "u1", "the abandoned answer"),
-      user("u2", null, "the question asked from the root"), // pi's leaf was cleared to null
+      user("u2", null, "the question asked from the root"),
       assistant("a-live", "u2", "the answer in play"),
     ]);
     expect(piAbandonedTurns(atRoot, statSync(atRoot).size)).toEqual({ count: 2, branches: 1, summary: null });
   });
 
   it("counts a turn once however many branches it was abandoned into", () => {
-    // three moves away from the same prompt: the head they share is not counted three times
     const path = file([
       entry("s", null, { type: "session", version: 3, id: "s", cwd: root }),
       user("u1", "s", "asked"),
@@ -343,12 +314,11 @@ describe("pi's abandoned paths", () => {
     ]);
     const result = piAbandonedTurns(path, statSync(path).size);
     expect(result?.count).toBe(2);
-    expect(result?.branches).toBe(1); // the summary sits on the live branch, so it is not one itself
+    expect(result?.branches).toBe(1);
     expect(result?.summary).toBe("We tried the first question and it failed.");
   });
 
   it("says nothing rather than guess at a tree it cannot walk", () => {
-    // a torn tail and a file shorter than the index both answer through the same guard
     const path = file([
       entry("s", null, { type: "session", version: 3, id: "s", cwd: root }),
       user("u1", "s", "first"),
@@ -358,7 +328,6 @@ describe("pi's abandoned paths", () => {
   });
 
   it("leaves entries that are not turns out of the count", () => {
-    // model changes and usage sit among the rows and are never turns the chat showed
     const path = file([
       entry("s", null, { type: "session", version: 3, id: "s", cwd: root }),
       user("u1", "s", "the question"),
@@ -371,8 +340,6 @@ describe("pi's abandoned paths", () => {
   });
 });
 
-// The count only helps if the route carries it: the chat cannot see bytes it is not sent, and a
-// branch's page is built from the live ranges alone.
 describe("the abandoned count on the page", () => {
   const page = (path: string) => transcriptPage("pi-transcript" as never, path);
 
@@ -384,7 +351,6 @@ describe("the abandoned count on the page", () => {
       user("u2", "s", "the retried question"),
       assistant("a-live", "u2", "the answer in play"),
     ]);
-    // shown by the chat, and hidden but counted: the two together are the file
     expect(shown(path)).toEqual(["user:the retried question", "assistant:the answer in play"]);
     expect(page(path).abandoned).toEqual({ count: 2, branches: 1, summary: null });
   });
@@ -441,7 +407,6 @@ describe("pi's entry index on awkward files", () => {
   it("starts over when another file takes the path, even one of the same size that ends the same", () => {
     const path = file([session, user("u1", "s", "one"), assistant("a1", "u1", "the same closing answer, longer than the bytes the tail check reads")]);
     expect(piEntryIndex(path)!.entries.map((item) => item.id)).toEqual(["s", "u1", "a1"]);
-    // an import or a restore: other entries, the same length, the same last bytes
     const replacement = file([session, user("u2", "s", "two"), assistant("a1", "u1", "the same closing answer, longer than the bytes the tail check reads")]);
     expect(statSync(replacement).size).toBe(statSync(path).size);
     renameSync(replacement, path);

@@ -1,12 +1,6 @@
-/**
- * Overrides keep the app's Mod+Shift convention for a bare key ("k" is Mod+Shift+K); a recorded chord
- * with other modifiers is stored exactly, as "ctrl+alt+shift+meta+key" in that order ("meta+PageUp").
- * null returns a key to the terminal.
- */
 export type ShortcutOverrides = Record<string, string | null>;
-export const CUSTOM_SHORTCUT_IDS = ["palette", "find", "toggle-view", "focus-input", "scroll-up", "scroll-down", "toggle-sidebar", "new-session", "new-tab", "rename-tab", "split-right", "split-down", "zoom-pane", "previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace", "settings"];
+export const CUSTOM_SHORTCUT_IDS = ["palette", "find", "toggle-view", "focus-input", "scroll-up", "scroll-down", "toggle-sidebar", "new-session", "new-tab", "rename-tab", "split-right", "split-down", "zoom-pane", "close-pane", "close-tab", "previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace", "settings"];
 
-/** A chord with its exact modifiers; key as overrides store it (letters lowercase). */
 export interface ExactChord {
   ctrl: boolean;
   alt: boolean;
@@ -15,12 +9,10 @@ export interface ExactChord {
   key: string;
 }
 
-// the punctuation keys are named by their US character but read by position (shortcutEventKey)
 const BINDABLE_KEY = "(?:[a-z0-9,\\-=\\[\\];'\\\\./`§]|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|PageUp|PageDown|Home|End)";
 const MOD_SHIFT_KEY = new RegExp(`^${BINDABLE_KEY}$`);
 const EXACT_CHORD = new RegExp(`^(ctrl\\+)?(alt\\+)?(shift\\+)?(meta\\+)?(${BINDABLE_KEY})$`);
 
-/** A stored exact chord, or null for a bare Mod+Shift key or a value with no Ctrl, Alt or Meta. */
 export function parseExactChord(value: string): ExactChord | null {
   const match = EXACT_CHORD.exec(value);
   if (!match || !value.includes("+")) return null;
@@ -32,7 +24,6 @@ export function formatExactChord(chord: ExactChord): string {
   return `${chord.ctrl ? "ctrl+" : ""}${chord.alt ? "alt+" : ""}${chord.shift ? "shift+" : ""}${chord.meta ? "meta+" : ""}${chord.key}`;
 }
 
-/** What a stored binding means on this platform: a bare key is Mod+Shift+key. */
 export function bindingChord(value: string, platformIsMac: boolean): ExactChord {
   return parseExactChord(value) ?? { ctrl: !platformIsMac, alt: false, shift: true, meta: platformIsMac, key: value };
 }
@@ -93,7 +84,6 @@ export function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent);
 }
 
-/** Stored overrides as this device may use them: an exact chord the recorder would refuse here is dropped. */
 export function sanitizeShortcutOverrides(raw: unknown, platformIsMac = isMacPlatform()): ShortcutOverrides {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const result: ShortcutOverrides = {};

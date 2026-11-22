@@ -50,12 +50,20 @@ git --version
 | **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer) and to let Tailscale serve the app | In-app, like A |
 
 Use A unless the user says otherwise. C is A plus the prerequisites and step 5 in one command,
-`curl -fsSL https://ovis.sh/install.sh | sh`: it installs herdr and Bun for the user only (no sudo)
-when they are missing (and Node 22 only when the release's Rust PTY host cannot be installed on the
-PC and it has no Node 18 or newer), installs the plugin, starts it when herdr
+`curl -fsSL https://ovis.sh/install.sh | sh`: it installs herdr for the user only (no sudo) when it
+is missing, and the release's compiled server into `~/.local/share/ovis` (taken only once the
+release's signed `ovis-server.json` verifies against the key the installer pins and each file has the
+size and SHA-256 it names; nothing there changes when a check fails), with no Bun or Node. It links a
+small plugin folder that runs that binary into herdr, starts it when herdr
 runs, and, when Tailscale runs on the PC, serves the app to the tailnet (`tailscale serve`) and
 prints the address as a QR code. It changes the user's Tailscale configuration, so it needs the
-same **Ask** as step 5. Running it again keeps what is there. On a first install it prints a link
+same **Ask** as step 5. Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
+take turns through an install lock in `~/.local/share/ovis`: a waiter breaks the lock once the holder's pid no
+longer runs, one breaker at a time. A release
+from before the compiled server, a branch in `OVIS_REF`, an install from source already on the PC, or
+`OVIS_FROM_SOURCE=1` install from source as before ([one rule](#binary-or-source)) (Bun, herdr's plugin checkout, and Node 22 only where
+the Rust PTY host cannot run). `OVIS_RELEASES_URL` (an https:// address, or a `file://` folder) points
+it at another place for releases; plain http is refused. On a first install it prints a link
 for a GitHub star, unless the account gh is signed in to has starred the repository already. It
 asks whether to give one only at a terminal, and goes on by itself after 20 seconds: do not answer
 the question, and do not star the repository for the user.
@@ -83,8 +91,27 @@ then switches to the Herdr app's terminals (herdr-core).
 herdr plugin install devswha/ovis --yes
 ```
 
-herdr clones the repository, runs `bun install` and `bun run build`, then registers the plugin. This
-takes about a minute.
+herdr clones the repository and runs `scripts/plugin-launch.ts install`, which downloads the release's compiled
+server for this version (`ovis-server-<platform>` and the built client, `ovis-dist.tar.gz`), checks the signature
+of the release's `ovis-server.json` against the key the repository pins and each file's size and SHA-256, and moves
+it into `.ovis/server` in the plugin's checkout in one rename; every plugin command then runs that binary while it
+still verifies, so a first start needs no network. This takes about a minute.
+
+<a id="binary-or-source"></a>**Binary or source.** Ovis builds from source instead (`bun install`, `bun run build`,
+and `scripts/plugin.ts` run by Bun) when `OVIS_FROM_SOURCE=1` is set (a developer checkout; `install.sh` and
+`install.ps1` set it for herdr when `OVIS_REF` names a branch or a commit), and it says so in one line. Otherwise:
+- the plugin's launcher and `install.ps1` fall back to source only when this version's release has no
+  `ovis-server.json` at all (GitHub answers 404, or a `file://` folder has none: every release up to v0.5.3). Anything
+  else fails: a server error, a network failure, or a manifest that is there but fails its signature, version, size or
+  SHA-256 check;
+- `install.sh` today falls back to source when its manifest probe fails with any HTTP error, not only 404: the source
+  of the same tag, from GitHub over TLS. The update work (todo 7 of the relay-fleet plan) narrows it to 404 only. A
+  manifest that is there and fails a check fails, as above;
+- the plugin's launcher takes the release's binary only when the checkout's `server/` and `shared/` are the git trees
+  the signed manifest names: a branch, or main between releases, runs its own sources;
+- over an install of the release's binary, `install.sh` builds no source: asked for one (`OVIS_FROM_SOURCE=1`, a
+  branch, or a tag without the binary), it stops before installing anything and says how to remove the binary first;
+  when the latest release cannot be checked, it leaves the installed Ovis as it is.
 
 - Success: the command exits 0 and `herdr plugin list` shows `devswha.ovis`.
 - The first build step is a check that prints, in one line, what is missing (`bun`, or a version

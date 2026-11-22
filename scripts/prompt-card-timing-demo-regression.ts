@@ -1,8 +1,5 @@
 /**
- * The prompt card stays on screen while its prompt does: a chat drawn again (back from the Terminal
- * lens) and a socket that reconnects keep the card in every painted frame, as the conversation keeps
- * its turns. A card answered in the terminal is not drawn again, and the card comes and goes with
- * herdr's blocked status, not at the next 2 s poll. On the unmodified app over the demo's fixture
+ * On the unmodified app over the demo's fixture
  * transport, whose "web" pane has an approval open; the screen read (GET /api/pane/prompt) takes
  * PROMPT_READ_MS, as the server's does. Loopback only; no herdr session is opened.
  */
@@ -16,7 +13,6 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
 const PROMPT_READ_MS = 150;
-// the chat's prompt poll (src/components/ChatView.tsx PROMPT_POLL_MS): a status change must not wait for it
 const PROMPT_POLL_MS = 2000;
 const app = mkdtempSync(join(tmpdir(), "herdr-prompt-card-timing-"));
 
@@ -48,7 +44,6 @@ const HOOKS = `<script>(() => {
   requestAnimationFrame(() => channel.port2.postMessage(0));
 })();</script>`;
 
-/** How long, from the first painted frame without the card to the next one with it, the composer stood alone (ms; 0: never). */
 const cardlessPaints = (page: Page, from: number): Promise<number> => page.evaluate((start) => {
   const paints = (window as unknown as { paints: { at: number; composer: boolean; card: boolean }[] }).paints.slice(start);
   const first = paints.findIndex((paint) => paint.composer && !paint.card);
@@ -58,11 +53,6 @@ const cardlessPaints = (page: Page, from: number): Promise<number> => page.evalu
 }, from);
 const paintCount = (page: Page): Promise<number> => page.evaluate(() => (window as unknown as { paints: unknown[] }).paints.length);
 
-/**
- * herdr reports the web pane blocked (its prompt open) or working (answered in the terminal) just
- * after a prompt read answered, so the next poll is about PROMPT_POLL_MS away: the ms from that
- * report to the first painted frame whose card is `shown` (or not).
- */
 const cardAfterStatus = async (page: Page, status: "blocked" | "working"): Promise<number> => {
   const reads = await page.evaluate(() => (window as unknown as { promptReads: number }).promptReads);
   await page.waitForFunction((count) => (window as unknown as { promptReads: number }).promptReads > count, reads, { timeout: PROMPT_POLL_MS * 2 });
@@ -102,7 +92,6 @@ try {
     await page.locator(".conn-live").waitFor({ state: "attached" });
     await page.locator(".prompt-card").waitFor();
 
-    // back from the Terminal lens: the chat is drawn again, and so is the card the screen still shows
     await page.locator(".view-switch button", { hasText: "Terminal" }).click();
     await page.locator(".terminal-stack.is-chat").waitFor({ state: "detached" });
     let from = await paintCount(page);
@@ -112,9 +101,7 @@ try {
     await page.waitForTimeout(500);
     const afterLens = await cardlessPaints(page, from);
 
-    // a socket that drops and reconnects: the screen did not change, the card stays
     from = await paintCount(page);
-    // a drop this short is not said (src/lib/reconnectGrace.ts): the new socket's open is what shows the reconnect
     const sockets = await page.evaluate(() => { const kept = (window as unknown as { keptSockets: WebSocket[] }).keptSockets; kept.at(-1)!.close(); return kept.length; });
     await page.waitForFunction((before) => { const kept = (window as unknown as { keptSockets: WebSocket[] }).keptSockets; return kept.length > before && kept.at(-1)!.readyState === WebSocket.OPEN; }, sockets, { timeout: 15_000 });
     await page.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
@@ -122,10 +109,8 @@ try {
     await page.waitForTimeout(PROMPT_READ_MS * 3);
     const afterReconnect = await cardlessPaints(page, from);
 
-    // the approval answered in the Terminal lens: back in Chat, its card is not drawn again
     await page.locator(".view-switch button", { hasText: "Terminal" }).click();
     await page.locator(".terminal-stack.is-chat").waitFor({ state: "detached" });
-    // the answer sets the agent to work again, as herdr reports it
     await page.evaluate((pane) => {
       (window as unknown as { promptGone: boolean }).promptGone = true;
       (window as unknown as { __herdrDemoOrder: { status: (pane: string, status: string) => void } }).__herdrDemoOrder.status(pane, "working");
@@ -141,7 +126,6 @@ try {
       return shown.length === 0 ? 0 : Math.round(shown.at(-1)!.at - shown[0]!.at) || 1;
     }, from);
 
-    // the agent asks again, then the question is answered in the terminal: the card follows herdr's status at once
     const shownAfterBlocked = await cardAfterStatus(page, "blocked");
     const goneAfterWorking = await cardAfterStatus(page, "working");
 

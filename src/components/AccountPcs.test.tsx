@@ -6,7 +6,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { AccountPcList, AccountSignIn, CheckPcsButton } from "./AccountPcs.tsx";
+import { AccountPcList, AccountSignIn, CheckPcsButton, accountPcStateText, listedPcStateText } from "./AccountPcs.tsx";
 
 const render = (node: ReturnType<typeof createElement>): string => {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
@@ -140,7 +140,6 @@ describe("AccountSignIn", () => {
           }),
         );
       });
-      // Tap Google first so it becomes the remembered provider, then click Try again
       const googleBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-provider"] === "google");
       await act(async () => { googleBtn.props.onClick(); });
       const retryBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "retry-signin");
@@ -150,7 +149,6 @@ describe("AccountSignIn", () => {
       await act(async () => { renderer?.unmount(); });
     }
 
-    // Remounted after an OAuth redirect failure with failedProvider="google" and no prior click
     const redirectRetried: string[] = [];
     try {
       await act(async () => {
@@ -173,8 +171,6 @@ describe("AccountSignIn", () => {
     }
   });
 
-  // the provider mark's placement outside a provider button (inline in the dashboard's foot) is what the browser
-  // computes: scripts/relay-dashboard-browser-qa.ts provider-mark-inline
 });
 
 describe("CheckPcsButton", () => {
@@ -217,5 +213,21 @@ describe("AccountPcList", () => {
     expect(html).toContain('class="status-dot" data-state="ready" data-size="inline"');
     expect(html).toContain('class="status-dot" data-state="needs-you" data-size="inline"');
     expect(html).toContain('class="status-dot" data-state="offline" data-size="inline"');
+  });
+});
+
+describe("listedPcStateText", () => {
+  const t = (key: string) => key;
+  const pc = (state: MyPc["state"], paired: boolean): MyPc => ({ server_id: "a".repeat(32), name: "Desk", state, last_seen_at: null, added_at: null, listed: true, paired, linked: paired });
+
+  it("says a listed PC is in the account where no pairing can tell whether it waits for an approval", () => {
+    expect(listedPcStateText(pc("needs-approval", false), t as never)).toBe("In your account");
+    expect(accountPcStateText(pc("needs-approval", false), t as never)).toBe("Needs approval");
+  });
+
+  it("keeps what the directory itself knows", () => {
+    expect(listedPcStateText(pc("needs-update", false), t as never)).toBe("Update Ovis on it");
+    expect(listedPcStateText(pc("offline", false), t as never)).toBe(accountPcStateText(pc("offline", false), t as never));
+    expect(listedPcStateText(pc("paired", true), t as never)).toBe("Ready");
   });
 });

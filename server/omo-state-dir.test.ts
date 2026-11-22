@@ -39,7 +39,6 @@ test("agent environment precedence and home fallbacks are injectable without cre
   delete env.HOME;
   expect(omoStateDir(cwd, { env, home: root })).toBe(windows ? join(root, "profile", ".omo", "agent", suffix) : join(root, ".omo", "agent", suffix));
   expect(omoStateDir(cwd, options)).toBe(join(root, ".omo", "agent", suffix));
-  // on Windows too, a given home wins over the OS's own when the environment names none
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   Object.defineProperty(process, "platform", { value: "win32" });
   try { expect(omoStateDir(cwd, options)).toBe(join(root, ".omo", "agent", suffix)); } finally { Object.defineProperty(process, "platform", platform); }

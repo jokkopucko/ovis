@@ -1,6 +1,5 @@
 import type { LayoutCell } from "./layoutMap.ts";
 
-/** Newest first, including the current tab and at most three previous tabs. */
 export function visitPaneTab(previous: readonly string[], current: string | null, liveTabs: ReadonlySet<string>): readonly string[] {
   const surviving = previous.filter((id) => liveTabs.has(id) && id !== current);
   return current !== null && liveTabs.has(current) ? [current, ...surviving].slice(0, 4) : surviving.slice(0, 4);

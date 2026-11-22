@@ -1,8 +1,3 @@
-/**
- * OMP sessions from the pane's own process when Herdr supplies no usable session path.
- * Herdr deliberately omits recognized agents' argv on WSL to avoid blocking procfs reads.
- * Recover process identity outside the bridge, then use the open transcript or breadcrumb.
- */
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -49,11 +44,9 @@ const VALUE_OPTIONS = new Set([
 
 /**
  * What an omp command line says about where it keeps its session: the last of each option wins.
- * `sessionDirValue` is the last `--session-dir`'s value ("" for an empty one, undefined when it
- * ends argv without one or none is given). `extensions` are the files `-e`, `--extension`, `--hook`
- * and `--trusted-extension` name, which omp loads even when it discovers none (`noExtensions`):
- * under `--no-extensions`, and under `--trusted-extension`, which loads only its own files (omp
- * refuses it together with the others).
+ * `extensions` are the files `-e`, `--extension`, `--hook` and `--trusted-extension` name, which omp
+ * loads even when it discovers none (`noExtensions`): under `--no-extensions`, and under
+ * `--trusted-extension`, which loads only its own files (omp refuses it together with the others).
  */
 export interface OmpLaunch {
   profile: string | null; sessionDir: boolean; cwd: string | null; sessionDirValue?: string;
@@ -73,7 +66,6 @@ const EXTENSION_OPTIONS = new Set(["-e", "--extension", "--hook", "--trusted-ext
 export function ompLaunch(argv: readonly string[]): OmpLaunch | null {
   let profile: string | null = null;
   const rest: string[] = [];
-  // a bun or node interpreter comes first, then omp's script
   for (let at = OMP_EXECUTABLE.test(argv[0] ?? "") ? 1 : 2; at < argv.length; at++) {
     const word = argv[at]!;
     if (word === "--") { rest.push(...argv.slice(at)); break; }
@@ -98,7 +90,6 @@ export function ompLaunch(argv: readonly string[]): OmpLaunch | null {
     if (equals > 0) { value = word.slice(equals + 1); word = word.slice(0, equals); }
     if (word === "--") break;
     if (equals < 0 && VALUE_OPTIONS.has(word)) value = rest[++at];
-    // a moved store counts even without its value: omp's environment can move it too
     if (word === "--session-dir") { sessionDir = true; sessionDirValue = value; }
     else if (word === "--cwd" && value !== undefined) cwd = value;
     else if (EXTENSION_OPTIONS.has(word) && value) {
@@ -121,11 +112,7 @@ export function ompAgentDir(argv: readonly string[], environ: readonly string[] 
   return ompConfigDir(argv, environ, home);
 }
 
-/**
- * The agent directory omp loads extensions from: moving sessions does not move its configuration.
- * Read the way ompStoreLayout reads it, from the environment when one was read (without one, the
- * default directory or the `--profile` one).
- */
+/** The agent directory omp loads extensions from: moving sessions does not move its configuration. */
 export function ompConfigDir(argv: readonly string[], environ: readonly string[] | null, home: string): string | null {
   const launch = ompLaunch(argv);
   if (launch === null) return null;
@@ -203,15 +190,17 @@ export type OmpLayout = StoreRoots;
  *   profile handed it down);
  * - an agent directory that is the default one keeps its sessions under
  *   `$XDG_DATA_HOME/omp[/profiles/<name>]/sessions` and its breadcrumbs under
- *   `$XDG_STATE_HOME/omp[/profiles/<name>]/terminal-sessions`, each only when that directory exists;
+ *   `$XDG_STATE_HOME/omp[/profiles/<name>]/terminal-sessions`, each only when that directory exists,
+ *   on Linux and macOS (omp reads them on macOS from 18.12, and its `init-xdg` migration that makes
+ *   them runs there only from then, so an older omp never finds one there);
  * - the last `--session-dir`, else PI_CODING_AGENT_SESSION_DIR, is a session directory of its own.
  * Only the environment omp was started with counts: values omp loads later from its `.env` files
  * are not seen, so such a store is not found (the transcripts lie outside the store this names).
  * null when nothing proves the store: argv omp would refuse, an environment that could not be read
  * (Linux and macOS show a same-user process's own; Windows none), a variable given twice, a
  * profile name omp refuses, a relative directory (omp resolved it against a directory nothing
- * records), an empty or missing `--session-dir` value, or on macOS an XDG omp root (whether omp
- * reads those there depends on its version).
+ * records), an empty or missing `--session-dir` value, or on Windows an XDG omp root (omp reads
+ * none there).
  */
 export function ompStoreLayout(argv: readonly string[], environ: readonly string[] | null, platform: NodeJS.Platform = process.platform): OmpLayout | null {
   const launch = ompLaunch(argv);
@@ -220,7 +209,6 @@ export function ompStoreLayout(argv: readonly string[], environ: readonly string
   for (const word of environ) {
     const equals = word.indexOf("=");
     if (equals <= 0) continue;
-    // which of two the process read is not proven
     if (variables.has(word.slice(0, equals))) return null;
     variables.set(word.slice(0, equals), word.slice(equals + 1));
   }
@@ -242,7 +230,7 @@ export function ompStoreLayout(argv: readonly string[], environ: readonly string
       return existsSync(app) ? app : undefined;
     };
     const data = xdg("XDG_DATA_HOME"), state = xdg("XDG_STATE_HOME");
-    if (data === null || state === null || platform !== "linux" && (data || state)) return null;
+    if (data === null || state === null || platform !== "linux" && platform !== "darwin" && (data || state)) return null;
     if (data) sessions = join(data, "sessions");
     if (state) terminalSessions = join(state, "terminal-sessions");
   }
@@ -252,11 +240,6 @@ export function ompStoreLayout(argv: readonly string[], environ: readonly string
   return isAbsolute(own) ? { sessions: resolve(own), terminalSessions, depth: 1 } : null;
 }
 
-/**
- * The agent directory of an omp with this launch and environment, as ompStoreLayout describes it,
- * the default one it would be without PI_CODING_AGENT_DIR, and its profile. null for a profile name
- * omp refuses or a relative PI_CODING_AGENT_DIR.
- */
 function ompAgentDirectory(launch: OmpLaunch, variable: (key: string) => string | undefined, home: string): { agent: string; defaultAgent: string; profile: string | undefined } | null {
   const root = join(home, variable("PI_CONFIG_DIR") || ".omp");
   const fromEnv = ompProfileName(variable("OMP_PROFILE") !== undefined ? variable("OMP_PROFILE") : variable("PI_PROFILE"));
@@ -286,13 +269,10 @@ function routingEnviron(pid: number): readonly string[] | null {
   return null;
 }
 
-/** The pane's omp processes and the one layout they share (ompPaneRoute). */
 export interface OmpRoute {
   layout: OmpLayout;
   pids: number[];
-  /** The routing environment read for each process, standing in for gjcTerminal's own read. */
   environOf: (pid: number) => readonly string[] | undefined;
-  /** The absolute `--cwd` every omp process in the pane started with, or null (ompLaunchDir). */
   launchDir: string | null;
   /**
    * On macOS herdr-core, the files each process holds open (ompHeldOpen), the only proof there; null for a
@@ -308,17 +288,14 @@ export interface OmpRoute {
 
 /** An lsof listing longer than this is not read: nothing is proved from a part of one. */
 const LSOF_MAX_BYTES = 1 << 20;
-/** How long lsof may run before it is killed and nothing is proved. */
 const LSOF_DEADLINE_MS = 3000;
 
-/** How long one lsof listing of a process stands for it while its start stays the same: about one poll. */
 const LSOF_FRESH_MS = 2000;
 /**
  * A name lsof listed, with the `dev:ino` of the file it held (its `D` and `i` fields), or null when lsof
  * printed neither: such a `.jsonl` proves nothing, since the name may meanwhile name another file.
  */
 interface HeldName { name: string; id: string | null }
-/** Each process's last listing, by pid, with the start it was listed under and when (performance.now). */
 const listed = new Map<number, { identity: number; files: HeldName[] | null; at: number }>();
 
 /** The bytes lsof's `-F n` field writes as a backslash and one letter. */
@@ -448,26 +425,17 @@ function sampledStart(pid: number): bigint | null {
   try { return darwinStartTime(pid); } catch { return null; }
 }
 
-/**
- * Settings -> Experimental -> OMP on macOS herdr-core: chat from the session it holds open (src/lib/settings.ts
- * ompHeldFiles), as the server's shared preferences hold it. Off until the server's start points it there, and
- * off by default: the chat there then falls back as it did before lsof was read.
- */
 let heldFilesOn: () => boolean = () => false;
 
-/** Points ompHeldOpen at the setting's live value (the server's start, from its shared preferences). */
 export function readOmpHeldFilesSetting(read: () => boolean): void {
   heldFilesOn = read;
 }
 
 /**
- * The route as the held transcript is read from it, once herdr's report for the pane gave no usable
- * path (none, or one rejected: outside the omp's store, or not its session). On macOS herdr-core
- * (`core`) there is no /proc and omp's breadcrumb proves nothing (#3365): only the files a process
- * holds open do, so lsof lists them, and when it proves nothing no file is held and heldTranscript
- * binds nothing. Only with ompHeldFiles on; off, lsof is never run and the route is read as before.
- * A process with no listing that proves anything (its start unread or changed, left out by lsof, lsof
- * failed) may hold another session than the others: it is unreadable, so nothing is bound then.
+ * On macOS herdr-core (`core`) there is no /proc and omp's breadcrumb proves nothing (#3365): only the files a
+ * process holds open do, so lsof lists them, and when it proves nothing no file is held and heldTranscript
+ * binds nothing. A process with no listing that proves anything (its start unread or changed, left out by lsof,
+ * lsof failed) may hold another session than the others: it is unreadable, so nothing is bound then.
  */
 export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRoute> {
   if (process.platform !== "darwin" || !core || !heldFilesOn()) return route;
@@ -476,16 +444,13 @@ export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRo
 }
 
 /**
- * Where the pane's omp processes keep their sessions: the one layout their own argv and routing
- * environment give (ompStoreLayout). null when herdr shows no live omp process in the pane;
- * "unproved" when one's store cannot be told, two keep different ones, or a live process whose
- * argv herdr left out could not be read, since nothing then says which store, or which session,
- * the pane shows. omp's helpers count for nothing.
+ * null when herdr shows no live omp process in the pane; "unproved" when one's store cannot be told, two keep
+ * different ones, or a live process whose argv herdr left out could not be read, since nothing then says which
+ * store, or which session, the pane shows.
  */
 export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): Promise<OmpRoute | "unproved" | null> {
   // `known`: herdr's answer the caller's poll already read for this pane. One that named no processes is asked again:
   // with no omp seen herdr's reported session is trusted, and an omp started since may keep another store
-  // lsof may list these processes later (ompHeldOpen): each one's start is read with the sample that names it
   const sampleStarts = process.platform === "darwin" && heldFilesOn();
   // A process that started at or after herdr was asked is not the one its sample named, but a pid reused
   // since: its start is not taken, so lsof never lists it (ompHeldOpen). `askedAt` is never later than the
@@ -508,7 +473,6 @@ export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): 
     let argv = Array.isArray(foreground.argv) ? foreground.argv.map(String) : [];
     if (argv.length > 0 && (!isOmpProcess(argv) || isOmpHelper(argv))) continue;
     const start = sampleStarts ? sampledStart(foreground.pid) : null;
-    // processStartIdentity's own form (whole milliseconds), as darwinOpenFiles reads it again
     if (start !== null && start < BigInt(askedAt) * 1000n) starts.set(foreground.pid, Number(start / 1000n));
     // Herdr omits a recognized agent's argv (on Linux, WSL included). A procfs memory read blocks
     // while the process holds its memory map locked (omp does while it pages in, and on WSL while
@@ -517,9 +481,7 @@ export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): 
     let environ: readonly string[] | null;
     if (probe) {
       const memory = await ompProcessMemory(foreground.pid, argv.length === 0);
-      // an omp herdr named whose environment cannot be read may keep its sessions anywhere
       if (memory === null && argv.length > 0) return "unproved";
-      // a live agent whose argv could not be read may be an omp keeping another store
       if (memory === null) { unread ||= processStartTicks(foreground.pid) !== null; continue; }
       if (argv.length === 0) argv = memory.argv;
       environ = memory.environ;
@@ -550,10 +512,8 @@ const sameDirectory = (a: string, b: string): boolean => {
 };
 
 /**
- * The transcript a route's processes hold open or last pointed their terminal breadcrumb at, or
- * null. `cwd` is the pane's live directory, herdr's foreground cwd where it reports one: omp changes
- * into its `--cwd` when it starts and into a resumed session's project later, and names that
- * directory in its session header, so the live one is matched first. The absolute `--cwd` every
+ * omp changes into its `--cwd` when it starts and into a resumed session's project later, and names
+ * that directory in its session header, so the live one is matched first. The absolute `--cwd` every
  * process started with is tried only when that finds nothing (herdr reports a directory that is
  * not omp's own, or none).
  */
@@ -612,7 +572,6 @@ export function ompBlobStore(transcript: string): string | null {
   return null;
 }
 
-/** The transcript the pane's omp process holds open or last pointed its terminal breadcrumb at, or null (ompRouteTranscript, read as ompHeldOpen says). */
 export async function ompHeldTranscript(paneId: string, cwd: string, core = false): Promise<string | null> {
   const route = await ompPaneRoute(paneId);
   return route === null || route === "unproved" ? null : ompRouteTranscript(await ompHeldOpen(route, core), cwd);

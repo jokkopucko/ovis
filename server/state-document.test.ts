@@ -46,7 +46,6 @@ describe("setAsideDamaged", () => {
     expect(readStateDocument(path)).toEqual({ kind: "missing" });
   });
 
-  // a file system without hard links: the copy is made with copyFileSync instead
   const withoutLinks = () => spyOn(fs, "linkSync").mockImplementation(() => { throw Object.assign(new Error("no links"), { code: "EPERM" }); });
 
   it("flushes a copy to disk before the damaged original goes", () => {
@@ -54,7 +53,6 @@ describe("setAsideDamaged", () => {
     writeFileSync(path, "damaged");
     const steps: string[] = [];
     const links = withoutLinks();
-    // which file each descriptor is, so the step names the file that was synced
     const opened = new Map<number, string>();
     const realOpen = fs.openSync;
     const open = spyOn(fs, "openSync").mockImplementation(((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
@@ -134,7 +132,6 @@ describe("writeStateDocument", () => {
     const dir = directory(), path = join(dir, "usage-removed.json");
     const order: string[] = [];
     const flush = ((fd: number) => { order.push(`fsync ${fs.fstatSync(fd).isDirectory() ? "directory" : "file"}`); }) as never;
-    // the directory is flushed through private-state.ts, as setAsideDamaged's copy is
     const fsync = spyOn(fs, "fsyncSync").mockImplementation(flush);
     const directoryFsync = spyOn(privateStateFs, "fsyncSync").mockImplementation(flush);
     const rename = spyOn(fs, "renameSync");

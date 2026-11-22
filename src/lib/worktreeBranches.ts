@@ -4,10 +4,6 @@ import { MAX_INVENTORY_WORKSPACES } from "../../shared/workspace-lifecycle.ts";
 /** The longest query one inventory read carries: well inside the relay's 4096-character request target (shared/relay-mux.ts). */
 export const MAX_INVENTORY_QUERY_CHARS = 2048;
 
-/**
- * The workspaces split into GET /api/worktree/inventory reads: at most MAX_INVENTORY_WORKSPACES each, and
- * no longer than MAX_INVENTORY_QUERY_CHARS of query; one workspace too long for that is read alone.
- */
 export function inventoryReads(workspaceIds: readonly string[]): string[][] {
   const reads: string[][] = [];
   let read: string[] = [];
@@ -53,16 +49,11 @@ function checkoutIdentities(workspaces: readonly WorkspaceInfo[]): Map<string, C
   return identities;
 }
 
-/** Status, workspace labels and reorder events do not cause another git inventory request. */
 export function worktreeWorkspaceSignature(workspaces: readonly WorkspaceInfo[]): string {
   return JSON.stringify([...checkoutIdentities(workspaces)].sort(([left], [right]) => left.localeCompare(right))
     .map(([id, identity]) => [id, identity.repoKey, identity.checkoutPath]));
 }
 
-/**
- * One authoritative inventory per repository, preferably through its main checkout. Every
- * repository is read, one without linked worktrees too: the sidebar names each one's branch.
- */
 export function worktreeRepositories(workspaces: readonly WorkspaceInfo[]): WorktreeRepository[] {
   const repositories = new Map<string, WorkspaceInfo>();
   for (const workspace of workspaces) {
@@ -80,15 +71,9 @@ function matches(branch: StoredBranch, identity: CheckoutIdentity): boolean {
   return branch.checkoutPath === identity.checkoutPath && (branch.repoKey === null || branch.repoKey === identity.repoKey);
 }
 
-/**
- * Branches belong to an exact workspace checkout. Request generations reject inventory
- * responses read before a create/open result or a roster change. A fresh result can arrive
- * before its workspace's next snapshot; that seed lasts until the next structural snapshot.
- */
 export class WorkspaceBranchCache {
   private identities = new Map<string, CheckoutIdentity>();
   private records = new Map<string, StoredBranch>();
-  /** git workspaces herdr has not marked (no `worktree`), by workspace id */
   private unmarked = new Map<string, WorkspaceBranch>();
   private signature = "";
   private revision = 0;
@@ -145,7 +130,6 @@ export class WorkspaceBranchCache {
     return true;
   }
 
-  /** A git workspace herdr has not marked: the branch of the checkout it answered from. */
   applyUnmarked(workspaceId: string, listing: WorktreeListing, generation: number): boolean {
     if (generation !== this.revision) return false;
     const source = normalizeCheckoutPath(listing.source.source_checkout_path);
@@ -157,15 +141,10 @@ export class WorkspaceBranchCache {
     return before?.branch !== branch.branch || before.isDetached !== branch.isDetached || before.checkoutPath !== branch.checkoutPath;
   }
 
-  /** git refused an unmarked workspace (a 4xx): it is no checkout now, so its branch goes. */
   forgetUnmarked(workspaceId: string, generation: number): boolean {
     return generation === this.revision && this.unmarked.delete(workspaceId);
   }
 
-  /**
-   * Filter against this render's snapshot as well, before the reconciliation effect runs.
-   * `unmarked`: the git workspaces herdr has not marked that are still known as such.
-   */
   branchesFor(workspaces: readonly WorkspaceInfo[], unmarked: ReadonlySet<string> = new Set()): ReadonlyMap<string, WorkspaceBranch> {
     const branches = new Map<string, WorkspaceBranch>();
     for (const workspace of workspaces) {

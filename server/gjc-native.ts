@@ -4,7 +4,6 @@ import nodePath, { join } from "node:path";
 import { GJC_NATIVE_DIRECTORY, GJC_NATIVE_LEASE_MS, isGjcNativeBindingShape, type GjcNativeBinding } from "../shared/gjc-native.ts";
 
 export const GJC_NATIVE_MAX_BYTES = 16 * 1024;
-// Keep the transcript header limit independent of the smaller identity-record limit.
 const GJC_TRANSCRIPT_HEADER_BYTES = 64 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -76,15 +75,14 @@ function readNativeFile(home: string, pid: number): unknown | null {
   }
 }
 
-/** Read the process-scoped lifecycle record from the default GJC agent store. */
 export function readGjcNativeBinding(home: string, pid: number, now?: number): GjcNativeBinding | null {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   const value = readNativeFile(home, pid);
   // A heartbeat can land while the file is read. Compare against the clock after
   // the read, not a timestamp captured before it that would reject fresh evidence.
-  const checkedAt = now ?? Date.now();
-  if (!Number.isSafeInteger(checkedAt) || checkedAt < 0) return null;
-  return value === null ? null : parseBinding(value, pid, checkedAt);
+  const clockAfterRead = now ?? Date.now();
+  if (!Number.isSafeInteger(clockAfterRead) || clockAfterRead < 0) return null;
+  return value === null ? null : parseBinding(value, pid, clockAfterRead);
 }
 
 function canonicalDirectory(path: string): string | null {
@@ -96,7 +94,6 @@ function canonicalDirectory(path: string): string | null {
   }
 }
 
-/** The session file's header, with `identity`: the exact dev:ino of the descriptor it was read through. */
 function readSessionHeader(path: string): { id: unknown; cwd: unknown; type: unknown; identity: string } | null {
   let fd: number | undefined;
   try {
@@ -121,7 +118,6 @@ function readSessionHeader(path: string): { id: unknown; cwd: unknown; type: unk
   }
 }
 
-/** Validate the record's exact main-session file and both canonical cwd identities. */
 export function validateGjcNativeTranscript(
   binding: GjcNativeBinding,
   cwd: string,
@@ -131,7 +127,6 @@ export function validateGjcNativeTranscript(
   return validatedGjcNativeTranscript(binding, cwd, home, platform)?.path ?? null;
 }
 
-/** validateGjcNativeTranscript, with the exact dev:ino of the file whose header it read (`identity`). */
 export function validatedGjcNativeTranscript(
   binding: GjcNativeBinding,
   cwd: string,

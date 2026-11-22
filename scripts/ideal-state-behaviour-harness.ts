@@ -1,15 +1,3 @@
-/**
- * The demo build that scripts/ideal-state-behaviour-qa.ts probes: the app and its fixture transport
- * (scripts/demo-build.ts) served on 127.0.0.1 at a free port, with three page hooks laid over the demo:
- *
- * - `__probe.finishTurn()` runs the demo's held 4500 ms timer, which lands the Claude pane's last tool
- *   row and answer and ends its turn (site/demo/transport.ts): an output event the probe triggers when
- *   it is ready to measure, not when the demo's clock says.
- * - `__probe.status(paneId, status)` tells the page a pane's agent status changed, on the two streams
- *   the bridge tells it on (the machines event stream and the terminal socket), as herdr reports one.
- * - `window.__probeStage` (set by each visit's init script) answers GET /api/pane/conversation and
- *   GET /api/pane/prompt for the panes it names instead of the demo.
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,12 +47,10 @@ const STAGE = `<script>(() => {
 })();</script>`;
 
 export interface Stage { turns?: Record<string, unknown[]>; prompts?: Record<string, unknown> }
-/** `ready`: what the page draws once it is up (the connection line by default) */
 export interface OpenOptions { pane: string; phone?: boolean; stage?: Stage; query?: string; clock?: boolean; ready?: string }
 export interface Visit { context: BrowserContext; page: Page }
 export interface Demo { open(options: OpenOptions): Promise<Visit>; close(): Promise<void> }
 
-/** Builds (or copies HERDR_DEMO_BUILD), serves and launches the browser; `close` undoes all three. */
 export async function startDemo(): Promise<Demo> {
   const app = mkdtempSync(join(tmpdir(), "ovis-is-probes-"));
   let server: ReturnType<typeof Bun.serve> | null = null;

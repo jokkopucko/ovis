@@ -8,7 +8,6 @@
  */
 import { shellMode, type ShellMode } from "./shellMode.ts";
 
-/** This page's query, `?` and all, or "". */
 export function pageSearch(location: { search: string; hash: string } = window.location, mode: ShellMode = shellMode()): string {
   if (mode !== "relay") return location.search;
   // an address from before the fragment carried it (a link, or an older entry of the history) is
@@ -36,15 +35,26 @@ export function reloadOnPlainClick(event: LinkClick, page: Reloadable = window, 
 /**
  * An address of the hosted shell with a query left from an older build, the load's own or an
  * entry Back or Forward lands on: the query moves into the fragment, so a reload or the page's
- * next request does not carry it again. Returns whether it moved.
+ * next request does not carry it again.
  */
+/**
+ * The query as a fragment's fields, less a `sign-in` entry: that entry is taken from a fragment alone, and a query
+ * moved into one never carries it (so a reload cannot start a sign-in a query named).
+ */
+export function queryWithoutSignIn(search: string): string {
+  const fields = new URLSearchParams(search.replace(/^\?/, ""));
+  if (!fields.has("sign-in")) return search.replace(/^\?/, "");
+  fields.delete("sign-in");
+  return fields.toString();
+}
+
 export function moveQueryToFragment(page: { location: { pathname: string; search: string }; history: { state: unknown; replaceState(data: unknown, unused: string, url: string): void } }): boolean {
   if (page.location.search.length <= 1) return false;
-  page.history.replaceState(page.history.state, "", `${page.location.pathname}#${page.location.search.slice(1)}`);
+  const query = queryWithoutSignIn(page.location.search);
+  page.history.replaceState(page.history.state, "", query === "" ? page.location.pathname : `${page.location.pathname}#${query}`);
   return true;
 }
 
-/** The address that says `search` (as pageSearch gives it) at `pathname`: what history.pushState takes. */
 export function pageAddress(pathname: string, search: string, hash: string, mode: ShellMode = shellMode()): string {
   if (mode !== "relay") return `${pathname}${search}${hash}`;
   const query = search.startsWith("?") ? search.slice(1) : search;

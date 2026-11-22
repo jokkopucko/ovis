@@ -8,8 +8,6 @@ import { claudeProjectDir } from "./claude-store.ts";
 import { createServer } from "./index.ts";
 import { herdrRpc, workspaceCreate } from "./herdr/client.ts";
 
-// Replay the native local_command envelopes covered by conversation.test.ts. This is not
-// a model process: it only records /context, and deliberately persists nothing for /btw.
 const RECORDER = `
 const fs = require("node:fs");
 const net = require("node:net");

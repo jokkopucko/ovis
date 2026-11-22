@@ -16,7 +16,6 @@ describe("newSessionLaunch", () => {
     const claude = newSessionLaunch({ agent: "claude", model: "opus", effort: "high", prompt: "Fix it" }, { ...plain, claudeLaunchMode: "plan" });
     expect(claude).toEqual({ agent: { kind: "claude", args: ["--permission-mode", "plan", "--model", "opus", "--effort", "high"] }, prompt: { text: "Fix it", via: "pending" } });
     expect(firstMessageOf(claude)).toBe("Fix it");
-    // Ultracode rides after the effort, and the message still waits for the bridge
     expect(newSessionLaunch({ agent: "claude", model: "", effort: "medium", ultracode: true, prompt: "Fix it" }, plain))
       .toEqual({ agent: { kind: "claude", args: ["--effort", "medium", "--settings", "{\"ultracode\":true}"] }, prompt: { text: "Fix it", via: "pending" } });
     expect(newSessionLaunch({ agent: "claude", model: "", effort: "", ultracode: false, prompt: "" }, plain)).toEqual({ agent: { kind: "claude" }, prompt: null });
@@ -41,11 +40,9 @@ describe("newSessionLaunch", () => {
 
 describe("the dialog's launch", () => {
   it("drops the Ultracode switch where the agent's launch does not take it, so a switch no longer shown never disables Start", () => {
-    // the agent list moved a remembered Claude Code to a shell or to Codex with the switch left on
     expect(dialogLaunch({ agent: "", model: "", effort: "", ultracode: true, prompt: "" }, plain)).toEqual({ agent: null, prompt: null });
     expect(dialogLaunch({ agent: "codex", model: "", effort: "", ultracode: true, prompt: "go" }, plain))
       .toEqual({ agent: { kind: "codex", args: ["--", "go"] }, prompt: { text: "go", via: "positional" } });
-    // Claude Code still takes it, and a choice its fields show still refuses Start
     expect(dialogLaunch({ agent: "claude", model: "", effort: "", ultracode: true, prompt: "" }, plain))
       .toEqual({ agent: { kind: "claude", args: ["--settings", "{\"ultracode\":true}"] }, prompt: null });
     expect(dialogLaunch({ agent: "claude", model: "two words", effort: "", ultracode: true, prompt: "" }, plain)).toEqual({ fault: "model" });
@@ -92,7 +89,6 @@ describe("what became of the first message", () => {
 
 describe("Start's in-flight guard", () => {
   it("sends one create however often Start is pressed while the first is in flight, then takes the next", async () => {
-    // the dialog's own Start: its guard, its request and startNewSession, with the create stood in for
     const guard = inFlightGuard();
     const sent: unknown[] = [];
     let release = (): void => {};

@@ -1,0 +1,163 @@
+name: Release validation
+# The verdict job names which of the two validated the commit, and release.yml's publish job refuses
+# to tag without that name: a skipped, failed or cancelled job here can stop a release, never pass one.
+on:
+  workflow_call:
+    inputs:
+      revalidate:
+        description: Run ci.yml in this run even when main's own run already passed the commit
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      validated_by:
+        description: "'ci' when ci.yml passed in this run, 'main-run-<id>' when main's push run was verified green, empty otherwise"
+        value: ${{ jobs.verdict.outputs.validated_by }}
+  workflow_dispatch:
+    inputs:
+      revalidate:
+        description: Run ci.yml in this run even when main's own run already passed the commit
+        required: false
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  reuse:
+    name: Main's CI for this commit
+    # GitHub-hosted whatever the runner variables say: it may wait for main's run, which needs the
+    # self-hosted runners itself, and scripts/ci-runner-route.sh would count a job waiting there as busy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    continue-on-error: true
+    # actions: read lets the script read main's run and its jobs
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      green: ${{ steps.decide.outputs.green }}
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - id: decide
+        name: Ask whether main's CI already passed this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVALIDATE: ${{ inputs.revalidate }}
+          # main's run takes 15 to 30 minutes, so one still going is given 40
+          RELEASE_CI_WAIT_SECONDS: '2400'
+        run: |
+          # only a whole yes with its run id is passed on: a crash, half an answer or anything else is a no
+          answer=$(bun scripts/release-ci-reuse.ts) || answer=''
+          yes=$'^green=true\nrun=[1-9][0-9]*$'
+          if [[ "$answer" =~ $yes ]]; then
+            printf '%s\n' "$answer" >> "$GITHUB_OUTPUT"
+          else
+            printf 'green=false\nrun=\n' >> "$GITHUB_OUTPUT"
+          fi
+  # ci.yml's Fast checks once more, for a release that main's run stands in for. That run's own Fast
+  # checks ran where a push to main runs it, the self-hosted PC, whose container has no pwsh, no
+  # setfacl and no process of another user: the unit tests that need one skip themselves there. Here
+  # they run on GitHub's image whatever the runner variables say.
+  # When the answer is no, ci.yml runs Fast checks of its own and
+  # this job's is not read, so it may fail without failing the run; the verdict then reads the
+  # answer its `passed` step writes, since a job that may fail reports success either way.
+  fast:
+    name: Fast checks (GitHub-hosted)
+    if: ${{ !inputs.revalidate }}
+    continue-on-error: true
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CHECK_DIR: ${{ github.workspace }}/.ci
+      UNIT_TEST_WORKERS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+        with:
+          node: 'true'
+          cache: none
+      - run: bun install --frozen-lockfile
+      - id: upgrade-fixtures
+        name: Fetch the pinned upgrade fixtures
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
+          git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
+          git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
+      - run: bun run check fast
+      - name: Release guards
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          git fetch --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*' '+refs/tags/remote-v*:refs/tags/remote-v*'
+          if [ -n "$BASE_SHA" ]; then git fetch --no-tags --depth=1 origin "$BASE_SHA" || true; fi
+          bun scripts/release-guards.ts --base "$BASE_SHA"
+      - id: passed
+        name: Say that Fast checks passed
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
+      - name: Preserve check report and verification logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: check-fast-hosted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci/report.json
+            .ci/**/*.log
+            .ci/browser-evidence/**/*.png
+            .ci/browser-evidence/**/*.json
+            .ci/browser-evidence/**/*.zip
+          include-hidden-files: true
+          if-no-files-found: ignore
+  ci:
+    needs: reuse
+    # skipped only for a verified yes: a reuse job that failed, was skipped or gave no answer runs it
+    if: ${{ !cancelled() && (inputs.revalidate || needs.reuse.result != 'success' || needs.reuse.outputs.green != 'true') }}
+    uses: ./.github/workflows/ci.yml
+    # the Release run publishes and signs: every job of it is GitHub-hosted and cacheless (scripts/privileged-jobs-workflow.test.ts)
+    with:
+      hosted_only: true
+    permissions:
+      contents: read
+      actions: read
+  verdict:
+    name: Verdict
+    needs: [reuse, fast, ci]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      validated_by: ${{ steps.verdict.outputs.validated_by }}
+    steps:
+      - id: verdict
+        name: Name what validated the commit
+        env:
+          CI_RESULT: ${{ needs.ci.result }}
+          FAST_PASSED: ${{ needs.fast.outputs.passed }}
+          REUSE_RESULT: ${{ needs.reuse.result }}
+          REUSE_GREEN: ${{ needs.reuse.outputs.green }}
+          REUSE_RUN: ${{ needs.reuse.outputs.run }}
+          REVALIDATE: ${{ inputs.revalidate }}
+        run: |
+          if [ "$CI_RESULT" = success ]; then
+            validated_by=ci
+          elif [ "$CI_RESULT" = skipped ] && [ "$REVALIDATE" = false ] && [ "$REUSE_RESULT" = success ] && [ "$REUSE_GREEN" = true ] && [[ "$REUSE_RUN" =~ ^[1-9][0-9]*$ ]] && [ "$FAST_PASSED" = true ]; then
+            validated_by="main-run-$REUSE_RUN"
+          else
+            echo "::error::Not validated: ci.yml ended '$CI_RESULT' in this run, and main's own run was not verified with Fast checks passed here (revalidate '$REVALIDATE', its job '$REUSE_RESULT', green '$REUSE_GREEN', run '$REUSE_RUN', Fast checks passed '$FAST_PASSED')." >&2
+            exit 1
+          fi
+          echo "Validated by $validated_by"
+          echo "validated_by=$validated_by" >> "$GITHUB_OUTPUT"

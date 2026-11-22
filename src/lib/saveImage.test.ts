@@ -36,7 +36,6 @@ describe("saveRoute", () => {
     expect(saveRoute()).toBe("share");
     environment({}, "ios");
     expect(saveRoute()).toBe("share");
-    // an Android app built before the plugin: no share sheet either, so the viewer says it failed
     environment({}, "android");
     expect(saveRoute()).toBe("share");
   });
@@ -54,7 +53,6 @@ describe("saveInApp", () => {
       calls.push([plugin, method, options]);
       return { saved: "downloads" };
     });
-    // more bytes than one String.fromCharCode slice, every byte value included
     const bytes = Uint8Array.from({ length: 0x8000 * 2 + 7 }, (_, at) => at % 256);
     expect(await saveInApp(new File([bytes], "shot.png", { type: "image/png" }))).toBe("saved");
     expect(calls.map(([plugin, method, options]) => [plugin, method, options?.name, options?.type])).toEqual([[SAVE_PLUGIN, "saveImage", "shot.png", "image/png"]]);
@@ -104,9 +102,7 @@ describe("imageFile", () => {
       return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } });
     } };
     setTransport(relay);
-    // When the viewer reads the picture for the share sheet
     const file = await imageFile("/api/fs/file?path=%2Fshot.png", "shot.png", null);
-    // Then it asked the relay for the PC's path, and the file is the picture under its name
     expect(asked).toEqual(["/api/fs/file?path=%2Fshot.png"]);
     expect([file.name, file.type, file.size]).toEqual(["shot.png", "image/png", 4]);
   });

@@ -34,13 +34,10 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
           { label: "Remote relay", description: "Goes through [the relay](https://example.com/relay) with `ssh`." },
         ],
       });
-      // the menu on screen still answers: the same keys as the card read off it
       for (const answer of [{ option_index: 0 }, { option_index: 1 }, { custom_text: "Keep `it`" }]) {
         expect(answerKeys(rich, answer)).toEqual(answerKeys(single, answer));
       }
 
-      // a question omp cut at four rows stays as drawn: what it shows is a prefix, which another call's
-      // question may share, and the card must not give one call's words to the menu of another
       const multi = card(screen(version, "multi", width));
       expect(multi.question.endsWith("…")).toBe(true);
       expect(ompMarkdownPrompt(multi, open(version))).toBe(multi);
@@ -63,24 +60,20 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       ["another question", withArgs(asks, (args) => { args.questions[0]!.question = "Which **route** should carry the `other` session?"; })],
       ["the options in another order", withArgs(asks, (args) => { args.questions[0]!.options.reverse(); })],
       ["another label", withArgs(asks, (args) => { args.questions[0]!.options[1]!.label = "Remote `relay` host"; })],
-      // what the letters alone would not tell apart: a path, a link's address, a mark, a letter's case
       ["a label with a path", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local/socket`"; })],
       ["another address", withArgs(asks, (args) => { args.questions[0]!.question = args.questions[0]!.question.replace("/guide", "/Guide"); })],
       ["a description with a mark more", withArgs(asks, (args) => { args.questions[0]!.options[0]!.description = "Keeps the **session** on *this* P/C."; })],
       ["a label in another case", withArgs(asks, (args) => { args.questions[0]!.options[1]!.label = "remote relay"; })],
-      // omp draws the characters in code as written
       ["code with an underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local_socket`"; })],
       ["code with an asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local*socket`"; })],
       ["an address with an underscore", withArgs(asks, (args) => { args.questions[0]!.question = args.questions[0]!.question.replace("/guide", "/gui_de"); })],
       // a space between two words: omp wraps at the spaces, but never takes one out (#2220, CodeRabbit)
       ["a space less", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local`socket"; })],
-      // and a mark that pairs with nothing, as a glob or a path
       ["an unpaired asterisk", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` *socket"; })],
       ["an unpaired underscore", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` _socket"; })],
       // where Bun's parser and omp's part: omp draws an HTML entity and `~x~` as written
       ["an HTML entity", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local`&#32;socket"; })],
       ["single tildes", withArgs(asks, (args) => { args.questions[0]!.options[0]!.label = "Use `local` ~socket~"; })],
-      // Markdown omp draws in its own way: a table
       ["a table in the question", withArgs(asks, (args) => { args.questions[0]!.question += "\n\n| a | b |\n|---|---|\n| 1 | 2 |"; })],
       ["another description", withArgs(asks, (args) => { args.questions[0]!.options[0]!.description = "Keeps the **session** elsewhere."; })],
       ["a description omp does not show", withArgs(asks, (args) => { delete args.questions[0]!.options[0]!.description; })],
@@ -89,7 +82,6 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       ["arguments in no shape omp asks with", asks.map((call) => ({ ...call, args: { questions: "route" } }))],
     ];
     for (const [name, calls] of unproved) expect(ompMarkdownPrompt(single, calls), name).toBe(single);
-    // a question that ends in its own `\u2026` on one row is not one omp cut: it shows the whole question
     const row = "Which route should carry the fixture session? See the guide (https://example.com/guide).";
     const drawnScreen = screen(version, "single", 120);
     const at = drawnScreen.lastIndexOf(row);
@@ -97,12 +89,10 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
     expect(ending.question).toBe("Which route should carry the fixture session\u2026");
     const longer = withArgs(asks, (args) => { args.questions[0]!.question = "Which **route** should carry the `fixture` session into production?"; });
     expect(ompMarkdownPrompt(ending, longer)).toBe(ending);
-    // nor is one that fills four rows while omp's footer offers nothing to expand
     const full = screen(version, "multi", 120).replace(" \u00b7 Ctrl+O expand", "               ");
     const unexpanded = card(full);
     expect(unexpanded.question.endsWith("\u2026")).toBe(true);
     expect(ompMarkdownPrompt(unexpanded, open(version))).toBe(unexpanded);
-    // omp's review of the answers is no question card
     const review = card(readFileSync(fixture("18.12.6-submit-60.txt"), "utf8"));
     expect(review.title).toBe("Review answers");
     expect(ompMarkdownPrompt(review, asks)).toBe(review);
@@ -111,7 +101,6 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
   it("leaves the card as drawn where the chat's own Markdown scanner would show other characters (#2220 review)", () => {
     const version = "18.12.6";
     const drawnScreen = screen(version, "single", 120);
-    // the screen's rows rewritten in place, as omp would draw these labels
     const relabel = (shown: string, labels: [string, string]) => {
       let out = shown;
       for (const [from, to] of [["Use local socket (Recommended)", labels[0]], ["Remote relay", labels[1]]] as const) {
@@ -121,11 +110,8 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       return out;
     };
     const cases: [string, [string, string], [string, string]][] = [
-      // omp draws the stars of a glob pair as written; the chat's scanner takes them for emphasis
       ["a glob pair", ["Keep *.log and *.tmp", "Keep .log and .tmp"], ["Keep *.log and *.tmp", "Keep .log and .tmp"]],
-      // an escaped mark: omp draws the mark, the chat's scanner keeps the backslash
       ["an escape", ["Keep \\*literal\\* files", "Remote relay"], ["Keep *literal* files", "Remote relay"]],
-      // a code span in two backticks around one
       ["a two-backtick code span", ["Run `` a`b ``", "Remote relay"], ["Run a`b", "Remote relay"]],
     ];
     for (const [name, asked, shown] of cases) {
@@ -137,30 +123,30 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       });
       expect(ompMarkdownPrompt(menu, calls), name).toBe(menu);
     }
-    // the glob pair in the question itself
     const row = "Which route should carry the fixture session? See the guide (https://example.com/guide).";
     const at = drawnScreen.lastIndexOf(row);
     const globs = card(drawnScreen.slice(0, at) + "Keep *.log and *.tmp?".padEnd(row.length) + drawnScreen.slice(at + row.length));
     const asked = withArgs(open(version), (args) => { args.questions[0]!.question = "Keep *.log and *.tmp?"; });
     expect(ompMarkdownPrompt(globs, asked)).toBe(globs);
-    // a picture: omp draws its alt text, the card its picture or `!` and its address
+    // a numbered list that skips: omp renumbers it (1, 2), the card draws it as written (1, 3)
+    const list = (shown: string) => card(drawnScreen.slice(0, at) + shown.padEnd(row.length) + drawnScreen.slice(at + row.length));
+    const listed = (question: string) => withArgs(open(version), (args) => { args.questions[0]!.question = question; });
+    const renumbered = list("1. keep 2. drop");
+    expect(ompMarkdownPrompt(renumbered, listed("1. keep\n3. drop"))).toBe(renumbered);
+    expect(ompMarkdownPrompt(renumbered, listed("1. keep\n2. drop"))?.text_format).toBe("markdown");
     const picture = card(drawnScreen.slice(0, at) + "Use production or staging?".padEnd(row.length) + drawnScreen.slice(at + row.length));
     const pictured = withArgs(open(version), (args) => { args.questions[0]!.question = "Use ![production](/etc/prod.conf) or staging?"; });
     expect(ompMarkdownPrompt(picture, pictured)).toBe(picture);
   });
 
   it("leaves the card as drawn for a question the card would draw as a diagram, or options it would show alike (#2233)", () => {
-    // omp draws a ```mermaid fence's code; the chat's Markdown would draw a diagram in its place
-    // (this fixture's question is cut, so it stays as drawn whatever its fences; the rule below holds for whole ones)
     const multi = card(screen("18.13.2", "multi", 120));
     expect(ompMarkdownPrompt(multi, open("18.13.2"))).toBe(multi);
-    // and a ```svg fence's, which the chat draws as a figure, and a ```math one's, drawn as a formula
     for (const language of ["mermaid", "svg", "math"]) {
       const diagram = withArgs(open("18.13.2"), (args) => { args.questions[1]!.question = args.questions[1]!.question.replace("```sh", `\`\`\`${language}`); });
       expect(ompMarkdownPrompt(multi, diagram)).toBe(multi);
     }
 
-    // two options omp draws as different characters (or with different link addresses) that the card shows alike
     const version = "18.12.6";
     const drawnScreen = screen(version, "single", 120);
     const relabel = (labels: [string, string]) => {
@@ -184,7 +170,6 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
       });
       expect(ompMarkdownPrompt(menu, calls), name).toBe(menu);
     }
-    // two options told apart on the card keep their Markdown
     const apart = card(relabel(["Keep production", "Keep staging"]));
     const named = withArgs(open(version), (args) => {
       args.questions[0]!.options[0]!.label = "Keep **production**";
@@ -200,7 +185,6 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
     expect(ompAsksAfter(opened, { type: "message", message: { role: "toolResult", toolCallId: "a" } })).toEqual([]);
     expect(ompAsksAfter(opened, { type: "message", message: { role: "user", content: "next" } })).toEqual([]);
     expect(ompAsksAfter(opened, { type: "custom", customType: "tool_execution_start" })).toBe(opened);
-    // another tool's call, or one omp did not finish streaming, opens nothing
     expect(ompAsksAfter([], { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "b", name: "bash", arguments: {} }] } })).toEqual([]);
     expect(ompAsksAfter([], { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "c", name: "ask", arguments: {}, incomplete: true }] } })).toEqual([]);
   });

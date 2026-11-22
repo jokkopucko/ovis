@@ -1,4 +1,3 @@
-/** The parts of a pane's attachment the input checks read: who is in it, its state and its session. */
 export interface SeenAttachment<Client> {
   clients: { has(client: Client): boolean };
   ready: boolean;
@@ -8,35 +7,20 @@ export interface SeenAttachment<Client> {
   cols: number;
 }
 
-/**
- * A connection's sighting of a pane's terminal, compared with the terminal now. The sighting is the
- * attachment then (whether or not the connection was in it), the session it ran and the connection's
- * claim then; each fact below is read now.
- */
 export interface SightingFacts {
-  /** the pane has an attachment now */
   attached: boolean;
   /** the connection was in the attachment it saw: what it typed belongs to that attach */
   origin: boolean;
-  /** the pane's attachment now is the one seen (no attachment then and now counts too) */
   sameAttachment: boolean;
   /** the seen attachment still runs the session seen: no retry, take-over or handoff replaced it */
   samePty: boolean;
-  /** the connection's claim on the pane now is the one it had then */
   sameClaim: boolean;
-  /** the connection has a claim on the pane now */
   claimed: boolean;
-  /** the connection is in the seen attachment now */
   member: boolean;
-  /** the seen attachment is ready now */
   ready: boolean;
-  /** another web bridge holds the seen attachment's terminal now */
   held: boolean;
-  /** another web bridge holds the pane's attachment now, whichever it is */
   currentHeld: boolean;
-  /** the seen attachment mirrors the pane's screen */
   mirror: boolean;
-  /** the seen attachment's grid width now */
   cols: number | undefined;
 }
 
@@ -76,7 +60,6 @@ export function sameOrigin(facts: SightingFacts): boolean {
  * connection's own part (it may type, its role is the one it had) is checked beside them.
  */
 export const typingGuards = {
-  /** typing that goes through herdr (no attach here, or a mirrored one), and its turn in the queue */
   herdrTyping: (facts: SightingFacts): boolean => facts.sameClaim && sameOrigin(facts),
   /** typing queued behind a message into the attach's pty: the same pty, still ready and this bridge's */
   queuedTyping: (facts: SightingFacts): boolean => facts.sameAttachment && facts.samePty && facts.sameClaim && facts.member

@@ -1,10 +1,9 @@
 .terminal-viewport-tools { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .terminal-find-hit { position: absolute; background: color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
 .terminal-find-hit.is-current { background: color-mix(in srgb, var(--accent) 38%, transparent); outline: var(--hairline) solid var(--accent); outline-offset: calc(-1 * var(--hairline)); }
-/* the way back to the bottom while reading up: the chat lens' round, wordless form, anchored by its
-   bottom-right corner to the grid's visible bottom-right corner */
 .terminal-jump-bottom {
   position: absolute;
+  border-color: var(--border-input);
   translate: calc(-100% - var(--space-2)) calc(-100% - var(--space-2));
   width: var(--control-h);
   min-height: var(--control-h);
@@ -15,6 +14,9 @@
   pointer-events: auto;
 }
 .terminal-jump-bottom svg { width: var(--icon-size); height: var(--icon-size); }
+@media (hover: hover) {
+  .terminal-jump-bottom:hover:not(:disabled) { border-color: var(--border-input); }
+}
 @media (pointer: coarse) {
   .terminal-jump-bottom { width: var(--touch-target); min-height: var(--touch-target); }
 }

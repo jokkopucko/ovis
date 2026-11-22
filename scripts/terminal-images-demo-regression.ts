@@ -1,10 +1,7 @@
 /**
- * Settings -> Terminal -> Pictures in the terminal: an inline picture a pane prints is drawn, turning the
- * setting off takes the pictures away and draws none meanwhile, and turning it on again draws the next
- * picture only where it was printed. The image addon keeps a picture's id in its cells and a new addon
+ * The image addon keeps a picture's id in its cells and a new addon
  * numbers from 1 again: one loaded anew drew its first picture into the cells an old picture 1 had
- * left. With no choice stored on the device, a herdr-core server (`terminal-history`) draws them, the
- * picture in a pane's first output included, and the switch shows on; herdr's own server draws none.
+ * left.
  * Demo fixtures only: no herdr, hc or user state.
  */
 import assert from "node:assert/strict";
@@ -18,13 +15,12 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsFolds } from "./settings-page.ts";
 import { shownRows } from "./shown-rows.ts";
+import { serveDemo } from "./demo-server.ts";
 
 interface ImagesFixture { print(data: string): void }
-/** `core`: the server lists `terminal-history`, as herdr-core does; `first`: the output an attach replays first */
 interface ImagesConfig { core?: boolean; first?: string }
 declare global { interface Window { imagesFixture: ImagesFixture; imagesConfig?: ImagesConfig } }
 
-/** The demo serves the pane; its own recording is held back, and the test prints what it needs. */
 function installImagesFixture(): void {
   const sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> = [];
   let pane: string | null = null;
@@ -41,7 +37,6 @@ function installImagesFixture(): void {
         return push({ ...frame, features: [...(frame.features as string[]), "terminal-history"] });
       }
       if (frame.type !== "pty-data") return push(frame);
-      // the demo's own recording would move the screen under the test
       if (frame.fixture !== "images") return;
       const { fixture: _, ...output } = frame;
       push(output);
@@ -130,7 +125,6 @@ const chafaTiff = (rgb: [number, number, number], side = 24): string => {
   return `\x1b]1337;File=inline=1;width=3;height=2;preserveAspectRatio=0:${tiff.toString("base64")}\x07`;
 };
 
-/** the picture layer's pixel at a point given in its own pixels, or null where it draws nothing */
 const pixel = (page: Page, x: number, y: number) => page.evaluate(({ x, y }) => {
   const layer = document.querySelector<HTMLCanvasElement>(".pane-frame.is-current canvas.xterm-image-layer");
   if (!layer || layer.width === 0) return null;
@@ -144,7 +138,6 @@ const print = async (page: Page, data: string, marker: string) => {
   await page.locator(shownRows(".pane-frame.is-current"), { hasText: marker }).waitFor();
   await settled(page);
 };
-/** the Pictures switch as Settings shows it, in an open Settings -> Terminal */
 const picturesSwitch = async (page: Page) => {
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   await page.getByRole("navigation", { name: "Settings" }).getByText("Terminal", { exact: true }).click();
@@ -169,17 +162,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installImagesFixture.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -192,14 +175,12 @@ try {
       page.setDefaultTimeout(10000);
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      // the addon is its own chunk, loaded once the terminal is there: a picture printed after it is drawn
       const addonLoaded = page.waitForResponse((response) => /addon-image-[^/]*\.js$/.test(new URL(response.url()).pathname));
       await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
       await page.locator(".pane-frame.is-current .xterm").waitFor();
       await addonLoaded;
       await settled(page);
 
-      // a red square at the top left; the blue one later goes a few rows lower
       await print(page, `\x1b[H\x1b[2J${RED}`, "RED-PRINTED");
       assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "a sixel picture is drawn where it is printed");
 
@@ -219,7 +200,6 @@ try {
       });
       assert.ok(below.first > 0, `on again: the new picture is drawn lower down, where it was printed (${JSON.stringify(below)})`);
       assert.equal(await pixel(page, 4, 4), null, "on again: the cells the first picture left draw nothing, not the new picture");
-      // what the addon itself says those cells hold: drawn again (a scroll, a resize), they show it
       const held = await page.evaluate(() => (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => number[] | null }).imageAt?.(0, 0));
       assert.notEqual(held, undefined, "the demo build's probe answers");
       assert.equal(held, null, `on again: the top left cell holds no picture (${JSON.stringify(held)})`);
@@ -236,8 +216,6 @@ try {
       console.log("PASS pictures: drawn, gone while off, and on again only where printed; imgcat's multipart and chafa's TIFF drawn too, also past 10M characters");
       await context.close();
 
-      // no choice stored on this device: the server decides. The demo's health names herdr, so the switch
-      // follows what the terminal's own connection lists, not the health read.
       for (const core of [true, false]) {
         const fresh = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
         await fresh.addInitScript((config) => {

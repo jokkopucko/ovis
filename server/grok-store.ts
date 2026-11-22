@@ -1,4 +1,3 @@
-/** Exact Grok session binding on the machine that owns the pane. */
 import { opendirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
@@ -13,7 +12,6 @@ const DELETED_SUFFIX = " (deleted)";
 const EXECUTABLE_SUFFIXES = [".cjs", ".mjs", ".exe", ".js"];
 
 export interface GrokProcessInfo { foreground_processes?: { pid: number; argv?: string[] | null }[] }
-/** Discover native or bun/node-launched Grok using the same names as the exe gate. */
 export function grokPaneProcesses(info: GrokProcessInfo): { pid: number }[] {
   return (info.foreground_processes ?? []).filter((p) => {
     const argv = p.argv ?? [];
@@ -78,7 +76,7 @@ export function grokTranscriptPath(home: string, session: string): string | null
       if (path !== candidate || !inside(store, path) || !statSync(path).isFile()) continue;
       if (found !== null) return null;
       found = path;
-    } catch { /* no matching file in this group */ }
+    } catch { }
   }
   return found;
 }
@@ -120,7 +118,6 @@ export function grokHeldSessions(pid: number, home: string): Map<string, number>
     const store = realpathSync(join(home, "sessions"));
     const fds = opendirSync(`/proc/${pid}/fd`);
     const sessions = new Map<string, number>();
-    /** folders of a cwd group the process holds some other file in */
     const others = new Set<string>();
     let count = 0;
     try {
@@ -128,7 +125,6 @@ export function grokHeldSessions(pid: number, home: string): Map<string, number>
         if (++count > MAX_LISTED_FILES) return null;
         const descriptor = `/proc/${pid}/fd/${fd.name}`;
         let target: string;
-        // a descriptor closed since the listing is not a held file
         try { target = readlinkSync(descriptor); } catch { continue; }
         const dir = heldSessionDir(store, target, others);
         if (dir === undefined) continue;
@@ -168,7 +164,6 @@ export function grokLsofEvidence(text: string): { executable: string | null; fil
     if (line.startsWith("f")) {
       if (records.push({ fd: line.slice(1), dev: null, ino: null, name: null }) > MAX_LISTED_FILES) return null;
     } else if (line.startsWith("n")) {
-      // A name with no descriptor in front is a format this parser does not understand.
       if (!last || last.name !== null) return null;
       last.name = line.slice(1);
     } else if (last && line.startsWith("D")) last.dev = number(line.slice(1));
@@ -207,14 +202,12 @@ export function grokHeldSessionsFromLsof(files: readonly GrokLsofFile[], home: s
   } catch { return null; }
 }
 
-/** The process's lsof listing, or null when lsof fails, times out or prints too much. */
 async function lsofListing(pid: number): Promise<string | null> {
   const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(pid), "-FfDin"], { stdout: "pipe", stderr: "ignore", timeout: 3000 });
   const bytes = await new Response(child.stdout).bytes();
   return await child.exited === 0 && bytes.byteLength <= MAX_LISTING_BYTES ? new TextDecoder().decode(bytes) : null;
 }
 
-/** Herdr's exact ID, when its unique held directory has the newest events.jsonl. */
 function reportedSessionPath(home: string, sessionId: string, held: Map<string, number> | null): string | null {
   if (!held) return null;
   // A duplicate held ID is ambiguous even if only one directory has updates.jsonl.

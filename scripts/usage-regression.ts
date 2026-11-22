@@ -2,18 +2,25 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Browser, BrowserContext, BrowserContextOptions } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from "playwright-core";
+import { AGENT_CATALOG, catalogRow } from "../shared/agent-catalog.ts";
 import type { UsageReport } from "../shared/protocol.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
+async function openUsageDrawer(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+  // The popover is positioned inside the drawer and inherits its slide.
+  await page.waitForFunction(() => {
+    const drawer = document.querySelector("#workspace-drawer.is-open");
+    return drawer !== null && drawer.getBoundingClientRect().left === 0 && drawer.getAnimations().length === 0;
+  });
+}
+
 const at = (hours: number): string => new Date(Date.now() + hours * 3600_000).toISOString();
-/** Built when it is asked for: its times hold however late in the run that is. */
 const report = (): UsageReport => ({
   providers: [
     { id: "claude", key: "claude:u1", account: "me@example.com", plan: "max", problem: null, checked_at: at(0), windows: [
-      // 2.8 hours into the session at 15%/h: lasts to the reset
       { kind: "session", scope: null, used_percent: 42, resets_at: at(2.2), starts_at: at(2.2 - 5) },
-      // 86 hours into the week: runs out in about 2 days, 1.4 days before the reset
       { kind: "week", scope: null, used_percent: 63.4, resets_at: at(82), starts_at: at(82 - 168) },
       { kind: "week", scope: "Sonnet", used_percent: 5, resets_at: null, starts_at: null },
     ], credits: { kind: "spend", currency: "USD", used: 12.19, limit: 15.39, used_percent: 79.2 } },
@@ -31,17 +38,12 @@ const report = (): UsageReport => ({
   ],
 });
 
-/**
- * A context whose PC lists no agents: Settings → Agents then shows every account under Other accounts,
- * as the staged report has them, whatever this machine has installed.
- */
 async function usageContext(browser: Browser, options: BrowserContextOptions): Promise<BrowserContext> {
   const context = await browser.newContext(options);
   await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [] } }));
   return context;
 }
 
-/** a header the check puts on every request of the page it reloads: what that page asked for, whenever it is counted */
 const RELOADED = "x-usage-qa-reloaded";
 
 async function staged(context: BrowserContext): Promise<{ asked: string[]; afterReload: string[] }> {
@@ -67,7 +69,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await page.goto(origin);
     const strip = page.locator(".usage-strip");
     const settingsButton = page.locator(".sidebar-footer-row .sidebar-footer-action");
-    // Plan limits is one row: Off, or on and counted as Used or Remaining
     const limits = page.locator('.segmented[aria-label="Plan limits"]');
 
     // off until chosen: nothing is shown and no sign-in is sent anywhere
@@ -77,14 +78,10 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await settingsButton.click();
     await openSettingsPage(page, "Agents");
     assert.equal(await limits.getByRole("button", { name: "Off", exact: true }).getAttribute("aria-pressed"), "true");
-    // on, counted as before: what is left
     await limits.getByRole("button", { name: "Remaining", exact: true }).click();
     await page.keyboard.press("Escape");
     await strip.waitFor();
 
-    // what is left of each plan's five-hour session by default, in the server's order; a plan
-    // without a session shows its limit closest to running out, and the tooltip names another
-    // limit near its end that the chip does not show. As many chips as the row holds, the rest in "+N"
     const chipCount = await page.locator(".usage-chip").count();
     const more = await page.locator(".usage-more").count() === 0 ? 0 : Number((await page.locator(".usage-more").textContent())!.slice(1));
     assert.equal(chipCount + more, 7, "every account is a chip or counted in +N");
@@ -101,7 +98,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
     await popover.waitFor();
     assert.equal(await popover.locator(".usage-provider").count(), 7);
-    // Claude's capped usage credits add a meter; Codex's balance and the resets are text only
     assert.equal(await popover.getByRole("meter").count(), 10);
     assert.equal(await popover.locator(".usage-account").first().textContent(), "me@example.com");
     assert.equal(await popover.locator(".usage-row.is-high").count(), 1);
@@ -122,8 +118,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await popover.waitFor({ state: "hidden" });
     assert.equal(await strip.evaluate((el) => el === document.activeElement), true, "Escape hands focus back to the strip");
 
-    // Settings: the week instead, where one near its limit is red; then the share used, an account
-    // hidden from the strip, another moved up
     const names = () => page.locator(".usage-popover .usage-provider").evaluateAll((sections) => sections.map((section) => section.getAttribute("aria-label")));
     await settingsButton.click();
     await openSettingsPage(page, "Agents");
@@ -136,8 +130,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.equal(await page.locator(".usage-chip").nth(1).evaluate((chip) => chip.classList.contains("is-high")), true);
     await settingsButton.click();
     await openSettingsPage(page, "Agents");
-    // the moved order is shared: the page saves it to the server once the settings rest, and a check
-    // run after this one on the same server must not have that save land in the middle of it
     const orderSaved = page.waitForResponse((response) => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/preferences"
       && (response.request().postDataJSON() as { settings?: Record<string, unknown> } | null)?.settings?.["usageOrder"] !== undefined, { timeout: 10_000 });
     await page.getByRole("button", { name: "Used", exact: true }).click();
@@ -157,7 +149,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.deepEqual([stored.usageHidden, stored.usageCount, stored.usageGlance], [["codex:work"], "used", "week"]);
     assert.equal((await orderSaved).status(), 200, "the moved order reached the server before this page closes");
 
-    // turned off in Settings: gone, and no longer asked for
     await settingsButton.click();
     await openSettingsPage(page, "Agents");
     // The strip disappears before the shared preference's debounced save. Reload only once
@@ -170,11 +161,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.equal(await page.locator("[data-section='other-accounts'] .settings-condition").count(), 1, "Other accounts says plan limits show them");
     assert.equal(await page.locator(".usage-provider").count(), 0, "disabled meters leave no provider placeholders");
     await usageOffSaved;
-    // a request Settings made before the switch can still be on its way here, so the count is of
-    // the reloaded page's own requests, not of what arrives after the reload
     await context.setExtraHTTPHeaders({ [RELOADED]: "1" });
-    // In the new document, settings are written when the server's preferences are applied.
-    // Waiting for that write observes hydration, not just the footer's earlier mount.
     await page.addInitScript(() => {
       const setItem = Storage.prototype.setItem;
       Storage.prototype.setItem = function (key, value) {
@@ -186,7 +173,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     });
     await page.reload();
     await page.locator(".sidebar-footer").waitFor();
-    // a timeout here, not the assertion below, is how a lost OFF save would now fail
     await page.locator("html[data-usage-preferences-hydrated]").waitFor();
     assert.deepEqual(afterReload, [], "a hidden strip asks for nothing");
     await context.setExtraHTTPHeaders({});
@@ -195,7 +181,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await context.close();
   }
 
-  // on a phone the popover opens inside the drawer and stays on screen
   // The desktop check saved OFF: seed the shared preference too, or hydration overrides
   // this phone's local ON value before its strip can be opened.
   const usageOn = await fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ settings: { showUsage: true } }) });
@@ -206,7 +191,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await phone.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
     const page = await phone.newPage();
     await page.goto(origin);
-    await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+    await openUsageDrawer(page);
     await page.locator(".usage-strip").click();
     const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
     await popover.waitFor();
@@ -216,7 +201,6 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.equal(await popover.locator(".usage-row-label").evaluateAll((labels) => labels.every((label) => label.scrollWidth <= label.clientWidth)), true, "no row label is cut short on a phone");
     if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-popover-phone.png") });
 
-    // Settings on the phone: every account row fits its card, controls included
     await page.keyboard.press("Escape");
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
     await openSettingsPage(page, "Agents");
@@ -232,13 +216,229 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
   }
   console.log("PASS plan meters beside the Settings gear: session left by default, accounts, order, hiding, week and used, row fit, popover, refresh, Escape, off switch and phone fit");
   await checkStatuslineSwitch(browser, origin);
+  await checkRecordedAccounts(browser, origin);
 }
 
+const recordedReport = (): UsageReport => ({
+  providers: [
+    { id: "claude", key: "claude:recorded", account: "omp@example.com", plan: null, problem: null, checked_at: at(0), recorded: { by: "omp", stale: false, signed_in: false }, windows: [
+      { kind: "session", scope: null, used_percent: 31, resets_at: at(3), starts_at: at(3 - 5) },
+      { kind: "week", scope: null, used_percent: 52, resets_at: at(76), starts_at: at(76 - 168) },
+    ] },
+    { id: "claude", key: "claude:stale", account: "idle@example.com", plan: null, problem: null, checked_at: at(-3), recorded: { by: "omp", stale: true, signed_in: false }, windows: [
+      { kind: "session", scope: null, used_percent: 87, resets_at: at(1.4), starts_at: at(1.4 - 5) },
+    ] },
+    { id: "codex", key: "codex:work", account: "me@work.example", plan: "pro", problem: null, checked_at: at(0), windows: [
+      { kind: "session", scope: null, used_percent: 12, resets_at: at(0.8), starts_at: at(0.8 - 5) },
+    ] },
+  ],
+});
+
+const standInReport = (): UsageReport => ({
+  providers: [
+    { id: "claude", key: "claude:team", account: "me@team.example", plan: "max", problem: "expired", checked_at: at(0), recorded: { by: "omp", stale: false, signed_in: true }, windows: [
+      { kind: "session", scope: null, used_percent: 31, resets_at: at(3), starts_at: at(3 - 5) },
+      { kind: "week", scope: null, used_percent: 91, resets_at: at(76), starts_at: at(76 - 168) },
+    ] },
+    { id: "claude", key: "claude:home", account: "me@example.com", plan: "pro", problem: null, checked_at: at(-3), recorded: { by: "omp", stale: true, signed_in: true }, windows: [
+      { kind: "session", scope: null, used_percent: 87, resets_at: at(1.4), starts_at: at(1.4 - 5) },
+    ] },
+    { id: "claude", key: "claude:mac", account: "mac@example.com", plan: null, problem: "locked", checked_at: at(0), recorded: { by: "omp", stale: false, signed_in: true }, windows: [
+      { kind: "session", scope: null, used_percent: 20, resets_at: at(4), starts_at: at(4 - 5) },
+    ] },
+    { id: "claude", key: "claude:slow", account: "slow@example.com", plan: null, problem: "rate_limited", checked_at: at(0), recorded: { by: "omp", stale: false, signed_in: true }, windows: [
+      { kind: "session", scope: null, used_percent: 50, resets_at: at(2), starts_at: at(2 - 5) },
+    ] },
+  ],
+});
+
+const lineCounts = (target: ReturnType<Page["locator"]>): Promise<number[]> => target.evaluateAll((elements) => elements.map((element) => {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+}));
+
 /**
- * A Claude sign-in the usage API refuses although its token has not expired (a blocked network's
- * 403) offers the status line in the popover; Settings' switch shows and undoes it. Only on or off
- * is sent, and nothing reaches the test server's own home.
+ * An account another tool recorded is never drawn as a reading of the server's own: its chip's bar is dotted and the
+ * popover, the strip's name and Settings say who recorded it and when. A stale one says it may have changed and loses
+ * its alarm colour. Known from the record alone, it is no sign-in of Claude Code, whose row still offers Sign in;
+ * standing in for the numbers of a sign-in this PC holds, it leaves that sign-in its plan, its problem and Sign in again.
  */
+async function checkRecordedAccounts(browser: Browser, origin: string): Promise<void> {
+  const reset = await fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ settings: { showUsage: true, usageOrder: [], usageHidden: [], usageCount: "left", usageGlance: "session" } }) });
+  assert.equal(reset.status, 200);
+  const installed = { installed: true, binary: "/usr/bin/claude", on_path: true, version: "2.1.311", version_error: null, meets_min_version: true };
+  const claudeCode = catalogRow(AGENT_CATALOG.find((entry) => entry.id === "claude")!, "linux", installed);
+  const staged = async (context: BrowserContext, report: () => UsageReport = recordedReport): Promise<void> => {
+    await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [claudeCode] } }));
+    await context.route("**/api/usage/statusline", (route) => route.fulfill({ json: { installed: false, supported: true } }));
+    await context.route("**/api/usage*", (route) => route.fulfill({ json: report() }));
+    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
+  };
+  const notes = (popover: ReturnType<Page["locator"]>) => popover.locator(".usage-provider").evaluateAll((sections) =>
+    sections.map((section) => [...section.querySelectorAll(".usage-recorded > span")].map((line) => line.textContent)));
+  const chips = (page: Page) => page.locator(".usage-chip").evaluateAll((all) =>
+    all.map((chip) => [chip.querySelector(".usage-chip-value")?.textContent, ...["has-problem", "is-recorded", "is-stale"].filter((name) => chip.classList.contains(name))]));
+  const inks = (page: Page) => page.evaluate(() => {
+    const probe = document.body.appendChild(document.createElement("span"));
+    const ink = (token: string): string => { probe.style.color = `var(${token})`; return getComputedStyle(probe).color; };
+    const found = { alarm: ink("--status-blocked"), dim: ink("--text-dim") };
+    probe.remove();
+    return found;
+  });
+  const accountRows = (row: ReturnType<Page["locator"]>) => row.locator(".usage-accounts-row").evaluateAll((rows) => rows.map((account) =>
+    [...account.querySelectorAll(".usage-account-meta > span")].map((cell) => `${cell.textContent}${cell.classList.contains("has-problem") ? " (problem)" : ""}${cell.classList.contains("is-recorded") ? " (record)" : ""}`)));
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    await staged(context);
+    const page = await context.newPage();
+    await page.goto(origin);
+    const strip = page.locator(".usage-strip");
+    await strip.waitFor();
+    assert.deepEqual(await chips(page), [["69%", "is-recorded"], ["13%", "is-recorded", "is-stale"], ["88%"]]);
+    const { alarm, dim } = await inks(page);
+    assert.notEqual(alarm, dim);
+    const staleChip = page.locator(".usage-chip.is-stale.is-high");
+    assert.equal(await staleChip.count(), 1);
+    assert.equal(await staleChip.locator(".usage-chip-value").evaluate((value) => getComputedStyle(value).color), dim, "a stale record's percent is drawn in the dim ink, not the colour of a limit near its end");
+    assert.equal((await staleChip.locator(".usage-chip-bar").evaluate((bar) => getComputedStyle(bar).backgroundImage)).includes(alarm), false, "a stale record's bar is not red either");
+    assert.equal(await strip.getAttribute("aria-label"),
+      "Subscription usage: Claude · omp@example.com 69% left (Recorded by Oh My Pi, just now), Claude · idle@example.com 13% left (Recorded by Oh My Pi, 3 h ago · It may have changed since.), Codex · me@work.example 88% left");
+
+    await strip.click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    assert.deepEqual(await notes(popover), [["Recorded by Oh My Pi, just now"], ["Recorded by Oh My Pi, 3 h ago", "It may have changed since."], []]);
+    assert.deepEqual(await popover.locator(".usage-provider").evaluateAll((sections) => sections.map((section) => section.classList.contains("is-stale"))), [false, true, false]);
+    const stale = popover.locator(".usage-provider.is-stale");
+    assert.deepEqual(await stale.locator(".usage-row.is-high").first().evaluate((row) => [getComputedStyle(row.querySelector(".usage-row-value")!).color, getComputedStyle(row.querySelector(".usage-bar > span")!).backgroundColor]), [dim, dim],
+      "a stale record's 13% left and its bar are drawn in the dim ink, not red");
+    assert.equal(await popover.locator(".usage-note.is-problem").count(), 0, "a record is no problem of a sign-in");
+    assert.equal(await popover.getByRole("button", { name: /Sign in again/ }).count(), 0);
+    if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-popover.png") });
+
+    await page.keyboard.press("Escape");
+    await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
+    await openSettingsPage(page, "Agents");
+    const row = page.locator('.agents-item[data-agent="claude"]');
+    await row.getByRole("button", { name: "Sign in to Claude Code", exact: true }).waitFor();
+    assert.equal(await row.locator(".agents-state").textContent(), "Not signed in");
+    await row.locator(".agents-toggle").click();
+    await row.locator(".usage-accounts-row").nth(1).waitFor();
+    assert.deepEqual(await accountRows(row), [["Recorded by Oh My Pi · Session 69% left", "just now (record)"], ["Recorded by Oh My Pi · Session 13% left", "Old record · 3 h ago (record)"]]);
+    assert.equal(await row.getByRole("button", { name: /Sign in again/ }).count(), 0);
+    if (process.env.UI_EVIDENCE_DIR) await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-settings.png") });
+    // removing one forgets a list entry: what stays is the tool's record, not a sign-in of this PC's
+    await row.getByRole("button", { name: "Remove Claude · omp@example.com", exact: true }).click();
+    const confirmation = page.getByRole("alertdialog");
+    assert.match(await confirmation.locator(".confirm-body").textContent() ?? "", /Oh My Pi keeps its record of it/);
+    await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+    await confirmation.waitFor({ state: "detached" });
+  } finally {
+    await context.close();
+  }
+
+  const signedIn = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    await staged(signedIn, standInReport);
+    const page = await signedIn.newPage();
+    await page.goto(origin);
+    const strip = page.locator(".usage-strip");
+    await strip.waitFor();
+    const drawn = await chips(page);
+    assert.ok(drawn.length >= 2);
+    assert.deepEqual(drawn, [["69%", "is-recorded"], ["13%", "is-recorded", "is-stale"], ["80%", "is-recorded"], ["50%", "is-recorded"]].slice(0, drawn.length));
+    await strip.click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    const fresh = ["Recorded by Oh My Pi, just now"];
+    assert.deepEqual(await notes(popover), [fresh, ["Recorded by Oh My Pi, 3 h ago", "It may have changed since."], fresh, fresh]);
+    assert.deepEqual(await popover.locator(".usage-plan").allTextContents(), ["max", "pro"]);
+    assert.deepEqual(await popover.locator(".usage-provider").evaluateAll((sections) => sections.map((section) => [...section.querySelectorAll(".usage-note:not(.usage-recorded)")].map((note) => note.textContent))),
+      [["Sign-in expired."], [], ["The server cannot open the keychain holding this sign-in."], []]);
+    assert.equal(await popover.getByRole("button", { name: /^Sign in again/ }).count(), 1);
+    assert.equal(await popover.getByRole("button", { name: "Sign in again to Claude · me@team.example", exact: true }).count(), 1);
+    const { alarm } = await inks(page);
+    assert.equal(await popover.locator(".usage-provider:not(.is-stale) .usage-row.is-high .usage-bar > span").evaluate((bar) => getComputedStyle(bar).backgroundColor), alarm);
+    if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-signed-in-popover.png") });
+
+    await page.keyboard.press("Escape");
+    await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
+    await openSettingsPage(page, "Agents");
+    const row = page.locator('.agents-item[data-agent="claude"]');
+    await row.getByRole("button", { name: "Sign in again to Claude · me@team.example", exact: true }).waitFor();
+    assert.equal(await row.locator(".agents-state").textContent(), "4 accounts · 3 need attention");
+    assert.equal(await row.getByRole("button", { name: "Sign in to Claude Code", exact: true }).count(), 0);
+    await row.locator(".agents-toggle").click();
+    await row.locator(".usage-accounts-row").nth(3).waitFor();
+    assert.deepEqual(await accountRows(row), [
+      ["Recorded by Oh My Pi · just now · max · Session 69% left", "Expired (problem)"],
+      ["Recorded by Oh My Pi · Old record · 3 h ago · pro · Session 13% left", "Signed in"],
+      ["Recorded by Oh My Pi · just now · Session 80% left", "Failed (problem)"],
+      ["Recorded by Oh My Pi · just now · Session 50% left", "Failed (problem)"],
+    ]);
+    if (process.env.UI_EVIDENCE_DIR) await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-signed-in-settings.png") });
+  } finally {
+    await signedIn.close();
+  }
+
+  const kept = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    await staged(kept, () => ({ server_time: at(-1), providers: [{ id: "claude", key: "claude:kept", account: "kept@example.com", plan: null, problem: null, checked_at: at(-1 - 4 / 60), recorded: { by: "gjc", stale: false, signed_in: false }, windows: [
+      { kind: "session", scope: null, used_percent: 40, resets_at: at(2), starts_at: at(2 - 5) },
+    ] }] }));
+    const page = await kept.newPage();
+    await page.clock.install();
+    await page.goto(origin);
+    const strip = page.locator(".usage-strip");
+    await strip.waitFor();
+    assert.deepEqual(await chips(page), [["60%", "is-recorded"]]);
+    await kept.route("**/api/usage*", () => {});
+    await page.clock.setSystemTime(Date.now() - 15 * 60_000);
+    await page.clock.fastForward(12 * 60_000);
+    await page.locator(".usage-chip.is-stale").waitFor();
+    assert.deepEqual(await chips(page), [["60%", "is-recorded", "is-stale"]]);
+    await strip.click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    const [lines] = await notes(popover);
+    assert.match(lines?.[0] ?? "", /^Recorded by Gajae Code, /);
+    assert.equal(lines?.[1], "It may have changed since.");
+  } finally {
+    await kept.close();
+  }
+
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, locale: "en-US" });
+  try {
+    await staged(phone);
+    const page = await phone.newPage();
+    await page.goto(origin);
+    await openUsageDrawer(page);
+    await page.locator(".usage-strip").click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    const box = await popover.boundingBox();
+    assert.ok(box && box.x >= 0 && box.x + box.width <= 390, "the popover stays inside the phone's screen");
+    assert.deepEqual(await lineCounts(popover.locator(".usage-recorded > span")), [1, 1, 1]);
+    if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-popover-phone.png") });
+    await page.keyboard.press("Escape");
+    await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
+    await openSettingsPage(page, "Agents");
+    const row = page.locator('.agents-item[data-agent="claude"]');
+    await row.locator(".agents-toggle").click();
+    const accounts = row.locator(".usage-accounts-row");
+    await accounts.nth(1).waitFor();
+    assert.equal(await accounts.evaluateAll((rows) => rows.every((account) => account.scrollWidth <= account.clientWidth)), true, "each account row fits the phone");
+    assert.deepEqual(await lineCounts(accounts.locator(".usage-account-fact:last-child")), [1, 1]);
+    if (process.env.UI_EVIDENCE_DIR) await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-settings-phone.png") });
+  } finally {
+    await phone.close();
+  }
+  console.log("PASS accounts another tool recorded: dotted chip, recorder and age in the popover, strip and Settings, a stale one dimmed and no alarm, no sign-in of Claude Code from a record alone, a sign-in kept with its plan, problem and Sign in again while a record stands in, phone fit");
+}
+
+/** Only on or off is sent, and nothing reaches the test server's own home. */
 async function checkStatuslineSwitch(browser: Browser, origin: string): Promise<void> {
   const context = await usageContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
@@ -260,7 +460,6 @@ async function checkStatuslineSwitch(browser: Browser, origin: string): Promise<
     await page.locator(".usage-strip").click();
     const offer = page.getByRole("button", { name: "Read from Claude's status line instead", exact: true });
     await offer.click();
-    // turned on, the limits are asked for again at once: the offer goes and the windows come
     await offer.waitFor({ state: "detached" });
     await page.locator(".usage-row").first().waitFor();
     assert.deepEqual(posted, [{ enabled: true }]);
@@ -295,24 +494,19 @@ const expiredReport = (): UsageReport => ({
  * a dialog (UsageSignInDialog), whose Open terminal hands the tab over.
  */
 export async function checkUsageSignInAgain(browser: Browser, origin: string): Promise<void> {
-  // the account order is shared through the server: whatever an earlier check on it saved (checkUsageMeters
-  // moves an account) would put its accounts first here, so this check starts from none
   const reset = await fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ settings: { usageOrder: [] } }) });
   assert.equal(reset.status, 200, "the shared account order is cleared");
   for (const phone of [false, true]) {
     const context = await usageContext(browser, { viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 }, locale: "en-US", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
     try {
       const posted: unknown[] = [];
-      // a followed start (the dialog) is refused, then runs; Open terminal's start opens the tab
       const answers = [
         { status: 409, json: { error: { code: "cli_unavailable", message: "Install the official CLI on this PC before signing in" } } },
         { status: 200, json: { login_id: "00000000-0000-4000-8000-000000000009", device_auth: false } },
       ];
       const tab = { status: 200, json: { pane_id: "w9:p9", workspace_id: "w9", manual: false, device_auth: false } };
       const cancelled: unknown[] = [];
-      // what reached the server, in order: Open terminal's tab starts only once the cancel has been answered
       const events: string[] = [];
-      // Record the browser's awaited response, not merely arrival at the mock server.
       await context.addInitScript(() => {
         const events: string[] = [];
         Object.assign(window, { usageLoginEvents: events });
@@ -332,7 +526,6 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
         return route.fulfill({ status: 204 });
       });
       await context.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
-      // the dialog reads the provider's sign-ins and the login's screen: a login still starting
       await context.route("**/api/usage/login?provider=*", (route) => route.fulfill({ json: { accounts: ["me@team.example"] } }));
       await context.route("**/api/usage/login/prompt*", (route) => route.fulfill({ json: { provider: "claude", url: null, user_code: null, wants_code: false, ended: false } }));
       await context.route("**/api/usage/login", (route) => {
@@ -348,7 +541,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(origin);
-      const openDrawer = async () => { if (phone) await page.getByRole("button", { name: "Open workspace list", exact: true }).click(); };
+      const openDrawer = async () => { if (phone) await openUsageDrawer(page); };
       await openDrawer();
       await page.locator(".usage-strip").click();
       const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
@@ -363,14 +556,12 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
         const box = await popover.boundingBox();
         assert.ok(box && box.x >= 0 && box.x + box.width <= 390, "the popover stays inside the phone's screen");
       }
-      // the sign-in is followed in its own dialog, the popover giving way to it; a refusal is said there
       const following = page.getByRole("dialog", { name: "Sign in to Claude Code", exact: true });
       await again.click();
       await popover.waitFor({ state: "detached" });
       await following.getByRole("alert").filter({ hasText: "Install the official CLI on this PC before signing in" }).waitFor();
       await following.getByRole("button", { name: "Done", exact: true }).click();
       await following.waitFor({ state: "detached" });
-      // started: its Open terminal hands the tab over (a phone's drawer is still out after Done)
       if (!(await page.locator(".usage-strip").isVisible())) await openDrawer();
       await page.locator(".usage-strip").click();
       await popover.getByRole("button", { name: /^Sign in again/ }).click();
@@ -382,7 +573,6 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
       await openSettingsPage(page, "Agents");
       const rows = page.locator(".usage-accounts-row");
-      // the rows come with the usage report, loaded once the page is shown: count them once they are
       await rows.nth(3).waitFor();
       assert.equal(await rows.count(), 4);
       const rowAgain = page.locator(".settings-dialog").getByRole("button", { name: /^Sign in again/ });

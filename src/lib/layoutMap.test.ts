@@ -10,7 +10,6 @@ const tab = (panes: { id: string; rect: ReturnType<typeof rect>; focused?: boole
   splits: [],
 });
 
-// herdr 0.9.3's own layouts, as its snapshot gave them on a 120x40 area
 const columns = tab([{ id: "p1", rect: rect(0, 0, 60, 40), focused: true }, { id: "p2", rect: rect(60, 0, 60, 40) }]);
 const grid = tab([
   { id: "p1", rect: rect(0, 0, 48, 40) },

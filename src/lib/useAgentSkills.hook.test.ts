@@ -7,10 +7,8 @@ import { type AgentSkills, SKILLS_MS, useAgentSkills } from "./useAgentSkills.ts
 
 const skill: SlashCommand = { name: "deploy", description: "Ship it", source: "skill" };
 
-// React, the hook and the API function are real; only the network is a stand-in (#2254).
 describe("useAgentSkills while the PC is busy scanning", () => {
   let renderer: ReactTestRenderer | null = null;
-  /** answers left that are a busy PC's 503, each with this Retry-After (seconds) */
   let busy: { left: number; retryAfter: string | null } = { left: 0, retryAfter: null };
   let seen: AgentSkills = null;
   let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
@@ -18,7 +16,6 @@ describe("useAgentSkills while the PC is busy scanning", () => {
     [seen] = useAgentSkills(open, "claude", folder, (agent, cwd) => fetchAgentCommands(agent, cwd), (text) => text);
     return null;
   }
-  /** Lets a read's promise chain finish: a bounded number of turns, each inside act. */
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
   const calls = () => fetchSpy.mock.calls.length;
   const advance = async (ms: number) => { await act(async () => { jest.advanceTimersByTime(ms); }); };
@@ -54,7 +51,6 @@ describe("useAgentSkills while the PC is busy scanning", () => {
     await open();
     await settle(() => false);
     expect(calls()).toBe(1);
-    // no error note, no empty list: still on its way
     expect(seen).toBeNull();
     await advance(1_000);
     await settle(() => seen !== null);

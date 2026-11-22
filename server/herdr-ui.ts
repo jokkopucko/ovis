@@ -5,8 +5,7 @@ import { herdrConfigPath, readHerdrConfig } from "./herdr-sidebar.ts";
 /**
  * The herdr client preferences of the PC serving this web UI that its own selection follows (#1559):
  * `[ui] copy_on_select`, read again on each request. herdr's default (on) stands for a config that
- * is missing, unreadable or no TOML, and for a value that is no boolean. With it, the `[keys]` prefix
- * bindings of the actions the app runs, resolved as herdr resolves them (shared/herdr-keys.ts).
+ * is missing, unreadable or no TOML, and for a value that is no boolean.
  */
 export function readHerdrUi(path = herdrConfigPath()): HerdrUiConfig {
   const config = readHerdrConfig(path);

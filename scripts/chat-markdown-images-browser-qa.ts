@@ -1,4 +1,3 @@
-/** Real browser and HTTP bytes; the pane API fixture has a foreground cwd different from the hint. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +12,7 @@ let status = 503;
 let kind = "image";
 const stats: URL[] = [];
 const reads: string[] = [];
-// set, a stat and a byte read wait until the page has seen the frames it needs
 let held: { promise: Promise<void>; release: () => void } | null = null;
-// told of each byte read as it arrives, before it is held
 let onRead: (() => void) | null = null;
 const foreground = "/repo/subproject";
 const foregroundPath = `${foreground}/out/diagram.svg`;
@@ -97,7 +94,6 @@ try {
   await viewer.waitFor({ state: "detached" });
   console.log("PASS The recovered image still opens in the viewer with its actual filename");
 
-  // A reopened chat draws a known image at its final height from the first frame (#2548).
   await page.evaluate(() => window.imageQa.update("Answer\n\n![Diagram](./out/diagram.svg)\n\nAfter the image."));
   // `complete` is true a task before `load` fires; the slot gives its box up only on `load`
   await page.waitForFunction(() => document.querySelector("img.markdown-image")?.closest(".image-slot:not(.is-loading)") != null);
@@ -109,11 +105,9 @@ try {
     const top = () => [...document.querySelectorAll("p")].find((node) => node.textContent === "After the image.")?.getBoundingClientRect().top ?? -1;
     const old = document.querySelector("img.markdown-image")!;
     const frame = () => {
-      // from the first frame the new mount is in, whatever it draws
       const image = document.querySelector<HTMLImageElement>("img.markdown-image");
       const remounted = !document.contains(old);
       if (remounted) seen.push(top());
-      // the stat and the bytes answer only after five frames of the new mount, as a slow PC or link would
       if (seen.length === 5) void fetch("/release-stat");
       // ten more frames after the bytes are in, so a late move is seen too
       // a regression that never settles fails on what it showed, not on CI's timeout

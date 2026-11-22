@@ -14,8 +14,8 @@ describe("pending target identity", () => {
 
   it("refuses a hookless Claude's session switched by /clear or /resume in the same process (regression #540)", () => {
     expect(samePendingIdentity({ ...identity, claudeSession: "before-clear" }, { ...identity, claudeSession: "after-clear" })).toBe(false);
-    expect(samePendingIdentity({ ...identity, claudeSession: "same" }, { ...identity, claudeSession: "same" })).toBe(true); // control
-    expect(samePendingIdentity({ ...identity, claudeSession: null }, { ...identity, claudeSession: "learned" })).toBe(true); // control: learned later
+    expect(samePendingIdentity({ ...identity, claudeSession: "same" }, { ...identity, claudeSession: "same" })).toBe(true);
+    expect(samePendingIdentity({ ...identity, claudeSession: null }, { ...identity, claudeSession: "learned" })).toBe(true);
     expect(samePendingIdentity({ ...identity, claudeSession: "known" }, { ...identity, claudeSession: null })).toBe(true); // control: record unreadable now (a send refuses it in pendingContext, #2125)
   });
 
@@ -52,6 +52,38 @@ function fixture() {
 }
 
 describe("bridge pending input", () => {
+  it("holds a message with no reason only when its sender asked for the hold, and the page tells the two kinds apart by that for the copy's whole life", () => {
+    let id = 0;
+    const data = new Map<string, string>();
+    const page = new PendingMessageStore(() => ({ getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value); }, removeItem: (key) => { data.delete(key); } }));
+    const queue = new PendingInputs<string, string>((owner, pane, messages, removed) => page.publish(pane, messages, removed ?? [], owner), () => 1_000, 100, () => `pending-${++id}`);
+    const identity: PendingIdentity = { agent: "claude", terminalId: "t1", session: null };
+    const fault = { code: "agent_blocked", message: "The agent is waiting for an answer in the terminal" };
+    const asked = queue.enqueue("a", "asked", 1, "hold me", "lease", identity, true);
+    expect(asked.message.state).toBe("held");
+    expect(asked.message.error).toBeUndefined();
+    const lost = queue.enqueue("a", "lost", 2, "queued, then its lease was lost", "lease", identity);
+    queue.hold("a", "lost");
+    const one = queue.enqueue("a", "one", 3, "queued, then held alone", "lease", identity);
+    queue.holdItem(one, fault);
+    const pane = queue.enqueue("a", "pane", 4, "queued, then its pane was held", "lease", identity);
+    queue.holdPane("pane", fault);
+    const refused = queue.enqueue("a", "refused", 5, "queued, then its send was refused", "lease", identity);
+    expect(queue.claim(refused, false)).toBe(true);
+    queue.settle(refused, fault);
+    for (const item of [lost, one, pane, refused]) expect([item.message.text, item.message.state, typeof item.message.error?.code]).toEqual([item.message.text, "held", "string"]);
+    const panes = ["asked", "lost", "one", "pane", "refused"];
+    const shown = (read: (pane: string) => unknown) => Object.fromEntries(panes.map((each) => [each, read(each)]));
+    expect(shown((each) => page.read(each)[0]?.heldByRequest === true)).toEqual({ asked: true, lost: false, one: false, pane: false, refused: false });
+    expect(queue.claim(asked, false)).toBe(true);
+    queue.settle(asked, fault);
+    expect(asked.message).toMatchObject({ state: "held", error: fault });
+    expect(page.read("asked")[0]).toMatchObject({ state: "held", heldByRequest: true, error: fault });
+    queue.close("a");
+    expect(asked.message).toMatchObject({ state: "held", error: fault });
+    page.suspendScope("a");
+    expect(shown((each) => page.read(each)[0]?.state)).toEqual({ asked: "held", lost: "uncertain", one: "uncertain", pane: "uncertain", refused: "uncertain" });
+  });
   it("stamps a try with this PC's clock as it goes out, and drops the stamp once the message waits again", () => {
     const f = fixture(), item = f.enqueue(1);
     f.advance(500);
@@ -155,14 +187,11 @@ describe("bridge pending input", () => {
     expect(f.queue.discard(first)).toBe(true);
     for (let request = 3; request <= 1024; request++) expect(f.queue.discard(f.enqueue(request))).toBe(true);
     expect(() => f.enqueue(1025)).toThrow(PendingInputError);
-    // Already accepted input still has room for its final outcome.
     expect(f.queue.discard(reserved)).toBe(true);
     const submit = async () => ({ ok: true });
     expect((await f.queue.resend("p1", first.message.id, "fingerprint", submit)).ok).toBe(false);
     f.advance(60_001);
     expect(f.enqueue(1025)).toBeDefined();
-    // The bounded-window policy deliberately preserves stale-copy recovery after
-    // disposition eviction, just as after a bridge restart.
     expect((await f.queue.resend("p1", first.message.id, "fingerprint", submit)).ok).toBe(true);
   });
   it("does not withdraw while a held-copy delivery is in flight", async () => {
@@ -289,7 +318,9 @@ describe("bridge pending input", () => {
     f.queue.status("p1", "working");
     expect(f.queue.claim(first, false)).toBe(true); f.queue.committing(first, true); f.queue.settle(first);
     expect(f.queue.next("p1")).toBeNull();
-    f.queue.status("p1", "done"); expect(f.queue.next("p1")).toBe(second);
+    // right after the Enter, that rest may be the end of a turn the steer started by landing as the work ended (#4118)
+    f.queue.status("p1", "done"); expect(f.queue.next("p1")).toBeNull();
+    f.queue.status("p1", "working"); f.queue.status("p1", "done"); expect(f.queue.next("p1")).toBe(second);
   });
 
   for (const settleBeforeIdle of [true, false]) it(`keeps the interruption's ready state from draining the queue (${settleBeforeIdle ? "settled" : "in flight"})`, () => {
@@ -469,7 +500,6 @@ describe("an owner counted per pane", () => {
     for (let pane = 0; pane < MAX_PENDING_PER_OWNER + 8; pane++) store.enqueue("bridge", `p${pane}`, -1 - pane, "first", null, identity);
     expect(MAX_PENDING_PER_PANE).toBe(1);
     expect(() => store.enqueue("bridge", "p0", -999, "second", null, identity)).toThrow(PendingInputError);
-    // a connection's own messages still count across panes (control)
     for (let id = 1; id <= MAX_PENDING_PER_OWNER; id++) store.enqueue("connection", `q${id}`, id, "mine", null, identity);
     expect(() => store.enqueue("connection", "q-more", 999, "mine", null, identity)).toThrow(PendingInputError);
   });
@@ -477,7 +507,7 @@ describe("an owner counted per pane", () => {
     const store = new PendingInputs<string, null>(() => {}, Date.now, undefined, undefined, () => true);
     const item = store.enqueue("bridge", "p", -1, "first", null, { agent: "claude", terminalId: "t", session: null });
     store.status("p", "idle");
-    expect(store.next("p")).toBe(item); // control: a ready pane offers it
+    expect(store.next("p")).toBe(item);
     store.holdItem(item, { code: "first_message_unattended", message: "gone" });
     expect(store.list("bridge", "p")).toEqual([expect.objectContaining({ state: "held", error: { code: "first_message_unattended", message: "gone" } })]);
     expect(store.next("p")).toBeNull();
@@ -516,7 +546,6 @@ describe("a pane moved to a new ID (#1503)", () => {
     expect(f.queue.next("p2")).toBeNull();
     expect(f.receipts.filter((r) => r.owner === "a" && r.pane === "p1").at(-1)?.messages).toEqual([]);
     expect(f.receipts.filter((r) => r.owner === "a" && r.pane === "p2").at(-1)?.messages).toHaveLength(1);
-    // an explicit send and its outcome go under the new ID
     expect(f.queue.claim(queued, false)).toBe(true);
     f.queue.settle(queued);
     expect(f.queue.outcome("a", "p2", queued.message.id)).toBe("sent");
@@ -566,4 +595,53 @@ describe("a pane moved to a new ID (#1503)", () => {
         expect(f.queue.discard(item, true)).toBe(false);
       }
     });
+});
+
+describe("what a pane's messages wait for besides their turn", () => {
+  const identity: PendingIdentity = { agent: "omp", terminalId: "t1", session: null };
+  const store = () => {
+    const told: Array<{ owner: string; states: string[] }> = [];
+    let id = 0;
+    const queue = new PendingInputs<string, string>((owner, _pane, messages) => told.push({ owner, states: messages.map((message) => `${message.state}${message.waiting ? ` ${message.waiting}` : ""}`) }), () => 1_000, 100, () => `pending-${++id}`);
+    queue.status("p", "idle");
+    return { queue, told };
+  };
+
+  it("is said on its queued rows to each owner of one, and no longer once it is over", () => {
+    const { queue, told } = store();
+    queue.enqueue("a", "p", 1, "one", "lease", identity);
+    queue.enqueue("b", "p", 2, "two", "lease", identity, true);
+    queue.enqueue("c", "q", 3, "elsewhere", "lease", identity);
+    told.length = 0;
+    queue.waitingFor("p", "omp_starting");
+    expect(told).toEqual([{ owner: "a", states: ["queued omp_starting"] }]);
+    expect(queue.list("b", "p").map((message) => message.waiting)).toEqual([undefined]);
+    expect(queue.list("c", "q").map((message) => message.waiting)).toEqual([undefined]);
+    queue.waitingFor("p", "omp_starting");
+    expect(told).toHaveLength(1);
+    queue.enqueue("a", "p", 4, "three", "lease", identity);
+    expect(queue.list("a", "p").map((message) => message.waiting)).toEqual(["omp_starting", "omp_starting"]);
+    told.length = 0;
+    queue.waitingFor("p", undefined);
+    expect(told).toEqual([{ owner: "a", states: ["queued", "queued"] }]);
+    queue.waitingFor("p", "omp_starting");
+    queue.forget("p");
+    expect(queue.list("a", "p").map((message) => message.waiting)).toEqual([undefined, undefined]);
+  });
+
+  it("holds the pane's queued messages for their senders, and leaves one on its way to its send's own end", () => {
+    const { queue, told } = store();
+    const sending = queue.enqueue("a", "p", 1, "one", "lease", identity);
+    queue.enqueue("a", "p", 2, "two", "lease", identity);
+    queue.enqueue("b", "p", 3, "three", "lease", identity);
+    expect(queue.claim(sending, true)).toBe(true);
+    queue.sendingWaitsFor(sending, "omp_starting");
+    told.length = 0;
+    queue.holdQueued("p", { code: "typed_while_waiting", message: "typed" });
+    expect(told).toEqual([{ owner: "a", states: ["sending omp_starting", "held"] }, { owner: "b", states: ["held"] }]);
+    expect(queue.list("b", "p")[0]).toMatchObject({ state: "held", error: { code: "typed_while_waiting" } });
+    told.length = 0;
+    queue.sendingWaitsFor(sending, undefined);
+    expect(told).toEqual([{ owner: "a", states: ["sending", "held"] }]);
+  });
 });

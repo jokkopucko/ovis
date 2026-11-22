@@ -21,7 +21,10 @@ describe("an agent's launch arguments", () => {
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toContain("--effort");
     expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=ultra", "-m", "gpt-6.1"])).toBeNull();
     expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=ultracode"])).toContain("model_reasoning_effort");
-    // other agents' arguments are theirs: only control characters are refused there
+    // DeepSeek Harness's levels, in both spellings
+    expect(launchArgsFault("dsh-tui", ["--effort", "off"])).toBeNull();
+    expect(launchArgsFault("dsh-tui", ["--effort=max"])).toBeNull();
+    expect(launchArgsFault("dsh-tui", ["--effort", "xhigh"])).toBe("agent.args --effort must be one of off, low, high, max");
     expect(launchArgsFault("omp", ["--model", "two words"])).toBeNull();
   });
   it("still takes Claude Code's --effort ultracode, which the dialog no longer lists as a level", () => {
@@ -31,19 +34,16 @@ describe("an agent's launch arguments", () => {
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toBe("agent.args --effort must be one of low, medium, high, xhigh, max, ultracode");
   });
   it("passes Ultracode's --settings as the agent's own flag, after an effort or on its own", () => {
-    // the one settings object the dialog's switch passes: Ultracode on, nothing else
     expect(JSON.parse(CLAUDE_ULTRACODE_SETTINGS)).toEqual({ ultracode: true });
     expect(launchArgsFault("claude", ["--effort", "medium", "--settings", CLAUDE_ULTRACODE_SETTINGS])).toBeNull();
     expect(launchArgsFault("claude", ["--permission-mode", "plan", "--model", "opus", "--effort", "high", "--settings", "{\"ultracode\":true}"])).toBeNull();
     expect(launchArgsFault("claude", ["--settings", "{\"ultracode\":true}"])).toBeNull();
-    // the effort beside it is still checked
     expect(launchArgsFault("claude", ["--effort", "INVALID", "--settings", "{\"ultracode\":true}"])).toContain("--effort");
   });
 });
 
 describe("every spelling the CLIs accept for a model or an effort", () => {
   it.each([
-    // [kind, args, the fault's flag, or null when the launch is fine]
     ["codex", ["-m", "two words"], "--model"],
     ["codex", ["-mtwo words"], "--model"],
     ["codex", ["-m=two words"], "--model"],
@@ -81,5 +81,37 @@ describe("a first message", () => {
     expect(firstMessageFault("line one\n\tline two", true)).toBeNull();
     expect(firstMessageFault("run \u001b[2J this", true)).toContain("control characters");
     expect(firstMessageFault("hi", null)).toContain("needs an agent");
+  });
+});
+
+describe("an MCP server named by the client", () => {
+  it.each([
+    ["claude", ["--mcp-config", "/tmp/evil.json"]],
+    ["claude", ["--model", "opus", "--mcp-config={\"mcpServers\":{}}"]],
+    ["copilot", ["--additional-mcp-config", "@/tmp/evil.json"]],
+    ["codex", ["-c", "mcp_servers.x.command='sh'"]],
+    ["codex", ["--config=mcp_servers={}"]],
+    ["codex", ["-c", "\"mcp_servers\".x.args=[]"]],
+  ])("is refused for %s: only the PC adds one, from its settings", (kind, args) => {
+    expect(launchArgsFault(kind, args)).toContain("browser tool");
+  });
+  it.each([
+    ["codex", ["mcp", "add", "x", "--", "sh"]],
+    ["claude", ["mcp", "add", "x", "sh"]],
+    ["copilot", ["--model", "x", "mcp", "add", "x", "--", "sh"]],
+    ["claude", ["--", "mcp", "add", "x", "sh"]],
+    ["copilot", ["--", "mcp", "add", "x"]],
+    ["claude", ["-c", "mcp", "add", "x", "sh"]],
+  ])("is refused through %s's own mcp command, which writes its settings", (kind, args) => {
+    expect(launchArgsFault(kind, args)).toContain("mcp command");
+  });
+  it("is no command as a flag's value, nor in Codex's prompt after --", () => {
+    expect(launchArgsFault("claude", ["--model", "mcp"])).toBeNull();
+    expect(launchArgsFault("codex", ["-m", "mcp", "--", "mcp"])).toBeNull();
+  });
+  it("is the prompt's own text after --", () => {
+    expect(launchArgsFault("codex", ["--", "--mcp-config and mcp_servers"])).toBeNull();
+    expect(launchArgsFault("claude", ["--", "--mcp-config"])).toBeNull();
+    expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=high"])).toBeNull();
   });
 });

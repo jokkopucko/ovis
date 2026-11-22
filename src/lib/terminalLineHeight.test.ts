@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 
 import { terminalLineHeight } from "./terminalLineHeight.ts";
 
-/** the row xterm draws for a line of `charHeight` px with this lineHeight (DomRenderer), in CSS px */
 const row = (charHeight: number, lineHeight: number, ratio: number): number =>
   Math.floor(Math.ceil(charHeight * ratio) * lineHeight) / ratio;
 
@@ -24,7 +23,6 @@ describe("terminalLineHeight", () => {
   it("gives the row nearest Hangul and its gap, never shorter than the font's line, at every size and pixel ratio", () => {
     for (const ratio of [1, 1.25, 1.5, 2, 2.625, 3]) {
       for (let fontSize = 8; fontSize <= 32; fontSize += 1) {
-        // Menlo's and Consolas's lines, shorter than Hangul and its gap
         for (const lineEm of [1.164, 1.171]) {
           const charHeight = Math.round(lineEm * fontSize);
           const drawn = row(charHeight, terminalLineHeight(charHeight, fontSize, ratio), ratio);

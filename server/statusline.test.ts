@@ -37,7 +37,6 @@ describe("parseStatusline", () => {
   it("is null for a payload with nothing to show", () => {
     expect(parseStatusline({}, 1)).toBeNull();
     expect(parseStatusline({ rate_limits: { five_hour: {} } }, 1)).toBeNull();
-    // an ISO string where epoch seconds belong is not a time this reader invents one for
     expect(parseStatusline({ rate_limits: { five_hour: { used_percentage: 5, resets_at: "2026-10-28T00:00:00Z" } } }, 1)!.fiveHour)
       .toEqual({ usedPercent: 5, resetsAt: null });
   });

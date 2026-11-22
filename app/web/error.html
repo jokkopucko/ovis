@@ -9,11 +9,32 @@
 </head>
 <body>
   <main>
-    <h1 data-ko="PC에 연결할 수 없습니다">Can't reach your PC</h1>
+    <h1 id="title" data-ko="PC에 연결할 수 없습니다">Can't reach your PC</h1>
     <p id="what">The app could not open it.</p>
     <p class="error" id="reason"></p>
     <p id="tailscale" hidden data-ko="Tailscale 주소입니다. 이 휴대폰에서 Tailscale이 꺼져 있을 수 있습니다. Tailscale 앱에서 연결을 켠 뒤 다시 시도를 누르세요.">This is a Tailscale address, and Tailscale may be off on this phone. Turn it on in the Tailscale app, then tap Try again.</p>
+    <p id="not-ovis" hidden data-ko="이 주소는 응답하지만 Ovis가 아닙니다. 다른 웹 서버이거나, 앱이 열 수 없는 herdr 자체입니다. PC 바꾸기를 누르고, PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.">This address answers, but it is not Ovis: another web server, or herdr itself, which the app cannot open. Tap Change PC and open the address Ovis shows under Settings → Phone &amp; devices on the PC.</p>
+    <p id="refused" hidden data-ko="그 주소에서 기다리는 것이 없습니다. PC에서 Ovis가 실행 중이어야 하고(herdr만으로는 안 됩니다), Ovis는 기본으로 PC 자신(127.0.0.1)에서만 기다립니다. PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.">Nothing listens at that address. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Phone &amp; devices on the PC.</p>
+    <p id="loopback" hidden data-ko="휴대폰에서 localhost와 127.0.0.1은 PC가 아니라 휴대폰 자신입니다.">On a phone, localhost and 127.0.0.1 are the phone itself, not your PC.</p>
+    <p id="network" hidden data-ko="PC가 꺼져 있거나 이 휴대폰에서 닿지 않을 수 있습니다. 집 네트워크 주소는 모바일 데이터나 다른 Wi-Fi에서 열리지 않고, PC의 방화벽이 포트를 막을 수도 있습니다.">The PC may be off, or out of this phone's reach: a home network address does not open over mobile data or another Wi-Fi, and a firewall on the PC can block the port.</p>
+    <p id="public" hidden data-ko="서버가 꺼져 있거나, 이 휴대폰의 연결(또는 VPN)이 서버에 닿지 않을 수 있습니다.">The server may be down, or this phone's connection (or a VPN on it) may not reach it.</p>
     <p id="relay" hidden data-ko="이 PC는 Ovis 릴레이를 거쳐 열립니다. 릴레이에 연결할 수 없었습니다. 이 휴대폰이 인터넷에 연결되어 있는지 확인한 뒤 다시 시도를 누르세요.">This PC opens through the Ovis relay. The relay could not be reached: check that this phone is online, then tap Try again.</p>
+    <!-- a PC added over SSH (Android's SshTunnel): the failure's kind (state.kind "ssh-<kind>",
+         SshFailure) picks the words, as SshWords does on the setup screen, and state.command is the
+         one command that fixes it on the PC -->
+    <div id="ssh" hidden>
+      <p data-ssh="host-key-changed" data-ko="PC가 이 PC를 추가할 때 확인한 것과 다른 SSH 호스트 키로 응답했습니다. 기기를 다시 설치했거나 SSH 키를 바꿨을 수도 있고, 누군가 연결을 가로채고 있을 수도 있습니다. Ovis는 연결하지 않습니다. 바뀐 이유를 안다면 PC 바꾸기 → 이 PC의 관리 → 호스트 키 지우기를 누른 뒤, PC를 열어 새 지문을 확인하세요.">The PC answered with another SSH host key than the one you confirmed when you added it. The machine may have been reinstalled or its SSH keys replaced, or someone may be intercepting the connection. Ovis does not connect. If you know why it changed, tap Change PC, then Manage beside this PC → Forget host key, and open it to check the new fingerprint.</p>
+      <p data-ssh="host-key-unknown" data-ko="이 PC의 호스트 키를 지웠습니다. PC 바꾸기를 누르고 PC를 열면, 지금의 키를 보여 주고 확인을 받습니다.">This PC's host key was forgotten. Tap Change PC and open it: the app shows the key it has now, for you to confirm.</p>
+      <p data-ssh="auth" data-ko="PC가 이 PC용으로 저장한 키를 받지 않았습니다. 그쪽 ~/.ssh/authorized_keys에서 빠졌을 수 있습니다. PC 바꾸기 → 관리 → 다시 설정을 누르세요. 비밀번호를 한 번 쓰면 이 휴대폰의 키가 다시 등록됩니다.">The PC did not accept the key saved for it: it may have been taken out of ~/.ssh/authorized_keys there. Tap Change PC, then Manage → Set up again; a password used once registers this phone's key again.</p>
+      <p data-ssh="key-unreadable key-lost" data-ko="이 휴대폰이 이 PC용으로 저장한 키를 더 이상 열지 못합니다. PC 바꾸기 → 관리 → 다시 설정을 누르세요.">This phone can no longer open the key saved for this PC. Tap Change PC, then Manage → Set up again.</p>
+      <p data-ssh="unreachable timeout" data-ko="SSH로 PC에 닿지 못했습니다. PC가 켜져 있는지, 그쪽에서 SSH가 실행 중인지, 이 휴대폰이 PC에 닿는지(같은 Wi-Fi, 또는 Tailscale 켜짐) 확인한 뒤 다시 시도를 누르세요.">The PC could not be reached over SSH. Check that it is on, that SSH runs there, and that this phone reaches it (the same Wi-Fi, or Tailscale on), then tap Try again.</p>
+      <p data-ssh="no-ovis bridge-only" data-ko="그 PC의 이 계정에는 Ovis가 설치되어 있지 않습니다. PC의 터미널에서 아래 명령으로 설치하거나, PC 바꾸기 → 관리 → 다시 설정에서 휴대폰으로 설치하세요.">Ovis is not installed for this account on the PC. Install it in a terminal there with the command below, or from the phone: Change PC, then Manage → Set up again.</p>
+      <p data-ssh="not-started" data-ko="PC에 Ovis가 설치되어 있지만 시작되지 않았습니다. 그쪽에서 아래 명령으로 시작한 뒤 다시 시도를 누르세요.">Ovis is installed on the PC but did not start. Start it there with the command below, then tap Try again.</p>
+      <p data-ssh="unsupported" data-ko="지금은 Linux와 macOS 기기만 휴대폰에서 SSH로 열 수 있습니다.">Only Linux and macOS machines can be opened over SSH from the phone for now.</p>
+      <p data-ssh="other" data-ko="SSH 연결이 예상하지 못한 이유로 멈췄습니다. 다시 시도를 누르고, 계속되면 PC 바꾸기 → 관리 → 다시 설정을 누르세요.">The SSH connection stopped for an unexpected reason. Tap Try again; if it keeps failing, tap Change PC, then Manage → Set up again.</p>
+      <pre class="command" id="ssh-command" hidden></pre>
+      <button type="button" id="ssh-copy" hidden data-ko="명령 복사">Copy the command</button>
+    </div>
     <p id="check" data-ko="PC가 켜져 있는지, 거기서 Ovis가 실행 중인지, 이 휴대폰이 PC에 닿을 수 있는지(Tailscale이면 둘 다 같은 tailnet에 있는지) 확인하세요.">Check that the PC is on, that Ovis runs there, and that this phone can reach it (on Tailscale, both in the same tailnet).</p>
     <div class="row">
       <button type="button" class="primary" id="retry" data-ko="다시 시도">Try again</button>
@@ -27,6 +48,18 @@
        on a WebView too old for that listener MainActivity catches a move to /_ovis/retry or
        /_ovis/change-pc. The buttons work before anything is asked, whichever way answers. -->
   <script type="module">
+    // homeHost in shell.js, copied as this page stands alone (scripts/app-shell.test.ts checks they agree)
+    function homeHost(hostname) {
+      const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+      if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host.endsWith(".ts.net") || host.startsWith("fd7a:115c:a1e0:")) return true;
+      const ipv4 = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+      if (ipv4) {
+        const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+        return a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+      }
+      if (host.includes(":")) return /^f[cd]/.test(host) || /^fe[89ab]/.test(host);
+      return !host.includes(".") || /\.(local|lan|home\.arpa|internal)$/.test(host);
+    }
     const korean = /^ko\b/i.test(navigator.language ?? "");
     if (korean) {
       document.documentElement.lang = "ko";
@@ -58,13 +91,59 @@
       // a PC paired over the Ovis relay is saved by its scope on the app's origin (/s/<server_id>/)
       relay = /^\/s\/[0-9a-f]{32}\/$/.test(url.pathname);
     } catch {}
-    if (relay && state.name) {
+    // a PC added over SSH opens on this phone's own 127.0.0.n:47317 (SshTunnel), on purpose
+    const sshKind = (state.kind ?? "").startsWith("ssh-") ? state.kind.slice(4) : "";
+    const sshPc = sshKind !== "" || (/^127\.\d+\.\d+\.\d+$/.test(host) && (() => { try { return new URL(pc).port === "47317"; } catch { return false; } })());
+    if (sshKind) {
+      const known = [...document.querySelectorAll("[data-ssh]")].some((p) => p.dataset.ssh.split(" ").includes(sshKind));
+      for (const p of document.querySelectorAll("[data-ssh]")) p.hidden = !p.dataset.ssh.split(" ").includes(known ? sshKind : "other");
+      const titles = {
+        "host-key-changed": ["The PC's SSH key changed", "PC의 SSH 키가 바뀌었습니다"],
+        "auth": ["The PC refused this phone", "PC가 이 휴대폰을 거부했습니다"],
+        "no-ovis": ["Ovis is not installed there", "그 PC에 Ovis가 없습니다"],
+        "bridge-only": ["Ovis is not installed there", "그 PC에 Ovis가 없습니다"],
+        "not-started": ["Ovis is not running there", "그 PC에서 Ovis가 실행 중이 아닙니다"],
+      };
+      if (titles[sshKind]) document.getElementById("title").textContent = titles[sshKind][korean ? 1 : 0];
+      const command = state.command ?? "";
+      const commandBox = document.getElementById("ssh-command");
+      const copy = document.getElementById("ssh-copy");
+      commandBox.textContent = command;
+      commandBox.hidden = copy.hidden = command === "";
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(command); }
+        catch {
+          // a WebView that keeps the clipboard from the page: the command is selected for a long press instead
+          getSelection()?.selectAllChildren(commandBox);
+          document.execCommand("copy");
+        }
+        copy.textContent = korean ? "복사했습니다" : "Copied";
+      });
+      document.getElementById("ssh").hidden = false;
+    }
+    if ((relay || sshPc) && state.name) {
       document.getElementById("what").textContent = korean ? `앱이 ${state.name}을(를) 열지 못했습니다.` : `The app could not open ${state.name}.`;
     }
+    // why it failed, when the app or WebView says: not Ovis, nothing listening, or no answer
+    const failure = state.failure ?? "";
+    const notOvis = state.kind === "not-ovis";
+    const refused = !relay && !sshPc && /ERR_CONNECTION_REFUSED/.test(failure);
+    const unreached = !relay && (state.kind === "timeout" || /ERR_(CONNECTION_TIMED_OUT|TIMED_OUT|ADDRESS_UNREACHABLE)/.test(failure));
+    if (notOvis) document.getElementById("title").textContent = korean ? "Ovis가 아닙니다" : "This is not Ovis";
+    document.getElementById("not-ovis").hidden = !notOvis;
+    document.getElementById("refused").hidden = !refused;
+    // whatever the reason (iOS reports a refusal in its own words, with no kind): on a phone, an
+    // address of the phone itself never reaches the PC
+    document.getElementById("loopback").hidden = relay || sshPc || !(host === "localhost" || host.endsWith(".localhost") || /^127\.\d+\.\d+\.\d+$/.test(host) || host === "::1");
+    // a home network or tailnet address: only there do the PC, the home network and its firewall
+    // explain no answer; a public server is down or out of the phone's reach (an SSH PC says its own)
+    const home = homeHost(host);
+    document.getElementById("network").hidden = !unreached || !home || sshPc;
+    document.getElementById("public").hidden = !unreached || home || sshPc;
     document.getElementById("relay").hidden = !relay;
-    document.getElementById("check").hidden = relay;
+    document.getElementById("check").hidden = relay || notOvis || refused || unreached || sshKind !== "";
     const ipv4 = host.match(/^100\.(\d+)\.\d+\.\d+$/);
-    document.getElementById("tailscale").hidden = relay || /^HTTP \d{3}\b/.test(state.failure ?? "") || !(host.endsWith(".ts.net") || (ipv4 && Number(ipv4[1]) >= 64 && Number(ipv4[1]) <= 127) || host.startsWith("fd7a:115c:a1e0:"));
+    document.getElementById("tailscale").hidden = relay || notOvis || refused || /^HTTP \d{3}\b/.test(state.failure ?? "") || !(host.endsWith(".ts.net") || (ipv4 && Number(ipv4[1]) >= 64 && Number(ipv4[1]) <= 127) || host.startsWith("fd7a:115c:a1e0:"));
   </script>
 </body>
 </html>

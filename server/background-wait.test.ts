@@ -19,7 +19,6 @@ describe("BackgroundWait", () => {
     time.pass(WAIT_LIMIT_MS + 1000);
     expect(waits.tick()).toEqual(["claude"]);
     expect([waits.waiting("omo"), waits.waiting("claude")]).toEqual([true, false]);
-    // its last task ends: the grace still applies
     waits.running("omo", 0, null, false);
     time.pass(WAIT_GRACE_MS);
     expect(waits.tick()).toEqual(["omo"]);
@@ -29,13 +28,11 @@ describe("BackgroundWait", () => {
   it("holds an OmO turn that ends in the same read as its running tasks are counted", () => {
     const time = clock();
     const waits = new BackgroundWait(time.now);
-    // omoChanged gives the session's count first, then the turn's status
     waits.running("p1", 0, null, false);
     waits.status("p1", "working");
     waits.running("p1", 2, null, false);
     waits.status("p1", "done");
     expect(waits.waiting("p1")).toBe(true);
-    // the tasks end: held for the grace, and OmO's wake is a turn of its own
     waits.running("p1", 0, null, false);
     expect(waits.waiting("p1")).toBe(true);
     waits.running("p1", 0, null, false);
@@ -74,7 +71,6 @@ describe("BackgroundWait", () => {
     waits.running("p1", 2);
     waits.status("p1", "done");
     time.pass(WAIT_LIMIT_MS - 1000);
-    // one ended and its notice resumed the turn, which rests on the other: a deploy, or a dev server left
     waits.running("p1", 1);
     waits.status("p1", "working");
     waits.status("p1", "done");
@@ -91,16 +87,13 @@ describe("BackgroundWait", () => {
     const waits = new BackgroundWait(time.now);
     waits.status("p1", "working");
     expect(waits.running("p1", 1)).toBe(false);
-    // the turn ends on it: waiting
     expect(waits.status("p1", "done")).toBe(true);
     expect(waits.waiting("p1")).toBe(true);
     time.pass(5 * 60_000);
-    // it ended, and the notice brought Claude back: the same work going on
     expect(waits.running("p1", 0)).toBe(false);
     time.pass(2000);
     expect(waits.status("p1", "working")).toBe(true);
     expect(waits.waiting("p1")).toBe(false);
-    // and that turn ends with nothing left
     expect(waits.status("p1", "done")).toBe(false);
     expect(waits.waiting("p1")).toBe(false);
   });
@@ -125,7 +118,6 @@ describe("BackgroundWait", () => {
     const waits = new BackgroundWait(time.now);
     waits.status("p1", "working");
     waits.running("p1", 1);
-    // read as the turn ends, before the pane is taken to be at rest (server/index.ts onStatus)
     waits.running("p1", 0);
     expect(waits.status("p1", "done")).toBe(false);
     waits.status("p2", "working");
@@ -143,7 +135,6 @@ describe("BackgroundWait", () => {
     expect(waits.tick()).toEqual([]);
     time.pass(1);
     expect(waits.tick()).toEqual(["p1"]);
-    // seen meanwhile (done to idle): still the same rest, and still past the limit
     expect(waits.status("p1", "idle")).toBe(false);
     waits.status("p1", "working");
     waits.running("p1", 1, time.now());
@@ -158,7 +149,6 @@ describe("BackgroundWait", () => {
     waits.status("p1", "done");
     time.pass(10);
     expect(waits.running("p1", 1, 0)).toBe(true);
-    // A later human prompt is not discovered until after two rest transitions.
     const prompt = time.now();
     waits.status("p1", "working");
     time.pass(10);
@@ -177,9 +167,7 @@ describe("BackgroundWait", () => {
     time.pass(WAIT_LIMIT_MS);
     waits.status("p1", "done");
     waits.running("p1", 1, prompt);
-    // an automatic resume that rests again on the prompt's work is held anew
     expect(waits.waiting("p1")).toBe(true);
-    // A new prompt later than every observed rest cannot borrow any old transition or grace.
     time.pass(1);
     waits.running("p1", 0, time.now());
     expect(waits.waiting("p1")).toBe(false);
@@ -205,7 +193,6 @@ describe("BackgroundWait", () => {
     waits.running("p1", 1);
     waits.status("p1", "done");
     expect(waits.waiting("p1")).toBe(true);
-    // a snapshot asked for while the turn worked lands after the turn ended
     waits.seed("p1", "working");
     expect(waits.waiting("p1")).toBe(true);
   });
@@ -213,23 +200,19 @@ describe("BackgroundWait", () => {
   it("keeps, past another agent's lifetime, only the rests seen since the agent that followed began", () => {
     const time = clock();
     const waits = new BackgroundWait(time.now);
-    // one agent's turn rests on its work
     waits.status("p", "working");
     waits.running("p", 1, null);
     waits.status("p", "done");
     expect(waits.waiting("p")).toBe(true);
     time.pass(1000);
     const since = time.now();
-    // the next agent's turn rests before its tracker knows its session
     waits.status("p", "working");
     time.pass(1000);
     waits.status("p", "idle");
     waits.resetBefore("p", since);
     expect(waits.waiting("p")).toBe(false);
-    // its tracker counts what that turn started: the turn holds
     waits.running("p", 1, since);
     expect(waits.waiting("p")).toBe(true);
-    // a reset keeps no rest
     waits.reset("p");
     waits.running("p", 1, since);
     expect(waits.waiting("p")).toBe(false);

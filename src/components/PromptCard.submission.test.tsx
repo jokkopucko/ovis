@@ -6,7 +6,7 @@ import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
 import * as machineContext from "../lib/machineContext.tsx";
 import * as settingsModule from "../lib/settings.ts";
-import { PromptCard } from "./PromptCard.tsx";
+import { PromptCard, type PromptCardProps } from "./PromptCard.tsx";
 
 describe("a pending answer sends once, keeps its place, and offers Retry on failure (IS-056)", () => {
   const approval: InteractivePrompt = {
@@ -58,7 +58,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       expect(status().props.className).toBe("prompt-card-status is-empty");
       expect(options().map((opt) => opt.props.disabled)).toEqual([false, false, false]);
 
-      // 10 rapid clicks in the same turn send 1 request and disable every option in place
       const first = options()[0]!;
       await act(async () => {
         for (let i = 0; i < 10; i++) first.props.onClick({ nativeEvent: {}, currentTarget: {} });
@@ -68,7 +67,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       expect(status().props.className).toBe("prompt-card-status");
       expect(status().children).toContain("Sending your answer…");
 
-      // A forced 500 shows a failure state with Retry in place, and clicking Retry sends the same choice again
       await act(async () => { settle!(new ApiError("herdr said no", 500, "internal_error", "internal_error")); });
       expect(options().map((opt) => opt.props.disabled)).toEqual([false, false, false]);
       const retry = renderer!.root.find((node) => node.type === "button" && typeof node.props.className === "string" && node.props.className.includes("prompt-card-retry"));
@@ -156,8 +154,7 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
   });
 });
 
-/** A card for `prompt` whose answers fail with a 500 until `settle` is called with nothing. */
-async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: PromptAnswer[]; root: () => ReactTestRenderer["root"]; settle: (error?: unknown) => Promise<void> }) => Promise<void>): Promise<void> {
+async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: PromptAnswer[]; root: () => ReactTestRenderer["root"]; settle: (error?: unknown) => Promise<void>; update: (next: Partial<PromptCardProps>) => Promise<void> }) => Promise<void>, props: Partial<PromptCardProps> = {}): Promise<void> {
   const sent: PromptAnswer[] = [];
   let pending: ((error?: unknown) => void) | null = null;
   const answerSpy = spyOn(machineContext, "useMachineApi").mockReturnValue({
@@ -182,9 +179,10 @@ async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: Pr
   let renderer: ReactTestRenderer | undefined;
   try {
     await act(async () => {
-      renderer = create(createElement(PromptCard, { paneId: "w1D:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {} }));
+      renderer = create(createElement(PromptCard, { paneId: "w1D:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, ...props }));
     });
-    await run({ sent, root: () => renderer!.root, settle: (error) => act(async () => { pending!(error); }) });
+    const update = (next: Partial<PromptCardProps>) => act(async () => { renderer!.update(createElement(PromptCard, { paneId: "w1D:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, ...props, ...next })); });
+    await run({ sent, root: () => renderer!.root, settle: (error) => act(async () => { pending!(error); }), update });
   } finally {
     await act(async () => { renderer?.unmount(); });
     settingsSpy.mockRestore();
@@ -237,5 +235,55 @@ describe("a failed answer's Retry never sends a selection the user has since cha
       expect(sent.map((answer) => [answer.step_next, answer.draft?.option_indices])).toEqual([[true, [0]], [true, [1]]]);
       await settle();
     });
+  });
+});
+
+describe("a device that may only watch sees the card's answers as unavailable and sends none", () => {
+  const click = { nativeEvent: {}, currentTarget: {} };
+  const REASON = "This device can only watch.";
+  const prompts: InteractivePrompt[] = [
+    {
+      id: "watch-approval", agent: "codex", kind: "approval", title: "Allow command?", question: "Allow command?", body: "git push origin feat/export-guard",
+      options: [{ label: "Yes", description: null }, { label: "No, and tell Codex what to do differently", description: null }],
+      multi_select: false, custom_option_index: null,
+    },
+    {
+      id: "watch-form", agent: "pi", kind: "question", title: "Pick", question: "Pick", body: null,
+      options: [{ label: "A", description: null }, { label: "B", description: null }, { label: "Type something", description: null }],
+      multi_select: true, custom_option_index: 2, checks_with_text: true, can_step_next: true, optional: true,
+    },
+  ];
+
+  it.each(prompts.map((prompt) => [prompt.id, prompt] as const))("%s", async (_id, prompt) => {
+    await withFailingCard(prompt, async ({ sent, root }) => {
+      const controls = root().findAll((node) => (node.type === "button" || node.type === "input") && node.props.className !== "prompt-card-fold");
+      expect(controls.length).toBeGreaterThan(1);
+      expect(controls.filter((node) => node.props.disabled !== true).map((node) => node.props.className)).toEqual([]);
+      const reason = root().find((node) => node.type === "p" && node.children.includes(REASON));
+      expect(reason.props.id).toBeTruthy();
+      const answers = controls.filter((node) => node.type === "button");
+      expect(answers.map((node) => node.props.title)).toEqual(answers.map(() => REASON));
+      expect(answers.filter((node) => !String(node.props["aria-describedby"]).split(" ").includes(reason.props.id))).toEqual([]);
+      // folding the card is the device's own and stays
+      expect(root().find((node) => node.props.className === "prompt-card-fold").props.disabled).toBe(false);
+      // a press that reaches a button anyway sends nothing
+      for (const button of answers) await act(async () => { button.props.onClick(click); });
+      expect(sent).toEqual([]);
+    }, { watching: true });
+  });
+
+  it("takes the device's permission as it is now: answers come back when it may drive again, and go when it may only watch", async () => {
+    await withFailingCard(prompts[0]!, async ({ sent, root, update }) => {
+      const option = () => root().findAll((node) => node.type === "button" && String(node.props.className).startsWith("prompt-card-option"))[0]!;
+      const reasons = () => root().findAll((node) => node.type === "p" && node.children.includes(REASON));
+      expect([option().props.disabled, reasons().length]).toEqual([true, 1]);
+      await update({ watching: false });
+      expect([option().props.disabled, option().props.title, reasons().length]).toEqual([false, undefined, 0]);
+      await update({ watching: true });
+      expect([option().props.disabled, reasons().length]).toEqual([true, 1]);
+      await update({ watching: false });
+      await act(async () => { option().props.onClick(click); });
+      expect(sent.map((answer) => answer.option_index)).toEqual([0]);
+    }, { watching: true });
   });
 });

@@ -15,10 +15,8 @@ type Socket = ServerWebSocket<SocketData>;
 export interface BunRelayOptions {
   port?: number;
   hostname?: string;
-  /** Overrides only rate limiting, not the hard room/socket caps. */
   limiters?: Limiters;
   limits?: Partial<BunRelayLimits>;
-  /** the shortest gap between two guests of a pairing room (pair-room.ts); tests make it 0 */
   pairGuestGapMs?: number;
   /** which PCs get in by their relay pass (pass.ts); every PC without it */
   pass?: PassPolicy;
@@ -29,7 +27,6 @@ export interface BunRelay {
   stop(): Promise<void>;
 }
 
-/** how often idle sockets are looked for */
 const SWEEP_MS = 10_000;
 
 export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
@@ -37,10 +34,8 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
   const limiters = options.limiters ?? memoryLimiters(limits);
   const rooms = new Map<string, { room: Room<Socket> | PairRoom<Socket>; sockets: Set<Socket>; pending: number }>();
   const pass = options.pass;
-  // a pairing room's key cannot be a server_id, which is 32 hex digits
   const keyOf = (request: SocketRequest | PairSocketRequest) => "kind" in request ? `pair:${request.nameplate}` : request.server_id;
   let socketCount = 0;
-  /** open and upgrading sockets per connecting address; an address with none is forgotten */
   const byAddress = new Map<string, number>();
   const release = (address: string) => {
     const left = (byAddress.get(address) ?? 1) - 1;

@@ -23,7 +23,13 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function nativeSignIn(provider: AccountProvider, options: { store: AccountStore; service: string }): Promise<AccountSession> {
+/** A sign-in whose `wanted` said no once its pending record was written: the sheet was not opened. */
+export class SignInNotWanted extends Error {
+  constructor() { super("the sign-in was no longer wanted"); this.name = "SignInNotWanted"; }
+}
+
+/** `wanted`: asked once the pending record is written, right before the sheet opens; false opens nothing (SignInNotWanted) */
+export async function nativeSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; wanted?: () => boolean | Promise<boolean> }): Promise<AccountSession> {
   if (provider === "apple" && !inAndroidApp()) {
     const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
     const { idToken } = await callNative<{ idToken: string }>(AUTH_PLUGIN, "signInWithApple", { nonce: await sha256Hex(nonce) });
@@ -32,6 +38,7 @@ export async function nativeSignIn(provider: AccountProvider, options: { store: 
     return session;
   }
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT });
+  if (options.wanted !== undefined && !await options.wanted()) throw new SignInNotWanted();
   const { url: callback } = await callNative<{ url: string }>(AUTH_PLUGIN, "authenticate", { url });
   const back = new URL(callback);
   return finishOwnSignIn(url, back.hash.length > 1 ? back.hash : back.search, { store: options.store });

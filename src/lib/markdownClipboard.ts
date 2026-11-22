@@ -10,7 +10,6 @@ export interface ClipboardNode {
 
 export interface ClipboardPayload {
   readonly text: string;
-  /** null: plain text only (a selection reaching past the chat) */
   readonly html: string | null;
 }
 
@@ -35,10 +34,11 @@ function richHtml(node: ClipboardNode): string {
   if (node.tag === "A" && href && /^(https?:\/\/|mailto:)/i.test(href)) attributes = ` href="${escapeHtml(href)}"`;
   const start = attr(node, "start");
   if (node.tag === "OL" && start && /^\d+$/.test(start)) attributes = ` start="${start}"`;
+  const value = attr(node, "value");
+  if (node.tag === "LI" && value && /^\d+$/.test(value)) attributes = ` value="${value}"`;
   return node.tag === "BR" || node.tag === "HR" ? `<${tag}>` : `<${tag}${attributes}>${content}</${tag}>`;
 }
 
-/** The browser owns plain-text layout and whitespace; only the rich representation is rebuilt. */
 export function renderedClipboardPayload(nodes: readonly ClipboardNode[], text: string): ClipboardPayload & { readonly html: string } {
   return { text, html: nodes.map(richHtml).join("") };
 }
@@ -49,13 +49,6 @@ function fromDom(node: Node): ClipboardNode {
   return { tag: node.tagName, attrs, children: [...node.childNodes].map(fromDom) };
 }
 
-/**
- * A tool-file label reads shortened (`app/src/a.ts`) while its `data-raw-path` is the path as written
- * (`/work/app/src/a.ts`): a selection that takes the whole label copies that path. The missing head
- * goes into the label's own text for the copy alone and comes out again, so no boundary moves.
- * `read` learns whether any label grew. A label the page hides (a chat under a terminal peek, one not
- * rendered at all) is not what the reader selected and stays as it is.
- */
 function withRawToolPaths<T>(selection: Selection, scope: ParentNode, read: (grew: boolean) => T): T {
   const grown: { text: Text; head: number }[] = [];
   try {
@@ -108,8 +101,7 @@ function selectionPayload(selection: Selection): ClipboardPayload | null {
     if (element?.closest("input, textarea, [contenteditable=true]")) return null;
     const container = document.createElement("div");
     container.append(range.cloneContents());
-    // cloneContents drops the common ancestor and all its formatting. Restore those wrappers
-    // only up to Markdown, never a virtual row or the scroller itself.
+    // cloneContents drops the common ancestor and all its formatting.
     let wrapped: Node = container;
     if (element?.closest(".markdown")) {
       for (let current: Element | null = element; current && !current.classList.contains("markdown"); current = current.parentElement) {

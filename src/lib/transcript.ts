@@ -12,23 +12,19 @@ export type TranscriptRole = "user" | "agent" | "status";
 
 export interface TranscriptMessage {
   role: TranscriptRole;
-  /** paragraph breaks are kept as \n inside one message */
   text: string;
 }
 
 /** Full-width rules agent TUIs draw between turns (Claude Code separators). */
 const RULE_LINE = /^[─━═]{6,}$/;
-/** The prompt echo: what the user typed, shown back by the agent TUI. */
 const USER_LINE = /^❯\s?/;
 /**
  * Chrome the TUI repaints every turn — model/cwd line, context meters, mode
- * footers, turn metadata (✳ Brewed for…, ※ recap). Dimmed, never bubble-styled,
- * so the transcript reads as messages.
+ * footers, turn metadata (✳ Brewed for…, ※ recap).
  */
 const STATUS_LINE =
   /^(?:\[[^\]]*\]\s*│|⏵|⣾|█|Context\s|Usage\s|[·•]\s*\d+\s*shell|✳|※)/;
 
-/** Splits a stripped scrollback read into ordered transcript messages. */
 export function toTranscriptMessages(text: string): TranscriptMessage[] {
   const messages: TranscriptMessage[] = [];
   let pending: { role: TranscriptRole; lines: string[] } | null = null;

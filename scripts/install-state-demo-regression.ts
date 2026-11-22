@@ -33,14 +33,11 @@ const ready = async (page: Page): Promise<void> => {
   await page.locator(".sidebar-footer").waitFor();
   await assertNoSidebarInstall(page);
 };
-// by its words or by a name alone (an icon-only button labelled Install app counts too)
 const assertNoSidebarInstall = async (page: Page): Promise<void> => {
   const sidebar = page.locator(".sidebar-shell");
   assert.equal(await sidebar.getByText(/install app/i).count() + await sidebar.getByRole("button", { name: /install/i }).count(), 0, "the sidebar offers no Install app");
 };
-// installHelp() for desktop Chromium over loopback (src/lib/install.ts)
 const CHROMIUM_HELP = "Use the install icon in the address bar, or the browser menu's Install option.";
-/** Settings → Devices and PCs → More settings → Install, opened in this page. */
 const installRow = async (page: Page): Promise<Locator> => {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(page, "Devices and PCs");
@@ -79,7 +76,6 @@ try {
     catch { return new Response("bad path", { status: 400 }); }
     if (!file || file.endsWith("/")) file += "index.html";
     if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    // the production path the server answers the manifest with (server/static.ts)
     if (file === "manifest.webmanifest") return new Response(manifestBody(manifest, origin), { headers: { "content-type": "application/manifest+json" } });
     const body = Bun.file(join(app, file));
     return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
@@ -112,7 +108,6 @@ try {
       await send(cdp, "PWA.uninstall", { manifestId });
       console.log(`PASS spike: PWA.install and PWA.uninstall accepted in ${headless ? "headless" : "headed"} Chromium ${browser.version()}`);
 
-      // (a) before the install, with no prompt held: no sidebar Install app; Settings says how to install
       const tab = watch(context.pages()[0] ?? await context.newPage());
       await tab.goto(manifestId);
       await ready(tab);
@@ -123,7 +118,6 @@ try {
       await shot(tab, "settings-help");
       console.log("PASS (a) before install, without a prompt: no sidebar Install app, Settings > Install shows the steps");
 
-      // (a2) a prompt: Settings' Install app shows it, once, and no help
       const prompted = watch(await context.newPage());
       await prompted.goto(manifestId);
       await ready(prompted);
@@ -142,7 +136,6 @@ try {
       console.log("PASS (a2) with a prompt: no sidebar Install app, Settings' Install app calls prompt() exactly once and shows no help");
       await prompted.close();
 
-      // (b) installed and launched in its own window: no Install app, Settings says Installed.
       // An install through CDP opens in a tab by default; the user setting makes it a window.
       await send(cdp, "PWA.install", { manifestId, installUrlOrBundleUrl: manifestId });
       await send(cdp, "PWA.changeAppUserSettings", { manifestId, displayMode: "standalone" });

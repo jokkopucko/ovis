@@ -1,0 +1,15 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/…/codex-cap/work
+
+
+
+  Select a review preset
+
+
+› 1. Review against a base branch
+  2. Review uncommitted changes
+  3. Review a commit
+  4. Custom review instructions
+
+  enter select · esc back

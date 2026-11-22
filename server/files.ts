@@ -6,21 +6,17 @@ import { fileTask } from "./file-pool.ts";
 
 const CACHE_MS = 5_000;
 const MAX_ENTRIES = 5_000;
-/** git lists paths cheaply, so a tracked data set of thousands of files does not hide the rest */
 const MAX_GIT_ENTRIES = 100_000;
-/** one folder's share of files, so a folder of thousands leaves room for its siblings; its subfolders are always walked */
 const MAX_FOLDER_ENTRIES = 1_000;
 const MAX_DEPTH = 6;
 const SKIP: Record<string, true> = { ".git": true, node_modules: true, dist: true, target: true, ".venv": true };
 const cache = new Map<string, { expires: number; files: string[] }>();
 
-/** What one git listing may print; past it the listing is not used and the walk answers instead. */
 export const GIT_LIST_MAX_BYTES = 16 * 1024 * 1024;
 /** How long one git listing may run, including a process it left holding its output. */
 export const GIT_LIST_DEADLINE_MS = 3_000;
 
 interface GitListOptions {
-  /** the git to run (a stand-in, in tests) */
   git: string;
   deadlineMs: number;
   maxBytes: number;
@@ -29,7 +25,6 @@ interface GitListOptions {
 const GIT_LIST_DEFAULTS: GitListOptions = { git: "git", deadlineMs: GIT_LIST_DEADLINE_MS, maxBytes: GIT_LIST_MAX_BYTES };
 let gitList = GIT_LIST_DEFAULTS;
 
-/** For tests: a stand-in git, a shorter deadline or a smaller cap. No argument restores the defaults. */
 export function setGitListOptions(options: Partial<GitListOptions> = {}): void {
   gitList = { ...GIT_LIST_DEFAULTS, ...options };
 }
@@ -56,7 +51,6 @@ function listedNames(output: Uint8Array): string[] | null {
   return Buffer.from(output.buffer, output.byteOffset, output.byteLength).toString("utf8").split("\0").filter(Boolean);
 }
 
-/** The listing, at most `limit` names of it; null when git failed, overran its cap or its deadline. */
 async function gitFiles(cwd: string, limit = MAX_GIT_ENTRIES): Promise<string[] | null> {
   const { deadlineMs, maxBytes } = gitList;
   let proc: Bun.Subprocess<"ignore", "pipe", "ignore">;
@@ -98,16 +92,11 @@ async function gitFiles(cwd: string, limit = MAX_GIT_ENTRIES): Promise<string[] 
 
 /**
  * Breadth first, each folder taking at most its share, so one huge folder cannot use up the walk.
- * Synchronous: the lookups here run it on a file thread (`file-pool.ts`).
  */
 export function walkFiles(cwd: string): string[] {
   return walk(cwd).files;
 }
 
-/**
- * The walk: only the files `keep` names are listed and take a folder's share; `cut` says a cap,
- * or the time `until`, left some of the tree unread.
- */
 function walk(cwd: string, keep: (name: string) => boolean = () => true, until = Number.POSITIVE_INFINITY): { files: string[]; cut: boolean } {
   const files: string[] = [];
   let visited = 0;
@@ -151,7 +140,6 @@ function walk(cwd: string, keep: (name: string) => boolean = () => true, until =
     }
     level = next;
   }
-  // folders past the depth or the entry cap were never read
   return { files, cut: cut || level.length > 0 };
 }
 
@@ -199,20 +187,9 @@ export async function paneFiles(cwd: string, query = "", limit = 20): Promise<st
 }
 
 const MARKDOWN_NAME = /\.(?:md|markdown)$/i;
-/** How many Markdown files one listing answers with, the newest. */
 export const MAX_MARKDOWN_DOCUMENTS = 500;
-/**
- * How long one listing reads on its file thread (the Markdown walk outside a repository, then a stat
- * of each file) before it answers with what it read, marked cut: a slow disk holds the thread for
- * this long at most, well inside the long-task deadline.
- */
 export const MARKDOWN_READ_MS = 2_000;
 
-/**
- * The Markdown files of `listed` (paths relative to `cwd`), or of a walk of `cwd` that lists only
- * Markdown files when there is no listing, each with its size and last change. Synchronous: it runs
- * on a file thread (`file-pool.ts`). Past `budgetMs` it stops reading and says the list is cut.
- */
 export function readMarkdownDocuments(cwd: string, listed: string[] | null, budgetMs = MARKDOWN_READ_MS): { documents: MarkdownDocument[]; cut: boolean } {
   const until = Date.now() + budgetMs;
   const found = listed === null ? walk(cwd, (name) => MARKDOWN_NAME.test(name), until) : { files: listed, cut: false };
@@ -226,7 +203,7 @@ export function readMarkdownDocuments(cwd: string, listed: string[] | null, budg
     try {
       const stat = statSync(join(cwd, path));
       if (stat.isFile()) documents.push({ path, size: stat.size, modified: stat.mtime.toISOString() });
-    } catch { /* gone since it was listed, or unreadable: not listed */ }
+    } catch { }
   }
   return { documents, cut };
 }
@@ -240,15 +217,12 @@ export function readMarkdownDocuments(cwd: string, listed: string[] | null, budg
 export async function paneDocuments(cwd: string, signal?: AbortSignal): Promise<PaneDocuments> {
   const listed = await gitFiles(cwd, Number.POSITIVE_INFINITY);
   const { documents, cut } = await fileTask<{ documents: MarkdownDocument[]; cut: boolean }>({ op: "documents", cwd, paths: listed === null ? null : listed.filter((path) => MARKDOWN_NAME.test(path)) }, signal);
-  // ISO times of one form compare as text
   documents.sort((left, right) => left.modified === right.modified ? left.path.localeCompare(right.path) : left.modified < right.modified ? 1 : -1);
   return { root: cwd, documents: documents.slice(0, MAX_MARKDOWN_DOCUMENTS), truncated: cut || documents.length > MAX_MARKDOWN_DOCUMENTS };
 }
 
 const walked = new Map<string, { expires: number; files: string[] }>();
-/** One listing per folder at a time: lookups that arrive while it runs share it rather than start their own git. */
 const listing = new Map<string, Promise<string[]>>();
-/** Raised by clearFileCache: a listing begun before it neither fills the cache nor removes a later listing. */
 let generation = 0;
 
 /**
@@ -266,7 +240,6 @@ export async function filesNamed(cwd: string, name: string, limit = 10, anyForm 
     let shared = listing.get(cwd);
     if (shared === undefined) {
       const begun = generation;
-      // not cut to MAX_GIT_ENTRIES: a name is matched against every path
       const pending: Promise<string[]> = gitFiles(cwd, Infinity).then(async (listed) => {
         const found = [...new Set([...listed ?? [], ...await fileTask<string[]>({ op: "walk", cwd })])];
         if (begun === generation) {

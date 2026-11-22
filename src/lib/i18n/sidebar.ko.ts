@@ -1,7 +1,7 @@
 /**
  * Korean for the keys only the sidebar files use:
  * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
- * components/SidebarSplit.tsx.
+ * components/SidebarSplit.tsx, components/InboxList.tsx, lib/inboxRow.ts.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_KO: Record<string, string> = {
@@ -22,7 +22,6 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Helpers": "도우미",
   "Helpers of {title}": "{title}의 도우미",
   "Fold helpers under their agent": "도우미를 에이전트 아래에 접기",
-  "On this device, an agent's helpers fold under one line below its row in the Agents list, with how many there are. A helper that needs you and the selected one stay in sight.": "이 기기의 에이전트 목록에서 에이전트의 도우미를 그 행 아래 한 줄로 접고 개수를 보여 줍니다. 내 응답이 필요한 도우미와 선택한 도우미는 계속 보입니다.",
   "Background tasks running: {count}": "실행 중인 백그라운드 작업: {count}",
   "Agent waiting on background work": "에이전트가 백그라운드 작업을 기다리는 중",
   "Has a question": "질문 있음",
@@ -34,6 +33,17 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Loading agents…": "에이전트 불러오는 중…",
   "Herdr workspaces": "herdr 워크스페이스",
   "No agents running": "실행 중인 에이전트가 없습니다",
+  "Clear search": "검색어 지우기",
+  "Nothing is running yet": "아직 실행 중인 것이 없습니다",
+  "Couldn't load the list.": "목록을 불러오지 못했습니다.",
+  "Retrying…": "다시 시도하는 중…",
+  "Use + to start a workspace": "+ 버튼으로 워크스페이스를 시작하세요",
+  "No results": "결과 없음",
+  "You: {text}": "나: {text}",
+  "Turn failed": "오류",
+  "Filter by state": "상태로 거르기",
+  "Search agents": "에이전트 검색",
+  "Filter by state: {state}": "상태로 거르기: {state}",
   "Expand worktrees of {name}": "{name}의 워크트리 펼치기",
   "Collapse worktrees of {name}": "{name}의 워크트리 접기",
   "Agents: {names}": "에이전트: {names}",
@@ -66,9 +76,12 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Collapse": "접기",
   "Expand": "펼치기",
   "Working": "실행",
+  "Working, waiting on background work": "실행, 백그라운드 작업 대기 중",
   "Idle": "대기",
   "{count} need you": "응답 필요 {count}개",
   "Agent state unknown": "에이전트 상태 알 수 없음",
   "Move to {group}": "{group}(으)로 옮기기",
   "Remove from {group}": "{group}에서 빼기",
+  "{count} working": "작업 중 {count}개",
+  "On this device, an agent's helpers fold into one line under it in the Agents list, with their count. A helper that needs you and the one you selected stay in sight.": "이 기기의 에이전트 목록에서 에이전트의 도우미들을 그 아래 한 줄로 접고 개수를 보여 줍니다. 내 응답이 필요한 도우미와 선택한 도우미는 계속 보입니다.",
 };

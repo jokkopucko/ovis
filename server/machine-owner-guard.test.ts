@@ -11,7 +11,7 @@ import type { PushService } from "./push.ts";
 import { SshConnection } from "./ssh.ts";
 
 // Every change to this PC's PCs goes through one rule: the owner, from any device he signed in or paired himself, from
-// this app's own page. One table: each management route against each kind of access. Isolated state, port 0, no PC.
+// this app's own page.
 const base: AccessInput = { loopback: true, forwarded: false, funnel: false, tailscaleLogin: null, forwardedFor: null, host: null, tokenMatched: false, device: null, owner: null, tagged: false,
   soleLogin: null, dnsName: null, tailnetIp: null, serveOnly: false, tokenConfigured: false, gated: false };
 const drive = { id: "d1", label: "Phone", role: "drive" as const };
@@ -52,7 +52,6 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 function manager() {
   const dir = mkdtempSync(join(tmpdir(), "ovis-owner-guard-"));
   const reconnect = spyOn(MachineManager.prototype as unknown as { reconnect(): Promise<void> }, "reconnect").mockImplementation(async () => {});
-  // a setup the owner gets through starts no real ssh: its connection refuses at once
   const ssh = spyOn(SshConnection.prototype, "start").mockImplementation(async () => { throw new Error("isolated: no SSH"); });
   const made = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
   cleanups.push(() => { made.stop(); reconnect.mockRestore(); ssh.mockRestore(); rmSync(dir, { recursive: true, force: true }); });

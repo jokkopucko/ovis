@@ -13,9 +13,6 @@ import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
  * the pane's attachment. The pty branch below it refuses a client that is not one; this one
  * did not, so a connection could type into a pane held by someone else's attach.
  *
- * `terminalAttach: false` is the configuration that puts a server on that branch, so the test
- * needs no second PC and no Windows: the mirror path is the one under test.
- *
  * Both cases assert what landed in the pane rather than whether an error arrived: a guard that
  * refused everything would pass an "no error came back" check while breaking the key bar and
  * an older bridge's composer send, which is the regression this narrower guard exists to avoid.
@@ -70,7 +67,6 @@ async function pane(label: string): Promise<string> {
   return created.root_pane.pane_id;
 }
 
-/** What the pane's own screen shows, which is where typed text ends up either way. */
 async function screen(paneId: string): Promise<string> {
   return (await paneRead({ paneId, source: "visible", format: "text" })).text;
 }
@@ -82,16 +78,13 @@ describe("typing into a pane held by another connection", () => {
     const stranger = connect(server.port);
     await until(async () => holder.snapshotted() && stranger.snapshotted(), "both snapshots");
 
-    // one connection attaches the pane; a mirror is ready as soon as it exists
     holder.send({ type: "attach", pane_id: held, cols: 80, rows: 24 });
     await until(async () => holder.ready(held), "the holder's attach to become ready");
 
-    // another connection, which never attached, types into that pane
     const trespass = "typed past someone else's attach";
     stranger.send({ type: "input", pane_id: held, text: trespass });
     await until(async () => stranger.errors().length > 0, "the refusal to reach the stranger");
     expect(stranger.errors()).toEqual(["input_not_ready"]);
-    // the server answers that frame in order, so by now the frame is fully handled
     expect(await screen(held)).not.toContain(trespass);
   });
 

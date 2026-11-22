@@ -1,17 +1,11 @@
-/* The row menu floats over everything that scrolls, and over the phone drawer: the drawer is a
-   layer of its own, and the menu opens from inside it. */
 .row-menu {
   position: fixed;
   z-index: calc(var(--z-drawer) + 1);
-  /* the menu widths by their role (G-153) */
   min-width: var(--menu-w-sm);
   max-width: min(var(--menu-w), calc(100vw - var(--space-4)));
-  /* the popover's max-height comes from the room the anchor leaves (RowMenu.tsx); `.menu` hides
-     its overflow, so the scroll box is here */
   overflow-y: auto;
 }
 
-/* hints that are paths (New workspace's "+N" folders): room for them, and the path, not the name, is cut */
 .row-menu-paths {
   max-width: min(420px, calc(100vw - var(--space-4)));
 }
@@ -30,16 +24,11 @@
   text-align: right;
 }
 
-/* opened from inside a dialog (New workspace's "+N" folders, a link in a file preview), as a
-   popover or a phone's sheet: over every dialog layer, the file viewer's (+1) and Settings over a
-   preview (+2) included, and still under the palette */
 .row-menu.is-over-modal,
 .modal-scrim.is-over-modal {
   z-index: calc(var(--z-modal) + 3);
 }
 
-/* the keyboard's item: the common ring, inside the item so the menu's edge does not clip it (G-038), over the
-   same fill a pointer gives it */
 .row-menu .menu-item:focus-visible {
   outline: var(--ring);
   outline-offset: calc(var(--ring-offset) * -1);
@@ -57,9 +46,6 @@
   color: currentColor;
 }
 
-/* a shared switch a watching device sees but cannot flip (an agent's Mute alerts): its words and
-   mark in the dim text colour, not faded, so they keep AA contrast in both themes; its state still
-   drawn, and a press or a hover changes nothing */
 .row-menu .menu-item.is-disabled,
 .row-sheet-item.is-disabled,
 .row-menu .menu-item.is-disabled svg,
@@ -77,18 +63,48 @@
 
 .row-sheet-item.is-disabled:active { background: transparent; }
 
-/* a picker's item that is what is open now: named in the strong colour, with its mark unfaded */
 .row-menu .menu-item[aria-current="true"],
 .row-sheet-item[aria-current="true"] {
+  background: var(--bg-hover);
   color: var(--text-strong);
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-selected);
 }
 
-/* what the menu is about, above its items: a line of its own, ruled off from them */
+.row-sheet-line.is-current {
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+}
+
+/* forced colors repaint the fill as Canvas: a leading Highlight bar instead, as the sidebar's rows */
+@media (forced-colors: active) {
+  .row-menu .menu-item[aria-current="true"],
+  .row-sheet-item[aria-current="true"] {
+    margin-inline-start: calc(-2 * var(--hairline));
+    border-inline-start: calc(2 * var(--hairline)) solid Highlight;
+  }
+
+  .row-sheet-items {
+    margin-inline: calc(-2 * var(--hairline));
+    padding-inline: calc(2 * var(--hairline));
+  }
+}
+
 .row-menu-header {
   padding: var(--space-2);
   margin-bottom: var(--space-1);
   border-bottom: var(--hairline) solid var(--border);
+}
+
+/* what the row waits for, under the header: a row with no room for it leaves it out whole, and a touch screen too
+   wide for the sheet has no tooltip to say it, so the popover says it, wrapped and whole, as the sheet does */
+.row-menu-alert {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--status-blocked);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .row-menu-divider {
@@ -97,13 +113,10 @@
   background: var(--border);
 }
 
-/* the phone's sheet: a grip, the row's name, then one tall button per action, and Cancel */
 .row-sheet {
   padding: var(--space-2) var(--space-3) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
 }
 
-/* the actions, between the head and Cancel, which stay put: the sheet is held to the screen
-   (`.modal` at <=640px) and hides its overflow, so a tab's menu of a dozen actions scrolls here */
 .row-sheet-items {
   display: flex;
   flex: 1 1 auto;
@@ -113,7 +126,6 @@
   overscroll-behavior: contain;
 }
 
-/* the grip and the head keep their height whatever the list holds (G-048): only the items give way */
 .row-sheet-grip {
   align-self: center;
   flex: 0 0 auto;
@@ -132,8 +144,6 @@
   padding: var(--space-1) var(--space-2) var(--space-3);
 }
 
-/* the sheet is the last place a phone says a row's whole name and place (G-023): both wrap, inside a long
-   path too, and can be selected and copied, the one exception to the sidebar chrome's no-select */
 .row-sheet-title {
   color: var(--text-strong);
   font-size: var(--fs-md);
@@ -153,10 +163,6 @@
   -webkit-touch-callout: default;
 }
 
-/* A row's menu names its target above the items (G-022): the desktop popover covers the row it is for, so the
-   name and the place are said in a compact line of their own; the phone's sheet draws the same node as its
-   title and subtitle (wrapped, selectable: the last place a phone says them whole, G-023). A place that is a
-   branch or a path is in the literal face, told from a name (G-151). */
 .row-menu-target {
   display: flex;
   flex-direction: column;
@@ -200,8 +206,23 @@
   -webkit-touch-callout: default;
 }
 
-/* what the row cut, said whole: it wraps, even inside a long word. Plugin tokens can be dozens of
-   long values, so it scrolls past a third of the screen instead of pushing the actions out */
+/* what the row waits for, in the agent's own words: the first thing under its name and place, in the waiting
+   state's colour, since a one-line row has no room to say it. It wraps and can be copied, as the name can. The
+   words are the agent's, of any length: past a fifth of the screen they scroll here instead of pushing the name
+   and the actions out of the sheet, and a fifth, not the detail's third, since both can be at their limit at once */
+.row-sheet-alert {
+  max-height: 20vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-top: var(--space-1);
+  color: var(--status-blocked);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
 .row-sheet-detail {
   max-height: 30vh;
   overflow-y: auto;
@@ -228,7 +249,6 @@
   cursor: pointer;
 }
 
-/* the label takes the row; a state in words sits at its far end */
 .row-sheet-label {
   flex: 1 1 auto;
   min-width: 0;
@@ -247,7 +267,12 @@
   color: var(--text-dim);
 }
 
-/* an item with a button of its own at its end (a tab list's Close): the item takes the row */
+.row-sheet-item .ovis-mark {
+  flex: 0 0 auto;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
 .row-sheet-line {
   display: flex;
   align-items: stretch;
@@ -286,7 +311,6 @@
 
 .row-sheet-aside:active { outline: none; }
 
-/* the keyboard's item in the sheet: the common ring, inside the item (G-038) */
 .row-sheet-aside:focus-visible,
 .row-sheet-item:focus-visible {
   outline: var(--ring);
@@ -315,13 +339,11 @@
   background: var(--bg-hover);
 }
 
-/* the row fills when pressed, as an iPhone's does: it does not dim as a lone button would (styles.css) */
 .row-sheet-item:active {
   outline: none;
   opacity: 1;
 }
 
-/* Cancel keeps a finger's height however long the list above it is (G-048): the list alone shrinks */
 .row-sheet-cancel {
   flex: 0 0 auto;
   height: var(--touch-target);

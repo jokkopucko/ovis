@@ -37,7 +37,7 @@ afterEach(async () => {
 
 /**
  * A TUI stand-in running as `kiro-cli-chat chat`, whose child runs as `kiro-cli-chat acp`, as Kiro's session
- * process does; resolves once that child runs.
+ * process does.
  */
 async function kiroPane(): Promise<{ tui: number; acp: number }> {
   const dir = await mkdtemp(join(home, "pane-"));
@@ -82,7 +82,6 @@ describe("Kiro session binding", () => {
 
   linuxTest("a Kiro that holds no session yet, and one that was quit, stay on the terminal", async () => {
     const pane = await kiroPane();
-    // the store still has the folder's earlier conversation, which no process holds
     await writeFile(join(sessions, `${OTHER}.jsonl`), await fixture("interactive-2.35.1.jsonl"));
     await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
   });
@@ -102,7 +101,6 @@ describe("Kiro session binding", () => {
   linuxTest("never binds a stale lock, two locks, or a log outside the store", async () => {
     const pane = await kiroPane();
     await writeFile(join(sessions, `${ID}.jsonl`), "");
-    // a lock written before this process started belonged to an earlier one that had its pid
     await lock(ID, pane.acp, new Date(Date.now() - 600_000));
     await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
     await lock(ID, pane.acp);

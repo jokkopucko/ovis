@@ -1,0 +1,195 @@
+import { afterAll, expect, it } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { coreEnvironment, coreStartEnv, envAfterCommand, forCore, loginTerminalEnv, terminalEnvFor, userTerminalEnv } from "./terminal-env.ts";
+
+const dir = mkdtempSync(join(tmpdir(), "ovis-terminal-env-"));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const win = process.platform === "win32";
+
+function homeWith(profile: string): string {
+  const home = mkdtempSync(join(dir, "home-"));
+  writeFileSync(join(home, ".profile"), profile);
+  return home;
+}
+
+const fromAgent = (home: string) => ({
+  HOME: home, PATH: "/usr/bin:/bin", SHELL: "/bin/sh", LANG: "C.UTF-8", SSH_AUTH_SOCK: join(dir, "agent.sock"),
+  TERM: "dumb", COLORTERM: "", NO_COLOR: "1", AGENT_SESSION_VAR: "agent",
+  PORT: "7317", OVIS_TOKEN: "secret", HERDR_PANE_ID: "w1:p1", HC_TERMINAL_ID: "t9",
+});
+
+it.skipIf(win)("gives a terminal the login shell's environment in colour, without the agent's or Ovis's own variables", async () => {
+  // regression: a core an agent's shell started gave every pane its NO_COLOR, and none of the tokens the profile exports
+  const env = await loginTerminalEnv({ env: fromAgent(homeWith("export GH_TOKEN=from-profile\n")), shell: "/bin/sh" });
+  expect(env).toMatchObject({ GH_TOKEN: "from-profile", TERM: "xterm-256color", COLORTERM: "truecolor" });
+  for (const name of ["NO_COLOR", "SSH_AUTH_SOCK", "AGENT_SESSION_VAR", "PORT", "OVIS_TOKEN", "HERDR_PANE_ID", "HC_TERMINAL_ID", "PWD", "OLDPWD", "SHLVL", "_"]) expect(env).not.toHaveProperty(name);
+});
+
+it.skipIf(win)("never hands a terminal BUN_BE_BUN, which the compiled server sets to run its own probe as Bun", async () => {
+  const env = await loginTerminalEnv({ env: fromAgent(homeWith("export BUN_BE_BUN=1 GH_TOKEN=from-profile\n")), shell: "/bin/sh" });
+  expect(env).not.toHaveProperty("BUN_BE_BUN");
+  expect(env["GH_TOKEN"]).toBe("from-profile");
+});
+
+it.skipIf(win)("keeps NO_COLOR when the user's own login sets it", async () => {
+  const env = await loginTerminalEnv({ env: fromAgent(homeWith("export NO_COLOR=yes\n")), shell: "/bin/sh" });
+  expect(env["NO_COLOR"]).toBe("yes");
+});
+
+it.skipIf(win)("still asks for colour when the login shell gives nothing", async () => {
+  expect(await loginTerminalEnv({ env: fromAgent(homeWith("exit 3\n")), shell: "/bin/sh" })).toEqual({ TERM: "xterm-256color", COLORTERM: "truecolor" });
+});
+
+it("turns NO_COLOR off only on a core that has one, and keeps the core's PATH folders after the login's", () => {
+  const terminal = { PATH: "/login/bin:/usr/bin", GH_TOKEN: "t" };
+  expect(forCore(terminal, { PATH: "/usr/bin:/core/tools" })).toEqual({ PATH: "/login/bin:/usr/bin:/core/tools", GH_TOKEN: "t" });
+  expect(forCore(terminal, { NO_COLOR: "1" })).toEqual({ ...terminal, NO_COLOR: "" });
+  expect(forCore({ NO_COLOR: "yes" }, { NO_COLOR: "1" })).toEqual({ NO_COLOR: "yes" });
+  expect(forCore({ GH_TOKEN: "t" }, { PATH: "/core/tools" })).toEqual({ GH_TOKEN: "t" });
+});
+
+it.skipIf(process.platform !== "linux")("fits the terminals to the running core's own environment, else to the one that starts it", async () => {
+  const core = Bun.spawn(["/bin/sh", "-c", "echo started; read _"], { env: { PATH: "/usr/bin:/core/tools", NO_COLOR: "1" }, stdin: "pipe", stdout: "pipe" });
+  try {
+    // a pid is known before its program runs, and until then /proc shows the test's own environment; a real core
+    // has answered by the time it is read, so this one is read once it has said something too
+    await core.stdout.getReader().read();
+    const running = { call: async () => ({ pid: core.pid, holder: null, holders: [] }) } as never;
+    expect(await coreEnvironment(running)).toMatchObject({ PATH: "/usr/bin:/core/tools", NO_COLOR: "1" });
+    expect(await terminalEnvFor(running, { PATH: "/login" }, { PATH: "/starter" })()).toEqual({ PATH: "/login:/usr/bin:/core/tools", NO_COLOR: "" });
+  } finally { core.kill(); await core.exited; }
+  const unreadable = { call: async () => { throw new Error("no core"); } } as never;
+  expect(await terminalEnvFor(unreadable, { PATH: "/login" }, { PATH: "/starter", NO_COLOR: "1" })()).toEqual({ PATH: "/login:/starter", NO_COLOR: "" });
+});
+
+it("reads the environment the core's holder has, which starts its shells", async () => {
+  // regression: on macOS the core itself is a launchd job with launchd's environment; its holder has the starter's
+  const read: number[] = [];
+  const hc = { call: async () => ({ pid: 10, holder: { pid: 11 }, holders: [{ pid: 11 }] }) } as never;
+  await coreEnvironment(hc, async (pid) => { read.push(pid); return {}; });
+  expect(read).toEqual([11]);
+  // no terminal yet, so no holder: Linux's core has the starter's environment, macOS's has launchd's and is not read
+  const fresh = { call: async () => ({ pid: 10, holder: null, holders: [] }) } as never;
+  await coreEnvironment(fresh, async (pid) => { read.push(pid); return {}; }, "linux");
+  expect(await coreEnvironment(fresh, async (pid) => { read.push(pid); return {}; }, "darwin")).toBeNull();
+  expect(read).toEqual([11, 10]);
+  const draining = { call: async () => ({ pid: 10, holder: null, holders: [{ pid: 12, current: false }] }) } as never;
+  await coreEnvironment(draining, async (pid) => { read.push(pid); return {}; }, "linux");
+  expect(await coreEnvironment(draining, async (pid) => { read.push(pid); return {}; }, "darwin")).toBeNull();
+  expect(read).toEqual([11, 10, 10]);
+});
+
+it("asks a macOS core with no holder yet for the environment it runs programs in", async () => {
+  const calls: string[] = [];
+  const printed = (stdout: string, more: Record<string, unknown> = {}) => ({
+    call: async (method: string, params: { argv?: string[] }) => {
+      calls.push(method === "machine.exec" ? `${method} ${params.argv?.join(" ")}` : method);
+      return method === "server.status" ? { pid: 10, holder: null, holders: [] } : { code: 0, timed_out: false, truncated: false, stdout: Buffer.from(stdout).toString("base64"), ...more };
+    },
+  }) as never;
+  const core = printed("PATH=/usr/bin:/core/tools\0NO_COLOR=1\0MULTI=a\nb=c\0");
+  expect(await coreEnvironment(core, async () => { throw new Error("no pid is read"); }, "darwin")).toEqual({ PATH: "/usr/bin:/core/tools", NO_COLOR: "1", MULTI: "a\nb=c" });
+  expect(calls).toEqual(["server.status", "machine.exec /usr/bin/env -0"]);
+  expect(await terminalEnvFor(core, { PATH: "/login" }, { PATH: "/starter" }, (hc) => coreEnvironment(hc, async () => null, "darwin"))()).toEqual({ PATH: "/login:/usr/bin:/core/tools", NO_COLOR: "" });
+  for (const failed of [{ code: 1 }, { timed_out: true }, { truncated: true }]) expect(await coreEnvironment(printed("NO_COLOR=1\0", failed), async () => null, "darwin")).toBeNull();
+});
+
+it("fits each terminal to the core as it is then, so a core restarted with another environment is read again", async () => {
+  const answers: (Record<string, string> | null)[] = [null, { NO_COLOR: "1" }, {}];
+  const env = terminalEnvFor({ call: async () => ({}) } as never, { PATH: "/login" }, {}, async () => answers.shift() ?? null);
+  expect(await env()).toEqual({ PATH: "/login" });
+  expect(await env()).toEqual({ PATH: "/login", NO_COLOR: "" });
+  expect(await env()).toEqual({ PATH: "/login" });
+});
+
+it("reads the variables macOS's ps -wwE prints after the command line", () => {
+  const command = "/Users/u/Library/Application Support/Ovis/bin/herdr-core hold --socket /tmp/x.sock\n";
+  const withEnv = `${command.trimEnd()} HOME=/Users/u NO_COLOR=1 PATH=/usr/bin:/Users/u/My Tools/bin TMPDIR=/var/folders/T/\n`;
+  expect(envAfterCommand(command, withEnv)).toEqual({ HOME: "/Users/u", NO_COLOR: "1", PATH: "/usr/bin:/Users/u/My Tools/bin", TMPDIR: "/var/folders/T/" });
+  expect(envAfterCommand(command, command)).toEqual({});
+  expect(envAfterCommand(command, "/bin/zsh HOME=/x\n")).toBeNull();
+  // a value holding " PATH=" reads as a second PATH: which one is the core's cannot be told
+  expect(envAfterCommand(command, `${command} PATH=/core/bin OPTIONS=debug PATH=/other\n`)).toBeNull();
+});
+
+it.skipIf(win)("runs no bunfig.toml preload of the home folder it reads in", async () => {
+  // regression: started in the home folder, the probe's bun ran a ~/bunfig.toml preload, which could change what it printed
+  const home = homeWith("");
+  writeFileSync(join(home, "preload.ts"), "process.env.FROM_BUNFIG = \"ran\";\n");
+  writeFileSync(join(home, "bunfig.toml"), `preload = ["${join(home, "preload.ts")}"]\n`);
+  expect(await loginTerminalEnv({ env: fromAgent(home), shell: "/bin/sh" })).not.toHaveProperty("FROM_BUNFIG");
+});
+
+it.skipIf(win)("reads a zsh user's settings where ZDOTDIR says", async () => {
+  // regression: ZDOTDIR was not passed to the login shell, so $ZDOTDIR/.zprofile was never read
+  const zdot = mkdtempSync(join(dir, "zdot-"));
+  writeFileSync(join(zdot, ".zprofile"), "export GH_TOKEN=from-zprofile\n");
+  const env = await loginTerminalEnv({ env: { ...fromAgent(homeWith("")), ZDOTDIR: zdot }, shell: standInShell('. "$ZDOTDIR/.zprofile"') });
+  expect(env["GH_TOKEN"]).toBe("from-zprofile");
+  expect(env).not.toHaveProperty("ZDOTDIR");
+});
+
+it.skipIf(win)("reads an exported bash function and a value holding newlines as what they are", async () => {
+  // regression: read line by line, the function's body went into PATH and a value's `API_TOKEN=…` line became a variable
+  // the profile changes PATH itself, so it is sent whatever the host's /etc/profile does
+  const home = homeWith("greet() { echo hi; }\nexport -f greet\nexport MULTI='first\nAPI_TOKEN=inside-a-value'\nexport PATH=\"/fn-test:$PATH\"\n");
+  const env = await loginTerminalEnv({ env: { ...fromAgent(home), SHELL: "/bin/bash" }, shell: "/bin/bash" });
+  expect(env["MULTI"]).toBe("first\nAPI_TOKEN=inside-a-value");
+  expect(env["PATH"]).toStartWith("/fn-test:");
+  expect(env["PATH"]).not.toContain("\n");
+  expect(env).not.toHaveProperty("API_TOKEN");
+  expect(Object.keys(env).filter((name) => name.includes("greet"))).toEqual([]);
+});
+
+it.skipIf(win)("keeps the probe's own agent, tty and session out of the panes", async () => {
+  // regression: `eval $(ssh-agent)` in the profile gave every pane the probe's keyless agent, GPG_TTY read "not a tty"
+  const home = homeWith(`export SSH_AUTH_SOCK=${join(dir, "probe.sock")} SSH_AGENT_PID=123 GPG_TTY='not a tty' DISPLAY=:9 GH_TOKEN=from-profile\n`);
+  const env = await loginTerminalEnv({ env: fromAgent(home), shell: "/bin/sh" });
+  expect(env["GH_TOKEN"]).toBe("from-profile");
+  for (const name of ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_TTY", "DISPLAY"]) expect(env).not.toHaveProperty(name);
+});
+
+function standInShell(setup: string): string {
+  const shell = join(mkdtempSync(join(dir, "shell-")), "sh");
+  writeFileSync(shell, `#!/bin/sh\n${setup}\nexec /bin/sh -c "$3"\n`);
+  chmodSync(shell, 0o755);
+  return shell;
+}
+
+it.skipIf(win)("gives no value the login shell left as this server had it, so a pane keeps the core's own", async () => {
+  const env = fromAgent(homeWith(""));
+  const unchanged = await loginTerminalEnv({ env, shell: standInShell("") });
+  for (const name of ["PATH", "LANG", "HOME", "SHELL"]) expect(unchanged).not.toHaveProperty(name);
+  const changed = await loginTerminalEnv({ env, shell: standInShell("export PATH=/user/tools:$PATH LANG=ko_KR.UTF-8") });
+  expect(changed).toMatchObject({ PATH: "/user/tools:/usr/bin:/bin", LANG: "ko_KR.UTF-8" });
+});
+
+it.skipIf(win)("reads no .env of the folder this server runs in", async () => {
+  // regression: the probe's `bun -e` loaded the server folder's .env into what every pane got
+  const folder = mkdtempSync(join(dir, "checkout-"));
+  writeFileSync(join(folder, ".env"), "FROM_DOT_ENV=leaked\n");
+  const before = process.cwd();
+  process.chdir(folder);
+  try {
+    expect(await loginTerminalEnv({ env: fromAgent(homeWith("")), shell: standInShell("") })).not.toHaveProperty("FROM_DOT_ENV");
+  } finally { process.chdir(before); }
+});
+
+it.skipIf(win)("reads the login shell again after it gave nothing, and keeps what it gave once it did", async () => {
+  const home = homeWith(`[ -e "$HOME/ready" ] || exit 3\nexport GH_TOKEN="$(cat "$HOME/ready")"\n`);
+  const env = { ...fromAgent(home), SHELL: "/bin/sh" };
+  expect(await userTerminalEnv(env)).not.toHaveProperty("GH_TOKEN");
+  writeFileSync(join(home, "ready"), "first");
+  expect((await userTerminalEnv(env))["GH_TOKEN"]).toBe("first");
+  writeFileSync(join(home, "ready"), "second");
+  expect((await userTerminalEnv(env))["GH_TOKEN"]).toBe("first");
+});
+
+it("starts a core in the terminal environment, found where the server's own variables say", () => {
+  const server = { HOME: "/home/u", HC_SESSION: "s", HC_SOCKET: "/r/hc.sock", XDG_RUNTIME_DIR: "/r", XDG_STATE_HOME: "/st", NO_COLOR: "1", PATH: "/a" };
+  // the profile's XDG_CONFIG_HOME, which the server has none of, would point hc at another core's settings (hc then defaults it from HOME)
+  const terminal = { HOME: "/elsewhere", XDG_RUNTIME_DIR: "/x", XDG_STATE_HOME: "/y", XDG_CONFIG_HOME: "/z", HC_SESSION: "other", NO_COLOR: "", PATH: "/b", GH_TOKEN: "from-profile" };
+  expect(coreStartEnv(server, terminal)).toEqual({ ...server, NO_COLOR: "", PATH: "/b:/a", GH_TOKEN: "from-profile" });
+});

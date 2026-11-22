@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pagePolicy } from "../server/file-view.ts";
 import { shellContentSecurityPolicy } from "../server/static.ts";
 import { REGIONAL_APPS } from "../shared/relay-regions.ts";
 import { applyHeaders, loadPagesSite, pagesResponse, parseHeaders, parseRedirects, pathPattern, redirectFor } from "./pages-static.ts";
-import { shellHeaders, shellRedirects } from "./shell-build.ts";
+import { shellFiles, shellHeaders, shellRedirects } from "./shell-build.ts";
 
 const ID = "ab".repeat(16);
 
@@ -78,9 +78,32 @@ describe("the loopback Pages server", () => {
     const slashless = await get(`/s/${ID}`);
     expect(slashless.status).toBe(301);
     expect(slashless.headers.get("location")).toBe(`/s/${ID}/`);
-    expect((await get(`/s/${ID}/~render`)).status).toBe(404);
-    expect((await get("/_headers")).status).toBe(404);
+    // no render.html here, and no 404.html: Pages answers what it lacks with the page, as a single-page app
+    expect(await (await get(`/s/${ID}/~render`)).text()).toContain("shell");
+    expect(await (await get("/_headers")).text()).not.toContain("Cache-Control");
     expect((await get("/assets/a.js")).headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
-    expect((await get("/assets/missing.js")).status).toBe(404);
+    const fallback = await get("/assets/missing.js");
+    expect([fallback.status, fallback.headers.get("content-type")]).toEqual([200, "text/html; charset=utf-8"]);
+  });
+
+  it("answers a hashed file the shell's deployment lacks with a 404 no browser keeps, never the page under the assets' caching", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pages-static-"));
+    dirs.push(dir);
+    const manifest = readFileSync(join(import.meta.dir, "..", "public", "manifest.webmanifest"), "utf8");
+    for (const [name, content] of Object.entries({ ...shellFiles(manifest), "index.html": "<!doctype html><title>shell</title>", "assets/shell-a.css": ".a{}" })) {
+      mkdirSync(join(dir, name, ".."), { recursive: true });
+      writeFileSync(join(dir, name), content);
+    }
+    const site = loadPagesSite(dir);
+    const get = (path: string) => pagesResponse(site, new Request(`https://app.ovis.sh${path}`));
+    for (const path of ["/assets/shell-gone.css", "/assets/index-gone.js"]) {
+      const missing = await get(path);
+      expect([missing.status, missing.headers.get("cache-control")]).toEqual([404, "no-store"]);
+    }
+    const present = await get("/assets/shell-a.css");
+    expect([present.status, present.headers.get("content-type"), present.headers.get("cache-control")]).toEqual([200, "text/css; charset=utf-8", "public, max-age=31536000, immutable"]);
+    // outside /assets/ a missing path is still the page, as the shell's front page has always been answered
+    const page = await get("/pair");
+    expect([page.status, page.headers.get("cache-control")]).toEqual([200, null]);
   });
 });

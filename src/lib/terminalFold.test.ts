@@ -4,7 +4,6 @@ import { cellStyle, columnAt, contrastRatio, dimmedColor, paletteColor, readable
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
-/** A grid row of plain cells: what rowHtml reads of xterm's buffer, palette colours only. */
 function line(cells: Cell[], cols: number): IBufferLine {
   const at = (x: number): Cell => cells[x] ?? { chars: "" };
   const cell = (x: number): IBufferCell => {
@@ -126,10 +125,8 @@ describe("the folded view of a mirrored grid", () => {
     const theme = { foreground: "#eeeeee", background: "#111111", cursor: "#ff0000", cursorAccent: "#000000" };
     expect(rowHtml(line(plain("abc"), 6), 6, theme, scratch, 1, { x: 1, shape: "block" }))
       .toBe('a<span class="terminal-fold-cursor" style="background:#ff0000;color:#000000;">b</span>c');
-    // a shell's prompt ends in a blank the caret stands after
     expect(rowHtml(line(plain("ab"), 6), 6, theme, scratch, 1, { x: 3, shape: "outline" }))
       .toBe('ab <span class="terminal-fold-cursor" style="box-shadow:inset 0 0 0 1px #ff0000;"> </span>');
-    // on the second half of a wide glyph: the glyph is the cursor's
     expect(rowHtml(line([{ chars: "한", width: 2 }, { chars: "", width: 0 }, { chars: "x" }], 3), 3, theme, scratch, 1, { x: 1, shape: "none" }))
       .toBe('<span class="terminal-fold-cursor">한</span>x');
     // a write that filled the row: the cursor waits past the last column, and stands on the last cell
@@ -150,7 +147,6 @@ describe("the folded view of a mirrored grid", () => {
       expect(heard).toBe(2);
       wideGrids.set(first, null);
       expect(wideGrids.snapshot().has(pane)).toBe(true);
-      // the other terminal moved on to another pane: this one is no longer wide anywhere
       wideGrids.set(second, wideGridKey("pc", "w1:p2"));
       expect(wideGrids.snapshot().has(pane)).toBe(false);
       wideGrids.set(second, null);

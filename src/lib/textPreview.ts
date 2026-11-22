@@ -1,9 +1,7 @@
 import type { InlineNode, MarkdownBlock } from "../../shared/markdown.ts";
 
-/** How the viewer shows a text file: chosen in its header, Preview unless the user asked for the source. */
 export type TextViewMode = "preview" | "code";
 
-/** Whether a file in `language` has a rendered Preview besides its source: Markdown does. */
 export function hasPreview(language: string | null): boolean {
   return language === "markdown";
 }
@@ -23,11 +21,6 @@ export const PREVIEW_ELEMENT_LIMIT = 60_000;
  */
 const MATH_ELEMENTS_PER_CHAR = 5;
 
-/**
- * How many elements inline nodes draw, never fewer than `Markdown.tsx` draws: plain text is a span
- * with a button for each path in it (a path has a `/`, so its slashes bound them), code a `<code>`
- * that may be a path's button, and math its KaTeX.
- */
 function inlineElements(nodes: readonly InlineNode[]): number {
   let count = 0;
   for (const node of nodes) {
@@ -40,13 +33,7 @@ function inlineElements(nodes: readonly InlineNode[]): number {
   return count;
 }
 
-/**
- * At least how many elements `blocks` draw as a Preview: each block, line, list item (a task's box
- * and its tick too) and table row and cell with its inline elements, a code block as the lines it
- * shows folded (at most 30), and a math block as its KaTeX.
- */
 export function previewElements(blocks: readonly MarkdownBlock[]): number {
-  // the Preview's own `.markdown` box
   return 1 + blockElements(blocks);
 }
 
@@ -57,10 +44,6 @@ export function previewElements(blocks: readonly MarkdownBlock[]): number {
  */
 export const PREVIEW_CHUNK_ELEMENTS = 2_000;
 
-/**
- * `blocks` in runs of whole top-level blocks of at most `limit` elements each (a block larger than
- * the limit is a run of its own), in order; nothing is dropped and no block is split.
- */
 export function previewChunks(blocks: readonly MarkdownBlock[], limit = PREVIEW_CHUNK_ELEMENTS): MarkdownBlock[][] {
   const chunks: MarkdownBlock[][] = [];
   let chunk: MarkdownBlock[] = [];

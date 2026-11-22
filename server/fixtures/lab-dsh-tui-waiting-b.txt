@@ -1,0 +1,39 @@
+
+                                            █   █  █▀▀▀   █▀▀▀   █▄▄▄▀   ▀▀▀▄  █▀▀▀   █▀▀▀   ██
+                        ▄▀▄       ▄         █   █  █      █      █          █  █      █      █ █
+                        ▀▀▀▀▄  ▄▄▀▀▀        █▄▄▄▀  █▄▄▄▄  █▄▄▄▄  █      █▄▄▄▀  █▄▄▄▄  █▄▄▄▄  █   █
+        ▄▄▄▄▄▄▄▄▄       ▀▀▀▀▀▀▀▀▀▀▀▀
+      ▄▀▀▀▀▀▀▀▀▀▀▀▀▄▄     ▀▀▀▀▀▀▀▀▀         █   █    ▄▀▄    █▀▀▀▄   █   █   █▀▀▀▀   █▀▀▀▀   █▀▀▀▀
+    ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄  ▄▀▀▀▀▀            █   █   █   █   █   █   ██  █   █       █       █
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀            █▀▀▀█   █▀▀▀█   █▄▄▄▀   █ █ █   █▀▀▀     ▀▀▀▄    ▀▀▀▄
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀             █   █   █   █   █ █     █  ██   █           █       █
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀              █   █   █   █   █   █   █   █   █▄▄▄▄   █▄▄▄▀   █▄▄▄▀
+     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀               claude-haiku-5-5
+       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄              /home/user/scratch/lab-dsh-tui
+          ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀              Tip: /preset switches the kernel agent preset: standard/ptc/minimal/cordis…
+
+          Explore the uncharted!
+
+  ❯ Use your tool for asking the user a question to ask me ONE multiple-choice question: 'Which color?' with
+    options red, green, blue. Wait for my answer, then reply with just the color.
+
+  ● ⏵ Asking you which color you want, then I'll reply with just that color.
+
+  🌓 Checking with you · 58s · ↑ 11.3k · ↓ 18 tokens
+
+    ─────────────────────────────────────────────▾  📋 Question 1/1   ─────────────────────────────────────────────
+
+    ◈ Color
+    Which color?
+
+
+    ❯● red
+     ○ green
+     ○ blue
+     ✎ Custom answer： Type directly…
+
+    ↑/↓ select · Ctrl+V paste · Type text to attach an answer · Enter submit · Esc cancel · Ctrl+K to fold / click
+    the header
+                                                                                                       11k/200k 5.7%
+   claude-haiku-5-5 · cache 83.8% · lab-dsh-tui                                                  ctx 5.7% (11k/200k)
+   esc to interrupt

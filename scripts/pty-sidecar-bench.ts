@@ -37,7 +37,6 @@ const outAt = process.argv.indexOf("--out");
 const OUT = outAt === -1 ? null : process.argv[outAt + 1] ?? null;
 
 assert.equal(process.platform, "linux", "the host's CPU and memory are read from /proc");
-/** the binary PtySession runs for OVIS_PTY_SIDECAR=rust: OVIS_PTY_SIDECAR_BIN, else the release build */
 const RUST_HOST = rustSidecar({ ...process.env, OVIS_PTY_SIDECAR: "rust" }) ?? "";
 assert.ok(RUST_HOST, `build the Rust host first (${RUST_SIDECAR_BUILD}) or set OVIS_PTY_SIDECAR_BIN`);
 const TICK_MS = 1000 / Number(Bun.spawnSync(["getconf", "CLK_TCK"]).stdout.toString().trim() || 100);
@@ -66,7 +65,6 @@ function statusKiB(pid: number, key: "VmRSS" | "VmHWM"): number {
 function childrenOf(parent: number): number[] {
   return readdirSync("/proc").filter((name) => /^\d+$/.test(name)).map(Number).filter((pid) => stat(pid)?.[1] === String(parent));
 }
-/** The host process a session just spawned: this process's child running that host. */
 function hostPid(host: Host, known: Set<number>): number {
   const marker = host === "rust" ? RUST_HOST : "pty-host.mjs";
   const pid = childrenOf(process.pid).find((candidate) => !known.has(candidate) && readFileSync(`/proc/${candidate}/cmdline`, "utf8").includes(marker));
@@ -127,7 +125,6 @@ function summary(values: number[]) {
   return { n: sorted.length, p50: round(at(50)), p95: round(at(95)), mean: round(sorted.reduce((sum, value) => sum + value, 0) / sorted.length), min: round(sorted[0]!), max: round(sorted.at(-1)!) };
 }
 
-/** Warm-up rounds first (not counted), then `rounds` alternating rounds of each host. */
 async function alternate<T>(rounds: number, warmups: number, once: (host: Host) => Promise<T>): Promise<Record<Host, T[]>> {
   const results: Record<Host, T[]> = { node: [], rust: [] };
   for (let round = 0; round < warmups + rounds; round++) {
@@ -142,7 +139,6 @@ async function alternate<T>(rounds: number, warmups: number, once: (host: Host) 
 
 const SH = ["sh", "-c"];
 
-/** Spawn until the command's first byte, then kill until `exited` (the server's re-attach gate). */
 async function startupAndTeardown() {
   const raw = await alternate(ROUNDS, 3, async (host) => {
     const began = performance.now();
@@ -157,7 +153,6 @@ async function startupAndTeardown() {
   }]));
 }
 
-/** One byte into a raw, non-echoing pty that `cat` sends back: write until it is read back, one at a time. */
 async function echo() {
   const result: Record<string, unknown> = {};
   for (const host of HOSTS) {
@@ -179,20 +174,17 @@ async function echo() {
   return result;
 }
 
-/** UTF-8 text with colours and long lines, as an agent's terminal prints it: exactly 1 MiB. */
 function block(): Buffer {
   const line = "\x1b[32m✓\x1b[0m 한글 출력 🙂 emoji \x1b[1;34mbold blue\x1b[0m path/to/some/file.ts:123:45 ".repeat(3) + "\r\n";
   let text = "";
   while (Buffer.byteLength(text) < 1024 * 1024) text += line;
   let bytes = Buffer.from(text);
-  // cut back to 1 MiB on a character boundary, padded with ASCII
   let cut = 1024 * 1024;
   while ((bytes[cut]! & 0xc0) === 0x80) cut--;
   bytes = Buffer.concat([bytes.subarray(0, cut), Buffer.alloc(1024 * 1024 - cut, 0x2e)]);
   return bytes;
 }
 
-/** MIB MiB through the pty with output processing off (bytes arrive as written), hashed at the far end. */
 async function throughput(file: string, expected: string) {
   const raw = await alternate(3, 1, async (host) => {
     const hash = createHash("sha256");
@@ -250,7 +242,6 @@ async function throughput(file: string, expected: string) {
   }));
 }
 
-/** IDLE hosts each running an idle `cat`: their resident memory, and their CPU over a quiet window. */
 async function idle() {
   const result: Record<string, unknown> = {};
   for (const host of HOSTS) {
@@ -273,7 +264,6 @@ async function idle() {
   return result;
 }
 
-/** A real attach in the isolated test session: first paint, typed input reaching the shell, teardown. */
 async function attach() {
   const socket = herdrSocketPath();
   if (socket !== testSocketPath()) return { skipped: `HERDR_SOCKET is not the isolated test session (${socket})` };
@@ -293,7 +283,6 @@ async function attach() {
         await bench.until("first paint", (output) => output.length > 0);
         const paint = performance.now() - began;
         const probe = `PROBE_${host}_${crypto.randomUUID().slice(0, 8)}`;
-        // the shell takes keys once its prompt is up: resend until the probe comes back
         for (let attempt = 0; attempt < 20 && !stripVTControlCharacters(bench.output()).includes(`${probe}_한글🙂`); attempt++) {
           bench.session.write(`printf '%s_%s\\n' ${probe} '한글🙂'\r`);
           await bench.until("probe", (output) => stripVTControlCharacters(output).includes(`${probe}_한글🙂`), 1000).catch(() => {});

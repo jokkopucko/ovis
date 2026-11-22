@@ -9,16 +9,8 @@ import { ConversationUnavailable, HistoryChanged, MAX_PAGE_PROMPTS, type Convers
  */
 export const SEARCH_PAGES = 20;
 export const SEARCH_MS = 1000;
-/** past this many matches an answer stops at the end of its page: the list has plenty to show */
 export const SEARCH_MATCHES = 50;
 
-/**
- * Searches the pane's conversation through the pages the chat reads (`read`: paneConversation,
- * so every agent's transcript is searched as its chat shows it), from the newest page or from the
- * page before `before`, until the beginning or one answer's budget. `historyId` holds the search
- * to the history it began on: a page from another one is HistoryChanged, and so is a conversation
- * gone after a page of it was searched (ConversationUnavailable is for a pane with none at all).
- */
 export async function searchConversationPages(read: (page: ConversationPage) => Promise<RecognizedConversation>, pattern: RegExp,
   { before, historyId }: { before?: string; historyId?: string }, now: () => number = () => performance.now()): Promise<ConversationSearchResponse> {
   const started = now();
@@ -27,7 +19,6 @@ export async function searchConversationPages(read: (page: ConversationPage) => 
   let history = historyId;
   for (let pages = 1; ; pages++) {
     const page = await read({ ...(cursor === undefined ? {} : { before: cursor }), prompts: MAX_PAGE_PROMPTS }).catch((error: unknown) => {
-      // no matches and no cursor would say the whole conversation was searched
       throw error instanceof ConversationUnavailable && cursor !== undefined ? new HistoryChanged() : error;
     });
     if (history !== undefined && page.history_id !== history) throw new HistoryChanged();

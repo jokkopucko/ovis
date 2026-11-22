@@ -1,20 +1,15 @@
-/**
- * Todo 17: two real PCs, a remote bridge, one shell origin, and the real encrypted relay.
- * Run after both builds, with FFMPEG pointing at ffmpeg and an isolated HERDR_TEST_SESSION.
- * Reuses the shell QA's Pages host and WebSocket bridge. All waits name an event; the browser
- * clock is frozen, so a readiness check cannot accidentally win by letting a timer elapse.
- */
+/** Run after both builds, with FFMPEG pointing at ffmpeg and an isolated HERDR_TEST_SESSION. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import { fileInfo, fileResponse, pagePolicy } from "../server/file-view.ts";
-import { herdrRpc, sessionSnapshot, subscribeEvents, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { opencodeImage } from "../server/opencode.ts";
 import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 import { relayResourcePath } from "../shared/relay-mux.ts";
@@ -25,8 +20,8 @@ import { chromePath } from "./chrome-path.ts";
 import { loadPagesSite, pagesResponse } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
+import { startRelayMediaOpenCode } from "./relay-media-opencode.ts";
 
-/** Todo 17's two-PC resource proof, against `tree`'s server (relay-e2e-regression.ts runs it too). */
 export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");
@@ -66,7 +61,6 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     }), `positive Range on ${pc}`);
   }
 
-  // Every full-page read opens a client/data pair, all from the same loopback address.
   const relay = startBunRelay({ port: 0 });
   const relayAddress = (address: string): string => {
     const url = new URL(address);
@@ -98,7 +92,6 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   mkdirSync(remoteDir);
   let remote: ReturnType<typeof Bun.serve> | undefined;
 
-  /** Three independent blocked operations, reported only after the attempted fetch settles. */
   const attack = (id: string): string => `(async () => {
     if (document.body) document.body.dataset.ran = "1";
     const result = {};
@@ -115,7 +108,6 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     copyFileSync(join(repo, "public/icons/icon-192.png"), join(dir, "picture.png"));
     copyFileSync(video, join(dir, "seek.mp4"));
     writeFileSync(join(dir, "large.pdf"), Buffer.alloc(70 * 1024 * 1024));
-    // A valid single-page PDF, generated in the same real browser rather than a fake PDF MIME.
     const pdfPage = await browser.newPage();
     await pdfPage.setContent(`<h1>${name}</h1>`);
     await pdfPage.pdf({ path: join(dir, "document.pdf") });
@@ -134,23 +126,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     workspaces.push(workspace.workspace.workspace_id);
     const pane = workspace.root_pane.pane_id;
     // A session report is accepted only while the actual foreground process holds the pane.
-    const standIn = join(dir, "opencode");
-    writeFileSync(standIn, "#!/bin/sh\nwhile read -r line; do :; done\n");
-    chmodSync(standIn, 0o755);
-    const watching = Promise.withResolvers<void>();
-    const running = Promise.withResolvers<void>();
-    const subscription = subscribeEvents([{ type: "pane.updated", pane_id: pane }, { type: "pane.agent_status_changed", pane_id: pane }], {
-      onStarted: watching.resolve,
-      onError: running.reject,
-      onEvent: () => { void sessionSnapshot().then((snapshot) => {
-        if (snapshot.panes.some((candidate) => candidate.pane_id === pane && candidate.agent === "opencode")) running.resolve();
-      }, running.reject); },
-    });
-    try {
-      await bounded(watching.promise, "agent event subscription");
-      await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${JSON.stringify(standIn)}\n` });
-      await bounded(running.promise, "stand-in OpenCode foreground process");
-    } finally { subscription.close(); }
+    await startRelayMediaOpenCode(pane, dir);
     await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:opencode", agent: "opencode",
       agent_session_id: "ses_media", session_start_source: "select" });
     const reported = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane);
@@ -162,10 +138,9 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) synced.resolve(); });
       return socket;
     } });
-    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, opencodeDb: dbPath });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, opencodeDb: dbPath, accountOpensAll: false });
     const logger = app.context.services.requestLog;
     const handle = logger.handle.bind(logger);
-    // Observe the real dispatcher, without changing any response or endpoint behavior.
     logger.handle = async (request, dispatch) => {
       record(name, request);
       let response = await handle(request, dispatch);
@@ -258,14 +233,10 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     const offer = decodeOffer(p.service.offer().url);
     assert.ok(offer);
     await navigate(page, encodeOffer({ ...offer, name: p.name }, origin));
-    await page.getByRole("button", { name: "Pair", exact: true }).click({ force: true });
-    // a first pairing stops at Ready: nothing opens until Open PC (lib/relay/shell.tsx)
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app");
     const paired = page.waitForEvent("framenavigated", { predicate: (frame) => frame === page.mainFrame() && !frame.url().includes("#offer=") });
-    await Promise.all([paired, ready.getByRole("button", { name: "Open PC" }).click()]);
+    await Promise.all([paired, page.getByRole("button", { name: "Pair", exact: true }).click({ force: true })]);
     await page.locator(".app").waitFor();
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint after a pairing");
     return page;
   }
   async function controlled(page: Page): Promise<void> {
@@ -277,12 +248,25 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   }
   async function read(page: Page, p: typeof pcs[number], name: string, machine = "local"): Promise<void> {
     const path = machine === "local" ? join(p.dir, name) : `/remote/${name}`;
-    // each file is a load of its own, as a tab opened on its link is: the reader's address differs
-    // from the page's only in its fragment (lib/pageQuery.ts), and a reader already up would take
-    // a file of the same PC in place, leaving the last file's elements for a moment
     await page.goto("about:blank");
     await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`, "relay"));
     await page.locator(".file-reader").waitFor();
+  }
+  /**
+   * A page over the relay is drawn without its scripts first: the render host puts it in a frame of its own that
+   * runs none, and nothing in it has run. The press runs it in the render host itself.
+   */
+  async function runPageScripts(page: Page, heading: string): Promise<void> {
+    const host = page.locator("iframe.file-viewer-page");
+    await host.waitFor();
+    assert.equal(await host.getAttribute("data-page-scripts"), "off");
+    const still = page.frameLocator("iframe.file-viewer-page").locator("iframe");
+    await still.waitFor();
+    assert.equal(await still.getAttribute("sandbox"), "", "the page's own frame allows no script");
+    assert.ok((await still.getAttribute("srcdoc") ?? "").includes(heading), "and holds the page");
+    assert.equal(await page.evaluate(() => (window as Window & { isolationResults?: unknown[] }).isolationResults?.length ?? 0), 0, "no script of the page ran before the press");
+    await page.getByRole("button", { name: "Run scripts", exact: true }).click();
+    await page.locator('iframe.file-viewer-page[data-page-scripts="on"]').waitFor();
   }
   async function image(page: Page): Promise<void> {
     const picture = page.locator("img.file-viewer-media[src]");
@@ -422,10 +406,10 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       note(`${p.name}: attachment image decoded`);
       await pdf(page, p);
       await read(page, p, "page.html");
+      await runPageScripts(page, `${p.name} rendered`);
       isolated(await isolation(page));
       assert.equal(await page.frameLocator("iframe.file-viewer-page").locator("body").getAttribute("data-ran"), "1");
       assert.equal(await page.frameLocator("iframe.file-viewer-page").locator("h1").textContent(), `${p.name} rendered`);
-      // document.write has completed but a frozen clock has not painted the child frame yet.
       await page.frameLocator("iframe.file-viewer-page").locator("body").evaluate(() => {
         Object.defineProperty(window, "painted", { value: new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) });
       });
@@ -451,7 +435,6 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       const paired = blob ? await pair(ctx, first) : tabs[0];
       assert.ok(paired);
       if (blob) await closePage(paired);
-      // Pairing is shared in IndexedDB, but a download/PDF and its teardown own only their page.
       const check = async (run: (page: Page) => Promise<void>): Promise<void> => {
         const page = blob ? await mediaPage(ctx) : paired;
         try { await run(page); }
@@ -459,6 +442,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       };
       await check(async (page) => {
         await read(page, first, "page.html");
+        await runPageScripts(page, `${first.name} rendered`);
         isolated(await isolation(page));
       });
       await check(async (page) => {
@@ -474,7 +458,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         await page.evaluate((html) => {
           const frame = document.createElement("iframe");
           frame.sandbox.add("allow-scripts");
-          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html }, "*"); };
+          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html, scripts: true }, "*"); };
           frame.src = `${location.pathname}~render`;
           document.body.append(frame);
         }, `<!doctype html><body>${svg}</body>`);
@@ -532,8 +516,6 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
               }
             }, { capture: true });
           });
-          // The whole body may still be downloading at the locator deadline. Observe native
-          // readiness before asserting its source; the command's timeout bounds the whole run.
           await Promise.all([metadata.promise, read(page, first, "seek.mp4")]);
           const video = page.locator('video[src^="blob:"]');
           await video.waitFor();
@@ -561,7 +543,6 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       }
     }
 
-    // The installed app's Copy link must survive the originating tab closing, in either mode.
     {
       const ctx = await context(true);
       await ctx.addInitScript(() => {
@@ -589,6 +570,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       const opened = await mediaPage(ctx);
       assert.ok(href);
       await navigate(opened, href);
+      await runPageScripts(opened, `${first.name} rendered`);
       isolated(await isolation(opened));
       note("copy link: installed blob-mode file viewer copied a stable reader URL; a new tab opened it with its own channel");
       await closeContext(ctx);

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
+import { IME_INITIAL_ATTACH_TIMEOUT, resetImeInput, selectImePane, waitForImeTerminal } from "./terminal-ime-ready.ts";
 
-/** Replay Safari replacement edits and assert emitted bytes, commit order and pane isolation. */
 export async function checkSafariIme(browser: Browser, origin: string, pane: string, otherPane: string): Promise<void> {
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/26.6.2 Safari/605.1.15",
@@ -33,9 +33,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
   const page = await context.newPage();
   const sent: Array<{ pane_id: string; text: string }> = [];
   const signals = new EventEmitter();
-  // subscribed before the action that produces it, bounded so a lost frame fails the run
   const signal = (name: string) => once(signals, name, { signal: AbortSignal.timeout(10_000) });
-  // frames as if the server sent them (a lost attachment), and frames the page did not type (a role change)
   let toPage = (_frame: object): void => {};
   let toServer = (_frame: object): void => {};
   // a liveness probe's pings, held back while set: input is refused until their pong
@@ -50,7 +48,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     server.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
       if (frame.type === "pong") signals.emit("pong");
-      if (frame.type === "input-ready" && frame.ready !== false) signals.emit("ready");
       if (frame.type === "role-ack") signals.emit(`role:${frame.mode}`);
       socket.send(raw);
     });
@@ -63,10 +60,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
   });
   const input = page.locator(".pane-frame.is-current .xterm-helper-textarea");
   const reset = async () => {
-    const ready = signal("ready");
-    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
-    await ready;
-    await input.focus();
+    await resetImeInput(page, pane);
     sent.length = 0;
   };
   // Safari 26.6.2 edits the DOM BEFORE keydown 229, with no composition events. Each
@@ -108,7 +102,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     assert.equal(sent.map((frame) => frame.text).join(""), expected + "\x07", label);
     assert(sent.every((frame) => frame.pane_id === owner), `input stays with its pane ${owner}: ${JSON.stringify(sent)}`);
   };
-  // the pane and the exact bytes a named assertion saw, JSON-escaped
   const report = (label: string, owner = pane) => console.log(`  ok ${label}: pane ${owner} bytes ${JSON.stringify(sent.map((frame) => frame.text).join(""))}`);
   // Dictation (and Safari's text replacement) replaces its hypothesis in place: each one an
   // insertReplacementText over the previous one, with no composition events. withKey adds the
@@ -153,8 +146,9 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     box.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data }));
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }, data);
-  const selected = (owner: string) => page.waitForFunction((owner) => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.pane_id === owner, owner);
   try {
+    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`, { waitUntil: "domcontentloaded" });
+    await waitForImeTerminal(page, pane, IME_INITIAL_ATTACH_TIMEOUT);
     await reset();
     await input.press("a"); await input.press("b"); await input.press("c");
     await syllable(["ㅎ", "하", "한"]);
@@ -209,7 +203,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await check("하\x7f", "Backspace after blur finalizes an edit awaiting keydown sends one DEL");
 
     // Backspace and Delete may report their own keyCode, before or after Safari's edit.
-    // Every case runs and every failure is reported together.
     const failures: string[] = [];
     const variant = async (run: () => Promise<void>) => {
       try { await run(); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
@@ -276,13 +269,10 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
 
     await reset(); await syllable(["ㅎ", "하", "한"]);
     // A programmatic pane change does not blur first: reset must cancel pending text.
-    let switched = signal("ready");
-    await page.locator(`.pane-select[title^="${otherPane} —"]`).first().evaluate((node: HTMLElement) => node.click());
-    await selected(otherPane);
-    await switched;
+    await selectImePane(page, otherPane);
     await check("", "pending Safari text cannot enter another pane", otherPane);
+    await selectImePane(page, pane);
 
-    // Dictation: the hypotheses stay in the field, and the corrected phrase is sent once.
     const hypotheses = ["thi", "this", "this is", "this is a test", "This is a test."];
     for (const withKey of [false, true]) {
       await reset();
@@ -290,12 +280,10 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
       await check("This is a test.", `dictation replacement commits one corrected phrase${withKey ? ", keydown 229 after each edit" : ""}`);
       report(`dictation replacement commits one corrected phrase${withKey ? " (keydown 229 after each edit)" : ""}`);
     }
-    // A Backspace after dictation is the user's: it edits the phrase still in the field.
     await reset(); await dictate(hypotheses, false);
     await input.press("Backspace");
     await check("This is a test", "Backspace after dictation edits the phrase, never a sent byte");
     report("Backspace after dictation edits the pending phrase");
-    // The next typed key commits the phrase ahead of itself.
     await reset(); await dictate(hypotheses, true);
     await input.press("Enter");
     await check("This is a test.\r", "dictation commits before Enter");
@@ -319,12 +307,12 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     const observing = signal("role:observe");
     toServer({ type: "role", mode: "observe" });
     await observing;
-    await page.locator(".terminal-banner-observe").waitFor();
+    await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor();
     await input.press("Space");
     const interacting = signal("role:interact");
     toServer({ type: "role", mode: "interact" });
     await interacting;
-    await page.locator(".terminal-banner-observe").waitFor({ state: "detached" });
+    await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
     await input.focus();
     await input.press("a");
     await check("a", "refused context cannot seed the next accepted rewrite: a syllable committed while observing");
@@ -335,12 +323,12 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     const observingDictation = signal("role:observe");
     toServer({ type: "role", mode: "observe" });
     await observingDictation;
-    await page.locator(".terminal-banner-observe").waitFor();
+    await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor();
     await dictate(hypotheses, false);
     const interactingAfterDictation = signal("role:interact");
     toServer({ type: "role", mode: "interact" });
     await interactingAfterDictation;
-    await page.locator(".terminal-banner-observe").waitFor({ state: "detached" });
+    await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
     await input.focus();
     await input.press("a");
     await check("a", "refused context cannot seed the next accepted rewrite: dictation while observing");
@@ -364,12 +352,12 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     const held = signal("input:한 a");
     await page.locator(".draft-send").click();
     await held;
-    await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
+    await page.locator(".pane-frame.is-current .terminal-banner-draft").waitFor({ state: "detached" });
     await check("한 a", "a draft held while the pane was not ready is sent once, by Send");
     report("refused context: the held draft reaches the pane only by Send");
     await reset(); await notReady();
     await page.locator(".draft-discard").click();
-    await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
+    await page.locator(".pane-frame.is-current .terminal-banner-draft").waitFor({ state: "detached" });
     await input.focus();
     await input.press("b");
     await check("b", "refused context cannot seed the next accepted rewrite: a discarded draft");
@@ -391,7 +379,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     const heldPhrase = signal("input:This is a test.a");
     await page.locator(".draft-send").click();
     await heldPhrase;
-    await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
+    await page.locator(".pane-frame.is-current .terminal-banner-draft").waitFor({ state: "detached" });
     await check("This is a test.a", "a dictated draft is sent once, by Send");
     report("refused context: the dictated draft reaches the pane only by Send");
 
@@ -400,7 +388,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await reset();
     holdPings = true;
     const pinged = signal("ping");
-    // the page asks until it pings (askUntilPing): an `online` that meets a probe still ending is ignored
     await page.evaluate(() => (window as { askUntilPing?: () => void }).askUntilPing?.());
     await pinged;
     await dictate(hypotheses, false);
@@ -416,15 +403,12 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     const probedPhrase = signal("input:This is a test.a");
     await page.locator(".draft-send").click();
     await probedPhrase;
-    await page.locator(".terminal-banner-draft").waitFor({ state: "detached" });
+    await page.locator(".pane-frame.is-current .terminal-banner-draft").waitFor({ state: "detached" });
     await check("This is a test.a", "a draft dictated during a probe is sent once, by Send");
 
     // A pane switch during a pending dictation phrase: neither pane receives it.
     await reset(); await dictate(hypotheses.slice(0, 3), false);
-    switched = signal("ready");
-    await page.locator(`.pane-select[title^="${otherPane} —"]`).first().evaluate((node: HTMLElement) => node.click());
-    await selected(otherPane);
-    await switched;
+    await selectImePane(page, otherPane);
     await input.focus();
     await input.press("x");
     await check("x", "refused context cannot seed the next accepted rewrite: a pane switch mid-dictation", otherPane);

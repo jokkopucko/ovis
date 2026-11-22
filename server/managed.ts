@@ -1,8 +1,5 @@
 /**
- * Stable entry for `bun run start` and the herdr plugin (whose PID file records this process).
- * It runs the supervisor from the active release when that release has one, so an update
- * replaces the supervisor too, and falls back to the previous supervisor, then to this
- * checkout's, if a new one exits before it is ready. Keep this file small: it is the one piece
+ * Keep this file small: it is the one piece
  * an update cannot replace while it runs; only a restart from the source checkout does.
  */
 import "./adopt-legacy-env.ts";
@@ -10,9 +7,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
+import { entryCommand, ROOT } from "./entries.ts";
 import { HANDOVER_EXIT, moveLegacyStateDir, releaseIn, updateStateDir } from "./update-state.ts";
 
-/** The active release's supervisor, when it is still the build of this checkout's revision. */
 export function releaseSupervisor(root: string, stateDir: string): string | null {
   try {
     const saved = JSON.parse(readFileSync(join(stateDir, "current.json"), "utf8")) as { directory?: unknown; source_revision?: unknown };
@@ -25,25 +22,25 @@ export function releaseSupervisor(root: string, stateDir: string): string | null
   } catch { return null; }
 }
 
-export async function runManaged(root = resolve(import.meta.dir, "..")) {
+export async function runManaged(root = ROOT) {
   root = resolve(root);
   moveLegacyStateDir();
   const stateDir = updateStateDir(root, Number(process.env["PORT"] ?? DEFAULT_PORT));
-  const own = join(import.meta.dir, "supervisor.ts");
+  // the compiled binary has no supervisor.ts: there it runs as `ovis-server supervisor`
+  const own = entryCommand("supervisor")[1];
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let stopping = false;
   const stop = (signal: NodeJS.Signals) => { stopping = true; child?.kill(signal); };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
 
-  let previous: string | null = null; // the last supervisor that reached ready
+  let previous: string | null = null;
   let fallback = false;
   for (;;) {
     const file: string = fallback ? previous ?? own : releaseSupervisor(root, stateDir) ?? own;
     let ready = false;
     child = Bun.spawn([process.execPath, file], {
       cwd: root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
-      // OVIS_LAUNCHER: started by a launcher of this version, not by one from before the rename
       env: { ...process.env, OVIS_SOURCE_ROOT: root, OVIS_LAUNCHER: "1", ...(fallback ? { OVIS_SUPERVISOR_FALLBACK: "1" } : {}) },
       ipc(message) { if (message?.type === "supervisor-ready") ready = true; },
     });

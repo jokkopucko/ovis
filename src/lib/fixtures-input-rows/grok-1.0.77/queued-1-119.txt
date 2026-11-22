@@ -1,0 +1,39 @@
+
+  main ~/.c/o/outside-fixes/pr-3959-grok-scratch                                            2.3K / 128K │ [Dashboard]
+
+
+     ❯ Tell me a long story about lighthouses.                                                              7:22 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43                █
+     word44 word45 word46 word47 word48 word49 word50                                                                 █
+                                                                                                                      █
+                                                                                                                      █
+     ❯ first follow-up please                                                                               7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15        7:23 PM   █
+     word16 word17 word18 word19 word20                                                                               █
+                                                                                                                      █
+                                                                                                                      █
+     ❯ second follow-up please                                                                              7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     word1 word2                                                                                            7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     ❯ third follow-up please                                                                               7:23 PM   █
+                                                                                                                      █
+                                                                                                                      █
+     word1 word2 word3 word4 word5 word6 word7                                                              7:23 PM   █
+                                                                                                                      █
+
+    #1 fourth follow-up please
+
+    ⠹ Responding… 3.1s                                                                             3.1s ⇣2.27k [stop]
+
+  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                               │
+  ╰────────────────────────────────────────────────────────────────────────────────────────────────────── Stand-in ─╯
+
+  Enter:send now  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+;:queue  │  Ctrl+.:shortcuts

@@ -1,9 +1,3 @@
-/** Manual QA against a real Windows PC over SSH: the Add PC flow with a password, the chat-side
- * APIs through the bridge, and the terminal lens's mirrored screen. Needs remote-bundles/manifest-win32-x64.json
- * (bun run scripts/build-remote-bundle.ts win32-x64) and a herdr-free or herdr-bearing Windows host.
- *
- *   WINDOWS_QA_HOST=user@pc WINDOWS_QA_PASSWORD=... bun scripts/windows-host-qa.ts
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,7 +48,6 @@ async function connectWs(machineId: string): Promise<{ ws: WebSocket; frames: Se
 }
 
 try {
-  // WINDOWS_QA_UPDATE=1 installs this checkout's bundle over one the PC already has under the same version
   const job = await setup({ destination, session: "web-qa", name: "Windows QA", ...(process.env["WINDOWS_QA_UPDATE"] === "1" ? { update_remote: true } : {}) });
   assert.equal(job.phase, "connected", job.error ?? "");
   const machineId = job.machine_id;

@@ -3,7 +3,6 @@ import { parseTodoAnswer, todoCallSummary, todoSnapshot } from "./todos.ts";
 
 const call = (name: string, input: unknown, output = "") => ({ kind: "tool" as const, name, summary: name, input: JSON.stringify(input), output });
 
-// an omp/omo answer, as the tool prints it
 const OMP_ANSWER = `Remaining items (2):
   - E2E check [in_progress] (Verify)
   - Release run [pending] (Verify)
@@ -17,7 +16,6 @@ Active phase 2/2 "Verify" (0/3).
     - [ ] E2E check (in progress)
     - [ ] Release run`;
 
-// a gjc answer
 const GJC_ANSWER = `Remaining items (2):
   - Fix installer [in_progress] (Recovery)
   - Run regressions [pending] (Verification)
@@ -33,7 +31,6 @@ describe("parseTodoAnswer", () => {
     expect(parseTodoAnswer(GJC_ANSWER)!.map((item) => item.status)).toEqual(["completed", "in_progress", "pending"]);
     const blocked = parseTodoAnswer("Remaining items (1):\n  Ops:\n    - [ ] Update tailscale (blocked: needs sudo)")!;
     expect(blocked).toEqual([{ label: "Update tailscale", phase: "Ops", status: "blocked", note: "needs sudo" }]);
-    // a label that merely ends in parentheses keeps them
     expect(parseTodoAnswer("  A:\n    - [X] Install rsync (fast tools)")![0]!.label).toBe("Install rsync (fast tools)");
   });
 
@@ -50,6 +47,8 @@ describe("todoCallSummary", () => {
     expect(todoCallSummary(call("todo", { op: "done", phase: "Contract" }))).toBe("done · Contract");
     expect(todoCallSummary(call("todo_write", { ops: [{ op: "start", task: "Fix" }, { op: "append", phase: "B", items: ["z"] }] }))).toBe("start · Fix, add · 1 to B");
     expect(todoCallSummary(call("TodoWrite", { todos: [{ content: "a", status: "completed" }, { content: "b", status: "pending" }] }))).toBe("1/2 done");
+    // opencode names its tool `todowrite`: one word, no underscore, same `{ content, status }` list
+    expect(todoCallSummary(call("todowrite", { todos: [{ content: "a", status: "completed" }, { content: "b", status: "in_progress" }, { content: "c", status: "pending" }] }))).toBe("1/3 done");
     expect(todoCallSummary(call("Bash", { command: "ls" }))).toBeNull();
   });
 });
@@ -60,9 +59,12 @@ describe("todoSnapshot", () => {
       .toEqual([{ label: "Read", phase: null, status: "completed" }, { label: "Fix", phase: null, status: "in_progress" }, { label: "Ship", phase: null, status: "pending" }]);
     expect(todoSnapshot(call("update_plan", { plan: [{ step: "Plan", status: "completed" }] }))).toEqual([{ label: "Plan", phase: null, status: "completed" }]);
     expect(todoSnapshot(call("todo", { op: "init", list: [{ phase: "Build", items: ["Parser"] }] }, OMP_ANSWER))?.map((item) => item.label)).toEqual(["Parser", "Panel", "Old flow", "E2E check", "Release run"]);
-    // an init's input is one operation, not the list as it stands
     expect(todoSnapshot(call("todo", { op: "init", list: [{ phase: "Build", items: ["Parser"] }] }))).toBeNull();
     expect(todoSnapshot(call("TodoWrite", { todos: [] }))).toEqual([]);
+    // opencode's `todowrite` also sends `cancelled`: a given-up item, not one still to do
+    const opencode = call("todowrite", { todos: [{ content: "a", status: "completed" }, { content: "b", status: "cancelled" }] });
+    expect(todoSnapshot(opencode)).toEqual([{ label: "a", phase: null, status: "completed" }, { label: "b", phase: null, status: "dropped" }]);
+    expect(todoCallSummary(opencode)).toBe("1/2 done");
   });
 
   it("is null for an unreadable list and for other tools", () => {

@@ -1,12 +1,7 @@
-/* The Settings shortcut can open it while a file preview still holds its history entry: only
-   then is it raised, over the preview. On its own it stays on the layer every dialog shares, so
-   the file browser, later in the document, still opens above it; the palette has a layer of its own. */
 .settings-over-preview {
   z-index: calc(var(--z-modal) + 2);
 }
 
-/* Two columns from 641px: the list of pages, and the page it opened. A phone shows one of the
-   two at a time, as a sheet of a fixed height so that turning a page never moves its edge. */
 .settings-dialog {
   display: grid;
   grid-template-columns: 13rem minmax(0, 1fr);
@@ -60,7 +55,6 @@
   display: none;
 }
 
-/* Settings' search, over the list of pages; its results take the page's place (a phone's list's) */
 .settings-search {
   position: relative;
   display: flex;
@@ -83,7 +77,6 @@
   padding-left: calc(var(--space-3) + var(--icon-size-md) + var(--space-2));
 }
 
-/* each page with a row that matches: its name, which opens it, over the groups it holds there */
 .settings-search-page {
   display: flex;
   flex-direction: column;
@@ -120,16 +113,13 @@
   font-size: var(--fs-sm);
 }
 
-.settings-search-results:not(:has(> .settings-search-page > [data-found], > .settings-search-page > .settings-section > .settings-card > [data-setting])) > .settings-search-empty {
+.settings-search-results:not(:has(> .settings-search-page > [data-found], > .settings-search-page > .settings-section > .settings-card > [data-setting], > .settings-search-page > .settings-section > .settings-card > [data-found])) > .settings-search-empty {
   display: block;
 }
 
-/* a group is found by a setting it holds (SettingsControls.tsx SettingsRow) or by its title: it is
-   drawn with its note and what goes with those settings (a form, a status line); a group or a page
-   with nothing found, and what a page holds outside its groups, stay on the page itself */
 .settings-search-page > :not(.settings-section, .settings-search-page-title),
-.settings-search-results .settings-section:not([data-found]):not(:has(> .settings-card > [data-setting])),
-.settings-search-page:not(:has(> [data-found], > .settings-section > .settings-card > [data-setting])) {
+.settings-search-results .settings-section:not([data-found]):not(:has(> .settings-card > [data-setting], > .settings-card > [data-found])),
+.settings-search-page:not(:has(> [data-found], > .settings-section > .settings-card > [data-setting], > .settings-section > .settings-card > [data-found])) {
   display: none;
 }
 
@@ -165,7 +155,10 @@
   white-space: nowrap;
 }
 
-/* only a list that leads somewhere else points there: a phone's */
+.settings-change-pc {
+  margin-top: var(--space-2);
+}
+
 .settings-tab-chevron {
   display: none;
 }
@@ -182,7 +175,6 @@
   font-weight: var(--fw-selected);
 }
 
-/* the open page carries the selection color on its glyph, as a chosen segment does */
 .settings-tab[aria-selected="true"] svg {
   color: var(--accent);
 }
@@ -208,9 +200,6 @@
   display: none;
 }
 
-/* a change the server refused to save (SettingsDialog.tsx SaveFailure), above whichever page is
-   open: the sentence in the blocked color, the server's own words behind its Details word, in the
-   interface face as every failure's folded line is (styles.css) */
 .settings-save-error > p,
 .settings-save-error > .settings-details > summary {
   margin: 0;
@@ -231,9 +220,7 @@
   gap: var(--space-2);
 }
 
-/* where the change is (not on the server yet, or on its way) and the Retry that sends it, under the
-   sentence; the button wraps below the words on a narrow screen rather than squeezing them. Both
-   are read, so they take the reading size: 14 px with a mouse, 15 px under a finger */
+/* Both are read, so they take the reading size: 14 px with a mouse, 15 px under a finger */
 .settings-save-local {
   display: flex;
   flex-wrap: wrap;
@@ -257,14 +244,11 @@
   font-size: var(--fs-md);
 }
 
-/* on its way: dimmed by its color, not faded, so the word stays legible; the sentence beside it
-   says what is happening */
 .settings-save-local > .btn:disabled {
   opacity: 1;
   color: var(--text-dim);
 }
 
-/* a mouse's press shows as the amber edge a pressed icon button draws (styles.css .icon-button:active) */
 @media (pointer: fine) {
   .settings-save-local > .btn:active:not(:disabled) {
     background: var(--bg-elevated);
@@ -278,8 +262,6 @@
     font-size: var(--fs-chat);
   }
 
-  /* a finger's press fills Retry, as a pressed settings row fills, instead of the dim that would
-     fade its word (styles.css) */
   .settings-save-local > .btn:active:not(:disabled) {
     opacity: 1;
     background: var(--bg-hover);
@@ -374,7 +356,6 @@
   min-width: 0;
 }
 
-/* Named agent groups: the new name and its Add share a row, the field taking the room */
 .agent-group-add {
   display: flex;
   gap: var(--space-2);
@@ -387,7 +368,6 @@
   min-width: 0;
 }
 
-/* Alerts → Also send to: the URL or token and its buttons share a row */
 .alert-webhook-form {
   display: flex;
   flex-wrap: wrap;
@@ -409,7 +389,6 @@
   color: var(--danger-text);
 }
 
-/* Voice input: the key field and its buttons share a row, the notes stay dim */
 .voice-key {
   display: flex;
   flex-wrap: wrap;
@@ -452,7 +431,6 @@
   color: var(--danger-text);
 }
 
-/* Subscription usage: a row per account: mark, name, account, then move and show */
 .usage-accounts ol {
   margin: 0;
   padding: 0;
@@ -498,7 +476,6 @@
   color: var(--text-dim);
 }
 
-/* the ends of the list cannot move further: that arrow keeps its place in the column, unseen */
 .usage-accounts-actions .icon-button:disabled {
   visibility: hidden;
 }
@@ -507,7 +484,6 @@
   color: var(--text);
 }
 
-/* a hidden account stays in the list, faded, so it can be shown again */
 .usage-accounts-row.is-hidden > :not(.usage-accounts-actions) {
   opacity: 0.45;
 }
@@ -556,7 +532,6 @@
     grid-column: 1;
   }
 
-  /* the list is the sheet's whole body here, drawn as one card of rows */
   .settings-nav {
     grid-column: 1;
     grid-row: 2;
@@ -596,7 +571,6 @@
     display: block;
   }
 
-  /* searching, the field stays over its results, which take the list's place */
   .settings-dialog.is-searching {
     grid-template-rows: auto auto minmax(0, 1fr);
   }
@@ -623,7 +597,6 @@
     min-width: 0;
   }
 
-  /* the key takes the line; Save and Remove share the next one */
   .voice-key-input,
   .alert-webhook-input {
     flex-basis: 100%;
@@ -637,7 +610,6 @@
   }
 }
 
-/* a finger presses a page's row as an iPhone list row is pressed: it fills, it does not dim (styles.css) */
 @media (hover: none) and (pointer: coarse) {
   .settings-tab:active {
     opacity: 1;
@@ -645,7 +617,6 @@
   }
 }
 
-/* the font field: the typed list, and where the browser can list them a Browse button that opens the installed fonts under it */
 .settings-font-field {
   display: flex;
   flex: 0 1 18rem;
@@ -656,7 +627,6 @@
   min-width: 0;
 }
 
-/* the installed fonts open under the field and make the row tall: its label stays at the top, beside the field */
 .settings-row:has(> .settings-font-field .settings-font-picker) {
   align-items: flex-start;
 }
@@ -735,7 +705,6 @@
   list-style: none;
 }
 
-/* the one dim line under a page's title: what the page holds (G-173) */
 .settings-page-note {
   margin: 0;
   color: var(--text-dim);
@@ -748,7 +717,6 @@
   }
 }
 
-/* a read-only fact beside its label (Phone & devices, Access): text, never a control */
 .settings-fact {
   flex: 0 1 auto;
   max-width: 45%;
@@ -757,6 +725,16 @@
   font-weight: var(--fw-medium);
   text-align: end;
   overflow-wrap: anywhere;
+}
+
+/* on a phone a fact keeps its own width up to its 45% and the label's text takes what is left: a row shrinks its
+   children by their widths, so a fact beside a sentence-long description lost almost all of it and broke one letter
+   to a line. A word breaks only where it alone is wider than the 45% */
+@media (max-width: 640px) {
+  .settings-fact {
+    flex-shrink: 0;
+    overflow-wrap: break-word;
+  }
 }
 
 /* Access is read, not operated: its text takes reading sizes (14 px on a desktop; 18 and 15 on a

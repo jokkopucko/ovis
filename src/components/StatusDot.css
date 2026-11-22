@@ -1,6 +1,3 @@
-/* the relay app's one state glyph (StatusDot.tsx): 14px beside data, --dot-size inside a line of
-   text, the same 1.5px line at either size. It never moves and casts no shadow: a state is a shape,
-   a colour and the word beside it */
 .status-dot {
   flex: none;
   width: calc(2 * var(--dot-size));
@@ -27,8 +24,6 @@
 .status-dot[data-state="checking"] { color: var(--status-working); }
 .status-dot[data-state="failed"] { color: var(--status-blocked); }
 
-/* every part is drawn in currentColor: forced colours keep each shape, outlined in the system ink.
-   [data-state] matches the state rules above, so this later rule wins over them */
 @media (forced-colors: active) {
   .status-dot[data-state] {
     forced-color-adjust: none;

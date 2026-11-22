@@ -1,0 +1,30 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/.cache/ovis-tmp/codex-cap/work
+
+
+
+
+
+
+
+  Keyboard shortcuts
+
+  Compose                           Session
+  /            Commands             tab            Send message
+  @            Mention files        shift+tab      Change mode
+  !            Shell command        alt+,          Less reasoning
+  shift+enter  New line             alt+.          More reasoning
+  ^v           Paste image          f8             Voice
+  ^g           External editor      ←              Agents (empty prompt)
+  ^r           Search history       alt+← / alt+→  Subagents (empty prompt)
+  esc esc      Edit last message    f4             Inspect activity
+                                    ^c             Quit
+
+  … resize to see all
+  /keymap customize
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · /home/tester0/.cache/ovis-tmp/codex-cap/work
+  ? / esc close

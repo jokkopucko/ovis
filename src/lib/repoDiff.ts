@@ -7,21 +7,16 @@ import type { Translate } from "./i18n.ts";
 import type { DiffStyle } from "./settings.ts";
 import { VIRTUAL_HIGHLIGHT_CHARS, VIRTUAL_HIGHLIGHT_LINES } from "./sourcePreview.ts";
 
-/** Which two states of a repository are compared (GET /api/workspace/diff/*). */
 export interface RepoComparison {
   scope: RepoDiffScope;
-  /** `commit`: full hashes once a list answered, the names typed before; `branch`: the base as the reader named it */
   base: string | null;
   head: string | null;
-  /** `branch` only, once a list answered: the identity it was compared on, carried into each patch read */
   comparison: RepoBranchComparison | null;
 }
 
-/** One changed file of one comparison, on one PC's pane: what the diff viewer opens. */
 export interface RepoDiffTarget extends RepoComparison {
   machineId: string;
   paneId: string | null;
-  /** the pane's folder, read when the pane is gone */
   directory: string | null;
   path: string;
   oldPath: string | null;
@@ -29,12 +24,10 @@ export interface RepoDiffTarget extends RepoComparison {
 
 export const REPO_DIFF_SCOPES: readonly RepoDiffScope[] = ["workspace", "staged", "commit", "branch"];
 
-/** A ref as a reader names it: `refs/heads/main` is `main`, `refs/remotes/origin/main` is `origin/main`; anything else as it is. */
 export function refName(ref: string): string {
   return ref.replace(/^refs\/(?:heads|remotes)\//, "");
 }
 
-/** Whether two branch identities name the same comparison: the same repository, HEAD, base and merge base. */
 export function sameComparison(left: RepoBranchComparison | null, right: RepoBranchComparison | null): boolean {
   if (left === null || right === null) return left === right;
   return left.repository_root === right.repository_root && left.head_oid === right.head_oid && left.base_oid === right.base_oid && left.merge_base_oid === right.merge_base_oid;
@@ -58,7 +51,6 @@ export function statusWord(t: Translate, status: RepoDiffStatus): string {
   }
 }
 
-/** A full hash shortened to the seven characters git shows; a typed name as typed. */
 export function shortHash(revision: string): string {
   return /^[0-9a-f]{40,64}$/.test(revision) ? revision.slice(0, 7) : revision;
 }
@@ -72,7 +64,6 @@ export function comparisonWord(t: Translate, comparison: RepoComparison): string
   }
 }
 
-/** The empty state of a comparison that changed nothing. */
 export function nothingChangedWord(t: Translate, scope: RepoDiffScope): string {
   switch (scope) {
     case "workspace": return t("No uncommitted changes");
@@ -90,7 +81,6 @@ export function diffErrorMessage(t: Translate, error: unknown): string {
     case "not_a_repository": return t("This folder is not in a git repository.");
     case "revision_not_found": return t("No commit by that name.");
     case "invalid_revision": return t("Name a commit, branch or tag.");
-    // a bridge from before the branch scope refuses it as a scope it does not know
     case "invalid_scope": return t("This PC's bridge cannot compare branches yet.");
     case "unborn_head": return t("The repository has no commits yet, so there is no branch to compare.");
     case "no_common_ancestor": return t("That base shares no history with HEAD.");
@@ -106,12 +96,10 @@ export function diffErrorMessage(t: Translate, error: unknown): string {
   }
 }
 
-/** A branch patch whose identity is not the list's any more: the server's 409, or an answer for another identity. */
 export function comparisonChangedWord(t: Translate): string {
   return t("HEAD or the repository changed since the list was read; refresh the list.");
 }
 
-/** Why a file has no patch to draw (`unavailable`), or null when it has one. */
 export function unavailableMessage(t: Translate, answer: RepoDiffFilePatch): string | null {
   switch (answer.unavailable) {
     case null: return null;
@@ -122,27 +110,20 @@ export function unavailableMessage(t: Translate, answer: RepoDiffFilePatch): str
   }
 }
 
-/**
- * Whether a patch is colored in the package's worker: a language the app colors,
- * and the same bounds as a virtualized source, counted on the patch text itself.
- */
 export function diffColorable(name: string, patch: string): boolean {
   return canHighlight(languageForPath(name)) && patch.length <= VIRTUAL_HIGHLIGHT_CHARS && countLines(patch) <= VIRTUAL_HIGHLIGHT_LINES;
 }
 
-/** The style drawn: split needs two columns of code, which a phone's width cannot hold. */
 export function diffStyleFor(setting: DiffStyle, narrow: boolean): DiffStyle {
   return narrow ? "unified" : setting;
 }
 
-/** A repository-relative path on the PC that holds the repository, for the file viewer. */
 export function repositoryFilePath(root: string, path: string): string {
   return `${root.replace(/[\\/]+$/, "")}/${path}`;
 }
 
 const HISTORY_KEY = REPO_DIFF_KEY;
 
-/** The viewer's target in a history entry, when the entry holds one of a known shape. */
 export function diffTargetFromState(state: unknown): RepoDiffTarget | null {
   if (state === null || typeof state !== "object") return null;
   const entry = (state as Record<string, unknown>)[HISTORY_KEY];
@@ -158,7 +139,6 @@ export function diffTargetFromState(state: unknown): RepoDiffTarget | null {
   return { machineId, paneId: text("paneId"), directory: text("directory"), scope: scope as RepoDiffScope, base: text("base"), head: text("head"), comparison, path, oldPath: text("oldPath") };
 }
 
-/** A branch identity of the known shape, null when absent, undefined when of another shape. */
 function branchComparisonOf(value: unknown): RepoBranchComparison | null | undefined {
   if (value === null || value === undefined) return null;
   if (typeof value !== "object") return undefined;

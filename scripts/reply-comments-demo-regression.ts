@@ -1,10 +1,4 @@
 /**
- * Comments on a reply (#511) on the unmodified app over the demo's fixture transport: a selection
- * in one agent reply offers Comment over the chat without moving it, the comment waits in one chip
- * over the input card, and the next message carries the comments first, as `> quote` lines and
- * the comment, then the typed text, with `agent_only`. A slash command leaves them waiting, and a
- * selection reaching a user message offers nothing. At 1280 with a mouse and at 390 on a touch
- * screen. With UI_EVIDENCE_DIR set, each state is captured in the Codex palette, dark and light.
  * All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
  */
 import assert from "node:assert/strict";
@@ -16,6 +10,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const playwrightCore = "playwright-core";
 const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
@@ -32,19 +27,22 @@ const SECOND = { quote: "replay the local edit on top of it", comment: "If both 
 
 interface Submit { text: string; agent_only?: true; delivery?: string }
 
-/** Two painted frames: what the page already took has been committed and laid out. */
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
-/** The chat scroller's box and place: a selection in progress must leave both as they were (#1922). */
+const atEnd = (page: Page) => page.waitForFunction(() => {
+  const view = document.querySelector<HTMLElement>('.chat-view[data-chat-pinned="0"]');
+  const transcript = view?.querySelector<HTMLElement>(".chat-transcript-virtual");
+  // The list can temporarily pad the transcript past its real end.
+  return view !== null && transcript?.style.paddingBottom === ""
+    && Math.abs(view.scrollHeight - view.clientHeight - view.scrollTop) <= 1;
+}, undefined, WAIT);
+
 const layout = (page: Page) => page.evaluate(() => {
   const view = document.querySelector<HTMLElement>(".chat-view")!;
   return { height: view.clientHeight, scrollTop: view.scrollTop, composer: document.querySelector(".composer")!.getBoundingClientRect().top };
 });
 
-/** The text-node range of `phrase` in the last agent reply (or from the user's ask through it), as client rects' ends. */
-const rangeOf = (page: Page, phrase: string, fromAsk = false) => page.evaluate(([words, ask]) => {
-  const rows = [...document.querySelectorAll(".chat-turn-agent")];
-  const turn = rows[rows.length - 1]!;
+const selectRange = (page: Page, phrase: string, mouse: boolean, fromAsk?: string) => page.evaluate(async ({ words, ask, drag, timeout }) => {
   const textNodes = (root: Node): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text); return nodes; };
   const find = (nodes: Text[], target: string): [Text, number, Text, number] => {
     const all = nodes.map((node) => node.data).join("");
@@ -53,46 +51,54 @@ const rangeOf = (page: Page, phrase: string, fromAsk = false) => page.evaluate((
     const point = (offset: number): [Text, number] => { let left = offset; for (const node of nodes) { if (left <= node.data.length) return [node, left]; left -= node.data.length; } throw new Error("offset"); };
     return [...point(at), ...point(at + target.length)];
   };
-  const [wordsNode, wordsAt, endText, end] = find(textNodes(turn), words);
-  const user = ask === null ? null : [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask))!;
-  const [startNode, startAt] = user === null ? [wordsNode, wordsAt] : find(textNodes(user), ask!);
-  const range = document.createRange();
-  range.setStart(startNode, startAt);
-  range.setEnd(endText, end);
-  const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
-  return { x0: rects[0]!.left + 1, y0: rects[0]!.top + rects[0]!.height / 2, x1: rects.at(-1)!.right - 1, y1: rects.at(-1)!.top + rects.at(-1)!.height / 2 };
-}, [phrase, fromAsk ? ASK : null] as const);
+  const deadline = performance.now() + timeout;
+  let previous = "";
+  // Clearing a selection releases the virtual timeline's scroll anchor. Use the range
+  // only once the current reply's endpoints are hittable and stop moving across renders.
+  while (performance.now() < deadline) {
+    let current = "";
+    const turn = [...document.querySelectorAll(".chat-turn-agent")].find((node) => node.textContent?.includes("Show a conflict banner"));
+    const start = ask === undefined ? turn : [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask));
+    if (turn && start) {
+      const [wordsNode, wordsAt, endText, end] = find(textNodes(turn), words);
+      const [startNode, startAt] = ask === undefined ? [wordsNode, wordsAt] : find(textNodes(start), ask);
+      const range = document.createRange();
+      range.setStart(startNode, startAt);
+      range.setEnd(endText, end);
+      if (!drag) {
+        const selection = getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return null;
+      }
+      const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+      const first = rects[0], last = rects.at(-1);
+      if (first && last) {
+        const point = { x0: first.left + 1, y0: first.top + first.height / 2, x1: last.right - 1, y1: last.top + last.height / 2 };
+        const hit = start.contains(document.elementFromPoint(point.x0, point.y0)) && turn.contains(document.elementFromPoint(point.x1, point.y1));
+        if (hit) {
+          current = JSON.stringify(point);
+          if (current === previous) return point;
+        }
+      }
+    }
+    previous = current;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+  throw new Error(`the range for "${words}" did not settle inside the reply`);
+}, { words: phrase, ask: fromAsk, drag: mouse, ...WAIT });
 
-/** Selects as a reader does: a mouse drag on a desktop; on a touch screen the range the handles leave. */
 async function select(page: Page, phrase: string, mouse: boolean, fromAsk = false): Promise<void> {
-  if (mouse) {
-    const box = await rangeOf(page, phrase, fromAsk);
+  const box = await selectRange(page, phrase, mouse, fromAsk ? ASK : undefined);
+  if (box !== null) {
     await page.mouse.move(box.x0, box.y0);
     await page.mouse.down();
     await page.mouse.move((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, { steps: 4 });
     await page.mouse.move(box.x1, box.y1, { steps: 4 });
     await page.mouse.up();
-  } else {
-    await page.evaluate(([words, ask]) => {
-      const rows = [...document.querySelectorAll(".chat-turn-agent")];
-      const turn = rows[rows.length - 1]!;
-      const textNodes = (root: Node): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text); return nodes; };
-      const point = (nodes: Text[], offset: number): [Text, number] => { let left = offset; for (const node of nodes) { if (left <= node.data.length) return [node, left]; left -= node.data.length; } throw new Error("offset"); };
-      const nodes = textNodes(turn);
-      const all = nodes.map((node) => node.data).join("");
-      const at = all.indexOf(words);
-      const range = document.createRange();
-      if (ask !== null) {
-        const user = [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask))!;
-        const userNodes = textNodes(user);
-        range.setStart(...point(userNodes, userNodes.map((node) => node.data).join("").indexOf(ask)));
-      } else range.setStart(...point(nodes, at));
-      range.setEnd(...point(nodes, at + words.length));
-      getSelection()!.removeAllRanges();
-      getSelection()!.addRange(range);
-    }, [phrase, fromAsk ? ASK : null] as const);
   }
-  await frames(page);
+  if (fromAsk) await frames(page);
+  else assert.equal((await page.evaluate(() => getSelection()?.toString() ?? "")).trim(), phrase, "the gesture selected the intended quote");
 }
 
 async function comment(page: Page, phrase: string, text: string, mouse: boolean, count: number): Promise<void> {
@@ -101,7 +107,6 @@ async function comment(page: Page, phrase: string, text: string, mouse: boolean,
   await page.locator(".reply-comment-offer").click();
   const field = page.getByRole("textbox", { name: "Comment", exact: true });
   await field.fill(text);
-  // Ctrl+Enter saves, as the form says; the selection goes with it
   await field.press("Control+Enter");
   await page.locator(".reply-comment-form").waitFor({ state: "detached", ...WAIT });
   await page.locator(".reply-comments-open", { hasText: count === 1 ? "1 comment on the reply" : `${count} comments on the reply` }).waitFor(WAIT);
@@ -113,8 +118,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Over the demo's own transport: the pane's transcript reads end in a plan to comment on, and
-  // every submit frame the client sends is recorded (window.replyLab). Everything else is the demo's.
   const gates = `<script>(() => {
     const demo = window.fetch;
     const lab = window.replyLab = { submits: [] };
@@ -143,23 +146,11 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      // The chat's timeline chunk arriving after the Comment layer mounted (a cold load on a slow link): its
-      // selection is still offered and saved once the replies are drawn
       {
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
         try {
@@ -210,14 +201,12 @@ try {
           assert.deepEqual(await page.evaluate(() => [document.documentElement.dataset["palette"], document.documentElement.dataset["theme"]]), ["codex", theme], `${label}: the Codex palette`);
           const shot = async (step: string) => { if (evidence) await page.screenshot({ path: join(evidence, `${label}-${step}.png`) }); };
 
-          // a selection reaching the user's message offers nothing
           await select(page, "backfill it from", !shape.mobile, true);
           assert.ok((await page.evaluate(() => getSelection()?.toString() ?? "")).includes("backfill it from"), `${label}: the crossing selection holds`);
           assert.equal(await page.locator(".reply-comment-offer").count(), 0, `${label}: no Comment across a user message`);
+          await page.locator('.chat-view[data-chat-pinned]:not([data-chat-pinned="0"])').waitFor({ state: "attached", ...WAIT });
           await page.evaluate(() => getSelection()?.removeAllRanges());
-          await frames(page);
-
-          // the action floats: the chat keeps its size and place while the selection is made and offered
+          await atEnd(page);
           const before = await layout(page);
           await select(page, FIRST.quote, !shape.mobile);
           await page.locator(".reply-comment-offer").waitFor(WAIT);
@@ -233,9 +222,12 @@ try {
           await shot("2-write");
           if (shape.mobile) assert.ok(await page.locator(".reply-comment-form.is-docked").count() === 1, `${label}: the form docks over the message box`);
           await page.getByRole("textbox", { name: "Comment", exact: true }).press("Control+Enter");
+          await page.locator(".reply-comment-form").waitFor({ state: "detached", ...WAIT });
           await page.locator(".reply-comments-open", { hasText: "1 comment on the reply" }).waitFor(WAIT);
-          await frames(page);
           assert.equal(await page.evaluate(() => getSelection()?.isCollapsed ?? true), true, `${label}: saving clears the selection`);
+          await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
+          // The chip grew the composer; the chat follows its end a frame or more later, moving the reply under the next gesture.
+          await atEnd(page);
 
           await comment(page, SECOND.quote, SECOND.comment, !shape.mobile, 2);
           await page.locator(".reply-comments-open").click();
@@ -247,7 +239,6 @@ try {
           await shot("3-chip");
           await page.keyboard.press("Escape");
 
-          // a slash command goes alone: the comments wait for the next message
           await composer.fill("/compact");
           await composer.press("Escape");
           await page.locator(".reply-comments-open", { hasText: "2 comments waiting" }).waitFor(WAIT);
@@ -260,7 +251,6 @@ try {
           assert.equal(command.agent_only, undefined, `${label}: a command alone is no agent-only message`);
           await page.locator(".reply-comments-open", { hasText: "2 comments on the reply" }).waitFor(WAIT);
 
-          // the next message carries them, first, then what was typed, for an agent alone
           await composer.fill("Go ahead with step 1.");
           const next = await page.evaluate(() => (window as unknown as { replyLab: { submits: Submit[] } }).replyLab.submits.length);
           await page.getByRole("button", { name: "Send message", exact: true }).click();

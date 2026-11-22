@@ -23,14 +23,10 @@
   background: var(--bg-elevated);
 }
 
-/* what the user answers with never shrinks: header, steps, question, hint, options, the
-   custom row, the confirm row */
 .prompt-card > * {
   flex: none;
 }
 
-/* the card's bottom padding, as a strip that stays on the fold: whatever is cut under it fades
-   out, and it lies on empty space once the card is scrolled to its end */
 .prompt-card::after {
   content: "";
   position: sticky;
@@ -55,7 +51,6 @@
   margin: 0;
 }
 
-/* the card's one red: the "input needed" badge is read, not drawn */
 .prompt-card-header h2 {
   color: var(--status-blocked);
   font-size: var(--fs-sm);
@@ -63,7 +58,6 @@
   overflow-wrap: anywhere;
 }
 
-/* "Back" sits at the header's start, before the title */
 .prompt-card-back {
   flex: none;
   height: var(--space-6);
@@ -72,7 +66,6 @@
   font-size: var(--fs-xs);
 }
 
-/* "Next" sits at the header's end, before the fold: on to the next question, unanswered */
 .prompt-card-next {
   flex: none;
   height: var(--space-6);
@@ -86,13 +79,11 @@
   margin-inline-start: 0;
 }
 
-/* "View plan" sits at the header's end, beside the title */
 .prompt-card-plan-file {
   margin-inline-start: auto;
   flex: none;
 }
 
-/* the fold toggle ends the header: after "View plan", or on its own at the end */
 .prompt-card-fold {
   display: inline-grid;
   flex: none;
@@ -137,13 +128,10 @@
   }
 }
 
-/* folded: the header alone; a note that the answer is on its way, or failed, still shows */
 .prompt-card.is-folded > :not(.prompt-card-header, .prompt-card-error, .visually-hidden) {
   display: none;
 }
 
-/* a form of several questions: a chip per question, answered ones checked, the one asked now in
-   the accent; the chips name the questions, so the card's title only says where this one stands */
 .prompt-card-steps {
   display: flex;
   flex-wrap: wrap;
@@ -244,7 +232,6 @@
   color: var(--primary-text);
 }
 
-/* what the agent asks is the line to read first: full strength, not a caption under the title */
 .prompt-card-question {
   color: var(--text-strong);
   font-size: var(--fs-md);
@@ -252,12 +239,6 @@
   overflow-wrap: anywhere;
 }
 
-/* What the agent said before asking, read off the terminal (#2088): its prose, as the chat shows
-   an answer, under a caption that says where it came from. Like the body it gives way, eight lines
-   at rest and two when the card is short, with its own scroll. The two are the card's own flex
-   items (the wrapper draws no box): a box around them could only shrink as a whole, and its floor
-   would have to guess the caption's height, which wraps in some languages; as the card's items
-   the text keeps its two-line floor and the caption its full height, whatever it wraps to. */
 .prompt-card-words {
   display: contents;
 }
@@ -276,13 +257,11 @@
   overflow-wrap: anywhere;
 }
 
-/* the caption keeps its lines and sits closer to its text than the card's gap */
 .prompt-card-words .prompt-card-hint {
   flex: none;
   margin-top: calc(-1 * var(--space-1));
 }
 
-/* omp's own Markdown (text_format) keeps the card's question size, and an option's inline code reads as the chat's */
 .markdown.prompt-card-question {
   font-size: var(--fs-md);
   line-height: var(--lh-base);
@@ -304,8 +283,6 @@
   line-height: var(--lh-base);
 }
 
-/* The reference text (a command, a plan, a diff), in the card's one mono box. It is the part that
-   gives way: six lines at rest, down to two when the card is short, with its own scroll. */
 .prompt-card-body {
   flex: 0 1 auto;
   min-height: calc(2lh + 2 * var(--space-2));
@@ -324,17 +301,12 @@
   overflow-wrap: anywhere;
 }
 
-/* an approval's command is read as the agent wrote it, every line whole: a long one scrolls sideways
-   inside the box instead of wrapping into a column of pieces, and stays one selectable text (G-070).
-   A plan or a diff keeps wrapping above: its prose is read, not copied */
 .prompt-card-body.is-command {
   overflow-x: auto;
   white-space: pre;
   overflow-wrap: normal;
 }
 
-/* a review's answers: plain text, not the mono box, each question with its answer under it. Like
-   the body, it gives way when the card is short, with its own scroll */
 .prompt-card-answers {
   flex: 0 1 auto;
   min-height: calc(2lh + 2 * var(--space-2));
@@ -369,13 +341,10 @@
   font-weight: var(--fw-regular);
 }
 
-/* a command of one line is one line tall */
 .prompt-card-body.is-line {
   min-height: calc(1lh + 2 * var(--space-2));
 }
 
-/* its bottom padding, as a strip that stays on its fold: a line that is cut fades out instead of
-   being sliced */
 .prompt-card-body::after {
   content: "";
   position: sticky;
@@ -386,9 +355,6 @@
   pointer-events: none;
 }
 
-/* one option per row, full width: menu rows, not boxes in a box. Labels and their descriptions
-   line up to scan down, the way the agent's own menu reads. All weigh the same: no row is
-   filled or outlined as if it were the default */
 .prompt-card-options {
   display: flex;
   flex-direction: column;
@@ -424,7 +390,6 @@
   width: 100%;
   min-height: var(--control-h);
   display: flex;
-  /* the number sits on the label's first line whatever the mono font's metrics */
   align-items: baseline;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
@@ -435,7 +400,6 @@
   font-size: var(--fs-sm);
   line-height: var(--lh-base);
   text-align: left;
-  /* an option can name a long path: it wraps inside the card instead of running past it */
   overflow-wrap: anywhere;
   cursor: pointer;
   touch-action: manipulation;
@@ -458,25 +422,25 @@
   background: var(--bg-hover);
 }
 
-/* while an answer is on its way every option waits, the checkbox rows included (the busy state is
-   the options group's own, so the card's status line stays outside it); disabled is communicated by
-   cursor/state while keeping decision rationale and descriptions legible at >= 4.5:1 */
-.prompt-card-options[aria-busy="true"] .prompt-card-option {
+/* A device that may only watch sees them so too (is-unavailable): it cannot answer */
+.prompt-card-options[aria-busy="true"] .prompt-card-option,
+.prompt-card-options.is-unavailable .prompt-card-option {
   color: var(--text-dim);
   cursor: default;
 }
 
 @media (hover: hover) {
-  .prompt-card-options[aria-busy="true"] .prompt-card-option:hover {
+  .prompt-card-options[aria-busy="true"] .prompt-card-option:hover,
+  .prompt-card-options.is-unavailable .prompt-card-option:hover {
     background: transparent;
   }
 
-  .prompt-card-options[aria-busy="true"] .prompt-card-option:hover .prompt-card-number {
+  .prompt-card-options[aria-busy="true"] .prompt-card-option:hover .prompt-card-number,
+  .prompt-card-options.is-unavailable .prompt-card-option:hover .prompt-card-number {
     color: var(--text-dim);
   }
 }
 
-/* a picked option: a checked box, or a typed pick of an approval's option that waits for Confirm */
 .prompt-card-option.is-checked,
 .prompt-card-option.is-selected,
 .prompt-card-option.is-typed {
@@ -484,8 +448,6 @@
   border-color: var(--accent);
 }
 
-/* the number the agent's menu shows, as the key it is: typing it in the composer picks the
-   option too */
 .prompt-card-number {
   flex: none;
   min-width: var(--space-5);
@@ -510,7 +472,6 @@
   align-self: flex-start;
   width: var(--icon-size-md);
   height: var(--icon-size-md);
-  /* centred on the label's first line */
   margin: calc((var(--fs-sm) * var(--lh-base) - var(--icon-size-md)) / 2) 0 0;
   accent-color: var(--primary);
   cursor: inherit;
@@ -534,8 +495,6 @@
   font-weight: var(--fw-regular);
 }
 
-/* the menu's own recommendation, told by a tag instead of a "(Recommended)" suffix; at the badge
-   floor (--fs-meta, 12px), which the scope tag below shares */
 .prompt-card-tag {
   display: inline-block;
   padding: 1px var(--space-1);
@@ -544,17 +503,14 @@
   color: var(--accent);
   font-size: var(--fs-meta);
   font-weight: var(--fw-semibold);
-  /* no taller than the label's line, so the number beside it stays level */
   line-height: var(--lh-tight);
 }
 
-/* what an approval option grants, read off the agent's own words (promptText.ts approvalScope):
-   the same tag in the quiet register, so it never reads as a recommendation. Its words are drawn
-   from data-scope and the tag is aria-hidden, so the option's text and name stay the agent's alone;
-   a visually-hidden span beside the option carries the same words as text for the option's
-   aria-describedby (generated content on a hidden node reaches no accessibility tree) (G-071) */
+/* Its words are drawn from data-scope and the tag is aria-hidden, so the option's text and name
+   stay the agent's alone; a visually-hidden span beside the option carries the same words as text
+   for the option's aria-describedby (generated content on a hidden node reaches no accessibility
+   tree) (G-071) */
 .prompt-card-scope {
-  /* the gap a space would leave, without a space in the option's text */
   margin-inline-start: var(--space-1);
   background: var(--bg-elevated);
   color: var(--text);
@@ -564,11 +520,6 @@
   content: attr(data-scope);
 }
 
-/* "Send 2? Confirm / Cancel" is the answer's last step: it stays in sight on the card's fold,
-   solid down to the card's edge with a short fade above it, so nothing shows through. It is
-   pinned over the options, so it is kept short: the question is two lines at most and scrolls
-   in itself (an option's label can run to pages), and the two buttons are one group that never
-   breaks, beside the question when there is room and under it when there is not */
 .prompt-card-confirm {
   position: sticky;
   bottom: var(--space-3);
@@ -625,7 +576,6 @@
   gap: var(--space-2);
 }
 
-/* the field grows to the Send button's height, which is the touch target on a phone */
 .prompt-card-custom .input {
   flex: 1 1 auto;
   min-width: 0;
@@ -634,7 +584,6 @@
 }
 
 .prompt-card-custom .input:focus-visible {
-  border-color: var(--accent);
   outline: var(--ring);
   outline-offset: var(--ring-offset);
 }
@@ -698,7 +647,6 @@
   border: 0;
 }
 
-/* the chips' and rows' colour changes snap instead of fading */
 @media (prefers-reduced-motion: reduce) {
   .prompt-card-step,
   .prompt-card-option {
@@ -712,8 +660,6 @@
   .prompt-card { max-height: max(calc((var(--app-height, 100dvh) - var(--control-h)) * 0.6 - var(--prompt-card-strip)), calc(var(--touch-target) * 6)); }
 }
 
-/* the strip's height under the input card (Composer.css .composer-strip): its chip row, its padding
-   and bottom hairline, less the --space-4 it tucks under the card */
 .prompt-dock:has(~ .composer > .composer-strip) > .prompt-card {
   --prompt-card-strip: calc(var(--chip-h) + var(--space-5) + var(--space-1) + var(--hairline) - var(--space-4));
 }
@@ -730,7 +676,6 @@
     font-size: var(--fs-lg);
   }
 
-  /* a row with a description is already taller than a touch target */
   .prompt-card-option.has-description {
     padding-block: var(--space-1);
   }

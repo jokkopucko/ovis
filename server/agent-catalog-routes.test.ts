@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 import { AGENT_CATALOG, catalogPlatform, type AgentCatalogResponse } from "../shared/agent-catalog.ts";
 import { AgentDetector, catalogLocator, runVersion } from "./agent-catalog-detect.ts";
+import { handleAgentCatalogRequest } from "./agent-catalog-routes.ts";
+import type { LoginPathProbe } from "./shell-agent.ts";
 import { createServer } from "./index.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import { handleMachineRequest } from "./machine-api.ts";
@@ -29,9 +31,7 @@ describe("GET /api/agent-catalog", () => {
     mkdirSync(bin);
     const state = join(root, "state");
     mkdirSync(state);
-    // one paired device that may only watch
     writeFileSync(join(state, "devices.json"), JSON.stringify({ gate_closed_at: new Date().toISOString(), devices: [{ id: "0123456789abcdef", label: "Watch fixture", role: "watch", token_hash: createHash("sha256").update(WATCH_TOKEN).digest("hex"), created_at: new Date().toISOString(), last_seen_at: null }] }), { mode: 0o600 });
-    // installer folders are looked for in an empty home, never this PC's own
     const home = join(root, "home");
     mkdirSync(home);
     const agentDetector = new AgentDetector({ locate: catalogLocator({ probe: null }), home, env: {} });
@@ -106,6 +106,27 @@ describe("GET /api/agent-catalog", () => {
   });
 });
 
+it("says why the interactive shell's PATH was not read, and has Check again read it afresh", async () => {
+  let rereads = 0;
+  let problem: string | null = "/bin/zsh -l timed out after 2000 ms";
+  const probe: LoginPathProbe = Object.assign(async () => ({ path: "/nonexistent" }), { reread: () => { rereads += 1; problem = null; }, problem: () => problem });
+  const home = mkdtempSync(join(tmpdir(), "ovis-catalog-problem-"));
+  try {
+    const detector = new AgentDetector({ locate: catalogLocator({ probe, servicePath: () => "/nonexistent" }), home, env: {} });
+    const read = async (query: string, readOnly = false) => (await (await handleAgentCatalogRequest(new Request(`http://ovis/api/agent-catalog${query}`), "/api/agent-catalog", detector, "linux", readOnly))!.json()) as AgentCatalogResponse;
+    expect((await read("")).path_problem).toBe("/bin/zsh -l timed out after 2000 ms");
+    expect(rereads).toBe(0);
+    // a watching device reads it as kept: it never has the user's shell run again
+    expect((await read("?recheck=1", true)).path_problem).toBe("/bin/zsh -l timed out after 2000 ms");
+    expect(rereads).toBe(0);
+    const again = await read("?recheck=1");
+    expect(rereads).toBe(1);
+    expect("path_problem" in again).toBe(false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it("serves the first agent catalog GET from the startup warm cache without another version read", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-catalog-warm-"));
   const executable = join(root, "claude");
@@ -144,7 +165,6 @@ it("serves the first agent catalog GET from the startup warm cache without anoth
   try {
     server.warmAgentCatalog();
     await Promise.race([started.promise, deadline]);
-    // Startup and unrelated requests do not wait for the held version probe.
     expect((await fetch(`http://127.0.0.1:${server.port}/api/health?scope=bridge`)).status).toBe(200);
     const duringWarmup = fetch(`http://127.0.0.1:${server.port}/api/agent-catalog`);
     await Promise.race([overlapping.promise, deadline]);
@@ -170,14 +190,12 @@ it("serves the first agent catalog GET from the startup warm cache without anoth
 
 it("a GET during the warm-up joins its version reads: no agent's --version runs twice, queued ones included", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-catalog-warm-join-"));
-  // more agents than run at once, so some of the warm-up's reads still wait in its queue when the GET comes
   const ids = ["claude", "codex", "copilot", "opencode", "grok", "pi"];
   const executables = new Map(ids.map((id) => [id, join(root, id)]));
   for (const path of executables.values()) writeFileSync(path, "fixture executable");
   const runs = new Map<string, number>();
   const release = Promise.withResolvers<void>();
   const first = Promise.withResolvers<void>();
-  // every agent asked twice (the warm-up, then the GET) while no read has finished
   const asked = new Map<string, number>();
   const bothAsked = Promise.withResolvers<void>();
   class Detector extends AgentDetector {
@@ -208,7 +226,6 @@ it("a GET during the warm-up joins its version reads: no agent's --version runs 
     server.warmAgentCatalog();
     await Promise.race([first.promise, deadline]);
     const during = fetch(`http://127.0.0.1:${server.port}/api/agent-catalog`);
-    // the GET has asked for every agent before any read of the warm-up finished
     await Promise.race([bothAsked.promise, deadline]);
     release.resolve();
     const response = await Promise.race([during, deadline]);
@@ -271,7 +288,6 @@ it.skipIf(process.platform === "win32")("kills held warm-up processes on stop wi
   let launches = 0;
   let versionRuns = 0;
   let exits = 0;
-  // Each real version process holds a connection; its close is the process-death signal.
   const listener = Bun.listen({
     hostname: "127.0.0.1", port: 0,
     socket: {

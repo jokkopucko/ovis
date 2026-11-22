@@ -3,11 +3,6 @@
  * <script src> in <head>, ahead of the stylesheet and the app's modules, so the saved theme is on
  * the document before anything is painted. A module, async or deferred script could run after the
  * first paint, and an inline one is refused by the app's `script-src 'self'`.
- *
- * A build emits it under assets/ named after its contents (assets/theme-bootstrap-<hash>.js): the
- * server caches /assets/ for good (server/static.ts) and the service worker keeps a build's
- * /assets/ files (scripts/service-worker-build.ts), so it is emitted before those plugins read the
- * bundle. The dev server answers the same bundle at a path of its own.
  */
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -15,10 +10,8 @@ import type { Plugin } from "vite";
 
 // import.meta.url, not import.meta.dir: Vite bundles its config elsewhere and rewrites only the URL to this file's own
 const ENTRY = fileURLToPath(new URL("../src/theme-bootstrap.ts", import.meta.url));
-/** Where the dev server answers the script; a build names it after its contents instead. */
 export const DEV_PATH = "@theme-bootstrap.js";
 
-/** The boot script as one classic script: the theme reader and the generated theme table inside it, nothing imported. */
 export async function bundleThemeBootstrap(entry: string = ENTRY): Promise<string> {
   const result = await Bun.build({ entrypoints: [entry], target: "browser", format: "iife", minify: true });
   if (!result.success) throw new Error(`the theme boot script did not build:\n${result.logs.map(String).join("\n")}`);
@@ -27,12 +20,10 @@ export async function bundleThemeBootstrap(entry: string = ENTRY): Promise<strin
   return output.text();
 }
 
-/** The script's file in a build, named after its contents like the rest of assets/. */
 export function bootstrapFileName(source: string): string {
   return `assets/theme-bootstrap-${createHash("sha256").update(source).digest("hex").slice(0, 10)}.js`;
 }
 
-/** The script's address in the page for Vite's `base`: relative for a relative base (the demo), under the base otherwise. */
 export function bootstrapUrl(base: string, file: string): string {
   if (base === "" || base === "./") return `./${file}`;
   return `${base.endsWith("/") ? base : `${base}/`}${file}`;
@@ -42,9 +33,7 @@ const TITLE_END = "</title>";
 
 /**
  * The page with the script right after its <title>: below the theme-color meta it updates, above
- * the stylesheet and the module scripts Vite adds at the end of <head>. A page with no title is
- * left as it is: the browser scripts build title-less fixture pages through vite.config.ts, and
- * only the app's own page, which has one, reads a saved theme.
+ * the stylesheet and the module scripts Vite adds at the end of <head>.
  */
 export function injectBootstrap(html: string, src: string): string {
   const at = html.indexOf(TITLE_END);

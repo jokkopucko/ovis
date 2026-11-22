@@ -12,7 +12,6 @@ describe("glyphFit", () => {
     const fit = glyphFit(2 * IOS_CELL - IOS_HANGUL, IOS_HANGUL, IOS_CELL);
     expect(fit?.stretch).toBe(1.1);
     expect(fit!.scale * fit!.stretch).toBeCloseTo(1.2, 6);
-    // the glyph and the spacing after scaling still fill exactly the two cells
     expect(IOS_HANGUL * fit!.scale * fit!.stretch + fit!.spacing).toBeCloseTo(2 * IOS_CELL, 6);
     expect(fit!.spacing).toBeGreaterThan(0);
   });
@@ -128,7 +127,6 @@ const face = (family: string, unicodeRange: string, status = "unloaded"): FakeFa
   return fake;
 };
 
-/** A terminal's late faces, with its frames run by hand. */
 const follow = (faces: FakeFace[]) => {
   const frames: (() => void)[] = [];
   let arrivals = 0;
@@ -136,7 +134,6 @@ const follow = (faces: FakeFace[]) => {
   return { late, frames, arrivals: () => arrivals, runFrames: () => { for (const callback of frames.splice(0)) callback(); } };
 };
 
-// what follows each face ran before this: it was attached first
 const settled = (faces: FakeFace[]) => Promise.allSettled(faces.map((each) => each.loaded));
 
 describe("followLateFaces", () => {
@@ -218,7 +215,6 @@ describe("followLateFaces", () => {
     late.ask("Late Lines, monospace", "\u2500");
     runFrames();
     expect(arrivals()).toBe(1);
-    // measured again: drawing it from the face once more changes nothing
     late.ask("Late Lines, monospace", "\u2500");
     expect(frames).toHaveLength(0);
   });
@@ -252,7 +248,6 @@ describe("followLateFaces", () => {
 
 const GLOBALS = ["document", "HTMLSpanElement", "MutationObserver", "requestAnimationFrame", "window"] as const;
 
-/** What the renderer needs of a span: its text, classes, inline style and children. */
 class FakeSpan {
   textContent = "";
   className = "";
@@ -264,19 +259,12 @@ class FakeSpan {
   getBoundingClientRect() { return { left: 0, top: 0, width: 0 }; }
 }
 
-/**
- * adjustTerminalGlyphs on a stand-in page: one 7.8px cell per column, a canvas that measures an icon
- * 6px wide while its face has not loaded (the stand-in's width) and 13px once it has, xterm's rows
- * redrawn only when the test says (`draw`), and frames run by hand.
- */
-function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"]) {
+function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"], composing = false) {
   const before = GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const frames: (() => void)[] = [];
   const observers: ((records: { addedNodes: FakeSpan[] }[]) => void)[] = [];
   const icons = faces.find((each) => each.family.includes("Symbols"))!;
-  // a late box-drawing face draws its lines 13px wide, the stand-in 7.8px
   const lines = faces.find((each) => each.family.includes("Late Lines"));
-  // and Hangul 13px, a 1em syllable
   const measure = { font: "", measureText: (text: string) => ({ width: /[\ue000-\uf8ff]/u.test(text) ? (icons.status === "loaded" ? 13 : 6)
     : /[\u2500-\u257f]/u.test(text) && lines?.status === "loaded" ? 13 : /^[\uac00-\ud7a3]/u.test(text) ? 13 : 7.8 }) };
   const define = (name: string, value: unknown) => Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
@@ -288,18 +276,36 @@ function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"]) {
   const span = (text: string): FakeSpan => Object.assign(new FakeSpan(), { textContent: text });
   const drawn = texts.map(span);
   const rows = { querySelectorAll: () => drawn, getBoundingClientRect: () => ({ left: 0, top: 0, width: 78 }), offsetWidth: 78 };
-  const screen = { style: { width: "78px", height: "15px" }, querySelector: () => null };
+  // xterm's composition view, open while an IME composes, and the element its WidthCache measures in:
+  // a Hangul syllable 13px wide there once a late Hangul face has loaded, 11.245px in the stand-in
+  // before it, anything else a 7.8px cell
+  const hangul = faces.find((each) => each.family.includes("Hangul"));
+  const view = Object.assign(new FakeSpan(), { className: "composition-view active" });
+  Object.assign(view.style, { fontSize: "13px", transform: "", transformOrigin: "", paddingLeft: "" });
+  const xtermMeasure = {
+    textContent: "", reads: 0,
+    get offsetWidth() {
+      this.reads += 1;
+      const syllable = hangul && hangul.status !== "loaded" ? IOS_HANGUL : 13;
+      return this.textContent.length * (/^[\uac00-\ud7a3]/u.test(this.textContent) ? syllable : 7.8);
+    },
+  };
+  const screen = { style: { width: "78px", height: "15px" }, querySelector: (selector: string) => composing && selector === ".composition-view" ? view : null };
   const term = {
     cols: 10, rows: 1, refreshes: 0,
     options: { fontFamily: '"Symbols Nerd Font Mono", Menlo, "Ovis Hangul Mono", monospace', fontSize: 13, fontWeight: "normal", fontWeightBold: "bold" },
-    element: { querySelector: (selector: string) => selector === ".xterm-rows" ? rows : selector === ".xterm-screen" ? screen : null },
+    element: { querySelector: (selector: string) => selector === ".xterm-rows" ? rows : selector === ".xterm-screen" ? screen
+      : selector.endsWith(".xterm-char-measure-element") ? xtermMeasure : null },
     refresh() { term.refreshes += 1; },
   };
   const stop = adjustTerminalGlyphs(term as unknown as Terminal);
   return {
-    term, stop,
+    term, stop, view, xtermMeasure,
     runFrames: () => { for (const callback of frames.splice(0)) callback(); },
-    /** xterm draws a row again: its new span goes through the observer, as a MutationObserver delivers it */
+    compose: (text: string): void => {
+      view.textContent = text;
+      observers[1]!([]);
+    },
     draw: (text: string, className = "", letterSpacing = ""): FakeSpan => {
       const added = Object.assign(span(text), { className });
       added.style["letterSpacing"] = letterSpacing;
@@ -310,14 +316,12 @@ function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"]) {
   };
 }
 
-/** the font size an icon was drawn at inside its cell, or null when its span was left as xterm drew it */
 const iconSize = (span: FakeSpan): number | null => {
   const glyphs = span.children[0]?.children[0];
   const size = glyphs?.style["cssText"]?.match(/font-size:([\d.]+)px/);
   return size ? Number(size[1]) : null;
 };
 
-/** a declaration of a span's inline style, as the fit appended it (the last one wins) */
 const declared = (span: FakeSpan, property: string): string | undefined =>
   [...span.style["cssText"]!.matchAll(new RegExp(`(?:^|;)${property}:([^;]*)`, "g"))].at(-1)?.[1];
 
@@ -331,9 +335,7 @@ describe("adjustTerminalGlyphs fitting wide glyphs", () => {
 
   it("draws a Hangul run at the font's own height, widened to its cells, and keeps the next column", () => {
     page = glyphPage([face('"Symbols Nerd Font Mono"', ICON_RANGE)], []);
-    // xterm gives each 13px syllable the rest of its two 7.8px cells
     const cells = page.draw("한글입", "", `${2 * 7.8 - 13}px`);
-    // xterm's span keeps the cells' background on a box neither stretched nor clipped, the glyphs inside it are fitted
     expect(declared(cells, "transform")).toBeUndefined();
     expect(declared(cells, "clip-path")).toBeUndefined();
     expect(cells.style["letterSpacing"]).toBe("0px");
@@ -344,20 +346,117 @@ describe("adjustTerminalGlyphs fitting wide glyphs", () => {
     expect(13 * stretch).toBeCloseTo(0.9 * 2 * 7.8, 5);
     expect(declared(run, "transform-origin")).toBe("0 0");
     const px = (property: string): number => Number.parseFloat(declared(run, property)!);
-    // each syllable and its spacing, stretched, take its two cells, centered
     expect((13 + px("letter-spacing")) * stretch).toBeCloseTo(2 * 7.8, 5);
     expect(px("padding-left") * stretch * 2).toBeCloseTo(2 * 7.8 - 13 * stretch, 5);
-    // laid out unstretched, the run with its margin ends where its three syllables' six cells end
     expect(px("padding-left") + 3 * (13 + px("letter-spacing")) + px("margin-right")).toBeCloseTo(6 * 7.8, 5);
   });
 
   it("counts a syllable with a mark that does not compose as one character, so the next column stays", () => {
     page = glyphPage([face('"Symbols Nerd Font Mono"', ICON_RANGE)], []);
-    // NFC keeps U+0301 after the syllable: two characters in four cells
     const run = page.draw("한\u0301글", "", `${2 * 7.8 - 13}px`).children[0]!;
     expect(graphemes(run.textContent)).toBe(2);
     const px = (property: string): number => Number.parseFloat(declared(run, property)!);
     expect(px("padding-left") + 2 * (13 + px("letter-spacing")) + px("margin-right")).toBeCloseTo(4 * 7.8, 5);
+  });
+});
+
+const viewFit = (view: FakeSpan) => ({
+  fontSize: view.style["fontSize"], transform: view.style["transform"], transformOrigin: view.style["transformOrigin"],
+  letterSpacing: view.style["letterSpacing"], paddingLeft: view.style["paddingLeft"],
+});
+
+function freshViewFit(faces: FakeFace[], text: string, fontSize = 13) {
+  const fresh = glyphPage(faces, [], true);
+  try {
+    fresh.term.options.fontSize = fontSize;
+    fresh.compose(text);
+    return viewFit(fresh.view);
+  } finally {
+    fresh.stop();
+    fresh.restore();
+  }
+}
+
+describe("adjustTerminalGlyphs fitting the composition view", () => {
+  let page: ReturnType<typeof glyphPage> | undefined;
+  afterEach(() => {
+    page?.stop();
+    page?.restore();
+    page = undefined;
+  });
+
+  it("measures a composing syllable once for its glyph and font, however often xterm rewrites the box", () => {
+    const faces = [face('"Symbols Nerd Font Mono"', ICON_RANGE)];
+    const larger = freshViewFit(faces, "한", 14);
+    page = glyphPage(faces, [], true);
+    for (const text of ["ㅎ", "하", "한"]) page.compose(text);
+    const fitted = viewFit(page.view);
+    expect(fitted.transform).toMatch(/^scaleX\(/);
+    expect(fitted.transformOrigin).toBe("0 0");
+    expect(Number.parseFloat(fitted.letterSpacing!)).toBeGreaterThan(0);
+    expect(Number.parseFloat(fitted.paddingLeft!)).toBeGreaterThan(0);
+    expect(page.xtermMeasure.reads).toBe(3);
+    for (const text of ["한", "하", "한"]) page.compose(text);
+    expect(page.xtermMeasure.reads).toBe(3);
+    expect(viewFit(page.view)).toEqual(fitted);
+    expect(page.xtermMeasure.textContent).toBe("");
+
+    page.term.options.fontSize = 14;
+    page.compose("한");
+    expect(page.xtermMeasure.reads).toBe(4);
+    expect(viewFit(page.view)).toEqual(larger);
+    expect(larger.fontSize).not.toBe(fitted.fontSize);
+  });
+
+  it("measures a composing syllable again once its face arrived, though a later arrival set the family back", async () => {
+    const inFace = freshViewFit([face('"Symbols Nerd Font Mono"', ICON_RANGE, "loaded"), face('"Ovis Hangul Mono"', HANGUL_RANGE, "loaded")], "한");
+    const icons = face('"Symbols Nerd Font Mono"', ICON_RANGE);
+    const hangul = face('"Ovis Hangul Mono"', HANGUL_RANGE);
+    page = glyphPage([icons, hangul], ["\uf07b", "가"], true);
+    const family = page.term.options.fontFamily;
+    page.compose("한");
+    const inStandIn = viewFit(page.view);
+    expect(page.xtermMeasure.reads).toBe(1);
+    hangul.arrive();
+    await settled([hangul]);
+    page.runFrames();
+    icons.arrive();
+    await settled([icons]);
+    page.runFrames();
+    expect(page.term.options.fontFamily).toBe(family);
+    page.compose("한");
+    expect(page.xtermMeasure.reads).toBe(2);
+    expect(viewFit(page.view)).toEqual(inFace);
+    expect(inFace).not.toEqual(inStandIn);
+  });
+});
+
+describe("adjustTerminalGlyphs fitting a syllable composed before any row drew its script", () => {
+  let page: ReturnType<typeof glyphPage> | undefined;
+  afterEach(() => {
+    page?.stop();
+    page?.restore();
+    page = undefined;
+  });
+
+  it("measures it again once its face arrived, though no row had asked for that face", async () => {
+    const inFace = freshViewFit([face('"Symbols Nerd Font Mono"', ICON_RANGE, "loaded"), face('"Ovis Hangul Mono"', HANGUL_RANGE, "loaded")], "한");
+    const icons = face('"Symbols Nerd Font Mono"', ICON_RANGE);
+    const hangul = face('"Ovis Hangul Mono"', HANGUL_RANGE);
+    page = glyphPage([icons, hangul], [], true);
+    const family = page.term.options.fontFamily;
+    page.compose("한");
+    const inStandIn = viewFit(page.view);
+    expect(page.xtermMeasure.reads).toBe(1);
+    hangul.arrive();
+    await settled([hangul]);
+    page.runFrames();
+    page.compose("하");
+    page.compose("한");
+    expect(viewFit(page.view)).toEqual(inFace);
+    expect(inFace).not.toEqual(inStandIn);
+    expect(page.term.refreshes).toBe(0);
+    expect(page.term.options.fontFamily).toBe(family);
   });
 });
 
@@ -389,7 +488,6 @@ describe("adjustTerminalGlyphs with late faces", () => {
     const hangul = face('"Ovis Hangul Mono"', HANGUL_RANGE);
     page = glyphPage([icons, hangul]);
     const family = page.term.options.fontFamily;
-    // each arrival in a frame of its own, and xterm draws no row in between
     icons.arrive();
     await settled([icons]);
     page.runFrames();
@@ -436,11 +534,9 @@ describe("adjustTerminalGlyphs with late faces", () => {
       page.runFrames();
       expect(page.term.refreshes).toBe(0);
 
-      // xterm measured it with the stand-in, and now draws it from the face
       const drawn = page.draw(text, className, "0px");
       page.runFrames();
       expect(page.term.refreshes).toBe(1);
-      // under the cursor it takes its one cell before the frame that measures everything again
       if (className !== "") expect(Number.parseFloat(drawn.style["letterSpacing"]!)).toBeCloseTo(7.8 - 13, 5);
     });
   }

@@ -1,10 +1,21 @@
 """Owned test pane: capture actual terminal stdin without shell/TUI interpretation."""
 import os
+import signal
 import sys
 import termios
 import tty
 
 path, mode = sys.argv[1:]
+
+
+# SIGUSR1 / SIGUSR2: the program turns application cursor keys on / off, as a shell does around a command it runs.
+def cursor_keys(application):
+    name = "APPLICATION" if application else "NORMAL"
+    return lambda *_: os.write(1, ("\x1b[?1" + ("h" if application else "l") + "CURSOR KEYS " + name + "\r\n").encode())
+
+
+signal.signal(signal.SIGUSR1, cursor_keys(True))
+signal.signal(signal.SIGUSR2, cursor_keys(False))
 before = termios.tcgetattr(0)
 try:
     tty.setraw(0)

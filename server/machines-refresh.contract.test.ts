@@ -19,7 +19,6 @@ describe("slow structural roster refreshes", () => {
       let manager: MachineManager | undefined;
       let bridge: ReturnType<typeof Bun.serve> | undefined;
       let pending: { snapshot: SessionSnapshot; resolve: (snapshot: SessionSnapshot) => void } | undefined;
-      // each held read from the moment it begins (the request's arrival, or the local read's call), and each held response's publication
       const order: string[] = [];
       let entered = Promise.withResolvers<void>();
       let parked = Promise.withResolvers<void>();
@@ -55,7 +54,6 @@ describe("slow structural roster refreshes", () => {
             async fetch(request, server) {
               const { pathname } = new URL(request.url);
               if (pathname === "/ws" && server.upgrade(request, { data: undefined })) return;
-              // only the roster read is held: the move badge's read (watchMove) would otherwise take its place
               if (pathname !== "/api/session") return new Response(null, { status: 404 });
               return Response.json({ snapshot: await read() });
             },
@@ -79,7 +77,6 @@ describe("slow structural roster refreshes", () => {
           pending = undefined;
           parked = Promise.withResolvers<void>();
           entered = Promise.withResolvers<void>();
-          // only this response names the workspace so: the cached roster, or another read's, does not
           const marker = `ovis-test-slow-roster-held-${pass}`;
           const marked = { ...response.snapshot, workspaces: response.snapshot.workspaces.map((item) => item.workspace_id === workspace.workspace.workspace_id ? { ...item, label: marker } : item) };
           let published = false;
@@ -89,7 +86,6 @@ describe("slow structural roster refreshes", () => {
             if (snapshot?.workspaces.some((item) => item.label === marker)) { published = true; order.push(marker); }
           });
           const since = order.length;
-          // Structural invalidations only queue another read; they must not obsolete this one.
           if (remote) {
             const invalidated = Promise.withResolvers<void>();
             const stopWaiting = manager.subscribe((event) => {
@@ -104,7 +100,6 @@ describe("slow structural roster refreshes", () => {
           response.resolve(marked);
           await nextRead;
           stopListening();
-          // the held response was published before the next read began
           expect(order.slice(since)).toEqual([marker, "read"]);
         }
         held = false;
@@ -163,7 +158,6 @@ describe("workspace order evidence across a real bridge", () => {
       expect((await after).snapshot).toMatchObject({ order_epoch: sourceBoot, read_seq: 1 });
       const local = manager.list()[0]!;
       expect(local.source_boot_id).toBe("manager-boot");
-      // a fresh query asks the bridge again, past the start interval
       clock = 10_000;
       const verified = await handleMachineRequest(new Request("http://127.0.0.1/api/machines?verify_source_boot=remote"), manager);
       expect(verified.status).toBe(200);

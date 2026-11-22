@@ -6,9 +6,7 @@
 # when the Ovis plugin is installed (app/windows/src/Program.cs StartAtLogin), so while herdr says the
 # plugin is installed the copy and its sign-in start stay, and only its windows and shortcuts go. Without
 # the plugin all of it goes. herdr, the Ovis server it installed and their state stay. Anything that is
-# not provably that app's is left alone. Each step runs even when one before it failed; the exit code
-# says whether any did.
-# -Herdr: the herdr to ask; when empty, found where that app looks for it (app/windows/src/Paths.cs).
+# not provably that app's is left alone.
 param([Parameter(Mandatory = $true)][string]$NewExe, [string]$Herdr = '')
 $ErrorActionPreference = 'Stop'
 $failed = 0
@@ -83,13 +81,12 @@ $plugin = OvisPluginState
 $keepStart = $plugin -ne 'absent'
 
 # every open window of it, the installed copy's or one opened from a download: an open one could set
-# its shortcut and sign-in start up again, or run its Remove. It only drives herdr and the Ovis server,
-# which run on their own and keep running.
+# its shortcut and sign-in start up again, or run its Remove.
 Step 'close its windows' {
     # a second download saves as Ovis (1).exe
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name LIKE 'Ovis%.exe'")) {
         if (IsOldSetup $process.ExecutablePath) {
-            # asked to close first, as its own close button would; ended only when it does not within 10 s
+            # asked to close first, as its own close button would; ended when that request fails or it still runs 10 s later
             $running = Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
             if ($running -and $running.CloseMainWindow()) { Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue }
             if (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue) {
@@ -118,7 +115,6 @@ if ($plugin -eq 'present') {
     }
 }
 
-# its shortcuts (the Start menu one, also in a folder, and any the user copied to the desktop); this app's own are left
 Step 'remove its shortcuts' {
     $shell = New-Object -ComObject WScript.Shell
     $links = @()
@@ -142,7 +138,6 @@ if ($present -and -not $keepStart) {
     Step "remove $exe" {
         Remove-Item -LiteralPath $exe -Force
         Write-Output "removed $exe"
-        # only when nothing else is in the folder
         if (-not (Get-ChildItem -LiteralPath $dir -Force)) { Remove-Item -LiteralPath $dir -Force }
     }
 }

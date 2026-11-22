@@ -4,25 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSubmitText } from "./composer.ts";
 
-// The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
 let homeBefore: string | undefined;
 let integration: string;
 let agent: string;
-/** whether herdr's omp integration has reported the pane's session (omp's session_start) */
 let reported: boolean;
 let ompPid: number;
 let ompArgv: string[];
-/** the directory herdr reports the omp process running in */
 let ompCwd: string;
-/** whether herdr still shows an omp process in the pane */
 let ompShown: boolean;
 let calls: { method: string; params: Record<string, unknown> }[];
 let onPaneGet: (() => void) | undefined;
 let refusePrompt: boolean;
-/** a process started just now, standing in for an omp that is still starting */
 let fresh: ReturnType<typeof Bun.spawn> | undefined;
 
 beforeEach(() => {
@@ -36,7 +31,6 @@ beforeEach(() => {
   calls = [];
   onPaneGet = undefined;
   refusePrompt = false;
-  // the omp stand-ins and this process share a home with herdr's omp integration installed
   homeBefore = process.env["HOME"];
   process.env["HOME"] = root;
   integration = join(root, ".omp", "agent", "extensions", "herdr-omp-agent-state.ts");
@@ -64,6 +58,8 @@ beforeEach(() => {
           ? { pane: { pane_id: "w:p1", workspace_id: "w", tab_id: "w:t1", terminal_id: "w:p1", cwd: root, focused: false, revision: 0, agent, ...session } }
           : request.method === "pane.process_info" ? { process_info: { foreground_processes: ompShown ? [{ pid: ompPid, argv: ompArgv, cwd: ompCwd }] : [] } }
           : request.method === "agent.prompt" || request.method === "pane.send_keys" || request.method === "pane.send_text" ? {}
+          : request.method === "pane.read" && agent === "codex" ? { read: { text: "" } }
+          : request.method === "pane.read" && agent === "omp" ? { read: { text: "" } }
           : null;
         if (result === null) throw new Error(`unexpected RPC ${request.method}`);
         socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -102,7 +98,6 @@ const startedNow = async (environment: Record<string, string> = {}): Promise<num
   expect(await firstLine(child.stdout)).toBe("READY\n");
   return child.pid;
 };
-/** The first line a fixture prints: stdout can arrive in more than one chunk, so read up to the newline. */
 async function firstLine(stdout: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stdout.getReader();
   const decoder = new TextDecoder();
@@ -131,12 +126,9 @@ describe("a message sent to omp", () => {
     { target: "codex", text: "/model", expected: "/model" },
     { target: "omp", text: "/model x", expected: "/model x" },
   ])("sends $expected when $target receives $text", async ({ target, text, expected }) => {
-    // Given an agent ready to receive a chat command.
     agent = target;
     reported = target === "omp";
-    // When the chat command is sent immediately.
     await submitter()("w:p1", text, text, Date.now());
-    // Then only omp's bare model command opens its session picker.
     expect(calls.find((call) => call.method === "agent.prompt")?.params["text"]).toBe(expected);
   });
 
@@ -145,13 +137,10 @@ describe("a message sent to omp", () => {
     { target: "codex", text: "/model", expected: "/model" },
     { target: "omp", text: "/model x", expected: "/model x" },
   ])("types $expected when $target refuses $text", async ({ target, text, expected }) => {
-    // Given an agent whose prompt RPC refuses immediate delivery.
     agent = target;
     reported = target === "omp";
     refusePrompt = true;
-    // When the send falls back to terminal input.
     await submitter()("w:p1", text, text, Date.now());
-    // Then the fallback preserves the immediate path's command choice.
     expect(calls.find((call) => call.method === "pane.send_text")?.params["text"]).toBe(expected);
     expect(calls.find((call) => call.method === "pane.send_keys")?.params["keys"]).toEqual(["Enter"]);
   });
@@ -161,7 +150,6 @@ describe("a message sent to omp", () => {
     ompPid = posix ? await startedNow() : 1;
     await submitter()("w:p1", "/effort", "/effort", Date.now());
     expect(count("agent.prompt")).toBe(1);
-    // no startup wait reads omp's process: the one read is the outcome's process binding, alongside delivery
     expect(count("pane.process_info")).toBe(1);
   });
 
@@ -185,7 +173,6 @@ describe("a message sent to omp", () => {
   });
 
   for (const equals of [false, true]) it.skipIf(!posix)(`waits for the integration report with --session-dir${equals ? "=" : " "}X`, async () => {
-    // Given: sessions moved, but herdr's integration remains in the normal agent directory.
     ompPid = await startedNow();
     const sessions = join(root, "sessions");
     ompArgv = ["omp", ...(equals ? [`--session-dir=${sessions}`] : ["--session-dir", sessions])];
@@ -194,9 +181,7 @@ describe("a message sent to omp", () => {
       expect(count("agent.prompt"), "nothing is sent before the integration reports").toBe(0);
       reported = true;
     };
-    // When: a chat message arrives before the integration reports.
     await submitter()("w:p1", "/effort", "/effort", Date.now());
-    // Then: delivery follows the report, once, without extra keys.
     expect(reported).toBe(true);
     expect(count("agent.prompt")).toBe(1);
     expect(count("pane.send_keys")).toBe(0);
@@ -210,7 +195,6 @@ describe("a message sent to omp", () => {
     // only Linux shows the server another process's environment
     { name: "in the agent directory PI_CODING_AGENT_DIR names", place: () => join(root, "custom-agent", "extensions"), environ: true },
   ]) it.skipIf(!posix || environ === true && process.platform !== "linux")(`waits for the report of an integration ${name}`, async () => {
-    // Given: the integration is not in the default agent directory, but where this omp loads it.
     rmSync(integration);
     const dir = place();
     mkdirSync(dir, { recursive: true });
@@ -221,9 +205,7 @@ describe("a message sent to omp", () => {
       expect(count("agent.prompt"), "nothing is sent before the integration reports").toBe(0);
       reported = true;
     };
-    // When: a chat message arrives before the integration reports.
     await submitter()("w:p1", "/effort", "/effort", Date.now());
-    // Then: delivery follows the report, once.
     expect(reported).toBe(true);
     expect(count("agent.prompt")).toBe(1);
     expect(count("pane.send_keys")).toBe(0);
@@ -238,7 +220,6 @@ describe("a message sent to omp", () => {
   });
 
   it.skipIf(!posix)("sends once the report came even when herdr no longer shows the omp process", async () => {
-    // a lookup that finds no omp proves nothing about a replacement: the pane's agent is still omp
     ompPid = await startedNow();
     onPaneGet = () => {
       if (count("pane.get") !== 2) return;

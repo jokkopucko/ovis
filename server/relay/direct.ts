@@ -30,7 +30,6 @@ import { RelaySession, relayClock } from "./session.ts";
 import type { RelaySocketHandlers } from "./virtual-socket.ts";
 import { version } from "../../package.json";
 
-/** The port asked for first; another one when it is taken (AUTH_OK says which). */
 export const DIRECT_PORT = 7319;
 /** Carriers not yet signed in: per source address, and in total across every address listened on. */
 const MAX_PENDING_PER_SOURCE = 2;
@@ -63,7 +62,7 @@ export function rankLanAddresses(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>
 function routedAddress(): Promise<string | null> {
   return new Promise((resolve) => {
     const socket = createSocket("udp4");
-    const done = (address: string | null): void => { try { socket.close(); } catch { /* already closed */ } resolve(address); };
+    const done = (address: string | null): void => { try { socket.close(); } catch {} resolve(address); };
     socket.once("error", () => done(null));
     socket.connect(9, "1.1.1.1", () => {
       try { done(socket.address().address); } catch { done(null); }
@@ -107,24 +106,19 @@ export function directPeerAllowed(listening: string, source: string | undefined)
 export interface DirectCarrierOptions {
   readonly identity: RelayIdentity;
   readonly services: RequestServices;
-  /** The main listener's port, as RelaySession takes it. */
   readonly port: number;
   readonly serverVersion?: string;
   readonly clock?: MuxClock;
   /** The private addresses to listen on; this PC's own by default (rankLanAddresses). Tests name loopback. */
   readonly addresses?: () => readonly string[];
-  /** The PC's signed-in sessions over every way in (admissions.ts); its own when not given. */
   readonly sessions?: SignedInSessions;
-  /** The port to try first (DIRECT_PORT); 0 lets the system pick. */
   readonly preferredPort?: number;
   /** Whether a peer may connect; private IPv4 only by default. Tests on loopback widen it. */
   readonly peerAllowed?: (address: string | undefined) => boolean;
   readonly refreshMs?: number;
-  /** What AUTH_OK names for the port listened on, in place of the addresses: tests on loopback name a private one. */
   readonly advertise?: (port: number) => readonly string[];
   /** This PC's Tailscale address as `tailscale status` says it (tailnetAddresses), or null when unknown. */
   readonly tailnetIp?: () => string | null;
-  /** The Tailscale addresses to listen on; this PC's own by default (tailnetAddresses), none when `addresses` is given. */
   readonly tailnetAddresses?: () => readonly string[];
 }
 
@@ -139,15 +133,12 @@ interface Carrier {
   readonly transport: Transport;
   readonly sockets: Set<Parameters<RelaySocketHandlers["open"]>[0]>;
   cancelTimeout: () => void;
-  /** opening order, for giving way oldest first */
   readonly order: number;
   /** when it opened, on the carrier's clock: a client gets GRACE_MS before a newer one may take its place */
   readonly openedAt: number;
   session?: RelaySession;
   deviceId?: string;
-  /** Gives its signed-in place back (SignedInSessions.admit). */
   release?: () => void;
-  /** counts the session as its device's for good: its client opened a stream on it */
   chosen?: () => void;
 }
 
@@ -200,10 +191,6 @@ export class DirectCarrier {
     this.signedIn = options.sessions ?? new SignedInSessions();
   }
 
-  /**
-   * Listens and follows the PC's addresses; settles once the first bind was tried. A failure leaves it
-   * off (and the relay as it is) with a message.
-   */
   async start(): Promise<void> {
     if (this.stopped) return;
     await this.refresh();
@@ -215,11 +202,9 @@ export class DirectCarrier {
   }
 
   private async refresh(): Promise<void> {
-    // addresses named (tests) name every one: nothing of this PC's own is looked up beside them
     const tailnet = this.options.tailnetAddresses?.()
       ?? (this.options.addresses ? [] : tailnetAddresses(networkInterfaces(), this.options.tailnetIp?.() ?? null));
     const lan = this.options.addresses?.() ?? rankLanAddresses(networkInterfaces(), await routedAddress());
-    // the Tailscale one keeps a place: the home network's first ones fill the rest
     if (!this.stopped) this.bind([...lan.slice(0, MAX_DIRECT_CARRIERS - Math.min(tailnet.length, 1)), ...tailnet.slice(0, 1)]);
   }
 
@@ -234,12 +219,10 @@ export class DirectCarrier {
     return named.filter((carrier) => isDirectCarrier(carrier) && (tailnet || !isTailnetCarrier(carrier))).slice(0, MAX_DIRECT_CARRIERS);
   }
 
-  /** The port listened on, or null while nothing is. */
   get port(): number | null { return this.bound?.port ?? null; }
 
   get sessions(): number { return [...this.carriers.values()].filter((carrier) => carrier.deviceId && carrier.session?.mux.active).length; }
 
-  /** (Re)binds when the addresses changed: every one on one port, or none. Carriers already open stay. */
   private bind(listed: readonly string[]): void {
     const addresses = [...new Set(listed)];
     if (this.bound && addresses.join() === this.bound.addresses.join()) return;
@@ -313,7 +296,6 @@ export class DirectCarrier {
     });
   }
 
-  /** Room for one more client that has not signed in (admissionDrops), or false; `apply` false only asks. */
   private makeRoom(source: string, apply: boolean): boolean {
     const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId);
     const drops = admissionDrops(pending, source, this.clock.now());
@@ -322,7 +304,6 @@ export class DirectCarrier {
     return true;
   }
 
-  /** Ends a client that had not signed in, all at once: its place, timers and handshake go now, not at its close. */
   private drop(carrier: Carrier): void {
     const id = carrier.socket.data.id;
     if (this.carriers.get(id) !== carrier) return;
@@ -346,7 +327,6 @@ export class DirectCarrier {
     };
     const carrier: Carrier = { socket, source, transport, order: ++this.opened, openedAt: this.clock.now(), sockets: new Set(), cancelTimeout: this.clock.setTimeout(() => socket.close(), HANDSHAKE_MS) };
     this.carriers.set(id, carrier);
-    // the relay's word to a client that it reached the PC (shared/relay-channel.ts)
     socket.send(JSON.stringify({ type: "assigned", connection_id: id }));
     const { identity, services } = this.options;
     void openDaemonSecureChannel(transport, {
@@ -397,18 +377,15 @@ export class DirectCarrier {
     carrier.cancelTimeout();
     carrier.deviceId = deviceId;
     const line = carrier.session ? { route: inTailnet(carrier.source) ? "tailscale" as const : "lan" as const, since: Date.now(), mux: carrier.session.mux } : undefined;
-    // an app racing its carriers drops all but one: only the one it uses makes its device's older sessions give way
     const admission = this.signedIn.candidate(deviceId, () => carrier.session?.close("resource_exhausted"), line);
     carrier.release = admission.release;
     carrier.chosen = admission.chosen;
   }
 
-  /** Stops listening and ends every carrier, signed in or not. */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     this.cancelRefresh?.();
-    // no new connections; the carriers' GOAWAY goes out before their sockets close
     const listeners = this.listeners.splice(0);
     for (const listener of listeners) listener.stop(false);
     this.bound = null;

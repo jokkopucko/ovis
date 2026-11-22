@@ -3,7 +3,6 @@ import { sheetStep } from "./historyKeys.ts";
 
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 
-/** A browser's history, as far as this module uses it: a stack, a cursor, and popstate after `go`. */
 function fakeWindow() {
   const stack: unknown[] = [null];
   let index = 0;
@@ -15,13 +14,11 @@ function fakeWindow() {
     go(by: number) { index = Math.max(0, Math.min(stack.length - 1, index + by)); queueMicrotask(() => { for (const listener of listeners) listener({ state: stack[index] }); }); },
   };
   const window = { history, addEventListener(type: string, listener: (event: { state: unknown }) => void) { if (type === "popstate") listeners.push(listener); } };
-  /** the Settings entries up to the current one, as the module wrote them */
   const held = () => stack.slice(0, index + 1).map((state) => (state as Record<string, unknown> | null)?.["ovis:settings"] ?? null);
   return { window, held };
 }
 const fake = fakeWindow();
 (globalThis as unknown as { window: unknown }).window = fake.window;
-// after the window: the module listens to it as it loads
 const { outsideSettings, recordSettings, settingsEntry, settingsLevels, settingsSteppedOff } = await import("./settingsHistory.ts");
 const settled = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => queueMicrotask(() => resolve(undefined))); };
 
@@ -58,14 +55,12 @@ describe("settingsEntry", () => {
   });
 });
 
-/** what sheetHistory's enterSheet does: the entry under the sheet takes its id, and the sheet's entry is pushed with it */
 function openSheet(history: { state: unknown; replaceState(state: unknown): void; pushState(state: unknown): void }, id: string): void {
   const fields = history.state !== null && typeof history.state === "object" ? history.state : {};
   history.replaceState({ ...fields, "ovis:sheet-under": id });
   history.pushState({ ...fields, "ovis:sheet-under": id, "ovis:sheet": id });
 }
 
-/** what sheetHistory makes of a push from its sheet's entry: a replace, without the sheet's mark */
 const withoutSheet = (state: unknown): unknown => {
   if (state === null || typeof state !== "object") return state;
   const { ["ovis:sheet"]: _sheet, ...rest } = state as Record<string, unknown>;
@@ -74,21 +69,17 @@ const withoutSheet = (state: unknown): unknown => {
 
 describe("recordSettings", () => {
   it("rebuilds the earlier steps when the width changes: the list goes under a page a wider dialog opened, and away again", async () => {
-    // a wider dialog opened on Terminal: one step
     recordSettings([{ page: "terminal", keyBar: false }]);
     await settled();
     expect(fake.held()).toEqual([null, { page: "terminal", keyBar: false, depth: 1 }]);
-    // the window narrows: a phone's list belongs under the page, not a second Terminal over it
     recordSettings([{ page: null, keyBar: false }, { page: "terminal", keyBar: false }]);
     await settled();
     expect(fake.held()).toEqual([null, { page: null, keyBar: false, depth: 1 }, { page: "terminal", keyBar: false, depth: 2 }]);
-    // the key bar editor opens on the phone, then the window widens: the list under them goes
     recordSettings([{ page: null, keyBar: false }, { page: "terminal", keyBar: false }, { page: "terminal", keyBar: true }]);
     await settled();
     recordSettings([{ page: "terminal", keyBar: false }, { page: "terminal", keyBar: true }]);
     await settled();
     expect(fake.held()).toEqual([null, { page: "terminal", keyBar: false, depth: 1 }, { page: "terminal", keyBar: true, depth: 2 }]);
-    // closing takes every step off
     recordSettings([]);
     await settled();
     expect(fake.held()).toEqual([null]);
@@ -96,7 +87,6 @@ describe("recordSettings", () => {
 
   it("tells the app's Back that closing Settings stepped off its entries, and that a Back between panes did not", async () => {
     const seen: boolean[] = [];
-    // the app listens after this module, as useAddressBar does, and reads it for the same event
     fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
     fake.window.history.pushState({ "ovis:nav": true });
     recordSettings([{ page: "remote", keyBar: false }]);
@@ -114,24 +104,19 @@ describe("recordSettings", () => {
     fake.window.addEventListener("popstate", () => seen.push(settingsSteppedOff()));
     fake.window.history.pushState({ "ovis:nav": true });
     openSheet(fake.window.history, "palette");
-    // sheetHistory turns a push made from a sheet into a replace of the sheet's entry: the entry
-    // Settings began from, with its mark, is gone, and the one under its list is the pane's
     const push = fake.window.history.pushState;
     fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
     expect(Object.keys((fake.window.history.state ?? {}) as object)).not.toContain("ovis:sheet");
-    // Back through the levels: the page, then the list onto the pane's entry
     fake.window.history.go(-1);
     await settled();
-    // the entry Settings took over is its own now, never the sheet's again
     expect(Object.keys((fake.window.history.state ?? {}) as object)).not.toContain("ovis:sheet");
     fake.window.history.go(-1);
     await settled();
     expect(seen).toEqual([false, true]);
     recordSettings([]);
     await settled();
-    // and closed with X or Escape from the same start
     openSheet(fake.window.history, "palette-2");
     fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
@@ -153,7 +138,6 @@ describe("recordSettings", () => {
     fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
-    // the browser's Back menu, three entries back from the page: to A, past B the palette opened over
     fake.window.history.go(-3);
     await settled();
     expect(seen).toEqual([false]);
@@ -173,13 +157,11 @@ describe("recordSettings", () => {
     fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "devices", keyBar: false }]);
     await settled();
-    // Sign out's sheet on Phone & devices marks the page's entry with its own id, then Cancel steps off it
     openSheet(fake.window.history, "sign-out");
     fake.window.history.go(-1);
     await settled();
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
-    // the browser's Back menu, two entries back from the page: onto B, the entry the palette opened over
     fake.window.history.go(-2);
     await settled();
     expect(seen).toEqual([false, true]);
@@ -199,17 +181,14 @@ describe("recordSettings", () => {
     fake.window.history.pushState = (state: unknown) => { fake.window.history.pushState = push; fake.window.history.replaceState(withoutSheet(state)); };
     recordSettings([{ page: null, keyBar: false }, { page: "remote", keyBar: false }]);
     await settled();
-    // a preview opened over Settings, which then closes under it: the preview's entry stays
     fake.window.history.pushState(outsideSettings(fake.window.history.state));
     recordSettings([]);
     await settled();
-    // Settings opened again from the preview's entry, with Sign out's sheet inside it, then Cancel
     recordSettings([{ page: null, keyBar: false }, { page: "devices", keyBar: false }]);
     await settled();
     openSheet(fake.window.history, "sign-out-2");
     fake.window.history.go(-1);
     await settled();
-    // the browser's Back menu, past the preview this opening began from onto B: B's pane, no closing
     fake.window.history.go(-5);
     await settled();
     expect(settingsEntry(fake.window.history.state)).toBeNull();
@@ -228,7 +207,6 @@ describe("recordSettings", () => {
     fake.window.history.pushState({ "ovis:nav": "b" });
     recordSettings([{ page: "remote", keyBar: false }]);
     await settled();
-    // the browser's Back menu, two entries back: to pane A, past B where Settings was opened
     fake.window.history.go(-2);
     await settled();
     expect(seen).toEqual([false]);
@@ -244,7 +222,6 @@ describe("recordSettings", () => {
     fake.window.history.pushState({ "ovis:nav": true });
     recordSettings([{ page: "remote", keyBar: false }]);
     await settled();
-    // a preview opened from the Settings entry, then Back onto Settings and Forward onto the preview
     fake.window.history.pushState(outsideSettings(fake.window.history.state));
     fake.window.history.go(-1);
     await settled();
@@ -256,17 +233,14 @@ describe("recordSettings", () => {
     recordSettings([]);
     await settled();
     expect(seen).toEqual([false, false, false, true]);
-    // back onto the first entry, where the next case starts
     fake.window.history.go(-1);
     await settled();
   });
 
   it("does not take a step it cannot see on trust: entries of an earlier opening a Forward landed on are rebuilt", async () => {
-    // entries an earlier opening left (a wider dialog's Terminal and its editor), landed on by Forward
     const key = "ovis:settings";
     fake.window.history.pushState({ [key]: { page: "terminal", keyBar: false, depth: 1 } });
     fake.window.history.pushState({ [key]: { page: "terminal", keyBar: true, depth: 2 } });
-    // the dialog opens on a phone showing the editor: the list, the page, the editor
     recordSettings([{ page: null, keyBar: false }, { page: "terminal", keyBar: false }, { page: "terminal", keyBar: true }]);
     await settled();
     expect(fake.held()).toEqual([null, { page: null, keyBar: false, depth: 1 }, { page: "terminal", keyBar: false, depth: 2 }, { page: "terminal", keyBar: true, depth: 3 }]);
@@ -276,8 +250,7 @@ describe("recordSettings", () => {
   });
 });
 
-// Slow traversals need a cursor that moves only when they land, and a clock under the test's
-// control. Restore globals so this import-time browser stub cannot leak into another file.
+// Restore globals so this import-time browser stub cannot leak into another file.
 const baselineWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 const originalSetTimeout = globalThis.setTimeout;
 const originalClearTimeout = globalThis.clearTimeout;
@@ -404,7 +377,6 @@ describe("history traversal races", () => {
     browser.onSettingsHistory((_entry, own) => moves.push(own));
     browser.recordSettings(browser.settingsLevels(false, "terminal", true));
     browser.advance(1001);
-    // SettingsDialog unmounts before its width-change traversal has landed.
     browser.recordSettings([]);
     expect(browser.requests).toHaveLength(1);
     await browser.land();
@@ -434,20 +406,16 @@ describe("history traversal races", () => {
     browser.history.pushState({ route: "markerless" });
     browser.history.pushState({ route: "after-markerless" });
 
-    // Back lands on a state without the marker that is not the one Settings opened from: the app
-    // closes Settings, and its entries stay buried under that state
     await browser.move(-1);
     expect(moves).toEqual([[null, false]]);
     browser.recordSettings([]);
     expect(browser.requests).toEqual([]);
-    // the next Back lands on them from above: they are stepped over, never shown again
     await browser.move(-1);
     expect(moves).toEqual([[null, false]]);
     await browser.land();
     expect(moves).toEqual([[null, false], [null, true]]);
     expect(browser.index).toBe(0);
     expect(browser.settingsEntry(browser.history.state)).toBeNull();
-    // Forward from where they began still opens them again, as for any earlier opening
     await browser.move(1);
     expect(moves[2]).toEqual([{ page: null, keyBar: false, depth: 1 }, false]);
   });
@@ -461,8 +429,6 @@ describe("history traversal races", () => {
     browser.history.pushState({ route: "after-markerless" });
     await browser.move(-1);
     browser.recordSettings([]);
-    // Back onto the buried entries steps over them to the entry they began from: a Back of the
-    // user's, which the app takes to that entry's pane, not Settings closing
     await browser.move(-1);
     await browser.land();
     expect(browser.index).toBe(0);
@@ -473,20 +439,17 @@ describe("history traversal races", () => {
     const browser = await delayedHistory();
     const moves: Array<[ReturnType<typeof browser.settingsEntry>, boolean]> = [];
     browser.onSettingsHistory((entry, own) => moves.push([entry, own]));
-    // a first opening, buried by a markerless entry and closed
     browser.recordSettings(browser.settingsLevels(false, "appearance", false));
     browser.history.pushState({ route: "first" });
     browser.history.pushState({ route: "after-first" });
     await browser.move(-1);
     browser.recordSettings([]);
-    // a second opening from there, buried the same way and closed
     browser.recordSettings(browser.settingsLevels(false, "appearance", false));
     browser.history.pushState({ route: "second" });
     browser.history.pushState({ route: "after-second" });
     await browser.move(-1);
     browser.recordSettings([]);
     expect(browser.requests).toEqual([]);
-    // Back steps over the newer opening, then the older one: neither shows Settings again
     await browser.move(-1);
     await browser.land();
     await browser.move(-1);
@@ -503,7 +466,6 @@ describe("history traversal races", () => {
     const moves: boolean[] = [];
     browser.onSettingsHistory((_entry, own) => moves.push(own));
     browser.history.pushState({ route: "other" });
-    // the X: nothing of Settings is under the cursor, so nothing is stepped back over now
     browser.recordSettings([]);
     expect(browser.requests).toEqual([]);
     await browser.move(-1);
@@ -513,7 +475,6 @@ describe("history traversal races", () => {
   });
 
   it("keeps a preview opened over Settings on a reload, and steps Back over the Settings under it", async () => {
-    // what a link to a file and Settings leaves: the entry it opened from, Settings, the preview over it
     const base = { "ovis:settings-base": "a" };
     const settings = { ...base, "ovis:settings": { page: "about", keyBar: false, depth: 1 } };
     const preview = { ...outsideSettings(settings), "ovis:file-preview": { path: "README.md", paneId: null, machineId: "local" } };
@@ -521,7 +482,6 @@ describe("history traversal races", () => {
     const browser = await delayedHistory([base, settings, preview]);
     const moves: Array<[ReturnType<typeof browser.settingsEntry>, boolean]> = [];
     browser.onSettingsHistory((entry, own) => moves.push([entry, own]));
-    // the reload closes Settings without stepping back: the preview's entry stays where it is
     expect(browser.loadedOnSettingsEntry()).toBe(true);
     expect(browser.requests).toEqual([]);
     await browser.move(-1);
@@ -555,9 +515,7 @@ describe("history traversal races", () => {
     const moves: boolean[] = [];
     browser.onSettingsHistory((_entry, own) => moves.push(own));
     browser.recordSettings([]);
-    // the app's address bar drops Settings from the address on the entry the step leaves
     browser.history.replaceState({ ...browser.history.state as object });
-    // Settings opened again before the step lands
     browser.recordSettings(browser.settingsLevels(false, "appearance", false));
     await browser.land();
     expect(moves).toEqual([true]);
@@ -566,7 +524,6 @@ describe("history traversal races", () => {
 
   it("stays open when a closed sheet's step off the entry it opened over lands under it (#2000)", async () => {
     for (const step of [true, false]) {
-      // the palette's sheet, closed: its step back off its entry is on its way
       const browser = await delayedHistory([{ "ovis:sheet-under": "palette" }, { "ovis:sheet-under": "palette", "ovis:sheet": "palette" }]);
       const moves: boolean[] = [];
       browser.onSettingsHistory((_entry, own) => moves.push(own));
@@ -575,11 +532,46 @@ describe("history traversal races", () => {
       sheetStep.lands = () => step;
       try { await browser.move(-2); }
       finally { sheetStep.lands = answer; }
-      // the sheet's step: Settings stays, on an entry made again; a Back of the user's: it closes
       expect(moves).toEqual(step ? [] : [false]);
       expect(browser.settingsEntry(browser.history.state)).toEqual(step ? { page: null, keyBar: false, depth: 1 } : null);
       expect(browser.index).toBe(step ? 1 : 0);
     }
+  });
+
+  it("leaves Settings as it is for a Back that a phone sheet with no entry refused, and for its way back", async () => {
+    const browser = await delayedHistory([{ "ovis:nav": true }]);
+    browser.recordSettings(browser.settingsLevels(false, "appearance", false));
+    expect(browser.index).toBe(1);
+    const moves: Array<[string | null, boolean]> = [];
+    browser.onSettingsHistory((entry, own) => moves.push([entry?.page ?? null, own]));
+    const answer = sheetStep.holds;
+    sheetStep.holds = () => true;
+    try { await browser.move(-1); await browser.move(1); }
+    finally { sheetStep.holds = answer; }
+    expect(moves).toEqual([]);
+    expect(browser.settingsEntry(browser.history.state)).toEqual({ page: "appearance", keyBar: false, depth: 1 });
+    expect(browser.settingsSteppedOff()).toBe(false);
+    await browser.move(-1);
+    expect(moves).toEqual([[null, false]]);
+    expect(browser.settingsSteppedOff()).toBe(true);
+  });
+
+  it("does not open again on an entry it left, when a phone sheet goes onto that entry to take it", async () => {
+    const browser = await delayedHistory([{ "ovis:nav": true }]);
+    browser.recordSettings(browser.settingsLevels(false, "appearance", false));
+    const moves: Array<[string | null, boolean]> = [];
+    browser.onSettingsHistory((entry, own) => moves.push([entry?.page ?? null, own]));
+    await browser.move(-1);
+    browser.recordSettings([]);
+    expect(moves).toEqual([[null, false]]);
+    const answer = sheetStep.taking;
+    sheetStep.taking = () => true;
+    try { await browser.move(1); }
+    finally { sheetStep.taking = answer; }
+    expect(moves).toEqual([[null, false]]);
+    await browser.move(-1);
+    await browser.move(1);
+    expect(moves.at(-1)).toEqual(["appearance", false]);
   });
 
   it("lets go of its step back when a write on the same entry changes the Settings it holds", async () => {

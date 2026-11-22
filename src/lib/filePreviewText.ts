@@ -1,18 +1,14 @@
 /** Text shows its first part: this also bounds parsing and highlighting in the viewer. */
 export const TEXT_PREVIEW_BYTES = 256 * 1024;
 
-/** Source viewers opt into these (pass the bytes as `limit`, the lines as `maxLines`); the default stays TEXT_PREVIEW_BYTES. */
 export const SOURCE_PREVIEW_BYTES = 8 * 1024 * 1024;
 export const SOURCE_PREVIEW_LINES = 200_000;
 
 export interface FilePreviewText {
   text: string;
   truncated: boolean;
-  /** The whole size reported with the body, not the earlier stat. */
   total?: number;
-  /** Only with `maxLines`, and only when truncated: which budget (or a server range cut, as "bytes") ended the text; "time" when the deadline did (`partialOnTimeout`). */
   truncatedBy?: "bytes" | "lines" | "time";
-  /** Only with `maxLines`: logical lines of `text`, i.e. newline-terminated lines plus an unterminated final one. */
   lines?: number;
 }
 
@@ -23,7 +19,7 @@ function countLines(text: string): number {
 }
 
 /** Range is a request, not a client memory limit: a peer can ignore it or a file can grow. */
-export async function readFilePreviewText(response: Response, limit: number, options: { signal?: AbortSignal; timeoutMs?: number; /** Opt in to a logical-line budget, counted on bytes as they stream. */ maxLines?: number; /** On the deadline, return what arrived as a cut prefix instead of failing, when anything did. */ partialOnTimeout?: boolean } = {}): Promise<FilePreviewText> {
+export async function readFilePreviewText(response: Response, limit: number, options: { signal?: AbortSignal; timeoutMs?: number; maxLines?: number; partialOnTimeout?: boolean } = {}): Promise<FilePreviewText> {
   const discard = () => { void response.body?.cancel().catch(() => {}); };
   // An empty file has no first byte to send for Range. Discard any error body, never render it.
   if (response.status === 416 && response.headers.get("content-range")?.trim() === "bytes */0") {
@@ -45,7 +41,6 @@ export async function readFilePreviewText(response: Response, limit: number, opt
   const decoder = new TextDecoder();
   let text = "";
   let bytes = 0;
-  // Only partial files lose an incomplete final line; a single huge line keeps its whole characters.
   const finish = (truncated: boolean, by: "bytes" | "lines" | "time" = "bytes"): FilePreviewText => {
     const newline = text.lastIndexOf("\n");
     return budgeted({ text: truncated ? (newline < 0 ? text : text.slice(0, newline + 1)) : text + decoder.decode(), truncated, ...total }, by);
@@ -90,7 +85,6 @@ export async function readFilePreviewText(response: Response, limit: number, opt
       }
     }
   } catch (error) {
-    // a slow link still shows the part it delivered, as a cut prefix, rather than nothing
     if (error === timedOut && options.partialOnTimeout && bytes > 0) return finish(true, "time");
     throw error;
   } finally {

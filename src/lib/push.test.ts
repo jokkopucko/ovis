@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensurePushSubscription, pushSupported, registerPendingPush, removePushSubscription, testDevicePush } from "./push.ts";
 import { ApiError } from "./api.ts";
+import { confirmation } from "./pushConfirm.ts";
 import { notificationState, refreshNotificationState, requestNotificationPermission } from "./notifications.ts";
 import { useNotificationSwitch } from "./useNotifications.ts";
 import { fakeIndexedDB } from "./indexedDB.fake.ts";
@@ -33,7 +34,6 @@ interface StandInSubscription {
 let live: StandInSubscription | null;
 let issued: number;
 let registered: string[];
-/** endpoints the server answers `subscription_gone` for: their push service retired them */
 let retired: Set<string>;
 const saved = {
   fetch: globalThis.fetch,
@@ -94,7 +94,6 @@ afterEach(() => {
 
 describe("ensurePushSubscription", () => {
   it("gives overlapping callers one subscription, not two where only the later survives", async () => {
-    // the bell's first tap: its own call plus the load-time registration the grant starts
     const [fromClick, fromEffect] = await Promise.all([ensurePushSubscription(), ensurePushSubscription()]);
     expect(issued).toBe(1);
     expect(fromClick).toBe(fromEffect);
@@ -131,11 +130,10 @@ describe("ensurePushSubscription", () => {
     expect(registered).toEqual([first!, "https://push.example/2"]);
   });
 
-  // control: a browser that keeps returning the retired endpoint is not registered again
   it("gives up when the browser still holds the retired endpoint after unsubscribing", async () => {
     await ensurePushSubscription();
     const stuck = live!;
-    stuck.unsubscribe = async () => true; // the browser says yes and keeps it
+    stuck.unsubscribe = async () => true;
     retired.add(stuck.endpoint);
     await expect(ensurePushSubscription()).rejects.toMatchObject({ code: "subscription_gone" });
     expect(issued).toBe(1);
@@ -159,7 +157,6 @@ describe("testDevicePush", () => {
     }) as typeof fetch;
     const tested: string[] = [];
     expect(await testDevicePush((endpoint) => { tested.push(endpoint); })).toBe("sent");
-    // the endpoint the test went to is named, for the line it leaves in Settings (lib/pushHealth.ts)
     expect(tested).toEqual(["https://push.example/existing"]);
     expect(calls.length).toBe(1);
     expect(calls[0]![0]).toBe("/api/push/test");
@@ -167,6 +164,27 @@ describe("testDevicePush", () => {
     expect(JSON.parse(String(calls[0]![1]?.body))).toEqual({ endpoint: live.endpoint });
     expect(issued).toBe(0);
     expect(registered).toEqual([]);
+  });
+
+  it("records what the test came to as the subscription's confirmation, where the PC keeps no delivery record", async () => {
+    const before = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value) } } });
+    try {
+      live = standIn("https://push.example/existing", OTHER_KEY);
+      globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "push_failed", message: "push service 502" } }, { status: 502 })) as typeof fetch;
+      await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
+      expect(confirmation("https://push.example/existing")).toBe(false);
+      globalThis.fetch = (async (_url: string) => new Response(null, { status: 204 })) as typeof fetch;
+      expect(await testDevicePush()).toBe("sent");
+      expect(confirmation("https://push.example/existing")).toBe(true);
+      // a watching device's refusal says nothing of delivery
+      globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "read_only", message: "watch" } }, { status: 403 })) as typeof fetch;
+      await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
+      expect(confirmation("https://push.example/existing")).toBe(true);
+    } finally {
+      if (before) Object.defineProperty(globalThis, "window", before); else Reflect.deleteProperty(globalThis, "window");
+    }
   });
 
   it("reports a missing browser subscription without creating a replacement", async () => {
@@ -242,12 +260,8 @@ it("still cleans up the browser subscription when registration fails", async () 
 });
 
 describe("in the phone app", () => {
-  /**
-   * The app's OvisPush plugin as app/ios and app/android answer: one relay endpoint per PC, kept
-   * until unsubscribe, with the phone's keys. The page has no service worker and no Notification.
-   */
+  /** The page has no service worker and no Notification. */
   const KEYS = { p256dh: Buffer.from(new Uint8Array(65).fill(9)).toString("base64url"), auth: Buffer.from(new Uint8Array(16).fill(3)).toString("base64url") };
-  /** `checkGate`: holds a check's answer, which keeps the permission it read when it was asked */
   let app: { permission: string; answer: string; saved: string | null; made: number; calls: string[]; checkGate: Promise<void> | null };
   let sent: Array<{ url: string; method: string | undefined; body: unknown }>;
   const subscription = (endpoint: string) => ({ endpoint, expirationTime: null, keys: KEYS });
@@ -308,8 +322,6 @@ describe("in the phone app", () => {
     expect(app.calls.filter((call) => call === "OvisPush.requestPermissions")).toHaveLength(1);
   });
 
-  // the page came back into view as the user tapped Alerts: its check read the permission before
-  // the user answered the prompt, and its answer arrives after the tap's
   it("keeps the permission the user just gave when an older check answers after it, and subscribes", async () => {
     app.permission = "prompt";
     await refreshNotificationState();
@@ -324,7 +336,6 @@ describe("in the phone app", () => {
     expect(await ensurePushSubscription()).toBe("https://push.ovis.sh/v1/push/1");
     expect(app.calls).toContain("OvisPush.subscribe");
     expect(registered).toEqual(["https://push.ovis.sh/v1/push/1"]);
-    // a check asked after the answer still counts: notifications turned off in the phone's Settings
     app.permission = "denied";
     expect(await refreshNotificationState()).toBe("denied");
   });
@@ -334,7 +345,6 @@ describe("in the phone app", () => {
     const endpoint = await ensurePushSubscription({ input: true, done: "long" });
     expect(endpoint).toBe("https://push.ovis.sh/v1/push/1");
     expect(sent).toEqual([{ url: "/api/push/subscribe", method: "POST", body: { subscription: subscription(endpoint!), alerts: { input: true, done: "long" } } }]);
-    // a later load hands over the endpoint the app kept: the relay registers nothing new
     expect(await ensurePushSubscription()).toBe(endpoint);
     expect(app.made).toBe(1);
     expect(registered).toEqual([endpoint!, endpoint!]);
@@ -364,16 +374,11 @@ describe("in the phone app", () => {
     await removePushSubscription();
     expect(sent).toEqual([{ url: "/api/push/subscribe", method: "DELETE", body: { endpoint } }]);
     expect(app.saved).toBeNull();
-    // nothing left to remove: neither the PC nor the app is asked again
     app.calls = [];
     await removePushSubscription();
     expect(app.calls).toEqual(["OvisPush.getSubscription"]);
   });
 
-  /**
-   * The PC refuses to forget a subscription until `answer` lets it (the PC is unreachable meanwhile).
-   * `nextRefusal`, asked before what triggers it, settles when the next removal is refused.
-   */
   function pcRefusesRemoval() {
     const server = globalThis.fetch;
     let refusal = deferred();
@@ -413,7 +418,6 @@ describe("in the phone app", () => {
         alertsRef: { current: DEFAULT_ALERTS }, alertsOn, setPushOn: () => {} });
       return null;
     }
-    // the app forgets the endpoint last, once the PC has: that is a retry's removal done
     const forgotten = deferred();
     const capacitor = (globalThis as unknown as { Capacitor: { nativePromise: (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown> } }).Capacitor;
     const native = capacitor.nativePromise;
@@ -429,12 +433,10 @@ describe("in the phone app", () => {
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     let page: ReactTestRenderer | null = null;
     try {
-      // the PC is still out of reach as the app loads: that try is refused too, and the endpoint stays
       const refusedAtLoad = pc.nextRefusal();
       await act(async () => { page = create(createElement(Page, { alertsOn: false })); });
       await refusedAtLoad;
       expect(app.saved).toBe(endpoint);
-      // the PC answers again, and the app comes back into view (one of the alerts opened it)
       pc.answer();
       view.dispatchEvent(new Event("visibilitychange"));
       await forgotten.promise;
@@ -450,7 +452,6 @@ describe("in the phone app", () => {
   });
 
   it("preserves push when visibility changes during the alerts reenable commit", async () => {
-    // Given: an off device whose removal could not reach the PC.
     const endpoint = await ensurePushSubscription();
     const pc = pcRefusesRemoval();
     await expect(removePushSubscription()).rejects.toBeInstanceOf(ApiError);
@@ -482,10 +483,8 @@ describe("in the phone app", () => {
         return response;
       }, { preconnect: server.preconnect });
       sent = [];
-      // When: visibility changes after reenable renders but before the old effect cleans up.
       await act(async () => { page?.update(createElement(Page, { alertsOn: true })); });
       await registeredAgain.promise;
-      // Then: re-registration reuses the endpoint without removing it first.
       expect(sent.filter(({ method }) => method === "DELETE")).toEqual([]);
       expect(app.saved).toBe(endpoint);
     } finally {
@@ -533,7 +532,6 @@ describe("a subscription the hosted shell's worker kept while no window could te
   const SERVER = "0123456789abcdef0123456789abcdef";
   const OTHER = "fedcba9876543210fedcba9876543210";
   let db: FakeIndexedDB;
-  /** what reached the PC, in order; `online` false: the relay is out of reach */
   let calls: { method: string; endpoint: string }[];
   let online: boolean;
   let refusal: number | null;
@@ -544,7 +542,6 @@ describe("a subscription the hosted shell's worker kept while no window could te
     toJSON: () => ({ endpoint, expirationTime: null, keys: { p256dh: "p", auth: "a" } }),
   });
 
-  /** public/sw.js as the worker of `scope`, with `windows` open: fires its pushsubscriptionchange. */
   async function rotate(scope: string, change: { oldSubscription?: unknown; newSubscription?: unknown }, windows: { url: string; postMessage: (data: unknown) => void }[] = []) {
     const listeners = new Map<string, (event: unknown) => void>();
     const workerFetches: string[] = [];
@@ -589,20 +586,17 @@ describe("a subscription the hosted shell's worker kept while no window could te
     const fetched = await rotate(`https://app.test/s/${SERVER}/`, {
       oldSubscription: subscription("https://push.example/old"), newSubscription: subscription("https://push.example/new"),
     });
-    // the worker has no way to its PC: nothing is sent from it, the subscription waits in IndexedDB
     expect(fetched).toEqual([]);
     expect([...db.rows("pending-push").values()]).toEqual([{ server_id: SERVER,
       subscription: { endpoint: "https://push.example/new", expirationTime: null, keys: { p256dh: "p", auth: "a" } }, old_endpoint: "https://push.example/old" }]);
     expect(db.version()).toBe(2);
 
-    // another PC's start registers nothing of it
     expect(await registerPendingPush(OTHER, indexedPendingPush)).toBe(false);
     expect(calls).toEqual([]);
 
     expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(true);
     expect(calls).toEqual([{ method: "POST", endpoint: "https://push.example/new" }, { method: "DELETE", endpoint: "https://push.example/old" }]);
     expect(db.rows("pending-push").size).toBe(0);
-    // the start after that has nothing left to register
     expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(false);
     expect(calls).toHaveLength(2);
   });
@@ -611,16 +605,13 @@ describe("a subscription the hosted shell's worker kept while no window could te
     await rotate(`https://app.test/s/${SERVER}/`, {
       oldSubscription: subscription("https://push.example/old"), newSubscription: subscription("https://push.example/new"),
     });
-    // the browser now holds the rotated subscription, made for this PC's key
     live = standIn("https://push.example/new", new Uint8Array(65).fill(4).buffer);
-    // a start: the shell's recovery, then the app's effect while the recovery is still on its way
     const recovery = registerPendingPush(SERVER, indexedPendingPush, DEFAULT_ALERTS);
     const load = ensurePushSubscription(DEFAULT_ALERTS);
     expect(await recovery).toBe(true);
     expect(await load).toBe("https://push.example/new");
     expect(calls.filter(({ method }) => method === "POST")).toEqual([{ method: "POST", endpoint: "https://push.example/new" }]);
     expect(issued).toBe(0);
-    // the skip is spent: the next start's load-time registration goes to the PC as always
     await ensurePushSubscription(DEFAULT_ALERTS);
     expect(calls.filter(({ method }) => method === "POST")).toHaveLength(2);
   });
@@ -652,7 +643,6 @@ describe("a subscription the hosted shell's worker kept while no window could te
     online = false;
     await expect(registerPendingPush(SERVER, indexedPendingPush)).rejects.toBeInstanceOf(TypeError);
     expect(db.rows("pending-push").size).toBe(1);
-    // rotated again while offline: the PC never heard of b, so a is the one to drop
     await rotate(scope, { oldSubscription: subscription("https://push.example/b"), newSubscription: subscription("https://push.example/c") });
     online = true;
     expect(await registerPendingPush(SERVER, indexedPendingPush)).toBe(true);

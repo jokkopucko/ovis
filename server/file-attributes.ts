@@ -32,7 +32,6 @@ type Calls = {
 
 let loaded: Calls | null | undefined;
 
-/** The C library's calls for this platform, or null where they cannot be loaded. */
 function calls(platform: NodeJS.Platform): Calls | null {
   if (loaded !== undefined) return loaded;
   try {
@@ -96,7 +95,6 @@ function names(call: Calls, fd: number, platform: NodeJS.Platform): string[] {
   return buffer.subarray(0, got).toString("utf8").split("\0").filter(Boolean);
 }
 
-/** The value of one attribute, or null when it went away meanwhile. */
 function value(call: Calls, fd: number, name: Buffer): Buffer | null {
   const size = call.get(fd, name, null, 0);
   if (size < 0) return null;
@@ -106,9 +104,8 @@ function value(call: Calls, fd: number, name: Buffer): Buffer | null {
 }
 
 /**
- * Carries the attributes and the access list of the file open at `from` to the one open at `to`.
  * False when an access list (or the calls to read one) could not be carried over: the caller
- * refuses the save. `platform` stands in for the process's own in tests.
+ * refuses the save.
  */
 export function copyFileAttributes(from: number, to: number, platform: NodeJS.Platform = process.platform): boolean {
   const call = calls(platform);

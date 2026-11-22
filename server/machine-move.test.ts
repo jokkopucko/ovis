@@ -4,9 +4,6 @@ import type { Machine, MoveAllResponse } from "../shared/machines.ts";
 import { handleMachineRequest, slowMachinePath } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 
-// Two PCs of this Ovis's age, one older one and one that turns the bridge token away. `pc` and
-// `relay` answer a move as this version does: a start of the plan revision "shown" is taken,
-// any other is plan_changed.
 type Asked = { pc: string; method: string; path: string; search: string; authorization: string | null; update: string | null; cookie: string | null; body: string };
 const asked: Asked[] = [];
 const PLAN = { available: true, plan: { workspaces: [], panes: [], ready: true, revision: "shown" }, status: { state: "idle" } };
@@ -19,7 +16,6 @@ const pc = (name: string, answer: (request: Request) => Response | Promise<Respo
 const current = async (request: Request) => {
   if (request.method === "GET") return Response.json(PLAN);
   const path = new URL(request.url).pathname;
-  // a herdr error on a route this version knows (server/http.ts errorResponse): a 404 that is not an old Ovis
   if (path === "/api/runtime/move/stop" && JSON.parse(await request.text()).pane_id === "gone") return Response.json({ error: { code: "pane_not_found", message: "pane gone not found" } }, { status: 404 });
   if (request.method !== "POST" || path !== "/api/runtime/move") return Response.json({ ok: true });
   return JSON.parse(await request.text()).revision === "shown"
@@ -33,7 +29,6 @@ const remotes = {
   gateway: pc("gateway", () => Response.json({ error: { code: "upstream_lost", message: "the relay lost the answer" } }, { status: 502 })),
   refusing: pc("refusing", () => Response.json({ error: { code: "unauthorized", message: "unauthorized" } }, { status: 401 })),
 };
-// a PC that takes the start and then drops the connection before it answers: the move may have started there
 const droppedAt: string[] = [];
 const sockets = new Set<Socket>();
 const dropping = createServer((socket) => { sockets.add(socket); socket.once("data", (data) => { droppedAt.push(String(data).split("\r\n")[0]!); socket.destroy(); }); });
@@ -76,9 +71,7 @@ it("forwards a PC's move routes with that PC's credential and the app's header, 
   ]);
   for (const request of asked) expect([request.authorization, request.update, request.cookie]).toEqual(["Bearer pc-token", "1", null]);
   expect(asked[1]!.body).toBe(JSON.stringify({ revision: "shown" }));
-  // each change is read back onto the PC's badge at once; a plan read is not a change
   expect(soon).toEqual(["pc", "pc", "pc", "pc", "pc"]);
-  // the install downloads and checks herdr-core on that PC: it gets the long wait
   expect(slowMachinePath("runtime/move/install")).toBe(true);
 });
 
@@ -92,11 +85,8 @@ it("never asks a PC about its move for a watching device, its plan included", as
 it("tells an Ovis too old to be moved from here as an update to make first", async () => {
   expect(await code(await call("old/runtime/move"))).toEqual([409, "pc_update_required"]);
   expect(await code(await call("refusing/runtime/move", { method: "POST", body: { revision: "shown" } }))).toEqual([409, "pc_update_required"]);
-  // a relay PC's refusal is of this server's device, which an update there would not change
   expect(await code(await call("relay-refusing/runtime/move"))).toEqual([401, "unauthorized"]);
-  // a 404 of a route that PC knows (a herdr error) is its own answer, passed on as it came
   expect(await code(await call("pc/runtime/move/stop", { method: "POST", body: { pane_id: "gone" } }))).toEqual([404, "pane_not_found"]);
-  // a query that PC would refuse is not sent, so it is never taken for an old Ovis
   expect(await code(await call("pc/runtime/move?x=1"))).toEqual([400, "invalid_query"]);
   expect(asked.map((request) => request.pc)).toEqual(["old", "refusing", "refusing", "pc"]);
 });
@@ -127,7 +117,6 @@ it("tells a start whose answer never came apart from a refusal: that PC may have
   expect([response.status, answer.started, answer.refused, answer.unknown.map(({ machine_id }) => machine_id)]).toEqual([202, [], [], ["dropping"]]);
   expect(answer.unknown[0]!.message.length).toBeGreaterThan(0);
   expect(droppedAt).toEqual(["POST /api/runtime/move HTTP/1.1"]);
-  // a gateway's 502 may come after that PC took the start, as a dropped answer does
   const gateway = await (await call("runtime/move-all", { method: "POST", body: { plans: [{ machine_id: "gateway", revision: "shown" }] } })).json() as MoveAllResponse;
   expect([gateway.refused, gateway.unknown.map(({ machine_id }) => machine_id)]).toEqual([[], ["gateway"]]);
 });
@@ -139,7 +128,6 @@ it("takes a move of every PC only from a driving device of this app, as one list
   expect(await code(await call("runtime/move-all", { method: "POST", body }, true))).toEqual([403, "read_only"]);
   expect(await code(await call("runtime/move-all", { method: "POST", body: { plans: [{ machine_id: "pc" }] } }))).toEqual([400, "invalid_body"]);
   expect(await code(await call("runtime/move-all"))).toEqual([405, "method_not_allowed"]);
-  // each PC once, and never more plans than there are PCs
   expect(await code(await call("runtime/move-all", { method: "POST", body: { plans: [{ machine_id: "pc", revision: "shown" }, { machine_id: "pc", revision: "other" }] } }))).toEqual([400, "invalid_body"]);
   const tooMany = Array.from({ length: machines.length + 1 }, (_, index) => ({ machine_id: `pc-${index}`, revision: "shown" }));
   expect(await code(await call("runtime/move-all", { method: "POST", body: { plans: tooMany } }))).toEqual([400, "invalid_body"]);

@@ -6,8 +6,6 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { endsWithTurn, stoppedTurn } from "../lib/compose.ts";
 import type { ConversationTurn } from "../../shared/protocol.ts";
 
-// ChatView's own send effects and turn selection, run in a small hook host: rendering the whole
-// chat needs a socket, a transcript reader and a layout this record does not depend on.
 const source = readFileSync(join(import.meta.dir, "ChatView.tsx"), "utf8");
 const sentEffect = source.match(/useEffect\(\(\) => \{\s*if \(seenSent\.current === sentKey\) return;[\s\S]*?\}, \[sentKey, agentStatus\]\);/)?.[0];
 const unsentEffect = source.match(/useEffect\(\(\) => \{\s*if \(seenUnsent\.current === unsentKey\) return;[\s\S]*?\}, \[unsentKey\]\);/)?.[0];
@@ -49,10 +47,8 @@ async function host() {
 it("shows the stopped turn again once its copy leaves the box after a send refused with nothing typed", async () => {
   const chat = await host();
   expect(await chat.render({ turns: page, restored: "stopped message", sentKey: 0, unsentKey: 0 })).toEqual([earlier]);
-  // the composer bumps sentKey before the bridge answers; it refuses, nothing was typed
   await chat.render({ turns: page, restored: "stopped message", sentKey: 1, unsentKey: 0 });
   expect(await chat.render({ turns: page, restored: "stopped message", sentKey: 1, unsentKey: 1 })).toEqual([earlier]);
-  // the user clears the copy in the terminal: the turn is the transcript's last again, and shown
   expect(await chat.render({ turns: page, restored: null, sentKey: 1, unsentKey: 1 })).toEqual(page);
   await chat.unmount();
 });
@@ -61,7 +57,6 @@ it("keeps the stopped turn out after a send that went, while it is still the las
   const chat = await host();
   await chat.render({ turns: page, restored: "stopped message", sentKey: 0, unsentKey: 0 });
   await chat.render({ turns: page, restored: "stopped message", sentKey: 1, unsentKey: 0 });
-  // the send emptied the box before its own turn reached the transcript
   expect(await chat.render({ turns: page, restored: null, sentKey: 1, unsentKey: 0 })).toEqual([earlier]);
   await chat.unmount();
 });

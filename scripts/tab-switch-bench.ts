@@ -32,7 +32,6 @@ const ROUNDS = Number(arg("rounds", "5"));
 if (!Number.isInteger(ROUNDS) || ROUNDS < 1) throw new Error(`--rounds must be a positive integer, not ${arg("rounds", "5")}`);
 const OUT = arg("out", "");
 const LABEL = arg("label", "");
-/** tabs per round: the first one shown, then eight never shown */
 const TABS = 9;
 const VIEWPORTS = {
   desktop: { viewport: { width: 1280, height: 800 } },
@@ -58,7 +57,6 @@ async function until(check: () => Promise<boolean>, label: string, ms = 15_000):
   }
 }
 
-/** Clicks a tab in the page and times its screen and its input-ready, both from the click. */
 async function switchTo(page: Page, tabId: string, paneId: string, marker: string): Promise<{ text: number | null; ready: number | null }> {
   return page.evaluate(async ({ tabId, paneId, marker, rows }) => {
     type Bench = { ready: { pane: string; t: number }[] };
@@ -119,7 +117,7 @@ async function round(browser: Browser, origin: string, root: string, viewport: k
             try {
               const frame = JSON.parse(event.data) as { type?: string; pane_id?: string; ready?: boolean };
               if (frame.type === "input-ready" && frame.ready !== false && frame.pane_id) bench.ready.push({ pane: frame.pane_id, t: performance.now() });
-            } catch { /* not one frame */ }
+            } catch {}
           });
         }
       };
@@ -140,11 +138,8 @@ async function round(browser: Browser, origin: string, root: string, viewport: k
       if (result.text === null) throw new Error(`${viewport} round ${index}: tab ${i} (${kind ?? "setup"}) never showed its screen`);
       if (kind) samples.push({ viewport, kind, round: index, ...result });
     };
-    // eight tabs never shown in this page; newest first the history is then 8, 7, ..., 1, 0
     for (let i = 1; i <= 8; i++) await visit(i, "cold");
-    // the 8th most recent each time: 1, then 2 (the history is 1, 8, 7, ..., 2), then 3, then 4
     for (let i = 1; i <= 4; i++) await visit(i, "8th");
-    // back and forth between the last two
     for (const i of [3, 4, 3, 4]) await visit(i, "recent");
     if (errors.length) throw new Error(`page errors: ${errors.join("; ")}`);
     return samples;

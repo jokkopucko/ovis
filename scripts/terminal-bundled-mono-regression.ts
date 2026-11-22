@@ -1,13 +1,9 @@
 /**
- * The terminal draws in the bundled JetBrains Mono on every device and sizes its grid, and the pane's
- * pty, from it. xterm measures its cell, and lib/terminalLineHeight.ts its row, when the family is set,
+ * xterm measures its cell, and lib/terminalLineHeight.ts its row, when the family is set,
  * so a terminal opened with the face still loading would keep a fallback's cell and draw the face in
  * it. It opens without the face (lib/fontFamily.ts, openingFontStack), the font effect sets the face
  * once it has loaded, and the pane is attached only then (usePaneAttach.ts): its pty is sized once,
  * for the face's grid, not for a fallback's and then again (a reflow every program on it would see).
- * A face slower than the font effect's wait is set when it arrives, and one arriving mid-pinch leaves
- * the pinch its live size and sizes the pty once, when the fingers lift. The face's download is held
- * here, so it always arrives late.
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -18,7 +14,7 @@ import { chromium, type Page, type Route } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { UsageService } from "../server/usage.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
-import { terminalLineHeight } from "../src/lib/terminalLineHeight.ts";
+import { HANGUL_INK_EM, terminalLineHeight } from "../src/lib/terminalLineHeight.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 
@@ -35,7 +31,6 @@ let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
-/** `promise`, or a failure naming `label` once WAIT_MS passed */
 async function within<T>(promise: Promise<T>, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -77,12 +72,10 @@ function paneFrames(page: Page, pane: string) {
   };
 }
 
-/** The font family the shown rows are drawn in: libghostty's while it draws the pane, else xterm's. */
 const rowsFamily = (page: Page): Promise<string> =>
   page.evaluate((shown) => getComputedStyle(document.querySelector(shown)!).fontFamily, shownRows());
 
 try {
-  // Given: a pane that prints a Latin and a Korean row, each closed by a bar.
   const program = join(state, "rows.mjs");
   writeFileSync(program, `process.stdout.write(${JSON.stringify(`\x1b[2J\x1b[H${ROWS.join("\r\n")}\r\nROWS_READY\r\n`)});
 setInterval(() => {}, 1 << 30);
@@ -100,17 +93,11 @@ setInterval(() => {}, 1 << 30);
     tailscaleOwner: null, usage: new UsageService(undefined, []) });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
 
-  // The face arrives soon after the page asks for it (1x and 2x): the pane is attached at the face's
-  // grid and never resized. It arrives only after the font effect's wait (slow): the pane is attached
-  // at the fallback's grid, and the face is set when it comes. And a font typed in Settings fails to
-  // load (404) while the face still loads, which ends the font set's wait for the whole stack.
   for (const [deviceScaleFactor, slow, typedFails] of [[1, false, false], [2, false, false], [1, true, false], [1, true, true]] as const) {
     // a service worker's fetches pass by the page's routes
     const context = await browser.newContext({ viewport: { width: 1200, height: 760 }, deviceScaleFactor, serviceWorkers: "block" });
     await context.addInitScript((typed) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false, ...(typed ? { terminalFontFamily: "Pretendard Variable" } : {}) }));
-      // the texts the page asks the font set to load for: the font effect's own wait asks for "Mg가",
-      // and the wait for a face slower than that (monoFaceArrived) for "M"
       const asked: string[] = [];
       const load = FontFaceSet.prototype.load;
       FontFaceSet.prototype.load = function (this: FontFaceSet, font: string, text?: string) { asked.push(text ?? ""); return load.call(this, font, text); };
@@ -135,7 +122,6 @@ setInterval(() => {}, 1 << 30);
     await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
     await page.locator(".conn-live").waitFor();
     await within(faceAsked, "the page to ask for the face");
-    // When: the face arrives after the terminal opened without it
     assert.ok(!(await rowsFamily(page)).includes(FAMILY), "the terminal opens without the face it has not loaded");
     // a slow face is let go only once the font effect gave up waiting for it, waits for its arrival
     // instead, and the pane has been attached without it: the attach must not wait for the face, and a
@@ -151,8 +137,6 @@ setInterval(() => {}, 1 << 30);
     await page.waitForFunction(([family, shown]) => getComputedStyle(document.querySelector(shown)!).fontFamily.includes(family), [FAMILY, shownRows()] as const);
     await page.locator(shownRows(), { hasText: ROWS[1]! }).waitFor();
 
-    // Then: the grid is measured from the face, its rows are the face's, and it fits its host. Its rows are
-    // drawn again in a later frame after a face or grid change, so it is measured in a frame whose first rows show the rows written
     const drawn = await (await page.waitForFunction(([family, shown, written]) => {
       const rows = document.querySelector<HTMLElement>(shown)!;
       const screen = document.querySelector<HTMLElement>(".pane-terminal .xterm-screen")!;
@@ -160,7 +144,6 @@ setInterval(() => {}, 1 << 30);
       const canvas = document.createElement("canvas").getContext("2d")!;
       canvas.font = `${size}px "${family}"`;
       const metrics = canvas.measureText("W");
-      // each row's bars, left to right, where the browser put them
       const bars = [...rows.children].slice(0, 2).map((row) => {
         const found: number[] = [];
         const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
@@ -195,12 +178,10 @@ setInterval(() => {}, 1 << 30);
       };
     }, [FAMILY, shownRows(), ROWS] as const)).jsonValue();
     const [latin, korean] = drawn.bars;
-    // |abcdefghijklmn|: the closing bar stands 15 cells after the opening one
     const cell = (latin!.at(-1)! - latin![0]!) / (ROWS[0]!.length - 1);
     const line = Math.ceil(drawn.charHeight * drawn.dpr);
     const row = Math.floor(line * terminalLineHeight(drawn.charHeight, drawn.size, drawn.dpr)) / drawn.dpr;
-    // Ovis Hangul Mono's ink, 0.913em (lib/terminalLineHeight.ts, HANGUL_INK_EM)
-    const hangulGap = drawn.rowHeight - 0.913 * drawn.size;
+    const hangulGap = drawn.rowHeight - HANGUL_INK_EM * drawn.size;
     const resizes = frames.resizes();
     console.log(JSON.stringify({ deviceScaleFactor, slow, typedFails, cell, row, hangulGap: +hangulGap.toFixed(2), attach: [attach.cols, attach.rows], resizes, ...drawn }));
     await page.screenshot({ path: join(evidence, `terminal-bundled-mono-${deviceScaleFactor}x${slow ? "-slow" : ""}${typedFails ? "-typed-fails" : ""}.png`) });
@@ -211,19 +192,15 @@ setInterval(() => {}, 1 << 30);
     assert.ok(drawn.width <= drawn.hostWidth + 0.5 && drawn.hostWidth - drawn.width < cell + 16, `the grid fits its host again: ${drawn.width}px of ${drawn.hostWidth}px`);
     assert.ok(Math.abs(latin!.at(-1)! - korean!.at(-1)!) < 0.5, `the Korean row closes on the Latin row's column: ${latin!.at(-1)} / ${korean!.at(-1)}`);
     if (!slow) {
-      // the pty was sized once, at the attach, for the face's grid: the face's arrival resized nothing
       assert.deepEqual([attach.cols, attach.rows], [drawn.cols, drawn.gridRows], "the pane is attached at the face's grid");
       assert.deepEqual(resizes, [], "a face that arrives within the font effect's wait resizes no pty");
     } else {
-      // attached at a fallback's grid, then sized once for the face's
       assert.deepEqual(resizes.map((frame) => [frame.cols, frame.rows]).at(-1), [drawn.cols, drawn.gridRows], "a late face sizes the pty for its grid");
     }
     assert.deepEqual(errors, []);
     await context.close();
   }
 
-  // The face arrives while two fingers pinch, first spread wider and then back at the saved size: the
-  // pinch keeps its live size, and the shared pty is sized once, when the fingers lift, for the grid the face gave.
   for (const grow of [true, false]) {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
     await context.addInitScript(() => {
@@ -242,7 +219,6 @@ setInterval(() => {}, 1 << 30);
     let release = false;
     await page.route(FACE, (route) => release ? route.continue() : void held.push(route));
     await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
-    // the pane is attached once the font effect gave up waiting for the held face
     await page.locator(shownRows(), { hasText: ROWS[1]! }).waitFor();
     await frames.inputReady();
     const box = (await page.locator(".pane-terminal").boundingBox())!;
@@ -261,16 +237,12 @@ setInterval(() => {}, 1 << 30);
     if (grow) assert.ok(pinchedPx > startPx, `the pinch grew the font: ${startPx} → ${pinchedPx}`);
     else assert.equal(pinchedPx, startPx, "the pinch came back to the saved size");
     const before = frames.resizes().length;
-    // When: the face arrives mid-pinch
     release = true;
     for (const route of held.splice(0)) await route.continue();
-    // the family is set in the same task as any resize its fit would send
     await page.waitForFunction(([family, shown]) => getComputedStyle(document.querySelector(shown)!).fontFamily.includes(family), [FAMILY, shownRows()] as const);
-    // Then: the pinch keeps its live size and sizes no pty while the fingers are down
     assert.equal(await fontPx(), pinchedPx, `the arriving face keeps the pinch's live size (grow=${grow})`);
     assert.deepEqual(frames.resizes().slice(before), [], `no resize while the fingers are down (grow=${grow})`);
     await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    // the badge is hidden in the same task as the release's resize, last
     await badge.waitFor({ state: "hidden" });
     // xterm adds and removes row elements in the resize itself; their text is drawn again in a later frame
     const gridRows = await page.evaluate((shown) => document.querySelector(shown)!.children.length, shownRows());

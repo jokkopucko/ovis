@@ -184,7 +184,6 @@ describe("session context publication and quarantine", () => {
       const old = new Date(now - CONTEXT_STALE_MS - (index + 1) * 1000);
       fs.utimesSync(path, old, old);
     }
-    // Fix the listing order so foreign names consume the old implementation's entire budget.
     const entries = fs.readdirSync(directory, { withFileTypes: true })
       .sort((a, b) => Number(a.name.startsWith(profile.slice(0, 16))) - Number(b.name.startsWith(profile.slice(0, 16))));
     const listing = fs.opendirSync(directory);

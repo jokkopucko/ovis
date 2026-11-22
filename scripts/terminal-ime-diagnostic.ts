@@ -20,7 +20,6 @@ assert(Bun.which("herdr") || process.env.OVIS_HERDR_BIN, "herdr is required");
 assert(Bun.which("node"), "Node is required for the owned PTY capture process");
 
 const root = mkdtempSync(join(tmpdir(), "herdr-ime-diagnostic-"));
-// Keep artifacts after closing the workspace; each run has a fresh directory.
 const events = join(root, "events.ndjson");
 const received = join(root, "received.bin");
 const ready = join(root, "ready");
@@ -37,7 +36,6 @@ process.stdin.on('data', bytes => {
 });
 `);
 
-/** Runs only in this diagnostic's temporary build, before the app connects. */
 function installTrace(pane: string): void {
   localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: "direct" }));
   localStorage.setItem(`ovis:view:${pane}`, "terminal");
@@ -74,7 +72,7 @@ function installTrace(pane: string): void {
       try {
         const frame = JSON.parse(data);
         if (frame.type === "input" && frame.pane_id === pane) trace({ kind: "ws", ...frame });
-      } catch { /* non-JSON frames are not this diagnostic's input */ }
+      } catch {}
     }
     return send.call(this, data);
   };
@@ -98,7 +96,6 @@ let workspace: string | undefined;
 let deadline: ReturnType<typeof setTimeout> | undefined;
 const connections = new Set<Socket>();
 let stopping: Promise<void> | undefined;
-/** Close owned resources once and retain the trace-to-PTY comparison for manual inspection. */
 function stop(): Promise<void> {
   return stopping ??= (async () => {
     clearTimeout(deadline);

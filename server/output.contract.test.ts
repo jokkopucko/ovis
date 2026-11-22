@@ -43,7 +43,6 @@ async function connect(paneId: string, ack = true, observer = false, port = serv
     bytes: 0, frames: 0, ack, code: 0, exits: 0, ready: 0, notReady: 0,
     latest: undefined as Extract<ServerMessage, { type: "pty-data" }> | undefined,
     errors: [] as string[], tail: "",
-    /** the first frame's text (a joiner's replay), and whether `find` has arrived since the attach */
     first: undefined as string | undefined, find, found: false,
   };
   const send = (message: ClientMessage) => ws.send(JSON.stringify(message));
@@ -73,10 +72,7 @@ async function connect(paneId: string, ack = true, observer = false, port = serv
 }
 
 /**
- * Makes the pty spawn fail on both hosts (herdr itself stays found). The Rust host is picked by
- * absolute path, so it is pointed at one that does not exist. The Node sidecar it falls back to finds
- * no Node, so the attach throws before spawning: none on PATH, and an empty HOME hides the one
- * install.sh puts under ~/.local/share. Node's availability is taken first, so a run on the Rust host
+ * Node's availability is taken first, so a run on the Rust host
  * does not cache it as missing for the tests after this one.
  */
 function breakPath(): () => void {
@@ -103,7 +99,6 @@ function breakPath(): () => void {
 const FLOOD = `python3 -u -c 'import sys,time; [(sys.stdout.write("\\033[H"+(str(i%10)*79+"\\n")*23),sys.stdout.flush(),time.sleep(.01)) for i in range(1500)]'`;
 
 async function flood(paneId: string, command = FLOOD): Promise<void> {
-  // Redraws reach the attach stream; raw shell byte rate alone is not its workload.
   await Bun.sleep(150); // herdr's attach consumes very early keystrokes
   await paneSendText(paneId, command);
   await paneSendKeys(paneId, ["Enter"]);
@@ -140,7 +135,6 @@ describe("real terminal output flow control", () => {
       expect(Date.now() - started).toBeLessThan(OUTPUT_STALL_MS + 2000);
       const received = operator.state.bytes;
       await until(() => operator.state.bytes > received + 4096, "operator output resumes");
-      // Ctrl+C takes the actual WS input path while output is running.
       operator.send({ type: "input", pane_id: paneId, text: "\x03" });
       await Bun.sleep(200);
       operator.send({ type: "input", pane_id: paneId, text: "printf 'FLOW_%s\\n' ALIVE\r" });
@@ -156,20 +150,16 @@ describe("real terminal output flow control", () => {
     let joiner: Awaited<ReturnType<typeof connect>> | undefined;
     try {
       await flood(paneId);
-      // the replay tail is full: the joiner's first frame is ~128 KiB
       await until(() => operator.state.bytes >= 160 * 1024, "operator fills the replay tail", 15_000);
-      // a phone on a slow link: it does not acknowledge its replay for longer than the stall deadline
       joiner = await connect(paneId, false);
       const joined = Date.now();
       expect(joiner.state.bytes).toBeGreaterThan(64 * 1024);
       await Bun.sleep(1000); // fixed wait: the joiner must stay silent past the time its window blocks
       const before = operator.state.bytes;
       await Bun.sleep(OUTPUT_STALL_MS); // fixed wait: proving nothing stalls or closes for a full stall deadline
-      // the joiner held only its own window up: the shared pty kept streaming to the operator
       expect(operator.state.bytes - before).toBeGreaterThan(64 * 1024);
       expect(Date.now() - joined).toBeGreaterThan(OUTPUT_STALL_MS);
       expect(joiner.state.code).toBe(0);
-      // its ACK arrives inside its budget and it carries on as an ordinary client
       joiner.state.ack = true;
       joiner.acknowledge();
       const caught = joiner.state.bytes;
@@ -194,10 +184,8 @@ for i in itertools.count(): sys.stdout.write("".join("\\033[%d;1H%s" % (r, str((
       await flood(paneId, program);
       await until(() => operator.state.found, "the frame is drawn", 15_000);
       const drawn = operator.state.bytes;
-      // the updates since the frame overflow the 128 KiB tail a joiner is sent
       await until(() => operator.state.bytes - drawn > 192 * 1024, "the tail fills with updates", 20_000);
       joiner = await connect(paneId, true, false, server.port, MARK);
-      // the replay alone has no frame (the bug this guards against): herdr's repaint brings it
       expect(joiner.state.first?.includes(MARK)).toBe(false);
       await until(() => joiner!.state.found, "the frame reaches the joiner", 10_000);
       expect(joiner.state.errors).toEqual([]);
@@ -282,7 +270,6 @@ describe("same-terminal attach recovery", () => {
           expect(client.state.notReady).toBe(1);
           expect(client.state.exits).toBe(0);
           expect(herdr.attempts()).toBe(2);
-          // Past the one recovery window, the stable replacement remains the only attach.
           await Bun.sleep(650); // fixed wait: proves no third attach appears after the recovery settles
           expect(herdr.attempts()).toBe(2);
           expect(client.state.ready).toBe(2);
@@ -374,11 +361,9 @@ describe("a terminal attach that cannot spawn (#154)", () => {
       ws.send(JSON.stringify({ type: "attach", pane_id: paneId, cols: 100, rows: 30, flow_control: "ack" } satisfies ClientMessage));
       await until(() => errors.includes("command_failed"), "the failed spawn is reported");
     } finally { restore(); }
-    // the next attach spawns its own pty instead of joining a dead record
     const second = await connect(paneId);
     second.ws.close();
     await until(() => second.state.code !== 0, "second client closed");
-    // closing it tore the attachment down cleanly: the server still attaches the pane
     const third = await connect(paneId);
     try {
       expect(third.state.errors).toEqual([]);
@@ -414,10 +399,8 @@ describe("a herdr the server cannot start (#925)", () => {
       else process.env["OVIS_HERDR_BIN"] = previous;
     }
     expect(errors).toEqual(["attach_failed"]);
-    // the panes of a PC share one connection: the failure names its pane, so only that terminal ends
     expect(errorPanes).toEqual([paneId]);
     expect(logged.filter((line) => line.includes(paneId) && line.includes(missing))).toHaveLength(1);
-    // nothing was left behind: with herdr back, the pane attaches for real
     const client = await connect(paneId);
     try {
       expect(client.state.errors).toEqual([]);
@@ -462,7 +445,6 @@ describe("an attach herdr refuses over a read in progress", () => {
     await withHerdr(herdr.path, async () => {
       const client = await connect(paneId);
       try {
-        // the refusals are retried; the third attach is real and paints the pane
         await until(() => herdr.attempts() === 3 && client.state.tail.includes("\x1b[?1049h"), "the third attach paints");
         await Bun.sleep(300); // herdr's attach consumes very early keystrokes
         client.send({ type: "input", pane_id: paneId, text: "echo attach-$((6*7))\r" });
@@ -470,7 +452,6 @@ describe("an attach herdr refuses over a read in progress", () => {
         expect(herdr.attempts()).toBe(3);
         expect(client.state.exits).toBe(0);
         expect(client.state.errors).toEqual([]);
-        // a refused attach's setup, teardown and message never reached the terminal
         expect(client.state.tail).not.toContain("read in progress");
       } finally { client.ws.close(); }
     });
@@ -491,7 +472,6 @@ describe("an attach herdr refuses over a read in progress", () => {
       });
       await until(() => ws.readyState === WebSocket.OPEN, "socket open");
       ws.send(JSON.stringify({ type: "attach", pane_id: paneId, cols: 100, rows: 30 } satisfies ClientMessage));
-      // the refusal is running: the retry that follows its exit spawns without node
       await until(() => herdr.attempts() === 1, "the refused attach started");
       const restore = breakPath();
       try {
@@ -500,7 +480,6 @@ describe("an attach herdr refuses over a read in progress", () => {
       expect(errors).toEqual(["command_failed"]);
       expect(herdr.attempts()).toBe(1);
       ws.close();
-      // the server survived and the pane attaches again for real
       const client = await connect(paneId);
       try {
         expect(client.state.errors).toEqual([]);
@@ -527,7 +506,6 @@ describe("an attach herdr refuses over a read in progress", () => {
         ws.send(JSON.stringify({ type: "attach", pane_id: paneId, cols: 100, rows: 30 } satisfies ClientMessage));
         await until(() => exits === 1, "pty-exit once the retries run out");
         expect(herdr.attempts()).toBeGreaterThan(2);
-        // the last refusal is shown: it says why the terminal ended
         expect(tail).toContain("read in progress");
         ws.close();
       });
@@ -563,7 +541,6 @@ describe("herdr's attach-time terminal queries", () => {
         await until(() => first.state.tail.includes("\x1b[?1049h"), "the attach behind the queries paints");
         await until(() => existsSync(replies) && readFileSync(replies, "utf8").length === 18, "the bridge answered");
         expect(readFileSync(replies, "utf8")).toBe("\x1b[?1016;4$y\x1b[?1;2c");
-        // a browser joining later gets the replay: the queries are not in it to be answered again
         const second = await connect(paneId);
         try {
           for (const client of [first, second]) {

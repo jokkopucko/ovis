@@ -57,7 +57,6 @@ it("carries a plugin's pane tokens and agent line to the browsers' roster, live,
 
     await herdrRpc("pane.report_metadata", { pane_id: paneId, source: "plugin:board", applies_to_source: "manual", display_agent: "needs a login · 8m ago" });
     await waitFor("the agent's line", (event) => pane(event)?.display_agent === "needs a login · 8m ago");
-    // its status stayed what it was: only the line changed
     const last = [...events].reverse().find((event) => pane(event)?.display_agent === "needs a login · 8m ago");
     expect(pane(last!)?.agent_status).toBe("idle");
 
@@ -110,7 +109,6 @@ describe("a browser's own snapshots", () => {
   }, 60_000);
 
   it("leaves them in every snapshot of a bridge this app starts on a PC, whose only client is its connection server", async () => {
-    // as server/remote-entry.ts starts one: no machines, bridge only, its registered credential as its token
     const bridgeState = mkdtempSync(join(tmpdir(), "ovis-test-pane-tokens-bridge-"));
     const managed = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bridgeState, token: "registered-credential", machines: false, bridgeOnly: true, tailscaleOwner: null, herdrConfigPath });
     // a server without machines that browsers do reach still leaves them out

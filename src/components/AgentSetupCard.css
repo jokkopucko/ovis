@@ -1,4 +1,3 @@
-/* one agent's setup, Install then Sign in, on one card (AgentSetupCard) */
 .agent-setup {
   display: flex;
   flex-direction: column;

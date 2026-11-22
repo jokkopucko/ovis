@@ -1,6 +1,5 @@
 /**
  * The wire shape of GET /api/system: what one PC says about its own load right now.
- * Types only (src/ imports nothing else from here); the numbers are read by server/system-stats.ts.
  */
 
 /** One filesystem the user's files live on, with the numbers `df` prints for it. */
@@ -23,7 +22,7 @@ export interface SystemReport {
   cpu_count: number;
   /** the share of CPU time in use since the previous reading; null when there is nothing to compare yet */
   cpu_percent: number | null;
-  /** memory in use without the file cache (Linux: total minus MemAvailable) */
+  /** memory in use without the file cache (Linux: total minus MemAvailable; macOS: from vm_stat) */
   memory: { used: number; total: number; percent: number } | null;
   /** 1, 5 and 15 minute load averages; null on Windows, which has none */
   load: [number, number, number] | null;

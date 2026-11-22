@@ -4,7 +4,6 @@ import { discard, readCapped, readCappedJson, RemoteResponseInvalid, RemoteRespo
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
-/** A body served chunk by chunk that records how far it was pulled and whether it was cancelled. */
 function body(chunks: Uint8Array[], headers: Record<string, string> = {}) {
   const receipt = { pulled: 0, cancelled: false };
   const stream = new ReadableStream<Uint8Array>({
@@ -22,7 +21,6 @@ describe("capped remote answers", () => {
   it("cancels at cap plus one without decoding", async () => {
     const decode = spyOn(TextDecoder.prototype, "decode");
     cleanups.push(() => decode.mockRestore());
-    // not JSON at all: a parse would fail differently, so the size check must come first
     const { response, receipt } = body([bytes("x".repeat(8)), bytes("y".repeat(9)), bytes("never pulled")]);
     await expect(readCappedJson(response, 16)).rejects.toBeInstanceOf(RemoteResponseTooLarge);
     expect(receipt).toEqual({ pulled: 2, cancelled: true });
@@ -32,7 +30,6 @@ describe("capped remote answers", () => {
 
   it("accepts exact cap across UTF-8 chunks", async () => {
     const encoded = bytes(JSON.stringify({ name: "한글 PC" }));
-    // split inside the first Hangul syllable's three bytes
     const split = encoded.indexOf(0xed) + 1;
     const { response, receipt } = body([encoded.slice(0, split), encoded.slice(split)]);
     expect(await readCappedJson<{ name: string }>(response, encoded.byteLength)).toEqual({ name: "한글 PC" });

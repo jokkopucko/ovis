@@ -1,28 +1,15 @@
-/**
- * The move of this PC's whole herdr session to herdr-core (shared/runtime-move.ts), as Settings
- * shows it: what each pane becomes, in a tag; which panes hold the move up; the panes of a tab in
- * the order its splits put them; and the agents whose input line Ovis could not read.
- */
 import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import type { MoveNode, MovePane, MovePlan, MoveStatus, MoveVerdict } from "../../shared/runtime-move.ts";
 import type { Translate } from "./i18n.ts";
 
-/**
- * How a pane's verdict reads: `ok` goes on as it was, `plain` is replaced by one like it, `warn`
- * starts over, `wait` holds the move up until it is done, `you` holds it up until the person acts:
- * an agent waiting for an answer as much as one to end by hand, in the needs-input tone the
- * sidebar and tabs use for it.
- */
 export type MoveTone = "ok" | "plain" | "warn" | "wait" | "you";
 
 export interface MoveTag { text: string; tone: MoveTone }
 
-/** The agent's product name ("Claude Code"), or the kind itself for one the catalog does not list. */
 export function agentName(kind: string): string {
   return AGENT_CATALOG.find((entry) => entry.id === kind)?.name ?? kind;
 }
 
-/** What becomes of a pane, as its tag says it. */
 export function verdictTag(t: Translate, verdict: MoveVerdict): MoveTag {
   switch (verdict.kind) {
     case "resume": return { text: t("Continues the same conversation"), tone: "ok" };
@@ -50,24 +37,20 @@ export function paneAgent(pane: MovePane): string | null {
   }
 }
 
-/** The pane's title: the name the person gave it, else its agent's name, else Shell. */
 export function paneTitle(t: Translate, pane: MovePane): string {
   if (pane.name !== null) return pane.name;
   const agent = paneAgent(pane);
   return agent === null ? t("Shell") : agentName(agent);
 }
 
-/** The panes that hold the move up: an agent at work or waiting, a shell running a command, an agent the person must end. */
 export function blockingPanes(plan: MovePlan): MovePane[] {
   return plan.panes.filter((pane) => pane.verdict.kind === "busy" || pane.verdict.kind === "needs_you");
 }
 
-/** The shells running a command that hold the move up: the ones the wait can end. */
 export function runningCommands(plan: MovePlan): MovePane[] {
   return plan.panes.filter((pane) => pane.verdict.kind === "busy" && pane.verdict.reason === "command_running");
 }
 
-/** A tab's pane ids in reading order: a split's left or top side first, then the other. */
 export function tabPaneIds(node: MoveNode): string[] {
   return "pane" in node ? [node.pane] : [...tabPaneIds(node.first), ...tabPaneIds(node.second)];
 }
@@ -90,7 +73,6 @@ function unreachable(value: never): never {
   throw new Error(`unexpected value ${JSON.stringify(value)}`);
 }
 
-/** The reason a move stopped, as the person reads it; the server's own words only for an unexpected failure. */
 export function moveReasonText(t: Translate, reason: string): string {
   if (reason === "agent_busy") return t("An agent started working again.");
   if (reason === "input_left") return t("Text was left in an agent's input box.");
@@ -105,7 +87,6 @@ export function moveReasonText(t: Translate, reason: string): string {
   return t("Something failed: {detail}", { detail: reason.replace(/^failed: /, "") });
 }
 
-/** Why an agent was not reopened in herdr, as the person reads it. */
 export function moveWhyText(t: Translate, why: string): string {
   if (why === "agent_still_there") return t("It is running again.");
   if (why === "pane_gone") return t("Its pane is gone.");

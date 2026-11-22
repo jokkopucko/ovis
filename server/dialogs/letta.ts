@@ -48,14 +48,12 @@ const LETTA_MODEL_NOTES = new Set(["Refreshing list...", "Warning: Could not fet
  *
  *    Enter select · ←→/Tab switch · Esc back
  *
- * It draws the level under its cursor only, and ←/→ cycle through levels the screen never lists, so
- * the card offers the level shown, picked with Enter, and leaves another to the terminal.
+ * It draws the level under its cursor only, and ←/→ cycle through levels the screen never lists.
  */
 const LETTA_EFFORT_TITLE = "Set your model's reasoning settings";
 const LETTA_EFFORT_HINT = "Enter select · ←→/Tab switch · Esc back";
 const LETTA_EFFORT_RE = /^▌+ (\S.*) reasoning effort$/;
 
-/** The screen's lines without colour or trailing space, and the index of the last one with text. */
 function screenLines(screen: string): { lines: string[]; end: number } {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
   let end = lines.length - 1;
@@ -98,14 +96,11 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     const text = row[2]!.replace(LETTA_CURRENT_RE, "");
     rows.push({ label: normalizeText(text), cursor: row[1] === "> ", current, lineIndex: index });
   }
-  // a search that matches nothing draws no rows: the card still offers the tabs, another search and Cancel
   if (empty ? rows.length > 0 : rows.filter((row) => row.cursor).length !== 1) return null;
   const selectedIndex = Math.max(0, rows.findIndex((row) => row.cursor));
   const query = lines[search]!.replace(/^\s{2}Search: /, "");
   const typed = query === "(type to filter)" ? "" : query;
 
-  // the tabs: their line, and which one is shown, by the line Letta draws under them. Left and Right
-  // step one tab, so the tabs beside the one shown are offered
   const tabs = lines[search - 2]?.trim().split(/\s{2,}/).map((tab) => tab.match(LETTA_TAB_RE)) ?? [];
   const shown = LETTA_TAB_OF[lines[search - 1]?.trim() ?? ""];
   // a tab known by its line alone: a line two tabs share (a free tier's Letta API tabs) tells them apart from no card
@@ -137,14 +132,12 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     custom_option_index: searchIndex,
   }, {
     responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search", "cancel"], selectedIndex, lettaSearch: typed,
-    // the tab shown, by the line Letta draws under the tabs (their counts follow the search), and the tabs drawn
     lettaTab: shown, lettaTabs: names,
     checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: cancelIndex,
     optionSteps: [
       ...rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
       // one key switches the tab, and Letta clears the search with it
       ...beside.map(({ key }) => [{ keys: [key] }]),
-      // the search row answers by typed words (customSteps), and Cancel by Esc
       [],
       [{ keys: [KEY.escape] }],
     ],
@@ -155,7 +148,6 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
       const first = text.startsWith("r") ? `R${text.slice(1)}` : text;
       return [...keySteps(Array.from({ length: typed.length }, () => KEY.backspace)), ...[...first].map((character) => ({ text: character }))];
     },
-    // the search is the card's too: the same rows under another search take other backspaces
   }, { call: `search ${typed}` });
 }
 
@@ -165,7 +157,6 @@ function parseLettaEffort(screen: string): ParsedPrompt | null {
   const level = findLastIndex(lines.slice(0, end), (line) => LETTA_EFFORT_RE.test(line.trim()));
   const title = findLastIndex(lines.slice(0, Math.max(level, 0)), (line) => line.trim() === LETTA_EFFORT_TITLE);
   if (level < 0 || title < 0 || lines.slice(level + 1, end).some((line) => line.trim() !== "")) return null;
-  // the model is the one line with text between the title and the level
   const named = lines.slice(title + 1, level).map((line) => line.trim()).filter(Boolean);
   if (named.length !== 1) return null;
   const shown = lines[level]!.trim().match(LETTA_EFFORT_RE)![1]!;
@@ -188,8 +179,7 @@ function parseLettaEffort(screen: string): ParsedPrompt | null {
 }
 
 /**
- * Whether a read shows the card's model list with `search` typed, on the card's tab: a key of the card's search goes
- * nowhere else. Letta moves to the first tab with models itself once the search leaves the shown one none (and draws
+ * Letta moves to the first tab with models itself once the search leaves the shown one none (and draws
  * that tab no more): a tab still drawn but not shown is a switch from somewhere else, where the search would not go.
  */
 export function lettaSearchShown(shown: ParsedPrompt | null | undefined, card: ParsedPrompt, search: string): boolean {
@@ -198,10 +188,6 @@ export function lettaSearchShown(shown: ParsedPrompt | null | undefined, card: P
     && (shown.lettaTab === card.lettaTab || (tabs.length > 0 && tabs[0] === shown.lettaTab && !tabs.includes(card.lettaTab ?? "")));
 }
 
-/**
- * What a Letta picker picked with Enter is, however Letta redraws it until it moves on (another count, a refresh):
- * the model list by the row under its cursor on its tab and search, the reasoning step by its model and level.
- */
 export function lettaPick(parsed: ParsedPrompt | undefined): string | undefined {
   if (parsed?.responder === "letta-model") return `model\n${parsed.lettaTab}\n${parsed.lettaSearch}\n${parsed.menuLabels[parsed.selectedIndex]}`;
   if (parsed?.responder === "letta-effort") return `effort\n${parsed.menuLabels[0]}`;

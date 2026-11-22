@@ -1,0 +1,11 @@
+# The hc-tui source this crate builds on (https://github.com/followcat/hc-tui, Apache-2.0).
+# prepare.sh fetches exactly this commit into ./upstream and applies ./patches on top.
+# Nothing of hc-tui is copied into this repository: only the pin and the patches are.
+# This file is read by prepare.sh as shell assignments, so keep it to NAME=value lines.
+HC_TUI_REPO=https://github.com/followcat/hc-tui
+HC_TUI_TAG=v0.1.6
+HC_TUI_COMMIT=a37bddb98627c51838939c92e4a574fde8482974
+# vendor/ghostty as that commit records it; prepare.sh checks the submodule against it.
+GHOSTTY_COMMIT=1e5cdb865807abc990181efb8ebfa9122955cce2
+# The Zig that builds libghostty-vt: upstream/tools/install-zig.sh installs and verifies it.
+ZIG_VERSION=0.16.0

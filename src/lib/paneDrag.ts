@@ -2,12 +2,10 @@ import type { SplitTarget } from "./split.ts";
 
 /**
  * A tab dragged out of its strip (useTabReorder): the strip holds the pointer, so the pane area
- * never sees the drag. The strip reports it here and App draws the split guide from it, as it
- * does for a sidebar row's native drag (lib/split.ts).
+ * never sees the drag.
  */
 export interface PaneDrag {
   target: SplitTarget;
-  /** where the pointer is, once it has left the strip; null while it is still over the strip */
   point: { x: number; y: number } | null;
 }
 
@@ -33,7 +31,6 @@ export const paneDrag = {
   move(x: number, y: number): void {
     if (current) set({ target: current.target, point: { x, y } });
   },
-  /** over the strip again: no half is the target */
   back(): void {
     if (current?.point) set({ target: current.target, point: null });
   },
@@ -45,7 +42,6 @@ export const paneDrag = {
   cancel(): void {
     set(null);
   },
-  /** App's: what a drop does */
   onDrop(handler: ((target: SplitTarget, x: number, y: number) => void) | null): void {
     dropHandler = handler;
   },

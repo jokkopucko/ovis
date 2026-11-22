@@ -19,7 +19,6 @@ const FIXTURES = join(import.meta.dir, "fixtures", "session-history");
 const WINDOWS = process.platform === "win32";
 const CWD = WINDOWS ? "C:\\work\\project" : "/work/project";
 const ID = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
-/** The folder each agent names after CWD, as the agent itself spells it. */
 const FOLDERS: Partial<Record<SessionHistoryAgent, string>> = WINDOWS
   ? { claude: "C--work-project", pi: "--C--work-project--", omo: "--C--work-project--", omp: "--C--work-project--", gjc: "--C--work-project--", grok: "C%3A%5Cwork%5Cproject" }
   : { claude: "-work-project", pi: "--work-project--", omo: "--work-project--", omp: "--work-project--", gjc: "--work-project--", cmd: "work-project", grok: "%2Fwork%2Fproject" };
@@ -148,7 +147,6 @@ describe("listSessions", () => {
     expect(bytes).toBe(HEAD_BYTES);
   });
 
-  /** A Codex store holding the shared fixture table's rollouts; returns the day folder and how many bytes each listing reads. */
   const codexTable = (home: string) => {
     const day = join(home, ".codex", "sessions", "2026", "10", "20");
     mkdirSync(day, { recursive: true });
@@ -177,14 +175,11 @@ describe("listSessions", () => {
     const { reads, readHead } = countingReads();
     const rows = listSessions("codex", CWD, { home, env: {}, readHead });
     const eligible = rolloutHeaders.cases.filter((fixture) => fixture.interactive);
-    // newest first, each with the prompt and the resume command of its own verified id
     expect(rows.map((row) => [row.id, row.firstMessage, row.resume?.argv])).toEqual([...eligible].reverse()
       .map((fixture) => [String(fixture.payload.id), fixture.name, ["codex", "resume", String(fixture.payload.id)]]));
-    // the same files, and only they, are the live reader's
     for (const fixture of rolloutHeaders.cases) {
       expect([fixture.name, codexRolloutPath(join(day, fixture.file), join(home, ".codex")) !== null]).toEqual([fixture.name, fixture.interactive]);
     }
-    // refusing a child or a contradiction reads nothing past each file's one head read
     expect(reads.files).toBe(rolloutHeaders.cases.length);
   });
 
@@ -198,8 +193,6 @@ describe("listSessions", () => {
     writeFileSync(path, `${JSON.stringify({ type: "session_meta", payload: legacy })}\n`);
     expect(listSessions("codex", CWD, { home, env: {} }).map((row) => [row.id, row.resume?.argv])).toEqual([[thread, ["codex", "resume", thread]]]);
     expect(codexRolloutPath(path, join(home, ".codex"))).toBe(path);
-    // no id at all: nothing contradicts the file, and the live reader still takes it; the
-    // history has no id to resume it by
     writeFileSync(path, `${JSON.stringify({ type: "session_meta", payload: { ...legacy, id: undefined } })}\n`);
     expect(codexRolloutPath(path, join(home, ".codex"))).toBe(path);
     expect(listSessions("codex", CWD, { home, env: {} })).toEqual([]);
@@ -217,7 +210,6 @@ describe("listSessions", () => {
       return [codexRolloutPath(path, join(home, ".codex")) !== null, listSessions("codex", CWD, { home, env: {} }).map((row) => row.resume?.argv)];
     };
     expect(eligible(base)).toEqual([true, [["codex", "resume", thread]]]);
-    // a null id or session_id is present and not a thread: neither path takes it
     expect(eligible({ ...base, session_id: null })).toEqual([false, []]);
     expect(eligible({ ...base, id: null })).toEqual([false, []]);
   });
@@ -239,7 +231,6 @@ describe("listSessions", () => {
     mkdirSync(day, { recursive: true });
     const path = join(day, `rollout-2026-10-01T09-00-00-${ID(1)}.jsonl`);
     const prompt = `${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "cut prompt" } })}\n`;
-    /** A header line of exactly `length` bytes, the marker (when asked) at its end. */
     const header = (length: number, marker: boolean) => {
       const line = (padding: string) => JSON.stringify({ type: "session_meta", payload: {
         id: ID(1), timestamp: "2026-10-01T09:00:00.000Z", cwd: CWD, source: "cli", base_instructions: { text: padding }, ...(marker ? { thread_source: "subagent" } : {}) } });
@@ -251,21 +242,15 @@ describe("listSessions", () => {
       writeFileSync(path, body);
       const { reads, readHead } = countingReads();
       const ids = listSessions("codex", CWD, { home, env: {}, readHead }).map((row) => row.id);
-      // never more than the one head read
       expect(reads).toEqual({ files: 1, bytes: Math.min(HEAD_BYTES, Buffer.byteLength(body)) });
       return ids;
     };
-    // the marker past the read: the header is not listed, and neither is one without it
     expect(listed(`${header(2 * HEAD_BYTES, true)}\n${prompt}`)).toEqual([]);
     expect(listed(`${header(2 * HEAD_BYTES, false)}\n${prompt}`)).toEqual([]);
-    // byte boundaries: a header whose newline is the read's last byte is whole and checked
     expect(listed(`${header(HEAD_BYTES - 1, false)}\n${prompt}`)).toEqual([ID(1)]);
     expect(listed(`${header(HEAD_BYTES - 1, true)}\n${prompt}`)).toEqual([]);
-    // one byte longer fills the read without its newline: not listed
     expect(listed(`${header(HEAD_BYTES, false)}\n${prompt}`)).toEqual([]);
-    // a file that is only its header, without a newline, ends within the read
     expect(listed(header(HEAD_BYTES - 1, false))).toEqual([ID(1)]);
-    // a malformed first line, or a first record that is not session_meta, is no rollout
     expect(listed(`{"type":"session_meta","payload":\n${prompt}`)).toEqual([]);
     expect(listed(`${JSON.stringify({ type: "event_msg", payload: { id: ID(1), cwd: CWD, source: "cli" } })}\n${prompt}`)).toEqual([]);
   });
@@ -414,7 +399,6 @@ describe("listSessions", () => {
     expect(targets.map((target) => typeof target)).toEqual(["number"]);
     swap = true;
     expect(listed()).toEqual([]);
-    // The unsafe replacement was refused before the reader could see it.
     expect(targets).toHaveLength(1);
   });
 
@@ -531,7 +515,6 @@ describe("listSessions", () => {
     let reads = 0;
     expect(listSessions("hermes", CWD, { home, env: {}, opened: () => { reads++; } }).map((row) => row.id)).toEqual(EXPECTED.hermes);
     expect(sideFiles(dirname(db))).toEqual(before);
-    // nobody wrote meanwhile: the immutable read stands, and the store is read once
     expect(reads).toBe(1);
   });
 
@@ -547,8 +530,6 @@ describe("listSessions", () => {
     try {
       const rows = listSessions("hermes", CWD, {
         home, env: {},
-        // between the immutable open and the query, another connection writes and checkpoints into the
-        // main file (an agent opening its store, writing, checkpointing); it stays open, as a writer does
         opened: (_path, immutable) => {
           reads++;
           if (!immutable || writer) return;
@@ -568,10 +549,28 @@ describe("listSessions", () => {
         ["20261002_090000_fx0002", "rewritten prompt"],
         ["20261001_090000_fx0001", "rewritten prompt"],
       ]);
-      // the immutable read, then the one read as SQLite reads a store being written
       expect(reads).toBe(2);
     } finally { writer?.close(); }
   });
+
+  /**
+   * Returns once the kernel's file clock has moved past `ctimeNs`. A kernel without fine-grained file timestamps (Linux
+   * before 6.13) stamps every change within one tick, a few milliseconds, with the same time: a change made in the tick of
+   * the one before looks like no change to a reader that compares times and sizes.
+   */
+  function afterFileClock(ctimeNs: bigint): void {
+    const dir = mkdtempSync(join(tmpdir(), "file-clock-"));
+    const probe = join(dir, "probe");
+    // a clock set back while it waits would keep it here: a tick is milliseconds, so seconds mean a stuck clock
+    const deadline = performance.now() + 2_000;
+    try {
+      for (let seen = -1n; seen <= ctimeNs;) {
+        if (performance.now() > deadline) throw new Error(`the file clock stayed at or before ${ctimeNs} ns: the probe's change time is ${seen} ns`);
+        writeFileSync(probe, "");
+        seen = statSync(probe, { bigint: true }).ctimeNs;
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
 
   it("reads a WAL store immutable once more, writing nothing into it, when its writer came and went during the read", () => {
     const home = newHome();
@@ -589,6 +588,7 @@ describe("listSessions", () => {
       opened: (_path, immutable) => {
         reads++;
         if (!immutable || afterWriter) return;
+        afterFileClock(statSync(db, { bigint: true }).ctimeNs);
         const writer = new Database(db);
         writer.exec("UPDATE messages SET content = 'rewritten prompt' WHERE role = 'user'");
         writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -596,14 +596,12 @@ describe("listSessions", () => {
         afterWriter = sideFiles(dirname(db));
       },
     });
-    // the listing made no side file of its own
     expect(sideFiles(dirname(db))).toEqual(afterWriter!);
     expect(rows.map((row) => row.firstMessage)).toEqual(["rewritten prompt", "rewritten prompt"]);
     expect(reads).toBe(2);
   });
 
   it("lists nothing when a writer changes the WAL store during both immutable reads", () => {
-    // Given a closed WAL store and a writer that checkpoints and closes during each open.
     const home = newHome();
     install("hermes", home);
     const db = join(home, ".hermes", "state.db");
@@ -612,7 +610,6 @@ describe("listSessions", () => {
     setup.close();
     const modes: boolean[] = [];
 
-    // When both immutable reads race a change to the main file.
     const rows = listSessions("hermes", CWD, {
       home, env: {},
       opened: (_path, immutable) => {
@@ -622,13 +619,11 @@ describe("listSessions", () => {
           writer.query("UPDATE messages SET content = ? WHERE role = 'user'").run(`rewritten prompt ${modes.length}`);
           writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
         } finally { writer.close(); }
-        // Distinct fixed mtimes expose each change even within one filesystem timestamp tick.
         const seconds = 1_790_000_000 + modes.length;
         utimesSync(db, seconds, seconds);
       },
     });
 
-    // Then the second immutable result is discarded, with no third attempt.
     expect(modes).toEqual([true, true]);
     expect(rows).toEqual([]);
   });
@@ -644,7 +639,6 @@ describe("listSessions", () => {
     let reads = 0;
     const rows = listSessions("hermes", CWD, {
       home, env: {},
-      // the first read fails (its connection is gone) while nobody writes: nothing changed, so it is not read again
       opened: (_path, immutable, opened) => { if (reads++ === 0 && immutable) opened.close(); },
     });
     expect(sideFiles(dirname(db))).toEqual(before);
@@ -659,7 +653,6 @@ describe("listSessions", () => {
     const writer = new Database(db);
     writer.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; PRAGMA wal_checkpoint(TRUNCATE)");
     writer.exec("UPDATE messages SET content = 'only in the log' WHERE session_id = '20261002_090000_fx0002' AND role = 'user'");
-    // a store restored from a copy: its main file and a valid -wal, no -shm
     const restored = newHome();
     mkdirSync(join(restored, ".hermes"));
     copyFileSync(db, join(restored, ".hermes", "state.db"));
@@ -685,7 +678,6 @@ describe("listSessions", () => {
       const listed = listSessions("hermes", CWD, {
         home, env: {},
         opened: () => { opened = true; },
-        // once SQLite has opened the store, its path reports another file
         stat: (path, bigint) => path === checked && opened ? withIno(statAs(path, bigint), NEAR + 9n) : statAs(path, bigint),
       });
       expect([wal, listed]).toEqual([wal, []]);
@@ -700,7 +692,6 @@ describe("listSessions", () => {
     // a writer whose uncommitted pages reach the main file (a tiny cache spills them), then a crash:
     // the main file and its hot -journal, as they are on disk
     writer.exec("PRAGMA journal_mode = DELETE; PRAGMA synchronous = OFF");
-    // Setup needs no disk syncs; eight padded rows still spill beyond the crash's one-page cache.
     writer.transaction(() => {
       writer.exec(readFileSync(join(FIXTURES, "hermes", "dot-hermes", "state.sql"), "utf8").replaceAll(":cwd", sql(CWD)));
       for (let n = 0; n < 8; n++) writer.query("INSERT INTO messages (session_id, role, content, timestamp) VALUES ('20261004_090000_fx0004', 'assistant', ?, 1791104401)").run(`pad ${"x".repeat(500)}`);
@@ -738,12 +729,9 @@ describe("listSessions", () => {
   it(`lists a database whose check is the ${MAX_STATS}th: its identity after the open is part of that check`, () => {
     const home = newHome();
     install("hermes", home);
-    // a Hermes listing spends 6 checks up to its database's identity: the cwd's canonical form, the
-    // store's stat and resolution, the database's and its folder's resolutions, then the identity
     const listed = (spent: number) => listSessions("hermes", CWD, { home, env: {}, spent }).length;
     expect(listed(MAX_STATS - 7)).toBe(2);
     expect(listed(MAX_STATS - 6)).toBe(2);
-    // one check further and the identity is past the bound: nothing is listed
     expect(listed(MAX_STATS - 5)).toBe(0);
   });
 
@@ -776,11 +764,9 @@ describe("listSessions", () => {
       "fx0109 root", "fx0108 legacy-reset", "fx0107 root", "fx0105 root", "fx0104 reset", "fx0103 root",
       "fx0102 branch", "fx0101 root",
     ]);
-    // the children are exactly those Hermes lists in the folder and resumes as themselves
     expect(rows.filter((row) => kindOf(row.id) !== "root").map((row) => row.id).sort())
       .toEqual(hermesEvidence.decision.proven.map((row) => row.id).sort());
     for (const row of rows) {
-      // Hermes's own list shows it, and `hermes --resume <id>` opens it
       expect(hermesEvidence.native_list_in_cwd).toContain(row.id);
       if (kindOf(row.id) !== "root") expect(hermesEvidence.rows.find((made) => made.id === row.id)!.resume_opens).toBe(row.id);
       expect(row.resume?.argv).toEqual(["hermes", "--resume", row.id]);
@@ -791,7 +777,6 @@ describe("listSessions", () => {
 
   it("hides an unmarked Hermes child that started before its parent ended branched", () => {
     const home = newHome();
-    // fx0105 ended "branched" at 1791625560: this child started a minute before
     nativeHermes(home, `INSERT INTO sessions (id, source, parent_session_id, started_at, cwd) VALUES ('20261010_094500_fx0199', 'cli', '20261010_094000_fx0105', 1791625500, ${sql(CWD)})`);
     const plain = newHome();
     nativeHermes(plain);
@@ -811,13 +796,11 @@ describe("listSessions", () => {
 
   it(`walks Hermes's resume for the folder's newest ${HERMES_CANDIDATES} roots and branch or reset children alone`, () => {
     const home = newHome();
-    // newer than every row of the store: branches of fx0101 that each resume as their child, which has messages
     nativeHermes(home, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${HERMES_CANDIDATES - 1})
       INSERT INTO sessions (id, source, parent_session_id, model_config, started_at, last_activity_at, cwd)
       SELECT 'newer_branch_' || i, 'cli', '20261010_090000_fx0101', '{"_branched_from": "20261010_090000_fx0101"}', 1800000000 + i, 1800000000 + i, ${sql(CWD)} FROM n;
       INSERT INTO sessions (id, source, parent_session_id, started_at) SELECT 'newer_child_' || substr(id, 14), 'cli', id, started_at + 1 FROM sessions WHERE id LIKE 'newer_branch_%';
       INSERT INTO messages (session_id, role, content, timestamp) SELECT id, 'user', 'newer', started_at FROM sessions WHERE id LIKE 'newer_child_%';`);
-    // the window holds those and the folder's newest conversation; the older ones are not reached
     expect(listSessions("hermes", CWD, { home, env: {} }).map((row) => row.id)).toEqual(["20261010_136000_fx0135"]);
   });
 
@@ -833,7 +816,6 @@ describe("listSessions", () => {
     });
   }
 
-  // the entries a listing walks, taken or passed over, as the opendir seam counts them
   const walking = () => {
     const seen = { walked: 0, lstats: 0 };
     const opendir = (dir: string): Dir => {
@@ -850,7 +832,6 @@ describe("listSessions", () => {
     const home = newHome();
     const project = join(home, ".claude", "projects", claudeProjectDir(CWD));
     mkdirSync(project, { recursive: true });
-    // a project of folders the listing passes over (Claude's per-session folders), and a few sessions
     for (let n = 0; n < MAX_ENTRIES + 4000; n++) mkdirSync(join(project, `folder-${n}`));
     for (let n = 0; n < 10; n++) writeFileSync(join(project, `${n.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000.jsonl`), "");
     const { seen, opendir, lstat } = walking();
@@ -903,7 +884,6 @@ describe("listSessions", () => {
     const home = newHome();
     const project = join(home, ".claude", "projects", claudeProjectDir(CWD));
     mkdirSync(project, { recursive: true });
-    // a folder of more entries than the walk takes, all passed over, made up by the opendir seam
     let walked = 0;
     const opendir = (dir: string): Dir => {
       if (dir !== project) return opendirSync(dir);
@@ -949,7 +929,6 @@ describe("listSessions", () => {
     expect(listSessions("claude", CWD, { home, env: {} }).map((row) => row.id)).toEqual(newest);
   });
 
-  // more entries than the 4096 the listing once took: which ones it saw followed readdir order
   for (const [count, folders] of [[2500, true], [5000, false]] as const) {
     it(`keeps the newest ${MAX_ROWS} of ${count} Claude sessions${folders ? " with their per-session folders" : ""}, whatever the readdir order`, () => {
       const home = newHome();
@@ -960,7 +939,6 @@ describe("listSessions", () => {
         const id = `${n.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`;
         const path = join(project, `${id}.jsonl`);
         writeFileSync(path, `${JSON.stringify({ type: "user", cwd: CWD, message: { role: "user", content: `prompt ${n}` } })}\n`);
-        // the times follow neither the names nor the order the files were made in
         const at = (n * 7919) % count;
         utimesSync(path, 1_790_000_000 + at, 1_790_000_000 + at);
         // Claude keeps a folder of subagent transcripts beside a session
@@ -1002,8 +980,6 @@ describe("listSessions", () => {
     let looked = 0;
     const rows = listSessions("grok", CWD, { home, env: {}, lstat: (path) => { looked++; return lstatSync(path); } });
     expect(rows).toHaveLength(MAX_ROWS);
-    // each of the 100 folders timed once: at least one lstat (its files, else itself), at most its two
-    // files' times, never those times twice
     expect(looked).toBeGreaterThanOrEqual(100);
     expect(looked).toBeLessThanOrEqual(2 * 100);
   });
@@ -1055,7 +1031,6 @@ describe("listSessions", () => {
       stat: (path, bigint) => { stats++; return bigint ? statSync(path, { bigint: true }) : statSync(path); },
     });
     expect(rows).toHaveLength(5);
-    // the store, five summaries, and both folders of each of the five sessions
     expect(stats).toBe(1 + 5 + 5 * 2);
   });
 
@@ -1096,7 +1071,6 @@ describe("listSessions", () => {
     });
     expect(rows.map((row) => row.id)).toEqual([ID(3)]);
     expect(resolved).toEqual(["C:\\PROGRA~1\\PROJEC~1"]);
-    // stat calls: the store and the session's summary (the one resolution is budgeted, through realpath)
     expect(stats).toBe(2);
   });
 
@@ -1123,6 +1097,23 @@ describe("listSessions", () => {
     const resolved: string[] = [];
     expect((await listSessions("pi", SHORT, { home, env: {}, platform: "win32", realpath: shortAlias(resolved) })).map((row) => row.id)).toEqual([ID(3)]);
     expect(resolved).toEqual([SHORT]);
+  });
+
+  it("lists omp's sessions from the store its environment moves them to (#3746)", () => {
+    const home = newHome();
+    const write = (store: string, id: string) => {
+      mkdirSync(join(store, FOLDERS.omp!), { recursive: true });
+      writeFileSync(join(store, FOLDERS.omp!, `${id}.jsonl`), piHeader(id) + piPrompt(id));
+    };
+    write(join(home, ".omp", "agent", "sessions"), ID(1));
+    write(join(home, "xdg-data", "omp", "sessions"), ID(2));
+    write(join(home, ".omp-work", "agent", "sessions"), ID(3));
+    const ids = (env: Record<string, string>, platform: NodeJS.Platform = "darwin") => listSessions("omp", CWD, { home, env, platform }).map((row) => row.id);
+    expect(ids({})).toEqual([ID(1)]);
+    expect(ids({ XDG_DATA_HOME: join(home, "xdg-data") })).toEqual([ID(2)]);
+    expect(ids({ XDG_DATA_HOME: join(home, "xdg-data") }, "linux")).toEqual([ID(2)]);
+    expect(ids({ PI_CONFIG_DIR: ".omp-work" })).toEqual([ID(3)]);
+    expect(ids({ XDG_DATA_HOME: join(home, "nothing-here") })).toEqual([ID(1)]);
   });
 
   it("finds omp's temp-scoped folder when TEMP is a Windows short-name alias of the cwd's base", () => {
@@ -1226,7 +1217,6 @@ describe("GET /api/sessions/history", () => {
     expect(asked).toBe(false);
   });
 
-  /** One store's transcript of `id` in CWD's project, its first prompt `prompt`. */
   const claudeStore = (store: string, id: string, prompt: string): void => {
     const folder = join(store, "projects", claudeProjectDir(CWD));
     mkdirSync(folder, { recursive: true });
@@ -1234,12 +1224,10 @@ describe("GET /api/sessions/history", () => {
   };
   /** A started user process standing for a pane's Claude, with the environment given (macOS hides system binaries' environments). */
   const claudeStandIn = async (env: Record<string, string | undefined>) => {
-    // alive until the test ends it: it waits on a stdin nothing writes to, and says it is ready first
     const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], { env, stdin: "pipe", stdout: "pipe" });
     await child.stdout.getReader().read();
     return child;
   };
-  /** Ends the stand-ins and waits until each has exited. */
   const stop = async (...children: ReturnType<typeof Bun.spawn>[]) => { for (const child of children) { child.kill(); await child.exited; } };
   /** herdr's own environment, which a new tab inherits: none exported, unless a test says otherwise */
   const launchAbsent = async () => ({ state: "absent" as const });
@@ -1249,7 +1237,6 @@ describe("GET /api/sessions/history", () => {
   it.skipIf(process.platform !== "linux")("Claude history uses the source pane store", async () => {
     const home = newHome();
     const alternate = join(home, "alternate-store");
-    // the same session id in two stores, each with its own first prompt
     claudeStore(join(home, ".claude"), ID(1), "default store prompt");
     claudeStore(alternate, ID(1), "alternate store prompt");
     const child = await claudeStandIn({ PATH: process.env["PATH"] ?? "", CLAUDE_CONFIG_DIR: alternate });
@@ -1264,7 +1251,6 @@ describe("GET /api/sessions/history", () => {
   });
 
   describe("POST /api/sessions/resume", () => {
-    // unit tests have no herdr: a request that got as far as making a tab would fail on the missing socket, not answer these
     const resume = (body: Record<string, unknown>, options: Omit<Parameters<typeof handleSessionResumeRequest>[1], "readOnly"> & { readOnly?: boolean }) =>
       handleSessionResumeRequest(new Request("http://localhost/api/sessions/resume", { method: "POST", body: JSON.stringify(body) }), { readOnly: false, ...options });
     const answer = async (response: Response) => [response.status, ((await response.json()) as { error?: { code: string }; action?: string; workspace_id?: string; pane_id?: string })] as const;
@@ -1302,15 +1288,11 @@ describe("GET /api/sessions/history", () => {
         expect(await codes({ ...valid, pane_id: "p9" })).toEqual([400, "pane_not_in_workspace"]);
         expect(await codes({ ...valid, pane_id: "p-gone" })).toEqual([409, "stale_source"]);
         expect(await codes({ ...valid, session_id: ID(7) })).toEqual([404, "session_not_found"]);
-        // the pane's Claude moved to the default store since the list: the key no longer matches
         expect(await codes(valid, { paneProcesses: claudePane(implicit.pid) })).toEqual([409, "stale_source"]);
-        // two Claudes in the pane, or none readable: no store is guessed
         expect(await codes(valid, { paneProcesses: async () => ({ shell_pid: null, foreground_processes: [{ pid: child.pid, name: "claude" }, { pid: implicit.pid, name: "claude" }] }) })).toEqual([409, "claude_store_unknown"]);
         expect(await codes(valid, { paneProcesses: async () => { throw new Error("herdr busy"); } })).toEqual([409, "claude_store_unknown"]);
         // herdr's answer without the pane's processes says nothing of its Claude: never the default store
         for (const partial of [undefined, {}, { shell_pid: 7 }, { foreground_processes: [] }]) expect(await codes(valid, { paneProcesses: async () => partial })).toEqual([409, "claude_store_unknown"]);
-        // none exported by the pane's Claude, but herdr exports one (the pane's shell dropped it): a new
-        // tab would start in herdr's store, so the list withholds Resume and the endpoint refuses it
         const implicitPane = claudePane(implicit.pid);
         const implicitKey = ((await (await handleSessionHistoryRequest(...request("workspace_id=w1&agent=claude&pane_id=p1"), { readOnly: false, ...base, paneProcesses: implicitPane })).json()) as ClaudeListing).sessions[0]!.resume!.source!.store_key;
         for (const launchSource of [async () => ({ state: "override" as const, dir: alternate }), async () => ({ state: "unreadable" as const })]) {
@@ -1336,7 +1318,6 @@ describe("GET /api/sessions/history", () => {
       } finally { await stop(child); }
     });
 
-    /** A resume's tab, Claude start and close as herdr would answer them, with each close kept. */
     const fakeTabs = (closed: string[], started = true) => ({
       create: async () => ({ tab: { tab_id: "t-new", workspace_id: "w1" }, root_pane: { pane_id: "p-new" } }) as unknown as Awaited<ReturnType<typeof import("./herdr/client.ts").tabCreate>>,
       start: async () => started ? { agent_started: true as const } : { agent_started: false as const, error: { code: "agent_start_failed", message: "not in this test" } },
@@ -1354,7 +1335,6 @@ describe("GET /api/sessions/history", () => {
       const rcClaude = await claudeStandIn({ PATH: process.env["PATH"] ?? "", CLAUDE_CONFIG_DIR: rcStore });
       const sameClaude = await claudeStandIn({ PATH: process.env["PATH"] ?? "", CLAUDE_CONFIG_DIR: alternate });
       try {
-        // the new pane shows its shell first, then the Claude the resume started
         const panes = (resumed: number) => {
           let asked = 0;
           return async (paneId: string): Promise<PaneProcesses> => paneId === "p-new" && asked++ === 0
@@ -1376,7 +1356,6 @@ describe("GET /api/sessions/history", () => {
     it.skipIf(process.platform !== "linux")("opens a pane showing the session from the same store folder, however that folder was chosen", async () => {
       const home = newHome();
       claudeStore(join(home, ".claude"), ID(1), "default store prompt");
-      // the list's pane runs Claude with none exported; another pane runs it on ~/.claude by name
       const implicit = await claudeStandIn({ PATH: process.env["PATH"] ?? "" });
       const explicit = await claudeStandIn({ PATH: process.env["PATH"] ?? "", CLAUDE_CONFIG_DIR: join(home, ".claude") });
       try {
@@ -1395,7 +1374,6 @@ describe("GET /api/sessions/history", () => {
     it("closes a resumed Claude's tab that does not say its store in time", async () => {
       const home = newHome();
       claudeStore(join(home, ".claude"), ID(1), "default store prompt");
-      // the new pane never shows a Claude whose store can be read: no proof of the store, so nothing is kept.
       // Both panes are a shell with nothing under it, on every platform: Windows looks under shell_pid
       const shell = async (): Promise<PaneProcesses> => ({ shell_pid: 1, foreground_processes: [{ pid: 1, name: "bash", argv: ["bash"] }] });
       const table = async (): Promise<ProcessRow[]> => [{ pid: 1, parent: 0, path: "bash", commandLine: "bash" }];
@@ -1428,7 +1406,6 @@ describe("GET /api/sessions/history", () => {
       const server = Bun.serve({
         port: 0, hostname: "127.0.0.1",
         fetch: async (incoming) => {
-          // the body in, then the first window, as index.ts's own 75 s was before this budget
           const body = await incoming.text();
           server.timeout(incoming, 4);
           return handleSessionResumeRequest(new Request(incoming.url, { method: "POST", body }), { readOnly: false, ...base, tabs, holdOpen: (seconds: number) => { asked.push(seconds); server.timeout(incoming, seconds); } });
@@ -1437,7 +1414,6 @@ describe("GET /api/sessions/history", () => {
       try {
         const body = JSON.stringify({ workspace_id: "w1", pane_id: "p1", agent: "claude", session_id: ID(1), store_key: listed.sessions[0]!.resume!.source!.store_key });
         const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/resume`, { method: "POST", body });
-        // the new pane never shows a Claude, so the store check refuses it: an answer, not a dropped socket
         expect([response.status, ((await response.json()) as { error?: { code: string } }).error?.code, closed]).toEqual([409, "launch_store_unknown", ["t-new"]]);
       } finally { server.stop(true); }
       // one budget, asked once, covering busy-shell retries (10 s), one agentStart (60 s) and the store
@@ -1445,14 +1421,10 @@ describe("GET /api/sessions/history", () => {
       expect(asked).toEqual([RESUME_BUDGET_S]);
       expect(RESUME_BUDGET_S).toBeGreaterThanOrEqual(10 + 60 + 15);
       expect(RESUME_BUDGET_S).toBeLessThanOrEqual(255);
-      // a PC's resume goes through the proxy, which waits on it as long as on a worktree's creation
       expect(["sessions/resume", "worktree/create", "sessions/history", "tab/create"].map(slowMachinePath)).toEqual([true, true, false, false]);
     }, 20_000);
 
     it("answers by its own deadline while the start still runs, and closes the tab that start made after", async () => {
-      // the per-call limits of herdr's RPCs add up past any one budget: the route answers by its deadline,
-      // within the window it asked for, and work that ends after that answer leaves no tab behind. The
-      // deadline here falls once the start is under way (in the server, a timer)
       const home = newHome();
       claudeStore(join(home, ".claude"), ID(1), "default store prompt");
       const shell = async (): Promise<PaneProcesses> => ({ shell_pid: 1, foreground_processes: [{ pid: 1, name: "bash", argv: ["bash"] }] });
@@ -1466,7 +1438,6 @@ describe("GET /api/sessions/history", () => {
       const made: string[] = [];
       const tabs = {
         create: async () => { made.push("t-new"); return { tab: { tab_id: "t-new", workspace_id: "w1" }, root_pane: { pane_id: "p-new" } } as unknown as Awaited<ReturnType<typeof import("./herdr/client.ts").tabCreate>>; },
-        // the start is still running when the deadline falls: it ends only once released
         start: async () => { started.resolve(); await release.promise; return { agent_started: true as const }; },
         close: async (tabId: string) => { closed.resolve(tabId); },
       };
@@ -1477,18 +1448,14 @@ describe("GET /api/sessions/history", () => {
       try {
         const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/resume`, { method: "POST", body: JSON.stringify(valid) });
         expect([response.status, ((await response.json()) as { error?: { code: string } }).error?.code]).toEqual([504, "resume_timed_out"]);
-        // a retry while that start still runs is refused: the tab it may find is the one about to be closed
         const retried: string[] = [];
         const shown = snapshot();
-        // the roster already lists the late start's pane, reporting the session, on the same store folder
         const showing = { ...shown, tabs: [...shown.tabs, { tab_id: "t-new", workspace_id: "w1", number: 3 }], panes: [...shown.panes, { pane_id: "p-new", tab_id: "t-new", workspace_id: "w1", cwd: CWD, agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: ID(1) } }] } as unknown as typeof shown;
         const [status, json] = await answer(await resume(valid, { ...base, snapshot: async () => showing, tabs: { ...tabs, create: async () => { retried.push("t-retry"); return tabs.create(); } } }));
         expect([status, json.error?.code, retried]).toEqual([409, "resume_in_progress", []]);
         release.resolve();
-        // the client was told the resume did not happen: the tab the late start made is closed
         expect(await closed.promise).toBe("t-new");
         expect(made).toEqual(["t-new"]);
-        // once that is done, the session can be resumed again
         const again = await answer(await resume(valid, { ...base, tabs: { ...tabs, start: async () => ({ agent_started: false as const, error: { code: "agent_start_failed", message: "not in this test" } }) } }));
         expect([again[0], again[1].action]).toEqual([200, "created"]);
       } finally { release.resolve(); server.stop(true); }
@@ -1505,7 +1472,6 @@ describe("GET /api/sessions/history", () => {
       const exported = `PATH=/usr/bin\0CLAUDE_CONFIG_DIR=${alternate}\0HOME=${home}`;
       const environments: Record<number, string> = { [SOURCE]: exported, [STARTED]: `PATH=/usr/bin\0NOTE=example CLAUDE_CONFIG_DIR=${alternate}\0HOME=${home}` };
       const environment = spyOn(darwinProcess, "environment").mockImplementation((pid: number) => environments[pid] ?? null);
-      // the live chat's reading stays ps's: it answers nothing here
       const spawned = spyOn(Bun, "spawn").mockImplementation((() => ({ stdout: new Response("").body, exited: Promise.resolve(0), kill: () => {} })) as unknown as typeof Bun.spawn);
       const paneProcesses = async (paneId: string): Promise<PaneProcesses> => ({ shell_pid: null, foreground_processes: [{ pid: paneId === "p-new" ? STARTED : SOURCE, name: "claude", argv: ["claude"] }] });
       try {
@@ -1515,7 +1481,6 @@ describe("GET /api/sessions/history", () => {
         const closed: string[] = [];
         const [status, json] = await answer(await resume(valid, { ...base, tabs: fakeTabs(closed) }));
         expect([status, json.error?.code, closed]).toEqual([409, "launch_store_changed", ["t-new"]]);
-        // the control: a Claude the store really is exported to is kept
         environments[STARTED] = exported;
         forgetClaudeSessions();
         const kept: string[] = [];
@@ -1654,9 +1619,7 @@ describe("GET /api/sessions/history", () => {
       };
       expect(await outcome(".claude")).toEqual([200, "created", []]);
       expect(await outcome(".claude-second")).toEqual([409, "launch_store_changed", ["t-new"]]);
-      // the new Claude's live record in two stores (one copied while it ran): which one it writes cannot be told
       expect(await outcome([".claude", ".claude-second"])).toEqual([409, "launch_store_unknown", ["t-new"]]);
-      // below a launcher with no record: the child holding it is the started Claude, and its tab is kept
       expect(await outcome(".claude", launchedRows)).toEqual([200, "created", []]);
     });
 
@@ -1685,7 +1648,6 @@ describe("GET /api/sessions/history", () => {
       return [response.status, ((await response.json()) as { error: { code: string } }).error.code];
     };
     expect(await codes("p-elsewhere")).toEqual([400, "pane_not_in_workspace"]);
-    // a pane that is gone is a stale source, as Resume answers it
     expect(await codes("p-gone")).toEqual([409, "stale_source"]);
     expect(asked).toBe(0);
   });

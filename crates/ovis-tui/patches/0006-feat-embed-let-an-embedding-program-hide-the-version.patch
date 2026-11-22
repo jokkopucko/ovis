@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ovis-tui <ovis-tui@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 04:18:39 +0900
+Subject: [PATCH 6/7] feat(embed): let an embedding program hide the version
+ badge
+
+Embed::hide_version_badge leaves hc-tui's version out of the sidebar's top row and the phone header: in a program that embeds the client, the user runs that program, and hc-tui's version reads as its own.
+---
+ crates/hc-tui/src/chrome/render.rs | 44 ++++++++++++++++++++++++++++++
+ crates/hc-tui/src/cli.rs           |  1 +
+ crates/hc-tui/src/embed.rs         |  3 ++
+ 3 files changed, 48 insertions(+)
+
+diff --git a/crates/hc-tui/src/chrome/render.rs b/crates/hc-tui/src/chrome/render.rs
+index beaffbb..a96caca 100644
+--- a/crates/hc-tui/src/chrome/render.rs
++++ b/crates/hc-tui/src/chrome/render.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): an embedder may hide the version badge.
+ // Derived from herdr src/client/shell/render.rs and src/client/shell/state.rs (Apache-2.0).
+ 
+ use std::collections::{HashMap, HashSet};
+@@ -284,6 +285,21 @@ pub(super) fn display_width(text: &str) -> u16 {
+     UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
+ }
+ 
++thread_local! {
++    /// Whether the version badge draws on this thread: a program that
++    /// embeds the client may hide hc-tui's version (`Embed::hide_version_badge`).
++    static VERSION_BADGE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
++}
++
++/// Shows or hides the version badge for every frame drawn on this thread.
++pub(crate) fn show_version_badge(on: bool) {
++    VERSION_BADGE.with(|shown| shown.set(on));
++}
++
++fn version_badge_shown() -> bool {
++    VERSION_BADGE.with(std::cell::Cell::get)
++}
++
+ /// The badge's two parts: the running `vX.Y.Z`, and — once the
+ /// update check reported a newer release — the ` ↑ v…` hint in the
+ /// notice toast's accent.
+@@ -296,6 +312,9 @@ fn version_badge_text(update_latest: Option<&str>) -> (String, Option<String>) {
+ 
+ /// Width of the fully drawn badge — callers reserve a slot with it.
+ pub(super) fn version_badge_width(update_latest: Option<&str>) -> u16 {
++    if !version_badge_shown() {
++        return 0;
++    }
+     let (version, hint) = version_badge_text(update_latest);
+     display_width(&version) + hint.as_deref().map_or(0, display_width)
+ }
+@@ -310,6 +329,9 @@ pub(super) fn put_version_badge(
+     update_latest: Option<&str>,
+     palette: &Palette,
+ ) -> Rect {
++    if !version_badge_shown() {
++        return Rect::default();
++    }
+     let (version, hint) = version_badge_text(update_latest);
+     let ver_w = display_width(&version);
+     let hint_w = hint.as_deref().map_or(0, display_width);
+@@ -342,3 +364,25 @@ pub(super) fn put_version_badge(
+     );
+     Rect::new(hint_x, row.y, hint_w, 1)
+ }
++
++#[cfg(test)]
++mod version_badge_tests {
++    use super::*;
++
++    fn drawn(shown: bool) -> String {
++        show_version_badge(shown);
++        let row = Rect::new(0, 0, 30, 1);
++        let mut buffer = Buffer::empty(row);
++        put_version_badge(&mut buffer, row, 0, None, &Palette::terminal());
++        show_version_badge(true);
++        (0..30)
++            .map(|x| buffer[(x, 0)].symbol().to_owned())
++            .collect()
++    }
++
++    #[test]
++    fn an_embedder_that_hides_the_version_badge_gets_none() {
++        assert!(drawn(true).contains(env!("CARGO_PKG_VERSION")));
++        assert_eq!(drawn(false).trim(), "");
++    }
++}
+diff --git a/crates/hc-tui/src/cli.rs b/crates/hc-tui/src/cli.rs
+index b721018..fb53d75 100644
+--- a/crates/hc-tui/src/cli.rs
++++ b/crates/hc-tui/src/cli.rs
+@@ -188,6 +188,7 @@ pub async fn run_embedded(
+ ) -> Result<(), String> {
+     App::discard_input_on_recovery(embed.discard_input_on_recovery);
+     let embed_no_core_start = embed.no_core_start;
++    crate::chrome::render::show_version_badge(!embed.hide_version_badge);
+     // The user's herdr config drives prefix + keybindings, read-only.
+     let config_path = crate::config::config_path();
+     let loaded = crate::config::load(&config_path);
+diff --git a/crates/hc-tui/src/embed.rs b/crates/hc-tui/src/embed.rs
+index a343ad1..7ebfb08 100644
+--- a/crates/hc-tui/src/embed.rs
++++ b/crates/hc-tui/src/embed.rs
+@@ -14,4 +14,7 @@ pub struct Embed {
+     /// Never run `hc server start`: a core that is not running stays so,
+     /// and the embedding program says how to start it.
+     pub no_core_start: bool,
++    /// Leave out hc-tui's version badge (the sidebar's top row, the
++    /// phone header): the embedding program is what the user runs.
++    pub hide_version_badge: bool,
+ }

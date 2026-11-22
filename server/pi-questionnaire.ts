@@ -3,7 +3,6 @@ import { piBranchRecordRanges, piEntryIndex } from "./pi-tree.ts";
 
 export interface PiQuestionnaireCall { id: string; args: unknown }
 
-// Reuse an unchanged branch without reparsing long histories on every cursor reread.
 const cache = new Map<string, { stamp: string; calls: readonly PiQuestionnaireCall[] }>();
 
 /** Pending calls on the same last-written branch Pi's conversation reader projects.

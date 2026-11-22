@@ -39,7 +39,6 @@ export class ConnectionDiagnostics {
 
   constructor(
     private component: "herdr.rpc" | "machine.local" | "machine.remote" | "websocket" | "conversation",
-    /** a budgeted sink returns false to decline a line: the failure then stays unseen */
     private write: (line: string) => unknown = (line) => console.warn(line),
     private now: () => number = Date.now,
     private wallNow: () => number = () => Date.now(),
@@ -49,10 +48,10 @@ export class ConnectionDiagnostics {
     const now = this.now();
     let failure = this.failures.get(key);
     if (failure) {
-      this.failures.delete(key); // re-insert: the oldest entry is then the least recently used
+      this.failures.delete(key);
     } else {
       // Retain recent healthy keys too: clearing their throttle lets rapid failure/recovery
-      // cycles flood the log. This one bounded map owns both episodes and throttle history.
+      // cycles flood the log.
       if (this.failures.size >= MAX_FAILURES) this.failures.delete(this.failures.keys().next().value!);
       failure = { id: randomUUID(), since: now, loggedAt: -Infinity, code, count: 0, suppressed: 0, active: false, visible: false };
     }
@@ -68,7 +67,6 @@ export class ConnectionDiagnostics {
       failure.suppressed++;
       return;
     }
-    // A declined line shows nothing, so no recovery may follow it; the next failure tries again.
     if (!this.emit("failed", failure, fields, now)) {
       failure.suppressed++;
       return;
@@ -82,8 +80,6 @@ export class ConnectionDiagnostics {
     const failure = this.failures.get(key);
     if (!failure?.active) return;
     failure.active = false;
-    // A silent flapping episode must not produce an orphan recovery line. Its suppressed
-    // failures are carried to the next visible episode; each visible episode recovers once.
     if (!failure.visible) return;
     this.emit("recovered", failure, fields, this.now());
     failure.visible = false;

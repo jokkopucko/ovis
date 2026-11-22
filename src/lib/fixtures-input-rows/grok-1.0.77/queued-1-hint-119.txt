@@ -1,0 +1,39 @@
+
+  main ~/.c/o/outside-fixes/pr-3959-grok-scratch                                            2.1K / 128K │ [Dashboard]
+
+
+     ❯ Tell me a long story about lighthouses.                                                              7:22 PM
+
+
+     word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15        7:22 PM
+     word16 word17
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    #1 first follow-up please
+
+    ⠼ Responding… 8.2s                                                                             8.3s ⇣2.10k [stop]
+
+   Queued · Enter to send now
+
+  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                               │
+  ╰────────────────────────────────────────────────────────────────────────────────────────────────────── Stand-in ─╯
+
+  Enter:send now  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+;:queue  │  Ctrl+.:shortcuts

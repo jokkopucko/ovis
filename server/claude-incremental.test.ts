@@ -1,7 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import type { SubagentDetail } from "./claude-subagents.ts";
-import { createClaudeTranscriptParser, parseClaudeTranscript } from "./conversation.ts";
+import { createClaudeTranscriptParser, forgetTranscriptState, parseClaudeTranscript, transcriptPage } from "./conversation.ts";
 
 const jsonl = (...records: unknown[]) => records.map((record) => JSON.stringify(record)).join("\n");
 const stamp = (ms: number) => new Date(Date.UTC(2026, 9, 1) + ms).toISOString();
@@ -22,7 +25,19 @@ const tasks = (turns: ConversationTurn[]) => turns.flatMap((turn) => turn.parts.
 
 type Options = NonNullable<Parameters<typeof createClaudeTranscriptParser>[0]>;
 
-/** Check every append and speculative final line, including older returned snapshots. */
+/**
+ * Claude Code 2.1.30x: a background subagent sends its report with SubagentHandback, as another session's
+ * message framed and indented; the task's notification then only points at it (#3658)
+ */
+function handbackRecords(lines = ["## Verdict", "", "**No.** The path is not cheaper.", "  - indented item"]) {
+  const frame = "[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user. The report follows:";
+  const body = `${frame}\n${lines.map((line) => `  ${line}`).join("\n")}`;
+  const handback = { ...user(`Another Claude session sent a message:\n<agent-message from="a3e6">\n${body}\n</agent-message>`), isMeta: true, origin: { kind: "peer", from: "a3e6", senderTaskId: "a3e6", name: "general-purpose", body } };
+  const pointer = 'This agent\'s report was delivered to you as a message from "a3e6" (its SubagentHandback call). Read it there; it is not repeated here.\n';
+  const ended = notification("a3e6", "toolu_a3e6", pointer, "completed", 'Agent "Price the path" finished');
+  return { handback, pointer, ended, report: lines.join("\n").trim() };
+}
+
 function appendRecords(records: unknown[], options: Options = {}): ConversationTurn[] {
   const parser = createClaudeTranscriptParser(options);
   const initiallyNoticed = new Set(options.noticed);
@@ -198,6 +213,18 @@ describe("incremental Claude transcripts", () => {
     expect(JSON.stringify(turns)).not.toContain("Hidden meta body");
   });
 
+  it("puts a subagent's hand-back report in its card, whichever of the two arrives first (#3658)", () => {
+    const { handback, pointer, ended, report } = handbackRecords();
+    for (const records of [[enqueue(ended), handback, user(ended)], [handback, user(ended)]]) {
+      const turns = appendRecords([user("Price it"), assistant([{ type: "text", text: "Started." }], "end_turn"), ...records]);
+      expect(turns.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice"))).toEqual([]);
+      expect(tasks(turns).map(({ id, title, result }) => ({ id, title, result }))).toEqual([{ id: "a3e6", title: "Price the path", result: report }]);
+    }
+    const turns = appendRecords([{ ...handback, origin: { ...handback.origin, senderTaskId: undefined, from: "other" } }, user(notification("b1", "toolu_b1", pointer.replace("a3e6", "b1")))]);
+    expect(turns.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice")).length).toBe(1);
+    expect(tasks(turns).map((task) => task.result)).toEqual([pointer.replace("a3e6", "b1").trim()]);
+  });
+
   it("names a tool's pictures and a prompt that is only a picture the same live as cold", () => {
     const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
     const turns = appendRecords([
@@ -252,5 +279,75 @@ describe("incremental Claude transcripts", () => {
     expect(parser.snapshot()).toEqual(preview);
     expect(parser.snapshot()).toEqual(parseClaudeTranscript(`${jsonl(prompt)}\n${tail}`));
     expect(before).toHaveLength(1);
+  });
+});
+
+describe("a subagent's hand-back through the page reader (#3658)", () => {
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); forgetTranscriptState(); });
+  const shown = (turns: ConversationTurn[]) => ({
+    notices: turns.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice")).length,
+    results: tasks(turns).map((task) => task.result),
+  });
+
+  const rows = (turns: ConversationTurn[]) => turns.map((turn) => turn.parts.map((part) => part.kind === "text" ? part.text : part.kind === "task_result" ? `card:${part.tasks[0]!.result.slice(0, 10)}` : part.kind).join(" "));
+
+  for (const order of ["notification first", "hand-back first", "hand-back, reply, notification"] as const) {
+    it(`puts the report in the card, warm as cold, with the ${order}`, () => {
+      const { handback, ended, report } = handbackRecords();
+      const records = order === "notification first" ? [enqueue(ended), handback, user(ended)]
+        : order === "hand-back first" ? [handback, user(ended)]
+        : [handback, assistant([{ type: "text", text: "Summary of the report" }], "end_turn"), user(ended)];
+      const root = mkdtempSync(join(tmpdir(), "ovis-handback-page-")); roots.push(root);
+      const path = join(root, "session.jsonl");
+      writeFileSync(path, `${jsonl(user("Price it"), assistant([{ type: "text", text: "Started." }], "end_turn"), ...records)}\n`);
+      const cold = transcriptPage("claude-transcript", path).turns;
+      expect(shown(cold)).toEqual({ notices: 0, results: [report] });
+      if (order === "hand-back, reply, notification") expect(rows(cold)).toEqual(["Price it", "Started.", "card:## Verdict", "Summary of the report"]);
+      appendFileSync(path, `${jsonl(user("Thanks"), assistant([{ type: "text", text: "Sure." }], "end_turn"))}\n`);
+      const warm = transcriptPage("claude-transcript", path).turns;
+      forgetTranscriptState();
+      expect(shown(warm)).toEqual({ notices: 0, results: [report] });
+      expect(warm).toEqual(transcriptPage("claude-transcript", path).turns);
+    });
+  }
+
+  const peerSays = { ...user("Review ready"), isMeta: true, origin: { kind: "peer", from: "reviewer", name: "Reviewer", body: "Review ready" } };
+  for (const [order, between] of [["a prompt", () => [user("next"), assistant([{ type: "text", text: "On it." }], "end_turn")]], ["another session's message", () => [peerSays]]] as const) {
+    it(`pairs a hand-back with its notification only within one turn, warm as cold, with ${order} between them`, () => {
+      const { handback, ended, pointer } = handbackRecords();
+      const root = mkdtempSync(join(tmpdir(), "ovis-handback-page-")); roots.push(root);
+      const path = join(root, "session.jsonl");
+      const head = [user("Price it"), assistant([{ type: "text", text: "Started." }], "end_turn")];
+      for (const [first, second] of [[[handback], [user(ended)]], [[enqueue(ended), user(ended)], [handback]]] as const) {
+        writeFileSync(path, `${jsonl(...head, ...first)}\n`);
+        transcriptPage("claude-transcript", path);
+        appendFileSync(path, `${jsonl(...between(), ...second, user("Thanks"), assistant([{ type: "text", text: "Sure." }], "end_turn"))}\n`);
+        const warm = transcriptPage("claude-transcript", path).turns;
+        forgetTranscriptState();
+        const cold = transcriptPage("claude-transcript", path).turns;
+        expect(warm).toEqual(cold);
+        expect(tasks(cold).map((task) => task.result)).toEqual([pointer.trim()]);
+        expect(cold.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice" && part.text.startsWith("[Subagent hand-back]"))).length).toBe(1);
+        forgetTranscriptState();
+      }
+    });
+  }
+
+  it("keeps the first line's own indentation, a report that opens with code", () => {
+    const { handback, ended } = handbackRecords(["", "    const x = 1;", "", "That is the line."]);
+    expect(tasks(parseClaudeTranscript(jsonl(enqueue(ended), handback, user(ended)))).map((task) => task.result)).toEqual(["    const x = 1;\n\nThat is the line."]);
+  });
+
+  it("leaves a report longer than a card holds as the message it came as, whole", () => {
+    const lines = [...Array.from({ length: 2_000 }, (_, index) => `line ${index} of the report`), "TAIL"];
+    const { handback, ended, pointer } = handbackRecords(lines);
+    const root = mkdtempSync(join(tmpdir(), "ovis-handback-page-")); roots.push(root);
+    const path = join(root, "session.jsonl");
+    writeFileSync(path, `${jsonl(user("Price it"), enqueue(ended), handback, user(ended))}\n`);
+    const turns = transcriptPage("claude-transcript", path).turns;
+    const notice = turns.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice"))[0];
+    expect(notice?.kind === "notice" && notice.text.endsWith("TAIL")).toBeTrue();
+    expect(tasks(turns).map((task) => task.result)).toEqual([pointer.trim()]);
   });
 });

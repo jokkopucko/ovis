@@ -7,7 +7,6 @@ import type { Browser, Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
-/** Resolves once the server's event stream carries a preferences document with `showUsage` at `value` (it opens with the current one). */
 async function serverHolds(origin: string, value: boolean, timeoutMs: number): Promise<void> {
   const response = await fetch(`${origin}/api/machines/events`, { signal: AbortSignal.timeout(timeoutMs) });
   assert.ok(response.ok && response.body, `the event stream opens (${response.status})`);
@@ -30,7 +29,6 @@ async function serverHolds(origin: string, value: boolean, timeoutMs: number): P
   assert.fail("the event stream ended before the server held the value");
 }
 
-/** A shared setting changed just before the page reloads reaches the server, and stays after the reload (#2374). */
 export async function checkSettingSurvivesReload(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
@@ -46,11 +44,9 @@ export async function checkSettingSurvivesReload(browser: Browser, origin: strin
     await page.locator(".conn-live").waitFor();
     await page.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(page, "Agents");
-    // Plan limits is one row (#settings-chat-agents): Off, or on and counted as Used or Remaining
     const limits = page.locator('.segmented[aria-label="Plan limits"]');
     const choose = (on: boolean) => limits.getByRole("button", { name: on ? "Used" : "Off", exact: true }).click();
 
-    // whatever an earlier check left: one value saved and let land, then the other and a reload at once
     const first = await limits.getByRole("button", { name: "Off", exact: true }).getAttribute("aria-pressed") === "true";
     const onSaved = page.waitForResponse((response) => response.request().method() === "PUT" && new URL(response.url()).pathname === "/api/preferences"
       && response.ok() && response.request().postDataJSON()?.settings?.showUsage === first);
@@ -62,7 +58,6 @@ export async function checkSettingSurvivesReload(browser: Browser, origin: strin
     await page.waitForFunction((last) => (JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as { showUsage?: boolean }).showUsage === last, !first);
     await page.reload();
     await page.locator(".conn-live").waitFor();
-    // the server holds the last value once the change sent on the way out lands, and the reloaded page takes it
     await serverHolds(origin, !first, 5_000);
     await page.waitForFunction((last) => (JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as { showUsage?: boolean }).showUsage === last, !first, { timeout: 5_000 });
     assert.equal(await served(), !first, "the server took the last value");

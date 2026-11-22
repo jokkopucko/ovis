@@ -1,9 +1,4 @@
-/**
- * Purpose: verify Manage PC's Remove PC… (its danger item, the confirm dialog's danger button in every theme, the
- * busy guard and a failed then retried removal) in the real demo client.
- * Tags: sidebar, machines, accessibility, browser, regression.
- * Usage: bun scripts/sidebar-machine-removal-demo-regression.ts
- */
+/** Usage: bun scripts/sidebar-machine-removal-demo-regression.ts */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +7,7 @@ import { chromium, type Locator, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 import { prepareMachineControlsDemo } from "./sidebar-machine-controls-fixture.ts";
 import { SUPPORTED_ENTRIES } from "../src/lib/themes.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-machine-removal-"));
 const evidenceDir = process.env.UI_EVIDENCE_DIR;
@@ -159,7 +155,6 @@ async function checkDangerPresentation(page: Page, theme: Scenario["theme"], sta
   assert.ok(focus.focusVisible && (focus.outlineStyle !== "none" && focus.outlineWidth > 0 || focus.boxShadow !== "none"), `${theme} ${stage} danger button has a visible keyboard focus indicator: ${JSON.stringify(focus)}`);
 }
 
-/** The confirm's danger button stays readable in every theme block of this mode (the dialog workspace Close uses). */
 async function checkEveryPalette(button: Locator, theme: Scenario["theme"]): Promise<void> {
   const page = button.page();
   const shown = await page.evaluate(() => document.documentElement.dataset.palette);
@@ -175,7 +170,6 @@ async function checkEveryPalette(button: Locator, theme: Scenario["theme"]): Pro
   await page.evaluate((palette) => { if (palette === undefined) delete document.documentElement.dataset.palette; else document.documentElement.dataset.palette = palette; }, shown);
 }
 
-/** The menu's Remove PC… reads as a danger item on the menu's own background. */
 async function checkDangerItem(item: Locator, theme: Scenario["theme"]): Promise<void> {
   const contrast = await item.evaluate((element) => {
     const parse = (source: string) => { const numbers = source.match(/[\d.]+/g)!.map(Number); return { r: numbers[0]!, g: numbers[1]!, b: numbers[2]! }; };
@@ -224,7 +218,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
     await checkDangerItem(removeItem, scenario.theme);
     await capture(menu, scenario, "menu");
 
-    // the menu's item only asks: the dialog workspace Close uses, Cancel focused
     await removeItem.click();
     const dialog = page.getByRole("alertdialog");
     await dialog.waitFor();
@@ -239,7 +232,6 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
     await dialog.waitFor({ state: "detached" });
     assert.equal(await fixtureValue(page, "calls.deleteAttempts"), 0, `${scenario.theme} Cancel sends no DELETE`);
 
-    // a rename in flight holds Remove PC… and Rename… alike
     menu = await openMenu(page, group);
     await menu.getByRole("menuitem", { name: RENAME_LABEL, exact: true }).click();
     const input = page.locator(".machine-rename-input");
@@ -298,15 +290,7 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   if (evidenceDir) mkdirSync(evidenceDir, { recursive: true });
   await prepareMachineControlsDemo(app);
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app, { prefix: "/" });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const url = `http://127.0.0.1:${server.port}/`;
   for (const scenario of scenarios) await withScenario(browser, url, scenario);

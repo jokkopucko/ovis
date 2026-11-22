@@ -17,7 +17,6 @@ export class PaneObserving {
     const roles = this.mounts.get(key);
     return roles !== undefined && roles.size > 0 && [...roles.values()].every(Boolean);
   };
-  /** `mount`'s role for `key`; null when it unmounts or moves to another pane */
   set(key: string, mount: symbol, observing: boolean | null): void {
     const before = `${this.known(key)}:${this.has(key)}`;
     const roles = this.mounts.get(key) ?? new Map<symbol, boolean>();

@@ -209,11 +209,9 @@ describe("dictationLocale", () => {
   });
 
   it("follows the browser's first language on auto when the UI is not translated into it", () => {
-    // a Hungarian browser gets an English UI, but is heard in Hungarian
     expect(dictationLocale("auto", "system", "en", ["hu-HU", "en-US"])).toBe("hu-HU");
     expect(dictationLocale("auto", "system", "en", ["de"])).toBe("de");
     expect(dictationLocale("auto", "system", "ko", ["de-DE", "ko-KR"])).toBe("de-DE");
-    // not a language tag: the UI language
     expect(dictationLocale("auto", "system", "en", ["*"])).toBe("en-US");
     expect(dictationLocale("auto", "system", "en", ["hu"])).toBe("hu");
     expect(dictationLocale("auto", "system", "en", ["fil-PH"])).toBe("en-US");
@@ -268,7 +266,6 @@ describe("error reasons and keywords", () => {
 });
 
 describe("createSpeechGate", () => {
-  /** feeds one reading per 16 ms frame from `from` and returns the gate's decisions with their times */
   const run = (gate: ReturnType<typeof createSpeechGate>, rms: number, from: number, ms: number) => {
     const changes: Array<[number, string]> = [];
     for (let now = from; now < from + ms; now += 16) {
@@ -312,7 +309,6 @@ describe("createSpeechGate", () => {
 
 describe("applyDictation", () => {
   const end = (value: string) => ({ start: value.length, end: value.length });
-  /** the box after an applied dictation; fails the test when it was refused or changed nothing */
   const applied = (...args: Parameters<typeof applyDictation>) => {
     const next = applyDictation(...args);
     if (next === null || next === "too_long") throw new Error(`not applied: ${String(next)}`);
@@ -360,7 +356,6 @@ describe("applyDictation", () => {
     const draft = "um check tests";
     const box = applied(draft, { start: 0, end: 0 }, spans, { take: 1, phase: "raw", text: "um check tests" }).value;
     expect(box).toBe("um check tests um check tests");
-    // the user deletes the dictated words: the original draft now sits at the stored offsets
     expect(applyDictation(draft, { start: 0, end: 0 }, spans, { take: 1, phase: "polished", text: "check tests" })).toBeNull();
   });
 
@@ -410,7 +405,6 @@ describe("createVoiceEngine", () => {
   const GLOBALS = ["document", "MediaRecorder", "requestAnimationFrame", "cancelAnimationFrame", "fetch"] as const;
   const saved = new Map<string, PropertyDescriptor | undefined>();
   const define = (target: object, name: string, value: unknown) => Object.defineProperty(target, name, { configurable: true, writable: true, value });
-  /** each getUserMedia call, to be answered by the test in the order it chooses */
   let micRequests: Array<(stream: FakeStream) => void> = [];
   let frames: FrameRequestCallback[] = [];
   let uploads: Array<(response: Response) => void> = [];
@@ -468,7 +462,6 @@ describe("createVoiceEngine", () => {
     return { voice, states, texts, reached };
   }
 
-  /** lets the engine's own continuations after a resolved promise run; nothing here waits on time */
   const drain = async (): Promise<void> => { for (let turn = 0; turn < 10; turn++) await Promise.resolve(); };
 
   it("passes the selected full locale to browser recognition without uploading audio", () => {
@@ -521,7 +514,6 @@ describe("createVoiceEngine", () => {
     voice.press();
     micRequests[0]!(new FakeStream());
     await drain();
-    // the meter loop is what moves a take from starting to recording
     frames.pop()!(performance.now() + 1000);
     expect(states.at(-1)).toBe("recording");
     voice.press();

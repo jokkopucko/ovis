@@ -50,7 +50,6 @@ it("an address the page passes on plays for no other client, and ends when that 
   const { base, render, close } = fixture();
   try {
     const { address } = await render();
-    // the same address asked for through a proxy on behalf of someone else
     expect((await fetch(`${base}${address}`, { headers: { ...fromPage, "x-forwarded-for": "198.51.100.7" } })).status).toBe(404);
     expect((await fetch(`${base}${address}`, { headers: fromPage })).status).toBe(200);
     const signedOut = await fetch(`${base}/api/auth`, { method: "DELETE", headers: { authorization: "Bearer test-page-media", origin: base } });
@@ -122,7 +121,6 @@ it("behind a proxy that rewrites Host, the policy and the address name the host 
     expect(origin).toBe("https://pc.example.ts.net");
     expect(policy).toContain("media-src data: blob: https://pc.example.ts.net/api/fs/page-media/");
     expect(policy).not.toContain(base);
-    // the proxy forwards the same visitor's request for it
     expect((await fetch(`${base}${address}`, { headers: { ...fromPage, "x-forwarded-for": "100.64.0.5" } })).status).toBe(200);
   } finally { close(); }
 });

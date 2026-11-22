@@ -70,7 +70,6 @@ export interface CheckReport {
     unchangedAfterBuild: boolean | null;
     provenance: "built-this-run" | "pre-existing-unknown" | "modified-after-build" | "unknown" | "unavailable";
   };
-  /** retained: isolated state kept, by absolute path, because the run's teardown failed */
   evidence: { logs: string[]; artifacts: string[]; retained: string[] };
 }
 
@@ -203,13 +202,13 @@ export function baseRevision(cwd: string, env: Record<string, string | undefined
         };
         sha = event.pull_request?.base?.sha || event.merge_group?.base_sha || null;
       }
-    } catch { /* the event file is optional or not valid JSON */ }
+    } catch {}
   }
   if (!sha && branch) {
     try {
       const result = spawnSync("git", ["-C", cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", `${branch}^{commit}`], { encoding: "utf8", timeout: 5_000 });
       if (result.status === 0) sha = result.stdout.trim() || null;
-    } catch { /* a base ref may not be available in this checkout */ }
+    } catch {}
   }
   return { branch, sha: sha && /^[0-9a-f]{40,64}$/i.test(sha) ? sha : null };
 }

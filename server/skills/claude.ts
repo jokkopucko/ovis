@@ -31,7 +31,6 @@ export const terminalBound = [
 /** The reference's menu section: these four are typed in full and never shown in the `/` menu. */
 const agentHidden = ["agents", "heapdump", "setup-bedrock", "setup-vertex"] as const;
 
-/** Every row of the reference table but the removed ones, alphabetical. */
 const REFERENCE: readonly string[] = [
     "add-dir", "advisor", "agents", "artifact-capabilities", "artifact-diagramming", "artifacts", "auto-mode-setup",
     "autocompact", "autofix-pr", "background", "batch", "branch", "btw", "bug", "cd", "chrome", "claude-api",
@@ -62,7 +61,6 @@ const BUNDLED: ReadonlySet<string> = new Set([
 /** Claude's own commands, without the bundled skills: an echo of one of these is a command, not a skill. */
 export const claudeCommandNames = (): string[] => REFERENCE.filter((name) => !BUNDLED.has(name));
 
-/** Whitespace and the Unicode default-ignorable code points (soft hyphen, joiners, variation selectors, BOM...). */
 const IGNORED = /[\s\p{Default_Ignorable_Code_Point}]/gu;
 
 /**
@@ -118,7 +116,6 @@ function isOff(value: unknown): boolean {
   return value === false || value === 0 || (typeof value === "string" && ["false", "no", "off", "0"].includes(value.trim().toLowerCase()));
 }
 
-/** The canonical file path is the row's identity, so one file reached through links is one row. */
 function canonical(path: string): string {
   try { return realpathSync(path); } catch { return path; }
 }
@@ -205,7 +202,6 @@ function pluginCommands(config: string, budget: WalkBudget): SlashCommand[] {
 
 
 export const source: AgentCommandSource = {
-  // The reference's rows that are not bundled skills; the bundled ones come from discover so that skillOverrides can hide them.
   builtins: REFERENCE.filter((name) => !BUNDLED.has(name)),
   forms,
   terminalBound,

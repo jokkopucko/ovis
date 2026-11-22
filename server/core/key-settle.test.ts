@@ -67,7 +67,6 @@ it("types a letter that comes while a key waits after the key, through herdr, no
   const sent = keys(["left"]);
   type("b");
   await sent;
-  // the letter's turn comes right after the key's: wait for that turn to be taken
   await keys(["right"]);
   expect(events.map((e) => e.what)).toEqual(["pty \"a\"", "keys left", "text \"b\"", "keys right"]);
 });
@@ -86,7 +85,6 @@ it("keeps text a client tags automatic but that is no terminal reply in the pane
   const { events, keys, reply } = lane();
   const sent = keys(["left"]);
   reply("ls\r");
-  // escape sequences around text: a paste, not one answer
   reply("\x1b[200~ls\x1b[201~");
   await sent;
   await keys(["right"]);

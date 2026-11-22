@@ -117,7 +117,6 @@ describe("install", () => {
     publish(HOST, { crate: "0".repeat(40) });
     const built = (binary: string, crate = tree) => {
       files.set(`/${TREE_RELEASE}${tree}/ovis-pty-sidecar-linux-x64`, binary);
-      // a beta's manifest says main's version then, which need not be this checkout's
       files.set(`/${TREE_RELEASE}${tree}/ovis-pty-sidecar.json`, JSON.stringify({
         version: "0.0.1", crate, assets: { "linux-x64": { file: "ovis-pty-sidecar-linux-x64", sha256: sha256(HOST) } },
       }));
@@ -129,7 +128,6 @@ describe("install", () => {
     expect(readFileSync(path, "utf8")).toBe(HOST);
     expect(JSON.parse(readFileSync(`${path}.json`, "utf8"))).toMatchObject({ crate: tree, version });
 
-    // checked the same way: other sources, or a binary that is not the manifest's, install nothing
     built(HOST, "1".repeat(40));
     expect((await install({ releases, target: target(), platform: "linux-x64" })).ok).toBe(false);
     built(`${HOST}# tampered\n`);
@@ -147,7 +145,6 @@ describe("install", () => {
 
 describe("pty-sidecar-attach.sh", () => {
   const ATTACH = join(import.meta.dir, "pty-sidecar-attach.sh");
-  /** runs the attach script against a fake gh whose `release view` answers `view` (an asset list) or fails; returns what gh was asked to upload */
   function attach(view: string | null): { code: number; uploads: string[]; stderr: string } {
     const dir = mkdtempSync(join(tmpdir(), "ovis-pty-attach-"));
     try {

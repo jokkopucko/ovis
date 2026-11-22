@@ -1,11 +1,6 @@
 /**
  * Test support, never served: a file thread (`file-worker.ts`) whose tasks can be held. It runs
  * each task for real, then
- * - never answers a task whose path ends in `/stuck`, nor an `open` of one ending in `/held-open`
- *   (its stat answers), as a call that never returns would not;
- * - with a `gate` (a SharedArrayBuffer of two Int32 cells), records in cell 1 the descriptor the
- *   task opened (`Atomics.notify` on it; -2 when it opened none) and answers only once cell 0 is
- *   set, as a call that returns late would;
  * - with a `readGate` (three Int32 cells and a FIFO's path), stops inside the file read itself: it
  *   opens the FIFO (read and write, which never waits), records the descriptor being read in cell 1
  *   (`Atomics.notify`), then blocks in a read of the FIFO, a real system call that ending the thread
@@ -59,7 +54,6 @@ self.onmessage = (event: MessageEvent<FileTask & { gate?: SharedArrayBuffer; rea
   try { result = runFileTask(task); } finally { delete pageFileHooks.readSync; delete pageFileHooks.afterAuthorize; }
   if (task.gate !== undefined) {
     const cells = new Int32Array(task.gate);
-    // the descriptor the thread opened, handed over or not (the cell `open` names it in)
     const opened = task.op === "open" && task.opened !== undefined ? task.opened[0]! : -1;
     const fd = result !== null && typeof result === "object" && "fd" in result && result.fd !== null ? result.fd : opened;
     Atomics.store(cells, 1, fd >= 0 ? fd : -2);

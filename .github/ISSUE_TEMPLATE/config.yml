@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Questions and chat
+    url: https://ovis.sh/discord
+    about: Ask for help and talk with other Ovis users on Discord.
   - name: Security vulnerability
     url: https://github.com/devswha/ovis/security/advisories/new
     about: Report privately. See SECURITY.md.

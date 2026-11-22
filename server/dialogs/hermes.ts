@@ -1,5 +1,5 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, onePerPass, type AnswerStep, KEY, type ParsedPrompt, type PromptDraft, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
+import { ANSI_RE, onePerPass, type AnswerStep, type CardWords, KEY, type ParsedPrompt, type PromptDraft, editorRowsMatch, englishOf, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
 import type { NativeSteps } from "./step-navigate.ts";
 
 /**
@@ -13,8 +13,7 @@ import type { NativeSteps } from "./step-navigate.ts";
  *   0/1 answered · ↑/↓ select · Enter confirm and continue · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel
  *
  * An open question, or "Other" once picked, shows a `> ` line instead of the rows. A batch of
- * questions shows each one's line (✓ answered, · waiting) and expands only the active (▸) one,
- * so the card is that question; the next one becomes the next card.
+ * questions shows each one's line (✓ answered, · waiting) and expands only the active (▸) one.
  */
 export const HERMES_HINT_RE = /^(\d+)\/(\d+) answered · /;
 
@@ -31,12 +30,9 @@ const HERMES_OTHER = "Other (type your answer)";
  * A batch's questions as the card's steps, each line `✓` answered, `▸` open now, `·` waiting,
  * the question wrapped at its own indent. Tab and Shift+Tab move the open one (ui-tui
  * prompts.tsx), but an answered question shows `✓` even while Tab is on it, so nothing tells it
- * is there: the card goes only to open questions with none answered on the way.
+ * is there.
  *
- * The batch is named by all it draws of itself: every question's text, which are answered and the
- * answer drawn under each. Hermes draws a question's options only while it is open, so nothing on
- * the screen names the options of the question a key moves to: a move is one key, and each one is
- * asked for anew against the card it leaves (whose id holds the open question and its options).
+ * Hermes draws a question's options only while it is open.
  */
 function hermesNavigation(block: string[], base: number, current: number, switches: boolean): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps?: NativeSteps } {
   const indent = (line: string) => line.length - line.trimStart().length;
@@ -45,7 +41,6 @@ function hermesNavigation(block: string[], base: number, current: number, switch
   for (const [index, line] of block.entries()) {
     const text = line.trim();
     if (indent(line) !== base) {
-      // an answered question's answer, drawn under it; the open one's rows change as it moves
       if (questions.at(-1)?.answered) drawn.at(-1)!.push(text);
       continue;
     }
@@ -58,7 +53,6 @@ function hermesNavigation(block: string[], base: number, current: number, switch
   if (questions.length < 2 || at < 0) return {};
   // while an answer is typed the hint drops "Tab/Shift+Tab switch question", and Tab does nothing
   if (!switches) return { steps: questions };
-  // the question next to the open one, itself still open
   const reachable = (to: number) => Math.abs(to - at) === 1 && questions[to] !== undefined && !questions[to].answered;
   return {
     steps: questions.map((question, index) => ({ ...question, ...(reachable(index) ? { can_navigate: true } : {}) })),
@@ -74,7 +68,9 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   if (hintIndex < 0) return null;
   const askIndex = findLastIndex(lines.slice(0, hintIndex), (line) => HERMES_ASK_RE.test(line.trim()));
   if (askIndex < 0) return null;
-  const block = lines.slice(askIndex + 1, hintIndex).filter((line) => line.trim());
+  const rawBlock = lines.slice(askIndex + 1, hintIndex);
+  const occupied = rawBlock.flatMap((line, index) => line.trim() ? [index] : []);
+  const block = occupied.map((index) => rawBlock[index]!);
   const indent = (line: string) => line.length - line.trimStart().length;
   const at = block.findIndex((line) => line.trimStart().startsWith("▸ ") && !HERMES_ROW_RE.test(line.trim()));
   if (at < 0) return null;
@@ -94,6 +90,7 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   const switches = HERMES_SWITCH_RE.test(lines[hintIndex]!);
   if (member[0]?.startsWith(">")) {
     const { nativeSteps, ...navigation } = hermesNavigation(block, base, at, switches);
+    const questionStep = (step: { readonly label: CardWords; readonly current: boolean; readonly answered: boolean }) => [englishOf(step.label), step.current, step.answered];
     return finishPrompt("hermes", {
       kind: "question", title: own("Question"), question, body,
       options: [{ label: own("Type your answer"), description: null }], multi_select: false, custom_option_index: 0,
@@ -102,13 +99,25 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
       ...(nativeSteps ? { nativeSteps } : {}),
       responder: "hermes-input", menuLabels: [], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 0,
       rejectWithEscapeIndex: null, customSteps: typed,
+      customEditorMatches: ({ prompt, text }) => {
+        const start = occupied[end];
+        if (start === undefined || question !== prompt.question || (total! > 1 && prompt.steps?.length !== total)
+          || JSON.stringify(navigation.steps?.map(questionStep)) !== JSON.stringify(prompt.steps?.map(questionStep))
+          || lines.slice(hintIndex + 1).some((line) => /^\s*[❯›>$]/.test(line))) return false;
+        const input = rawBlock.slice(start, occupied[end + member.length]);
+        const first = /^(\s*> )(.*)$/.exec(input[0] ?? "");
+        if (!first) return false;
+        const indent = " ".repeat(first[1]?.length ?? 0);
+        return input.slice(1).every((line) => line === "" || line.startsWith(indent))
+          && editorRowsMatch([first[2] ?? "", ...input.slice(1).map((line) => line.slice(indent.length))], text);
+      },
     });
   }
   const rows: { label: string; selected: boolean; box: boolean; checked: boolean }[] = [];
   for (const line of member) {
     const row = line.match(HERMES_ROW_RE);
     if (row && Number(row[3]) === rows.length + 1) rows.push({ label: row[4]!, selected: Boolean(row[1]), box: Boolean(row[2]), checked: row[2] === "[x] " });
-    else if (rows.length) rows.at(-1)!.label += ` ${line}`; // a label wrapped onto the next line
+    else if (rows.length) rows.at(-1)!.label += ` ${line}`;
     else return null;
   }
   if (rows.length < 2 || rows.at(-1)!.label !== HERMES_OTHER) return null;
@@ -213,7 +222,6 @@ const HERMES_STATUS_BAR = " ☤ ";
 
 const HERMES_APPROVAL_ROW_RE = /^([❯ ]) (\d)\. (.+)$/u;
 
-/** a row anywhere in the box that reads like a choice, however the command or warning got it there */
 const HERMES_CHOICE_LIKE_RE = /^\s*(?:❯\s*)?\d+\.\s/u;
 
 /**
@@ -238,13 +246,12 @@ const HERMES_SHOW_FULL = "Show full command";
  * Where the approval hint is, read up from the bottom of the screen: the input line the panel holds
  * between its rules, the status bar, then the hint. A pane under 64 columns has no rule under the
  * input, and for a moment after a resize Hermes hides both rules and the status bar
- * (cli_terminal_mixin.py _status_bar_suppressed_after_resize). -1 when the screen ends otherwise.
+ * (cli_terminal_mixin.py _status_bar_suppressed_after_resize).
  */
 function hermesApprovalHint(lines: string[]): number {
   let at = hermesInputLine(lines);
   if (!HERMES_APPROVAL_INPUT_RE.test(lines[at] ?? "")) return -1;
   at -= 1;
-  // the rule over the input: plain, or the modern layout's with the spinner in it
   if (HERMES_RULE_RE.test(lines[at] ?? "") || HERMES_SPINNER_RULE_RE.test(lines[at] ?? "")) at -= 1;
   if (lines[at]?.startsWith(HERMES_STATUS_BAR)) at -= 1;
   return HERMES_APPROVAL_HINT_RE.test(lines[at] ?? "") ? at : -1;
@@ -291,7 +298,6 @@ function parseHermesApproval(screen: string): ParsedPrompt | null {
     if (lines[bottom]!.trim() && (!HERMES_SPINNER_LINE_RE.test(lines[bottom]!) || ++spinner > 1)) return null;
   }
   if (bottom < 0) return null;
-  // every row `│ `, the panel's text and ` │` at the borders' width, up to the top border
   const width = [...lines[bottom]!].length;
   let top = bottom - 1;
   while (top >= 0 && /^│ .* │$/u.test(lines[top]!) && [...lines[top]!].length === width) top -= 1;
@@ -349,20 +355,15 @@ function parseHermesApproval(screen: string): ParsedPrompt | null {
  *    ☤ fixture-model │ ctx -- │ …        (the status bar)
  *   ────────────────────────────
  *   ❯ …                                  (the prompt, idle again)
- *
- * A result counts only when it is complete: its layout's own lines are all there, and the CLI has
- * moved on, back at its idle `❯` prompt or on to the next command's echo.
  */
 type HermesResultReader = "hermes-help" | "hermes-status" | "hermes-version" | "hermes-profile" | "hermes-reload-skills";
 
 export const HERMES_ECHO_RE = /^⚙\uFE0F?\s+(\/\S+)$/;
-/** where a block ends: the next echo, the status bar, the input's rule or the prompt */
 const HERMES_BLOCK_END_RE = /^(?:⚙\uFE0F?\s+\/| ☤ |─{8,}$|❯ ?)/;
 const HERMES_IDLE_RE = /^❯(?: |$)/;
 const RELOAD_INTRO_RE = /^(?:⏳|🔄) Reloading skills\.\.\.$/;
 const RELOAD_COUNT_RE = /^📚 \d+ skill\(s\) available$/;
 
-/** The last lines of a block joined as the terminal wrapped them, for an end that may wrap. */
 const endsWith = (lines: string[], end: RegExp): boolean =>
   [1, 2, 3, 4].some((count) => count <= lines.length && end.test(lines.slice(-count).map((line) => line.trim()).join("")));
 
@@ -370,7 +371,7 @@ const firstLine = (lines: string[]): string => lines[0]?.trim() ?? "";
 
 /**
  * cli_info_mixin.py _reload_skills, under the busy line: "No new skills detected." or the added and
- * removed lists, then the count; or one failure line. Anything less is not a reload Hermes printed.
+ * removed lists, then the count; or one failure line.
  */
 function reloadLayout(lines: string[]): "succeeded" | "failed" | null {
   const shown = lines.map((line) => line.trim());
@@ -398,7 +399,6 @@ function reloadLayout(lines: string[]): "succeeded" | "failed" | null {
   return items > 0 ? "succeeded" : null;
 }
 
-/** each command's layout: its echoed names, and whether a block is the whole of its output */
 const HERMES_LAYOUTS: readonly { reader: HermesResultReader; names: readonly string[]; complete(lines: string[], movedOn: boolean): boolean }[] = [
   {
     reader: "hermes-status", names: ["/status"],
@@ -427,10 +427,6 @@ const HERMES_LAYOUTS: readonly { reader: HermesResultReader; names: readonly str
   },
 ];
 
-/**
- * The complete block of `layout` starting at `start` (the line under its echo), as the screen shows it:
- * it ends at a later echo or at the bottom chrome, never where the text merely stops.
- */
 function blockAt(lines: string[], start: number, layout: (typeof HERMES_LAYOUTS)[number]): { lines: string[]; catalogChanged?: true } | null {
   let end = start;
   while (end < lines.length && !HERMES_BLOCK_END_RE.test(lines[end]!.trimEnd())) end += 1;
@@ -438,7 +434,6 @@ function blockAt(lines: string[], start: number, layout: (typeof HERMES_LAYOUTS)
   const block = lines.slice(start, end);
   while (block.length && !block[0]!.trim()) block.shift();
   while (block.length && !block.at(-1)!.trim()) block.pop();
-  // printing ends once the next command is echoed, or the prompt is idle again
   const movedOn = HERMES_ECHO_RE.test(lines[end]!.trimEnd()) || lines.slice(end).some((line) => HERMES_IDLE_RE.test(line));
   if (!block.length || !movedOn || !layout.complete(block, movedOn)) return null;
   return layout.reader === "hermes-reload-skills" && reloadLayout(block) === "succeeded" ? { lines: block, catalogChanged: true } : { lines: block };
@@ -446,11 +441,6 @@ function blockAt(lines: string[], start: number, layout: (typeof HERMES_LAYOUTS)
 
 const screenLines = (screen: string): string[] => screen.replace(ANSI_RE, "").split(/\r?\n/);
 
-/**
- * A result reader is given what is below this send's own echo (server/outcome.ts) and the text sent:
- * the block must start there. Its card shows what Hermes printed and closes with Dismiss, which
- * sends nothing.
- */
 function parseHermesResult(below: string, sent: string | null, reader: HermesResultReader): ParsedPrompt | null {
   const layout = HERMES_LAYOUTS.find((candidate) => candidate.reader === reader)!;
   const command = sent?.trim() ?? "";

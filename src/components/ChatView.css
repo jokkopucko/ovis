@@ -1,18 +1,3 @@
-/*
- * The chat lens, in the Codex / gajae-code-app register: the transcript is a quiet
- * document. The user's words are the only raised block, right-aligned; the agent
- * answers as plain prose with no avatar or name (the composer's status line already
- * names it), and everything it did in between folds under one "Worked for 7s · 1 edit"
- * line whose rows stay one line each until opened. Meta (time, copy) is low-emphasis
- * and fades in on hover.
- */
-
-/* The chat's text has its own size (Settings → Chat font size): the view scales the type
-   tokens by --chat-scale (lib/settings.ts) and the transcript uses the scaled ones under
-   the same names, so every message and code block grows together. The prompt card is outside
-   this view, over the message box, and grows with them: its dock does the same (Composer.css).
-   A file viewer's Markdown preview is the same rendering, so it takes the chat's font too, and its size
-   until Settings → File text size gives files one of their own (--file-scale, lib/settings.ts) */
 .file-viewer-content { --chat-scale: var(--file-scale, 1); }
 
 .chat-view,
@@ -21,19 +6,13 @@
   --chat-fs-xs: calc(var(--fs-xs) * var(--chat-scale, 1));
   --chat-fs-sm: calc(var(--fs-sm) * var(--chat-scale, 1));
   --chat-fs-md: calc(var(--fs-md) * var(--chat-scale, 1));
-  /* what is read at length (answers, the user's words, live narration) is one step above the
-     body size; labels, rows and meta keep the sizes above */
   --chat-fs-body: calc(var(--fs-chat) * var(--chat-scale, 1));
   --chat-fs-lg: calc(var(--fs-lg) * var(--chat-scale, 1));
   --chat-fs-xl: calc(var(--fs-xl) * var(--chat-scale, 1));
-  /* the page's meta floor and heading steps (styles.css --fs-meta, --fs-h3/h2/h1), scaled the same way */
   --chat-fs-meta: calc(var(--fs-meta) * var(--chat-scale, 1));
   --chat-fs-h3: calc(var(--fs-h3) * var(--chat-scale, 1));
   --chat-fs-h2: calc(var(--fs-h2) * var(--chat-scale, 1));
   --chat-fs-h1: calc(var(--fs-h1) * var(--chat-scale, 1));
-  /* the space between and inside its blocks scales the same way, as iOS scales a layout's
-     metrics with its Dynamic Type (UIFontMetrics): at the page's spacing a small text sat loose
-     between wide gaps and a large one cramped */
   --chat-space-1: calc(var(--space-1) * var(--chat-scale, 1));
   --chat-space-2: calc(var(--space-2) * var(--chat-scale, 1));
   --chat-space-3: calc(var(--space-3) * var(--chat-scale, 1));
@@ -44,7 +23,6 @@
   --chat-chip-h: calc(var(--chip-h) * var(--chat-scale, 1));
   --chat-control-h: calc(var(--control-h) * var(--chat-scale, 1));
 }
-
 
 .chat-transcript,
 .file-viewer-markdown {
@@ -58,15 +36,10 @@
   --fs-h3: var(--chat-fs-h3);
   --fs-h2: var(--chat-fs-h2);
   --fs-h1: var(--chat-fs-h1);
-  /* Settings -> Chat font (lib/settings.ts): the prose only; code, work rows and paths keep --font-mono */
   font-family: var(--font-chat, var(--font-ui));
   font-size: var(--fs-md);
 }
 
-/* The view's edges keep the page's spacing (the chat's padding, which the virtual list sets inside
-   the transcript from --chat-edge, and a file's margin: only its blocks take the scaled one), and
-   a finger's targets keep --touch-target: a meta row shrinks under the reach of its copy target,
-   and a work block's head keeps a --touch-target row on a touch screen */
 .chat-transcript,
 .file-viewer-markdown > * {
   --space-1: var(--chat-space-1);
@@ -81,12 +54,10 @@
 }
 
 .chat-view {
-  /* its edges, at the page's spacing: the transcript's inside follows the chat's text size */
   --chat-edge: var(--space-4);
   --chat-edge-end: var(--space-5);
   position: absolute;
   inset: 0;
-  /* up under a phone's glass header (styles.css), into the room the stack keeps for it */
   top: calc(-1 * var(--header-over, 0px));
   z-index: 1;
   overflow-y: auto;
@@ -94,22 +65,14 @@
      page, Android Chrome takes it for pull-to-refresh and reloads the app */
   overscroll-behavior: contain;
   padding: var(--chat-edge) var(--chat-edge) var(--chat-edge-end);
-  /* a phone's glass header lies over the transcript's top, and the input card over its end
-     (styles.css, Composer.css): the first and last lines start clear of both */
   padding-top: calc(var(--chat-edge) + var(--header-over, 0px));
   padding-bottom: calc(var(--chat-edge-end) + var(--composer-over, 0px));
   scroll-padding-top: var(--header-over, 0px);
-  /* and a row brought into view (an opened screen preview, a search match) stops clear of the card
-     and of the New messages pill that floats over the end while the reader is away from it: the
-     pill's --control-h and the space around it */
   scroll-padding-bottom: calc(var(--composer-over, 0px) + var(--control-h) + 2 * var(--space-2));
   background: var(--surface-canvas);
-  /* the transcript's scrollbar is thin as a document's, in the theme's colours (html, styles.css) */
   scrollbar-width: thin;
 }
 
-/* From 769px the header over the chat has no bar and no rule (styles.css): the transcript
-   scrolls under a short fade instead. Not under a tab strip or a notice, which draw their own rule. */
 @media (min-width: 769px) {
   .terminal-host:first-child .chat-view::before {
     content: "";
@@ -134,12 +97,9 @@
   margin-inline: auto;
   display: flex;
   flex-direction: column;
-  /* an answer sits close under its prompt; the larger space falls between exchanges */
   gap: var(--space-3);
-  /* the tallest a picture in the chat is drawn: a tall screenshot never takes several screens */
   --chat-image-max-h: 70vh;
 }
-
 
 .chat-turn {
   width: 100%;
@@ -150,7 +110,6 @@
   font-size: var(--fs-sm);
 }
 
-/* the toggle's own box is the pointer's target (a finger's below): the text keeps its line */
 .chat-terminal-fallback summary {
   padding-block: calc((var(--pointer-target) - 1lh) / 2);
   cursor: pointer;
@@ -191,8 +150,6 @@
   overflow-wrap: anywhere;
 }
 
-/* a user turn opens a new exchange: space separates it from the answer above, not a rule
-   (the one rule of an exchange closes its folded work) */
 .chat-turn-user {
   display: flex;
   flex-direction: column;
@@ -204,7 +161,6 @@
   margin-top: var(--space-5);
 }
 
-/* the bubble and its time and copy: stacked here, side by side with a mouse (below) */
 .chat-user-row {
   align-self: stretch;
   display: flex;
@@ -213,9 +169,6 @@
   gap: var(--space-1);
 }
 
-/* the user's turn is a raised neutral card, not a colored one: amber stays reserved for
-   selection and the send action, so a long thread does not turn into a wall of color.
-   --bubble-border is the palette's call: no edge where the fill alone parts it from the page */
 .chat-bubble {
   max-width: 80%;
   padding: var(--space-3) var(--space-4);
@@ -228,21 +181,15 @@
   overflow-wrap: anywhere;
 }
 
-/* a long message (lib/userMessageFold.ts) is capped at --chat-fold-lines lines of its prose... */
 .chat-bubble.is-capped .chat-bubble-body {
   max-height: calc(var(--chat-fold-lines) * var(--chat-fs-body) * var(--lh-prose));
   overflow: hidden;
 }
 
-/* ...and where the cap cuts it (ChatView.tsx measures that), its last line fades into the card
-   through an alpha mask (the gradient's colour is only its opaque end), so the cut reads as a
-   fold behind Show full message and not as the end of what was said */
 .chat-bubble.is-folded .chat-bubble-body {
   mask-image: linear-gradient(currentColor calc(100% - var(--chat-fs-body) * var(--lh-prose)), transparent);
 }
 
-/* the fold's control on the card's right edge, a quiet text button in the meta register; its
-   padding overhangs the text edge as a work row's head does */
 .chat-bubble-foot {
   display: flex;
   justify-content: flex-end;
@@ -268,8 +215,6 @@
   }
 }
 
-/* meta rows fade in on hover / focus: the transcript reads as text, not as controls.
-   While unseen they take no click or tap; the keyboard still reaches them, which shows them */
 .chat-turn-meta {
   min-height: var(--chip-h);
   display: flex;
@@ -334,8 +279,6 @@
   margin-left: var(--space-1);
 }
 
-/* a turn's time takes focus so a keyboard reaches its full-date tooltip; its own box is the
-   pointer's target (a finger's below), over the meta row's line, and its figures keep their width */
 .chat-time {
   display: inline-flex;
   align-items: center;
@@ -349,7 +292,6 @@
   outline-offset: var(--ring-offset);
 }
 
-/* "MD" / "TXT": a copy glyph and a two-letter format, like Codex's copy control */
 .chat-meta-btn {
   display: inline-flex;
   align-items: center;
@@ -373,9 +315,6 @@
   }
 }
 
-/* a mouse's floor: a format button's own box is the --pointer-target, reaching past the row's
-   --chip-h line unseen (it has no edge); the copy glyph keeps its --chip-h look and takes the hit
-   area through an invisible expander around it (a finger's --touch-target size is set below) */
 @media (pointer: fine) {
   .chat-meta-btn {
     height: var(--pointer-target);
@@ -386,7 +325,6 @@
     position: relative;
   }
 
-  /* the copy glyph's hairline edge lies inside its box: the expander starts past it */
   .chat-copy::before {
     content: "";
     position: absolute;
@@ -394,15 +332,10 @@
   }
 }
 
-/* "Plain text": the second copy as words, shown with a mouse only (below) */
 .chat-meta-word {
   display: none;
 }
 
-/* With a mouse (and no touch screen beside it) the meta leaves the reading line: a user turn's
-   time and copy sit beside its bubble, and an answer has one copy glyph (it copies Markdown)
-   with the other format beside it as words. Touch keeps the two labelled buttons: it has no
-   tooltip to say what a bare glyph copies. */
 @media (hover: hover) and (pointer: fine) and (not (any-pointer: coarse)) {
   .chat-meta-btn .chat-meta-fmt,
   .chat-meta-plain:not(.is-copied) svg {
@@ -457,15 +390,12 @@
   margin-bottom: var(--space-3);
 }
 
-/* a $$ formula KaTeX cannot draw (or not yet): its own lines, as written */
 .markdown-math-source {
   display: block;
   white-space: pre-wrap;
   margin-bottom: var(--space-3);
 }
 
-/* as wide as the lane at most and never past its own size; a tall screenshot stops at --chat-image-max-h,
-   its aspect kept (contain covers an authored width) */
 .markdown-image {
   max-width: 100%;
   max-height: var(--chat-image-max-h);
@@ -473,7 +403,6 @@
   object-fit: contain;
 }
 
-/* A Markdown picture keeps its prose size and opens the chat's image viewer. */
 .markdown-image-open {
   max-width: 100%;
   padding: 0;
@@ -489,9 +418,6 @@
 
 .markdown-image-retry { margin-inline-start: var(--space-2); }
 
-/* an image holds its box until it decodes (Markdown.tsx ReservedImage, lib/imageBox.ts): the wrapper
-   is the box while the bytes arrive and after a failure, and gives it up once the picture is in, so
-   the image renders bare and nothing around it is laid out anew */
 .image-slot { display: contents; }
 
 .image-slot.is-loading,
@@ -507,7 +433,6 @@
   background: var(--bg-elevated);
 }
 
-/* the picture loads behind its slot and shows only once it is whole */
 .image-slot.is-loading > img {
   position: absolute;
   inset: 0;
@@ -533,8 +458,6 @@
 
 .image-slot-note > svg { width: 1.25em; height: 1.25em; flex: none; }
 
-/* a standalone Markdown image (a screenshot, a logo on a line of its own) holds a 16:9 slot as wide
-   as the lane, up to the bound lib/imageBox.ts puts on it, framed as a code block is */
 .markdown .image-slot.is-loading,
 .markdown .image-slot.is-failed {
   width: 100%;
@@ -543,16 +466,12 @@
   border-radius: var(--radius-lg);
 }
 
-/* an image that decoded before (a reopened chat, a row scrolled back in) holds the box
-   .markdown-image will take: its own width at most, narrower where the height bound stops it, its ratio */
 .markdown .image-slot.is-loading.is-sized {
-  /* no bound outside .chat-transcript, as for .markdown-image */
   width: min(100%, var(--image-width), calc(var(--chat-image-max-h, 100000px) * var(--image-aspect)));
   aspect-ratio: var(--image-ratio);
   max-height: var(--chat-image-max-h);
 }
 
-/* a README's centered logo and badges (shared/markdownHtml.ts) */
 .markdown .markdown-center {
   text-align: center;
 }
@@ -590,7 +509,6 @@
   margin: 0 0 var(--space-3);
 }
 
-/* a heading belongs to what follows it: the space over it is more than 1.5× the space under it */
 .markdown-h1,
 .markdown-h2,
 .markdown-h3,
@@ -604,12 +522,6 @@
   white-space: pre-line;
 }
 
-/* Every agent heading is an h3 (Markdown.tsx: an agent's markdown must not shadow the app's own
-   h1/h2 outline; its aria-level keeps the levels apart for a screen reader), so the tag says
-   nothing about the level and the level class is what these rules key off. The sizes are the
-   page's heading steps (styles.css --fs-h3/h2/h1: 1.25× the prose, then 1.25× again, twice),
-   scaled with the chat's text, and below h3 the size stops shrinking: the weight, then the dim
-   colour, tell the levels apart */
 .markdown .markdown-h1 { font-size: var(--fs-h1); }
 .markdown .markdown-h2 { font-size: var(--fs-h2); }
 .markdown .markdown-h3 { font-size: var(--fs-h3); }
@@ -640,7 +552,6 @@ ol.markdown-list {
   margin: var(--space-1) 0 0;
 }
 
-/* a task item: its box takes the bullet's place, on the text's first line */
 .markdown-task {
   list-style: none;
 }
@@ -655,7 +566,6 @@ ol.markdown-list {
   margin: 0 var(--space-2) 0 calc(-1em - var(--space-2));
   vertical-align: -0.125em;
   border: var(--hairline) solid var(--text-dim);
-  /* half the small radius: a 1em box with the full one reads as a round radio button */
   border-radius: calc(var(--radius-sm) / 2);
 }
 
@@ -675,14 +585,12 @@ ol.markdown-list {
   margin-top: var(--space-1);
 }
 
-/* emphasis is semibold: at the prose size the bold weight shouts */
 .markdown strong,
 .markdown b {
   color: var(--text-strong);
   font-weight: var(--fw-semibold);
 }
 
-/* a table or text below it in a list item: a little air above and below, as between two items */
 .markdown-list .markdown-table-wrap,
 .markdown-list p {
   margin: var(--space-1) 0;
@@ -694,8 +602,6 @@ ol.markdown-list {
   color: var(--text-dim);
 }
 
-/* code sits under the line it is in, at any size of that line: a chip in a heading, in settled
-   narration and in an answer are each a step below their own text */
 .markdown :not(pre) > code {
   padding: var(--hairline) var(--space-1);
   border-radius: var(--radius-sm);
@@ -709,7 +615,6 @@ ol.markdown-list {
   background: var(--bg-hover);
 }
 
-/* a link keeps its color and its underline (never color alone); the underline is quiet at rest */
 .markdown a {
   color: var(--accent);
   text-decoration: underline;
@@ -760,9 +665,6 @@ ol.markdown-list {
   font-size: var(--fs-meta);
 }
 
-/* The block's chrome is not code: its language label, "Show all" toggle, copy error and "Too
-   long to highlight" note stay out of a selection dragged across the block, so a copy gives the
-   code alone, as the block's own Copy does. Selection.toString() skips unselectable text. */
 .markdown-code-header,
 .markdown-code-more,
 .markdown-code-error,
@@ -771,9 +673,6 @@ ol.markdown-list {
   user-select: none;
 }
 
-/* With a mouse a code block has no header strip: its language and copy control sit over the
-   top right corner and show on hover or focus. Touch keeps the strip, where nothing can
-   cover the code. */
 @media (hover: hover) and (pointer: fine) and (not (any-pointer: coarse)) {
   .markdown-code {
     position: relative;
@@ -801,7 +700,6 @@ ol.markdown-list {
   }
 }
 
-/* no height cap: an inner scroll hid the rest of the block on phones */
 .markdown-code .hl-code {
   padding: var(--space-3) var(--space-4);
   font-size: var(--fs-sm);
@@ -841,10 +739,8 @@ ol.markdown-list {
   font-size: var(--fs-sm);
 }
 
-/* A cell, and a file path in it, breaks between words only, so a column is never narrower
-   than its longest word and a table without room scrolls in its wrap. The reply's
-   `overflow-wrap: anywhere` counts toward a cell's narrowest width: with it a table squeezed
-   every column down to a letter or two and never overflowed. */
+/* `overflow-wrap: anywhere` counts toward a cell's min-content width (CSS Text 3): inherited,
+   it squeezed every column down to a letter or two and the table never overflowed */
 .markdown th,
 .markdown td {
   padding: var(--space-2);
@@ -859,21 +755,15 @@ ol.markdown-list {
   font-weight: var(--fw-semibold);
 }
 
-/* ---------- work block: "Worked for 7s · 1 edit" over one-line rows ---------- */
-
 .work-block {
   width: 100%;
   display: flex;
   flex-direction: column;
-  /* the folded rule is the block's own bottom edge, whose place the block holds open and folded
-     alike: only its colour moves, at the pace of the rows' move (AnimatedHeight.css), never the
-     block's height, so a reader pinned at the end is never pulled up by a momentary shrink */
   padding-bottom: var(--space-1);
   border-bottom: var(--hairline) solid transparent;
   transition: border-bottom-color var(--dur-base) var(--ease-out);
 }
 
-/* a folded block is one row with the exchange's one rule under it, where it closes the work */
 .work-block.is-folded {
   border-bottom-color: var(--border);
 }
@@ -895,7 +785,6 @@ ol.markdown-list {
   cursor: pointer;
 }
 
-/* the header, its rows and the prose around them start on one line: the hover plate overhangs it */
 .work-block-head,
 .work-row-head {
   width: calc(100% + 2 * var(--space-1));
@@ -922,8 +811,6 @@ ol.markdown-list {
   height: 100%;
 }
 
-/* a settled title reads as a footnote; the live one keeps its weight and its state color.
-   It wraps only when the row cannot hold it beside a failure count (largest type, narrowest phone) */
 .work-block-title {
   flex: 0 1 auto;
   color: var(--text-dim);
@@ -931,7 +818,6 @@ ol.markdown-list {
   font-variant-numeric: var(--font-numeric);
 }
 
-/* the time a live block has run, after its title: its figures count in place without a shift */
 .work-block-elapsed {
   flex: none;
   color: var(--text-dim);
@@ -948,7 +834,6 @@ ol.markdown-list {
   font-weight: var(--fw-medium);
 }
 
-/* the dot breathes, the words hold still (same rule as the RUN badge) */
 .work-block.is-live .work-block-title::before {
   content: "";
   width: var(--dot-size-sm);
@@ -958,8 +843,6 @@ ol.markdown-list {
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }
 
-/* A blocked agent is not working: the open block keeps its live layout and reads "Needs you",
-   the sidebar's words, in the dim color. Only the dot is red, and it holds still. */
 .work-block.is-live.is-waiting .work-block-title {
   color: var(--text-dim);
 }
@@ -969,7 +852,6 @@ ol.markdown-list {
   animation: none;
 }
 
-/* the counts take what the title and the failure count leave, and are the first to be cut */
 .work-block-summary {
   flex: 1 1 0;
   min-width: 0;
@@ -980,14 +862,11 @@ ol.markdown-list {
   font-variant-numeric: var(--font-numeric);
 }
 
-/* a failure is never the part a narrow header cuts */
 .work-block-failed {
   flex: none;
   white-space: nowrap;
 }
 
-/* a work line and the pictures its tools returned at its end (lib/workImages.ts): the words keep the
-   line's hover plate and are cut first, the thumbnails never wrap */
 .work-block-line,
 .work-row-line {
   display: flex;
@@ -1008,7 +887,6 @@ ol.markdown-list {
   gap: var(--space-1);
 }
 
-/* small enough to sit in the line's height: what the agent saw, at a glance */
 .work-image {
   display: inline-flex;
   align-items: center;
@@ -1043,8 +921,6 @@ ol.markdown-list {
   object-fit: cover;
 }
 
-/* a finger's floor: the line is --touch-target tall there, and each thumbnail takes all of it as a
-   square, so a tap that misses one never folds the block (fewer of them fit: LINE_IMAGES_SHOWN_TOUCH) */
 @media (pointer: coarse) {
   .work-image {
     width: var(--touch-target);
@@ -1052,7 +928,6 @@ ol.markdown-list {
   }
 }
 
-/* the hover look: over the page, a fixed box so it is placed once, before the picture decodes */
 .work-image-preview {
   position: fixed;
   z-index: var(--z-popover);
@@ -1093,8 +968,6 @@ ol.markdown-list {
   white-space: nowrap;
 }
 
-/* rows hang under the header on its own left edge. The space under the header is the rows' own
-   (not the block's gap): it opens and folds with them, and a folded block holds none of it */
 .work-block-rows {
   display: flex;
   flex-direction: column;
@@ -1118,7 +991,6 @@ ol.markdown-list {
   font-weight: var(--fw-medium);
 }
 
-/* a tool the verb table knows: "Ran" in the interface face, its object after it in mono */
 .work-row-name.is-verb {
   color: var(--text-dim);
   font-family: var(--font-ui);
@@ -1142,7 +1014,6 @@ ol.markdown-list {
   color: var(--text-dim);
 }
 
-/* what the agent said mid-work: once the turn settles, a quiet row again (dim, --fs-sm) */
 .work-narration {
   padding: var(--space-1) 0 var(--space-2);
   color: var(--text-dim);
@@ -1152,7 +1023,6 @@ ol.markdown-list {
   font-size: var(--fs-sm);
 }
 
-/* while the agent runs it is its voice: answer prose, on the prose edge */
 .work-block.is-live .work-narration {
   color: var(--text);
 }
@@ -1161,7 +1031,6 @@ ol.markdown-list {
   font-size: var(--chat-fs-body);
 }
 
-/* the tool's own id, first in the opened detail of a row that shows a verb in its place */
 .work-row-tool {
   margin: 0;
   color: var(--text-dim);
@@ -1205,7 +1074,6 @@ ol.markdown-list {
 
 .chat-tool-io pre,
 .chat-tool-io p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-/* blocks stacked in a call's detail; a file link inside an output's text is not one */
 .chat-tool-io > :not(:first-child):not(.markdown-file) { margin-top: var(--space-2); }
 
 /* a tool's own pictures in its opened row (pi reads a file into the result): left-aligned, unlike
@@ -1250,7 +1118,6 @@ ol.markdown-list {
 .chat-checklist li.is-active .chat-checklist-box { color: var(--status-working); }
 .chat-checklist-phase { margin-top: var(--space-2); color: var(--text-dim); font-weight: var(--fw-semibold); }
 
-/* the top of what is loaded: the way to the page before it */
 .chat-older {
   align-self: center;
   min-height: var(--control-h);
@@ -1268,9 +1135,6 @@ ol.markdown-list {
 
 .chat-inline-error { color: var(--status-blocked); }
 
-/* a sent message the agent has not written as a turn yet (SentWaiting.tsx): the user's own bubble,
-   its words faded to --text-dim (still 4.5:1), so the turn that replaces it reads as the same bubble
-   coming up to full strength. A late one's clock sits where the turn's time will be */
 .chat-sent-waiting-list {
   display: flex;
   flex-direction: column;
@@ -1287,6 +1151,34 @@ ol.markdown-list {
   opacity: 1;
 }
 
+.chat-turn-unanswered .chat-bubble {
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.chat-unanswered-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--chat-fs-xs);
+}
+
+.chat-unanswered-words {
+  text-align: end;
+}
+
+.chat-unanswered-words > svg {
+  width: 1em;
+  height: 1em;
+  margin-inline-end: var(--space-1);
+  vertical-align: -0.125em;
+  color: var(--status-blocked);
+}
+
 .chat-sent-late {
   display: inline-flex;
   color: var(--text-dim);
@@ -1298,8 +1190,6 @@ ol.markdown-list {
   height: 1em;
 }
 
-/* a read that failed (ChatView.tsx FailureLine): the one line, Try again beside it where it is the
-   way on, and a dim Details toggle under them for the advice and the PC's own words */
 .chat-failure {
   display: flex;
   flex-wrap: wrap;
@@ -1334,8 +1224,6 @@ ol.markdown-list {
   margin-top: var(--space-1);
 }
 
-/* the toggle's own box is the pointer's target, a finger's below (the button beside it is a .btn
-   and grows to it in styles.css): it keeps its line, the box reaching past it both ways */
 .chat-failure-details > summary {
   min-width: var(--pointer-target);
   padding-block: calc((var(--pointer-target) - 1lh) / 2);
@@ -1354,7 +1242,6 @@ ol.markdown-list {
   }
 }
 
-/* a native turn thinking under its open work block: one quiet line, not a second head */
 .chat-activity-line {
   display: flex;
   align-items: center;
@@ -1369,7 +1256,6 @@ ol.markdown-list {
 /* the Working head while herdr's status may still trail an answer: its place is kept, unseen */
 .chat-activity-reserved { visibility: hidden; }
 
-/* a pending block's head opens nothing until its rows are drawn */
 .work-block.is-pending .work-block-head,
 .work-block.is-pending .work-block-head:hover {
   background: transparent;
@@ -1405,6 +1291,7 @@ ol.markdown-list {
 
 .chat-new-messages {
   position: sticky;
+  border-color: var(--border-input);
   z-index: var(--z-popover);
   bottom: calc(var(--space-2) + var(--composer-over, 0px));
   left: 50%;
@@ -1415,10 +1302,11 @@ ol.markdown-list {
 
 .chat-new-messages svg { width: var(--icon-size); height: var(--icon-size); }
 
-/* chat mode is ONE surface: the stack, the transcript and the composer region all sit on
-   --bg; the only card is the composer's input box, on the same column as the transcript */
+@media (hover: hover) {
+  .chat-new-messages:hover:not(:disabled) { border-color: var(--border-input); }
+}
+
 .terminal-stack.is-chat {
-  /* a phone's glass header lies over the stack's top: what the stack holds starts below it */
   padding-top: var(--header-over, 0px);
   background: var(--bg);
 }
@@ -1440,11 +1328,8 @@ ol.markdown-list {
   .chat-copy,
   .markdown-code-copy { width: var(--touch-target); }
 
-  /* no hover on touch: the meta rows are always there, quietly */
   .chat-turn-meta { opacity: 1; pointer-events: auto; }
 
-  /* a user turn's row is one line, not a --touch-target row: the copy button keeps its
-     --touch-target size, which reaches above and below the line */
   .chat-user-row > .chat-turn-meta { height: var(--chip-h); }
 
   .chat-user-row .chat-copy,
@@ -1452,13 +1337,11 @@ ol.markdown-list {
     margin-block: calc((var(--chip-h) - var(--touch-target)) / 2);
   }
 
-  /* a finger's floor for the time: its own box, over the row's line as the copy's is */
   .chat-time {
     min-height: var(--touch-target);
     margin-block: calc((var(--chip-h) - var(--touch-target)) / 2);
   }
 
-  /* a compaction's summary and a skill's row grow to the floor in place */
   .chat-skill > summary {
     min-height: var(--touch-target);
   }
@@ -1482,8 +1365,6 @@ ol.markdown-list {
     touch-action: manipulation;
   }
 
-  /* both answer copies are --touch-target targets; the first one drops its own left inset so its
-     glyph stays on the prose edge (an overhang past the transcript's edge could not be tapped) */
   .chat-agent-meta { gap: 0; }
 
   .chat-agent-meta .chat-meta-btn {
@@ -1494,11 +1375,9 @@ ol.markdown-list {
 
   .chat-agent-meta .chat-meta-btn:first-child { padding-left: 0; }
 
-  /* the skill a message invoked sits clear of the copy target that reaches below the row */
   .chat-turn-user .chat-user-row + .chat-skills { margin-top: calc((var(--touch-target) - var(--chip-h)) / 2); }
 }
 
-/* a mouse with a touch screen beside it: a finger has no hover, so the meta is never unseen */
 @media (pointer: fine) and (any-pointer: coarse) {
   .chat-turn-meta { opacity: 1; pointer-events: auto; }
 }
@@ -1557,7 +1436,6 @@ ol.markdown-list {
 .todo-item.is-blocked .todo-icon { color: var(--status-blocked); }
 .todo-item.is-dropped { color: var(--text-dim); text-decoration: line-through; }
 
-/* a todo call's detail in the work block shows the list after it */
 .work-row-detail .todo-list { padding: var(--space-1) var(--space-3); }
 
 .todo-list .sr-only {
@@ -1569,10 +1447,6 @@ ol.markdown-list {
   white-space: nowrap;
 }
 
-/* a file path in an answer: opens the file viewer, reads as the text or code it is. Its
-   dotted underline is the affordance; the accent comes under the pointer or the focus. It
-   breaks as the text around it does: anywhere in a paragraph, between words in a table cell */
-/* a skill's name in an answer, in the form it is typed: the raw text stays in the node, so a copy yields it */
 .markdown-skill {
   display: inline-block;
   padding: 0 var(--space-2);
@@ -1663,8 +1537,7 @@ ol.markdown-list {
   }
 }
 
-/* a finger's floor: the path's own box grows past its line both ways, the line keeping its height
-   (the button is an atomic inline: its margin box is what the line measures) */
+/* the button is an atomic inline: its margin box is what the line measures (CSS 2.1 10.8) */
 @media (pointer: coarse) {
   .markdown-file {
     padding-block: calc((var(--touch-target) - 1lh) / 2);
@@ -1672,7 +1545,6 @@ ol.markdown-list {
   }
 }
 
-/* a call that failed: its name in the alert colour and a word that says so, even folded */
 .work-row.is-error .work-row-name {
   color: var(--status-blocked);
 }
@@ -1687,7 +1559,6 @@ ol.markdown-list {
   font-weight: var(--fw-semibold);
 }
 
-/* how one todo update went, in words: outlined, so it never reads by colour alone */
 .work-row-state {
   flex: none;
   padding: 0 var(--space-1);
@@ -1705,13 +1576,11 @@ ol.markdown-list {
   white-space: nowrap;
 }
 
-/* a run of todo updates reads as words, in the interface face of the verb before it, not as a command */
 .work-todo-group > .work-row-head .work-row-summary {
   font-family: var(--font-ui);
   font-size: var(--fs-sm);
 }
 
-/* a run of todo updates, opened: the list it stands for, then every update in order */
 .work-todo-caption {
   margin: 0;
   color: var(--text-dim);
@@ -1763,8 +1632,6 @@ ol.markdown-list {
   }
 }
 
-/* a finger's floor: the link itself grows to it, so the files of a patch, one per line, never share
-   a hit area */
 @media (pointer: coarse) {
   .chat-tool-file-link {
     display: inline-flex;
@@ -1774,7 +1641,6 @@ ol.markdown-list {
   }
 }
 
-/* the way back to the end while reading up: the pill's round, wordless form */
 .chat-new-messages.is-icon {
   width: var(--control-h);
   padding: 0;
@@ -1789,14 +1655,11 @@ ol.markdown-list {
   }
 }
 
-/* images the user sent: above their bubble, opened in the viewer on a tap */
 .chat-user-images {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  /* pictures of different heights each keep their own box, never stretched to the tallest */
   align-items: flex-end;
-  /* as wide as the lane, not its pictures: a slot still loading has no width of its own to give */
   align-self: stretch;
   gap: var(--space-2);
   margin-bottom: var(--space-2);
@@ -1814,11 +1677,6 @@ ol.markdown-list {
   min-width: 0;
 }
 
-/* shown whole, as a desktop chat app (the Claude and ChatGPT apps) shows a picture: up to the lane's
-   width and --chat-image-max-h, never past its own size, so an icon stays an icon. While it loads
-   or after it failed its slot is a lane-wide 16:9 box no taller than a picture may be (Markdown.tsx
-   ReservedImage), half the lane when the message holds more than one, and the list keeps the view
-   still when the picture lands at its own size (ChatTimeline.tsx maintainVisibleContentPosition) */
 .chat-user-image img {
   display: block;
   width: auto;
@@ -1841,15 +1699,12 @@ ol.markdown-list {
   width: calc((100% - var(--space-2)) / 2);
 }
 
-/* where a compaction folded the conversation: a quiet divider, its summary on request. The
-   divider keeps its place: the margin gives up what the summary's target takes past its --chip-h line */
 .chat-compact {
   margin: calc(var(--space-4) - (var(--pointer-target) - var(--chip-h)) / 2) 0;
   color: var(--text-dim);
   font-size: var(--fs-sm);
 }
 
-/* the summary's own box is the pointer's target (a finger's below) */
 .chat-compact > summary {
   display: flex;
   align-items: center;
@@ -1869,7 +1724,6 @@ ol.markdown-list {
   }
 }
 
-/* the word that says what a click does, after the label, by the state: a divider gives no caret */
 .chat-compact-state {
   flex: none;
   color: var(--text-dim);
@@ -1888,7 +1742,6 @@ ol.markdown-list {
   border-top: var(--hairline) solid var(--border);
 }
 
-/* the time keeps its one line between the label and the state word */
 .chat-compact > summary .chat-time {
   flex: none;
 }
@@ -1904,14 +1757,11 @@ ol.markdown-list {
   border-radius: var(--radius-lg);
 }
 
-/* a summary opened on request, not the conversation: it keeps the body size */
 .chat-compact-text .markdown {
   font-size: var(--fs-md);
   line-height: var(--lh-base);
 }
 
-/* and so do the parts of it that name a size of their own: every heading is the size of the
-   summary's text, whichever level the agent wrote it as, and code is the step below it */
 .chat-compact-text .markdown-h1,
 .chat-compact-text .markdown-h2,
 .chat-compact-text .markdown-h3,
@@ -1930,7 +1780,6 @@ ol.markdown-list {
   line-height: var(--lh-base);
 }
 
-/* a notice named by its own first line: one line, cut short, between the divider rules */
 .chat-notice-label {
   flex: 0 1 auto;
   min-width: 0;
@@ -1939,7 +1788,6 @@ ol.markdown-list {
   text-overflow: ellipsis;
 }
 
-/* OmO's goal waiting on background work: the divider's look, one line or wrapped centred, nothing to open */
 .chat-goal-wait {
   display: flex;
   align-items: center;
@@ -1969,7 +1817,6 @@ ol.markdown-list {
   text-align: center;
 }
 
-/* a runtime notice is job output, not prose: verbatim, wrapped, and bounded like a whole tool output */
 .chat-notice-text {
   margin-bottom: 0;
   max-height: 60vh;
@@ -1980,14 +1827,11 @@ ol.markdown-list {
   overflow-wrap: anywhere;
 }
 
-/* a cut output's rest, on request; once whole, it scrolls in its own box instead of growing the page */
 .chat-tool-more {
   margin-top: var(--space-1);
   font-size: var(--fs-xs);
 }
 
-/* a call's output folds by lines (ToolOutputText) instead of scrolling inside its box: the chat is
-   the only vertical scroller */
 .chat-tool-io.chat-tool-result {
   max-height: none;
   overflow: visible;
@@ -1999,7 +1843,6 @@ ol.markdown-list {
   display: block;
 }
 
-/* Skills remain discoverable when the work rows are folded. */
 .chat-skills {
   display: flex;
   flex-wrap: wrap;
@@ -2030,14 +1873,11 @@ ol.markdown-list {
 
 .chat-skill[open] .chat-skill-caret { transform: rotate(180deg); }
 
-/* a turn's failed requests (#901): one row, their errors on request */
 .chat-failed-requests { width: fit-content; margin: var(--space-2) 0; }
-/* a run nothing followed keeps the alert colour; one the turn went on from is history, in the quiet register */
 .chat-failed-requests.is-error > summary > svg:first-child { color: var(--status-blocked); }
 .chat-failed-requests:not(.is-error) > summary > svg:first-child { color: var(--text-dim); }
 .chat-failed-requests-list { margin: 0; padding-inline-start: var(--space-8); font-family: var(--font-mono); white-space: pre-wrap; }
 
-/* omo's goal as the turn left it: one line beside the skills, the whole objective on request */
 .chat-goal {
   min-width: 0;
   max-width: 100%;
@@ -2065,15 +1905,12 @@ ol.markdown-list {
 .chat-goal.is-blocked, .chat-goal.is-budget_limited { border-color: var(--status-blocked); }
 .chat-goal.is-blocked .chat-goal-status, .chat-goal.is-budget_limited .chat-goal-status { color: var(--status-blocked); }
 .chat-goal[open] .chat-skill-caret { transform: rotate(180deg); }
-/* opened, the whole objective is right below: the cut copy would say it twice */
 .chat-goal[open] .chat-goal-objective { visibility: hidden; }
 .chat-goal-detail { padding: 0 var(--space-2) var(--space-2); overflow-wrap: anywhere; }
 .chat-goal-detail p { margin: 0 0 var(--space-1); }
 .chat-goal-text { white-space: pre-wrap; }
 .chat-goal-reason, .chat-goal-spent { color: var(--text-dim); }
 
-/* OmO's background tasks reporting back: one card in the transcript's column, a row per task
-   whose status is written and colored as in the background-task list, its result on request */
 .chat-task-results {
   margin: var(--space-4) 0;
   overflow: hidden;
@@ -2125,7 +1962,6 @@ ol.markdown-list {
 .chat-task-result-status { flex: none; margin-top: 2px; color: var(--text-dim); font-size: var(--fs-xs); }
 .chat-task-result > summary > .chat-skill-caret { width: 14px; height: 14px; flex: none; margin-top: 3px; color: var(--text-dim); }
 .chat-task-result[open] .chat-skill-caret { transform: rotate(180deg); }
-/* the result reads as the agent's answer does, under the title and bounded like a whole tool output */
 .chat-task-result-body {
   max-height: 60vh;
   overflow: auto;
@@ -2134,7 +1970,6 @@ ol.markdown-list {
 }
 .chat-task-result-note { margin: var(--space-2) 0 0; color: var(--text-dim); font-size: var(--fs-xs); }
 
-/* a question the agent asked: its questions numbered, the options it offered under each */
 .chat-ask-questions {
   margin: 0;
   padding-left: var(--space-5);
@@ -2158,7 +1993,6 @@ ol.markdown-list {
   white-space: pre-wrap;
 }
 
-/* a Claude teammate's delivery: a task card of its own per message, its original text on request */
 .chat-teammate-messages { min-width: 0; }
 .chat-teammate-message { border-top: var(--hairline) solid var(--border); }
 .chat-teammate-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2166,7 +2000,6 @@ ol.markdown-list {
 .chat-teammate-raw > summary { cursor: pointer; }
 .chat-teammate-raw > pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* a task call's tasks: what each is for and the agent it runs as, the prompt under it */
 .chat-task-calls {
   display: flex;
   flex-direction: column;
@@ -2195,12 +2028,8 @@ ol.markdown-list {
 }
 .chat-task-call-prompt { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* under the message that invoked it, on the message's side */
 .chat-turn-user .chat-skills { justify-content: flex-end; margin: 0; }
 
-/* what became of a command sent from here (lib/outcomeChip.ts): one quiet line under the bubble,
-   on the message's side, in the meta register, as a messaging app's delivery receipt sits under a
-   sent bubble. The word changes on evidence alone and never moves: no animation marks a state */
 .chat-outcome {
   display: flex;
   flex-direction: column;
@@ -2228,7 +2057,6 @@ ol.markdown-list {
 
 .chat-outcome-state > svg { width: 14px; height: 14px; flex-shrink: 0; }
 
-/* beside a terminal snapshot that does not show it: which command the state is for */
 .chat-outcome-command {
   min-width: 0;
   font-family: var(--font-mono);
@@ -2237,7 +2065,6 @@ ol.markdown-list {
   overflow-wrap: anywhere;
 }
 
-/* the reason a skill went as plain text: the chip's second line, in its own quiet register */
 .chat-outcome-note {
   margin: 0;
   font-size: var(--fs-xs);
@@ -2245,11 +2072,9 @@ ol.markdown-list {
   overflow-wrap: anywhere;
 }
 
-/* a result and a question waiting take their status colours; the rest stay dim: the word is the signal */
 .chat-outcome[data-outcome-state="result-observed"] .chat-outcome-state { color: var(--status-done); }
 .chat-outcome[data-outcome-state="interaction-required"] .chat-outcome-state { color: var(--status-blocked); }
 
-/* the chip's one action, a text button in the fold control's register */
 .chat-outcome-action {
   min-height: var(--chip-h);
   padding: 0 var(--space-1);
@@ -2292,7 +2117,6 @@ ol.markdown-list {
   font-size: inherit;
 }
 
-/* a command the user ran in the agent's shell (bash mode): the command, then what it printed */
 .chat-shell-command {
   display: flex;
   align-items: center;
@@ -2317,7 +2141,6 @@ ol.markdown-list {
 
 .chat-shell-stderr { color: var(--status-blocked); }
 
-/* a changed screen after the send: a passing view folded under the chip, never a result */
 .chat-outcome-preview {
   max-width: 100%;
   border: var(--hairline) solid var(--border);
@@ -2340,7 +2163,6 @@ ol.markdown-list {
 
 .chat-outcome-preview[open] .chat-outcome-caret { transform: rotate(180deg); }
 
-/* screen text, as the terminal showed it: verbatim with its line breaks, bounded like a notice */
 .chat-outcome-preview-text {
   margin: 0;
   padding: 0 var(--space-2) var(--space-2);
@@ -2354,7 +2176,6 @@ ol.markdown-list {
   overflow-wrap: anywhere;
 }
 
-/* what a recognized command printed (Hermes /status), verbatim: the preview's card, open, with its Dismiss */
 .chat-outcome-result {
   display: flex;
   flex-direction: column;
@@ -2384,13 +2205,11 @@ ol.markdown-list {
   .chat-outcome-action,
   .chat-outcome-preview > summary { min-height: var(--touch-target); }
 
-  /* the chip sits clear of the copy target that reaches below the bubble's row */
   .chat-turn-user .chat-user-row + .chat-outcome { margin-top: calc((var(--touch-target) - var(--chip-h)) / 2); }
 }
 
 /* pi moved its leaf and wrote nothing: the turns above are not all the file holds, and this is
-   the only place that can say so. Read-only, so it is quieter than a compaction, which changed
-   what the agent answers from. */
+   the only place that can say so. */
 .chat-abandoned { margin: var(--space-2) 0; }
 .chat-abandoned > summary { font-style: italic; }
 .chat-abandoned-note { margin: var(--space-2) 0 0; color: var(--text-dim); }

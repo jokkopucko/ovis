@@ -1,11 +1,3 @@
-/**
- * Regenerates the README media in docs/screenshots from a staged demo session (stage.ts):
- * stills in a browser window or a phone (transparent PNGs), and a desktop and a phone
- * walkthrough, recorded at 2x (record.ts) and composed with a camera, a cursor and taps
- * (compose.ts) into MP4 and GIF. Needs ffmpeg.
- *
- *   bun run build && bun scripts/readme-media/capture.ts [shots] [video]
- */
 import { stage } from "./stage.ts";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { mkdirSync } from "node:fs";
@@ -62,23 +54,19 @@ async function desktopVideo() {
   const hand = new Recorder(page, VIDEO_DESKTOP.width, VIDEO_DESKTOP.height);
   await hand.begin();
   await Bun.sleep(1400);
-  // the folded work of a turn: look closer, open it
   const work = await hand.center(".work-block-head");
   hand.camera(1.45, work.x + 260, work.y + 120);
   await Bun.sleep(500);
   await hand.click(".work-block-head"); await Bun.sleep(1900);
   hand.camera(1);
   await hand.moveTo(900, 420); await page.mouse.wheel(0, -260); await Bun.sleep(1100);
-  // Codex asks: answer it from the chat
   await hand.click(row("web")); await hand.moveTo(760, 300, 450); await Bun.sleep(500);
   const card = await hand.center(".prompt-card");
   hand.camera(1.5, card.x, card.y);
   await Bun.sleep(1100);
   await hand.click(".prompt-card-options button"); await Bun.sleep(1300);
   hand.camera(1);
-  // the real terminal, typed into
   await hand.click(row("shell")); await hand.moveTo(1040, 620, 450); await Bun.sleep(500);
-  // the terminal's top left (the prompt of a fresh pane) just inside the view, where the output will run
   const screen = (await page.locator(".xterm-screen").boundingBox())!;
   const zoom = 1.55;
   hand.camera(zoom, screen.x - 16 + VIDEO_DESKTOP.width / zoom / 2, screen.y - 16 + VIDEO_DESKTOP.height / zoom / 2);
@@ -86,7 +74,6 @@ async function desktopVideo() {
   await page.keyboard.type("git tag --list && bun test", { delay: 55 }); await page.keyboard.press("Enter"); await Bun.sleep(2200);
   hand.camera(1);
   await Bun.sleep(600);
-  // jump anywhere from the palette
   await page.keyboard.press("Control+Shift+K"); await Bun.sleep(700);
   await page.keyboard.type("backup", { delay: 90 }); await Bun.sleep(600); await page.keyboard.press("Enter"); await Bun.sleep(2200);
   const recording = await hand.end();
@@ -99,12 +86,12 @@ async function phoneVideo() {
   const hand = new Recorder(page, PHONE.width, PHONE.height);
   await hand.begin();
   await Bun.sleep(1200);
-  await hand.drag(200, 380, 700); await Bun.sleep(1200);                 // read back
-  await hand.tap(".drawer-toggle"); await Bun.sleep(1300);               // every agent
-  await hand.tap(row("web")); await Bun.sleep(2000);                     // Codex asks
+  await hand.drag(200, 380, 700); await Bun.sleep(1200);
+  await hand.tap(".drawer-toggle"); await Bun.sleep(1300);
+  await hand.tap(row("web")); await Bun.sleep(2000);
   await hand.tap(".prompt-card-options button"); await Bun.sleep(1600);
   await hand.tap(".drawer-toggle"); await Bun.sleep(1000);
-  await hand.tap(row("shell")); await Bun.sleep(1400);                   // the terminal, with a key bar
+  await hand.tap(row("shell")); await Bun.sleep(1400);
   await herdrRpc("pane.send_text", { pane_id: demo.pane("shell").pane, text: `git log --oneline --graph --decorate --color=always | cat\n` }); await Bun.sleep(1800);
   await hand.tap(".drawer-toggle"); await Bun.sleep(900);
   await hand.tap(row("api")); await Bun.sleep(1400);

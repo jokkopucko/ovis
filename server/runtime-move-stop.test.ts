@@ -7,18 +7,14 @@ import type { HerdrRuntimeFacts } from "../shared/machines.ts";
 import type { MovePlanResponse } from "../shared/runtime-move.ts";
 import { moveService, psProcessGroup, type MoveService, type PaneStopDeps } from "./runtime-move-service.ts";
 
-// The waiting move's stop against stand-ins for herdr and this PC: what it sends and signals when a
-// cancel, a changed pane or an unknown process group comes between its reads.
 const facts: HerdrRuntimeFacts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null };
 const roots: string[] = [];
 const services: MoveService[] = [];
 
-/** a shell pane p1 and p2 each running `sleep` in its own group, and an agent at work that keeps the move waiting */
 function world() {
   const root = mkdtempSync(join(tmpdir(), "ovis-runtime-move-stop-"));
   roots.push(root);
   const fronts: Record<string, { shell: number; group: number; name?: string }> = { p1: { shell: 101, group: 201 }, p2: { shell: 102, group: 202 } };
-  /** the foreground group each shell's terminal reports on this PC; absent: the shell is not a process here */
   const terminals: Record<number, number> = { 101: 201, 102: 202 };
   const shellPane = (pane_id: string) => ({ pane_id, tab_id: "t1", workspace_id: "w1", cwd: root, agent: null });
   const snapshot = { workspaces: [{ workspace_id: "w1", label: "demo" }], tabs: [{ tab_id: "t1", workspace_id: "w1", label: "1", number: 1 }], layouts: [], agents: [],
@@ -26,7 +22,6 @@ function world() {
   const sent: { paneId: string; keys: string[]; guard: () => boolean }[] = [];
   const signalled: number[] = [];
   let onInfo: ((paneId: string, inLane: boolean) => void) | null = null;
-  /** the stop waited for typing to settle: it is in the pane's input lane, right before its last look */
   let inLane = false;
   let own: number | null = 999;
   let onSend: ((paneId: string) => void) | null = null;
@@ -113,7 +108,6 @@ describe("ending every running command at once", () => {
     await wait();
     const offer = await service.prepareStopAll();
     expect(offer).toEqual({ token: expect.any(String), panes: [{ pane_id: "p1", command: "sleep" }, { pane_id: "p2", command: "sleep" }] });
-    // p2 ran another command meanwhile: nothing is ended, and the person is asked again
     fronts["p2"] = { shell: 102, group: 303 };
     expect(await service.stopAll((offer as { token: string }).token)).toBe("changed");
     expect(sent).toEqual([]);
@@ -146,7 +140,6 @@ describe("what a stop checks right before it acts", () => {
     const { service, fronts, sent, wait, onInfo } = world();
     await wait();
     let looks = 0;
-    // the plan saw sleep; by the stop's own look a vim runs there in a new group
     onInfo((paneId) => { if (paneId === "p1" && ++looks === 2) fronts["p1"] = { shell: 101, group: 401, name: "vim" }; });
     expect(await service.stopPane("p1", false, "sleep")).toBe("changed");
     expect(sent).toEqual([]);
@@ -178,7 +171,6 @@ describe("End all after its confirm", () => {
     const { service, fronts, sent, wait, onSend } = world();
     await wait();
     const offer = (await service.prepareStopAll()) as { token: string };
-    // while p1 is stopped, p2 starts another sleep in a new group: it was never confirmed
     onSend((paneId) => { if (paneId === "p1") fronts["p2"] = { shell: 102, group: 303 }; });
     expect(await service.stopAll(offer.token)).toBe("changed");
     expect(sent.map(({ paneId }) => paneId)).toEqual(["p1"]);

@@ -1,19 +1,11 @@
 import { pathParts } from "./filePaths.ts";
 
-/**
- * What a list draws before an entry's name so code, images, JSON and folders can be told apart at
- * a glance: a kind read from the name alone, which components/FileGlyph.tsx turns into one lucide
- * glyph each. The name is the only input, as the lists have nothing else, so a wrong extension
- * gets a wrong glyph, and no kind says anything the name beside it does not.
- */
 export type FileIconKind =
   | "file" | "code" | "json" | "config" | "text" | "image" | "video" | "audio"
   | "archive" | "shell" | "lock" | "diff" | "font" | "key" | "binary" | "spreadsheet";
 
-/** A folder is one glyph, except a repository's own `.git`. */
 export type FolderIconKind = "folder" | "git";
 
-// by extension, lowercased
 const EXTENSIONS: Record<Exclude<FileIconKind, "file">, string[]> = {
   code: [
     "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "svelte", "astro",
@@ -41,8 +33,6 @@ const BY_EXTENSION: ReadonlyMap<string, FileIconKind> = new Map(
   (Object.keys(EXTENSIONS) as Exclude<FileIconKind, "file">[]).flatMap((kind) => EXTENSIONS[kind].map((extension) => [extension, kind] as const)),
 );
 
-// whole names, lowercased, before the extension: a lockfile's extension says JSON or YAML, and a
-// README, a LICENSE or a Makefile has no extension to speak of
 const BY_NAME: Readonly<Record<string, FileIconKind>> = {
   "package-lock.json": "lock", "npm-shrinkwrap.json": "lock", "pnpm-lock.yaml": "lock", "go.sum": "lock",
   dockerfile: "config", containerfile: "config", makefile: "config", gnumakefile: "config", "cmakelists.txt": "config", justfile: "config", procfile: "config",
@@ -52,19 +42,16 @@ const BY_NAME: Readonly<Record<string, FileIconKind>> = {
   ".bashrc": "shell", ".zshrc": "shell", ".profile": "shell", ".bash_profile": "shell", ".zprofile": "shell", ".bash_aliases": "shell",
 };
 
-/** The kind of glyph for a file, from the name at the end of `path` (either separator), case-insensitively. */
 export function fileIconKind(path: string): FileIconKind {
   const { stem, extension } = pathParts(path.toLowerCase());
   const name = stem + extension;
   const named = BY_NAME[name];
   if (named !== undefined) return named;
-  // `.env.local` and `Dockerfile.dev` carry their kind in the stem, their extension says nothing
   if (name === ".env" || name.startsWith(".env.")) return "config";
   if (name.startsWith("dockerfile.") || name.endsWith(".dockerfile")) return "config";
   return (extension !== "" ? BY_EXTENSION.get(extension.slice(1)) : undefined) ?? "file";
 }
 
-/** The kind of glyph for a folder, from its name. */
 export function folderIconKind(name: string): FolderIconKind {
   return name === ".git" ? "git" : "folder";
 }

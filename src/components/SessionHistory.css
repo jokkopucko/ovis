@@ -12,7 +12,6 @@
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
-/* one row per session, the worktree dialog's row anatomy: text leads, the time and the way on trail */
 .session-list {
   display: flex;
   flex-direction: column;
@@ -52,7 +51,6 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-/* a session with no words yet shows its id, in mono as a path is */
 .session-title.session-id {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -91,7 +89,6 @@
 .session-empty {
   margin: 0;
 }
-/* Resuming, the list read again and why: one line kept under the rows, empty or not, so no row moves when it speaks */
 .session-status {
   min-height: calc(var(--fs-xs) * var(--lh-base));
 }
@@ -99,7 +96,6 @@
   color: var(--status-blocked);
   overflow-wrap: anywhere;
 }
-/* a phone: the pill would crowd the button beside a two-line title, so it stands over the button */
 @media (max-width: 640px) {
   .session-actions {
     flex-direction: column;

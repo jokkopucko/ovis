@@ -1,7 +1,5 @@
 /**
- * Voice input: the browser records a short clip, the connection server sends it to the
- * user's own OpenAI key (BYOK) and streams the text back. The key lives only on the server
- * (stateDir/voice.json, mode 0600, or OVIS_OPENAI_API_KEY); no route ever returns it.
+ * The key lives only on the server (stateDir/voice.json, mode 0600, or OVIS_OPENAI_API_KEY); no route ever returns it.
  */
 
 export type VoiceMode = "chat" | "terminal";

@@ -3,8 +3,6 @@ import type { UsageLoginPrompt } from "../../shared/usage-login.ts";
 /**
  * How a browser-followed sign-in came out once its CLI exited, from the provider's sign-ins on the PC
  * before and after (GET /api/usage/login?provider=: local files only, nothing sent to the provider).
- * A new sign-in is a success that names it; signing in again keeps the same name, so its end only
- * says it finished (the account's state comes with the next usage read); anything else did not sign in.
  */
 export type SignInOutcome =
   | { kind: "signed-in"; account: string | null }

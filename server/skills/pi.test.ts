@@ -31,7 +31,6 @@ const scan = (home: string, cwd: string | null) => source.discover({ home, cwd, 
 const extra = (home: string, cwd: string | null) => scan(home, cwd);
 const names = (home: string, cwd: string | null) => extra(home, cwd).map((command) => command.name);
 
-/** a home, and a project that is a repository with a pane working in a subfolder of it */
 function setup(): { home: string; repo: string; cwd: string; agentDir: string } {
   const home = temp();
   process.env.HOME = home;

@@ -6,7 +6,6 @@ import type { HealthAuth, PairedDevice } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { DevicesPanel, offersAccountRemove } from "./DevicesPanel.tsx";
 
-/** English, whatever the machine running the test prefers. */
 function render(auth: HealthAuth): string {
   const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });

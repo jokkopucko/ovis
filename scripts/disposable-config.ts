@@ -9,9 +9,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
-/** The environment variable `isolate` sets to the config directory it made. */
 export const DISPOSABLE_CONFIG_ENV = "HERDR_TEST_DISPOSABLE_CONFIG";
-/** The file `isolate` leaves in that directory. */
 export const DISPOSABLE_CONFIG_FILE = ".ovis-check-run";
 
 /**

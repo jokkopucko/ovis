@@ -7,12 +7,11 @@ function fixture() {
   return { data, store: new ComposerDraftStore(() => storage) };
 }
 
-// #511: Edit puts an agent-only message (comments as `> quote` lines) back in the box; its next send keeps the rule
 it("keeps a draft Edit put back from an agent-only message agent-only until the box is emptied", () => {
   const { store } = fixture();
   const key = "ovis:composer-draft:p1";
   store.restorePending(key, "> quote\ncomment");
-  expect(store.isAgentOnly(key)).toBe(false); // control: an ordinary queued message
+  expect(store.isAgentOnly(key)).toBe(false);
   store.set(key, "");
   store.restorePending(key, "> quote\ncomment", true);
   expect(store.isAgentOnly(key)).toBe(true);
@@ -53,7 +52,6 @@ it("keeps the mark of a marked draft another tab shows, if this one cleared it m
   a.restorePending(key, "> backup.txt\ncomment", true);
   expect(b.read(key).text).toBe("> backup.txt\ncomment");
   a.set(key, "");
-  // b edits the draft it still shows before the clear reaches it: its text is stored with the mark
   b.set(key, "> backup.txt\ncomment, edited");
   expect(b.isAgentOnly(key)).toBe(true);
   expect(new ComposerDraftStore(() => storage).isAgentOnly(key)).toBe(true);

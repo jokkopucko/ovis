@@ -1,0 +1,169 @@
+.inbox-rail {
+  --inbox-rail-stroke-current: 2.5;
+  --inbox-rail-box: calc(var(--inbox-rail-w) + env(safe-area-inset-left, 0px));
+  display: flex;
+  flex: 0 0 var(--inbox-rail-box);
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: var(--inbox-rail-box);
+  min-height: 0;
+  padding-block: var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  padding-inline: calc(var(--space-3) + env(safe-area-inset-left, 0px)) calc(var(--space-3) - var(--hairline));
+  background: var(--bg-nav);
+  border-inline-end: var(--hairline) solid var(--border);
+  /* No scrollbar is drawn: one would take a fifth of the rail and push every button off its line. */
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+}
+
+.inbox-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.inbox-rail-group {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inbox-rail-group.is-lower {
+  margin-block-start: auto;
+}
+
+.icon-button.inbox-rail-item {
+  --rail-item-bg: var(--bg-nav);
+  --rail-mark-inset: calc((var(--inbox-control) - var(--icon-size)) / 2 - var(--space-2));
+  position: relative;
+  width: var(--inbox-control);
+  height: var(--inbox-control);
+  background: var(--rail-item-bg);
+  color: var(--text-dim);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.icon-button.inbox-rail-item::before {
+  content: "";
+  position: absolute;
+  inset-block: calc(var(--space-2) / -2 - var(--hairline));
+  inset-inline: calc(var(--space-3) * -1 - var(--hairline) - env(safe-area-inset-left, 0px)) calc(var(--space-3) * -1);
+}
+
+.inbox-rail-group.is-top > .inbox-rail-item:first-child::before {
+  inset-block-start: calc(var(--space-3) * -1 - var(--hairline));
+}
+
+.inbox-rail-group.is-lower > .inbox-rail-item:last-child::before {
+  inset-block-end: calc(var(--space-3) * -1 - var(--hairline) - env(safe-area-inset-bottom, 0px));
+}
+
+.icon-button.inbox-rail-item.inbox-rail-exit {
+  margin-block-end: var(--space-2);
+}
+
+.icon-button.inbox-rail-item.inbox-rail-exit::before {
+  inset-block-end: calc(var(--space-2) / -2 - var(--space-2) - var(--hairline));
+}
+
+@media (hover: hover) {
+  .icon-button.inbox-rail-item:hover:not(:disabled) {
+    --rail-item-bg: var(--side-hover);
+    background: var(--rail-item-bg);
+    color: var(--text);
+  }
+}
+
+.icon-button.inbox-rail-item[aria-expanded="true"] {
+  --rail-item-bg: var(--side-hover);
+  background: var(--rail-item-bg);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.icon-button.inbox-rail-item:active:not(:disabled) {
+  --rail-item-bg: color-mix(in srgb, var(--side-selected), var(--border-strong));
+  background: var(--rail-item-bg);
+  border-color: transparent;
+  color: var(--text-strong);
+}
+
+.icon-button.inbox-rail-item[aria-current="page"],
+.icon-button.inbox-rail-item[aria-current="page"]:hover:not(:disabled) {
+  --rail-item-bg: var(--side-selected);
+  background: var(--rail-item-bg);
+  color: var(--text-strong);
+}
+
+.icon-button.inbox-rail-item[aria-current="page"]:active:not(:disabled) {
+  --rail-item-bg: color-mix(in srgb, var(--side-selected), var(--border-strong));
+  background: var(--rail-item-bg);
+}
+
+.icon-button.inbox-rail-item[aria-current="page"] svg {
+  stroke-width: var(--inbox-rail-stroke-current);
+}
+
+.icon-button.inbox-rail-item > .header-more-dot {
+  top: calc(var(--rail-mark-inset) + (var(--fs-meta) * var(--lh-tight) - var(--dot-size)) / 2);
+  right: var(--rail-mark-inset);
+}
+
+.icon-button.inbox-rail-item > .header-more-dot.is-waiting[data-count]::after {
+  outline: var(--space-half) solid var(--rail-item-bg);
+}
+
+.inbox-rail-dot {
+  position: absolute;
+  inset-block-end: calc(var(--rail-mark-inset) + var(--space-1-5));
+  inset-inline-end: calc(var(--rail-mark-inset) + var(--space-1-5));
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: var(--radius-pill);
+  outline: var(--space-half) solid var(--rail-item-bg);
+  background: var(--status-done);
+  pointer-events: none;
+}
+
+.inbox-rail-dot.is-reconnecting {
+  background: var(--status-reconnecting);
+  animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inbox-rail-dot.is-reconnecting {
+    animation: none;
+  }
+}
+
+.inbox-rail-mark {
+  display: block;
+  flex: 0 0 auto;
+  width: var(--mark-size);
+  height: var(--mark-size);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .icon-button.inbox-rail-item:active:not(:disabled) {
+    opacity: 1;
+  }
+}
+
+/* An installed desktop app with the title bar folded away draws the window's own controls over the window's top.
+   Where they stand at its start (macOS: the title bar's area begins after them), the rail begins under the title
+   bar; where they stand at its end, it begins where it always does. */
+@media (display-mode: window-controls-overlay) {
+  .inbox-rail {
+    padding-block-start: calc(var(--space-3) + min(env(titlebar-area-height, 0px), env(titlebar-area-x, 0px) * 1000));
+  }
+}
+
+/* an iPad home-screen app in a window has the window's controls over its top-left corner (lib/viewport.ts), where
+   the rail's first button would stand: the rail begins under the corner the classic header leaves free */
+:root[data-window-controls] .inbox-rail {
+  padding-block-start: calc(var(--header-h) + var(--space-3));
+}

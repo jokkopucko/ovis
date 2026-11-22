@@ -102,7 +102,7 @@ export class ClientConnectionLog {
     if (this.global.count >= 16) return jsonResponse({ error: { code: "trace_rate_limited", message: "Connection diagnostics are rate limited" } }, 429, { "retry-after": "60" });
     this.global.count++;
     try { this.write(JSON.stringify({ time: new Date(now).toISOString(), event: "client.connection_trace", client_reported: true, client_id: trace.client_id, target: trace.target, events: trace.events })); }
-    catch { /* diagnostics must not affect the app's connection or delivery */ }
+    catch {}
     return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
   }
 }

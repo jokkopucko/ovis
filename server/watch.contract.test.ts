@@ -11,12 +11,11 @@ async function until(predicate: () => boolean, label: string, ms = 10_000): Prom
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error(`${label} not observed within ${ms}ms`);
     // These are real CLI processes and WebSocket deliveries; fake timers cannot
-    // advance their external lifecycle. Poll the named condition to a deadline.
+    // advance their external lifecycle.
     await Bun.sleep(25);
   }
 }
 
-/** Capture real wire frames, with bounded waits rather than assuming delivery timing. */
 class RecordingSocket {
   readonly seen: ServerMessage[] = [];
   private readonly ws: WebSocket;
@@ -148,12 +147,30 @@ describe("WebSocket read-only live watch", () => {
       await until(() => observeCount() === 1, "live observe process");
       socket.send({ type: "unwatch", pane_id: paneId });
       await until(() => observeCount() === 0, "observer gone after unwatch");
-      // A subsequent answered frame proves this connection is still usable.
       socket.send({ type: "role", mode: "observe" });
       await socket.waitFor((message) => message.type === "role-ack", "role after unwatch");
       expect(socket.seen.some((message) => message.type === "watch-end" && message.pane_id === paneId)).toBe(false);
     } finally { await close(socket); }
   }, 25_000);
+
+  it("draws a watched pane again at another grid with one observe process, and tells the page of no end", async () => {
+    const socket = await connect();
+    try {
+      socket.send({ type: "watch", pane_id: paneId, cols: 100, rows: 30 });
+      await socket.waitFor((message) => message.type === "watch-data" && message.pane_id === paneId, "initial watch frame");
+      await until(() => observeCount() === 1, "live observe process");
+      socket.send({ type: "watch", pane_id: paneId, cols: 90, rows: 28 });
+      await until(() => processCount(`terminal session observe ${paneId} --cols 90 --rows 28`) === 1, "the observe process of the new grid", 5_000);
+      await until(() => observeCount() === 1, "the first observe process gone");
+      const nonce = crypto.randomUUID().replaceAll("-", "");
+      const from = socket.seen.length;
+      await herdrRpc("pane.send_text", { pane_id: paneId, text: `printf 'again-%s\\n' '${nonce}'` });
+      await herdrRpc("pane.send_keys", { pane_id: paneId, keys: ["Enter"] });
+      await socket.waitFor((message) => message.type === "watch-data" && message.pane_id === paneId && message.data.includes(`again-${nonce}`), "output in the new view", from);
+      expect(socket.seen.some((message) => message.type === "watch-end" && message.pane_id === paneId)).toBe(false);
+      expect(observeCount()).toBe(1);
+    } finally { await close(socket); }
+  }, 30_000);
 
   it("closing the WebSocket stops its observe process", async () => {
     const socket = await connect();

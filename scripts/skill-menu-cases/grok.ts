@@ -12,7 +12,6 @@ export const agent = "grok";
 const SKILLS: Record<string, { description: string; origin: "user" | "project" | "plugin" }> = {
   commit: { origin: "user", description: "Create well-formatted git commits following conventional commit standards. Use when the user wants to commit changes or asks for /commit." },
   "pdf-tools": { origin: "project", description: "Extracts text and tables from PDF files with pdftotext and pdfplumber. Use when a PDF is attached or named; never for scanned pages, which need OCR first." },
-  // one sentence with no full stop, too long for the row: nothing is cut from the text, the row cuts it, and the tooltip still holds it
   "preview-deploy": { origin: "project", description: "Builds the docs site, deploys it to a throwaway preview host and posts the address on the pull request it was asked from, then tears the host down once that pull request closes" },
   "lint-fix": { origin: "plugin", description: "Runs the team's linter and applies its safe fixes. Use after a refactor." },
 };
@@ -39,7 +38,6 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     assert.deepEqual([...headings].sort(), ["Built in", "Plugin skills", "Project skills", "Terminal commands", "Your skills"], `builtins and each origin stand under their own heading: ${headings.join(" | ")}`);
     await menuFits("H");
     await rowsBrief("H");
-    // the skills end the list: the capture shows their headings, icons and rows after the last builtins
     await menu.evaluate((node) => { node.scrollTop = node.scrollHeight; });
     await capture();
     log(`  ${rows.length} rows, skills: ${Object.keys(SKILLS).join(", ")}`);
@@ -67,7 +65,6 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     const turn = page.locator(".chat-turn-user").last();
     await turn.locator(".chat-bubble-body").filter({ hasText: "please run" }).waitFor();
     await turn.scrollIntoViewIfNeeded();
-    // the matcher arrives with the pane's command list: a bounded wait, not a fixed one
     const drawn = await turn.locator(".markdown-skill").first().waitFor({ timeout: 5_000 }).then(() => true, () => false);
     const state = await chipGeometry();
     await capture();

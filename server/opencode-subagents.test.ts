@@ -38,15 +38,10 @@ let rows = 0;
  */
 const opencodeId = (ms: number): string => `msg_${((BigInt(ms) * 0x1000n + BigInt(++rows)) & 0xffffffffffffn).toString(16).padStart(12, "0")}AbCdEfGhIjKlMn`;
 
-/**
- * A store with one parent session, and writers for its rows and its children's, as OpenCode's service writes them.
- * `ids`: "opencode" names each row as OpenCode does, by when it was named (opencodeId); else plain numbered ids.
- */
 function store(parent = "ses_parent", ids: "plain" | "opencode" = "plain") {
   const path = join(root, `opencode-${++stores}.db`);
   const db = new Database(path, { create: true });
   opened.push(db);
-  // these stores test what is read, not crash durability
   db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF");
   db.exec(SCHEMA);
   const session = (id: string, at: number, extra: { parent?: string | null; title?: string | null; agent?: string; model?: string; archived?: number } = {}) =>
@@ -103,7 +98,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
   it("lists running ones first, oldest first, then the newest that ended, with what each did", () => {
     const s = store();
     s.prompt(s.parent, NOW - 30 * MIN);
-    // two running: one at work, and one continued by its sessionID after an earlier run ended
     s.session("ses_working", NOW - 20 * MIN, { title: "index the repo" });
     s.prompt("ses_working", NOW - 20 * MIN);
     s.step("ses_working", NOW - 19 * MIN);
@@ -112,7 +106,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.step("ses_continued", NOW - 49 * MIN, { finish: "stop" });
     s.idle("ses_continued", NOW - 48 * MIN);
     s.prompt("ses_continued", NOW - 10 * MIN);
-    // ended: succeeded, failed, interrupted
     s.session("ses_done", NOW - 40 * MIN, { title: "find the bug" });
     s.prompt("ses_done", NOW - 40 * MIN);
     s.step("ses_done", NOW - 39 * MIN);
@@ -124,7 +117,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.session("ses_stopped", NOW - 33 * MIN);
     s.prompt("ses_stopped", NOW - 33 * MIN);
     s.idle("ses_stopped", NOW - 32 * MIN, "interrupted");
-    // not listed: no run yet, ended over a day ago, archived, another session's
     s.session("ses_unprompted", NOW - 5 * MIN);
     s.session("ses_old", NOW - 30 * 60 * MIN);
     s.prompt("ses_old", NOW - 30 * 60 * MIN);
@@ -141,7 +133,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     ]);
     expect(state.running).toBe(2);
     expect(state.promptAt).toBe(NOW - 30 * MIN);
-    // both runs this turn sent: the continued one by its latest prompt, not when it was first made
     expect(state.turnRunning).toBe(2);
     const done = state.tasks.find((task) => task.id === "ses_done")!;
     expect(done).toEqual({
@@ -149,7 +140,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
       started_at: new Date(NOW - 40 * MIN).toISOString(), ended_at: new Date(NOW - 37 * MIN).toISOString(),
       turns: 2, tool_calls: 1, tokens: 1125, detail_kind: "opencode-subagent",
     });
-    // the model a child names before its first step is the session's own
     expect(state.tasks.find((task) => task.id === "ses_failed")!.model).toBe("session-model");
     expect(state.tasks.find((task) => task.id === "ses_continued")!.ended_at).toBeNull();
   });
@@ -166,11 +156,9 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.step("ses_done", NOW - 38 * MIN, { finish: "stop", content: [{ type: "text", text: "found it" }] });
     s.idle("ses_done", NOW - 37 * MIN);
     const shell = (at: number, data: Record<string, unknown>) => s.add(s.parent, "shell", at, data);
-    // the rows the chat reads: running, exited well, exited badly
     shell(NOW - 6 * MIN, { metadata: { background: true }, shellID: "sh_run", command: "sleep 60", status: "running", exit: null, output: null, time: { created: NOW - 6 * MIN } });
     shell(NOW - 8 * MIN, { metadata: { background: true }, shellID: "sh_ok", command: "make build", status: "exited", exit: 0, output: { output: "done", size: 4, truncated: false }, time: { created: NOW - 9 * MIN } });
     shell(NOW - 10 * MIN, { metadata: { background: true }, shellID: "sh_bad", command: "make test", status: "exited", exit: 2, output: null, time: { created: NOW - 12 * MIN } });
-    // a foreground command and a `!` command are not background work
     shell(NOW - 4 * MIN, { command: "ls", status: "exited", exit: 0, time: { created: NOW - 4 * MIN } });
     shell(NOW - 3 * MIN, { metadata: { background: false }, shellID: "sh_fg", command: "echo hi", status: "exited", exit: 0, output: null, time: { created: NOW - 3 * MIN } });
 
@@ -180,7 +168,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
       ["sh_ok", "completed"], ["sh_bad", "failed"], ["ses_done", "completed"],
     ]);
     expect(state.running).toBe(2);
-    // a command never counts for the turn: the parent does not wait on it
     expect(state.turnRunning).toBe(1);
     expect(state.tasks.find((task) => task.id === "sh_run")).toEqual({
       id: "sh_run", title: "sleep 60", category: "shell", model: null, status: "running",
@@ -227,7 +214,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     let runningRows = 0;
     const reads: { mockRestore(): void }[] = [];
     const query = s.db.query.bind(s.db);
-    // the store hands back the same statement for the same SQL (a read a page a step asks for it again): spied once
     const spied = new WeakSet<object>();
     reads.push(spyOn(s.db, "query").mockImplementation(function <Result, Bindings extends SQLQueryBindings | SQLQueryBindings[]>(sql: string) {
       const statement = query<Result, Bindings>(sql);
@@ -348,7 +334,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     const state = opencodeSubagentState(s.path, s.parent, true, NOW, NOW - 5 * MIN)!;
     expect(state.tasks.map((task) => [task.id, task.status])).toEqual([["ses_fresh", "running"], ["ses_orphan", "lost"]]);
     expect(state.running).toBe(1);
-    // written in the seconds the service's start is read in: still its own
     expect(opencodeSubagentState(s.path, s.parent, true, NOW, NOW - 19 * MIN + 1000 + 3000)!.running).toBe(2);
   });
 
@@ -356,7 +341,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     const s = store();
     s.session("ses_early", NOW - 50 * MIN);
     s.prompt("ses_early", NOW - 50 * MIN);
-    // more than are read for the list (MAX_CHILDREN)
     const ended = 1030;
     for (let n = 0; n < ended; n++) {
       s.session(`ses_done${n}`, NOW - 40 * MIN + n * 1000);
@@ -366,7 +350,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     const state = opencodeSubagentState(s.path, s.parent, true, NOW, null, false)!;
     expect(state.running).toBe(1);
     expect(state.tasks.map((task) => task.id)).toEqual(["ses_early", ...Array.from({ length: 10 }, (_, n) => `ses_done${ended - 1 - n}`)]);
-    // then it ends after all of them: it is the newest that ended
     s.idle("ses_early", NOW - MIN);
     const after = opencodeSubagentState(s.path, s.parent, true, NOW, null, false)!;
     expect(after.running).toBe(0);
@@ -386,7 +369,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     expect((await pagedState(s.path, s.parent, true, NOW, null, false))?.running).toBe(1);
     const changes: unknown[] = [];
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: (...args) => changes.push(args) });
-    // the first page holds none that runs: the rest is read after it
     const reading = tracker.refresh([{ pane_id: "w1:p1", agent: "opencode", agent_status: "idle", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: s.parent } } as HerdrPane]);
     expect(tracker.countOf("w1:p1")).toBe(0);
     await reading;
@@ -406,13 +388,11 @@ describe("an OpenCode session's subagents are its child sessions", () => {
   it("keeps a subagent running while its parent waits on it, though the child went idle (anomalyco/opencode#57418)", () => {
     const s = store();
     s.prompt(s.parent, NOW - 30 * MIN);
-    // a foreground call: the child went idle with background work of its own, the call is not answered yet
     s.session("ses_fg", NOW - 20 * MIN);
     s.call("ses_fg", NOW - 20 * MIN, "running");
     s.prompt("ses_fg", NOW - 20 * MIN);
     s.step("ses_fg", NOW - 19 * MIN, { finish: "stop" });
     s.idle("ses_fg", NOW - 18 * MIN);
-    // a background call, answered at once, with no notice yet that it ended
     s.session("ses_bg", NOW - 15 * MIN);
     s.call("ses_bg", NOW - 15 * MIN, "background");
     s.prompt("ses_bg", NOW - 15 * MIN);
@@ -422,14 +402,12 @@ describe("an OpenCode session's subagents are its child sessions", () => {
 
     expect(state.tasks.map((task) => [task.id, task.status])).toEqual([["ses_fg", "running"], ["ses_bg", "running"]]);
     expect([state.running, state.turnRunning]).toEqual([2, 2]);
-    // Settings -> Read OpenCode subagent ends from their session off (the default): each child's own idle row ends it, as before
     expect(opencodeSubagentState(s.path, s.parent, true, NOW)!.running).toBe(0);
   });
 
   it("ends a subagent where its parent's record says it ended, however its child's rows read", () => {
     const s = store();
     s.prompt(s.parent, NOW - 60 * MIN);
-    // answered: completed, failed, stopped; the child idle earlier
     for (const [id, state, at] of [["ses_done", "completed", 40], ["ses_failed", "error", 38], ["ses_stopped", "aborted", 36], ["ses_job_cancelled", "cancelled", 34]] as const) {
       s.session(id, NOW - 50 * MIN);
       s.call(id, NOW - 50 * MIN, "running");
@@ -437,7 +415,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
       s.idle(id, NOW - 45 * MIN);
       s.call(id, NOW - at * MIN, state);
     }
-    // background ones, ended by the parent's notice while their child's newest row still reads running
     for (const [id, state, at] of [["ses_bg_done", "completed", 30], ["ses_bg_failed", "error", 28], ["ses_bg_cancelled", "cancelled", 26]] as const) {
       s.session(id, NOW - 50 * MIN);
       s.call(id, NOW - 50 * MIN, "background");
@@ -463,7 +440,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
   it("runs a subagent again for a newer call that resumes it, or by its own rows once woken after its end", () => {
     const s = store();
     s.prompt(s.parent, NOW - 60 * MIN);
-    // ended, then the parent calls it again by its sessionID: the newest call wins
     s.session("ses_resumed", NOW - 50 * MIN);
     s.call("ses_resumed", NOW - 50 * MIN, "background");
     s.prompt("ses_resumed", NOW - 50 * MIN);
@@ -472,14 +448,12 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.call("ses_resumed", NOW - 10 * MIN, "running", { sessionID: "ses_resumed" });
     s.prompt("ses_resumed", NOW - 10 * MIN);
     s.idle("ses_resumed", NOW - 9 * MIN);
-    // ended, then woken by something else (its own background command's result): its own rows tell, as before
     s.session("ses_woken", NOW - 50 * MIN);
     s.call("ses_woken", NOW - 50 * MIN, "running");
     s.prompt("ses_woken", NOW - 50 * MIN);
     s.idle("ses_woken", NOW - 45 * MIN);
     s.call("ses_woken", NOW - 44 * MIN, "completed");
     s.add("ses_woken", "synthetic", NOW - 5 * MIN, { time: { created: NOW - 5 * MIN }, metadata: { source: "shell", jobID: "job_1" }, text: "finished" });
-    // no call names it (a store 1.x wrote, or a plugin's subagent): its own rows tell
     s.session("ses_unnamed", NOW - 30 * MIN);
     s.prompt("ses_unnamed", NOW - 30 * MIN);
     s.idle("ses_unnamed", NOW - 29 * MIN);
@@ -516,7 +490,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.call("ses_child", NOW - 80_000, call);
     s.prompt("ses_child", NOW - 79_000);
     s.idle("ses_child", NOW - 70_000);
-    // the service starts again, wakes the child, and it goes idle; no parent idle row was written
     s.add("ses_child", "synthetic", NOW - 20_000, { time: { created: NOW - 20_000 }, metadata: { source: "shell" } });
     s.idle("ses_child", NOW - 10_000);
 
@@ -544,7 +517,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.call("ses_child", NOW - 20 * MIN, "background");
     s.prompt("ses_child", NOW - 20 * MIN);
     s.idle("ses_child", NOW - 15 * MIN);
-    // the parent calls it again, waiting on it, before the first run's notice is written
     s.call("ses_child", NOW - 10 * MIN, "running", { sessionID: "ses_child" });
     s.prompt("ses_child", NOW - 10 * MIN);
     s.idle("ses_child", NOW - 9 * MIN);
@@ -581,7 +553,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     const hidden = s.db.query<{ id: string }, [string]>("SELECT id FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1").get(s.parent)!;
     s.db.query("UPDATE session_v2 SET revert = ? WHERE id = ?").run(JSON.stringify({ messageID: hidden.id }), s.parent);
 
-    // the background call the chat still shows has no notice yet
     expect(opencodeSubagentState(s.path, s.parent, true, NOW, null, true, true)!.tasks.map((task) => [task.id, task.status])).toEqual([["ses_child", "running"]]);
   });
 
@@ -592,7 +563,6 @@ describe("an OpenCode session's subagents are its child sessions", () => {
     s.call("ses_child", NOW - 20 * MIN, "running");
     s.prompt("ses_child", NOW - 20 * MIN);
     s.idle("ses_child", NOW - 19 * MIN);
-    // answered at NOW - 10 * MIN + 500 (callData), and woken by its own command's result in that same millisecond
     s.call("ses_child", NOW - 10 * MIN, "completed");
     s.add("ses_child", "synthetic", NOW - 10 * MIN + 500, { time: { created: NOW - 10 * MIN + 500 }, metadata: { source: "shell" }, text: "finished" });
 
@@ -624,7 +594,6 @@ describe("the OpenCode subagent tracker", () => {
     const resets: string[] = [];
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: (...args) => changes.push(args), onReset: (paneId) => resets.push(paneId) });
     tracker.refresh([pane(s.parent)]);
-    // a pane seen first running its session: what its turn was seen do before is that session's
     expect(resets).toEqual([]);
     expect(changes).toEqual([]);
     s.prompt(s.parent, NOW - 10 * MIN);
@@ -633,13 +602,11 @@ describe("the OpenCode subagent tracker", () => {
     tracker.poll();
     expect(changes).toEqual([["w1:p1", 1, 1, NOW - 10 * MIN, false]]);
     expect(tracker.countOf("w1:p1")).toBe(1);
-    // the same store read again changes nothing
     tracker.poll();
     expect(changes).toHaveLength(1);
     s.idle("ses_working", NOW - MIN);
     tracker.poll("w1:p1");
     expect(changes.at(-1)).toEqual(["w1:p1", 0, 0, NOW - 10 * MIN, false]);
-    // started again, then OpenCode's home screen, which names no session: the pane runs it no more
     s.prompt("ses_working", NOW - 30_000);
     tracker.poll();
     expect(tracker.countOf("w1:p1")).toBe(1);
@@ -648,7 +615,6 @@ describe("the OpenCode subagent tracker", () => {
     expect(changes.at(-1)).toEqual(["w1:p1", 0, 0, null, false]);
     expect(tracker.sessionOf("w1:p1")).toEqual({ path: s.path, session: s.parent, live: false });
     expect((await tracker.tasksOf("w1:p1"))?.tasks.map((task) => [task.id, task.status])).toEqual([["ses_working", "lost"]]);
-    // back on that session, it counts again; then the pane runs a shell
     tracker.refresh([pane(s.parent)]);
     expect(tracker.countOf("w1:p1")).toBe(1);
     expect(resets).toEqual(["w1:p1"]);
@@ -657,11 +623,9 @@ describe("the OpenCode subagent tracker", () => {
     expect(changes.at(-1)).toEqual(["w1:p1", 0, 0, null, false]);
     expect(tracker.sessionOf("w1:p1")).toEqual({ path: s.path, session: s.parent, live: false });
     expect(resets).toHaveLength(1);
-    // another session in the pane: what the turn of the old one held goes
     tracker.refresh([pane("ses_next")]);
     expect(resets).toHaveLength(2);
     expect(tracker.sessionOf("w1:p1")?.session).toBe("ses_next");
-    // a pane gone from the snapshot is forgotten
     tracker.refresh([]);
     expect(tracker.sessionOf("w1:p1")).toBeNull();
   });
@@ -670,16 +634,13 @@ describe("the OpenCode subagent tracker", () => {
     const s = store();
     const resets: [string, boolean][] = [];
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: () => undefined, onReset: (paneId, first) => resets.push([paneId, first]) });
-    // a shell, then OpenCode's home screen, then its session found after the turn: one OpenCode lifetime
     tracker.refresh([{ pane_id: "w1:p1", agent: null, agent_status: "idle" } as HerdrPane]);
     tracker.refresh([pane(null)]);
     tracker.refresh([pane(s.parent)]);
     expect(resets).toEqual([]);
-    // a pane Claude Code ran until this snapshot
     tracker.refresh([{ ...pane(null, "claude"), pane_id: "w1:p2" }]);
     tracker.refresh([{ ...pane(s.parent), pane_id: "w1:p2" }]);
     expect(resets).toEqual([["w1:p2", true]]);
-    // another session there: a new lifetime of OpenCode's own
     tracker.refresh([{ ...pane("ses_next"), pane_id: "w1:p2" }]);
     expect(resets).toEqual([["w1:p2", true], ["w1:p2", false]]);
   });
@@ -694,10 +655,8 @@ describe("the OpenCode subagent tracker", () => {
     s.session("ses_working", NOW - 5 * MIN);
     s.prompt("ses_working", NOW - 5 * MIN);
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: () => undefined });
-    // a page, the last child in it: whole at once, as a turn's end needs
     void tracker.refresh([pane(s.parent)]);
     expect(tracker.countOf("w1:p1")).toBe(1);
-    // more running than a page: each counts, the rows kept read a page a turn
     const busy = store();
     for (let n = 0; n < SUBAGENT_PAGE + 5; n++) {
       busy.session(`ses_run${n}`, NOW - 5 * MIN + n);
@@ -706,7 +665,6 @@ describe("the OpenCode subagent tracker", () => {
     const all = opencodeSubagentState(busy.path, busy.parent, true, NOW, null, false)!;
     expect(all.running).toBe(SUBAGENT_PAGE + 5);
     expect(all.unlisted).toBe(SUBAGENT_PAGE + 5 - RUNNING_LIMIT);
-    // the newest of them are listed, oldest first
     expect(all.tasks).toHaveLength(RUNNING_LIMIT);
     expect(all.tasks[0]!.id).toBe(`ses_run${SUBAGENT_PAGE + 5 - RUNNING_LIMIT}`);
     const many = new OpencodeSubagentStatus({ store: () => busy.path, now: () => NOW, onChange: () => undefined });
@@ -726,14 +684,12 @@ describe("the OpenCode subagent tracker", () => {
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: (...args) => changes.push(args) });
     await tracker.refresh([pane(s.parent)]);
     expect(tracker.countOf("w1:p1")).toBe(1);
-    // a read goes on, and the pane goes back to OpenCode's home screen meanwhile
     const reading = tracker.poll();
     void tracker.refresh([pane(null)]);
     expect(tracker.countOf("w1:p1")).toBe(0);
     await reading;
     expect(tracker.countOf("w1:p1")).toBe(0);
     expect(changes.at(-1)).toEqual(["w1:p1", 0, 0, null, false]);
-    // back on it, a read goes on again, and the pane moves to another session meanwhile: that one is read at once
     await tracker.refresh([pane(s.parent)]);
     for (const id of ["ses_other_a", "ses_other_b"]) {
       s.session(id, NOW - 2 * MIN, { parent: "ses_other" });
@@ -752,7 +708,6 @@ describe("the OpenCode subagent tracker", () => {
       s.session(id, NOW - 5 * MIN);
       s.prompt(id, NOW - 5 * MIN);
     }
-    // the store is held by its writer once, between the first and the second child's rows
     let held = true;
     const flaky: typeof withStore = (path, read, busyMs) => withStore(path, (db) => read(new Proxy(db, {
       get(target, key) {
@@ -792,7 +747,6 @@ describe("the OpenCode subagent tracker", () => {
     s.prompt("ses_other_child", NOW - 2 * MIN);
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: () => undefined });
     await tracker.refresh([pane(s.parent)]);
-    // the list is read a page a turn, and the pane moves to another session meanwhile
     const asked = tracker.tasksOf("w1:p1");
     void tracker.refresh([pane("ses_other")]);
     expect((await asked)?.tasks.map((task) => [task.id, task.status])).toEqual([["ses_other_child", "running"]]);
@@ -804,16 +758,13 @@ describe("the OpenCode subagent tracker", () => {
     s.prompt("ses_working", NOW - 5 * MIN);
     const resets: [string, boolean][] = [];
     const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, onChange: () => undefined, onReset: (paneId, first) => resets.push([paneId, first]) });
-    // a snapshot's read begins, then a lookup made since finds the pane's session
     const stale = tracker.beginRead();
     tracker.ensure(pane(s.parent));
     tracker.poll();
-    // the snapshot, read before it, still shows OpenCode's home screen, or no such pane yet
     tracker.refresh([pane(null)], stale);
     tracker.refresh([], stale);
     expect(tracker.sessionOf("w1:p1")?.live).toBe(true);
     expect(tracker.countOf("w1:p1")).toBe(1);
-    // a newer read of the same session: no new lifetime
     tracker.refresh([pane(s.parent)]);
     expect(resets).toEqual([]);
   });
@@ -828,7 +779,6 @@ describe("the OpenCode subagent tracker", () => {
     s.prompt("ses_fg", NOW - 5 * MIN);
     tracker.refresh([pane(s.parent)]);
     expect(tracker.countOf("w1:p1")).toBe(1);
-    // idle with its background work still going: the parent's call is not answered
     s.idle("ses_fg", NOW - 4 * MIN);
     tracker.poll();
     expect(tracker.countOf("w1:p1")).toBe(1);
@@ -847,7 +797,6 @@ describe("the OpenCode subagent tracker", () => {
     s.step("ses_child", NOW - 4 * MIN);
     tracker.refresh([pane(s.parent)]);
     expect(tracker.countOf("w1:p1")).toBe(0);
-    // the answered call goes (an undo), and another row takes its seq, written as long ago: no call names the child
     const { id, seq } = s.db.query<{ id: string; seq: number }, [string]>("SELECT id, seq FROM session_message WHERE session_id = ? AND type = 'assistant'").get(s.parent)!;
     s.db.query("DELETE FROM session_message WHERE id = ?").run(id);
     s.prompt(s.parent, NOW - 6 * MIN);
@@ -921,7 +870,6 @@ describe("the OpenCode subagent tracker", () => {
     s.session("ses_child", NOW - 20 * MIN);
     s.call("ses_child", NOW - 20 * MIN, "background");
     s.prompt("ses_child", NOW - 20 * MIN);
-    // called again while that job runs: the call is written running before it joins the job (subagent.ts progress)
     s.call("ses_child", NOW - 10 * MIN, "running", { sessionID: "ses_child" });
     s.prompt("ses_child", NOW - 10 * MIN);
     s.idle("ses_child", NOW - 9 * MIN);
@@ -929,7 +877,6 @@ describe("the OpenCode subagent tracker", () => {
     s.prompt(s.parent, NOW - 7 * MIN);
     await tracker.refresh([pane(s.parent)]);
     expect(tracker.countOf("w1:p1")).toBe(1);
-    // then answered as gone to the background: it had joined the job that notice ended
     s.answer(NOW - 6 * MIN, "ses_child", NOW - 10 * MIN, "background", { sessionID: "ses_child" });
     await tracker.poll();
     expect(tracker.countOf("w1:p1")).toBe(0);
@@ -952,11 +899,9 @@ describe("the OpenCode subagent tracker", () => {
 
   it("answers the background tasks route with the pane's subagents, the live session's before a Claude one gone", async () => {
     const s = store();
-    // the route reads on the PC's clock
     const now = Date.now();
     s.session("ses_working", now - 5 * MIN);
     s.prompt("ses_working", now - 5 * MIN);
-    // a tracker's answer: the session's list, and the session it is of
     const listOf = async (session: string, live: boolean) => {
       const state = await pagedState(s.path, session, live);
       return state === null ? null : { tasks: state.tasks, unlisted: state.unlisted, read: { path: s.path, session, live } };
@@ -970,9 +915,7 @@ describe("the OpenCode subagent tracker", () => {
     const tasks = async (response: Response | null) => ((await response!.json()) as { tasks: { id: string; status: string }[] }).tasks.map((task) => [task.id, task.status]);
     expect(await tasks(await ask(true, null))).toEqual([["ses_working", "running"]]);
     expect(await tasks(await ask(false, false))).toEqual([["ses_working", "lost"]]);
-    // the pane runs Claude Code now: its list is Claude's
     expect(await tasks(await ask(false, true))).toEqual([]);
-    // it comes to run Claude Code while OpenCode's list is read: the answer is Claude's, after that one read
     let claudeNow = false;
     let reads = 0;
     const moving = await handleTasksRequest(...request(), {
@@ -985,7 +928,6 @@ describe("the OpenCode subagent tracker", () => {
     });
     expect(await tasks(moving)).toEqual([]);
     expect(reads).toBe(1);
-    // it comes to run another OpenCode session while the list is read: the list is that session's
     s.session("ses_moved_child", now - MIN, { parent: "ses_moved" });
     s.prompt("ses_moved_child", now - MIN);
     let moved = false;
@@ -998,7 +940,6 @@ describe("the OpenCode subagent tracker", () => {
       },
     });
     expect(await tasks(swapped)).toEqual([["ses_moved_child", "running"]]);
-    // or OmO comes to run there while OpenCode's session reads the same as before: OmO's list
     const omoCwd = join(root, "omo-folder");
     mkdirSync(join(omoCwd, ".omo", "senpi-task", "tasks"), { recursive: true });
     writeFileSync(join(omoCwd, ".omo", "senpi-task", "tasks", "st_1.json"), JSON.stringify({ task_id: "st_1", parent_session_id: "omo-session", host_pid: process.pid, status: "running", task_summary: "index the repo", started_at: new Date(now - MIN).toISOString() }));
@@ -1012,7 +953,6 @@ describe("the OpenCode subagent tracker", () => {
       },
     });
     expect(await tasks(toOmo)).toEqual([["st_1", "running"]]);
-    // a pane whose session moves on with every read is told nothing for sure, after three reads
     let flips = 0;
     const restless = await handleTasksRequest(...request(), {
       omo: { sessionOf: () => null },

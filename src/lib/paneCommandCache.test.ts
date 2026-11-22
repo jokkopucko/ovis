@@ -70,7 +70,6 @@ describe("cachedPaneCommands", () => {
     const staleRows: SlashCommand[] = [{ name: "stale", description: "", source: "builtin" }];
     resolvers[0]!(staleRows);
     expect(await stale).toBe(staleRows);
-    // the list the catalog change made is what the pane keeps for the next minute
     expect(await cachedPaneCommands("w3:p1", "local", "omo", fetchCommands)).toBe(freshRows);
     expect(resolvers.length).toBe(2);
   });
@@ -78,7 +77,6 @@ describe("cachedPaneCommands", () => {
   test("the components of a pane that mount together share one read, and a call after an invalidation starts a fresh one", async () => {
     const resolvers: ((commands: SlashCommand[]) => void)[] = [];
     const fetchCommands = (): Promise<SlashCommand[]> => new Promise((resolve) => { resolvers.push(resolve); });
-    // the terminal, the chat, its skill chips and the composer
     const mounted = [1, 2, 3, 4].map(() => cachedPaneCommands("w4:p1", "local", "claude", fetchCommands));
     expect(resolvers.length).toBe(1);
     invalidatePaneCommands("w4:p1", "local");
@@ -100,7 +98,6 @@ describe("cachedPaneCommands", () => {
       expect(paneCommandsNow("w5:p1", "local", "pi")).toBeNull();
       expect(paneCommandsNow("w5:p1", "studio", "claude")).toBeNull();
       setSystemTime(new Date(Date.now() + 61_000));
-      // a chat opened again a minute later draws its skill chips with the list it has, while it asks again
       let answer!: (commands: SlashCommand[]) => void;
       const fresh = cachedPaneCommands("w5:p1", "local", "claude", () => new Promise((resolve) => { answer = resolve; }));
       expect(paneCommandsNow("w5:p1", "local", "claude")).toBe(rows);
@@ -122,7 +119,6 @@ describe("cachedPaneCommands", () => {
     try {
       roster("a", "/repo/a");
       const inA = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
-      // claude started again in project B while project A's read is on its way
       roster("b", "/repo/b");
       const inB = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
       expect(resolvers.length).toBe(2);
@@ -130,13 +126,11 @@ describe("cachedPaneCommands", () => {
       const rowsA: SlashCommand[] = [{ name: "skill-of-a", description: "", source: "skill" }];
       resolvers[1]!(rowsB);
       expect(await inB).toBe(rowsB);
-      // A's answer comes last, but the pane is on B: it is not what the pane keeps
       resolvers[0]!(rowsA);
       expect(await inA).toBe(rowsA);
       expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsB);
       expect(await cachedPaneCommands("w6:p1", "local", "claude", fetchCommands)).toBe(rowsB);
       expect(resolvers.length).toBe(2);
-      // the same session read from another folder is another list too
       roster("b", "/repo/c");
       expect(paneCommandsNow("w6:p1", "local", "claude")).toBeNull();
       const inC = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
@@ -145,7 +139,6 @@ describe("cachedPaneCommands", () => {
       resolvers[2]!(rowsC);
       expect(await inC).toBe(rowsC);
       expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsC);
-      // the server lists the foreground folder's commands: a change of it alone is another list
       roster("b", "/repo/c", "/repo/d");
       void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
       expect(resolvers.length).toBe(4);
@@ -153,8 +146,6 @@ describe("cachedPaneCommands", () => {
       resolvers[3]!(rowsD);
       expect(await cachedPaneCommands("w6:p1", "local", "claude", fetchCommands)).toBe(rowsD);
       expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsD);
-      // herdr said a pane of the PC changed: the kept list stays drawn, but until the roster names the
-      // sessions a read joins none begun before and is not kept
       paneSessionsMoving("local");
       expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsD);
       roster("b", "/repo/c", "/repo/e");

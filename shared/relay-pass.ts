@@ -26,7 +26,6 @@ export const RELAY_PASS_SKEW_S = 300;
 /** The only audience: Ovis's relays. */
 export const RELAY_PASS_AUDIENCE = "ovis-relay";
 
-/** Close code for a PC socket refused for its pass, and its reasons. */
 export const RELAY_PASS_CLOSE = 4402;
 export const RELAY_PASS_REQUIRED = "relay pass required";
 export const RELAY_PASS_EXPIRED = "relay pass expired";

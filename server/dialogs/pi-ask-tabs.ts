@@ -7,7 +7,7 @@ export function piAskTabs(raw: string): { steps: InteractivePromptStep[]; index:
   const tabs = [...plain.matchAll(/ ([□■]) (.*?) (?=  (?:[□■]|✓))/g)];
   if (tabs.length < 2 || tabs.length > 4 || tabs.some(tab => !tab[2]?.trim())) return null;
   const expected = " ← " + tabs.map(tab => ` ${tab[1]} ${tab[2]}  `).join("") + " ✓ Submit  →";
-  if (plain.trim() !== expected.trim()) return null; // clipped or ambiguous header: no guessed tabs
+  if (plain.trim() !== expected.trim()) return null;
 
   const index = piActiveTab(raw, [...tabs.map(tab => tab.index! + 1), plain.indexOf("✓ Submit")]);
   const allAnswered = tabs.every(tab => tab[1] === "■");
@@ -20,10 +20,6 @@ export function piAskTabs(raw: string): { steps: InteractivePromptStep[]; index:
   return { steps, index, identity: JSON.stringify(tabs.map(tab => [tab[2], tab[1]])) };
 }
 
-/**
- * SGR evidence only: plain text never establishes the current tab. Offsets exclude ANSI.
- * `backgroundOnly`: a tab on a background alone counts, never the one tab in the default color.
- */
 export function piActiveTab(raw: string, markers: number[], backgroundOnly = false): number | null {
   const backgrounds: boolean[] = [];
   const dimmed: boolean[] = [];
@@ -64,7 +60,6 @@ export function piActiveTab(raw: string, markers: number[], backgroundOnly = fal
   const active = markers.flatMap((at, index) => backgrounds[at] ? [index] : []);
   if (backgroundOnly) return active.length === 1 ? active[0]! : null;
   const normal = markers.flatMap((at, index) => !dimmed[at] && defaultForegrounds[at] ? [index] : []);
-  // Never infer a position from plain text or from conflicting/ambiguous style evidence.
   return active.length > 1 || active.length === 1 && normal.length === 1 && active[0] !== normal[0]
     ? null : active.length === 1 ? active[0]! : normal.length === 1 ? normal[0]! : null;
 }

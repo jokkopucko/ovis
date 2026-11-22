@@ -1,5 +1,3 @@
-/* Files → Documents: the folder browser's card and rows (DirectoryBrowser.css), each row a file's
-   name, the folder it is in (dim, mono, cut from its start) and when it last changed */
 .md-docs-name {
   flex: 0 1 auto;
   min-width: 0;
@@ -37,7 +35,6 @@
   flex-direction: column;
 }
 
-/* one row tall, as the rows it stands in for, so a refresh moves nothing */
 .md-docs-loading-note {
   display: flex;
   align-items: center;

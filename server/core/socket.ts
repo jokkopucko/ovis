@@ -1,24 +1,26 @@
-/**
- * The WebSocket of a browser connection: it admits the connection, sends its features and the first snapshot, and hands each
- * frame to the handler of its type. FrameHandlers has one for every type a client sends, so a new frame type
- * without one fails the build instead of being dropped.
- */
 import type { WebSocketHandler } from "bun";
+import { ACCOUNT_OPENS_ALL_CAPABILITY, accountOpensAll } from "../../shared/account-devices-api.ts";
+import type { BlockReceipt, NoticeReplay } from "../../shared/account-devices-api.ts";
 import type { ClientMessage, ClientRole, ServerFeature, SessionSnapshot } from "../../shared/protocol.ts";
 import { ConnectionDiagnostics } from "../connection-diagnostics.ts";
-import { HerdrError, LARGE_REPLY_BYTES } from "../herdr/client.ts";
+import { faultOf, HerdrError, type HerdrFailureView, LARGE_REPLY_BYTES } from "../herdr/client.ts";
 import { OUTPUT_HARD_BYTES } from "../output-window.ts";
 import { pasteDirectoryForAll } from "../paste.ts";
 import { type Client, connectionOf, presenceOf, relayClient, send, setMachineEvents, type SocketData } from "./connections.ts";
 import { type AttachmentView, validGeometry } from "./terminals.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
-const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "take-over", "watch", "conversation-watch", "ping", "terminal-insert", "agent-only", "input-receipt", "conversation-search", "conversation-watch-detached", "prompt-watch"];
+const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "take-over", "watch", "conversation-watch", "ping", "terminal-insert", "agent-only", "input-receipt", "conversation-search", "conversation-watch-detached", "prompt-watch", "secret-prompts-2", "secret-prompts-3"];
 
 type Frame<K extends ClientMessage["type"]> = Extract<ClientMessage, { type: K }>;
 
-/** The handler of every frame type a client sends, but `presence`: that one is read before a frame is parsed (presenceOf). */
-export type FrameHandlers = { [K in Exclude<ClientMessage["type"], "presence">]: (client: Client, message: Frame<K>) => void | Promise<void> };
+/**
+ * Device notice frames (feature "account-opens-all/1"): typed in the protocol, with no handler until the PC's journal
+ * answers them, so until then they are dropped like any frame this server does not know.
+ */
+type AccountNoticeFrame = "notice-seen" | "notice-answer";
+
+export type FrameHandlers = { [K in Exclude<ClientMessage["type"], "presence" | AccountNoticeFrame>]: (client: Client, message: Frame<K>) => void | Promise<void> };
 
 export type SocketHandler = Omit<WebSocketHandler<SocketData>, "open" | "message" | "close" | "drain"> & {
   open(client: Client): void | Promise<void>;
@@ -27,10 +29,23 @@ export type SocketHandler = Omit<WebSocketHandler<SocketData>, "open" | "message
   drain(client: Client): void;
 };
 
-/** The frames of the connection itself: its liveness, its watches and its role. */
 type ConnectionFrame = "ping" | "watch" | "unwatch" | "role" | "machine-events";
 
-export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames }: {
+const INVALID_WATCH = "pane_id must be a pane's id: a string of at most 256 characters that is not blank, holds no control character and does not begin with a hyphen";
+
+/**
+ * A `watch` or `unwatch` frame's pane, checked before anything is started for it. An id that is no string would be
+ * another Map key at every frame: a watch that no later frame replaces and no unwatch names. One that begins with a
+ * hyphen (blanks before it aside) would be read as an option by herdr's own command line, which is handed the id as
+ * it came (watch.ts). And an id is written to the server's log and sent back when its watch cannot start: no pane's
+ * id is longer than a few dozen characters, or holds a control character.
+ */
+function watchablePane(paneId: unknown): paneId is string {
+  return typeof paneId === "string" && paneId.length <= 256 && paneId.trim() !== "" && !paneId.trim().startsWith("-") && !/[\u0000-\u001f\u007f]/.test(paneId);
+}
+
+export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, terminalModes, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure, accountEnabled = accountOpensAll(), notices: noticeHandlers }: {
+  herdrFailure?: HerdrFailureView;
   clients: Set<Client>;
   present: Set<Client>;
   stopped: () => boolean;
@@ -41,35 +56,35 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
    * --observe` streams a terminal at its own size, which a release hands to the Herdr app's window)
    */
   watchable: () => boolean;
-  /** whether attaches replay the pane's scrollback for the client to keep (`terminal-history`) */
   terminalHistory: () => boolean;
+  /** whether attaches carry the program's modes, so the client types a plain arrow as its terminal encodes it (`terminal-modes`) */
+  terminalModes: () => boolean;
   watchPane: (client: Client, paneId: string, geometry: { cols: number; rows: number }) => void;
   unwatchPane: (client: Client, paneId: string) => void;
   end: (client: Client, reason: "closed") => void;
   holdPending: (owner: Client) => void;
   attachments: ReadonlyMap<string, AttachmentView>;
   clientSnapshot: () => Promise<SessionSnapshot>;
-  /** the herdr this server reads now, as a snapshot's `herdr_lifetime` names it, known without a herdr call; undefined proves none */
   herdrLifetime: () => string | undefined;
   /** a snapshot as a browser is told it: without the token values the sidebar rows hide (server/herdr-sidebar.ts) */
   browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot;
   countVisit: (snapshot?: Promise<SessionSnapshot>, visit?: { surface?: TelemetrySurface; ingress?: TelemetryIngress }) => void;
   drainOutput: (client: Client) => void;
-  /** every other frame type's handler, from the module that owns what it changes */
   frames: Omit<FrameHandlers, ConnectionFrame>;
+  accountEnabled?: boolean | undefined;
+  /** the device journal's notices for a paired device (server/devices.ts), with OVIS_ACCOUNT_OPENS_ALL on */
+  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown, onApplied: () => void): Promise<BlockReceipt>; mayAnswer(caller: string | undefined, id: string): boolean; open(id: string): { readonly key: string | null; readonly account: string | null } | undefined; decide(id: string, replay: boolean): void; itsMe(deviceId: string, id: string, provedKey: string): boolean };
 }): SocketHandler {
+  const notices = accountEnabled ? noticeHandlers : undefined;
   const websocketDiagnostics = new ConnectionDiagnostics("websocket");
-  // Here and not in connections.ts: watch checks its grid with validGeometry (terminals.ts), and
-  // terminals.ts imports connections.ts, which imports none of the core.
   const connectionFrames = {
     "machine-events"(client: Client, message: Frame<"machine-events">): void {
       if (typeof message.enabled !== "boolean") {
         send(client, { type: "error", code: "invalid_subscription", message: "enabled must be a boolean" });
         return;
       }
-      setMachineEvents(client, message.enabled);
+      setMachineEvents(client, message.enabled, message.compact_agents === true);
     },
-    // liveness only: any role, no herdr call, nothing to wait behind
     ping(client: Client, message: Frame<"ping">): void {
       if (!Number.isSafeInteger(message.id)) {
         send(client, { type: "error", code: "invalid_ping", message: "id must be an integer" });
@@ -79,12 +94,15 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       return;
     },
     watch(client: Client, message: Frame<"watch">): void {
+      if (!watchablePane(message.pane_id)) {
+        send(client, { type: "error", code: "invalid_watch", message: INVALID_WATCH });
+        return;
+      }
       const geometry = validGeometry(message.cols, message.rows);
       if (!geometry) {
         send(client, { type: "error", code: "invalid_geometry", message: "cols and rows must be integers in 1..1000" });
         return;
       }
-      // a pane the view cannot start for ends at once, before anything is spawned for it
       if (!watchable()) {
         send(client, { type: "watch-end", pane_id: message.pane_id });
         return;
@@ -93,6 +111,10 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       return;
     },
     unwatch(client: Client, message: Frame<"unwatch">): void {
+      if (!watchablePane(message.pane_id)) {
+        send(client, { type: "error", code: "invalid_watch", message: INVALID_WATCH });
+        return;
+      }
       unwatchPane(client, message.pane_id);
       return;
     },
@@ -106,7 +128,6 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       setRole(client, message.mode);
       send(client, { type: "role-ack", mode: message.mode });
       if (message.mode === "observe") {
-        // the fresh observer needs the grid it must adopt
         for (const paneId of client.data.attached.keys()) {
           const attachment = attachments.get(paneId);
           if (attachment) {
@@ -132,32 +153,32 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       if (!admit(client)) return;
       if (client.data.relay) { client.data.relay.bind(relayClient(client)); return; }
       clients.add(client);
-      // before the snapshot, which waits on herdr (seconds after a restart or under load, or never when the
-      // read fails): a client sends nothing until it knows what this server takes, and that needs no herdr.
-      // The herdr it names lets a page that already knows that herdr send before the snapshot proves it
       const lifetime = herdrLifetime();
-      // without "watch" a tab out of use stays attached or pauses, and a reconnect attaches at once
       const features: ServerFeature[] = watchable() ? [...SERVER_FEATURES] : SERVER_FEATURES.filter((feature) => feature !== "watch");
       if (terminalHistory()) features.push("terminal-history");
-      if (client.data.machineEvents) features.push("machine-events");
+      if (terminalModes()) features.push("terminal-modes");
+      if (client.data.machineEvents || client.data.localRoster) features.push("machine-events");
+      if (accountEnabled) features.push(ACCOUNT_OPENS_ALL_CAPABILITY);
       // a folder OVIS_PASTE_DIR names lets the page read an upload's path whole through it (#2771); a
       // watch-only connection, which may list no folder, is not told where it is
       const pasteDir = client.data.readOnly ? undefined : pasteDirectoryForAll();
-      send(client, { type: "features", features, connection: client.data.connectionId, ...(lifetime === undefined ? {} : { herdr_lifetime: lifetime }), ...(pasteDir === undefined ? {} : { paste_dir: pasteDir }) });
+      send(client, { type: "features", features, connection: client.data.connectionId, server_time: Date.now(), ...(lifetime === undefined ? {} : { herdr_lifetime: lifetime }), ...(pasteDir === undefined ? {} : { paste_dir: pasteDir }) });
+      // what this device has not seen, before anything else on its stream (T57)
+      const replay = client.data.deviceId === undefined ? null : notices?.replay(client.data.deviceId);
+      if (replay) send(client, { type: "device-notice-replay", replay });
       const snapshot = clientSnapshot();
       countVisit(snapshot, { surface: client.data.surface, ingress: client.data.ingress });
       try {
         const read = await snapshot;
         send(client, { type: "snapshot", snapshot: client.data.bridge ? read : browserSnapshot(read), features, connection: client.data.connectionId });
       } catch (error) {
-        const code = error instanceof HerdrError ? error.code : "snapshot_failed";
-        send(client, { type: "error", code, message: error instanceof Error ? error.message : String(error) });
+        const fault = faultOf(error, "snapshot_failed", herdrFailure);
+        send(client, { type: "error", code: fault.code, message: fault.message });
       }
     },
 
     async message(client, raw) {
       if (stopped() || connectionOf(client).closing) return;
-      // read here for a relayed connection too: alerts for every PC go out from this server
       const presence = presenceOf(raw);
       if (presence === true) {
         present.add(client);
@@ -172,8 +193,50 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         send(client, { type: "error", code: "invalid_json", message: "message must be JSON" });
         return;
       }
+      if (message.type === "notice-seen") {
+        // an acknowledgement moves this device's `seen` and decides nothing (T57)
+        if (client.data.deviceId !== undefined && Number.isSafeInteger(message.seq)) notices?.seen(client.data.deviceId, message.seq);
+        return;
+      }
+      if (message.type === "notice-answer") {
+        // "It's me" is the join hold's to judge (T53), only for the session's proved key, never a bare device id; the
+        // confirmation it publishes is the answer. A PC without notices (flag off) ignores it as before.
+        if (message.answer === "its_me") {
+          if (notices === undefined || typeof message.id !== "string" || client.data.deviceId === undefined || !client.data.provedKey) return;
+          try { notices.itsMe(client.data.deviceId, message.id, client.data.provedKey); }
+          catch (error) {
+            console.error(`[devices] It's me could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+            send(client, { type: "error", code: "notice_decision_failed", message: "The notice could not be closed and remains open." });
+          }
+          return;
+        }
+        // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
+        if (notices === undefined || typeof message.id !== "string" || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
+        const receipts: BlockReceipt[] = [];
+        let answered = false;
+        let newlyApplied = false;
+        for (const block of message.blocks) {
+          const notice = notices.open(message.id);
+          if (notice && !notices.mayAnswer(client.data.deviceId, message.id)) break;
+          let applied = false;
+          const receipt = await notices.block(block, () => { applied = true; });
+          receipts.push(receipt);
+          if (receipt.outcome !== "refused" && notice && notice.key === block.target && notice.account === block.account) {
+            answered = true;
+            newlyApplied ||= applied;
+          }
+        }
+        if (answered && notices.mayAnswer(client.data.deviceId, message.id)) {
+          try { notices.decide(message.id, !newlyApplied); }
+          catch (error) {
+            console.error(`[devices] the notice could not be decided: ${error instanceof Error ? error.message : String(error)}`);
+            send(client, { type: "error", code: "notice_decision_failed", message: "The notice could not be closed and remains open." });
+          }
+        }
+        send(client, { type: "notice-answer-result", id: message.id, receipts });
+        return;
+      }
       try {
-        // a type no handler has is ignored, as the switch on it was: a handler of that very string, or nothing
         const frame = typeof message.type === "string" && Object.hasOwn(handlers, message.type)
           ? handlers[message.type as keyof FrameHandlers] as (client: Client, message: ClientMessage) => void | Promise<void> : undefined;
         await frame?.(client, message);
@@ -182,7 +245,8 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         // an attach that could not start names its pane: the panes of a PC share this connection, and one
         // without a pane would end every terminal on it
         const failed = code === "attach_failed" && message.type === "attach" ? { pane_id: message.pane_id } : {};
-        send(client, { type: "error", code, message: error instanceof Error ? error.message : String(error), ...failed });
+        const fault = faultOf(error, code, herdrFailure);
+        send(client, { type: "error", code: fault.code, message: fault.message, ...failed });
       }
     },
 

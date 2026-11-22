@@ -3,8 +3,7 @@ import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 /**
  * omp draws its own context in its status bar — `⠋ 46s · ◒ deepseek-flash · 📁 ~/coding_agent ·
  * ◫ 48.1%/1M ⟲ · $105.66` — which is the one place both numbers live: its transcript reports the
- * tokens a request filled but never the window, so the chat's context ring had no percent for omp.
- * Read from the screen, the same numbers omp shows.
+ * tokens a request filled but never the window.
  */
 
 /** `◫ 48.1%/1M`: percent filled, then the window's size (`200k`, `1M`) */
@@ -23,7 +22,6 @@ export function ompStatusContext(screen: string): { used: number; window: number
   return { used: Math.round(size * Math.min(100, percent) / 100), window: Math.round(size) };
 }
 
-/** long enough that one chat push does not cost a screen read each, short enough to follow a turn */
 const TTL_MS = 5_000;
 const cache = new Map<string, { at: number; history: number; context: { used: number; window: number } | null }>();
 
@@ -40,7 +38,6 @@ export async function ompScreenContext(paneId: string, now: number = Date.now())
   const after = screen === "" ? null : await paneScrollInfo(paneId).catch(() => null);
   if (after?.offset_from_bottom !== 0 || after.max_offset_from_bottom !== before.max_offset_from_bottom) return null;
   const context = ompStatusContext(screen);
-  // a closed pane's entry goes with the next read of any pane, so the cache holds live panes only
   for (const [id, entry] of cache) if (now - entry.at >= TTL_MS) cache.delete(id);
   cache.set(paneId, { at: now, history: before.max_offset_from_bottom, context });
   return context;

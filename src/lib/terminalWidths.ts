@@ -32,7 +32,6 @@ export const HERDR_UNICODE_VERSION = "15-herdr";
 const SPACING_MARK = /[\p{Mc}\u0e33\u0eb3]/u;
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const INVISIBLE = /(?![\u00ad\u1100-\u11ff\u200d\ufe00-\ufe0f\u{e0000}-\u{e0fff}])\p{Default_Ignorable_Code_Point}/u;
-/** Below these, the tests above cannot match. */
 const FIRST_INVISIBLE = 0x034f;
 const FIRST_SPACING_MARK = 0x0903;
 const FIRST_EMOJI_PRESENTATION = 0x231a;
@@ -64,10 +63,8 @@ const TEXT_FORM_EMOJI = new Set(
 /** The same character properties with another width (xterm's packing: join flag, then two width bits). */
 const withWidth = (properties: number, width: number): number => (properties & ~0b110) | (width << 1);
 
-/** Which correction a code point needs, if any. */
 type Kind = "plain" | "newer-emoji" | "spacing-mark" | "invisible";
 
-/** The width provider that matches herdr's grid, built on the grapheme addon's. */
 export function herdrWidthProvider(): IUnicodeVersionProvider {
   // the addon hands its providers only to terminal.unicode.register, so it registers into this
   let graphemes: IUnicodeVersionProvider | undefined;
@@ -84,7 +81,6 @@ export function herdrWidthProvider(): IUnicodeVersionProvider {
   new UnicodeGraphemesAddon().activate(registrar);
   if (!graphemes) throw new Error("the grapheme addon registered no 15-graphemes provider");
   const inner = graphemes;
-  // per code point above FIRST_INVISIBLE, which correction it needs
   const kinds = new Map<number, Kind>();
   const kindOf = (codepoint: number): Kind => {
     if (codepoint < FIRST_INVISIBLE) return "plain";
@@ -143,7 +139,6 @@ export function herdrWidthProvider(): IUnicodeVersionProvider {
   };
 }
 
-/** Makes `term` count cells as herdr does. */
 export function matchHerdrWidths(term: Terminal): void {
   term.unicode.register(herdrWidthProvider());
   term.unicode.activeVersion = HERDR_UNICODE_VERSION;

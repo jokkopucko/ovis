@@ -6,14 +6,11 @@ import { mirrorFrame } from "../mirror.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createTerminalRegistry } from "./terminals.ts";
 
-// A mirrored pane through the real registry and MirrorSession, against a stand-in herdr socket
-// whose every pane.read is held until the test answers it.
 type Frame = Record<string, unknown> & { type: string };
 
 let root: string;
 let previousSocket: string | undefined;
 let listener: ReturnType<typeof Bun.listen<{ buffer: string }>>;
-/** pane.read requests in arrival order, each answered with the screen the test gives it */
 let reads: AsyncIterator<(text: string) => void>;
 const nextRead = async () => (await reads.next()).value as (text: string) => void;
 
@@ -62,7 +59,6 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A client whose pty-data frames are recorded, each awaitable by its index. */
 function recorder() {
   const frames: Frame[] = [];
   const waiters: { count: number; done: () => void }[] = [];
@@ -78,7 +74,6 @@ function recorder() {
     },
     close() {},
   };
-  /** resolves once `count` pty-data frames arrived; rejects at a bounded deadline */
   const until = (count: number): Promise<Frame[]> => {
     if (frames.length >= count) return Promise.resolve(frames);
     const arrived = Promise.withResolvers<Frame[]>();
@@ -106,7 +101,6 @@ it("marks a mirror's first screen as replay for a client that attached before it
   try {
     await registry.terminalFrames.attach(first.client, attach);
     const answerFirst = await nextRead();
-    // the attach completed with nothing read yet: the screen reaches this client later
     expect(first.frames).toEqual([]);
     answerFirst("retained screen");
     const [initial] = await first.until(1);
@@ -114,13 +108,11 @@ it("marks a mirror's first screen as replay for a client that attached before it
     expect(initial!.replay).toBe(true);
     expect((initial!.flow as { offset: number }).offset).toBe(Buffer.byteLength(String(initial!.data)));
 
-    // a joiner after the read gets the same screen, marked the same way
     await registry.terminalFrames.attach(joiner.client, attach);
     const [joined] = await joiner.until(1);
     expect(joined!.data).toBe(initial!.data);
     expect(joined!.replay).toBe(true);
 
-    // the next screen is live for both: no replay flag, offsets continue from the replay
     (await nextRead())("live screen");
     const [, live] = await first.until(2);
     const [, liveJoined] = await joiner.until(2);
@@ -148,7 +140,6 @@ it("does not carry a pending first-screen mark into a later attach of a client t
     expect(initial!.replay).toBe(true);
     expect(leaver.frames).toEqual([]);
 
-    // back again: its replay is the attach's own, and the live screen after it is unmarked
     await registry.terminalFrames.attach(leaver.client, attach);
     (await nextRead())("live screen");
     const [replayed, live] = await leaver.until(2);

@@ -1,8 +1,3 @@
-/**
- * New workspace's recent folders. A phone keeps them on one row it swipes sideways. A wider
- * screen shows as many as one row holds and a "+N" chip after them, which lists the rest with
- * their whole paths (RowMenu): the dialog never grows a second row of chips.
- */
 import { useLayoutEffect, useRef, useState } from "react";
 import { FolderOpen } from "lucide-react";
 
@@ -20,14 +15,12 @@ interface Props {
   onPick: (path: string) => void;
 }
 
-/** How many chips of `widths` fit in `room`, with the "+N" chip after them when some do not. */
 export function chipsThatFit(widths: readonly number[], more: number, gap: number, room: number): number {
   const total = (count: number): number => widths.slice(0, count).reduce((sum, width) => sum + width, 0) + gap * Math.max(0, count - 1);
   if (total(widths.length) <= room) return widths.length;
   for (let count = widths.length - 1; count > 0; count -= 1) {
     if (total(count) + gap + more <= room) return count;
   }
-  // even one chip and the "+N" overflow: the one chip still shows, cut short by its own ellipsis
   return Math.min(1, widths.length);
 }
 
@@ -53,7 +46,6 @@ export function RecentFolderChips({ folders, disabled, labelledBy, basename, onP
     place();
     const observer = new ResizeObserver(place);
     if (row.current) observer.observe(row.current);
-    // the app's faces come after the first paint: the chips are measured again in them
     void document.fonts?.ready.then(place);
     return () => observer.disconnect();
   }, [swipe, folders]);
@@ -74,8 +66,6 @@ export function RecentFolderChips({ folders, disabled, labelledBy, basename, onP
         +{rest.length}
       </button>}
     </div>
-    {/* every chip and a "+N" one, drawn where nothing sees them, for their widths: inside a clipped
-        box the size of the row, so the long row they make never scrolls the dialog sideways */}
     {!swipe && <div className="new-session-folder-measure-clip" aria-hidden="true">
       <div ref={measure} className="new-session-folder-measure">
         {folders.map((path) => <span key={path} className="btn new-session-folder-chip"><FolderOpen aria-hidden="true" /><span>{basename(path)}</span></span>)}

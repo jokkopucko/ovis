@@ -1,5 +1,3 @@
-/* Plan meters beside Settings in the sidebar footer, and the popover with every limit */
-
 .usage {
   display: flex;
   flex: 1 1 auto;
@@ -24,7 +22,6 @@
 
 .usage-strip[aria-expanded="true"] { background: var(--bg-hover); }
 
-/* beside Settings in the sidebar's footer: the same half fill under a pointer */
 @media (hover: hover) {
   .usage-strip:hover { background: var(--side-hover); }
   .usage-strip[aria-expanded="true"]:hover { background: var(--bg-hover); }
@@ -54,7 +51,6 @@
   color: var(--text-dim);
 }
 
-/* the used share of the tightest limit, as a hairline under the chip */
 .usage-chip-bar {
   position: absolute;
   right: 2px;
@@ -64,7 +60,6 @@
   border-radius: var(--radius-pill);
   background: linear-gradient(to right, var(--text-dim) var(--fill), var(--border-strong) var(--fill));
 }
-
 
 .usage-chip.is-high .usage-chip-value {
   color: var(--status-blocked);
@@ -78,6 +73,24 @@
   opacity: 0.55;
 }
 
+.usage-chip.is-recorded .usage-chip-bar {
+  -webkit-mask-image: repeating-linear-gradient(to right, var(--text) 0 2px, transparent 2px 4px);
+  mask-image: repeating-linear-gradient(to right, var(--text) 0 2px, transparent 2px 4px);
+}
+
+.usage-chip.is-stale .usage-chip-value {
+  color: var(--text-dim);
+}
+
+.usage-chip.is-stale .usage-chip-bar {
+  background: linear-gradient(to right, var(--text-dim) var(--fill), var(--border-strong) var(--fill));
+}
+
+.usage-chip.is-stale .agent-mark,
+.usage-chip.is-stale .usage-chip-bar {
+  opacity: 0.55;
+}
+
 .usage-popover {
   position: absolute;
   right: var(--space-3);
@@ -87,7 +100,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  /* up to near the top of the sidebar; the rest scrolls */
   max-height: calc(var(--app-height, 100dvh) - 160px);
   overscroll-behavior: contain;
   padding: var(--space-2) var(--space-3) var(--space-3);
@@ -172,7 +184,14 @@
   color: var(--status-blocked);
 }
 
-/* Sign in again, under an expired sign-in in the popover and in Settings' account row */
+.usage-recorded {
+  font-size: var(--fs-xs);
+}
+
+.usage-recorded > span {
+  display: block;
+}
+
 .usage-sign-in-again {
   display: flex;
   flex-direction: column;
@@ -180,14 +199,11 @@
   gap: var(--space-1);
 }
 
-
-/* the in-place way out of a refused (not expired) Claude sign-in */
 .usage-offer {
   justify-self: start;
   font-size: var(--fs-sm);
 }
 
-/* label, reset time and percent on one line, the bar under them */
 .usage-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -240,6 +256,19 @@
 
 .usage-row.is-high .usage-bar > span {
   background: var(--status-blocked);
+}
+
+.usage-provider.is-stale .usage-row-label,
+.usage-provider.is-stale .usage-row-value {
+  color: var(--text-dim);
+}
+
+.usage-provider.is-stale .usage-bar {
+  opacity: 0.55;
+}
+
+.usage-provider.is-stale .usage-bar > span {
+  background: var(--text-dim);
 }
 
 @media (pointer: coarse) {

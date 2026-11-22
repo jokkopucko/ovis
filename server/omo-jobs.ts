@@ -22,20 +22,15 @@ export interface OmoJob {
   id: string;
   kind: "command" | "monitor" | "cell";
   title: string;
-  /** when its start was written */
   at: number;
-  /** a monitor that outlives restarts: listed, not counted */
   persistent?: boolean;
-  /** a monitor's description, which its notifications name it by */
   description?: string;
   ended?: { at: number; status: Exclude<OmoTask["status"], "running" | "lost"> };
 }
 
 export interface OmoJobs {
   running: readonly OmoJob[];
-  /** newest last, at most ENDED_LIMIT */
   ended: readonly OmoJob[];
-  /** Direct monitor arguments waiting for their toolResult, keyed by toolCallId. */
   monitorCalls?: readonly { id: string; title: string; description?: string; persistent: boolean }[];
 }
 
@@ -44,7 +39,6 @@ export const NO_JOBS: OmoJobs = { running: [], ended: [] };
 const RUNNING_LIMIT = 200;
 const ENDED_LIMIT = 20;
 const TITLE_LENGTH = 160;
-// anchored: an answer starts with the runtime's words; output that quotes them elsewhere is not a start
 const STARTS: ReadonlyArray<[RegExp, OmoJob["kind"]]> = [
   [/^Command running in background with ID: (bash_\d+)/, "command"],
   [/^Command is still running; auto-detached to background with ID: (bash_\d+)/, "command"],
@@ -60,7 +54,6 @@ type Row = Record<string, unknown>;
 const row = (value: unknown): Row | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Row : null;
 const words = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim().replace(/\s+/g, " ").slice(0, TITLE_LENGTH) : null;
 
-/** A runtime end word as the list says it: completed, a kill or a signal as cancelled, anything else as failed. */
 function endStatus(word: string): NonNullable<OmoJob["ended"]>["status"] {
   if (word === "completed") return "completed";
   if (word === "killed" || word === "cancelled" || word.startsWith("signal_")) return "cancelled";
@@ -83,7 +76,6 @@ function ended(jobs: OmoJobs, match: (job: OmoJob) => boolean, at: number, statu
   };
 }
 
-/** The starts and kills one answer text reports (a direct call's, or a preview inside eval). */
 function fromAnswer(jobs: OmoJobs, text: string, at: number, title: (kind: OmoJob["kind"]) => string, extra: Partial<OmoJob> = {}): OmoJobs {
   let next = jobs;
   for (const [pattern, kind] of STARTS) {
@@ -97,7 +89,6 @@ function fromAnswer(jobs: OmoJobs, text: string, at: number, title: (kind: OmoJo
 
 const fallbackTitle = (kind: OmoJob["kind"]): string => kind === "monitor" ? "Monitor" : kind === "cell" ? "Eval cell" : "Background command";
 
-/** One session record applied to the jobs so far. */
 export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
   const record = row(entry);
   if (record === null) return jobs;
@@ -125,14 +116,12 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
           const matches = next.running.filter((job) => job.kind === "monitor" && typeof description === "string" && job.description === description);
           if (matches.length === 1) next = ended(next, (job) => job === matches[0], at, endStatus(word ?? "completed"));
           else if (matches.length === 0) {
-            // A truncated transcript may omit the assistant call that supplied the description.
             const unknown = next.running.filter((job) => job.kind === "monitor" && job.description === undefined);
             if (unknown.length === 1) next = ended(next, (job) => job === unknown[0], at, endStatus(word ?? "completed"));
           }
         }
       }
     } else if (kind === "senpi-codemode:notification") {
-      // a cell's own end, and a command it left behind when it auto-detached
       for (const match of text.matchAll(CELL_END)) {
         next = ended(next, (job) => job.kind === "cell" && job.id === match[1], at, match[2] === "was killed" ? "failed" : endStatus(match[2]!));
       }
@@ -192,8 +181,7 @@ export function omoJobsAfter(jobs: OmoJobs, entry: unknown): OmoJobs {
 }
 
 /**
- * The jobs as the list shows them: running ones (oldest first), then those that ended (newest
- * first). One written before the OmO process now holding the session started (`since`) was the
+ * One written before the OmO process now holding the session started (`since`) was the
  * previous process's: it is lost, as OmO's own tasks of a dead host are.
  */
 export function omoJobTasks(jobs: OmoJobs | undefined, since: number | null): OmoTask[] {
@@ -218,7 +206,6 @@ export function omoJobTasks(jobs: OmoJobs | undefined, since: number | null): Om
   return [...running, ...[...done, ...lost].sort((a, b) => Date.parse(b.ended_at!) - Date.parse(a.ended_at!))];
 }
 
-/** How many of them count as the pane's running background work: cells are counted by omo-detached.ts, persistent monitors not at all. */
 export function omoJobCount(jobs: OmoJobs | undefined, since: number | null): number {
   return jobs?.running.filter((job) => job.kind !== "cell" && job.persistent !== true && (since === null || job.at >= since)).length ?? 0;
 }

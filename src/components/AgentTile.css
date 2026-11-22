@@ -1,5 +1,3 @@
-/* AgentTile: one coding agent as a tile (the setup guide, Add another agent, Settings) */
-/* the agents, two to a line: one installed is picked by a tap; one missing has its Install */
 .setup-found {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -9,7 +7,6 @@
   list-style: none;
 }
 
-/* a line's two tiles share its height: a name that wraps, or a version under it, lengthens both */
 .setup-found > li {
   display: flex;
   min-width: 0;
@@ -40,7 +37,6 @@ button.setup-tile {
   }
 }
 
-/* the one picked: its check and a tonal fill say so; the accent ring is the keyboard's focus alone */
 .setup-tile[aria-pressed="true"] {
   background: var(--accent-tint);
 }
@@ -79,7 +75,6 @@ button.setup-tile {
   gap: var(--space-half) var(--space-2);
   min-width: 0;
 }
-/* the product's whole name, wrapped at its spaces where the tile is narrow: it is what is picked or installed */
 .setup-found-name strong {
   min-width: 0;
   color: var(--text-strong);
@@ -93,7 +88,6 @@ button.setup-tile {
 }
 
 @media (max-width: 768px) {
-  /* two tiles to a line leave no room for the word: Install is its icon (its name stays for screen readers) */
   .setup-tile-install-label {
     position: absolute;
     width: 1px;
@@ -113,7 +107,6 @@ button.setup-tile {
   }
 }
 
-/* the ring of the PC check and of an install on its tile */
 .setup-spin {
   animation: setup-spin var(--dur-spin) steps(8) infinite;
 }

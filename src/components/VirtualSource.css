@@ -1,8 +1,4 @@
-/*
- * A virtualized source (VirtualSource): the scroll root is the one scroll owner of the viewer's
- * body, and the rows take the code tokens through the shadow CSS the component injects. The host's
- * line-height is measured once as the virtualizer's row estimate, so it is set in pixels here.
- */
+/* The host's line-height is measured once as the virtualizer's row estimate, so it is set in pixels here. */
 .virtual-source {
   flex: 1 1 auto;
   min-height: 0;
@@ -11,8 +7,6 @@
   flex-direction: column;
   color: var(--text);
   font-family: var(--font-mono);
-  /* the file viewer's source size (FileViewer.css): Settings → File text size, else the interface's;
-     the rows in the shadow root take it through --source-scale (lib/sourceTheme.ts) */
   --source-scale: var(--file-source-scale, 1);
   font-size: calc(var(--fs-xs) * var(--source-scale));
   line-height: calc(var(--fs-xs) * var(--source-scale) * var(--lh-base));

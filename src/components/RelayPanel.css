@@ -1,15 +1,12 @@
-/* what the relay is doing now is read, not a footnote: one step above a row's sentence, never above its label */
 .relay-status {
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 
-/* the relay's or the server's sentence can carry an address */
 .relay-error {
   overflow-wrap: anywhere;
 }
 
-/* the QR code beside its words, as the Phone group draws an address; one under the other on a phone */
 .relay-pairing {
   flex-direction: row;
   align-items: flex-start;
@@ -34,19 +31,16 @@
   }
 }
 
-/* a link without a code the clipboard refused: shown whole, selected, to copy by hand */
 .relay-codeless-link {
   display: block;
   overflow-wrap: anywhere;
   user-select: all;
 }
 
-/* the PC's relay id under its QR code, to compare with the one a phone shows for a mismatched key */
 .relay-pairing-id {
   margin-top: var(--space-3);
 }
 
-/* a code to type on the other device: large, monospaced, in its two groups, as the pairing code is drawn */
 .relay-typed-code {
   margin-top: var(--space-2);
 }

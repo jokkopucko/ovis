@@ -6,16 +6,9 @@ import { createServer } from "./index.ts";
 import { paneRead, paneSendKeys, paneSendText, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { ApiError, PaneLayoutSnapshot, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, SessionSnapshot } from "../shared/protocol.ts";
 
-/**
- * Contract test for the pane layout routes: /api/pane/split, zoom, swap, resize and clear, the
- * web's hands on herdr's prefix+v, prefix+z, prefix+shift+hjkl, resize mode and pane clear.
- * Against the real herdr, on a workspace of its own: every change is read back from herdr's
- * snapshot (the layout rects), never from the route's own answer.
- */
 let server: { port: number; stop: () => void };
 const stateDir = mkdtempSync(join(tmpdir(), "ovis-layout-contract-"));
 let workspaceId: string;
-/** the workspace's root pane: the left column throughout, until the swap */
 let root: string;
 
 beforeAll(async () => {
@@ -37,7 +30,6 @@ const postRaw = (route: string, body: string) => fetch(`${base()}/api/pane/${rou
 const post = (route: string, body: unknown) => postRaw(route, JSON.stringify(body));
 const code = async (response: Response): Promise<string> => ((await response.json()) as ApiError).error.code;
 
-/** the workspace's tab layout as herdr reports it now */
 async function layout(): Promise<PaneLayoutSnapshot> {
   const session = (await (await fetch(`${base()}/api/session`)).json()) as { snapshot: SessionSnapshot };
   const found = session.snapshot.layouts.find((candidate) => candidate.workspace_id === workspaceId);
@@ -49,7 +41,6 @@ const rectOf = (tab: PaneLayoutSnapshot, paneId: string) => {
   if (!pane) throw new Error(`pane ${paneId} is not in the layout`);
   return pane.rect;
 };
-/** herdr's snapshot is cross-process state: a bounded poll, never a fixed sleep */
 async function untilLayout(check: (tab: PaneLayoutSnapshot) => boolean, label: string): Promise<PaneLayoutSnapshot> {
   const deadline = Date.now() + 10_000;
   for (;;) {
@@ -97,7 +88,6 @@ describe("pane layout routes: validation", () => {
       expect(response.status).toBe(400);
       expect(await code(response)).toBe(expected);
     }
-    // nothing above reached herdr: the root pane stands alone as it was
     expect((await layout()).panes.map((pane) => pane.pane_id)).toEqual([root]);
   });
 
@@ -128,7 +118,6 @@ describe("pane layout routes: validation", () => {
 });
 
 describe("pane layout routes: herdr's layout changes", () => {
-  /** the pane split off to the root's right, then the one split off below it, then the one split off the root inside its column */
   let right: string;
   let below: string;
   let nested: string;
@@ -144,7 +133,6 @@ describe("pane layout routes: herdr's layout changes", () => {
     expect(answer.pane.workspace_id).toBe(workspaceId);
     expect(answer.pane.focused).toBe(false);
     const tab = await untilLayout((candidate) => candidate.panes.length === 2, "the second pane in the layout");
-    // beside the root, on its right, the two sharing the root's old width and its whole height
     const rootRect = rectOf(tab, root);
     const rightRect = rectOf(tab, right);
     expect(rightRect.x).toBe(rootRect.x + rootRect.width);
@@ -169,7 +157,6 @@ describe("pane layout routes: herdr's layout changes", () => {
     expect(belowRect.x).toBe(before.x);
     expect(belowRect.width).toBe(before.width);
     expect(rightRect.height + belowRect.height).toBe(before.height);
-    // the root column is untouched
     expect(rectOf(tab, root).height).toBe(before.height);
   });
 
@@ -193,7 +180,6 @@ describe("pane layout routes: herdr's layout changes", () => {
     // web's Zoom pane item relies on when it sends `on` for a pane other than the one shown alone
     expect((await (await post("zoom", { pane_id: root, mode: "on" })).json()) as PaneZoomed).toMatchObject({ zoomed: true, changed: true });
     await untilLayout((tab) => tab.zoomed && tab.focused_pane_id === root, "the layout zoomed on the root");
-    // the flag was set already, so herdr says so; the focus it moved counts as the change
     const other = (await (await post("zoom", { pane_id: right, mode: "on" })).json()) as PaneZoomed;
     expect(other).toEqual({ ok: true, zoomed: true, changed: true, reason: "already_zoomed" });
     await untilLayout((tab) => tab.zoomed && tab.focused_pane_id === right, "the layout zoomed on the right pane");
@@ -211,16 +197,13 @@ describe("pane layout routes: herdr's layout changes", () => {
     expect(answer.ok).toBe(true);
     expect(answer.changed).toBe(true);
     expect(answer.reason).toBeNull();
-    // the root's right-hand neighbour is one of the two in the right column
     const target = answer.target_pane_id ?? "";
     expect([right, below]).toContain(target);
     const tab = await untilLayout((candidate) => rectOf(candidate, root).x !== rectOf(before, root).x, "the root in the right column");
-    // the two panes changed places and nothing else moved
     expect(rectOf(tab, root)).toEqual(rectOf(before, target));
     expect(rectOf(tab, target)).toEqual(rectOf(before, root));
     const other = target === right ? below : right;
     expect(rectOf(tab, other)).toEqual(rectOf(before, other));
-    // nothing stands to the right of the right column
     const none = (await (await post("swap", { pane_id: root, direction: "right" })).json()) as PaneSwapped;
     expect(none).toEqual({ ok: true, changed: false, reason: "no_neighbor", target_pane_id: null });
   });
@@ -236,12 +219,10 @@ describe("pane layout routes: herdr's layout changes", () => {
     const tab = await untilLayout((candidate) => rectOf(candidate, root).height !== rectOf(before, root).height, "the root's height changed");
     const rows = Math.round(before.area.height * 0.25);
     expect(Math.abs(rectOf(tab, root).height - rectOf(before, root).height)).toBe(rows);
-    // the pane in the left column fills the tab's height: it has no border that could move up
     const column = tab.panes.find((pane) => pane.rect.height === tab.area.height)!;
     expect(column).toBeDefined();
     const unchanged = (await (await post("resize", { pane_id: column.pane_id, direction: "up" })).json()) as PaneResized;
     expect(unchanged).toEqual({ ok: true, changed: false, reason: "unchanged" });
-    // its right-hand border moves left, by herdr's default share: the column narrows
     const columnBefore = column.rect.width;
     const narrower = (await (await post("resize", { pane_id: column.pane_id, direction: "left" })).json()) as PaneResized;
     expect(narrower).toEqual({ ok: true, changed: true, reason: null });
@@ -249,8 +230,6 @@ describe("pane layout routes: herdr's layout changes", () => {
   });
 
   it("takes the amount on the split the border belongs to, not on the tab", async () => {
-    // a pane split off the root's right stands with it in the right column: their split's extent
-    // is the column's width, roughly half the tab's
     const column = rectOf(await layout(), root);
     const response = await post("split", { pane_id: root, direction: "right" });
     expect(response.status).toBe(200);
@@ -264,13 +243,11 @@ describe("pane layout routes: herdr's layout changes", () => {
     const moved = rectOf(tab, root).width - rootBefore;
     expect(Math.abs(moved - column.width * 0.25)).toBeLessThanOrEqual(2);
     expect(Math.abs(moved - tab.area.width * 0.25)).toBeGreaterThan(5);
-    // the border between the columns belongs to another split and stayed where it was
     expect(rectOf(tab, root).x).toBe(column.x);
     expect(rectOf(tab, root).width + rectOf(tab, nested).width).toBe(column.width);
   });
 
   it("clears the pane's screen and the pane stays", async () => {
-    // a marker the root's shell prints: on the screen before the clear, gone after it
     const marker = `ovis-clear-${Date.now().toString(36)}`;
     const untilScreen = async (check: (text: string) => boolean, label: string): Promise<void> => {
       const deadline = Date.now() + 10_000;

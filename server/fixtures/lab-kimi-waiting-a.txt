@@ -1,0 +1,35 @@
+/home/user/.dori-sa/agent-lab/run kimi
+user@host:~/scratch/lab-kimi$ /home/user/.dori-sa/agent-lab/run k
+imi
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                     │
+│   ▐█▛█▛█▌  Welcome to Kimi Code CLI!                                                                                │
+│   ▐█████▌  Send /help for help information.                                                                         │
+│                                                                                                                     │
+│  Directory: /home/user/scratch/lab-kimi                                               │
+│  Session: 4659c614-15b5-48c7-8708-4a96960463b2                                                                      │
+│  Model: claude-haiku-5-5                                                                                            │
+│  Tip: send /login to use Kimi for Coding                                                                            │
+│                                                                                                                     │
+│  ✨ Update: The new Kimi Code is already installed. Start it in a fresh terminal with kimi (verify: which kimi → ~  │
+│  /.kimi-code).                                                                                                      │
+│                                                                                                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+✨ Run the shell command: ls -la
+
+⠋ Using Shell (ls -la)
+╭─ approval ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Shell is requesting approval to run command:                                                                       │
+│                                                                                                                     │
+│  ls -la                                                                                                             │
+│                                                                                                                     │
+│ → [1] Approve once                                                                                                  │
+│   [2] Approve for this session                                                                                      │
+│   [3] Reject                                                                                                        │
+│   [4] Reject, tell the model what to do instead                                                                     │
+│                                                                                                                     │
+│   ▲/▼ select  1/2/3/4 choose  ↵ confirm                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+agent (claude-haiku-5-5 ○)  …/scratch/lab-kimi  /feedback: send feedback | /theme: switch dark/light
+                                                                                             context: 8.6% (17.3k/200k)

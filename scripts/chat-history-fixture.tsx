@@ -1,7 +1,7 @@
-/** Browser-only regression fixture, bundled by chat-history-browser-qa.ts. */
 import React, { Profiler, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { HISTORY_PROMPTS, SettingsProvider } from "../src/lib/settings.ts";
+import { terminalColors } from "../src/lib/themes.ts";
 import { PaneTerminal } from "../src/components/PaneTerminal.tsx";
 import { ChatView } from "../src/components/ChatView.tsx";
 import { useWholeOutput } from "../src/lib/useWholeOutput.ts";
@@ -14,10 +14,8 @@ import "../src/styles.css";
 declare global { interface Window { qa: { requests: { url: string; signal: AbortSignal; resolve: (text: string) => void; reject: () => void }[]; commits: string[][]; answered: string[]; target: (url: string, scope: string) => void; chat: (pane: string, machine?: string) => void; select: (pane: string, machine: string, agent?: string) => void; refresh: () => void; session: (pane: string, value: string) => void; press: (pane: string) => void; visible: (visible: boolean) => void } } }
 const nativeFetch = window.fetch;
 window.qa = { requests: [], commits: [], answered: [], target: () => {}, chat: () => {}, select: () => {}, refresh: () => {}, session: () => {}, press: () => {}, visible: () => {} };
-/** the session the roster last named per pane, as App hands it to PaneTerminal */
 const rosterSessions = new Map<string, string>();
 let rosterChanged = () => {};
-// the roster naming a pane's session (useMachineRoster), as it does before any chat renders from it
 window.qa.session = (pane, value) => {
   const named = { pane_id: pane, agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value } };
   observePaneSessions([{ id: "local", snapshot: { panes: [named] } }]);
@@ -28,8 +26,6 @@ window.fetch = (input, init) => {
   const url = String(input);
   if (!url.includes("tool-output") && !url.startsWith("/qa-output")) {
     const answer = nativeFetch(input, init);
-    // "machine/pane" of every conversation request that ended, answered or cancelled: the
-    // script waits on it before it says a late answer changed nothing
     if (url.includes("/conversation?")) {
       const parsed = new URL(url, location.href);
       const key = `${/\/api\/machines\/([^/]+)\//.exec(parsed.pathname)?.[1] ?? "local"}/${parsed.searchParams.get("pane_id")}`;
@@ -42,7 +38,6 @@ window.fetch = (input, init) => {
   return new Promise((resolve, reject) => window.qa.requests.push({ url, signal: init!.signal as AbortSignal,
     resolve: (text) => resolve(new Response(text)), reject: () => reject(new Error("late failure")) }));
 };
-/** The app's update line as App mounts it, without a server to poll: math-browser-qa.ts reads its reload line. */
 function UpdatesLine() {
   return <UpdateNotice updates={useUpdates(false)} onOpen={() => {}} />;
 }
@@ -63,11 +58,10 @@ function Fixture() {
 function Product({ pane, machine, agent }: { pane: string; machine: string; agent: string }) {
   const [, setRoster] = useState(0);
   rosterChanged = () => setRoster((value) => value + 1);
-  // a press on a tab or sidebar row (usePaneLens): the chat it opens reads a page of history
   window.qa.press = (pressed) => prefetchPaneConversation(pressed, "local", HISTORY_PROMPTS);
   return <div style={{ position: "relative", height: 600 }}><MachineContext.Provider value={machine}><Profiler id="product-pane" onRender={() => {
     window.qa.commits.push(Array.from(document.querySelectorAll(".chat-turn"), (turn) => turn.textContent ?? ""));
-  }}><PaneTerminal key={machine} paneId={pane} agent={agent} agentSession={rosterSessions.get(pane) ?? null} view="chat" terminalFontSize={14} terminalWheelSpeed={1} terminalFontFamily="" theme="dark" palette="amber" /></Profiler></MachineContext.Provider></div>;
+  }}><PaneTerminal key={machine} paneId={pane} agent={agent} agentSession={rosterSessions.get(pane) ?? null} view="chat" terminalFontSize={14} terminalWheelSpeed={1} terminalFontFamily="" colors={terminalColors("amber", "dark")} /></Profiler></MachineContext.Provider></div>;
 }
 function Root() {
   const [selected, setSelected] = useState<{ pane: string; machine: string; agent: string } | null>(null);

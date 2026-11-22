@@ -6,7 +6,6 @@
  * clipboard keeps what it had.
  */
 
-/** how long a click waits for the program's copy */
 export const OSC52_RESERVATION_MS = 1000;
 
 export interface ClipboardAccess {
@@ -15,9 +14,7 @@ export interface ClipboardAccess {
 }
 
 export interface Osc52Reservation {
-  /** Puts the text on the clipboard; settles true once it is there. Only the first call fills it. */
   fulfil(text: string): Promise<boolean>;
-  /** Gives the write up, leaving the clipboard as it was. */
   cancel(): void;
   readonly pending: boolean;
 }
@@ -46,7 +43,6 @@ export function reserveOsc52Copy(
   } catch {
     return null;
   }
-  // its rejection is the outcome when nothing fills it, not an error
   blob.promise.catch(() => {});
   const timer = setTimeout(giveUp, timeoutMs);
   return {

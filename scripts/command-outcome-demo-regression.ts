@@ -7,16 +7,10 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openLens } from "./header-lens.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// What became of a command sent from Chat, on the unmodified app over the demo's fixture transport
-// (site/demo/transport.ts tracks each send as the bridge would): the chip under the sent bubble
-// moves from accepted to done on the demo's transcript evidence, an inline `$review` to the Codex
-// pane and an unlisted `/myext run` to the pi pane get chips of their own, and a Claude `/btw`,
-// which the agent answers on its screen alone, keeps its sent row with "Runs in the terminal", the
-// transcript unchanged, a folded preview of the changed screen, and is never done. Every scenario
-// runs in a 1280×800 window and on a 390×844 phone, light and dark. Screenshots go to
-// command-outcome/ under UI_EVIDENCE_DIR (CI's uploaded folder) or else evidence/. All files and
-// HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-command-outcome-demo-"));
 const evidence = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "command-outcome");
@@ -32,24 +26,12 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = (pane: string): string => `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(pane)}`;
   mkdirSync(evidence, { recursive: true });
 
-  /** The chat lens over one pane: a pane switched away from keeps a hidden frame, so the owner tells them apart. A terminal command's peek shows the grid over it. */
   const chatStack = (page: Page, pane: string): Locator => page.locator(`.terminal-stack.is-chat:not(.is-peek)[data-pane-owner="${pane}"]`);
   const peekStack = (page: Page, pane: string): Locator => page.locator(`.terminal-stack.is-chat.is-peek[data-pane-owner="${pane}"]`);
-  /** The pane's chat log, once the chat lens shows it; the sidebar's row names its pane first. */
   const chatOf = async (page: Page, pane: string): Promise<Locator> => {
     const row = page.locator(`.pane-select[title^="${pane} —"]`).first();
     await row.waitFor({ state: "attached" });
@@ -58,7 +40,7 @@ try {
       await page.locator(`.pane-select[title^="${pane} —"][aria-current="true"]`).first().waitFor({ state: "attached" });
     }
     const stack = chatStack(page, pane);
-    if (await stack.count() === 0) await page.getByTitle(/^Chat transcript \(.+\)$/).click();
+    if (await stack.count() === 0) await openLens(page, "chat");
     await stack.waitFor();
     return stack.getByRole("log");
   };
@@ -67,7 +49,6 @@ try {
     await box.fill(text);
     await page.getByRole("button", { name: "Send message", exact: true }).click();
   };
-  /** the one chip for `text`: on the turn that records it, or on its provisional sent row, never both */
   const chipFor = (log: Locator, text: string): Locator => log.locator(".chat-turn-user").filter({ has: log.page().locator(".chat-bubble-body", { hasText: text }) }).locator(".chat-outcome");
 
   const withPane = async (browser: Browser, width: number, scheme: "light" | "dark", run: (page: Page, errors: string[]) => Promise<void>): Promise<void> => {
@@ -101,7 +82,6 @@ try {
       const shot = (name: string) => join(evidence, `${width}-${scheme}-${name}.png`);
       try {
         await withPane(browser, width, scheme, async (page) => {
-          // happy: a Claude /context is accepted, then done on the transcript, on the one bubble for it
           const claude = await chatOf(page, panes.flaky);
           const turnsBefore = await claude.locator(".chat-turn-user").count();
           await send(page, "/context");
@@ -167,14 +147,12 @@ try {
             console.log(`PASS ${label}: the row's keyboard action opens a peek that Back to Chat ends`);
           }
 
-          // an inline $review to the Codex pane, once its approval card is answered, shows its chip
           await page.evaluate(async (pane) => {
             const prompt = ((await (await fetch(`/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`)).json()) as { prompt: { id: string } | null }).prompt;
             if (prompt !== null) await fetch("/api/pane/prompt/answer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, prompt_id: prompt.id, option_index: 0 }) });
           }, panes.web);
           const codex = await chatOf(page, panes.web);
           await page.locator(".prompt-card").waitFor({ state: "detached" });
-          // the answered approval's turn ends with the push: the pane takes a message again
           await codex.locator(".chat-turn-agent").last().getByText("Pushed", { exact: false }).waitFor();
           await send(page, "Please use $review now");
           const review = chipFor(codex, "use $review now");
@@ -183,7 +161,6 @@ try {
           assert.equal(await codex.locator(".chat-bubble-body", { hasText: "use $review now" }).count(), 1);
           console.log(`PASS ${label}: an inline $review to the Codex pane shows its chip`);
 
-          // an unlisted /myext run to the pi pane: accepted, then unknown, since nothing can show its result
           const pi = await chatOf(page, panes.cli);
           await send(page, "/myext run");
           const myext = chipFor(pi, "/myext run");
@@ -193,8 +170,6 @@ try {
           await page.screenshot({ path: shot("myext-unknown"), animations: "disabled" });
           console.log(`PASS ${label}: an unlisted /myext run to the pi pane shows the unknown chip`);
 
-          // Hermes' registered informational reader still renders the actual result, not a
-          // terminal-only receipt. Dismiss affects this card alone and never sends input.
           const hermes = await chatOf(page, panes.hermes);
           await send(page, "/status");
           const result = hermes.locator(".chat-outcome-result");

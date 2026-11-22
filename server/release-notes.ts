@@ -1,18 +1,9 @@
-/** What an update brings, read from the CHANGELOG.md and release-summaries.json of the release it installs. */
 import { readSummary, RELEASES_LIMIT, type ReleaseNote, type ReleaseSummary, type UpdateNotes } from "../shared/update.ts";
 
-/** `## [0.3.52] - 2026-10-06`; `## [Unreleased]` is no release. */
 const SECTION = /^## \[(\d+\.\d+\.\d+)\](?:\s+-\s+(\S+))?\s*$/;
-/** `[0.3.52]: https://…`, the compare links under the last section */
-/** Where a section ends: the heading of any release (a pre-release, a linked one) or of Unreleased. */
 const BOUNDARY = /^## \[(?:unreleased|\d+\.\d+\.\d+[^\]]*)\]/i;
 const LINK_DEFINITION = /^\[[^\]]+\]:\s/;
-/**
- * Notes are read in a Settings box, not as the whole history: a jump over many releases names
- * the rest by count. Characters, since it bounds what is read, not what is sent.
- */
 export const NOTES_BUDGET = 48_000;
-/** Where a release tells itself as patch notes, a few short lines per language, beside CHANGELOG.md. */
 export const SUMMARIES_FILE = "release-summaries.json";
 
 function triple(version: string): [number, number, number] | null {
@@ -20,12 +11,10 @@ function triple(version: string): [number, number, number] | null {
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
-/** Positive when `a` is the later version. */
 function compare(a: [number, number, number], b: [number, number, number]): number {
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
-/** Positive when `a` is the later version; null when either is not `X.Y.Z`. */
 export function compareVersions(a: string, b: string): number | null {
   const first = triple(a), second = triple(b);
   return first && second ? compare(first, second) : null;
@@ -57,8 +46,6 @@ function sections(changelog: string): ReleaseNote[] {
     open = null;
   };
   for (const line of changelog.split(/\r?\n/)) {
-    // a release or Unreleased opens the next section; another level-two heading (`## Migration`,
-    // `## [Migration](https://…)`) belongs to the notes
     if (BOUNDARY.test(line)) {
       close();
       const match = SECTION.exec(line);
@@ -69,18 +56,10 @@ function sections(changelog: string): ReleaseNote[] {
   return found;
 }
 
-/** What a release's summary adds to an answer, as it travels. */
 function summarySize(summary: ReleaseSummary | undefined): number {
   return summary ? JSON.stringify(summary).length : 0;
 }
 
-/**
- * The sections of every release after `current`, up to `latest`, newest first. With no known
- * running version, the latest release alone. A release without a section, or with an empty one,
- * is left out, and a version the changelog names twice is told once, by its first section. A
- * release named in `summaries` carries its summary; the budget counts the sections and the
- * summaries both, and an answer names at most RELEASES_LIMIT releases: the rest are counted.
- */
 export function releaseNotes(
   changelog: string, current: string | null, latest: string, budget = NOTES_BUDGET,
   summaries: ReadonlyMap<string, ReleaseSummary> = new Map(),
@@ -105,9 +84,6 @@ export function releaseNotes(
   let used = 0;
   for (const section of wanted) {
     const size = section.notes.length + summarySize(section.summary);
-    // the newest release is always told, within the budget: its summary first, since that is
-    // what tells the release, and its notes cut at a line to the room the summary leaves; a
-    // summary that alone is over the budget is left out, and the notes get the budget
     if (releases.length === 0 && size > budget) {
       const { summary: written, ...told } = section;
       const summary = written && summarySize(written) < budget ? written : undefined;

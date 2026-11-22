@@ -27,12 +27,10 @@ describe("extractedAppDir", () => {
   });
 });
 
-// Linux's /proc, stood in for by POSIX symlinks
 describe.skipIf(process.platform === "win32")("othersRunFrom", () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-  /** a stand-in /proc: each process with its program and its parent */
   function proc(processes: Array<{ pid: number; ppid: number; exe: string }>): string {
     const root = mkdtempSync(join(tmpdir(), "ovis-proc-"));
     roots.push(root);

@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 /**
- * PTY host: runs ONE command on a real pseudo-terminal and bridges it to its parent.
- *
  * Bun.Terminal exists, but Bun 1.4.2 has no public output pause/resume API.
  * node-pty supplies that control so browser acknowledgements can stop PTY reads.
  * Keep it in Node: loading node-pty in Bun has panicked (oven-sh/bun#18546).
@@ -43,6 +41,7 @@ const rows = Number.parseInt(rowsRaw ?? "", 10);
 const env = { ...process.env, TERM: "xterm-256color" };
 delete env.OVIS_TOKEN;
 delete env.HERDR_WEB_TOKEN;
+delete env.OVIS_TEST_PTY_NO_CLOSE_DEADLINE;
 
 const term = pty.spawn(command, args, {
   name: "xterm-256color",
@@ -77,42 +76,33 @@ const EXIT_DRAIN_LIMIT_MS = 2000;
 const EXIT_HELD_LIMIT_MS = 15_000;
 /** node-pty's destroy once it asked for it: the command has exited */
 let finalRead = null;
-/** How long a command the host hung up has before the host kills it (crates/pty-sidecar's KILL_AFTER). */
 const KILL_AFTER_MS = 2000;
-/**
- * The signals this host sent the command while it still ran: one of them ending it is the host's own end
- * (exit 0, as before); any other signal is the command's, told as 128 + its number.
- */
 const sent = new Set();
 /** whether the command is still there: not yet reaped (node-pty reaps it as it exits) */
 function running() {
   try { process.kill(term.pid, 0); return true; } catch { return false; }
 }
-/** Sends the command's group `signal` as the host's own, noted only while the command still runs. */
 function endGroup(signal) {
   if (running()) sent.add(signal);
   killGroup(signal);
 }
-/**
- * A command that closed its terminal (EIO) may be dying: closing the pty here would hang it up first. As the
- * Rust host does, the close waits up to EXIT_QUIET_MS for its exit, and goes the moment it has exited; one
- * still running then is hung up by the host, and killed KILL_AFTER_MS later if it is still there, so no
- * wait is unbounded.
- */
+/** A command that closed its terminal (EIO) may be dying: closing the pty here would hang it up first. */
 let closing = null;
-/** how often a held close looks whether the command has exited */
 const CLOSING_POLL_MS = 10;
 const socket = process.platform === "win32" ? undefined : term._socket;
 if (socket) {
   const destroy = socket.destroy.bind(socket);
   socket.destroy = (...args) => {
+    // Without a test deadline, node-pty's own 200 ms destroy must not release a hold our exit check has not ended;
+    // with no hold (a clean EOF, no EIO), a destroy closes as it always does.
+    if (process.env.OVIS_TEST_PTY_NO_CLOSE_DEADLINE === "1" && !args[0] && closing !== null && !closing.done) return socket;
     if (args[0] && !finalRead && closing === null) {
       // an EIO'd pty is readable forever: reading stops, or it spins until the close
       socket._handle?.readStop?.();
-      const until = Date.now() + EXIT_QUIET_MS;
+      // Tests can require the child exit, rather than the grace deadline, to close the PTY.
+      const until = process.env.OVIS_TEST_PTY_NO_CLOSE_DEADLINE === "1" ? Infinity : Date.now() + EXIT_QUIET_MS;
       const close = () => { clearInterval(closing.timer); closing.done = true; destroy(...args); };
       closing = { done: false, close, timer: setInterval(() => {
-        // exited (and reaped) by itself: its end is its own, and nothing is left to read
         if (!running()) return close();
         if (Date.now() < until) return;
         endGroup("SIGHUP");
@@ -228,11 +218,10 @@ const stop = () => {
       // A paused reader still needs to observe EOF after the parent leaves.
       term.resume();
     } catch {
-      /* already gone */
     }
     // A child can ignore SIGHUP, and a blocked pipe must not pin the sidecar.
     setTimeout(() => {
-      if (!exited) { try { endGroup("SIGKILL"); } catch { /* already gone */ } }
+      if (!exited) { try { endGroup("SIGKILL"); } catch {} }
       process.exit(0);
     }, KILL_AFTER_MS).unref();
   }

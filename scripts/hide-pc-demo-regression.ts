@@ -7,16 +7,8 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings → Devices and PCs → Show in sidebar on the unmodified app over the demo's fixture transport,
-// at a phone's and a desktop's width. Only this disposable fixture rewrites the roster into two
-// connected PCs, the Host "Laptop" and "Work PC"; no herdr session is opened. Hiding Work PC takes
-// it out of the sidebar, the Agents list and the command palette on this device, moves the
-// selection off it, keeps the last PC shown, survives a reload, and leaves a link to its pane
-// working; Settings brings it back. The PCs list has no head: it starts right under the logo, and says
-// nothing of the PCs it hides. On three PCs at 390 and 1280, light and dark, Settings lists the hidden ones off,
-// shows one again in place, and keeps the last PC shown locked on.
-// Screenshots go to UI_EVIDENCE_DIR when it is set.
 const app = mkdtempSync(join(tmpdir(), "herdr-hide-pc-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 const patch = `(() => {
@@ -69,7 +61,6 @@ const patch = `(() => {
 let origin = "";
 const pane = encodeURIComponent(panes.web);
 const workGroup = (page: Page) => page.locator('section.machine-group[aria-label="PC Work PC"]');
-// a screenshot waits for the drawer and the sheet to finish moving, so it shows where they come to rest
 const still = (page: Page): Promise<unknown> => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
 const selection = (page: Page): Promise<string | null> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id ?? null);
 
@@ -81,7 +72,6 @@ async function open(browser: Browser, width: number, query: string, options: Ope
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone, colorScheme: options.theme ?? "light" });
   await context.addInitScript(({ roster, theme, hidden }) => {
     if (roster !== null) Object.assign(window, { hidePcRoster: roster });
-    // seeded once per page, so a reload keeps what the page itself stored
     if (sessionStorage.getItem("hide-pc-seeded") !== null) return;
     sessionStorage.setItem("hide-pc-seeded", "1");
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(theme === null ? { language: "en" } : { language: "en", theme }));
@@ -95,14 +85,11 @@ async function open(browser: Browser, width: number, query: string, options: Ope
   return { page, errors, phone, close: () => context.close() };
 }
 
-/** whatever the PCs list draws above its PCs: nothing any more, no head, no hidden count */
 const pcsHead = (page: Page) => page.locator(".pcs-sidebar > :not(.machine-list)");
 const storedHidden = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:hidden-pcs") ?? "null"));
 const group = (page: Page, name: string) => page.locator(`section.machine-group[aria-label="PC ${name}"]`);
-// the demo's timeline raises a finish droplet at its own moment; the shots are of the sidebar
 const NO_DROPLET = ".droplet { visibility: hidden !important; }";
 
-/** The sidebar in view: a phone's drawer is opened for it. */
 async function sidebar(page: Page, phone: boolean): Promise<void> {
   if (phone) {
     const toggle = page.getByRole("button", { name: "Open workspace list", exact: true });
@@ -116,15 +103,7 @@ try {
   writeFileSync(join(app, "hide-pc.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./hide-pc.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   origin = `http://127.0.0.1:${server.port}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -138,7 +117,6 @@ try {
           assert.ok(await page.locator('.agent-item[data-machine="work"]').count() > 0, "Work PC's agents are listed");
           await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "work");
 
-          // as a person does it: the gear, then Devices and PCs, on top of the pane open on Work PC
           await page.locator(".sidebar-footer-settings").click();
           await openSettingsPage(page, "Devices and PCs");
           const dialog = page.locator(".settings-dialog");
@@ -157,8 +135,6 @@ try {
 
           await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "detached" });
-          // closing Settings steps back over its history entries, onto the one that named Work PC's pane:
-          // once it has landed, the address says the pane picked meanwhile, not Work PC's
           await page.waitForFunction(() => !(history.state !== null && typeof history.state === "object" && "ovis:settings" in history.state) && !location.search.includes("machine=work"));
           await page.locator(".machine-context-name").first().waitFor({ state: "attached" });
           assert.equal(await selection(page), "local", "the selection stays off the hidden PC after Settings closes");
@@ -167,7 +143,6 @@ try {
           assert.equal(await workGroup(page).count(), 0, "a hidden PC leaves the sidebar");
           assert.equal(await page.locator('.agent-item[data-machine="work"]').count(), 0, "and the Agents list");
           assert.ok(await page.locator('.agent-item[data-machine="local"]').count() > 0);
-          // the list has no head to say it: Settings is where hidden PCs are seen and shown again
           assert.equal(await pcsHead(page).count(), 0, "nothing is drawn above the PCs");
           assert.equal(await page.locator(".machine-hidden-note").count(), 0, "no line under the PCs says it either");
           if (evidence) { await still(page); await page.screenshot({ path: join(evidence, `hide-pc-sidebar-${width}.png`) }); }
@@ -186,7 +161,6 @@ try {
           await sidebar(page, phone);
           assert.equal(await workGroup(page).count(), 0, "a reload keeps it hidden");
 
-          // a link to the hidden PC's pane still opens it, and the switch stays as it was
           await page.goto(`${origin}/?machine=work&pane=${pane}`);
           await page.locator(".conn-live").waitFor({ state: "attached" });
           await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "work");
@@ -196,7 +170,6 @@ try {
           await sidebar(page, phone);
           assert.equal(await workGroup(page).count(), 0);
 
-          // Settings shows the PC again in place, and a pane a link opened on it stays selected
           await page.locator(".sidebar-footer-settings").click();
           await openSettingsPage(page, "Devices and PCs");
           const back = page.locator(".settings-dialog").getByRole("switch", { name: "Show Work PC in sidebar", exact: true });
@@ -211,8 +184,6 @@ try {
           assert.deepEqual(errors, []);
 
           if (phone) {
-            // Settings opened from the phone's command palette takes the palette sheet's history entry over:
-            // closing it must still keep the selection the hiding moved
             await page.goto(`${origin}/?machine=work&pane=${pane}`);
             await page.locator(".conn-live").waitFor({ state: "attached" });
             await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "work");
@@ -230,7 +201,6 @@ try {
             await page.evaluate(() => localStorage.removeItem("ovis:hidden-pcs"));
           }
 
-          // a tab opened without a link restores its last selection: on a PC hidden meanwhile, it moves off it
           await page.evaluate((paneId) => {
             localStorage.setItem("ovis:hidden-pcs", JSON.stringify(["work"]));
             localStorage.setItem("ovis:selection", JSON.stringify({ machine_id: "work", pane_id: paneId }));
@@ -245,8 +215,6 @@ try {
         } finally { await close(); }
       }
 
-      // Three PCs, two hidden and a third id stored for a PC since removed: the list starts right under the logo
-      // with no head and no count, and Settings lists the hidden ones off, shows one again, and keeps the last PC shown on
       for (const width of [390, 1280]) {
         for (const theme of ["light", "dark"] as const) {
           const { page, errors, phone, close } = await open(browser, width, "", { roster: ["local", "work", "lab"], theme, hidden: ["work", "lab", "gone"] });

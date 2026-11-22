@@ -40,7 +40,6 @@ describe("worktree branch metadata", () => {
     const shell = { ...workspace("shell"), worktree: null };
     expect(worktreeRepositories([workspace("child"), workspace("other", "/other", "other"), workspace("main", "/repo", "repo", false), workspace("second"), shell]))
       .toEqual([{ repoKey: "other", workspaceId: "other" }, { repoKey: "repo", workspaceId: "main" }]);
-    // a repository with no linked worktree is read too, for its branch line
     expect(worktreeRepositories([workspace("main", "/repo", "repo", false), shell])).toEqual([{ repoKey: "repo", workspaceId: "main" }]);
     expect(worktreeRepositories([shell])).toEqual([]);
   });
@@ -133,7 +132,7 @@ describe("worktree branch metadata", () => {
     const cache = new WorkspaceBranchCache();
     cache.reconcile(workspaces);
     cache.applyListing("repo", listing([entry("child", "/repo/child"), entry("closed", "/repo/closed")]), cache.generation);
-    cache.invalidate(); // an offline or failed refresh leaves exact matches intact
+    cache.invalidate();
     expect(cache.branchesFor(workspaces).size).toBe(2);
     expect(cache.branchesFor([workspace("child", "/repo/different")]).size).toBe(0);
     expect(cache.branchesFor([workspace("child", "/repo/child", "new-repo")]).size).toBe(0);

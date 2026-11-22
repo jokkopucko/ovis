@@ -120,6 +120,24 @@ Removing that override and restarting restores the WebSocket transport. The SSE 
 available to older clients and bridge/relay consumers. A reconnect negotiates the transport again;
 no terminal input is replayed by this subscription.
 
+New clients request `compact_agents: true` on their `machine-events` subscription and
+`compact_agents=1` on `/api/machines` and `/api/machines/events`. Only these opt-in responses
+replace a snapshot's `agents` with `agent_refs`, and only where that is smaller (otherwise the
+snapshot keeps its `agents`): each row keeps its `pane_id`, agent-only fields
+and overrides, and inherits matching fields from the pane in the same snapshot. `_omit` lists
+optional pane fields that were absent from that agent. Clients restore full agent rows before
+updating application state; a restored row equals the full one after parsing, though its keys may
+come in another order, and the roster compares rows regardless of key order. Order, recency and completion counters, nulls, differing values and
+agents without a pane are preserved: a snapshot with an agent whose pane it does not list goes out
+full. `agent_refs` and a row's `_omit` are the server's alone: those a PC put in its own snapshot
+are removed from every response, compact or not, and clients expand only a snapshot with `agent_refs` and no
+`agents`. A compact snapshot a client cannot read (a reference naming no pane of its snapshot, a
+malformed `_omit`) keeps that PC's last roster, and the client reads the roster again without
+`compact_agents`. Redaction happens before compaction, and WebSocket size
+limits measure the compact frame. Legacy responses and the bridge protocol do not change;
+new clients also accept full rows from older servers. This reduces duplicate data without raising
+the machine-event backlog limit; an even larger roster can still fall back to SSE.
+
 A page takes machine events over SSE whenever its socket does not carry them: a connection that
 has not said whether it does within five seconds, a socket stopped for output (4008, which only
 reconnects on an attach), or a connection whose server sent `machine-events-ended`. Machine events
@@ -161,7 +179,8 @@ so no plugin installed there starts with the test servers, and two runs on one P
 socket and no file. The run stops its herdr servers and removes the directory when it ends, also
 when it is interrupted; `CHECK_DIR=<path>` keeps it there instead. A few lane or `check run`
 invocations may run at a time on a PC, each in a slot: a loopback port from 41737 up that the run
-listens on while it runs, so a run that died holds none. `CHECK_MAX_RUNS` sets how many (1 to 8);
+listens on while it runs, so a run that died holds none (on a self-hosted CI runner a lock file per
+port instead, in `CHECK_SLOTS_DIR`, which the kernel frees the same way). `CHECK_MAX_RUNS` sets how many (1 to 8);
 the default is one per eight cores, from 1 to 2. The contract and browser tests are bound by
 timing, so more runs side by side make them fail each other: on a 32-core PC three at once
 already lost Chromium screenshots in the browser lane, so raise it only to look for such failures. A run that finds every slot taken
@@ -170,7 +189,7 @@ first, as CI's herdr-backed lanes do. A second run in the same checkout exits at
 slots free: runs in one checkout share `dist/` and the generated types. `fast` takes no slot
 and never waits, but it claims its checkout the same way, so it and any other mode refuse each
 other there. A checkout is its real
-path, plus `RUNNER_NAME` when that is set: the self-hosted runners of one PC share a loopback and
+path, plus `RUNNER_NAME` when that is set: the self-hosted runners of one PC share the slots and
 all check out to the same path. The
 generated-types and generated-themes checks (`bun run generate:types --check`,
 `bun run generate:themes --check`) are read-only, but `test:unit` includes
@@ -253,6 +272,9 @@ bun scripts/sticky-modifiers-regression.ts # mobile held keys through real legac
 bun scripts/key-bar-customization-demo-regression.ts # mobile key layout, handle drag/edge scrolling, cancellation, saved combinations and migration on demo fixtures
 bun scripts/key-bar-hold-repeat-regression.ts # phone touch key-bar taps, holds (arrows and editing keys), swipes and sticky Ctrl on demo fixtures
 bun scripts/settings-pages-demo-regression.ts # every Settings page on a 390px and a 320px phone, and Back stepping out of the dialog
+bun scripts/settings-palette-search-demo-regression.ts # Settings found through the command palette: 46 searches in English, Korean, Japanese and Chinese open their page and group at 1440 and 390, and no earlier search steers a later opening
+bun scripts/settings-rows-demo-regression.ts # what Settings' pages hold: the dialog's own search, folded groups, merged rows and ↺, a row's sentence (a resting mouse, keyboard focus, Escape, a phone's tap, a watching device), the account's PCs and sign-in, the welcome's sign-in, About and the Alerts chips; the OpenAI key's group on React's development build too
+bun scripts/settings-segmented-demo-regression.ts # Settings' segmented controls by their boxes, on a phone at 390, 360 and 320px in English, Korean, Japanese and Chinese, at the largest and the compact text, with more contrast, and at 1440: what a chosen option draws stays inside its track, it holds its own label, and no label leaves its option or lies on its neighbour; a tap never changes how many rows a control takes, and no fact beside its label (Devices, Access) is squeezed narrower than its text
 bun scripts/agent-entry-points-demo-regression.ts # Add another agent… in New workspace and New worktree, Settings' agent list (installed, the tiles to install) and Open setup guide, and none of it on a watching device, at 1280 and 390
 bun scripts/terminal-served-font-regression.ts # a Terminal or Chat font only the PC has, served from the state folder's fonts/, at 1280 and 390, light and dark: the terminal is measured from it and attached once; no font named asks nothing
 bun scripts/interface-font-demo-regression.ts # Interface font at 390 and 1440: System and a typed list lead --font-ui, a reload keeps it, Default restores it; the message box takes the Chat font
@@ -263,11 +285,12 @@ bun scripts/docked-file-link-demo-regression.ts # File viewer on panel at 1280: 
 bun scripts/files-documents-demo-regression.ts # Files' Documents tab, always there (a stored old off ignored), at 1280 and 390, light and dark: it lists the pane folder's Markdown files newest first, the filter narrows them and Escape clears it, a row opens the file viewer, in the dialog, beside the pane at its narrowest and on a phone's sheet with the four tabs on their own row, and closing the file after a reload under the palette goes back to the pane
 bun scripts/palette-local-page-demo-regression.ts # Web links on In the app, at 1280 and 390, light and dark: the palette opens a page this PC serves by its typed address (`localhost:<port>`) beside the pane, a phone's popup closes with Back, and Close page over two stacked pages closes it, as it does after a reload under the palette, and so does closing a file docked over them; off by default, the palette offers no page
 bun scripts/theme-first-paint-demo-regression.ts # the saved theme in every painted frame before and after the app starts, root and demo builds under the app's CSP
+bun scripts/theme-file-demo-regression.ts # Settings → Appearance → Theme file at 390 and 1440, dark and light: the example of docs/themes.md is imported and drawn in the colors derived from it, the boot script alone draws it on the next launch, a built-in card takes the side back, a Base16 YAML scheme goes to its own side, a file that is no theme changes nothing, and Remove restores the built-in theme
 bun scripts/design-gate-qa.ts --out <dir> # the design gate on demo fixtures: every main surface and Settings page at 1440 and 390, light and dark, measured for contrast, target size, names, focus rings, truncation, reduced motion, overflow and overlap, font size and where PC load shows; report.json and a picture per visit, and with --baseline <report.json> it fails only on failures the baseline lacks
 bun scripts/boot-loading-demo-regression.ts # index.html's loading spinner while the app's script is held, as on a slow link: centred, stepped, still under reduced motion, gone with the app's first frame (#2329)
 bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513), and again with each lookbehind handed to RegExp as text refused, as Safari before 16.4 refuses it; the build turns every regular expression with one into such a call (#2534)
 bun scripts/alert-webhook-demo-regression.ts # Settings → Alerts → Also send to on demo fixtures: a Discord webhook saved and shown only masked, a test sent, Telegram's chat id, Off removing it, at 390 and 1280, light and dark
-bun scripts/push-health-demo-regression.ts # the alerts health notice with a stand-in PushManager: a retired subscription told once over the pane and in Settings, repaired once; a refusal, a key mismatch, denied, unsupported, offline, loading and a watching device's refused test, at 390 and 1440, light and dark, Korean at 390
+bun scripts/push-health-demo-regression.ts # the alerts health notice with a stand-in PushManager: a retired subscription told once over the pane and in Settings, repaired once; a refusal, a key mismatch, denied, unsupported, offline, loading and a watching device's refused test, at 390 and 1440, light and dark, Korean at 390; Japanese at the largest interface text on a 320 px phone keeps Close on the screen (#3498)
 bun scripts/install-hint-demo-regression.ts # the add-to-home-screen line on a phone's browser tab: iPhone steps with the share glyph, Android's menu item then one-tap Install, dismissal and install remembered, none in the home-screen app or on desktop, light and dark, Korean
 bun scripts/device-security-demo-regression.ts # Phone & devices on demo fixtures: revoking every device (the caller's warning, the confirmation, a refused write, a watching device) and the line every window gets when a device pairs
 bun scripts/chat-browser-qa.ts  # chat lens end to end
@@ -278,6 +301,7 @@ bun scripts/pane-input-focus-demo-regression.ts # the input focus shortcut again
 bun scripts/mirror-scroll-demo-regression.ts # fixed mirror wheel/touch, native history, no guessed program input, observe guards
 bun scripts/terminal-images-demo-regression.ts # Settings -> Pictures in the terminal: a picture is drawn, goes while off, and on again the next one is drawn only where it was printed
 bun scripts/core-history-scroll-demo-regression.ts # a herdr-core server's history kept in xterm: wheel and swipe scroll it, a replay erases the last one, nothing typed; herdr's own keeps none (#2663)
+bun scripts/core-kept-grid-demo-regression.ts      # a herdr-core pty kept at another device's size is drawn in its grid, so a redraw leaves no copy of the old frame; back in focus the page sizes it again (herdr's own server: the page keeps its grid)
 bun scripts/codex-drag-demo-regression.ts         # a plain drag in a Codex pane stays Ovis's selection unless Settings' Codex panes is on; then it is Codex's, with a Shift+drag note on herdr (#2384)
 bun scripts/terminal-ghostty-demo-regression.ts # libghostty draws every pane: a herdr-core pane from its first byte, a Kitty picture placed and deleted, typing still through xterm, herdr's own panes too; xterm draws an iTerm2 picture by itself
 bun scripts/mirror-fold-demo-regression.ts # a mirror, or an attached pane a phone watches at a wider grid, folded whole (portrait, landscape), Original width from the pane menu, driving phones and desktops unfolded
@@ -298,7 +322,7 @@ after a herdr restart. It prints the time each step took. `KEEP=1` leaves the co
 
 Tests run against a herdr session of their own, `ovis-test`. The first run starts a headless `herdr --session ovis-test server` and later runs reuse it, so test workspaces never show in the herdr you work in (`scripts/test-herdr.ts`). Stop it with `herdr --session ovis-test server stop`. `HERDR_TEST_SESSION` picks another name, and `HERDR_TEST_LIVE=1` runs against `HERDR_SOCKET` or your default session instead.
 
-Browser checks launch `CHROME_PATH` when it is set, else Google Chrome at `/opt/google/chrome/chrome` where that exists, else the lockfile's Playwright Chromium (`scripts/chrome-path.ts`; install it with `bun node_modules/playwright-core/cli.js install chromium`). After a herdr upgrade, refresh the generated wire types with `bun run generate:types --refresh` (and `--check` to verify). When ci.yml's `herdr-core-live` job pins a new `HC_VERSION`, refresh herdr-core's with `OVIS_HC_BIN=<that hc> bun run generate:types --refresh-hc`: the live job fails while the snapshot differs from what that hc's `hc schema` prints.
+Browser checks launch `CHROME_PATH` when it is set, else Google Chrome at `/opt/google/chrome/chrome` where that exists, else the lockfile's Playwright Chromium (`scripts/chrome-path.ts`; install it with `bun node_modules/playwright-core/cli.js install chromium`). After a herdr upgrade, refresh the generated wire types with `bun run generate:types --refresh` (and `--check` to verify). ci.yml's `herdr-core-live` job runs the live file on every hc in its `HC_RELEASES` list, one `version sha256` line per hc. When a newer hc than the snapshot's is added there, refresh herdr-core's with `OVIS_HC_BIN=<that hc> bun run generate:types --refresh-hc` (inside an isolated environment, as `hc schema` starts a core): the schema case fails on that hc until the snapshot equals what its `hc schema` prints. On an older hc of the list the same case checks only that every method and feature the generated types rely on is there.
 
 `HEADED=1 bun scripts/chat-browser-qa.ts` opens its owned native-transcript fixture in a
 visible Chrome window. Its detected Codex fixture process keeps the rollout open; no
@@ -314,46 +338,56 @@ bun scripts/unconfirmed-input-demo-regression.ts # typing the socket took but th
 bun scripts/terminal-keyboard-demo-regression.ts # the key bar's Show/Hide keyboard control: current-mode focus, measured state, Keyboard only from the key bar (inputmode=none until Show), Fold the key bar (the row folded under the line, Terminal keys, held modifiers let go on a fold), composition refusal, observe/held/offline/ended; `--serve-ios` only serves the build on loopback for a Simulator
 bun scripts/droplet-demo-regression.ts        # real-app alerts below the header, keyboard and landscape
 bun scripts/phone-safe-area-demo-regression.ts # sheets, dialogs and menus clear of emulated safe-area insets: upright, short and landscape
+bun scripts/phone-back-demo-regression.ts # a phone's Back at 390 and on its side (844x390): it closes the drawer, a row's menu over it, New workspace and the lists inside it one at a time, Files after a file closed by its X or by Back and Add PC opened as Settings closed, never the app or the pane with them open, and no history entry is added with no tap behind it
 bun scripts/chat-greeting-demo-regression.ts  # an empty chat's greeting: centred on a desktop, docked on a phone
 bun scripts/reply-comments-demo-regression.ts # comments on a reply (#511): the floating Comment moves nothing, one chip, the next message carries them for an agent alone, a slash command leaves them; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
 bun scripts/chat-select-quote-demo-regression.ts # Quote on a chat selection: Quote first and Comment second, the words go in the message box as a `> ` quote after the draft, it takes the keyboard, quotes stack, nothing is sent until Send, then for an agent alone; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
 bun scripts/chat-selection-turn-end-demo-regression.ts # a selection in progress while the agent's turn ends under it (#2650): a bare press and a drag at 1280 and a standing touch selection at 390, in a later reply and in the ending turn below its folding work, keep the words still in every painted frame and take exactly them; the chat is back at its end once the selection goes
 bun scripts/chat-quote-selection-end-regression.ts # Quote and Comment on a triple-click and a drag past a reply's last word (Claude and Codex), quoting the words alone; a selection from a user message or another reply still offers nothing; 1280 and 390
 bun scripts/diff-line-notes-demo-regression.ts # a note on a diff line (#1603): hover +, arrow keys and Enter, a tap and a 44px Add a note; it waits with the reply comments and goes first in the next message for an agent alone; too long is refused; no agent says why; 1280 and 390, Korean, Codex palette in UI_EVIDENCE_DIR
-bun scripts/composer-fit-demo-regression.ts   # one Send/Stop control, pending Send now actions, context/label fit and Chat font sizing
+bun scripts/composer-fit-demo-regression.ts   # the message box's status row: one Send/Stop control, pending Send now actions, context/label fit and the quota
+bun scripts/composer-send-demo-regression.ts  # sending from the message box: the send key, an immediate message's paste framing, held Send receipts, and Send or a drop while the keyboard composes a word
+bun scripts/composer-draft-demo-regression.ts # the draft in the message box: upload failure alerts, the agent's suggestion, skill completion, Chat font sizing, and its height, wrapping, zoom and scrolling
 bun scripts/plan-chip-demo-regression.ts      # the plan chip's step in progress: one row at 390 and 1440, cut when long, with tasks, the list's read states, offline and in a split, Korean too
 bun scripts/held-rows-demo-regression.ts      # held messages: the fold under an approval card, its button, a row's error
 bun scripts/chat-working-line-demo-regression.ts # the Working head: none before a working pane's first read, none under an answer drawn 300 ms or 1.5 s before the pane rests or read in with the last answer's start time or drawn while blocked, a finished turn not reopened when the agent begins another by itself, a turn kept at work until its answer is read after herdr rests, and an empty chat's greeting kept through a /clear's short working status
+bun scripts/sidebar-scrollbar-grip-demo-regression.ts # the sidebar's resize grip over a list's drawn scrollbar at 1440, light and dark: a drag on the scrollbar scrolls the list and resizes nothing, the strip beside it resizes, nothing moves
 bun scripts/sidebar-split-demo-regression.ts # PCs/Agents height split at 390 and 1280, both orders, light and dark: default, drag, per-order persistence, reset, keyboard and snap-folds (Agents only; the PCs stop at a row), list scrolling and containment, touch target and a short-window clamp; synthetic screenshots in UI_EVIDENCE_DIR
 bun scripts/sidebar-split-access-demo-regression.ts # divider review regressions: filter context and focus return, forced-colors focus, short folded phone windows, a drag or Home to the PCs' top never folding them, click-to-focus, live drag percentage, pointer ownership and cancellation, held-snap regrouping and two-line Agents minimums in both densities/orders; synthetic demo only
 bun scripts/sidebar-peek-demo-regression.ts # Settings → Show the sidebar on hover (#2588): off by default; on, the collapsed sidebar's toggle hover shows it over the pane at 1280 without moving the pane or the focus, the trip in keeps it, a row opens its pane, a field focused by keyboard and a row dragged in it hold it, an empty filter's Escape and leaving or Escape hide it, a click keeps it open; a phone's drawer unchanged at 390; light and dark screenshots in UI_EVIDENCE_DIR
-bun scripts/sidebar-heads-demo-regression.ts # no PCs head (also for a lone Host), and the Agents head counts and always shows its caret, open and folded, in both orders; a PC header's agent count traded for its actions on hover and keyboard focus, actions always under a finger, a press on the name folding it; folded PCs one row each; each list fading only at an edge with rows past it, none in forced colors; synthetic screenshots at 390 and 1280 in UI_EVIDENCE_DIR
+bun scripts/sidebar-heads-demo-regression.ts # no PCs head (also for a lone Host), and the Agents head counts and always shows its caret, open and folded, in both orders; a PC header's agent count traded for its actions on hover and keyboard focus, actions always under a finger, a press on the name folding it; a phone's drawer (360 and 390) starting a workspace from each PC's own +, the header's last control, on its rows' state column with the fold on their ⋯, none in its top row, and a + that is off at 3:1 or more in every theme entry, under a finger and on a hybrid device; folded PCs one row each; each list fading only at an edge with rows past it, none in forced colors; synthetic screenshots at 390 and 1280 in UI_EVIDENCE_DIR
 bun scripts/sidebar-activity-demo-regression.ts # Agents order Activity and pins: blocked pinned, recency, Pin agent / Unpin agent and Pin workspace / Unpin workspace from a right-click and the context-menu key, the ⋯ on a phone, and a finish opened here drawn as ready until the next one
+bun scripts/inbox-mode-demo-regression.ts # the agent inbox as a mode of the app, in light and dark. At 390: More's Open agent inbox and the drawer's foot row, the list (no title, the round controls, 80px rows, each state's mark, the filter's sheet, search), a thread with its prompt card and the terminal behind the monitor button, Back keeping the filter and scroll, Back to Ovis, the system Back and Forward, reloads, cold addresses, New workspace, a watching device, Settings → Start in the agent inbox on a phone, the keys the shell withholds, Keep screen on, finishes under the list, two PCs. At 1440 and 1920: the list beside the thread at the sidebar's width with the pane and the terminal as wide as in the classic app, the chip and the round controls on one line, each side's More, a narrowed window. Then once each, in two scripts of their own so each part fits the browser lane's limit (scripts/inbox-mode-panes-demo-regression.ts up to the system Back with a thread's More open, scripts/inbox-mode-rail-demo-regression.ts from a gone pane's address on): no size sent to a pane's pty by entering the mode or leaving it from the list (a phone, a wide window, one with the classic sidebar collapsed), the two sizes a thread's terminal asks for with the classic sidebar collapsed, a phone that left the mode stays out of it over a reload, the focus after Back to Ovis, the palette from More, the first paint of a cold load, the pressed fills, the rows under a scrollbar that takes room, which waits a row times, the list's word while the connection is lost, entering with a file open, the system Back with More open, an address whose pane is gone, the Ovis mark at the sidebar's head as a way in, and the classic app and the mode as one place (the thread, its draft, both scrolls and the filter over Back to Ovis, the way in again and a reload); screenshots in UI_EVIDENCE_DIR
+bun scripts/sheet-outside-tap-demo-regression.ts # a phone's sheets with real touch in an Android WebView's shape: a tap on the dimmed page above the inbox list's More and filter sheets, and the classic More over a pane, closes the sheet and every event of it lands on the scrim, no row or pane behind; Settings above the list closes alone too
 bun scripts/hide-pc-demo-regression.ts       # Remote PCs → Show in sidebar at 390 and 1440 on two demo PCs: a hidden PC leaves the sidebar, Agents and palette, the selection moves, the last PC stays, a reload keeps it, its link still opens, Settings shows it again; on three PCs at 390 and 1280, light and dark, no PCs head or hidden count, the list starting the section, and Settings listing the hidden ones off, showing one again and keeping the last PC shown on
-bun scripts/pc-load-demo-regression.ts       # Remote PCs → PC load in the sidebar on three demo PCs at 390 and 1280: on by default, red from 85%, none for a herdr-core machine, no ask while the drawer or list is out of view, off in its own key; the meters fit a 240px sidebar; screenshots light and dark in UI_EVIDENCE_DIR
+bun scripts/pc-load-demo-regression.ts       # Devices and PCs → PC load in the status bar on three demo PCs at 390 and 1280: on by default, the selected PC's load in a desktop's status bar, none in the sidebar or a phone's drawer, none for a herdr-core machine, no ask while off, the choice in its own key; screenshots in UI_EVIDENCE_DIR
 bun scripts/sidebar-filter-demo-regression.ts # the roster's label filter on two demo PCs: fuzzy matches with their ancestors, the selection kept as context, pins and folds untouched, a live and an offline roster, the drawer and a reload clearing it; screenshots at 390 and 1440 in UI_EVIDENCE_DIR
 bun scripts/sidebar-branch-line-demo-regression.ts # herdr's branch line: a repository and an unmarked git folder say their branch under the name, worktrees and folders outside git stay one line, desktop and phone, dark and light
 bun scripts/agent-lock-demo-regression.ts # Lock agent on a pinned Agents row (#2432): only a pinned row locks, a locked one keeps its pin, draws a lock and its tab offers no Close tab; Unlock brings Unpin back; 390 and 1280, light and dark
 bun scripts/agent-groups-demo-regression.ts # Named agent groups (#2431): a row's menu moves it into a group, drawn under its own heading with its count, which folds it; New workspace offers the groups; 390 and 1280, light and dark
+bun scripts/agent-state-groups-demo-regression.ts # Group agents by state (#3505): a heading folds its group by click, Enter and Space, keeps its count and stays folded across a reload, the filter opens every group, a watching device folds its own; a row says how long its agent has been in its state, from a kept stamp that carries herdr's counter (one without says none) and from a change in sight, and a read finish keeps it; on Two lines a row with a time is drawn as a row without one; 390 and 1280, light and dark
 bun scripts/sidebar-tokens-demo-regression.ts # herdr plugin tokens on agent rows: a dim line of their own on One line and Two lines, cut with the whole text in the tooltip and a phone's sheet, as text, following herdr's `$name` rows, and changing live
 bun scripts/sidebar-context-ring-demo-regression.ts # Settings → Context left on agent rows (#1305): off by default; on, the composer's context ring, words and 20% threshold on the rows whose window is known, the row's height kept, following the roster; 390 and 1280, light and dark
 bun scripts/sidebar-background-workspaces-demo-regression.ts # Settings → Background workspaces apart (#770): off keeps herdr's order; on, workspaces tagged role=background stand after the others under a folded heading with their count, a tagged worktree stays with its repository, the open one and a question stay in sight, the fold kept per PC; 390 and 1280, light and dark
 bun scripts/agent-helpers-fold-demo-regression.ts # Settings → Fold helpers under their agent (#772): off by default; on, an agent's helpers fold under a counted line that keeps a blocked helper in sight, opens and stays open on this device, and gives way to the filter; 390 and 1280, light and dark
 bun scripts/sidebar-selection-contrast-demo-regression.ts # the selected workspace and agent rows in every theme entry, selected, hovered and focused: the fill alone with no leading stroke (its contrast recorded), every text at 4.5:1, a Highlight bar at 3:1 in forced colors; the table and the Codex shots at 1280 and 390 in UI_EVIDENCE_DIR
 bun scripts/pane-mute-demo-regression.ts    # Mute alerts from an agent's row menu: one shared list for push, droplet, chime and tab notification, two tabs of one server, a second PC's same-named pane, an older server and a watching device
+bun scripts/pane-mute-captures-demo-regression.ts # with UI_EVIDENCE_DIR, every state of Mute alerts at 1440 and 390, dark and light, and Korean on a phone; with none it says so and runs nothing
 bun scripts/prompt-dock-demo-regression.ts    # the prompt card docked over the input card: its place, its height on a short phone, the grip, a typed pick
 bun scripts/plugin-actions-demo-regression.ts # a plugin action that ends after the server stopped waiting: the late failure said, a traceback's height on a phone with its keyboard up
-bun scripts/background-agent-detail-demo-regression.ts # a running Claude subagent's detail sheet from the background-task list on demo fixtures: open, Refresh, Escape, a phone's Back, focus return, late answers dropped, and the unsupported and older-bridge notes
+bun scripts/background-agent-detail-demo-regression.ts # a running Claude subagent's detail sheet from the background-task list on demo fixtures: open, Refresh, Escape, a phone's Back, focus return, late answers dropped, and the unsupported note; 1440 and 390, dark and light
+bun scripts/background-agent-states-desktop-demo-regression.ts # the states a read of that detail can end in (loading, empty, cut, gone, moved, offline, an older bridge, a failed Refresh): what each says and what to do next; 1440 dark here, 390 light in -states-phone- and the same in Korean in -states-korean-
 bun scripts/font-swap-demo-regression.ts      # the app's faces arriving late on a slow link: a reader at the end of a chat stays there, a tab strip the user scrolled stays put
 bun scripts/narrow-pane-demo-regression.ts    # a split pane under 80 columns: the smaller font, a zoom, and a pane no font can bring to 80
 bun scripts/agent-skill-menu-demo-regression.ts [agent …] # each agent's `/` (and `$`) skill menu, its origin groups and its skill chips at 1280 and 390px, one case file per agent in scripts/skill-menu-cases/, screenshots in evidence/agent-skill-menu/<agent>/
 bun scripts/install-state-demo-regression.ts  # Install app against a real CDP install on a throwaway profile and HOME: never in the sidebar; Settings > Install shows the help or the prompt before, Installed in the app window and a tab of its origin, the help again after uninstall
-bun scripts/terminal-paste-insert-demo-regression.ts # a phone's Paste key into the terminal's input line and Insert without Enter on the demo shell: the caret, a held or refused clipboard read, the acknowledged clear, an older bridge; with UI_EVIDENCE_DIR, every state at 390 and 1440, light and dark, and Korean
+bun scripts/terminal-paste-insert-demo-regression.ts # a phone's Paste key into the terminal's input line and Insert without Enter on the demo shell: the caret, a held or refused clipboard read, the acknowledged clear, an older bridge; with UI_EVIDENCE_DIR, every state on a light phone and a light desktop
+bun scripts/terminal-paste-insert-variants-demo-regression.ts # with UI_EVIDENCE_DIR, every state of the same on a dark phone, a Korean phone and a dark desktop; with none it says so and runs nothing
 bun scripts/link-menu-demo-regression.ts       # a long press on a chat link in the Android app: Copy link, Open link and, where the WebView shares, Share link; a tap, other words, a mouse's menu, a swipe and a browser keep their own; with UI_EVIDENCE_DIR, the sheet at 390 in English and Korean
 bun scripts/external-link-tab-regression.ts  # the app's link opener in Chromium on loopback pages: with Reuse tab for external links on, a second link replaces the first one's tab; off, each gets its own tab with no opener; no referrer either way
 ```
 
-`FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback; they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
+`FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback with `serveDemo` (`scripts/demo-server.ts`, which `scripts/conventions.test.ts` makes every new runner use); they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
 
 ## Pi session labels
 
@@ -740,10 +774,14 @@ verification file, the installers, the favicons and the demo. It writes no sitem
 on `main`, or on manual dispatches from `main`. A completed CI run only builds and deploys when it
 succeeded for a push from this repository; PR runs and forks cannot publish. It builds that CI run's
 head SHA without running validation again. Manual dispatches run reusable CI validation and the site
-build in parallel against the dispatch SHA, and deployment requires both to succeed.
-Deployments are serialized. Immediately before deploying,
-the workflow checks that the validated SHA is still the latest `main` commit; it fails closed if it is
-stale or that check cannot be completed. This does not change the separate Release workflow.
+build in parallel against the dispatch SHA, and deployment requires both to succeed. Every job of the
+run, that validation's included, runs on GitHub's runners and restores no Actions cache
+([Security model](../scripts/self-hosted-runner/README.md#security-model)); a manual run takes about
+as long as a hosted CI run, about 15 minutes.
+Deployments are serialized. A `current` job, with no environment, first checks that the validated SHA
+is still the latest `main` commit: when `main` has moved on, the run deploys nothing, records no
+deployment and ends green with a notice. The deploy job checks again immediately before deploying and
+fails if `main` moved on in between; both fail closed when the check cannot be completed. This does not change the separate Release workflow.
 The standalone `main` CI supplies that validation. Its push runs share one concurrency group: the
 running one finishes, and a newer push cancels the one still waiting, so a burst of merges runs
 main's checks at most twice and the newest run covers the merges in between. The Website workflow
@@ -795,11 +833,77 @@ after changing the staged session. Files, images, push and remote PCs are not pa
    Release run would then ask for a follow-up PR that raises the number again and a new tag.
 4. Run **Actions → Release → Run workflow**, select `main`, and enter `X.Y.Z` without `v`.
    The CLI equivalent is `gh workflow run release.yml --ref main -f version=X.Y.Z`.
+   Tick **revalidate** (`-f revalidate=true`) to run the whole CI in the Release run even when
+   main's own CI run already passed the commit. Run it once main's CI run of the release commit is
+   green and validation takes about four minutes (Fast checks alone); run earlier, it waits for that
+   run first.
 
-The workflow validates metadata, then runs the same unit, integration and browser checks
-as PRs against the exact `main` commit selected when the run starts. Only after all checks
-pass does it create the tag and GitHub release. A failed validation creates neither. Beside the
-checks it builds the Rust PTY host (**Rust PTY host binaries**, `.github/workflows/pty-sidecar.yml`):
+The workflow validates metadata, then requires the same unit, integration and browser checks
+as PRs to have passed on the exact `main` commit selected when the run starts. Only after that
+does it create the tag and GitHub release. A failed validation creates neither.
+
+The push to `main` already ran those checks on that commit, so the Release run does not run all of
+them a second time when main's run is green (`.github/workflows/release-validate.yml`). Its first
+job asks `scripts/release-ci-reuse.ts`, which says yes only when all of this holds:
+
+- there is exactly one push run of `ci.yml` on `main` for that commit, in this repository (a pull
+  request's run, a manual run and a fork's run never count);
+- it completed with success, on its first attempt or after one rerun;
+- every job of `ci.yml` is in it and passed: a failed, cancelled, skipped or missing job is a no,
+  whatever ci.yml's three required checks say.
+
+A run still going is waited for, at most 40 minutes (main's run takes 15 to 30) and only while
+none of its jobs has ended without passing. Anything else is a no at once: no run for the commit,
+a run that waits behind another run of `main`, a third attempt. An answer from GitHub that cannot
+be read is asked for twice more, five seconds apart, and is a no after the third. On a no the
+Release run runs the whole CI itself, as it did before, and with **revalidate** it always does.
+
+A release that takes main's run still runs Fast checks itself, always on GitHub's runner (**Fast
+checks (GitHub-hosted)**, the steps of `ci.yml`'s Fast checks). Main's run ran them on the
+self-hosted PC, where some unit tests skip themselves: the runner's container has no `pwsh`, no
+`setfacl` and no process of another user. Run again on GitHub's runner, those tests gate every
+release, and so does any other test that container comes to skip. The job starts with the question
+about main's run, not after its answer, so its minutes do not come on top of a wait. When the
+answer is no, `ci.yml` runs Fast checks of its own and this job's outcome is not read: it may fail
+without failing the run.
+
+The **Verdict** job then names what validated the commit: `ci` when the whole CI passed in the
+Release run, or `main-run-<id>` when main's run was verified and Fast checks passed in the Release
+run. The publish job refuses to tag without that name: a job that was skipped, failed or cancelled
+can stop a release but never pass one. The run's summary says which it was and why.
+
+A release validated by main's run (`main-run-<id>`) is made of these checks of its commit:
+
+| Check | Ran in | On |
+| --- | --- | --- |
+| Version, notes, unused tag, release guards for the whole tree (preflight) | the Release run | GitHub's runner, or the self-hosted PC when `CI_SELF_HOSTED_LABELS` holds labels |
+| Fast checks | the Release run, and main's run | GitHub's runner, and the self-hosted PC |
+| Rust PTY host build, with the crate's tests and the PtySession checks on the built Linux binaries | the Release run | GitHub's runners |
+| Integration tests, both Browser regression jobs | main's run | the self-hosted PC, unless the runner variables keep `main` on GitHub's ([Self-hosted runner](#self-hosted-runner)) |
+| herdr-core live contract | main's run | the self-hosted PC, unless the runner variables keep the light jobs on GitHub's |
+| Native Windows install, Native macOS session identity, Rust PTY host | main's run | GitHub's runners |
+
+Main's Integration tests and Browser regression jobs did not each build the client they tested:
+on the self-hosted PC they restore `dist/` from the runners' build cache, from the entry of that
+commit, which the first job of the same run to build it wrote (Fast checks, as a rule). The cache
+keeps a build under the run whose job handed it in, and a job reads only its own run's entries, so
+the `dist/` they tested was built by main's run, never by another run (a pull request's, say). An
+entry is named after the commit and everything else the build reads, and a restore checks every
+file's SHA-256
+(`scripts/build-cache.ts`, [the runner's README](../scripts/self-hosted-runner/README.md#build-cache)).
+A release validated in its own run (`ci`) never reads that cache: every job of it builds.
+
+Nothing is tagged unless the Verdict job passed. When a Release run stops there, or ends without
+having created the tag for any other reason, run Release again with **revalidate**: that run
+validates the commit by itself and takes nothing from main's run.
+
+**Actions → Release validation → Run workflow** from `main` (`gh workflow run
+release-validate.yml --ref main`) is a dry run of that decision for main's newest commit. It
+tags and publishes nothing. Run it once main's CI run of that commit is green to see a release
+take it and run Fast checks on GitHub's runner; when the answer is no, or with
+`-f revalidate=true`, it runs the whole CI as a release would.
+
+Beside the checks it builds the Rust PTY host (**Rust PTY host binaries**, `.github/workflows/pty-sidecar.yml`):
 static Linux x64 and arm64 binaries, a universal macOS one, `ovis-pty-sidecar.json` (the version,
 the `crates/pty-sidecar` git tree they were built from, and each file's SHA-256) and `SHA256SUMS`,
 all attached when the release is created, so no tag is seen without them. `bun
@@ -807,8 +911,77 @@ scripts/pty-sidecar.ts install` (herdr's plugin build, each update installed fro
 `install.sh`) puts the binary for its PC in `bin/ovis-pty-sidecar` only when the release's crate
 tree matches the checkout and the SHA-256 matches; otherwise that install runs the Node sidecar where
 the PC has Node, and mirrors its panes where it has none.
-A release without them gets them from **Actions → Attach the Rust PTY host** with its tag. Then it
-attaches the signed Ovis for Mac `Ovis.dmg` to the release, or skips that with a notice while the
+A release without them gets them from **Actions → Attach the Rust PTY host** with its tag.
+
+It also builds the server as one compiled binary per platform (`server-binary`, on the same runners as the
+rest of the release, `bun scripts/build-server.ts release`): `ovis-server-linux-x64`, `-linux-arm64`,
+`-darwin-arm64`, `-darwin-x64` and `-windows-x64.exe`, and the built client the installers unpack beside the binary,
+`ovis-dist.tar.gz` (from `bun run build`), with `ovis-server.json` (the version, the git trees of `server/` and
+`shared/`, each file's SHA-256 and size, and those of the three Rust PTY host binaries, which `server-binary` waits
+for and copies in: the binary installers run no host but the one named there), `ovis-server.SHA256SUMS` and `ovis-server.json.sig`, an Ed25519
+signature over the manifest's exact bytes. `server-binary-sign` signs on GitHub's runner: beside the key run only Bun,
+installed by the SHA-pinned `oven-sh/setup-bun`, and `scripts/server-manifest.ts`, which uses Node's built-ins; none
+of the repository's dependencies is installed there. `sign` refuses a key whose public half is not `RELEASE_PUBLIC_KEY`,
+committed in `scripts/server-manifest.ts`; the job then verifies the folder for the version being released against
+that committed key. `server-binary-attest` attests the files, and `publish` verifies them again for that version
+against the committed key, never one a job reports, and attaches each by name, refusing a folder that holds anything
+else; the PTY hosts it attaches must be byte for byte the ones the manifest signed. A different key put into the secret fails the release at `sign`. The signature vouches for whatever `server-binary` built.
+
+`bun scripts/build-server.ts verify <dir> --expect-version <X.Y.Z>` checks a downloaded set against the committed key
+(`--public-key <base64>` names another, for a test's own release), and stops at the first part that fails, with one
+line naming it (exit 1):
+- the folder holds exactly the five binaries, the client archive, the manifest, its signature and the sums file;
+- the signature over the manifest's bytes (both the signature and the key in standard base64, nothing around them);
+- the manifest in its canonical form: exactly its fields, the five platforms and the client archive, no duplicate key;
+- the version, when `--expect-version` is given;
+- each file's SHA-256 and size (a mismatch names its platform, or the client), and the sums file, which is required and
+  must list exactly the manifest's sums. The sums file adds no trust of its own: it is checked against the signed manifest.
+
+A signature alone does not stop a downgrade: an older release signed by the same key verifies too. Every consumer (the
+installers, the updater, a fleet machine: todos 6, 7, 28 and 59 of the relay-fleet plan) passes the version it asked
+for, as the release job does. The installers do it now: `install.sh` and `install.ps1` pin the committed key on one
+line each (`RELEASE_PUBLIC_KEY=` and `$releasePublicKey =`, held equal to `scripts/server-manifest.ts` by its test),
+and `scripts/plugin-launch.ts` takes it from that file. Each checks the manifest's signature first, then its schema
+(`"schema": 1`, the first field, so a reader can tell a later shape from this one) and version, then each file's
+size and SHA-256, and only then moves the release into place, in one rename (two on Windows, where a run cut off
+between them is put back by the next), holding an install lock (`.install.lock`, made by an atomic mkdir with the
+holder's pid; a waiter breaks it once the holder's pid no longer runs, one breaker at a time, so two installs at once
+take turns; `install.sh` releases it in one rename, while `install.ps1` and the plugin's installer still remove it in
+place, where three or more installs started at the same instant leave a narrow race, a follow-up). When to build
+from source instead is [one rule](../INSTALL.md#binary-or-source). Their tests run a copy whose key line names a key made for
+the test, or pass that key as `installServer`'s option, which the launcher never does: the shipped scripts read no
+key from anywhere else. `OVIS_RELEASES_URL` (https://, or a `file://` folder laid out as GitHub's
+`<url>/v<version>/<file>`) points them at another place, checked against the same key. Remote PC bundles and the desktop app carry the same binary with what runs beside it
+(`scripts/server-artifact.ts`), and no server sources. The builds are reproducible with the same Bun: CI pins Bun 1.4.4,
+so CI's hashes differ from ones built with another Bun.
+
+### The server binary's signing key
+
+The private key is the secret `OVIS_SERVER_SIGNING_KEY` of the GitHub environment `release-signing`, whose
+deployment branches are `main` alone. Only a workflow run for `main` whose job names that environment can read
+it, and only `server-binary-sign` does: it is not a repository secret, and `production` (the deploy jobs'
+environment) never holds it. Without the environment or its secret, `server-binary-sign` fails with an error naming
+the secret, and `publish`, which needs it, does not run: no tag and no release are made, and nothing is published
+unsigned. In a fork the job is skipped, and so is `publish`.
+
+The committed key (`RELEASE_PUBLIC_KEY`, `C8+dOD0g…`) is the public half of the key the owner already made: the
+secret holds its private half, and nothing below runs again for it. Only a new key pair (a lost or replaced key) runs
+these steps, on a Linux or macOS PC the owner trusts (`keygen` refuses to run on Windows, where a file mode does not
+keep the key to its owner), and then also commits the printed public key in `scripts/server-manifest.ts`
+(`RELEASE_PUBLIC_KEY`), `install.sh` (`RELEASE_PUBLIC_KEY=`) and `install.ps1` (`$releasePublicKey =`), before a
+release: `sign` refuses any other key, and installs that took the old key need a release under it to move on:
+1. `bun scripts/build-server.ts keygen <folder>` writes `<folder>/ovis-server-signing-key.pem` (readable by them
+   alone) and prints only the public key.
+2. Create the environment `release-signing` with deployment branches limited to `main` (Settings → Environments →
+   New environment; Deployment branches and tags: Selected branches and tags, add `main`).
+3. `gh secret set OVIS_SERVER_SIGNING_KEY --env release-signing --repo devswha/ovis < <folder>/ovis-server-signing-key.pem`
+   (the key is read from the file, never typed on a command line).
+4. Keep an offline copy, delete the file, and keep the public key: installs and updates check against it. It is
+   `RELEASE_PUBLIC_KEY` in `scripts/server-manifest.ts` and the key line of `install.sh` and `install.ps1`. Once a
+   release pins it in the binary, replacing the key strands the installs that took it, so losing the private key means
+   no further verified update reaches them.
+
+Then the Release run attaches the signed Ovis for Mac `Ovis.dmg` to the release, or skips that with a notice while the
 signing secrets are unset ([app/mac/README.md](../app/mac/README.md#releases)), and Ovis for Windows'
 `Ovis.exe` ([app/windows/README.md](../app/windows/README.md#releases)); the release becomes GitHub's
 latest only once it has both. A red `mac-dmg` or `windows-app` job leaves the release published: run
@@ -849,8 +1022,8 @@ published version with a new patch release. If publishing fails after a tag was 
 verify that tag's commit and repair its GitHub release rather than moving the tag.
 
 The hosted shell is then built and deployed in three jobs, so the Cloudflare token never shares a
-job with the build's dependencies. `shell-build` (no environment, no secrets, the dependency cache
-restored read-only) checks out the release tag, fails unless the tag points at the commit this
+job with the build's dependencies. `shell-build` (no environment, no secrets, no Actions cache
+restored) checks out the release tag, fails unless the tag points at the commit this
 release published, builds the shell (`bun run build:shell`), fails if `dist-shell/` lacks
 `index.html` or `build.json`, and uploads `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256`,
 passing the tarball's SHA-256 on as a job output. `shell-deploy`, on a GitHub-hosted runner with
@@ -1044,9 +1217,16 @@ user authorization.
 The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
 
 - **Fast checks**: frozen dependency install, then `bun run check fast`: workflow syntax
-  (checksum-pinned actionlint), generated type freshness, application and critical-tools typechecks
-  (`tsconfig.tools.json`), build, and
-  `bun run test:unit`. This suite does not start herdr.
+  (checksum-pinned actionlint), generated type freshness, application and tools typechecks
+  (`tsconfig.tools.json`: every TypeScript file under `scripts/`, `integrations/`, `site/` and
+  `app/scripts/` but the ones its `exclude` lists: files with type errors, files that import one or
+  lean on its declarations, and untracked `scripts/*.tmp.ts` probes; that list may only shrink, and
+  a new file is checked without being named), build, and
+  `bun run test:unit`. This suite does not start herdr. Its ratchets (fixed sleeps, that exclude
+  list) compare with main's head for a pull request (its merge commit's first parent) or, for a
+  push to main, the newest main commit in its history whose CI run passed (none found fails the
+  job), so a waiting run a newer push replaced leaves no gap; the job fetches it first (`RATCHET_BASE`); one that cannot read
+  its base fails, and a Release or manual run compares with nothing.
 - **Integration and browser**: a summary job that fails when any of three jobs fails, each with
   checksum-pinned herdr 0.9.3, Node 22 and the lockfile's Chromium:
   - **Integration tests** runs `bun run check integration`: a build and
@@ -1058,16 +1238,26 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
     Integration tests have a 15-second default timeout so their bounded process-startup
     probes can finish; individual tests can still specify a longer timeout.
   - **Browser regression (ui-regression)** runs `scripts/ui-regression.ts`,
-    `scripts/ui-contexts-regression.ts` and `scripts/ui-contexts-layout-regression.ts`, two at a
-    time. The core's stateful flow stays serial; the extracted feature checks own a separate
+    `scripts/ui-terminal-regression.ts`, `scripts/ui-ime-regression.ts`,
+    `scripts/ui-access-regression.ts`, `scripts/ui-contexts-regression.ts` and
+    `scripts/ui-contexts-layout-regression.ts`, two at a time. The core's stateful flow stays serial
+    in `scripts/ui-regression.ts`; its terminal's keys, input line, held drafts and attach
+    (`terminal`), its Safari, iPad and Linux IME replays (`ime`) and its sign out and relay panel
+    (`access`) run as parts of it, each from its own server and browser, so no part nears the
+    per-script cap. `scripts/ui-regression.ts` run itself is always the main flow, on the lane's
+    herdr session; each other part's entry file runs it on a herdr session of its own
+    (`scripts/own-herdr.ts`), so two parts side by side share no session or workspace label; the extracted feature checks own a separate
     temporary herdr config/session, Chromium process, server and fixture panes. Those helpers stay
     sequential within their own fixture. The two slowest (split view, a background tab's terminal
     size) run in the layout script, on a fixture of their own, so neither context script nears
     the per-script cap. Each context script prints each helper's elapsed time and stops its owned
-    daemon on exit. `bun run test:ui` also runs all three.
-  - **Browser regression (other scripts)** runs every other browser script: six at a time in
-    one job on self-hosted CI, and on hosted CI split over four jobs (`BROWSER_SHARD=k/4`,
-    balanced by `scripts/ci-browser-timings.json`) that run three at a time each.
+    daemon on exit. `bun run test:ui` also runs all six.
+  - **Browser regression (other scripts)** runs every other browser script, split over parts
+    (`BROWSER_SHARD=k/n`, balanced by `scripts/ci-browser-timings.json`): three parts on
+    self-hosted CI that run six at a time each (`Browser regression (other scripts 1/3)` and so
+    on), four on hosted CI and five on the VM runners that run three at a time each. Each part
+    uploads its logs as `browser-other-<part>-<run>-<attempt>`. `scripts/pages-gate.test.ts`
+    fails if a script is in no part or in two.
 
   Both browser jobs run `scripts/ci-browser-parallel.ts`, which takes its script list from
   `scripts/ci-browser.sh` (`BROWSER_SCRIPTS` picks from it, `BROWSER_EXCLUDE` leaves scripts out,
@@ -1094,27 +1284,46 @@ build, then a summary on success or failure. The first failing script stops it.
 The parallel runner builds the demo once, prints a line when each script starts and ends (and
 every minute a script is still running), and keeps running the other scripts after one fails.
 It starts the longest scripts first, by `scripts/ci-browser-timings.json` (each script's median
-seconds on CI; one it does not list counts as the median), so the lane does not end with one slow
-script running alone while the other workers wait; `BROWSER_ORDER=listed` keeps
-`scripts/ci-browser.sh`'s order. The table only orders the scripts: a stale one costs time, not
-coverage, and a new script needs no entry. A script removed from or renamed in `ci-browser.sh`
-leaves the table too (`scripts/ci-browser-parallel.test.ts` fails on a name the lane does not
-run). When scripts get much slower, refresh it with each script's median over several recent
-runs' `[worker-N] PASS <script> (<seconds>s)` lines.
+seconds on CI), so the lane does not end with one slow script running alone while the other
+workers wait; `BROWSER_ORDER=listed` keeps `scripts/ci-browser.sh`'s order. A script the table
+does not hold starts before all of those, because nobody has measured how long it runs, and a
+`[setup]` line of the job's log names it; only for the balance of the hosted shards does it count
+as the table's median. The table only orders the scripts: a stale one costs time, not coverage,
+and a new script needs no entry. A script removed from or renamed in `ci-browser.sh` leaves the
+table too (`scripts/ci-browser-parallel.test.ts` fails on a name the lane does not run).
+`bun scripts/ci-browser-timings.ts --runs 5` refreshes it: it reads the lane's `summary.json`
+from the newest five green runs of `ci.yml` on main through `gh` and writes each listed script's
+median over them, counting only a pass on the first run; a listed script none of them holds
+keeps its seconds. It also takes `summary.json` files already on disk as arguments, and with
+neither it only sorts the table and drops what the lane no longer runs, which an entry edited by
+hand needs (`scripts/ci-browser-timings.test.ts` fails on a table the tool would write
+otherwise). Refresh it when that `[setup]` line names scripts, when scripts got much slower, and
+after a script was split, once the runs it reads are newer than the split (an older run still
+times the whole script under its old name).
 Each script's full output goes to `${CHECK_DIR:-.ci}/browser-logs/<script>.log`, with
 `summary.json` beside it; a failure prints the last 400 lines of its log and the log's path, and
 the job then fails. CI uploads `browser-logs` on success or failure; browser-main adds the evidence
 every time, browser-other only when it failed or was cancelled (a timeout included) (its ~2,000 screenshots of a green run cost
 about 50 s to upload on the job that ends a run last).
 A script that fails is run a second time (`BROWSER_RETRY=0` turns that off). One that then passes
-does not fail the job, and is not counted as a plain pass either: its first log is kept as
-`<script>.attempt-1.log` and printed, the summary marks it `~` and `summary.json` lists it under
-`flaky`, and on GitHub it gets a warning annotation and a line in the job summary. A flaky script
-is a bug to fix in the script or the app, not noise: the second run only keeps one PR's merge
-from waiting on another change's race. A script that fails twice fails the job.
+is not counted as a plain pass: its first log is kept as `<script>.attempt-1.log` and printed,
+`summary.json` lists it under `flaky`, and on GitHub it gets an annotation and a line in the job
+summary. It fails the job unless `QUARANTINE` in `scripts/ci-browser-quarantine.ts` lists it with
+an issue about it and an end date not yet past (UTC, the date itself included): then
+the summary marks it `~` and the annotation is a warning. Otherwise the summary marks it `!`,
+`summary.json` also lists it under `notQuarantined`, and the error names the two ways out: fix the
+race, or add the entry. A flaky script is a bug to fix in the script or the app, not noise: the
+second run tells a race from a plain failure, and the quarantine keeps a known race from failing
+every PR while it is fixed, never for long (an entry ends at most 30 days ahead, which
+`scripts/ci-browser-parallel.test.ts` checks, along with its script and issue). Remove an entry
+once its script has stopped flaking. A script that fails twice fails the job.
 One run of a script may take `BROWSER_SCRIPT_TIMEOUT_SECONDS` (default 600). A run past it is
-stopped with every process it started, prints `TIMEOUT <script>` and its last 40 log lines at
-once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
+stopped (SIGTERM, then SIGKILL, then SIGKILL again for what the run started meanwhile and still carries its
+mark), says what it saw (`stopped N processes`, `could NOT stop: <pid> (<program name>)` for each one it could not, the name read from its executable and never from its arguments, only a process still running at the last look, at most 20 and then `and N more`,
+and `processes started at the last moment may not be listed` when the last look still found new ones or a
+signal was refused: finding a run's processes always races with their forking; a process without the run's
+mark that outlives the script and ignores SIGTERM is no longer found, and can be counted as stopped), prints `TIMEOUT <script>`
+and its last 40 log lines at once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
 hang names itself instead of running into the job's `timeout-minutes`. A script that exits while
 a process it started still holds its output open is stopped the same way, as `STOPPED`; on
 Linux such a process is found through `/proc` even after its parent has exited. A job cancelled at its `timeout-minutes` with scripts still logging
@@ -1122,12 +1331,17 @@ was usually short of time, not hung: check how long `check: took a slot after` s
 The console, GitHub annotations, job summary and `summary.json` name the failing assertion and
 its first script file and line when the log contains them.
 `bun scripts/ci-flakes.ts` ranks, across the last 24 hours of `ci.yml` runs and every attempt of
-each, which script failed or passed only on a second run, and at which assertion and site. It reads
+each, which script failed or passed only on a second run, at which assertion and site, and how many
+of those job attempts were in runs of the default branch itself (the others were on other
+branches). A script the lane stopped at its time limit is listed with that limit and no site. It reads
 through `gh` and changes nothing: a failed job's log, and a passed job's only when the job carries
 the flaky warning.
 Use `--hours 30` for a different window, `--repo owner/name` to select a repository instead of
 the current one, or `--json` for counts and rows as JSON; running jobs and unavailable logs are
 counted as skipped.
+`.github/workflows/ci-flakes.yml` runs it every day through `scripts/ci-flakes-issue.ts`, which keeps
+the list in the one open issue titled "CI flakes: browser scripts that failed or needed a second
+run", rewritten each time (`--dry-run` prints the body and writes nothing).
 
 Under `CI` or with `CHECK_DIR` set, both runners create `UI_EVIDENCE_DIR` at
 `${CHECK_DIR:-.ci}/browser-evidence`. Only the existing sticky-modifier and file-viewer captures
@@ -1148,32 +1362,41 @@ pages or credentials.
 ### Self-hosted runner
 
 `ci.yml`'s Linux jobs of a push run on the maintainer PC's runners (labels
-`["self-hosted","self-hosted-ovis"]`) by default. A same-repository pull request goes there too
-while those runners have room for its four Linux jobs, and to `ubuntu-24.04` (with the browser
-checks sharded) when they do not, so neither pool queues while the other sits idle. The workflow
-token cannot list runners, so Detect changes counts room from the Actions API: the repository
-variable `CI_SELF_HOSTED_CAPACITY` (default 10, the PC's `self-hosted-ovis` runners) minus the
-queued and running jobs of every workflow that target those labels. When that count fails, the
-pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
+`["self-hosted","self-hosted-ovis"]`) by default. A same-repository pull request goes there too,
+and to `ubuntu-24.04` (with the browser checks sharded) only when jobs already wait for those
+runners. The workflow token cannot list runners, so Detect changes reads the queued and running
+jobs of every workflow that target those labels from the Actions API: one queued for more than
+four minutes (a browser part takes about 8 minutes there and 12.5 hosted, so a wait that long
+still wins), or one queued for more than a minute while no job that only those runners can take,
+started within the last hour, is running (no runner looks online), sends the run hosted. When the
+jobs cannot be read, the pull request stays hosted. Detect changes itself runs on those runners
+unless `CI_LIGHT_LABELS` says otherwise, so with every runner gone a run waits there instead. Other events stay on `ubuntu-24.04`. The repository variable
 `CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
 self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
 JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline (unless
-`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). `release.yml`
-stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
+`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). The variable routes:
 
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
-- in `release.yml`: the preflight and publish jobs.
+- in `release.yml`: none: the Release run is GitHub-hosted and cacheless as a whole, the `ci.yml` it
+  runs through `release-validate.yml` (`hosted_only: true`) included
+  ([Security model](../scripts/self-hosted-runner/README.md#security-model)).
+
+`pages.yml` reads none of them: its run is GitHub-hosted and cacheless as a whole, the `ci.yml` its
+manual validation calls (`hosted_only: true`) included.
+
+`release-validate.yml`'s own three jobs are always GitHub-hosted. The one that asks about main's
+CI run may wait up to 40 minutes for that run, which needs the self-hosted runners itself. Its Fast
+checks is there to run the tests the self-hosted runner skips ([Releasing](#releasing)). The
+verdict runs for seconds.
 
 Light jobs, which wait longest in GitHub's hosted queue for the few seconds they run, take the
 self-hosted runners for every same-repository run: Detect changes, the herdr-core live contract and
-the Integration and browser summary in `ci.yml`, `pr-title.yml`, `remote-bundles.yml`'s Windows
-bundle, and `pages.yml`'s site build and deploy (after successful same-repository main push CI, or
-on a manual dispatch with reusable CI validation). Their `runs-on` sends a fork pull request to
+the Integration and browser summary in `ci.yml` and `pr-title.yml`. Their `runs-on` sends a fork pull request to
 `ubuntu-24.04` before it reads any variable; a push to main then takes `CI_MAIN_SELF_HOSTED_LABELS`
 when it is set (on a push or a run started from main), so main's Detect changes never waits behind pull requests; otherwise the job takes the repository variable `CI_LIGHT_LABELS`,
 else `CI_SELF_HOSTED_LABELS`, else `["self-hosted","self-hosted-ovis"]`; `"ubuntu-24.04"` in
-either variable keeps them hosted. They ignore the `self_hosted_labels` dispatch input, and
-`scripts/ci-runner-route.sh` leaves them out of the busy count, since each holds a runner for seconds. `scripts/light-runner-workflow.test.ts` fails when a job a pull
+either variable keeps them hosted. They ignore the `self_hosted_labels` dispatch input; one that
+waits for a runner counts in `scripts/ci-runner-route.sh`'s queue like any other. `scripts/light-runner-workflow.test.ts` fails when a job a pull
 request runs can reach a self-hosted runner without that guard or the route below.
 
 A push to main takes the repository variable `CI_MAIN_SELF_HOSTED_LABELS` over
@@ -1183,9 +1406,30 @@ request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTE
 `"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
 or main's jobs wait for one.
 
-The Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
+The Apple Silicon (`macos-15`) jobs that hold no secret can run on the self-hosted Mac
+(labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`; two runners): they take the repository
+variable `CI_MAC_LABELS`, a JSON label list (`["self-hosted","self-hosted-ovis-mac"]`) or the JSON
+string `"macos-15"`; unset, they stay on `macos-15`. `ci.yml`'s Native macOS session identity job
+takes it in ci.yml's own runs, main's push runs included; its `runs-on` sends a fork pull request to
+`macos-15` before it reads the variable, and Release validation, which calls ci.yml under its own
+name with `hosted_only`, stays on `macos-15`. A Release may take main's run in place of its own, whose
+macOS job then ran on the Mac, as its Linux jobs ran on the self-hosted PC. The `macos-15` entries of
+`remote-bundles.yml`'s bundle job and `pty-sidecar.yml`'s build job take it only for a pull request
+from this repository, so the binaries a release publishes or attests are always built on GitHub's
+runners (scripts/privileged-jobs-workflow.test.ts). `desktop.yml` and `beta.yml` read the Mac
+signing secrets and stay hosted, as do `macos-15-intel` jobs. A job waits for a runner while the Mac
+is off or both runners are busy: delete the variable to go back to `macos-15`.
+The runner runs jobs as the Mac's own account, so on it `setup-ci` installs Bun under the job's temp
+folder, not that account's `~/.bun`; the prepared-image check and the host's Bun cache are for the
+self-hosted Linux runners alone. Each Mac runner refuses a fork's job with the same `job-started.sh`
+as the Linux runners, which finds the job's worker through `/proc` on Linux and `/bin/ps` on macOS
+([Mac runner](../scripts/self-hosted-runner/README.md#mac-runner)); the repository's approval policy for
+fork pull request workflows (every outside contributor's run waits for a maintainer) stays on as well.
+
+The other Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
 `remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),
-`desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` always stay GitHub-hosted.
+`desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` stay off the self-hosted Linux
+runners (the Mac takes the `macos-15` jobs above).
 
 In `ci.yml`, Detect changes picks the runner with `scripts/ci-runner-route.sh`. A fork pull request
 always gets `ubuntu-24.04`, whatever the variable says. Since that script runs from the pull
@@ -1194,32 +1438,40 @@ job's worker before any step, `if: always()` ones included, can run
 (`scripts/self-hosted-runner/job-started.sh`). Otherwise the `self_hosted_labels`
 workflow_dispatch input, when not empty, overrides the variable for that one manual run. A value
 that is not a non-empty array of strings containing `"self-hosted"` fails the job instead of
-falling back. `pages.yml` and `release.yml` read the variable directly.
+falling back. A call with `hosted_only: true` (`pages.yml`'s and the Release's validation) gets
+`ubuntu-24.04` before the route reads anything else.
 
 Only a `pull_request` may skip the heavy jobs as docs-only, and only when every changed file is
 under `docs/`, ends in `.md` or `.txt`, is the root `LICENSE` or sits under
-`.github/ISSUE_TEMPLATE/`. Pushes, dispatches and runs called from `release.yml` or manual
-`pages.yml` dispatches always validate in full. Automatic Website runs reuse CI's successful
-main push validation instead of calling CI again.
+`.github/ISSUE_TEMPLATE/`. Pushes, dispatches and runs called for a release
+(`release-validate.yml`) or from manual `pages.yml` dispatches always validate in full. Automatic
+Website runs reuse CI's successful main push validation instead of calling CI again, and a Release
+run calls CI only when main's push run did not pass its commit; when it did, it runs Fast checks
+alone ([Releasing](#releasing)).
 
 The runner is an ephemeral Docker container that runs one job and exits. Containers have no CPU
-quota or total-memory limit; concurrent slots share the host's available resources. The
-runners of one PC share one network namespace (a container of its own, not the host's), so
-`check.ts`'s slots bound the Integration and both Browser regression jobs of every runner
+quota or total-memory limit; concurrent slots share the host's available resources. Each
+runner has a docker network of its own, so no job reaches a server another job's tests keep on
+their loopback, and the runners of one PC share `check.ts`'s slots as lock files in a volume all of
+them mount ([Check slots](../scripts/self-hosted-runner/README.md#check-slots)). So the slots bound
+the Integration and both Browser regression jobs of every runner
 together: `ci.yml` runs each of them through `bun run check` with `CHECK_MAX_RUNS` and
 `CHECK_WAIT_SECONDS`, and a job that finds the slots taken waits for one. A check run on the host
-itself is not in that namespace and does not count against it. Its image ships Bun,
+itself takes ports of the host's loopback and does not count against them. Its image ships Bun,
 Node 22, checksum-pinned herdr, Playwright Chromium and its system libraries, ffmpeg, git, the
 checksum-pinned GitHub CLI (`gh`) for deployment and release publishing, curl, jq, unzip,
-xz-utils and CA certificates, with no sudo. Self-hosted setup verifies the prepared tools and
+xz-utils, OpenSSH (client and server), iproute2 (`ss`), tmux, procps (`ps`) and CA certificates, with no sudo. Self-hosted setup verifies the prepared tools and
 fails on a stale image instead of downloading replacements. Rebuild the image after changing
 its pins; its Bun pin must match `.github/actions/setup-ci/action.yml`, and its Playwright pin
 must match `bun.lock`.
 
-The composite setup action used by `ci.yml`, `pages.yml` and `release.yml` keeps Bun's dependency
+The composite setup action (`.github/actions/setup-ci`) keeps Bun's dependency
 cache in `.ci-cache/bun`. Only GitHub-hosted jobs restore/save that cache remotely: on the measured
 self-hosted connection, downloading the archive took longer than a fresh dependency install.
 Self-hosted jobs install directly from the lockfile without transferring a remote dependency cache.
+`cache: none` restores and saves none: for every job of a run in which a job that publishes or signs takes an
+artifact, and for a job that publishes, signs or holds a secret itself (the relay deploy job, say, while the
+`ci.yml` its workflow calls keeps its caches).
 Hosted browsers use
 `.ci-cache/playwright`; self-hosted browsers come from the image. Neither cache restores a
 home-directory archive across different workspace depths. Tool/browser preparation no longer
@@ -1238,8 +1490,9 @@ Remote/server/shared/dependency changes also run the existing four-platform bund
 SSH workflow on PRs; its publishing job only runs for `remote-v*` tags. Website publishing
 continues after `main` pushes.
 
-Repository protection should require PRs and all three checks on `main`—**Fast checks**,
-**Integration and browser**, and **Native Windows install** (GitHub App ID `15368`)—including for
+Repository protection should require PRs and all four checks on `main`—**Fast checks**,
+**Integration and browser**, **Native Windows install**, and **Hook kill tests (container)**
+(GitHub App ID `15368`)—including for
 administrators. Branch protection does not require branches to be up to date before merging and
 does not enforce resolved review threads; resolve every review thread before merging anyway, as a
 practice. Force pushes and branch deletion are disabled. Human approvals are optional for this maintainer-led

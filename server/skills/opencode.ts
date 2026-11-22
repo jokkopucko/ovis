@@ -87,9 +87,8 @@ const V2_BUILTINS: readonly Builtin[] = [
 ];
 
 const majorMinor = (version: string): string => version.split(".").slice(0, 2).join(".");
-// a bare major ("2") is a version known only by its major: a v2-only flag of the pane's process
 const isV2 = (version: string | null | undefined): boolean => Number(/^(\d+)(?:\.|$)/.exec(version ?? "")?.[1] ?? 1) >= 2;
-const canonical = (path: string): string => { try { return realpathSync(path); } catch { return path; /* unresolvable: keep the path */ } };
+const canonical = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
 
 function configCommands(path: string, source: "user" | "project", key: string): SlashCommand[] {
   try {
@@ -102,13 +101,11 @@ function configCommands(path: string, source: "user" | "project", key: string): 
       if (typeof value !== "object" || value === null || !("template" in value) || typeof value.template !== "string") return [];
       return [{ name, description: "description" in value && typeof value.description === "string" ? value.description : "", source }];
     });
-  } catch { return []; /* missing, unreadable or malformed optional config */ }
+  } catch { return []; }
 }
 
-/** Command files one folder may contribute: links can name one file under many paths, each a command. */
 export const MAX_COMMAND_FILES = 1024;
 
-/** Every .md under `root`, dot directories included; a nested path is the name (team/check). */
 function commandFiles(root: string): { name: string; path: string }[] {
   const files: { name: string; path: string }[] = [];
   const ancestors = new Set<string>();
@@ -128,9 +125,9 @@ function commandFiles(root: string): { name: string; path: string }[] {
           if (files.length >= MAX_COMMAND_FILES) return;
           if (target.isDirectory()) visit(path);
           else if (target.isFile() && entry.name.endsWith(".md")) files.push({ name: relative(root, path).slice(0, -3).split(sep).join("/"), path });
-        } catch { continue; /* broken link */ }
+        } catch { continue; }
       }
-    } catch { /* optional command directory */ } finally { ancestors.delete(real); }
+    } catch { } finally { ancestors.delete(real); }
   };
   visit(root);
   return files;
@@ -140,9 +137,7 @@ export const source: AgentCommandSource = {
   builtins: Object.keys(DESCRIPTIONS),
   descriptions: DESCRIPTIONS,
   forms: FORMS,
-  // the screens Chat cannot represent: listed, but only the terminal runs them
   terminalBound: ["agents", "connect", "editor", "sessions", "skills", "themes"],
-  // the shared builtins were checked against both TUIs
   pin: [V1_PIN, V2_PIN],
   discover(ctx) {
     const v2 = isV2(ctx.version);
@@ -165,10 +160,9 @@ export const source: AgentCommandSource = {
       for (const kind of ["command", "commands"]) {
         for (const { name, path } of commandFiles(join(directory, kind))) {
           const id = canonical(path);
-          // one read per file, however many links name it
           let text = descriptions.get(id);
           if (text === undefined) {
-            try { text = description(readSkillText(path)); } catch { continue; /* unreadable */ }
+            try { text = description(readSkillText(path)); } catch { continue; }
             descriptions.set(id, text);
           }
           commands.set(name, { name, description: text, source, id });

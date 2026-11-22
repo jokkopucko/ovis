@@ -66,14 +66,13 @@ type Viewport = "1440" | "390";
 
 interface Failure { check: string; surface: string; viewport: Viewport; theme: Theme; key: string; detail: string }
 interface Hit { check: string; key: string; detail: string }
-/** A focus stop's failure, or the wrapper that draws its ring (null: the control itself). */
 type FocusVerdict = Hit | { ringOn: string | null };
 interface Visit { surface: string; viewport: Viewport; theme: Theme; shot: string; steps: string[]; pageErrors: string[]; stageError?: string; effectiveTargets?: string[]; focusRings?: string[] }
 interface AllowEntry { check: string; key: string; reason: string }
-/** The controls that keep their place ("자리는 그대로"): name and selector, the first drawn match (a second is `<name> #2`). */
 const LAYOUT_ANCHORS: [string, string][] = [
   ["tab-more", ".header-tabs .tab-strip-more"],
   ["view-switch", ".app-header .view-switch"],
+  ["lens-toggle", ".app-header .lens-toggle"],
   ["files-button", ".app-header .header-files-button"],
   ["more-button", ".app-header .header-more-button"],
   ["drawer-toggle", ".app-header .drawer-toggle"],
@@ -83,7 +82,6 @@ const LAYOUT_ANCHORS: [string, string][] = [
   ["settings-gear", ".sidebar-footer-settings"],
   ["status-bar", ".status-bar"],
 ];
-/** The current pane's composer: every drawn control in it, named `composer-<index> <class>` in document order, so a control added, removed or reordered changes the names. */
 const COMPOSER = ".pane-frame.is-current .composer";
 const LAYOUT_TOLERANCE = 2;
 const FOCUS_CEILING = 200;
@@ -105,10 +103,7 @@ const allowPath = option("--allow");
 const workers = Number(option("--workers") ?? 6);
 // "6x" or 0 would start no worker: no visit measured, no failure found, and a passing exit
 if (!Number.isInteger(workers) || workers < 1) throw new Error(`--workers ${option("--workers")}: a whole number of 1 or more`);
-// hidden: makes every chat turn's text #999 on #aaa, to prove the contrast check and the baseline diff can fail
 const SELF_TEST = args.includes("--self-test");
-// hidden: shifts the tab strip's More button and the composer status row's buttons (the context ring) 10px right,
-// to prove the layout check and its baseline diff can fail
 const SELF_TEST_LAYOUT = args.includes("--self-test-layout");
 const layoutOutPath = option("--layout-out");
 const layoutBaselinePath = option("--layout-baseline");
@@ -121,7 +116,6 @@ if ((layoutOutPath || layoutBaselinePath || SELF_TEST_LAYOUT) && !checks.has("la
 const label = (text: string): string => KO[text] ?? text;
 const minutes = (n: number): number => n * 60_000;
 
-/** Turns stamped a few minutes apart, ending now; every assistant turn finished. */
 function restamp(turns: ConversationTurn[]): ConversationTurn[] {
   const now = Date.now();
   turns.forEach((turn, index) => {
@@ -136,7 +130,6 @@ function restamp(turns: ConversationTurn[]): ConversationTurn[] {
   return turns;
 }
 
-/** A long finished transcript: user and assistant text, folded tool calls, a compaction card. */
 const LONG = restamp(["api", "flaky", "cli", "hermes", "omp"].flatMap((name) => structuredClone(CHATS[name]?.turns ?? [])));
 
 const MARKDOWN_TURNS = restamp([
@@ -185,7 +178,6 @@ const UPDATE_NOTES = {
     summary: { ko: { fixed: ["터미널 입력줄에서 화살표·스페이스 키가 다시 커서를 움직입니다", "Safari에서 사이드바가 열립니다"], improved: ["푸시 알림 제목에 창 이름이 들어갑니다"] }, en: { fixed: ["Arrow keys and Space move the cursor in a terminal's input line again", "The sidebar opens in Safari"], improved: ["Push alerts name the pane in their title"] } },
   }],
 };
-/** An update on offer to the build being served: its revision is the build's own (build.json). */
 const updateStage = (): Record<string, unknown> => ({
   updates: {
     managed: true, auto_update: false, phase: "idle", current_revision: (JSON.parse(readFileSync(join(app, "build.json"), "utf8")) as { revision: string }).revision, latest_revision: UPDATE_NOTES.revision,
@@ -223,7 +215,6 @@ const TAB_LABELS = ["api", "web", "docs", "deploy", "review", "tests", "release-
 /** Holds the demo's 4500 ms turn-ending timer (the api pane stays mid-turn; no finished-turn alert lands over a visit). */
 const HOLD_DEMO_TURN = `<script>(() => { const later = window.setTimeout; window.__laterTimeout = later; window.setTimeout = (callback, ms, ...rest) => ms === 4500 ? 0 : later(callback, ms, ...rest); })();</script>`;
 const RELEASE_TIMERS = `<script>if (window.__laterTimeout) window.setTimeout = window.__laterTimeout;</script>`;
-/** Over the demo's fetch, per `window.__gateStage` (set by each visit's init script): a pane's conversation, a question prompt, Files' Documents, an account service. */
 const STAGE_HOOKS = `<script>(() => {
   const stage = window.__gateStage || {};
   const demo = window.fetch;
@@ -277,24 +268,19 @@ const STAGE_HOOKS = `<script>(() => {
 interface Env { phone: boolean; steps: string[]; press: (locator: Locator) => Promise<void> }
 interface Surface {
   id: string;
-  /** Only at this width: the state does not exist at the other. */
   only?: "desktop" | "phone";
   pane?: string;
-  /** No pane in the address: the app as a first run draws it. */
   plain?: boolean;
+  ready?: string;
   query?: string;
-  /** The lens the pane opens in (chat by default). */
   view?: "chat" | "terminal";
-  /** What the page's fetch answers instead of the demo (STAGE_HOOKS); a function when it needs the build. */
   stage?: Record<string, unknown> | (() => Record<string, unknown>);
   storage?: Record<string, string>;
-  /** Fields of ovis:settings beside the language and theme, stored before the app loads. */
   settings?: Record<string, unknown>;
   run?: (page: Page, env: Env) => Promise<void>;
 }
 
 const current = (page: Page): Locator => page.locator(".pane-frame.is-current");
-/** Finite animations finished, then two frames drawn; infinite ones (spinners) are left running. */
 async function settle(page: Page): Promise<void> {
   // a tap leaves its control :active (drawn pressed, at 0.55 opacity) for a moment: what is measured is the control at rest
   await page.waitForFunction(() => document.querySelector(":active:not(html, body)") === null, undefined, { timeout: 5_000 }).catch(() => undefined);
@@ -345,7 +331,6 @@ const pcLoad = (on: boolean): Surface => ({
   run: async (page, env) => {
     if (env.phone) { await openDrawer(page, env); return; }
     await page.locator(".status-bar").waitFor({ state: "visible" });
-    // the load line comes with the demo's first /api/system answer; its absence is the pcload check's to report
     if (on) await page.locator(".status-bar-load").waitFor({ state: "visible", timeout: 10_000 }).catch(() => env.steps.push("(no .status-bar-load within 10 s)"));
     await settle(page);
   },
@@ -363,7 +348,6 @@ const SURFACES: Surface[] = [
     },
   },
   {
-    // the model pill with its context ring: the ring is a button in the composer's status row, outside its control groups
     id: "composer-context", pane: panes.flaky,
     stage: { turns: { [panes.flaky]: { source: "claude-transcript", turns: LONG, metadata: { model: "claude-opus-4-1", reasoning_effort: "high", context: { used: 132_000, window: 200_000 } } } } },
     run: async (page, env) => {
@@ -405,7 +389,6 @@ const SURFACES: Surface[] = [
       await current(page).locator(".terminal-stack.is-chat").waitFor();
       await current(page).locator(".composer-greeting").waitFor();
       await current(page).locator('.composer-status[data-status="idle"]').waitFor({ state: "attached" });
-      // a desktop lifts the greeting and the composer to the pane's middle; a phone keeps them docked
       if (!env.phone) await page.waitForFunction(() => {
         const greeting = document.querySelector(".pane-frame.is-current .composer-greeting")?.getBoundingClientRect();
         const box = document.querySelector(".pane-frame.is-current .composer")?.getBoundingClientRect();
@@ -453,6 +436,11 @@ const SURFACES: Surface[] = [
   },
   { id: "drawer-open", only: "phone", pane: panes.api, run: openDrawer },
   {
+    id: "phone-inbox", only: "phone", plain: true, ready: ".mode-inbox", storage: { "ovis:phone-inbox": "true" },
+    // the inbox mode's list also stands while it says Loading…: measured once a row is drawn
+    run: async (page) => { await page.locator(".mode-inbox .inbox-item").first().waitFor(); await settle(page); },
+  },
+  {
     id: "held-messages", pane: panes.web,
     storage: {
       // kept under the demo's herdr: with no record they would be an earlier release's and go to Recover unsent text
@@ -494,7 +482,7 @@ const SURFACES: Surface[] = [
   },
   {
     id: "welcome", plain: true, storage: { "ovis:setup-guide": JSON.stringify({ status: "open", state: { step: "welcome" } }) },
-    run: async (page) => { await page.locator(".setup-welcome").waitFor(); await settle(page); },
+    run: async (page) => { await page.locator(".setup-dialog .setup-choices").waitFor(); await settle(page); },
   },
   {
     id: "offline", pane: panes.flaky, query: "&demo_connection=switch",
@@ -518,7 +506,7 @@ const SURFACES: Surface[] = [
   {
     id: "setup-guide", plain: true, storage: { "ovis:setup-guide": JSON.stringify({ status: "open", state: { step: "setup" } }) },
     run: async (page) => {
-      await page.locator(".setup-guide .setup-tile").first().waitFor();
+      await page.locator(".setup-dialog .setup-tile").first().waitFor();
       await settle(page);
     },
   },
@@ -554,7 +542,6 @@ const SURFACES: Surface[] = [
         if (status !== 200) throw new Error(`POST /api/tab/create ${name} answered ${status}`);
       }
       if (env.phone) {
-        // a phone has no tab row: the header's tab list button opens every tab of the workspace
         await env.press(page.getByRole("button", { name: /의 탭$/ }).first());
         await menuRoot(page).getByText(/^mobile/).first().waitFor();
       } else {
@@ -578,7 +565,6 @@ const SURFACES: Surface[] = [
   {
     id: "view-only", pane: panes.api, query: "&demo_security=watch",
     run: async (page, env) => {
-      // the View only pill is in the status bar, which a phone hides: there the sidebar shows the watching state
       if (env.phone) await openDrawer(page, env);
       else { await page.locator(".status-bar-watch").first().waitFor(); await settle(page); }
     },
@@ -594,7 +580,6 @@ const SURFACES: Surface[] = [
         await button.evaluate((node: HTMLElement) => node.click());
       }
       await menuRoot(page).waitFor();
-      // a phone's More holds the pane's actions under Pane and tab… (G-143)
       if (env.phone) await openMoreGroup(page, "pane");
       await settle(page);
       await env.press(menuItem(page, label("Recover unsent text")));
@@ -634,7 +619,6 @@ interface GateRuntime {
 }
 type GateWindow = Window & { __gate: GateRuntime };
 
-/** Installed in every page by an init script: the measurements, in the page's own terms. */
 function gateRuntime(): void {
   type RGBA = [number, number, number, number];
   type Box = { l: number; t: number; r: number; b: number };
@@ -694,9 +678,7 @@ function gateRuntime(): void {
   const words = (el: Element): string => (ownText(el) || (el as HTMLElement).innerText || el.getAttribute("aria-label") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim();
   const keyOf = (el: Element): string => { const text = words(el).replace(/\d+/g, "#").slice(0, 40); return text ? `${path(el)} "${text}"` : path(el); };
 
-  /** The opacity the element is drawn with, its ancestors' included. */
   const opacity = (el: Element): number => { let value = 1; for (let node: Element | null = el; node; node = node.parentElement) value *= Number(style(node).opacity); return value; };
-  /** `box` cut to the viewport and to every ancestor that clips it (`from` included); null when nothing of it is left. */
   const clip = (from: Element | null, box: Box): Box | null => {
     let { l, t, r, b } = box;
     l = Math.max(l, 0); t = Math.max(t, 0); r = Math.min(r, innerWidth); b = Math.min(b, innerHeight);
@@ -711,7 +693,6 @@ function gateRuntime(): void {
     }
     return r - l > 0.5 && b - t > 0.5 ? { l, t, r, b } : null;
   };
-  /** The topmost modal layer: while one is open, what lies under it is not what a user sees. */
   const modalRoot = (): Element | null => {
     const open = [...document.querySelectorAll(MODAL)].filter((node) => node.getClientRects().length > 0 && style(node).visibility !== "hidden");
     const top = open.at(-1);
@@ -729,7 +710,6 @@ function gateRuntime(): void {
     if (rect.width <= 0 || rect.height <= 0) return null;
     return clip(el.parentElement, { l: rect.left, t: rect.top, r: rect.right, b: rect.bottom });
   };
-  /** The element's own text, one box per line it is drawn on, clipped as drawn: a wrapped span is its lines, not their bounding box. */
   const textBoxes = (el: Element): Box[] => {
     const range = document.createRange();
     const boxes: Box[] = [];
@@ -743,7 +723,6 @@ function gateRuntime(): void {
     }
     return boxes;
   };
-  /** The color behind the element's text: its ancestors' backgrounds composited down to the first opaque one; null over an image or gradient. */
   const backdrop = (el: Element): { color: RGBA; layer: Element | null } | null => {
     const layers: RGBA[] = [];
     let layer: Element | null = null;
@@ -868,7 +847,6 @@ function gateRuntime(): void {
       const page = document.scrollingElement ?? document.documentElement;
       if (page.scrollWidth > innerWidth + 1) hit("overflow", null, `the page scrolls sideways: scrollWidth ${page.scrollWidth} > ${innerWidth}`);
       const boxes = texts.filter(({ el }) => !el.closest(`${TERMINAL}, .katex`));
-      // an overlay (a dialog, a menu, the drawer) or a fixed or sticky bar covers what scrolls under it on purpose
       const layers = new Map<Element, Element | null>();
       const layer = (el: Element): Element | null => {
         if (layers.has(el)) return layers.get(el)!;
@@ -911,7 +889,6 @@ function gateRuntime(): void {
     const root = modalRoot();
     const first = root?.querySelector<HTMLElement>(INTERACTIVE);
     if (root && first) { first.focus(); return; }
-    // the sequential focus starting point before everything: the first Tab lands on the first stop
     sentinel = Object.assign(document.createElement("div"), { tabIndex: -1 });
     sentinel.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none";
     document.body.prepend(sentinel);
@@ -928,7 +905,6 @@ function gateRuntime(): void {
     }
     return null;
   };
-  /** The computed box-shadow's layers, split on the commas between them, not those inside a color. */
   const shadowLayers = (value: string): string[] => {
     const layers: string[] = [];
     let depth = 0, from = 0;
@@ -951,7 +927,6 @@ function gateRuntime(): void {
       boxShadow: s.boxShadow, borderColor: s.borderTopColor, borderWidth: s.borderTopWidth, borderStyle: s.borderTopStyle,
     };
   };
-  /** The ancestors that may draw a focused control's ring: up to 3 ancestors short of the dialog or app root; a terminal's hidden input also its terminal and pane frame. */
   const ringWrappers = (el: Element): Element[] => {
     const found: Element[] = [];
     for (let node = el.parentElement; node && found.length < 3; node = node.parentElement) {
@@ -963,8 +938,7 @@ function gateRuntime(): void {
   };
   /**
    * The ring `parts` of `node` against the background next to it (WCAG 1.4.11, 3:1): a ring drawn outside is read
-   * over the parent's background, an inset one (or an outline pulled inside) over the node's own. "none" when the
-   * parts draw nothing, "ok" at 3:1 or more, else the failing ratio.
+   * over the parent's background, an inset one (or an outline pulled inside) over the node's own.
    */
   const ringVerdict = (node: Element, snap: RingSnap, parts: readonly (keyof RingRead)[]): "ok" | "none" | string => {
     const marks: { color: RGBA; inside: boolean; what: string }[] = [];
@@ -998,10 +972,8 @@ function gateRuntime(): void {
     let id = focusIds.get(el);
     if (id === undefined) { id = focusCount += 1; focusIds.set(el, id); }
     const own = ringSnap(el);
-    // a box-shadow counts only where a layer draws (a transparent or zero-size one is no ring): undrawn, the wrappers are read
     const shadowDrawn = own.boxShadow !== "none" && ringVerdict(el, own, ["boxShadow"]) !== "none";
     const selfDrawn = (own.outlined || shadowDrawn) && opacity(el) > 0.01;
-    // the control's own border counts as its ring too, unless the control is not drawn (a terminal's hidden input)
     const wrappers = selfDrawn ? [] : [...(opacity(el) > 0.01 ? [el] : []), ...ringWrappers(el)].filter((node): node is HTMLElement => node instanceof HTMLElement);
     if (wrappers.length && el instanceof HTMLElement) {
       // read focused and blurred with transitions off (a border easing to its accent reads unchanged mid-way), then
@@ -1121,7 +1093,7 @@ async function visit(browser: Browser, origin: string, surface: Surface, viewpor
     try {
       const url = surface.plain ? `${origin}${PREFIX}` : `${origin}${PREFIX}?pane=${encodeURIComponent(surface.pane ?? panes.api)}&view=${surface.view ?? "chat"}${surface.query ?? ""}`;
       await page.goto(url);
-      await page.locator(surface.plain ? ".setup-guide, .setup-welcome, .conn-live" : ".conn-live").first().waitFor({ state: "attached", timeout: 20_000 });
+      await page.locator(surface.ready ?? (surface.plain ? ".setup-dialog, .conn-live" : ".conn-live")).first().waitFor({ state: "attached", timeout: 20_000 });
       await appFaces(page, "가나다");
       await surface.run?.(page, env);
       if (SELF_TEST) await page.addStyleTag({ content: SELF_TEST_CSS });
@@ -1140,7 +1112,6 @@ async function visit(browser: Browser, origin: string, surface: Surface, viewpor
     const measured = await page.evaluate((options) => (window as unknown as GateWindow).__gate.measure(options), { checks: statics, surface: surface.id, desktop: !phone });
     for (const hit of measured.hits) add(hit);
     if (checks.has("target")) result.effectiveTargets = measured.effective;
-    // before focus moves anything: the controls where the visit left them
     if (checks.has("layout")) anchors = await page.evaluate((options) => (window as unknown as GateWindow).__gate.layout(options), { anchors: LAYOUT_ANCHORS, composer: COMPOSER });
 
     if (checks.has("focus") && !phone) {
@@ -1210,7 +1181,6 @@ try {
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `${HOLD_DEMO_TURN}<script src="./demo-transport.js"></script>${RELEASE_TIMERS}\n    ${STAGE_HOOKS}\n    <script type="module"`));
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
-    // the icons the app links from the site's root (the welcome screen's mark)
     const rootAsset = /^\/(?:icons\/[\w.-]+|favicon\.(?:ico|png)|apple-touch-icon\.png|manifest\.webmanifest)$/.test(path);
     if (!path.startsWith(PREFIX) && !rootAsset) return new Response("not found", { status: 404 });
     let file: string;
@@ -1260,9 +1230,7 @@ try {
   console.log(`\n${visits.length} visits in ${((Date.now() - started) / 1000).toFixed(0)}s; report: ${join(OUT, "report.json")}`);
   console.log(`counts: ${Object.entries(counts).map(([check, count]) => `${check}=${count}`).join(" ")}`);
   if (baseline) {
-    // only what this run looked at: a narrower run does not resolve what it never visited
     const looked = new Set(visits.map((entry) => `${entry.surface}|${entry.viewport}|${entry.theme}`));
-    // focus-contrast is measured by the focus check
     const inScope = (failure: Failure): boolean => looked.has(`${failure.surface}|${failure.viewport}|${failure.theme}`) && (failure.check === "stage" || checks.has((failure.check === "focus-contrast" ? "focus" : failure.check) as Check));
     const before = new Set(baseline.failures.filter(inScope).map(identity));
     const now = new Set(found.map(identity));

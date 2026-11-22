@@ -6,7 +6,6 @@ const B = { machineId: "local", paneId: "w1:p2" };
 const C = { machineId: "pc2", paneId: "w1:p1" };
 const D = { machineId: "pc2", paneId: "w2:p1" };
 
-/** two halves as the two-half split kept them: `b` on `bSide`, the other slot's pane `other` */
 const halves = (other: typeof A, bSide: "left" | "right", active: "a" | "b"): SplitState => ({
   root: { dir: "row", ratio: 0.5, first: { slot: bSide === "left" ? "b" : "a" }, second: { slot: bSide === "left" ? "a" : "b" } },
   panes: { [active === "a" ? "b" : "a"]: other },
@@ -17,12 +16,10 @@ describe("split view", () => {
   it("opens a dropped pane beside the single one, on the side it was dropped on", () => {
     expect(dockPane(null, A, B, { slot: "a", edge: "right" })).toEqual({ split: halves(A, "right", "b"), solo: "b", select: B });
     expect(dockPane(null, A, B, { slot: "a", edge: "left" })).toEqual({ split: halves(A, "left", "b"), solo: "b", select: B });
-    // the single pane's slot keeps it, on the other side
     expect(slotSide(halves(A, "left", "b"), "a")).toBe("right");
   });
 
   it("opens a dropped pane in a new slot when the single pane is in slot b", () => {
-    // a split closed from its left half leaves its pane in slot b: dropping again keeps it there
     const next = dockPane(null, A, B, { slot: "b", edge: "right" }, "b")!;
     expect(next.split).toEqual(halves(A, "left", "a"));
     expect(slotSide(next.split!, "a")).toBe("right");
@@ -39,7 +36,6 @@ describe("split view", () => {
   });
 
   it("opens a pane dropped on the active slot there, and on another slot there, making it active", () => {
-    // B active on the right (slot b), A on the left (slot a)
     const split = halves(A, "right", "b");
     expect(dockPane(split, B, C, { slot: "b", edge: null })).toEqual({ split, solo: "b", select: C });
     expect(dockPane(split, B, C, { slot: "a", edge: null })).toEqual({ split: halves(B, "right", "a"), solo: "a", select: C });
@@ -47,9 +43,7 @@ describe("split view", () => {
 
   it("shows a slot's own pane in another slot too, never moving either", () => {
     const split = halves(A, "right", "b");
-    // the active B dropped on the left: the left shows B as well and is active, the right keeps B
     expect(dockPane(split, B, B, { slot: "a", edge: null })!.split).toEqual(halves(B, "right", "a"));
-    // the other pane A dropped on the active right half: the right shows A as well, the left keeps A
     expect(dockPane(split, B, A, { slot: "b", edge: null })!.split).toEqual(split);
   });
 
@@ -66,11 +60,9 @@ describe("split view", () => {
     const split = halves(A, "right", "b");
     expect(sideZone(split, "b", "left")).toEqual({ slot: "a", edge: null });
     expect(sideZone(split, "b", "right")).toEqual({ slot: "b", edge: null });
-    // two slots stacked cover both halves alike: either half is the active slot's, not always the lower one
     const stacked = dockPane(null, A, B, { slot: "a", edge: "bottom" })!.split!;
     expect(sideZone(stacked, "b", "left")).toEqual({ slot: "b", edge: null });
     expect(sideZone({ ...stacked, active: "a", panes: { b: B } }, "a", "right")).toEqual({ slot: "a", edge: null });
-    // otherwise the slot covering most of that half
     const three = dockPane(split, B, C, { slot: "b", edge: "bottom" })!.split!;
     expect(sideZone(resizeSplit(three, "", 0.3), "c", "left")).toEqual({ slot: "a", edge: null });
     expect(sideZone(resizeSplit(three, "", 0.8), "c", "right")).toEqual({ slot: "a", edge: null });
@@ -117,7 +109,6 @@ describe("split view", () => {
     expect(besideSide(850, 150, pane)).toBe("right");
     expect(besideSide(500, 70, pane)).toBe("up");
     expect(besideSide(500, 240, pane)).toBe("down");
-    // 100px of an 800px width is nearer than 40px of a 200px height: each side takes a quarter of a wide pane too
     expect(besideSide(200, 90, pane)).toBe("left");
   });
 
@@ -165,7 +156,6 @@ describe("split rows and columns", () => {
   it("opens a pane above or below the single one from a band along its top and bottom", () => {
     expect(dropZone(500, 100, box, null, "a")).toEqual({ slot: "a", edge: "top" });
     expect(dropZone(500, 700, box, null, "a")).toEqual({ slot: "a", edge: "bottom" });
-    // the sides keep the halves' midpoint and its steady band
     expect(dropZone(100, 400, box, null, "a")).toEqual({ slot: "a", edge: "left" });
     expect(dropZone(505, 400, box, null, "a", { slot: "a", edge: "left" })).toEqual({ slot: "a", edge: "left" });
     expect(dropZone(500, 900, box, null, "a")).toBeNull();
@@ -173,7 +163,6 @@ describe("split rows and columns", () => {
 
   it("opens a third pane beside, above or below a slot from its edge, and in its place from its middle", () => {
     const split = halves(A, "right", "b");
-    // the right half, slot b, spans x 500-1000
     expect(dropZone(560, 400, box, split, "b")).toEqual({ slot: "b", edge: "left" });
     expect(dropZone(750, 700, box, split, "b")).toEqual({ slot: "b", edge: "bottom" });
     expect(dropZone(750, 400, box, split, "b")).toEqual({ slot: "b", edge: null });
@@ -187,7 +176,6 @@ describe("split rows and columns", () => {
       ["b", { x: 0.5, y: 0, w: 0.5, h: 0.5 }],
       ["c", { x: 0.5, y: 0.5, w: 0.5, h: 0.5 }],
     ]));
-    // three slots are no longer two halves side by side
     expect(slotSide(below.split!, "a")).toBeNull();
     expect(zoneRect({ slot: "b", edge: "bottom" }, split, "b")).toEqual({ x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
   });
@@ -204,23 +192,18 @@ describe("split rows and columns", () => {
     expect(slotsOf(state!.root)).toHaveLength(MAX_SPLIT_SLOTS);
     expect(dockPane(state, active, A, { slot: state!.active, edge: "left" })).toBeNull();
     const rect = slotRects(state!.root).get(state!.active)!;
-    // the very edge of the active slot, which would open beside it in a smaller split
     expect(dropZone((rect.x + 0.01) * 1000, (rect.y + rect.h / 2) * 800, box, state, "a")).toEqual({ slot: state!.active, edge: null });
   });
 
   it("closes a slot into its sibling's place, the active one's place going to its nearest slot", () => {
     const three = dockPane(halves(A, "right", "b"), B, C, { slot: "b", edge: "bottom" })!.split!;
-    // closing the active c: b, its sibling, takes the right column again and is active
     const closed = closeSlots(three, C, new Set(["c"]))!;
     expect(closed).toEqual({ split: halves(A, "right", "b"), solo: "b", select: B });
-    // closing another slot keeps the active one
     const left = closeSlots(three, C, new Set(["a"]))!;
     expect(left.select).toEqual(C);
     expect(left.split!.root).toEqual({ dir: "column", ratio: 0.5, first: { slot: "b" }, second: { slot: "c" } });
-    // a slot whose pane is gone closes without touching the selection
     expect(withoutSlots(three, new Set(["a"]))).toEqual({ split: { ...three, root: left.split!.root, panes: { b: B } }, solo: "c" });
     expect(withoutSlots(three, new Set(["a", "b"]))).toEqual({ split: null, solo: "c" });
-    // down to one slot ends the split in the slot that is left
     expect(closeSlots(halves(A, "right", "b"), B, new Set(["b"]))).toEqual({ split: null, solo: "a", select: A });
     expect(closeSlots(halves(A, "right", "b"), B, new Set(["a"]))).toEqual({ split: null, solo: "b", select: B });
   });
@@ -294,7 +277,6 @@ describe("split storage", () => {
     const three = dockPane(halves(A, "right", "b"), B, C, { slot: "b", edge: "bottom" })!.split!;
     storeSplit(resizeSplit(three, "", 0.35));
     expect(storedSplit()).toEqual(resizeSplit(three, "", 0.35));
-    // a broken or foreign value opens no split
     for (const value of [
       { other: A, bSide: "up", active: "a" },
       { root: { slot: "a" }, panes: {}, active: "a" },

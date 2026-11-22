@@ -1,28 +1,15 @@
-/**
- * Settings -> Named agent groups (#2431): groups the user names (Agents, Replies, Tasks...) that
- * split the Agents list. Which group a row is in is the shared `agentGroupOf` setting, by the
- * row's pin key (lib/sidebarPins.ts), so every browser and the phone apps draw the same groups and
- * it outlives a reload as a pin does. Nothing is put in a group by itself: New workspace and New
- * tab offer the groups (the folder's last one picked first, kept on this device), and a row's menu
- * moves it.
- */
-
 import { pruneSidebarPins, sidebarPinKey } from "./sidebarPins.ts";
 
-/** how many groups, and how long a name, a list stays readable with */
 export const MAX_AGENT_GROUPS = 12;
 export const MAX_AGENT_GROUP_NAME = 32;
-/** rows with a group kept at most: the shared document stays small (shared/preferences.ts) */
 export const MAX_GROUPED_AGENTS = 300;
 
-/** The names as kept: trimmed, nonempty, each once, at most MAX_AGENT_GROUPS. */
 export function sanitizeGroupNames(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const names = raw.filter((name): name is string => typeof name === "string").map((name) => name.trim().slice(0, MAX_AGENT_GROUP_NAME)).filter((name) => name !== "");
   return [...new Set(names)].slice(0, MAX_AGENT_GROUPS);
 }
 
-/** The rows' groups as kept: pin key to a nonempty name, at most MAX_GROUPED_AGENTS. */
 export function sanitizeGroupOf(raw: unknown): Record<string, string> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
   const entries = Object.entries(raw).filter((entry): entry is [string, string] => entry[0] !== "" && typeof entry[1] === "string" && entry[1].trim() !== "");
@@ -33,10 +20,6 @@ interface GroupedRow { machine: { id: string }; entry: { pane: { pane_id: string
 
 const keyOf = ({ machine, entry }: GroupedRow): string => sidebarPinKey(machine.id, entry.pane.pane_id);
 
-/**
- * The group a row is drawn in: its own, else the one of the agent that started it (a helper stays
- * with its agent), else none. A name no longer in the list is none.
- */
 export function rowAgentGroup<R extends GroupedRow>(row: R, groupOf: Readonly<Record<string, string>>, names: readonly string[], all: readonly R[]): string | null {
   const byKey = new Map(all.map((candidate) => [keyOf(candidate), candidate]));
   const passed = new Set<R>();
@@ -48,22 +31,12 @@ export function rowAgentGroup<R extends GroupedRow>(row: R, groupOf: Readonly<Re
   return null;
 }
 
-/**
- * The rows split by group, in the order of `names`, each in the order given; the rows in no group
- * last, as `name: null`. A group with no row is left out.
- */
 export function splitNamedGroups<R extends GroupedRow>(rows: readonly R[], groupOf: Readonly<Record<string, string>>, names: readonly string[], all: readonly R[] = rows): { name: string | null; rows: R[] }[] {
   const byName = new Map<string | null, R[]>([...names.map((name): [string, R[]] => [name, []]), [null, []]]);
   for (const row of rows) byName.get(rowAgentGroup(row, groupOf, names, all))!.push(row);
   return [...byName].flatMap(([name, grouped]) => grouped.length === 0 ? [] : [{ name, rows: grouped }]);
 }
 
-/**
- * The groups after the row's is set (`null`: out of any group). Rows gone from a loaded PC leave
- * with it, as pins leave with a change of the user's (lib/sidebarPins.ts pruneSidebarPins): `kept`
- * says which keys may stay. A row new to the map is refused (null) once MAX_GROUPED_AGENTS rows
- * have a group: no other row's group is dropped to make room.
- */
 export function assignAgentGroup(groupOf: Readonly<Record<string, string>>, key: string, name: string | null, kept: (key: string) => boolean = () => true): Record<string, string> | null {
   const next = Object.fromEntries(Object.entries(groupOf).filter(([held]) => held !== key && kept(held)));
   if (name !== null && !(key in groupOf) && Object.keys(next).length >= MAX_GROUPED_AGENTS) return null;
@@ -81,7 +54,6 @@ export function liveGroupKeys(groupOf: Readonly<Record<string, string>>, machine
   return new Set(pruneSidebarPins(Object.keys(groupOf), live, machines, hidden));
 }
 
-/** The names and groups after a group is renamed: its rows go with it. A name taken by another group is refused (null). */
 export function renameAgentGroup(names: readonly string[], groupOf: Readonly<Record<string, string>>, from: string, to: string): { names: string[]; groupOf: Record<string, string> } | null {
   const name = to.trim().slice(0, MAX_AGENT_GROUP_NAME);
   if (name === "" || (name !== from && names.includes(name))) return null;
@@ -91,12 +63,11 @@ export function renameAgentGroup(names: readonly string[], groupOf: Readonly<Rec
   };
 }
 
-/** The names and groups after a group is removed: its rows are in no group. */
 export function removeAgentGroup(names: readonly string[], groupOf: Readonly<Record<string, string>>, name: string): { names: string[]; groupOf: Record<string, string> } {
   return { names: names.filter((held) => held !== name), groupOf: Object.fromEntries(Object.entries(groupOf).filter(([, held]) => held !== name)) };
 }
 
-/** The groups after herdr moved a pane under a new ID (#1503): its group goes with it. The map itself when it had none. */
+/** The groups after herdr moved a pane under a new ID (#1503): its group goes with it. */
 export function movedAgentGroup(groupOf: Readonly<Record<string, string>>, machineId: string, from: string, to: string): Readonly<Record<string, string>> {
   const before = sidebarPinKey(machineId, from), after = sidebarPinKey(machineId, to);
   const name = groupOf[before];
@@ -106,7 +77,6 @@ export function movedAgentGroup(groupOf: Readonly<Record<string, string>>, machi
   return next;
 }
 
-/** the group last picked for each folder, on this device: New workspace and New tab start on it */
 const FOLDER_GROUPS_KEY = "ovis:agent-group-by-folder";
 const MAX_FOLDER_GROUPS = 100;
 
@@ -123,14 +93,12 @@ function readFolderGroups(): Record<string, string> {
   } catch { return {}; }
 }
 
-/** The group last picked for this PC's folder, when it is still one of `names`; null otherwise. */
 export function folderAgentGroup(machineId: string, folder: string | null, names: readonly string[]): string | null {
   if (folder === null || folder.trim() === "") return null;
   const name = readFolderGroups()[folderKey(machineId, folder)];
   return name !== undefined && names.includes(name) ? name : null;
 }
 
-/** Keeps the group picked for this PC's folder (`null`: none picked), the latest last. */
 export function rememberFolderAgentGroup(machineId: string, folder: string | null, name: string | null): void {
   if (folder === null || folder.trim() === "") return;
   const key = folderKey(machineId, folder);
@@ -140,7 +108,6 @@ export function rememberFolderAgentGroup(machineId: string, folder: string | nul
   catch { /* storage denied: the next opening starts with no group */ }
 }
 
-/** What this device keeps under a group's name (the folders' last groups, the folds) follows a rename (`to`) or a removal (null). */
 export function renameDeviceAgentGroup(from: string, to: string | null): void {
   const folders = Object.entries(readFolderGroups()).flatMap(([key, name]): [string, string][] => name !== from ? [[key, name]] : to === null ? [] : [[key, to]]);
   try { window.localStorage.setItem(FOLDER_GROUPS_KEY, JSON.stringify(Object.fromEntries(folders))); }
@@ -148,7 +115,6 @@ export function renameDeviceAgentGroup(from: string, to: string | null): void {
   saveFoldedAgentGroups(loadFoldedAgentGroups().flatMap((name) => name !== from ? [name] : to === null ? [] : [to]));
 }
 
-/** the groups this device folds in the Agents list, by name */
 const FOLDS_KEY = "ovis:agent-group-folds";
 
 export function loadFoldedAgentGroups(): string[] {

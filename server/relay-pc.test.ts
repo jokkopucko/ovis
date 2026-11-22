@@ -36,7 +36,6 @@ it("saves an admitted key privately and signs in with it again", async () => {
 });
 
 it("reads back only carriers this server dials, at most four, from an edited key file", async () => {
-  // Given a saved key whose carriers were edited to name other hosts and kinds
   const path = keyPath();
   const pc = offer();
   const key = await RelayPcKey.create(path, pc, () => true);
@@ -46,7 +45,6 @@ it("reads back only carriers this server dials, at most four, from an edited key
   saved.direct = ["ws://8.8.8.8:7319", "wss://192.168.0.11:7319", 7, "ws://192.168.0.12:7319/v1/ws", "ws://10.0.0.1:1",
     "ws://100.64.0.7:7319", "ws://172.16.0.2:7319", "ws://169.254.0.3:7319", "ws://192.168.0.13:7319"];
   writeFileSync(path, JSON.stringify(saved));
-  // When it is read back
   const loaded = await RelayPcKey.load(path, () => true);
   // Then only carriers this server dials come back (private or Tailscale, on a direct listener's port), at most four
   expect(loaded.direct).toEqual(["ws://100.64.0.7:7319", "ws://172.16.0.2:7319", "ws://192.168.0.13:7319"]);
@@ -63,7 +61,6 @@ it("writes no key for a PC removed while its pairing finished", async () => {
   expect(existsSync(path)).toBe(false);
 });
 
-/** A relay socket that closes before the relay assigns it, as an unreachable relay's does; records where it was dialed. */
 function unreachable(dialed: string[]) {
   return (url: string) => {
     dialed.push(new URL(url).origin);
@@ -75,11 +72,9 @@ function unreachable(dialed: string[]) {
 }
 
 it("adds a PC through the global relay when its regional relay cannot be reached", async () => {
-  // Given a PC whose offer names Ovis's regional relay, which does not answer
   const pc = { ...offer(), relay: REGIONAL_RELAYS[0]! };
   const key = await RelayPcKey.create(keyPath(), pc, () => true);
   const dialed: string[] = [];
-  // Then the regional relay and then the global one, which that PC also keeps a link to, are tried
   await expect(openRelayPcTunnel(pc, key, { socket: unreachable(dialed), onLost: () => {} })).rejects.toBeInstanceOf(RelayUnreachableError);
   expect(dialed).toEqual([pc.relay, GLOBAL_RELAY]);
 });

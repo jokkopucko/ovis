@@ -7,7 +7,7 @@ import WebKit
 /// origin (DirectCallGate) may call it, only `ws://<private or Tailscale IPv4>:<port>/v1/ws?v=1` opens, at most two at
 /// once. Frames go to the page in order as `{ id, kind, data }` (binary as base64); a socket whose messages
 /// the page has not acknowledged pass 4 MiB or 16,384 is closed with 1009. Noise inside the channel proves
-/// the PC: the address is only a hint. Android's twin: app/android/app/src/main/java/sh/ovis/app/OvisDirectPlugin.java.
+/// the PC: the address is only a hint.
 @objc(OvisDirectPlugin)
 public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "OvisDirectPlugin"
@@ -26,20 +26,16 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private final class Socket {
         let task: URLSessionWebSocketTask
-        /// sizes of the messages sent to the page and not acknowledged yet, oldest first
         var unacked: [Int] = []
         var unackedBytes = 0
-        /// sends handed to the task and not completed yet: bounded as the page's queue is
         var pendingSends = 0
         var pendingBytes = 0
         var finished = false
         init(task: URLSessionWebSocketTask) { self.task = task }
     }
 
-    /// every socket's state, and the session's callbacks, on this one queue
     private let queue = DispatchQueue(label: "sh.ovis.direct")
     private var sockets: [String: Socket] = [:]
-    /// whether `session` was made, so teardown does not make one only to end it
     private var sessionMade = false
     private var pageObserver: NSObjectProtocol?
     private lazy var session: URLSession = {
@@ -102,7 +98,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             task.maximumMessageSize = Self.maxQueuedBytes
             let id = UUID().uuidString
             self.sockets[id] = Socket(task: task)
-            // answered before the socket starts, so the page knows it before any of its events
             call.resolve(["id": id])
             task.resume()
             self.receive(id)
@@ -159,7 +154,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let socket = self.sockets[id], !socket.finished else { call.resolve(); return }
             socket.task.cancel(with: URLSessionWebSocketTask.CloseCode(rawValue: code) ?? .normalClosure, reason: reason.data(using: .utf8))
             call.resolve()
-            // the PC's answer to the close usually comes first; a peer that never answers ends it here
             self.queue.asyncAfter(deadline: .now() + 5) { self.finish(id, code: code, reason: reason, error: false) }
         }
     }
@@ -219,7 +213,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Ends `id` once: an error event first when it broke, then its close event.
     fileprivate func finish(_ id: String, code: Int, reason: String, error: Bool) {
         guard let socket = sockets[id], !socket.finished else { return }
         socket.finished = true
@@ -261,7 +254,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
 }
 
 extension Notification.Name {
-    /// The web view's main frame committed a new page (NavigationFailureProxy).
     static let ovisPageCommitted = Notification.Name("sh.ovis.pageCommitted")
 }
 

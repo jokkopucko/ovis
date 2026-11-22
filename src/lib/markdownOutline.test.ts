@@ -10,7 +10,6 @@ describe("outlineOf", () => {
       { level: 1, text: "Guide", at: 0 },
       { level: 2, text: "Install now", at: 1 },
       { level: 3, text: "With bun", at: 2 },
-      // a heading in a quote is not one of the document's: the Preview draws it inside the quote
       { level: 4, text: "Links and x^2 logo", at: 3 },
     ]);
   });

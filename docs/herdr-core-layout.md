@@ -21,6 +21,7 @@ terminal (`hc label`, `terminal.label`; a label set to the empty string is remov
 | `ovis.workspace` | the workspace's name | Ovis, on each terminal of a renamed workspace |
 | `ovis.tab` | the tab's name | Ovis, on each terminal of a renamed tab |
 | `ovis.pane` | the pane's name (else the terminal's own `name`) | Ovis, on a renamed pane |
+| `ovis.opencode` | the OpenCode sessions the terminal reported, newest last, space separated | Ovis, while OpenCode runs there; removed once it is gone |
 
 `ovis.*` labels hold only small facts about one terminal. Nothing else Ovis keeps (approvals,
 prompt answers, conversations) is stored in hc.

@@ -26,7 +26,6 @@ const piFolder = (line: string): boolean => /^(?:[A-Za-z]:[\\/]|[~\/])/.test(lin
 const piStatus = (lines: string[], at: number): boolean => process.platform !== "win32" && at >= 2 && !piStats(lines[at] ?? "")
   && !PROMPT_LINE_RE.test(lines[at]!.trim()) && piStats(lines[at - 1] ?? "") && piFolder(lines[at - 2] ?? "");
 
-/** Also reserves malformed/clipped active drawings, never old hints above a newer prompt. */
 export function isPiQuestionnaireScreen(screen: string): boolean {
   const lines = screen.slice(-8192).replace(ANSI_RE, "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (piStatus(lines, lines.length - 1)) lines.pop();
@@ -44,7 +43,6 @@ export function isPiQuestionnaireScreen(screen: string): boolean {
 export const MAX_QUESTIONNAIRE_SCREEN_CHARS = 64 * 1024;
 const MAX_QUESTIONNAIRE_SCREEN_LINES = 512;
 
-/** Compare a wrapped suffix one line at a time, without copying growing screen suffixes. */
 function suffixStart(lines: string[], text: string): number {
   const wanted = compact(text);
   let end = wanted.length;
@@ -128,7 +126,6 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
   const joined = compact(content.join(" "));
   const inputMode = joined.endsWith(compact(INPUT));
   if (!joined.endsWith(compact(inputMode ? INPUT : hint))) return null;
-  // Strip the complete wrapped hint, preserving all content before its leading blank.
   const hintStart = suffixStart(content, inputMode ? INPUT : hint);
   if (hintStart <= 0) return null;
   let own = content.slice(0, hintStart);
@@ -160,7 +157,6 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
       const next = answered.slice(questionIndex + 1).find(tab => tab.answered);
       const nextPrefix = next ? `${compact(next.label)}:` : null;
       const end = nextPrefix ? dense.indexOf(nextPrefix, at) : dense.length;
-      // A header inside an answer is ambiguous, not a guessed summary boundary.
       if (end <= at || nextPrefix && dense.indexOf(nextPrefix, end + 1) !== -1) return null;
       const rendered = summary.slice(positions[at], positions[end] ?? summary.length).trim();
       let answer = rendered.replace(/\n/g, " ");
@@ -173,7 +169,7 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
         const exact = rendered.includes("\n") ? [] : q.options.filter(option => option.label === rendered);
         const candidates = exact.length ? exact : q.options.filter(option => same(option.label, answer));
         if (candidates.length !== 1) return null;
-        answer = candidates[0]!.label; // recover only unambiguous hard-wrapped words
+        answer = candidates[0]!.label;
       }
       answers.push({ question: tab.label, answer });
       at = end;
@@ -194,7 +190,7 @@ export function parsePiQuestionnaire(screen: string, source?: PiQuestionnaire): 
     const answerAt = own.findIndex(line => line.trim() === "Your answer:");
     if (!q.allowOther || answerAt < first) return null;
     const editor = own.slice(answerAt + 1).filter(line => line.trim());
-    // An empty editor still has its blank cursor row. Inspect the full slice instead.
+    // An empty editor still has its blank cursor row.
     const drawing = own.slice(answerAt + 1);
     while (!drawing[0]?.trim() && drawing.length) drawing.shift();
     if (editor.length < 2 || !/^ ─{6,}$/.test(drawing[0] ?? "") || drawing.at(-1) !== drawing[0]) return null;

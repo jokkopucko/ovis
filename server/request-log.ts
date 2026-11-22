@@ -9,7 +9,6 @@ const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIO
 export const clientRequestId = (value: string | null): string | undefined => value !== null && CLIENT_ID.test(value) ? value : undefined;
 export const requestMethod = (value: string): string => METHODS.has(value) ? value : "OTHER";
 
-/** One synchronous, bounded writer per server; no queue, timer or streaming-body reader. */
 export class RequestLog {
   private fd: number | undefined;
   private warned = false;
@@ -21,7 +20,6 @@ export class RequestLog {
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
       this.open();
     } catch (error) {
-      // Completion telemetry is best effort, including unavailable or read-only state.
       this.disable(error);
     }
   }

@@ -1,0 +1,58 @@
+.shell-pcs {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shell-pc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--side-row);
+  padding-inline: var(--space-2);
+}
+
+.shell-pc-open {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--touch-target);
+  color: var(--text-strong);
+  font-weight: var(--fw-semibold);
+  text-decoration: none;
+}
+
+.shell-pc-open > svg {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+}
+
+.shell-pc-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-pc[data-pc-state="off"] .shell-pc-open { color: var(--text-dim); }
+
+.shell-pc-off {
+  display: flex;
+  flex: none;
+  margin-inline-start: auto;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.shell-pc-check {
+  min-height: var(--touch-target);
+  padding-inline: var(--space-3);
+  font-size: var(--fs-sm);
+}

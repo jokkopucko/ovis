@@ -5,7 +5,6 @@ import type { Browser } from "playwright-core";
 
 type ProbeWindow = Window & { ready: boolean; messages: Array<{ type?: string; pane?: string; url?: string }>; selections: unknown[] };
 
-/** Real worker-to-App messages during startup; window creation/focus are controlled, not native notification activation. */
 export async function checkNotificationStartup(browser: Browser, upstream: string, olderPane: string, newerPane: string): Promise<void> {
   let releaseJS!: () => void;
   const jsGate = new Promise<void>((resolve) => { releaseJS = resolve; });

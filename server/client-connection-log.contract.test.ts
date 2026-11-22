@@ -11,7 +11,7 @@ it("gates bounded client diagnostics by auth and same origin, permits watch repo
   const devices = new DeviceStore(stateDir);
   const code = devices.startPairing().code;
   const paired = devices.pair(code, "Fictional viewer", "watch")!;
-  devices.match(paired.token); // Confirm only this fixture's first pairing before the server loads it.
+  devices.match(paired.token);
   const lines: string[] = [];
   const warn = spyOn(console, "warn").mockImplementation((line) => { lines.push(String(line)); });
   const app = createServer({ port: 0, hostname: "127.0.0.1", token: "fixture-owner-token", stateDir, machines: false, registerBridge: false, herdrProfiles: async () => [], tailscaleOwner: null });

@@ -109,7 +109,6 @@ final class PushKeys {
         return parameters.getParameterSpec(ECParameterSpec.class);
     }
 
-    /** A coordinate or scalar as exactly 32 big-endian bytes. */
     private static byte[] unsigned32(BigInteger value) {
         byte[] bytes = value.toByteArray();
         if (bytes.length == 32) return bytes;

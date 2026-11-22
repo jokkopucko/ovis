@@ -9,7 +9,6 @@ import { diffFindLines } from "./repoDiffFind.ts";
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const BASE = "fedcba9876543210fedcba9876543210fedcba98";
 
-/** A patch of `count` unchanged lines with one removed near the end. */
 function largePatch(count: number, removedAt: number): string {
   const body: string[] = [];
   for (let line = 1; line <= count; line++) body.push(line === removedAt ? `-  removed ${line};` : ` line ${line};`);
@@ -32,22 +31,15 @@ function capture(patch: string, at: { side: "old" | "new"; line: number }, scope
   return { machine: "home-server", repository: "/home/me/shop", comparison: capturedComparison(answer(scope, patch), patch), path: "src/big.ts", line };
 }
 
-/**
- * The parts of a note's quote an agent reads: the strings it names (JSON, so any path survives), the
- * side, line and kind, the comparison, and the fenced text (a whitespace-only line as a JSON string).
- */
 function parts(quote: string) {
   const lines = quote.split("\n");
   const open = lines.findIndex((line) => /^`{3,}$/.test(line));
   const close = open < 0 ? -1 : lines.indexOf(lines[open]!, open + 1);
   if (close !== lines.length - 1) throw new Error(`no fence closes the quote: ${quote}`);
-  // the names are the JSON strings before the fence, in order: path, PC, repository
   const strings = /"(?:[^"\\]|\\.)*"/g;
   const names = [...lines.slice(0, open).join("\n").matchAll(strings)].map((match) => JSON.parse(match[0]) as string);
-  // the first line's values once its name is taken out: the side, the kind and the one-based line
   const head = lines[0]!.replace(strings, "");
   const fenced = lines.slice(open + 1, close).join("\n");
-  // a whitespace-only line goes as a JSON string
   let text = fenced;
   if (/^".*"$/.test(fenced)) { const parsed = JSON.parse(fenced) as string; if (/^[\s\u0085]*$/.test(parsed)) text = parsed; }
   return {
@@ -104,7 +96,6 @@ describe("diff line notes", () => {
   it("finds the logical line of a hovered or tapped row: a removed row by its old number, the rest by their new one", () => {
     const lines = diffFindLines(largePatch(10, 4));
     expect(lineAtRow(lines, "deletions", 4)).toMatchObject({ kind: "deletion", side: "old", line: 4 });
-    // in split, the old column draws an unchanged line by its old number; its logical line is the new side's
     expect(lineAtRow(lines, "deletions", 6)).toMatchObject({ kind: "context", side: "new", line: 5 });
     expect(lineAtRow(lines, "additions", 5)).toMatchObject({ kind: "context", side: "new", line: 5 });
     expect(lineAtRow(lines, "additions", 99)).toBeNull();
@@ -127,7 +118,6 @@ describe("diff line notes", () => {
     expect(capturedComparison(answer("staged", patch), patch)).toBe(`staged on HEAD ${HEAD}, patch ${patchIdentity(patch)}`);
     expect(capturedComparison(answer("workspace", patch, { repository: { root: "/r", branch: null, head: null, detached: false, unborn: true } }), patch))
       .toBe(`working tree before the first commit, patch ${patchIdentity(patch)}`);
-    // another patch is another identity, the same patch the same one
     expect(patchIdentity(patch)).toBe(patchIdentity(largePatch(10, 4)));
     expect(patchIdentity(patch)).not.toBe(patchIdentity(largePatch(10, 5)));
     expect(patchIdentity(patch)).toMatch(/^[0-9a-f]{16}$/);
@@ -139,7 +129,6 @@ describe("diff line notes", () => {
     const draft = "x".repeat(MAX_COMPOSER_CHARS - messageWithComments([...waiting, { id: "", quote: "quote", comment: "note" }], "").length - 2);
     expect(noteOverflows(waiting, draft, "quote", "note")).toBe(false);
     expect(noteOverflows(waiting, `${draft}xyz`, "quote", "note")).toBe(true);
-    // a comment a send in flight carries is not in the next message
     expect(noteOverflows([...waiting, { id: "big", quote: "q", comment: "z".repeat(MAX_COMPOSER_CHARS) }], "Go ahead", "quote", "note", new Set(["big"]))).toBe(false);
   });
 

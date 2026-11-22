@@ -1,25 +1,13 @@
-/**
- * Builds Ovis for the desktop on the machine it is for (Linux or macOS, x64 or arm64; Windows x64):
- *
- *   bun scripts/build.ts stage    pinned herdr-core and Bun, checked, plus the Ovis server, into stage/
- *   bun scripts/build.ts bundle   the main process and preload into out/
- *   bun scripts/build.ts          both, then the installers into dist/ (AppImage; dmg and zip; NSIS setup exe)
- *   bun scripts/build.ts package  the bundle and the installers from the stage/ already there
- *   bun scripts/build.ts merge-feed <out> <latest-mac.yml>…   the Mac builds' feeds as one (scripts/feed.ts)
- *
- * OVIS_UPDATE_FEED=https://… builds the app to update itself from that generic feed.
- * OVIS_RELEASE_TAG=vX.Y.Z (the release workflow) stops the build unless package.json says X.Y.Z.
- */
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mergeFeeds } from "./feed.ts";
-import { importedPackages, pruneUnused } from "./server-packages.ts";
+import { stageServerArtifact } from "../../../scripts/server-artifact.ts";
 import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget, sha256, type Pinned } from "./runtimes.ts";
 
 const here = resolve(import.meta.dir, "..");
 const repo = resolve(here, "..", "..");
-const step = process.argv[2] ?? "dist";
-if (!["stage", "bundle", "package", "dist", "merge-feed"].includes(step)) throw new Error("Usage: bun scripts/build.ts [stage|bundle|package|merge-feed <out> <feed>…]");
+const step = process.argv[2] === "--stage-only" ? "stage" : process.argv[2] ?? "dist";
+if (!["stage", "bundle", "package", "dist", "merge-feed"].includes(step)) throw new Error("Usage: bun scripts/build.ts [stage|--stage-only|bundle|package|merge-feed <out> <feed>…]");
 if (step === "merge-feed") {
   const [out, ...inputs] = process.argv.slice(3);
   if (!out || inputs.length === 0) throw new Error("Usage: bun scripts/build.ts merge-feed <out> <latest-mac.yml>…");
@@ -76,7 +64,7 @@ function copyExecutable(from: string, to: string): void {
 async function stageAll(): Promise<void> {
   const runtimes = await fetchRuntimes();
   rmSync(stage, { recursive: true, force: true });
-  for (const dir of ["bin", "licenses/herdr-core", "licenses/bun", "server/scripts"]) mkdirSync(join(stage, dir), { recursive: true });
+  for (const dir of ["bin", "licenses/herdr-core", "licenses/bun"]) mkdirSync(join(stage, dir), { recursive: true });
   copyExecutable(join(runtimes, "hc", `herdr-core${exe}`), join(stage, "bin", `herdr-core${exe}`));
   // hc on Windows runs its terminals on the ConPTY beside it (conpty\conpty.dll, conpty\x64\OpenConsole.exe)
   if (windows) cpSync(join(runtimes, "hc", "conpty"), join(stage, "bin", "conpty"), { recursive: true });
@@ -89,32 +77,20 @@ async function stageAll(): Promise<void> {
   const bun = (await sh([join(stage, "bin", `bun${exe}`), "--version"], stage)).trim();
   if (bun !== BUN_VERSION) throw new Error(`The staged Bun says ${bun}, not ${BUN_VERSION}`);
 
-  // the server as the installer and the remote bundles run it: its sources, the built client and the production packages its code imports
   await sh(["bun", "run", "build"], repo);
-  const server = join(stage, "server");
-  for (const dir of ["server", "shared", "integrations", "dist", "patches"]) {
-    cpSync(join(repo, dir), join(server, dir), { recursive: true, filter: (path) => !path.endsWith(".test.ts") });
-  }
-  for (const file of ["package.json", "bun.lock"]) cpSync(join(repo, file), join(server, file));
-  for (const script of ["install-gjc-integration.ts", "install-pi-integration.ts"]) cpSync(join(repo, "scripts", script), join(server, "scripts", script));
-  await sh([join(stage, "bin", `bun${exe}`), "install", "--production", "--frozen-lockfile", "--ignore-scripts"], server, { ...process.env, BUN_INSTALL_CACHE_DIR: join(here, ".cache", "bun-install") });
-  // package-manager links: nothing runs them, and an installer need not carry symlinks
-  rmSync(join(server, "node_modules", ".bin"), { recursive: true, force: true });
-  // the client's packages are bundled into dist/: only what the server's own code imports stays
-  const removed = pruneUnused(server, importedPackages(["server", "shared", "integrations", "scripts"].map((dir) => join(server, dir))));
-  console.log(`left out ${removed.length} packages the server does not import`);
-  // the release's Rust PTY host (checked against the release manifest), which a sign-in the server
-  // follows in a terminal of its own needs on a PC without Node; without it the build goes on
+  // The release's Rust PTY host (checked against the release manifest) goes in
+  // with its record, which a sign-in the server follows in a terminal of its own needs on a PC without Node; without
+  // it the build goes on
   await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
   const host = join(repo, "bin", "ovis-pty-sidecar");
-  if (existsSync(host)) {
-    mkdirSync(join(server, "bin"));
-    copyExecutable(host, join(server, "bin", "ovis-pty-sidecar"));
-    if (existsSync(`${host}.json`)) cpSync(`${host}.json`, join(server, "bin", "ovis-pty-sidecar.json"));
-  } else {
-    console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
-  }
-  // the project's own license and notices, for the client, server and assets the app carries
+  if (!existsSync(host)) console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
+  await stageServerArtifact({
+    platform: windows ? "windows-x64" : target,
+    dir: join(stage, "server"),
+    nodePty: true,
+    downloads: join(cache, "server-downloads"),
+    ...(existsSync(host) ? { ptySidecar: { binary: host, ...(existsSync(`${host}.json`) ? { record: `${host}.json` } : {}) } } : {}),
+  });
   for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) cpSync(join(repo, file), join(stage, file));
   writeFileSync(join(stage, "versions.json"), JSON.stringify({ hc: HC_VERSION, bun: BUN_VERSION }));
   cpSync(join(repo, "app", "web", "ovis-logo.png"), join(here, "renderer", "ovis-logo.png"));
@@ -130,7 +106,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 async function bundle(): Promise<void> {
   rmSync(join(here, "out"), { recursive: true, force: true });
   await sh(["bun", "build", "src/main.ts", "src/preload.ts", "--target=node", "--format=cjs", "--outdir=out", "--external", "electron"], here);
-  // the packages the bundle took in (electron-updater and what it uses) ship with their license texts
   const main = readFileSync(join(here, "out", "main.js"), "utf8");
   const packages = [...new Set([...main.matchAll(/^\/\/ node_modules\/((?:@[^/\n]+\/)?[^/\n]+)\//gm)].map((match) => match[1]!))].sort();
   const texts = packages.map((name) => {
@@ -193,7 +168,6 @@ async function dist(): Promise<void> {
   if (windows) await windowsIcon();
   if (target.startsWith("linux-")) await linuxIcons();
   const version = (JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string }).version;
-  // the app says the release's version, which is also the server's it carries
   const tag = process.env["OVIS_RELEASE_TAG"]?.trim();
   if (tag && tag !== `v${version}`) throw new Error(`OVIS_RELEASE_TAG is ${tag}, but package.json says ${version}`);
   const [os, arch] = target.split("-") as [string, string];

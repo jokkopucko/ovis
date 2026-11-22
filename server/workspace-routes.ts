@@ -4,44 +4,28 @@
  * and the disk; the dispatcher in index.ts runs the access gate first.
  */
 import type { ServerContext } from "./dispatch.ts";
-import { statSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { MAX_LABEL_CHARS } from "../shared/labels.ts";
 import { MAX_INVENTORY_WORKSPACES, type WorktreeInventoryEntry } from "../shared/workspace-lifecycle.ts";
-import { argumentText, firstMessageFault } from "../shared/launch-rules.ts";
+import { hasNoControlCharacters, firstMessageFault } from "../shared/launch-rules.ts";
 import type { DirectoryCreated, PendingMessage, ServerMessage, TabMoved, TabMovedToWorkspace, WorkspaceMoved } from "../shared/protocol.ts";
+import type { FirstMessageAsk } from "./pending-input.ts";
 import type { MoveReceipt } from "./order-sequence.ts";
 import { agentFault, agentLaunch, type AgentPayload } from "./agent-launch.ts";
-import { createDirectory, listDirectories } from "./directories.ts";
+import { createDirectory, expandedDirectory, listDirectories } from "./directories.ts";
 import { HerdrError, paneMoveToNewTab, sessionSnapshot, tabClose, tabCreate, tabMove, tabRename, workspaceClose, workspaceCreate, workspaceMove, workspaceRename, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "./herdr/client.ts";
-import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse, readJsonObject, setRequestRoute } from "./http.ts";
+import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse, readJsonObject, requestFault, setRequestRoute, wordedHeaders } from "./http.ts";
 import { paneContext } from "./pane-context.ts";
 import { PullRequestError, mergeInputOf, mergePullRequest, pullRequestLog, pullRequestView } from "./pull-request.ts";
 import { repoDiffResponse } from "./repo-diff.ts";
 import { repoLogResponse } from "./repo-log.ts";
 import type { ShellAgentLocator } from "./shell-agent.ts";
 
-/** `value` as an absolute path (`~` expanded) when it is a directory this user can read; null otherwise. */
-export function expandedDirectory(value: string): string | null {
-  const expanded = value === "~" ? homedir() : value.startsWith("~/") ? resolve(homedir(), value.slice(2)) : resolve(value);
-  try {
-    return statSync(expanded).isDirectory() ? expanded : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The folder a repository route reads: the pane's own, or `directory` (absolute, `~/…`, or relative to
- * the pane's folder). A refusal in the API's envelope when there is none.
- */
 async function routeFolder(paneId: string | null, directory: string): Promise<string | Response> {
   if (!paneId && directory === "") return badRequest("missing_directory", "pane_id or directory query parameter is required");
   let base: string | undefined;
   if (paneId) {
     try { base = (await paneContext(paneId)).cwd; } catch (error) {
-      // a named folder is still read; the pane's own folder is gone with the pane
       if (directory === "") return errorResponse(error);
     }
   }
@@ -49,16 +33,13 @@ async function routeFolder(paneId: string | null, directory: string): Promise<st
   if (directory !== "") {
     const relative = directory !== "~" && !directory.startsWith("~/") && !isAbsolute(directory);
     if (relative && base === undefined) return badRequest("invalid_cwd", "a relative directory needs the pane it belongs to");
-    cwd = expandedDirectory(relative ? resolve(base!, directory) : directory) ?? undefined;
+    cwd = expandedDirectory(relative ? resolve(base!, directory) : directory, [base === undefined ? null : resolve(base)]) ?? undefined;
   }
   return cwd ?? badRequest("invalid_cwd", "directory must be a directory this user can read");
 }
 
-/** the most variables a create request's `env` may set */
 export const MAX_ENV_VARS = 64;
-/** the most a create request's `env` may hold, its names and values in UTF-8 bytes */
 export const MAX_ENV_BYTES = 32 * 1024;
-/** an environment variable's name as a shell takes it in `NAME=value` */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
  * How long one inventory read keeps asking herdr: a workspace still unread then is answered as a timed-out
@@ -80,23 +61,26 @@ function envFault(env: unknown): string | null {
   for (const [name, value] of entries) {
     // the name is quoted and cut: before this check it may hold anything
     if (!ENV_NAME.test(name)) return `env name ${JSON.stringify(name.slice(0, 64))} must be letters, digits and _, not starting with a digit`;
-    if (typeof value !== "string" || !argumentText(value)) return `env.${name} must be a string without control characters`;
+    if (typeof value !== "string" || !hasNoControlCharacters(value)) return `env.${name} must be a string without control characters`;
     bytes += Buffer.byteLength(name) + Buffer.byteLength(value);
   }
   if (bytes > MAX_ENV_BYTES) return `env may hold at most ${MAX_ENV_BYTES} bytes`;
   return null;
 }
 
-/** a create request's first message the bridge could not queue for the agent that did start: its own refusal */
-const notQueued = (error: unknown): { error: { code: string; message: string } } => ({ error: {
-  code: typeof (error as { code?: unknown } | null)?.code === "string" ? (error as { code: string }).code : "first_message_not_queued",
-  message: error instanceof Error ? error.message : String(error),
-} });
+const notQueued = (error: unknown): { error: { code: string; message: string } } => {
+  const own = error instanceof HerdrError ? undefined : (error as { code?: unknown } | null)?.code;
+  return { error: typeof own === "string" ? { code: own, message: error instanceof Error ? error.message : String(error) } : requestFault(error, "first_message_not_queued") };
+};
 
-/** The answer for a workspace route, or null when the path is not one. */
+/** server/core/pending.ts askFirstMessage and queueFirstMessage */
+export interface FirstMessages {
+  ask: (requester: string | null) => FirstMessageAsk;
+  queue: (paneId: string, text: string, kind: string, requester: FirstMessageAsk, launchedPid: number | null) => Promise<PendingMessage>;
+}
+
 export async function handleWorkspaceRequest(request: Request, url: URL, pathname: string, bunServer: Pick<ServerContext, "timeout">, broadcastAll: (message: ServerMessage) => void,
-  queueFirstMessage: (paneId: string, text: string, kind: string, requester: string | null, launchedPid: number | null) => Promise<PendingMessage>,
-  /** a move herdr confirmed: its receipt in this server's order (server/order-sequence.ts), taken at once */
+  firstMessages: FirstMessages,
   workspaceMoved: () => MoveReceipt, shellAgents?: ShellAgentLocator,
   /** false: the folders are another machine's, which hc checks as it starts the shell there */
   localFolders = true): Promise<Response | null> {
@@ -118,11 +102,10 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
   if (pathname === "/api/workspace/directories") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET or POST");
-    // a folder a pane's chat names is read from that pane's folder, as a file it names is
     const paneId = url.searchParams.get("pane_id");
     let base: string | undefined;
     if (paneId) {
-      try { base = (await paneContext(paneId)).cwd; } catch { /* an absolute path still lists */ }
+      try { base = (await paneContext(paneId)).cwd; } catch {}
       // a relative path whose pane is gone has no folder to be read from: not the server's own
       const path = (url.searchParams.get("path") ?? "").trim();
       if (base === undefined && path !== "" && path !== "~" && !path.startsWith("~/") && !isAbsolute(path)) return badRequest("invalid_cwd", "the pane a relative path belongs to is gone");
@@ -184,9 +167,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
   }
 
-  // A tab is made the way a workspace is: herdr opens it with a shell in its root pane, and
-  // the agent (if any) starts there through the one launch path, so names, retries and a
-  // partial failure read the same for both.
   if (pathname === "/api/workspace/create" || pathname === "/api/tab/create") {
     setRequestRoute(pathname);
     const inWorkspace = pathname === "/api/tab/create";
@@ -196,7 +176,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     if (inWorkspace && (typeof payload.workspace_id !== "string" || payload.workspace_id.trim() === "")) {
       return badRequest("missing_workspace_id", "workspace_id is required");
     }
-    // the client sends null for "not given": treat it exactly like an absent field
     if (payload.cwd === null) delete payload.cwd;
     if (payload.label === null) delete payload.label;
     if (payload.agent === null) delete payload.agent;
@@ -205,7 +184,8 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     const envProblem = envFault(payload.env);
     if (envProblem !== null) return badRequest("invalid_env", envProblem);
     if (payload.cwd !== undefined && typeof payload.cwd !== "string") return badRequest("invalid_cwd", "cwd must be an existing directory");
-    const cwd = payload.cwd === undefined ? undefined : localFolders ? expandedDirectory(payload.cwd) : payload.cwd;
+    // the folder of a create request is one the user picked and sees: a share too
+    const cwd = payload.cwd === undefined ? undefined : localFolders ? expandedDirectory(payload.cwd, "chosen") : payload.cwd;
     if (payload.cwd !== undefined && cwd === null) return badRequest("invalid_cwd", "cwd must be an existing directory");
     if (payload.label !== undefined && typeof payload.label !== "string") return badRequest("missing_label", "label must be a string");
     if (typeof payload.label === "string") {
@@ -226,6 +206,9 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
     // agent.start can legitimately take a minute; Bun's default idle timeout is shorter.
     if (payload.agent) bunServer.timeout(request, 75);
+    // taken before the workspace is made and the agent launched: a page that leaves or stops typing during that minute
+    // gets its first message held, as one that leaves after it is listed does
+    const asked = payload.agent && typeof payload.first_message === "string" ? firstMessages.ask(requester) : null;
     try {
       const options = {
         ...(cwd === undefined || cwd === null ? {} : { cwd }),
@@ -236,6 +219,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         ? await tabCreate({ ...options, workspaceId: payload.workspace_id as string })
         : await workspaceCreate(options);
       const workspaceId = created.tab.workspace_id;
+      asked?.at(created.root_pane.pane_id);
       // the page selects the pane on this answer but draws it only once the roster lists it: the roster is read as
       // the answer goes, not after the collector's debounced pane.created (500 ms). Not before the launch either:
       // herdr answers calls made at once up to 250 ms late, and the launch makes its own.
@@ -248,21 +232,21 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
       const launched = await agentLaunch(created.root_pane.pane_id, payload.agent, (pid) => { launchedPid = pid; }, shellAgents);
       // the request's first message is the user's send: queued for the agent's first ready turn through the
       // bridge's pending path (server/core/pending.ts), never typed here; an agent that did not start gets none
-      const firstMessage = launched.agent_started && typeof payload.first_message === "string"
-        ? await queueFirstMessage(created.root_pane.pane_id, payload.first_message, payload.agent.kind as string, requester, launchedPid).then((message): { id: string; held?: string } | ReturnType<typeof notQueued> => ({
+      const firstMessage = launched.agent_started && asked !== null
+        ? await firstMessages.queue(created.root_pane.pane_id, payload.first_message as string, payload.agent.kind as string, asked, launchedPid).then((message): { id: string; held?: string } | ReturnType<typeof notQueued> => ({
           id: message.id,
-          // held from the start (no page to type it, #2743): said, so a client tells it from a queued one
           ...(message.state === "held" && message.error ? { held: message.error.code } : {}),
         }), (error: unknown) => {
           console.warn(`first message for ${created.root_pane.pane_id} not queued: ${error instanceof Error ? error.message : String(error)}`);
-          // the agent runs and the message did not go in: told apart from an agent that did not start (null)
           return notQueued(error);
         })
         : null;
       broadcastAll({ type: "session-changed" });
-      return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, ...launched, ...(typeof payload.first_message === "string" ? { first_message: firstMessage } : {}) });
+      return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, ...launched, ...(typeof payload.first_message === "string" ? { first_message: firstMessage } : {}) }, 200, wordedHeaders());
     } catch (error) {
       return errorResponse(error);
+    } finally {
+      asked?.end();
     }
   }
 
@@ -294,7 +278,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     const entries: WorktreeInventoryEntry[] = [];
     const deadline = Date.now() + INVENTORY_BUDGET_MS;
     for (const workspaceId of workspaceIds) {
-      // a client that left, or a herdr too slow to finish in time: the rest is not asked (the client keeps their last branches)
       if (request.signal.aborted || Date.now() >= deadline) {
         entries.push({ workspace_id: workspaceId, error: { status: 502, code: "timeout", message: "not read: the inventory ran out of time" } });
         continue;
@@ -303,13 +286,12 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         const listing = await worktreeList(workspaceId);
         entries.push({ workspace_id: workspaceId, listing: { source: listing.source, worktrees: listing.worktrees } });
       } catch (error) {
-        // the status and words GET /api/worktree/list would have answered for it alone
         const refused = errorResponse(error);
         const body = (await refused.json()) as { error: { code: string; message: string } };
         entries.push({ workspace_id: workspaceId, error: { status: refused.status, code: body.error.code, message: body.error.message } });
       }
     }
-    return jsonResponse({ entries });
+    return jsonResponse({ entries }, 200, wordedHeaders());
   }
 
   if (pathname === "/api/worktree/remove") {
@@ -325,7 +307,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     bunServer.timeout(request, 75);
     try {
       const removed = await worktreeRemove(payload.workspace_id, payload.force === true);
-      // herdr closed the worktree's workspace: tell clients now, as the workspace close route does
       broadcastAll({ type: "session-changed" });
       return jsonResponse({ ok: true, path: removed.path, forced: removed.forced });
     } catch (error) {
@@ -341,7 +322,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     if (typeof payload.workspace_id !== "string" || payload.workspace_id.length === 0) {
       return badRequest("missing_workspace_id", "workspace_id is required");
     }
-    // the client sends null for "not given": an empty string is not given either
     const text = (value: unknown, name: string): string | undefined => {
       if (value === undefined || value === null) return undefined;
       if (typeof value !== "string") throw badRequest(`invalid_${name}`, `${name} must be a string`);
@@ -355,7 +335,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
       return response as Response;
     }
     if (label !== undefined && label.length > MAX_LABEL_CHARS) return badRequest("label_too_long", `label must be at most ${MAX_LABEL_CHARS} characters`);
-    // a checkout path is taken as git names it, spaces and all
     let path: string | undefined;
     if (payload.path !== undefined && payload.path !== null) {
       if (typeof payload.path !== "string") return badRequest("invalid_path", "path must be a string");
@@ -363,7 +342,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
     if (path !== undefined && !isAbsolute(path)) return badRequest("invalid_path", "path must be absolute");
     const creating = pathname === "/api/worktree/create";
-    // a new checkout can start an agent in its pane, as a new workspace can; null is "not given"
     const agent = creating ? payload.agent ?? undefined : undefined;
     const fault = agentFault(agent);
     if (fault !== null) return badRequest("invalid_agent", fault);
@@ -387,7 +365,6 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         return from(parent);
       });
       const launched = agent ? await agentLaunch(opened.root_pane.pane_id, agent, undefined, shellAgents) : {};
-      // as for a new tab: the roster is read as the answer goes
       broadcastAll({ type: "session-changed" });
       return jsonResponse({
         workspace_id: opened.workspace.workspace_id,
@@ -396,7 +373,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         path: opened.worktree.path,
         branch: opened.worktree.branch,
         ...launched,
-      });
+      }, 200, wordedHeaders());
     } catch (error) {
       // git's own words for a branch that has no commit yet (a folder just `git init`ed): with no
       // base named there is nothing to check out from, which the dialog says in its own words

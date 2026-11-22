@@ -5,7 +5,6 @@ export interface TeammateMessage {
   summary: string;
   status: "idle" | "message";
   text: string;
-  /** The original delivery, including runtime guidance, stays available on request. */
   raw: string;
 }
 export type TeammateMessagePart = TeammateMessage | { kind: "text"; text: string };
@@ -51,7 +50,7 @@ export function teammateMessageParts(text: string): TeammateMessagePart[] | null
           if (extra.length > 0 || (data.idleReason !== undefined && data.idleReason !== "available")) result = body;
         }
       }
-    } catch { /* Plain messages and torn JSON remain verbatim. */ }
+    } catch {}
     rest = rest.slice(envelope[0].length).trimStart();
     let raw = before.slice(0, before.length - rest.length).trimEnd();
     if (rest.startsWith(GUIDANCE)) {

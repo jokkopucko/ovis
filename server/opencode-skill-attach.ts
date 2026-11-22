@@ -11,13 +11,11 @@ import { HerdrError, paneRead, paneSendKeys, paneSendText } from "./herdr/client
 /** the key that accepted the selected row in the 2.0.32 recordings (fixtures opencode-autocomplete-2.0.32-skill-*) */
 export const OPENCODE_SKILL_ACCEPT_KEY = "Tab";
 export const OPENCODE_SKILL_ROW_WAIT_MS = 2_000;
-/** how long the screen after the key may take to show the accepted skill */
 export const OPENCODE_SKILL_ACCEPT_WAIT_MS = 1_000;
 const ROW_POLL_MS = 50;
 
 type Cell = { ch: string; bg: string; fg: string; bold: boolean };
 
-/** One screen line as cells with the background and weight SGR gave them; other escapes are dropped. */
 function cells(line: string): Cell[] {
   const out: Cell[] = [];
   let bg = "default";
@@ -63,7 +61,6 @@ const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\
  * - a box of rows `┃ … ┃` sharing one left and one right border;
  * - right under it, at the same left border: a bare `┃`, the input row(s) ending in the typed `@id`,
  *   a bare `┃`, the agent/model row, and the prompt's bottom edge `╹▀…` as wide as the box.
- * Returns its rows (as cells) and its agent row, or null for any other layout.
  */
 function autocomplete(screen: string, id: string): { rows: Cell[][]; panel: string; agent: string; inputFg: string; inputPrefix: string; inputTokens: string[] } | null {
   const all = screen.split(/\r?\n/u).map(cells);
@@ -83,7 +80,6 @@ function autocomplete(screen: string, id: string): { rows: Cell[][]; panel: stri
   const input = at;
   while (at < lines.length && filled.test(lines[at]!) && !lines[at]!.endsWith(`@${id}`)) at++;
   if (at >= lines.length || !new RegExp(`^${indent}┃ +(?:.* )?@${escape(id)}$`, "u").test(lines[at]!) || at - input > 8) return null;
-  // the input row's own background, right after its border: the colour of a row nobody selected
   const panel = all[at]![indent.length + 1]?.bg ?? "default";
   const inputFg = all[at]!.filter((cell) => cell.ch.trim() !== "").at(-1)!.fg;
   const inputText = lines.slice(input, at + 1).map((line) => line.replace(/^ *┃ */u, "")).join(" ");
@@ -117,10 +113,8 @@ export function skillRowSelected(screen: string, id: string): boolean {
   return selected.length === 1 && selected[0] === target;
 }
 
-/** Only the explicit agent label before the model separator is an identity; narrow model-only rows aren't. */
 const agentName = (line: string): string | null => /^ *┃ +(.+?)\s+·(?:\s|$)/u.exec(line)?.[1]?.trim().replace(/\s+/gu, " ") ?? null;
 
-/** The current prompt, anchored at its bottom edge, not an earlier bordered content block. */
 function promptState(screen: string, id: string, inputFg?: string): { agent: string | null; attached: boolean; space: boolean; token: string | null; prefix: string | null } | null {
   const all = screen.split(/\r?\n/u).map(cells);
   const lines = all.map(textOf);
@@ -134,7 +128,6 @@ function promptState(screen: string, id: string, inputFg?: string): { agent: str
   const top = lines.lastIndexOf(bare, bottom - 3);
   if (top < 0) return null;
   for (let index = bottom - 3; index > top; index--) {
-    // the last such token on the row: an earlier one can be a skill attached before it
     const match = [...lines[index]!.matchAll(/(?:^|\s)(@\S+)(?=\s|$)/gu)].at(-1);
     if (!match || !/^ *┃ /u.test(lines[index]!)) continue;
     const token = match[1]!;
@@ -145,8 +138,7 @@ function promptState(screen: string, id: string, inputFg?: string): { agent: str
     const tokenCells = all[index]!.slice(start, start + width);
     const next = all[index]![start + width];
     const paddingFg = all[index]![indent + 1]?.fg;
-    // Tab inserts a space drawn as input text, not panel padding. Without a pre-Tab colour,
-    // only that text-coloured separator can establish the normal input foreground.
+    // Tab inserts a space drawn as input text, not panel padding.
     const normalFg = inputFg ?? (next?.ch === " " && next.fg !== paddingFg ? next.fg : undefined);
     // Nothing after the token is typed yet, so a word starting the next input row is the token's own
     // wrapped tail (`@effect` + `-two`): the token is the two joined, never the first piece alone.
@@ -175,7 +167,6 @@ export function skillAccepted(screen: string, id: string, agent: string, inputFg
   return state?.attached === true && (state.agent === null || before === null || state.agent === before);
 }
 
-/** The `@id` tokens of `text` that name one of `skills`, in order, each once. */
 export function skillTokens(text: string, skills: readonly string[]): string[] {
   const known = new Set(skills);
   const found: string[] = [];
@@ -197,7 +188,6 @@ export interface SkillAttachIo {
 export const herdrSkillAttachIo = (paneId: string): SkillAttachIo => ({
   sendText: (text, allowed) => paneSendText(paneId, text, undefined, allowed),
   sendKeys: (keys, allowed) => paneSendKeys(paneId, keys, undefined, allowed),
-  // the visible screen with its colours: the selected row and an attached skill are drawn only in them
   screen: async () => (await paneRead({ paneId, source: "visible", format: "ansi" })).text,
   // fixed wait: the poll interval of typeWithSkills' deadline-bounded read of the autocomplete row
   wait: (ms) => Bun.sleep(ms),
@@ -206,7 +196,6 @@ export const herdrSkillAttachIo = (paneId: string): SkillAttachIo => ({
 
 const paste = (text: string): string => `\u001b[200~${text}\u001b[201~`;
 
-/** What reached the prompt, piece by piece: typed keys, or one bracketed paste (OpenCode treats them differently). */
 export type PromptPiece = { typed: string } | { pasted: string };
 
 /**
@@ -242,21 +231,17 @@ export async function typeWithSkills(text: string, skills: readonly string[], al
     let accepted = false;
     let insertedSpace = false;
     if (seen) {
-      // the checks awaited herdr: the box is read again right before the key, which goes only to that selected row
       await revalidate();
       if (!allowed()) throw new HerdrError("cancelled", "The message's sender may no longer type into this pane");
       const before = await io.screen();
       const box = autocomplete(before, id);
       // A read cannot guard the subsequent write atomically: that needs conditional herdr send-keys.
       if (box && skillRowSelected(before, id)) {
-        // the caller's last checks on the screen this key was decided on, which cost it no further read
         await beforeKey(before);
         await io.sendKeys([OPENCODE_SKILL_ACCEPT_KEY], allowed);
-        // attached only as the screen after the key shows it
         const deadline = io.now() + OPENCODE_SKILL_ACCEPT_WAIT_MS;
         const from = agentName(box.agent);
         let lastAgent: string | null = null;
-        // another agent named after Tab and not named back since: a model-only read cannot clear it
         let switched: string | null = null;
         do {
           const screen = await io.screen();
@@ -278,7 +263,6 @@ export async function typeWithSkills(text: string, skills: readonly string[], al
           if (switched !== null && late) {
             throw new HerdrError("submit_changed", `Tab switched OpenCode's agent from ${JSON.stringify(from)} to ${JSON.stringify(switched)}. Nothing more was typed.`);
           }
-          // a model-only row cannot show a switch from a named agent: it is taken only once the wait is up
           accepted = switched === null && (from === null || state?.agent != null || late) && skillAccepted(screen, id, box.agent, box.inputFg);
           insertedSpace ||= accepted;
           if (accepted || late) break;

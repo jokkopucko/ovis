@@ -17,18 +17,15 @@ export function accountServiceOf(env: Record<string, string | undefined>): strin
   try {
     const url = new URL(env["OVIS_ACCOUNT_SERVICE_URL"] ?? "https://account.ovis.sh");
     return url.protocol === "https:" ? url.origin : null;
-  } catch { return null; } // `off`, or no address at all
+  } catch { return null; }
 }
 
-/** A sign-in left at the provider's pages longer than this is given up. */
 export const SIGN_IN_MS = 10 * 60_000;
 
 const CLOSED_PAGE = "<!doctype html><meta charset=\"utf-8\"><title>Ovis</title><p style=\"font:16px system-ui;margin:3em;text-align:center\">You're signed in. You can close this tab and go back to Ovis.</p>";
 
 export interface LoopbackSignIn {
-  /** where the account service sends the browser back */
   readonly redirectUri: string;
-  /** the callback's query (`code=…&state=…`, or `error=…&state=…`), once the browser comes back */
   readonly returned: Promise<string>;
   /** the state of the sign-in the app opened: only a return naming it is taken */
   expect(state: string): void;
@@ -57,7 +54,6 @@ export async function startLoopbackSignIn(timeoutMs = SIGN_IN_MS): Promise<Loopb
     signIn.close();
   });
   const timer = setTimeout(() => { reject(new Error("The sign-in took too long")); signIn.close(); }, timeoutMs);
-  // taken before the port is open, so two starts at once still leave one sign-in
   const signIn: LoopbackSignIn & { redirectUri: string } = {
     redirectUri: "",
     returned: promise,
@@ -73,7 +69,6 @@ export async function startLoopbackSignIn(timeoutMs = SIGN_IN_MS): Promise<Loopb
   };
   current = signIn;
   try {
-    // a sign-in replaced while its port opens stops waiting for it
     await Promise.race([ended.promise, new Promise<void>((listening, failed) => { server.once("error", failed); server.listen(0, "127.0.0.1", () => listening()); })]);
   } catch (error) { signIn.close(); throw error; }
   if (current !== signIn) { server.close(); throw new Error("The sign-in was replaced or cancelled"); }

@@ -1,15 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
-import { isToolNarration, toolVerb, toolVerbKind } from "./toolVerbs.ts";
+import { isToolNarration, toolDisplayName, toolVerb, toolVerbKind } from "./toolVerbs.ts";
 
 describe("toolVerbKind", () => {
   it("reads every agent's file and shell tools as one of four verbs", () => {
     const expected: Record<string, string> = {
-      // Claude Code
       Read: "read", Edit: "edit", MultiEdit: "edit", NotebookEdit: "edit", Write: "write", Bash: "run",
-      // Codex
       exec: "run", exec_command: "run", shell: "run", shell_command: "run", local_shell: "run", apply_patch: "edit",
-      // pi, omp, gjc and omo name theirs in lowercase
       read: "read", edit: "edit", multiedit: "edit", patch: "edit", write: "write", bash: "run",
     };
     for (const [name, kind] of Object.entries(expected)) expect([name, toolVerbKind(name)]).toEqual([name, kind as ReturnType<typeof toolVerbKind>]);
@@ -17,13 +14,10 @@ describe("toolVerbKind", () => {
 
   it("leaves every other tool the chat knows under its own name", () => {
     const untouched = [
-      // counted as a file read or a command in the header, but not a plain read or run
       "Grep", "grep", "Glob", "glob", "LS", "ls", "find", "list", "search", "eval", "run_command",
-      // tools with their own row or panel
       "Skill", "Task", "Agent", "task", "WebFetch", "WebSearch", "webfetch", "web_search",
       "TodoWrite", "update_plan", "todo", "todo_write", "mcp__omo__todo",
       "create_goal", "update_goal", "get_goal", "request_user_input_async",
-      // a name that only contains a known one
       "mcp__files__read_all", "read_mcp_resource", "BashOutput", "write_stdin", "tool",
     ];
     for (const name of untouched) expect([name, toolVerbKind(name)]).toEqual([name, null]);
@@ -33,7 +27,6 @@ describe("toolVerbKind", () => {
     const script = 'const r = await tools.apply_patch("*** Begin Patch\\n*** Update File: src/a.ts\\n@@\\n-a\\n+b\\n*** End Patch");';
     expect(toolVerbKind("exec", script)).toBe("edit");
     expect(toolVerbKind("exec", '{"cmd":"bun test"}')).toBe("run");
-    // only a shell tool is re-read this way
     expect(toolVerbKind("Read", "*** Begin Patch\n*** End Patch")).toBe("read");
     expect(toolVerbKind("lookup", "*** Begin Patch\n*** End Patch")).toBeNull();
   });
@@ -65,16 +58,12 @@ describe("toolVerb", () => {
   });
 
   it("keeps the tool id when the summary is the call's intent, not its command or path", () => {
-    // omp sums a call up by its intent: server/transcript-records.ts
     expect(toolVerb(part("bash", { command: "ss -tlnp" }), "Checking ports")).toBeNull();
     expect(toolVerb(part("read", { path: "config.toml" }), "Looking at the config")).toBeNull();
     expect(toolVerb(part("edit", { path: "README.md", old_text: "teh", new_text: "the" }), "Fixing the typo")).toBeNull();
     expect(toolVerb(part("write", { path: "notes.md", content: "x" }), "Saving the notes")).toBeNull();
-    // the same calls without an intent are summed up by the command or path
     expect(toolVerb(part("bash", { command: "ss -tlnp" }), "ss -tlnp")).toBe("Ran");
-    // a Claude Bash call is summed up by its command, never its description
     expect(toolVerb(part("Bash", { command: "ss -tlnp", description: "Check ports" }), "Check ports")).toBeNull();
-    // a path is not what a command ran, nor a command what a file call read
     expect(toolVerb(part("bash", { path: "src/a.ts" }), "src/a.ts")).toBeNull();
     expect(toolVerb(part("read", { command: "cat a" }), "cat a")).toBeNull();
   });
@@ -82,9 +71,7 @@ describe("toolVerb", () => {
   it("keeps the tool id when there is nothing to put after the verb", () => {
     expect(toolVerb(part("Bash"), "")).toBeNull();
     expect(toolVerb(part("bash", { command: "   " }), "   ")).toBeNull();
-    // a call with no command or path is summed up by its own name
     expect(toolVerb(part("Bash"), "Bash")).toBeNull();
-    // input that is not JSON and not a patch
     expect(toolVerb({ name: "exec", input: "console.log(1)" }, "console.log(1)")).toBeNull();
     expect(toolVerb({ name: "exec", input: "null" }, "null")).toBeNull();
   });
@@ -102,11 +89,26 @@ describe("isToolNarration", () => {
     expect(isToolNarration(part("eval", { code: "await check()", summary: "Run the checks" }), "Run the checks")).toBe(true);
     expect(isToolNarration(part("Bash", { command: "bun test", description: " Run the unit tests " }), "Run the unit tests")).toBe(true);
     expect(isToolNarration(part("bash", { command: "lsof -i", intent: "Checking ports" }), "Checking ports")).toBe(true);
-    // the server cuts the sentence, so the cut one still matches
     expect(isToolNarration(part("eval", { code: "1", summary: "x".repeat(200) }), "x".repeat(120))).toBe(true);
     expect(isToolNarration(part("Bash", { command: "bun test", description: "Run the unit tests" }), "bun test")).toBe(false);
     expect(isToolNarration(part("Read", { file_path: "src/a.ts" }), "src/a.ts")).toBe(false);
     expect(isToolNarration(part("eval", { code: "1" }), "eval")).toBe(false);
     expect(isToolNarration({ name: "exec", input: "console.log(1)" }, "console.log(1)")).toBe(false);
+  });
+});
+
+describe("toolDisplayName", () => {
+  it("names an MCP tool by its server and tool (#3875)", () => {
+    expect(toolDisplayName("mcp__claude_ai_HomeAssistant__get_entity_state")).toBe("HomeAssistant get_entity_state");
+    expect(toolDisplayName("mcp__plugin_playwright_playwright__browser_take_screenshot")).toBe("playwright browser_take_screenshot");
+    expect(toolDisplayName("mcp__plugin_tools_github__create_issue")).toBe("tools_github create_issue");
+    expect(toolDisplayName("mcp__linear__create_issue")).toBe("linear create_issue");
+    expect(toolDisplayName("mcp__custom-tools__a__b")).toBe("custom-tools a__b");
+  });
+
+  it("keeps any other id as the agent names it", () => {
+    for (const name of ["Grep", "exec", "read_mcp_resource", "mcp__linear", "mcp____create_issue", "mcp__linear__", "MCP__linear__create_issue"]) {
+      expect(toolDisplayName(name)).toBe(name);
+    }
   });
 });

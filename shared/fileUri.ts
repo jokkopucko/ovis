@@ -1,4 +1,3 @@
-/** Local file URIs are read by the existing server-side file viewer. */
 export function fileUriPath(uri: string): string | null {
   // a control character belongs to no path, and URL drops a trailing one before it can be seen
   if (!/^file:\/\/\//i.test(uri) || /[\u0000-\u001f\u007f]/.test(uri)) return null;
@@ -11,6 +10,6 @@ export function fileUriPath(uri: string): string | null {
     // `/C:/Users/me/a.md` is how a URI writes a Windows drive path
     return /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
   } catch {
-    return null; // malformed URI input is not a file link
+    return null;
   }
 }

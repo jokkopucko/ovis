@@ -1,11 +1,3 @@
-/**
- * Synthetic native OmO todo answers through the real bridge, sidebar and plan panel, then the
- * plan chip's step in progress (#1040) as the fixture moves on: each later `todo` answer is appended
- * to the native transcript and the exact plan the bridge pushes for it is awaited on a socket of
- * this script's own, never a timer; a running task record beside it, a label that cannot break, a
- * list with no step in progress, every step done, a cleared list, and the pane split in herdr so
- * the chat's card is narrower than a phone.
- */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -35,7 +27,6 @@ mkdirSync(sessions, { recursive: true });
 const transcript = join(sessions, `2026-10-17T00-00-00-000Z_${id}.jsonl`);
 const answer = "Overall: 1/3 done\n  Build:\n    - [X] Read the source\n    - [ ] Implement OmO plans (in progress)\n  Verify:\n    - [ ] Run isolated validation";
 const LONG = "Verify-the-plan-chip-against-an-unbroken-label-that-never-wraps-and-stays-whole-in-the-button-name";
-/** the fixture's later answers, as OmO's todo tool writes them, appended in this order */
 const LATER: Record<string, { answer: string; plan: PlanSummary | null }> = {
   advanced: { answer: "Overall: 2/3 done\n  Build:\n    - [X] Read the source\n    - [X] Implement OmO plans\n  Verify:\n    - [ ] Run isolated validation (in progress)", plan: { done: 2, total: 3, current: "Run isolated validation" } },
   long: { answer: `Overall: 3/4 done\n  Build:\n    - [X] Read the source\n    - [X] Implement OmO plans\n  Verify:\n    - [X] Run isolated validation\n    - [ ] ${LONG} (in progress)`, plan: { done: 3, total: 4, current: LONG } },
@@ -67,7 +58,6 @@ let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let socket: WebSocket | undefined;
 let appended = 0;
-/** One more `todo` answer in the native transcript, as a turn of its own, so the pane's status stands. */
 function publish(text: string): void {
   const n = ++appended;
   const at = new Date(Date.parse("2026-10-17T00:01:00.000Z") + n * 60_000).toISOString();
@@ -79,7 +69,6 @@ function publish(text: string): void {
   ];
   appendFileSync(transcript, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
 }
-/** The next pane-status frame for the pane that says `want` of its plan and background count. */
 function pushed(want: (plan: PlanSummary | null | undefined, background: number | undefined) => boolean, what: string): Promise<{ plan: PlanSummary | null | undefined; background: number | undefined }> {
   return new Promise((resolve, reject) => {
     const signal = AbortSignal.timeout(20_000);
@@ -95,7 +84,6 @@ function pushed(want: (plan: PlanSummary | null | undefined, background: number 
   });
 }
 let paneIdOf = (): string => "";
-/** The chip as the page draws it. */
 const chip = (page: Page) => page.evaluate(() => {
   const toggle = document.querySelector<HTMLElement>(".bg-tasks-toggle");
   const current = toggle?.querySelector<HTMLElement>(".bg-tasks-current") ?? null;
@@ -132,7 +120,6 @@ try {
   workspaceId = created.workspace.workspace_id;
   const paneId = created.root_pane.pane_id;
   paneIdOf = () => paneId;
-  // Subscribe before starting the fixture: the holder's publication is the readiness signal.
   const watcher = watch(readyDir);
   try {
     const ready = once(watcher, "change", { signal: AbortSignal.timeout(20_000) });
@@ -141,7 +128,6 @@ try {
   } finally { watcher.close(); }
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null, usage: new UsageService(undefined, []) });
   const origin = `http://127.0.0.1:${server.port}`;
-  // Plan polling pushes its exact changed state, so readiness needs no timing loop.
   await new Promise<void>((resolve, reject) => {
     const signal = AbortSignal.timeout(30_000);
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
@@ -183,7 +169,6 @@ try {
         }
         const row = page.locator(`.agents-sidebar .agent-item[data-pane="${paneId}"]`);
         const badge = row.getByTestId("plan-progress");
-        // a desktop shows a row's counts under the pointer (the compact rows); a phone keeps them
         if (width !== 390) await row.hover();
         await badge.waitFor({ state: "visible" });
         assert.equal(await badge.textContent(), "1/3");
@@ -202,8 +187,6 @@ try {
   assert.deepEqual(errors, []);
   console.log(`PASS pane.plan ${JSON.stringify(pane.plan)}`);
 
-  // The chip follows the fixture live, on a desktop window and a phone at once; herdr's own focus
-  // is read before and after, since nothing the chip does may move it.
   const advances: Array<Record<string, unknown>> = [];
   const desktop = await browser.newContext({ viewport: { width: 1280, height: 844 }, colorScheme: "dark", locale: "en-US" });
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: "light", locale: "en-US" });
@@ -232,7 +215,6 @@ try {
       assert.equal(drawn.name, "Plan: 1 of 3 done · Implement OmO plans · Background tasks", `${what}: the name says the whole step, then the OmO pane's tasks`);
       assert.equal(drawn.title, drawn.name);
     }
-    // the desktop's keyboard rests on the chip while the fixture moves on
     const { page: desk } = pages[0]!;
     await desk.getByRole("textbox", { name: "Message", exact: true }).focus();
     for (let step = 0; step < 8 && !(await desk.evaluate(() => document.activeElement?.classList.contains("bg-tasks-toggle"))); step++) await desk.keyboard.press("Tab");
@@ -250,7 +232,6 @@ try {
       advances.push({ what, state: "advanced", chip: drawn });
     }
     assert.equal((await chip(desk))?.focused, true, "the pushed step leaves the keyboard where it was");
-    // the list opens on the new step as before
     await pages[1]!.page.locator(".bg-tasks-toggle").tap();
     const list = pages[1]!.page.locator(".bg-tasks-menu");
     await list.locator(".bg-step.is-in_progress").getByText("Run isolated validation", { exact: true }).waitFor();
@@ -259,7 +240,6 @@ try {
     await pages[1]!.page.keyboard.press("Escape");
     await list.waitFor({ state: "detached" });
 
-    // a background task of the session: its count joins the chip, the step stays
     const taskDir = join(root, ".omo", "senpi-task", "tasks");
     mkdirSync(taskDir, { recursive: true });
     const taskFile = join(taskDir, "st_00000001.json");
@@ -275,7 +255,6 @@ try {
       assert.equal(drawn.name, "Plan: 2 of 3 done · Run isolated validation · 1 background task");
     }
 
-    // a step whose label cannot break: cut in the chip, whole in its name, the figures and the count untouched
     frame = pushed((plan) => plan?.current === LONG, "the unbroken step");
     publish(LATER.long!.answer);
     advances.push({ state: "long", pushed: await frame });
@@ -292,7 +271,6 @@ try {
     }
     assert.equal(await focusedPane(origin), focusBefore, "herdr's own focus did not move for the chip");
 
-    // the pane split in herdr: the chat's card is narrower than a phone's, the chip keeps its row
     const split = await desk.evaluate(async (pane) => { const response = await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right", focus: false }) }); return { status: response.status, text: await response.text() }; }, paneId);
     assert.equal(split.status, 200, `the bridge split the pane: ${split.text}`);
     await desk.waitForFunction(() => document.querySelectorAll(".pane-frame").length === 2);
@@ -310,7 +288,6 @@ try {
       await desk.screenshot({ path: join(evidence, "native-1000-dark-split.png") });
     }
 
-    // no step in progress: the figures alone, still at work; then every step done and the task gone: quiet
     frame = pushed((plan) => plan?.done === 3 && plan.current === null, "a plan between steps");
     publish(LATER.between!.answer);
     advances.push({ state: "between", pushed: await frame });
@@ -336,7 +313,6 @@ try {
       assert.equal(drawn.current, null);
       assert.equal(drawn.count, null, `${what}: the ended task counts no more`);
     }
-    // the list cleared: no plan, the OmO pane's chip is its background tasks alone
     frame = pushed((plan) => plan === null, "the cleared plan");
     publish(LATER.cleared!.answer);
     advances.push({ state: "cleared", pushed: await frame });

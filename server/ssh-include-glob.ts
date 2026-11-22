@@ -11,7 +11,6 @@ export type Token = { kind: "char"; char: string } | { kind: "one" } | { kind: "
 /** both ends of a range a digit, a lowercase or an uppercase ASCII letter alike: ordered the same in every locale */
 const plainRange = (from: string, to: string): boolean => [/[0-9]/, /[a-z]/, /[A-Z]/].some((kind) => kind.test(from) && kind.test(to)) && from <= to;
 
-/** a bracket expression from just after its `[`: the token and the index after its `]`; "open" when no `]` closes it; null */
 function bracket(chars: string[], start: number): { token: Token; next: number } | "open" | null {
   let index = start;
   const negate = chars[index] === "!";
@@ -31,7 +30,6 @@ function bracket(chars: string[], start: number): { token: Token; next: number }
   return "open";
 }
 
-/** a component's literal name when it holds no wildcard, else its tokens; null for what is not matched exactly here */
 export function parseComponent(raw: string, escapes: boolean): { name: string } | { tokens: Token[] } | null {
   const chars = Array.from(raw);
   const tokens: Token[] = [];
@@ -65,11 +63,7 @@ const fits = (token: Token, char: string): boolean => {
   }
 };
 
-/**
- * Whether `name` matches the tokens, one step of `budget` per character tried (null once it runs out). A leading dot
- * is matched only by a literal dot, as glob(3) does. Each star takes the shortest run that lets the rest match, going
- * back only to the last star, which is exact for single-character tokens.
- */
+/** A leading dot is matched only by a literal dot, as glob(3) does. */
 export function matchComponent(tokens: readonly Token[], name: string, budget: { steps: number }): boolean | null {
   const text = Array.from(name);
   const head = tokens[0];
@@ -79,7 +73,6 @@ export function matchComponent(tokens: readonly Token[], name: string, budget: {
   let [at, from, star, starFrom] = [0, 0, -1, 0];
   while (from < text.length) {
     const token = tokens[at];
-    // a bracket costs a step for each range it tries
     budget.steps -= token?.kind === "class" ? Math.max(1, token.ranges.length) : 1;
     if (budget.steps < 0) return null;
     if (token?.kind === "star") { [star, starFrom] = [at++, from]; continue; }

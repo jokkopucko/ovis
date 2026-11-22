@@ -2,19 +2,22 @@ import { afterEach, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, SERVER_TIME_HEADER } from "../../shared/relay-mux.ts";
+import { accountDeviceId } from "../../shared/account-records.ts";
+import { channelBinding } from "../../shared/relay-e2ee.ts";
+import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, PAIR_SAS_FEATURE, SERVER_TIME_HEADER } from "../../shared/relay-mux.ts";
 import { MuxStreamError } from "../../shared/relay-mux-engine.ts";
+import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import type { MachineEvent } from "../../shared/machines.ts";
 import { handleRequest } from "../dispatch.ts";
 import { PairingRateLimitedError, readDeviceRegistry } from "../devices.ts";
 import { machineEventsClock, machineEventsQueuedBytes } from "../machine-api.ts";
 import { PortalService } from "../portal.ts";
 import { relayHeaders, RELAY_ORIGIN } from "./session.ts";
-import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
+import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
 
 const fixtures: ReturnType<typeof relayFixture>[] = [];
-function fixture(serveOnly = false) {
-  const value = relayFixture(serveOnly);
+function fixture(serveOnly = false, accountOpensAll = false) {
+  const value = relayFixture(serveOnly, { accountOpensAll });
   fixtures.push(value);
   return value;
 }
@@ -22,8 +25,8 @@ afterEach(() => { for (const item of fixtures.splice(0)) item.close(); });
 const guard = [["content-type", "application/json"], ["x-herdr-machine", "1"]] as const;
 const fileTarget = (path: string) => `/api/fs/file?path=${encodeURIComponent(path)}`;
 
-it("serves health through real protected channels and records the route template", async () => {
-  const f = fixture();
+it.each([false, true])("serves health through real protected channels and records the route template (Step 2: %s)", async accountOpensAll => {
+  const f = fixture(false, accountOpensAll);
   const device = await relayDevice(f);
   const link = await relayConnection(f);
   await link.auth(device);
@@ -43,7 +46,6 @@ it("names its relays in AUTH_OK to a phone that offered relay hints", async () =
   const relays = ["wss://relay-ap.ovis.sh", "wss://relay.ovis.sh"];
   const link = await relayConnection(f, { relayHints: () => relays });
   expect((await link.auth(device, ["relay-hints"])).relays).toEqual(relays);
-  // answered in AUTH_OK only: a provisional WELCOME goes out before HELLO is read
   expect((await link.welcome).payload.features).toEqual([]);
 });
 
@@ -66,8 +68,8 @@ it("names no relays to a phone that did not offer relay hints", async () => {
   expect(auth).not.toHaveProperty("relays");
 });
 
-it("keeps a renamed relay device admitted and still revokes its session", async () => {
-  const f = fixture();
+it.each([false, true])("keeps a renamed relay device admitted and still revokes its session (Step 2: %s)", async accountOpensAll => {
+  const f = fixture(false, accountOpensAll);
   const device = await relayDevice(f);
   const link = await relayConnection(f);
   await link.auth(device);
@@ -260,7 +262,6 @@ it("rejects OPEN before AUTH_OK without invoking the dispatcher", async () => {
   const f = fixture();
   let calls = 0;
   const link = await relayConnection(f, { dispatch: async (request, context) => { calls++; return handleRequest(request, context); } });
-  // The server closes the channel while answering, so this send may reject with that close.
   await link.channel.send(encodeFrame({
     type: FrameType.HTTP_OPEN, flags: 0, stream_id: 1,
     payload: { device_id: "0123456789abcdef", method: "GET", target: "/api/health", headers: [], body: "none" },
@@ -386,7 +387,6 @@ it("keeps the native pairing rate-limit status and retry header over relay HTTP"
   const f = fixture();
   const device = await relayDevice(f);
   const store = f.app.context.services.devices;
-  // Enrollment already spent the first of ten code issues.
   for (let issue = 1; issue < 10; issue++) store.startPairing();
   const link = await relayConnection(f);
   await link.auth(device);
@@ -446,12 +446,107 @@ it("closes a device revoked during listener registration before publishing AUTH_
   } finally { raced.mockRestore(); }
 });
 
+it("flag off: a missing row after AUTH proof stops watching without closing the relay session", async () => {
+  const f = relayFixture(false, { accountOpensAll: false });
+  fixtures.push(f);
+  const device = await relayDevice(f);
+  const { devices } = f.app.context.services;
+  const link = await relayConnection(f, { clock: new TestClock() });
+  const lookedUp = deferred<string>();
+  const row = spyOn(devices, "sessionRow").mockImplementationOnce((id) => {
+    lookedUp.resolve(id);
+    return null;
+  });
+  const admission = link.auth(device).catch((error: unknown) => error);
+  try {
+    expect(await bounded(lookedUp.promise)).toBe(device.id);
+    await link.flush();
+    expect(link.frames.map(({ type }) => type).filter(type => type !== FrameType.RECEIVED)).toEqual([FrameType.WELCOME]);
+    expect(link.channel.isOpen()).toBe(true);
+
+    devices.revoke(device.id);
+    await link.flush();
+    expect(link.channel.isOpen()).toBe(true);
+  } finally {
+    row.mockRestore();
+    link.stop();
+    await admission;
+  }
+});
+
+it("flag off: the relay delivers a selected mux PING even when the session closes before send", async () => {
+  const f = relayFixture(false, { accountOpensAll: false });
+  fixtures.push(f);
+  const link = await relayConnection(f);
+  await link.auth(await relayDevice(f));
+  await link.flush();
+  const beforePing = link.frames.length;
+
+  const freshness = spyOn(f.app.context.services, "checkAccountFreshness").mockImplementationOnce(() => {
+    link.session.close("auth_revoked");
+  });
+  try {
+    link.session.mux.ping();
+    await link.flush();
+    expect(link.frames.slice(beforePing).map(({ type }) => type)).toEqual([FrameType.PING, FrameType.SESSION_ERROR]);
+    expect(await bounded(link.serverError)).toBe("auth_revoked");
+  } finally { freshness.mockRestore(); }
+});
+
+it("flag off: an approved relay pairing is not rechecked for its approver's standing", async () => {
+  const { fixture: f, member } = await relayAccountFixture("drive", "acct_1", { accountOpensAll: false });
+  fixtures.push(f);
+  const { devices, accountMailbox, relay: { approvals } } = f.app.context.services;
+  const serverId = "0123456789abcdef0123456789abcdef";
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+  const id = accountDeviceId(serverId, publicKey);
+  const label = "Returning phone";
+  const existing = devices.pairRelayApproved(label, publicKey, { path: "code", id });
+  if (!existing) throw new Error("Expected an existing device");
+  approvals.openWindow();
+
+  const link = await relayConnection(f, { serverId });
+  await link.hello([PAIR_SAS_FEATURE]);
+  const binding = channelBinding(link.channel);
+  if (!binding) throw new Error("Expected a SAS channel binding");
+  const phoneNonce = randomPairNonce();
+  const challenge = deferred<string>();
+  const admitted = deferred<string>();
+  link.onFrame = (frame) => {
+    if (frame.type === FrameType.PAIR_CHALLENGE) challenge.resolve(frame.payload.nonce);
+    if (frame.type === FrameType.AUTH_OK) admitted.resolve(frame.payload.device_id);
+  };
+  link.mux.sendSession({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
+    payload: { label, public_key: publicKey, commitment: toBase64Url(pairCommitment(binding, publicKey, phoneNonce)) } });
+  const pcNonce = fromBase64Url(await bounded(challenge.promise));
+  link.mux.sendSession({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(phoneNonce) } });
+  await link.flush();
+  const [prompt] = approvals.list();
+  if (!prompt) throw new Error("Expected a SAS pairing prompt");
+  const digits = pairDigits(binding, publicKey, phoneNonce, pcNonce);
+
+  const gates = spyOn(accountMailbox, "gates").mockReturnValue({ ...accountMailbox.gates(), enrolling: () => true });
+  // Isolate the session recheck from the store's separate collision policy.
+  const paired = spyOn(devices, "pairRelayApproved").mockReturnValue(existing);
+  try {
+    expect(approvals.decideRemote(prompt.id, true, digits, { id: member.id, label: "Account phone", role: "drive" }))
+      .toEqual({ outcome: "decided", device_id: id });
+    link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await bounded(Promise.race([admitted.promise, link.serverError]))).toBe(id);
+    expect(paired).toHaveBeenCalledWith(label, publicKey, { path: "code", id, addedBy: member.id }, undefined, expect.any(Function));
+    expect(link.channel.isOpen()).toBe(true);
+  } finally {
+    paired.mockRestore();
+    gates.mockRestore();
+  }
+});
+
 it("sends WELCOME behind the protected handshake, before HELLO, and still requires HELLO before AUTH", async () => {
   const f = fixture();
   const device = await relayDevice(f);
   const link = await relayConnection(f);
   await link.flush();
-  // nothing sent by the phone yet: WELCOME already went out
   expect(link.frames.map((frame) => frame.type)).toEqual([FrameType.WELCOME]);
   expect((await link.auth(device)).device_id).toBe(device.id);
   expect(link.frames.filter((frame) => frame.type === FrameType.WELCOME)).toHaveLength(1);
@@ -476,7 +571,6 @@ it("sends no WELCOME before HELLO while a pairing window is open, so a phone fro
   let provisional = false;
   link.onFrame = (frame) => { if (frame.type === FrameType.WELCOME && frame.payload.provisional) provisional = true; };
   expect((await link.auth(await relayDevice(f))).device_id).toMatch(/^[0-9a-f]{16}$/);
-  // HELLO was answered by one WELCOME, as before provisional ones
   expect(link.frames.filter((frame) => frame.type === FrameType.WELCOME)).toHaveLength(1);
   expect(provisional).toBe(false);
 });
@@ -541,7 +635,7 @@ it("keeps the engine's 413 when an unknown-length upload crosses the request cei
       const reader = request.body?.getReader();
       if (!reader) throw new Error("Missing upload");
       try {
-        while (!(await reader.read()).done) { /* Consume without retaining the upload. */ }
+        while (!(await reader.read()).done) {}
         return new Response("accepted");
       } catch {
         return new Response("body stopped", { status: 400 });

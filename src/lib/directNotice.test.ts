@@ -39,7 +39,6 @@ describe("the same-Wi-Fi direct notice", () => {
     descriptors.clear();
   });
 
-  /** a page load: a fresh mount that reads only what storage kept */
   async function load(scope: string, host: string | null | undefined) {
     const seen: ProbeProps["seen"] = [];
     await act(async () => { renderer?.unmount(); renderer = create(createElement(Probe, { scope, host, seen })); });
@@ -52,7 +51,6 @@ describe("the same-Wi-Fi direct notice", () => {
     await act(async () => { page.latest().dismiss(); });
     expect(page.latest().dismissed).toBe(true);
     expect((await load("", "192.168.0.10")).latest().dismissed).toBe(true);
-    // another PC opened in the hosted shell shares this origin's storage, not the dismissal
     expect((await load("pc-two", "192.168.0.10")).latest().dismissed).toBe(false);
   });
 
@@ -66,7 +64,6 @@ describe("the same-Wi-Fi direct notice", () => {
   it("comes back once direct is turned off and on again, but not after an unanswered read", async () => {
     const page = await load("", "192.168.0.10");
     await act(async () => { page.latest().dismiss(); });
-    // no health answer yet on a fresh load says nothing about direct
     expect((await load("", undefined)).latest().dismissed).toBe(false);
     const again = await load("", "192.168.0.10");
     expect(again.latest().dismissed).toBe(true);
@@ -75,7 +72,6 @@ describe("the same-Wi-Fi direct notice", () => {
     expect(again.latest().dismissed).toBe(false);
   });
 
-  /** a tab of its own, open beside the others */
   async function tab(scope: string, host: string) {
     const seen: ProbeProps["seen"] = [];
     let own: ReactTestRenderer;
@@ -89,7 +85,6 @@ describe("the same-Wi-Fi direct notice", () => {
     await act(async () => { pcA.latest().dismiss(); });
     const pcB = await load("pc-b", "192.168.0.20");
     await act(async () => { pcB.latest().dismiss(); });
-    // pc-a's tab, still holding both records, sees direct go off on its PC
     const tabA = await tab("pc-a", "192.168.0.10");
     const tabB = await tab("pc-b", "192.168.0.20");
     await tabA.answer(null);
@@ -107,7 +102,6 @@ describe("what a health answer says about direct", () => {
     expect(directHostOf({ auth: signedIn })).toBeNull();
     // a signed-out answer never names exposure, so it says nothing about direct
     expect(directHostOf({ auth: { required: true, authenticated: false } })).toBeUndefined();
-    // the open-server warning is not the direct line
     expect(directHostOf({ auth: signedIn, lan_exposure: { host: "0.0.0.0" } })).toBeNull();
     expect(directHostOf({ auth: signedIn, lan_exposure: { host: "10.0.0.7", direct: true } })).toBe("10.0.0.7");
   });

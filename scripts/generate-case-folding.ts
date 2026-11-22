@@ -60,7 +60,6 @@ ${lines.join("\n")}
 `;
 }
 
-/** The source's bytes: the `--source` file, else the download from `url` */
 export async function sourceBytes(args: string[], url: string): Promise<Uint8Array> {
   const sourceAt = args.indexOf("--source");
   if (sourceAt >= 0) return readFileSync(args[sourceAt + 1]!);
@@ -69,7 +68,6 @@ export async function sourceBytes(args: string[], url: string): Promise<Uint8Arr
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Writes `module` to `output`, or with `--check` fails when the committed file differs */
 export function writeOrCheck(args: string[], output: string, module: string, command: string): void {
   if (!args.includes("--check")) {
     writeFileSync(output, module);

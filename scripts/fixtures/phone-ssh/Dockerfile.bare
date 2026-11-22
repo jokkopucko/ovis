@@ -1,0 +1,19 @@
+# A machine with SSH and nothing of Ovis or herdr, for the first install from the phone
+# (SshLink.install): what the official installer needs (curl, git, tar, unzip) and no more. Built by up-bare.sh.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssh-server procps git ca-certificates curl tar unzip \
+  && rm -rf /var/lib/apt/lists/*
+
+# test-only account and password, as the main fixture's; sshd is bound to host loopback only (up-bare.sh)
+RUN useradd -m -s /bin/bash fixture \
+  && echo 'fixture:phone-ssh-test-only' | chpasswd
+
+COPY sshd_config /etc/ssh/sshd_config.d/10-phone-ssh-fixture.conf
+RUN rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && mkdir -p /run/sshd
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

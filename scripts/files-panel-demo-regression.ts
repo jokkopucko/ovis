@@ -6,23 +6,17 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings → Chat → Files beside the pane (#1666) on the unmodified app over the demo's fixture
-// transport, at a desktop's and a phone's width, light and dark: off (the default) Files is the
-// dialog it was; on, a wide window shows it as a panel right of the pane that leaves the pane live,
-// a docked file takes its place and closing the file brings the list back; a phone keeps the dialog.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
-// Screenshots go to UI_EVIDENCE_DIR when it is set.
 const app = mkdtempSync(join(tmpdir(), "ovis-files-panel-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 
-// the demo's folders hold no files: two in each, and README.md readable
 const FILES_SCRIPT = `<script>(${(() => {
   const demoFetch = window.fetch;
   window.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.pathname.endsWith("/workspace/directories") && (init?.method ?? "GET") === "GET") {
-      // the demo serves its own PC's folders; a second PC's is drawn here
       if (url.pathname.includes("/machines/laptop/")) return Response.json({ path: "/home/laptop", parent: "/home", home: "/home/laptop", directories: [], truncated: false, files: [{ name: "LAPTOP_ONLY.txt", size: 8 }] });
       const listing = await (await demoFetch(input, init)).json();
       return Response.json({ ...listing, files: [{ name: "README.md", size: 64 }, { name: "package.json", size: 120 }] });
@@ -39,7 +33,6 @@ const FILES_SCRIPT = `<script>(${(() => {
 async function open(browser: Browser, width: number, settings: Record<string, unknown>, query = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
-  // Files beside the pane is kept in a key of its own (lib/settings.ts), not in ovis:settings
   const { filesPanel, ...main } = settings;
   await context.addInitScript(([value, panel]) => {
     if (localStorage.getItem("ovis:settings") !== null) return;
@@ -59,7 +52,6 @@ const shot = async (page: Page, name: string): Promise<void> => {
 };
 
 async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void> {
-  // off, the default: the dialog over the pane, as before
   {
     const { page, errors, close } = await open(browser, 1280, { theme });
     try {
@@ -71,7 +63,6 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
       assert.deepEqual(errors, []);
     } finally { await close(); }
   }
-  // on: the panel right of the pane
   const { page, errors, close } = await open(browser, 1280, { theme, filesPanel: true, fileOpen: "panel" });
   try {
     const button = page.locator(".header-files-button");
@@ -87,12 +78,10 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
     assert.ok(pane.x + pane.width <= box.x + 1, `the pane ends where the panel starts (${pane.x + pane.width} vs ${box.x})`);
     await shot(page, `files-panel-1280-${theme}`);
 
-    // Escape from the pane is the pane's
     await page.locator("main").first().click({ position: { x: 40, y: 200 } });
     await page.keyboard.press("Escape");
     assert.equal(await panel.count(), 1, "Escape outside the panel leaves it open");
 
-    // a file docks in its place, and closing it brings the list back at the folder it was in
     await panel.getByRole("button", { name: "Parent folder" }).click();
     await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
     await panel.getByText("README.md").click();
@@ -105,7 +94,6 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
     await panel.waitFor();
     await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
 
-    // the palette's Browse files shows it again over a docked file, as the header button does
     await panel.getByText("README.md").click();
     await viewer.waitFor();
     await page.keyboard.press("ControlOrMeta+Shift+K");
@@ -115,13 +103,11 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
     await viewer.waitFor({ state: "detached" });
     await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
 
-    // the sidebar stays usable beside it: the same pane id on another PC lists that PC's folder
     await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
     await page.locator(`[data-machine="laptop"][data-pane="${panes.web}"]`).first().click();
     await panel.getByText("LAPTOP_ONLY.txt").waitFor();
     assert.equal(await panel.getByText("README.md").count(), 0, "no row of the last PC's folder is left");
 
-    // the header button closes it again
     await button.click();
     await panel.waitFor({ state: "detached" });
     assert.equal(await button.getAttribute("aria-pressed"), "false");
@@ -131,7 +117,6 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
 }
 
 async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
-  // the setting, on its Settings page
   {
     const { page, errors, close } = await open(browser, 390, { theme }, "&settings=chat&section=file-viewer-more");
     try {
@@ -142,7 +127,6 @@ async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
       assert.deepEqual(errors, []);
     } finally { await close(); }
   }
-  // on, a phone has no room beside the pane: Files stays the sheet
   const { page, errors, close } = await open(browser, 390, { theme, filesPanel: true });
   try {
     await page.locator(".header-more-button").click();
@@ -163,17 +147,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${FILES_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   origin = `http://127.0.0.1:${server.port}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

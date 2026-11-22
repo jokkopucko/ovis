@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ExternalLink, Globe, RotateCw, X } from "lucide-react";
+import { ExternalLink as ExternalLinkIcon, Globe, RotateCw, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 import "./FileViewer.css";
 
 export interface WebPanelProps {
@@ -42,7 +43,7 @@ export function WebPanel({ url, onClose, docked = true, panelStart, covered = fa
     sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads" />;
   const actions = <div className="file-viewer-actions">
     <button type="button" className="icon-button file-viewer-action" aria-label={t("Reload page")} title={t("Reload page")} onClick={() => setLoads((count) => count + 1)}><RotateCw aria-hidden="true" /></button>
-    <a className="icon-button file-viewer-action" href={url} target="_blank" rel="noopener noreferrer" aria-label={t("Open in a new tab")} title={t("Open in a new tab")}><ExternalLink aria-hidden="true" /></a>
+    <ExternalLink kind="link" className="icon-button file-viewer-action" href={url} aria-label={t("Open in a new tab")} title={t("Open in a new tab")}><ExternalLinkIcon aria-hidden="true" /></ExternalLink>
   </div>;
   const close = <button type="button" className="icon-button file-viewer-action file-viewer-close" aria-label={t("Close page")} title={t("Close page")} onClick={onClose}><X aria-hidden="true" /></button>;
   return (

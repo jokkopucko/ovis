@@ -1,12 +1,3 @@
-/**
- * The phone's terminal input line and key bar are evenly spaced: the field and the send button have
- * the same room below them as above (they never sit on the key bar's rule), and the keys sit in the
- * middle of the key bar with room above and below (never against the screen's edge), each still a
- * 44px touch target inside the bar: a tap just inside that band, above or below a key, lands on the
- * key and not on the bar behind it. Folded (412) and unfolded (720) widths, a gesture-bar inset,
- * the on-screen keyboard up (visualViewport) and a landscape phone. On the isolated test herdr;
- * UI_EVIDENCE_DIR=<dir> keeps the screenshots.
- */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,8 +69,6 @@ export async function checkTerminalInputSpacing(browser: Browser, origin: string
             return { name: key.dataset["key"], top: own.top, bottom: own.bottom, tapTop, tapBottom, inView, landsAbove: inView && lands(tapTop + 0.5), landsBelow: inView && lands(tapBottom - 0.5) };
           });
           return {
-            // the field stands under its label (TerminalInput.css): the two are measured as one, as the send
-            // button is with the word above its round face
             line: { top: line.top + 1, bottom: line.bottom }, text: { top: box(".terminal-input-label").top, bottom: box(".terminal-input-text").bottom }, send: box(".terminal-input-send"),
             bar: { top: bar.top, bottom: bar.bottom - barPadding }, keys, target, barPadding, screenBottom: window.visualViewport!.height,
           };

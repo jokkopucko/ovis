@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
 import type { PaneFindResponse } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
 import type { ViewportIntentGate } from "../lib/viewportIntent.ts";
 import { findResultAfterError } from "../lib/paneFind.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
+import { PaneShownContext } from "../lib/paneSubmitContext.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useT } from "../lib/i18n.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import type { TerminalSearchState } from "./TerminalViewportTools.tsx";
@@ -15,6 +17,8 @@ export function FindBar({ paneId, viewportIntent, disabled, focusRequest, active
   const { findPane } = useMachineApi();
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<PaneFindResponse | null>(null);
+  const shown = useContext(PaneShownContext);
+  usePhoneSheetBack(() => { onClose(); }, shown);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<UserError | null>(null);
   useEffect(() => { onResult?.(result ? { query, result } : null); }, [query, result, onResult]);

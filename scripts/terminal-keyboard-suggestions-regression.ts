@@ -1,8 +1,7 @@
 /**
  * The terminal's inputs ask a phone keyboard for no word suggestions: the input line and xterm's
  * helper textarea say autocomplete="off" (with autocorrect, autocapitalize and spellcheck off), the
- * attribute Chrome on Android turns into TYPE_TEXT_FLAG_NO_SUGGESTIONS. The chat composer, where
- * suggestions help prose, does not. On the isolated test herdr.
+ * attribute Chrome on Android turns into TYPE_TEXT_FLAG_NO_SUGGESTIONS.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -11,6 +10,7 @@ import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openLens } from "./header-lens.ts";
 
 export async function checkTerminalKeyboardSuggestions(browser: Browser, origin: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-suggestions-")));
@@ -31,7 +31,7 @@ export async function checkTerminalKeyboardSuggestions(browser: Browser, origin:
       const attributes = await field.evaluate((node) => Object.fromEntries(["autocomplete", "autocorrect", "autocapitalize", "spellcheck"].map((name) => [name, node.getAttribute(name)])));
       assert.deepEqual(attributes, { autocomplete: "off", autocorrect: "off", autocapitalize: "off", spellcheck: "false" }, `${name} asks the keyboard for no suggestions`);
     }
-    await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
+    await openLens(page, "chat");
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await composer.waitFor();
     assert.notEqual(await composer.getAttribute("autocomplete"), "off", "the chat composer keeps its suggestions");

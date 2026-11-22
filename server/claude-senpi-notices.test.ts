@@ -34,7 +34,6 @@ describe("senpi's own notices in a Claude Code SDK prompt", () => {
 
   it("shows each task completion as the card of the task that ended, where it arrived", () => {
     const turns = parseClaudeTranscript(recorded);
-    // each report wakes the agent after an answer: its card, then the work it started
     expect(turns.map((turn) => turn.parts[0]?.kind === "task_result" ? "card" : turn.role)).toEqual(["assistant", "card", "assistant", "card", "assistant", "assistant", "card", "assistant", "assistant"]);
     expect(cards(turns).map(({ id, title, agent, model, status, duration_ms, tokens, tool_calls }) => ({ id, title, agent, model, status, duration_ms, tokens, tool_calls }))).toEqual([
       { id: "st_01a1175a", title: "rv534", agent: "deep-low", model: "Claude Opus 5.5", status: "completed", duration_ms: 200_000, tokens: 612311, tool_calls: 7 },
@@ -81,9 +80,7 @@ describe("senpi's own notices in a Claude Code SDK prompt", () => {
     const user = (content: unknown, extra: Record<string, unknown>) => JSON.stringify({ type: "user", ...extra, message: { role: "user", content } });
     const reminder = "<system-reminder>quoted</system-reminder>";
     expect(said(parseClaudeTranscript([
-      // typed at Claude Code's own prompt
       user([{ type: "text", text: reminder }], { promptSource: "typed", entrypoint: "cli" }),
-      // a program's prompt with words of its own after the wrapper
       user([{ type: "text", text: `${reminder}\nwhy is this here?` }], { promptSource: "sdk", entrypoint: "sdk-ts" }),
       // a tag senpi does not send
       user([{ type: "text", text: "<details>mine</details>" }], { promptSource: "sdk", entrypoint: "sdk-ts" }),
@@ -130,7 +127,6 @@ describe("senpi's own notices in a Claude Code SDK prompt", () => {
       expect(said(joined)).toEqual([]);
       expect(cards(joined).map((card) => card.id)).toEqual(["st_a", "st_b"]);
       expect(said(parseClaudeTranscript(sdk(`${capped}\n\nwhy did this appear?`)))).toEqual([`${capped}\n\nwhy did this appear?`]);
-      // a person's words after the reports keep the whole block theirs
       expect(said(parseClaudeTranscript(sdk(`${block}\n\nand my question`)))).toEqual([`${block}\n\nand my question`]);
     });
 

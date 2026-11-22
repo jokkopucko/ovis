@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
 import { connectionData, send } from "./connections.ts";
+import { createInputLane } from "./input.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
 import * as pty from "../pty/session.ts";
 import * as coreAttach from "../herdr-core/attach-session.ts";
 import type { CoreAttachOptions } from "../herdr-core/attach-session.ts";
 import * as herdr from "../herdr/client.ts";
+import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 
 let attachment: PaneAttachment;
@@ -53,7 +55,6 @@ it("pauses a pane whose output waits behind a large frame queued after its attac
     getBufferedAmount: () => buffered, send: (text: string) => { buffered += Buffer.byteLength(text); return -1; },
     close() {},
   };
-  // a pane that has written nothing yet: no replay
   attachment = {
     kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
     process: { exited: Promise.resolve(), pause() { flow.push("pause"); }, resume() { flow.push("resume"); }, resize() {}, winch() {}, kill() {}, write() {} } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
@@ -65,18 +66,14 @@ it("pauses a pane whose output waits behind a large frame queued after its attac
   });
   const start = Date.now();
   try {
-    // a reconnect: the browser attaches on open, and the session's snapshot, past the transport budget, queues after that
     await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true, flow_control: "ack" });
     expect(send(client, { type: "error", code: "x", message: "x".repeat(OUTPUT_HARD_BYTES) })).toBe(-1);
     const snapshot = buffered;
-    // the pane's output queues behind it in small frames, up to the high-water mark
     client.data.output.get("p")!.write(OUTPUT_HIGH_BYTES, 10);
     buffered += OUTPUT_HIGH_BYTES;
     for (let at = 0; at < 5000; at += 500) { setSystemTime(start + at); registry.reconcileOutput("p"); }
-    // still paused, so the backlog behind the snapshot grows no further, and not closed
     expect(flow.at(-1)).toBe("pause");
     expect(ended).toEqual([]);
-    // the snapshot crossed: the output behind it gets the usual deadline from now
     buffered -= snapshot;
     const crossed = start + 5000;
     const deadline = OUTPUT_STALL_MS + Math.ceil(10 * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
@@ -92,9 +89,85 @@ it("pauses a pane whose output waits behind a large frame queued after its attac
   }
 });
 
+for (const [how, name] of [
+  ["detach", "delivers the letter and wheel reports a viewer was answered for, in order, before its own detach lets the attach go, and takes nothing after it"],
+  ["disconnect", "ends the attach at once, with what it had not passed on, when its last viewer's connection is taken out"],
+  ["remove during drain", "kills a draining attach at once when its last viewer's connection is removed"],
+  ["force close during drain", "kills a draining attach at once when its pane attachment is forced closed"],
+  ["shutdown during drain", "kills a draining attach at once when the server closes all attachments"],
+] as const) {
+  it(`${name} (#4174)`, async () => {
+    const passed: string[] = [];
+    const gate = Promise.withResolvers<void>();
+    const gone = Promise.withResolvers<void>();
+    let taking = true;
+    let running = true;
+    const told: ServerMessage[] = [];
+    const client = {
+      data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+      getBufferedAmount: () => 0, send: (text: string) => { told.push(JSON.parse(text)); return text.length; }, close() {},
+    };
+    // an attach that takes bytes at once and passes them on only once the gate opens: killed, it ends with what still
+    // waits; asked to leave, it takes no more and goes after all of it
+    attachment = {
+      kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
+      process: {
+        exited: gone.promise, pause() {}, resume() {}, resize() {}, winch() {},
+        write(data: string) {
+          if (!taking) return false;
+          void gate.promise.then(() => { if (running) passed.push(data); });
+          return true;
+        },
+        kill() {
+          if (!running) return;
+          taking = running = false; passed.push("gone"); gone.resolve();
+        },
+        leave() {
+          taking = false;
+          void gate.promise.then(() => {
+            if (running) { running = false; passed.push("gone"); gone.resolve(); }
+          });
+        },
+      } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
+    };
+    const clients = new Set([client]);
+    const registry = createTerminalRegistry({
+      options: {}, clients, stopped: () => false, terminalAttach: async () => true,
+      holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
+      holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+    });
+    const { inputFrames } = createInputLane({
+      TYPED_SETTLE_MS: 0, KEY_SETTLE_MS: 0, clients, sight: registry.sight, poke: registry.poke,
+      terminalAttach: async () => true, terminalAttachKnown: () => true, mayType: () => true, authorizeSocket() {},
+    });
+    try {
+      await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true });
+      const typed = ["a", ...Array.from({ length: 6 }, (_, wheel) => `\x1b[<64;10;${wheel + 1}M`)];
+      typed.forEach((text, id) => inputFrames.input(client, { type: "input", pane_id: "p", text, id }));
+      if (how === "disconnect") registry.detachClaimed(client);
+      else registry.terminalFrames.detach(client, { type: "detach", pane_id: "p" });
+      inputFrames.input(client, { type: "input", pane_id: "p", text: "b", id: typed.length });
+      if (how !== "disconnect") expect(passed).toEqual([]);
+      if (how === "remove during drain") {
+        clients.delete(client);
+        registry.detachClaimed(client);
+      }
+      if (how === "force close during drain") registry.closeAttachment("p");
+      if (how === "shutdown during drain") registry.closeAttachments();
+      if (how !== "detach") expect(passed).toEqual(["gone"]);
+      gate.resolve();
+      await gone.promise;
+      expect(passed).toEqual(how === "detach" ? [...typed, "gone"] : ["gone"]);
+      expect(told.filter((frame) => frame.type === "input-result")).toEqual([
+        ...typed.map((_, id) => ({ type: "input-result" as const, id, pane_id: "p", ok: true })),
+        { type: "input-result" as const, id: typed.length, pane_id: "p", ok: false, code: "input_not_ready" },
+      ]);
+    } finally { gate.resolve(); registry.conversations.stop(); }
+  });
+}
+
 it("retains only a bounded opaque resume ID on an attach claim", async () => {
   const valid = crypto.randomUUID();
-  // only the UUIDv4 the browser generates: not 36 dashes, another UUID version or upper case
   for (const value of [valid, "", "not-a-resume-id", "x".repeat(4096), "-".repeat(36),
     "00000000-0000-0000-0000-000000000000", "12345678-1234-1234-8234-123456789abc", valid.toUpperCase()]) {
     await join({ ready: true, receiptResumeId: value, verifyResume: (id) => expect(id).toBe(value === valid ? valid : undefined) });
@@ -105,23 +178,21 @@ for (const readOnly of [false, true]) for (const ready of [false, true]) {
   it(`preserves input readiness ${ready} after replay for an ${readOnly ? "observer" : "owner"} joining a shared attach`, async () => {
     const frames = await join({ readOnly, ready });
     expect(frames.filter((frame) => frame.type === "pty-data")).toEqual([
-      // the joiner's replay, marked as the screen from before, byte for byte
       { type: "pty-data", pane_id: "p", data: "retained screen", replay: true },
     ]);
-    // An input-ready receipt is the existing attach-complete barrier for queued input,
-    // not an output-presentation notification. No early negative receipt may satisfy it.
     expect(frames.filter((frame) => frame.type === "input-ready")).toEqual(
       ready ? [{ type: "input-ready", pane_id: "p" }] : [],
     );
     if (ready) expect(frames.findIndex((frame) => frame.type === "input-ready"))
       .toBeGreaterThan(frames.findIndex((frame) => frame.type === "pty-data"));
     expect(frames.some((frame) => frame.type === "output-recovering")).toBe(false);
+    // a joiner that does not size the pty takes its grid before the replay drawn for it
+    expect(frames.filter((frame) => frame.type === "pane-geometry")).toEqual([{ type: "pane-geometry", pane_id: "p", cols: 80, rows: 24 }]);
+    expect(frames.findIndex((frame) => frame.type === "pane-geometry"))
+      .toBeLessThan(frames.findIndex((frame) => frame.type === "pty-data"));
   });
 }
 
-// #2664 review: a herdr-core joiner's bounded tail may have lost the attach's clear, and the history it kept doubled;
-// a tail on the alternate screen keeps no history, and leaving that screen blanked what the tail restores;
-// one that leaves it again reprinted the shell's lines after it into the history the joiner kept
 for (const [stream, cleared] of [
   [`${coreAttach.CLEAR_HISTORY}whole stream`, "none"],
   [`${coreAttach.CLEAR_HISTORY}${"h".repeat(2048)}main tail`, "ahead"],
@@ -136,7 +207,6 @@ for (const [stream, cleared] of [
       { type: "pty-data", pane_id: "p", data: cleared === "ahead" ? coreAttach.CLEAR_JOINER_HISTORY + tail.text()
         : cleared === "where it leaves" ? tail.text().replace("\x1b[?1049l", coreAttach.CLEAR_JOINER_HISTORY) : tail.text(), replay: true },
     ]);
-    // #2664 review: rows a cut tail of in-place updates never draws again stay on the joiner's screen
     expect(coreAttach.CLEAR_JOINER_HISTORY).not.toMatch(/\x1b\[[02]?J|\x1b\[H/);
   });
 }
@@ -147,17 +217,14 @@ for (const readOnly of [false, true]) {
     expect(frames.filter((frame) => frame.type === "output-recovering")).toEqual([{ type: "output-recovering", pane_id: "p" }]);
     expect(frames.findIndex((frame) => frame.type === "output-recovering"))
       .toBeLessThan(frames.findIndex((frame) => frame.type === "pty-data"));
-    // presentation only: the queued-input barrier still waits for the attach to take
     expect(frames.filter((frame) => frame.type === "input-ready")).toEqual([]);
   });
 }
 
 const REFUSAL = "herdr: server shut down: terminal attach failed: terminal term_0 already has an attached client; retry with --takeover\r\n";
 for (const [name, reads, screen] of [
-  // #2255 review: an OSC's opening read released the hold, and the refusal after it was painted
   ["an OSC cut across reads before the refusal", ["\x1b[?1049h", "\x1b]", `0;title\x07${REFUSAL}`], ""],
   ["a non-CSI escape before the refusal", ["\x1b[?1049h\x1b7", `\x1b8${REFUSAL}`], ""],
-  // printable screen text releases the hold at once, but a refusal after it is still never painted
   ["a refusal after the screen it released", ["\x1b[?1049h\x1b[2J\x1b[1;1Hpane text", `\r\n${REFUSAL}`], "pane text"],
 ] as const) {
   it(`never paints herdr's refusal: ${name}`, async () => {
@@ -186,7 +253,6 @@ for (const [name, reads, screen] of [
       data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
       getBufferedAmount: () => 0, send(raw: string) { frames.push(JSON.parse(raw)); return raw.length; }, close() {},
     };
-    // a hold and a retry that never run out here: only what the reads say decides
     const registry = createTerminalRegistry({
       options: {}, clients: new Set([client]), stopped: () => false,
       terminalAttach: async () => true, holdFor: 60_000, heldRetry: 60_000, retryFor: 0, relookupFor: 5_000,
@@ -198,7 +264,6 @@ for (const [name, reads, screen] of [
       if (!attach) throw new Error("no attach was started");
       for (const read of reads) attach.onData(read);
       const painted = (): string => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []).join("");
-      // a screen is passed on before the exit, without waiting out the hold
       expect(painted().includes(screen)).toBe(true);
       expect(frames.some((frame) => frame.type === "input-ready" && frame.ready !== false)).toBe(screen !== "");
       attach.onExit(1);
@@ -249,8 +314,6 @@ for (const resized of [false, true]) {
       await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24 });
       const attach = attempts[0];
       if (!attach) throw new Error("no attach was started");
-      // #2255 CI: the screen herdr drew before it applied this size is not yet the pane at that size,
-      // so input waits out the hold as it did before the early settle
       if (resized) await registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols: 91, rows: 27 });
       attach.onData("\x1b[?1049h\x1b[2J\x1b[1;1Hpane text");
       expect(frames.some((frame) => frame.type === "input-ready" && frame.ready !== false)).toBe(!resized);
@@ -269,7 +332,6 @@ function herdrScreen(cols: number, rows: number, text: string, first = false): s
   return `\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\${first ? "\x1b[2J" : ""}\x1b[1;1H\x1b[0;39;49m${text.padEnd(cols)}${rest}\x1b[0m\x1b[1;${text.length + 1}H\x1b[?25h\x1b[?2026l\x1b[1;${text.length + 1}H\x1b[?25h`;
 }
 
-/** an attach at 80x24 through the real attach lifecycle, its PTY mocked, on fake timers and a client that acknowledges its output */
 async function resizableAttach() {
   mock.restore();
   spyOn(herdr, "sessionSnapshot").mockResolvedValue({
@@ -344,17 +406,14 @@ async function resizableAttach() {
 
 const TAKEOVER = "\x1b[?1049l\x1b[?25h\x1b[0 qherdr: server shut down: terminal attach taken over\r\n";
 
-// take-over-regression CI: a displaced attach whose exit came after the hold had its diagnostic painted
 it("never paints herdr's takeover diagnostic when the displaced attach exits after the hold", async () => {
   using pane = await resizableAttach();
   pane.attach.onData(herdrScreen(80, 24, "pane text", true));
   expect(pane.ready()).toBe(true);
   pane.attach.onData(TAKEOVER);
-  // a busy host: the exit comes well after the hold ran out
   jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 10);
   pane.attach.onExit(1);
   expect(pane.painted()).not.toContain("terminal attach taken over");
-  // herdr's teardown of the alternate screen still reaches the terminal
   expect(pane.painted().endsWith("\x1b[?1049l\x1b[?25h\x1b[0 q")).toBe(true);
 });
 
@@ -363,19 +422,16 @@ it("passes on the start of a takeover diagnostic that never completes once the e
   pane.attach.onData(herdrScreen(80, 24, "pane text", true));
   const partial = TAKEOVER.slice(0, TAKEOVER.indexOf("taken"));
   pane.attach.onData(partial);
-  // right after the screen, the refusal guard holds the line for one hold, then the tail waits for the rest or the exit
   jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS + terminalProcess.ATTACH_TAKEOVER_EXIT_MS - 1);
   expect(pane.painted()).not.toContain("herdr: server shut down");
   jest.advanceTimersByTime(1);
   expect(pane.painted().endsWith(partial)).toBe(true);
 });
 
-// #2630 review: reads more than a hold apart split the diagnostic, and its words were painted without their teardown
 for (const cut of [TAKEOVER.indexOf("herdr"), TAKEOVER.indexOf(" down"), 3]) {
   it(`never paints herdr's takeover diagnostic split ${cut} bytes in, its reads far apart`, async () => {
     using pane = await resizableAttach();
     pane.attach.onData(herdrScreen(80, 24, "pane text", true));
-    // past the refusal guard's window: only the tail stands between these reads and the tab
     jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 10);
     pane.attach.onData(TAKEOVER.slice(0, cut));
     jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 5);
@@ -387,7 +443,6 @@ for (const cut of [TAKEOVER.indexOf("herdr"), TAKEOVER.indexOf(" down"), 3]) {
   });
 }
 
-// #2630 review: each later read restarted the wait, and text shaped like the diagnostic stayed hidden for seconds
 it("waits one bounded time from the diagnostic's first byte, however many line ends follow it", async () => {
   using pane = await resizableAttach();
   pane.attach.onData(herdrScreen(80, 24, "pane text", true));
@@ -405,7 +460,6 @@ it("passes on a pane's own takeover words when no exit follows them", async () =
   using pane = await resizableAttach();
   pane.attach.onData(herdrScreen(80, 24, "pane text", true));
   pane.attach.onData(TAKEOVER);
-  // the refusal guard's hold first, then the wait for the exit that would confirm the diagnostic
   jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS + terminalProcess.ATTACH_TAKEOVER_EXIT_MS - 1);
   expect(pane.painted()).not.toContain("terminal attach taken over");
   jest.advanceTimersByTime(1);
@@ -414,9 +468,8 @@ it("passes on a pane's own takeover words when no exit follows them", async () =
 
 for (const onCore of [true, false]) {
   it(`isolates ${onCore ? "a core stream from herdr probes, with no PTY" : "herdr attach startup probes and socket env"}`, async () => {
-    const previous = process.env["OVIS_RUNTIME"];
     const previousSocketPath = process.env["HERDR_SOCKET_PATH"];
-    process.env["OVIS_RUNTIME"] = onCore ? "herdr-core" : "herdr";
+    serveRuntime(onCore ? HERDR_CORE : null);
     process.env["HERDR_SOCKET_PATH"] = "/fixture/inherited-herdr.sock";
     try {
       using pane = await resizableAttach();
@@ -427,7 +480,6 @@ for (const onCore of [true, false]) {
         expect(pane.painted()).toBe(query + setup);
         expect(pane.ready()).toBe(true);
         expect(pane.writes).toEqual([]);
-        // the stream is a channel on the server's hc connection: no process, so no herdr socket to leak
         expect(pane.pty).toBeUndefined();
         expect(pane.core).toMatchObject({ terminal: "term_0", cols: 80, rows: 24 });
       } else {
@@ -436,19 +488,31 @@ for (const onCore of [true, false]) {
         expect(pane.writes).toEqual(["\x1b[?1;2c"]);
         expect(pane.pty?.env).toEqual({ HERDR_SOCKET_PATH: herdr.herdrSocketPath() });
         expect(pane.pty?.args).toEqual(["terminal", "attach", "term_0"]);
+        expect(pane.pty?.leaveAt).toBe(process.platform === "win32" ? undefined : terminalProcess.ATTACH_LEAVE);
         pane.attach.onData("screen");
         expect(pane.painted()).toBe(setup + "screen");
       }
     } finally {
-      if (previous === undefined) delete process.env["OVIS_RUNTIME"];
-      else process.env["OVIS_RUNTIME"] = previous;
+      serveRuntime(null);
       if (previousSocketPath === undefined) delete process.env["HERDR_SOCKET_PATH"];
       else process.env["HERDR_SOCKET_PATH"] = previousSocketPath;
     }
   });
 }
 
-// #2289: a resized attach goes out on herdr's screen at the pty's grid, not on an older one
+it("attaches with herdr's own command where OVIS_RUNTIME names herdr-core but no runtime was started", async () => {
+  const previous = process.env["OVIS_RUNTIME"];
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  try {
+    using pane = await resizableAttach();
+    expect(pane.core).toBeUndefined();
+    expect(pane.pty?.args).toEqual(["terminal", "attach", "term_0"]);
+  } finally {
+    if (previous === undefined) delete process.env["OVIS_RUNTIME"];
+    else process.env["OVIS_RUNTIME"] = previous;
+  }
+});
+
 for (const ordering of ["a resize back to the start size", "a redraw later than the hold", "a screen queued from before a round trip"] as const) {
   it(`keeps a resized attach held until herdr draws the current grid: ${ordering}`, async () => {
     using pane = await resizableAttach();
@@ -457,29 +521,23 @@ for (const ordering of ["a resize back to the start size", "a redraw later than 
     let current = herdrScreen(91, 27, "current");
     if (ordering === "a screen queued from before a round trip") {
       await resize(80, 24);
-      // #2289 review: one read brings herdr's first screen, drawn before both resizes, and the redraw for the grid between them
-      // the redraw for the grid between leaves the cursor at column 1, one more move to a row's start
       attach.onData(herdrScreen(80, 24, "old", true) + herdrScreen(91, 27, "between").replaceAll("\x1b[1;8H", "\x1b[2;1H"));
       expect(ready()).toBe(false);
       current = herdrScreen(80, 24, "current");
     } else {
-      // herdr's first screen is still the grid the attach started at
       attach.onData(herdrScreen(80, 24, "old", true));
       expect(ready()).toBe(false);
       if (ordering === "a resize back to the start size") {
         await resize(80, 24);
-        // the redraw for the 91x27 grid comes before the one for 80x24
         attach.onData(herdrScreen(91, 27, "between"));
         expect(ready()).toBe(false);
         current = herdrScreen(80, 24, "current");
       } else {
-        // the hold's own time runs out before the redraw
         jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
         expect(ready()).toBe(false);
         expect(painted()).toBe("");
       }
     }
-    // in reads cut anywhere, its sequences too: only the update's end makes it a whole screen
     const end = current.indexOf("\x1b[?2026l") + "\x1b[?2026l".length;
     for (let at = 0; at < current.length; at += 5) {
       expect([at, ready()]).toEqual([at, false]);
@@ -488,7 +546,6 @@ for (const ordering of ["a resize back to the start size", "a redraw later than 
     }
     expect(ready()).toBe(true);
     attach.onData(current.slice(Math.ceil(end / 5) * 5));
-    // past the window where a line that may be herdr's refusal waits (here the final "h" of ESC [?25h)
     jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
     expect(painted().endsWith(current)).toBe(true);
   });
@@ -500,7 +557,6 @@ it("lets a resized attach go when herdr never draws its current grid", async () 
   pane.attach.onData(herdrScreen(80, 24, "old", true));
   jest.advanceTimersByTime(terminalProcess.ATTACH_RESIZE_REDRAW_MS - 1);
   expect(pane.ready()).toBe(false);
-  // no attach stays held: past the wait, the screen herdr drew goes out as it did before
   jest.advanceTimersByTime(1);
   expect(pane.ready()).toBe(true);
 });
@@ -511,7 +567,6 @@ for (const late of [false, true]) {
     await pane.resize(91, 27);
     pane.attach.onData(herdrScreen(80, 24, "old", true));
     if (late) jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
-    // the program keeps drawing at the old grid while herdr's redraw is late
     const stale = herdrScreen(80, 24, "busy");
     for (let read = 0; read < 600 && !pane.ready(); read++) pane.attach.onData(stale);
     expect(pane.ready()).toBe(true);
@@ -525,13 +580,11 @@ it("settles on the redraw when a diff of the top row follows it in the same read
   using pane = await resizableAttach();
   await pane.resize(91, 27);
   pane.attach.onData(herdrScreen(80, 24, "old", true));
-  // a top row repainted at once: an update from row 1 that is no grid the pty had
   pane.attach.onData(`${herdrScreen(91, 27, "current")}\x1b[?2026h\x1b[1;1H${"x".repeat(91)}\x1b[?2026l`);
   expect(pane.ready()).toBe(true);
 });
 
 it("marks a newcomer recovering after a ready stream ends and clears it when the next attach takes", async () => {
-  // Given the real process lifecycle, with only its PTY and herdr lookup controlled.
   mock.restore();
   const snapshot = (terminalId: string) => ({
     panes: [{ pane_id: "p", terminal_id: terminalId, workspace_id: "w", tab_id: "t", cwd: "/fixture", focused: false, revision: 0, agent_status: "idle" as const }],
@@ -582,16 +635,13 @@ it("marks a newcomer recovering after a ready stream ends and clears it when the
     first.onData("retained screen");
     await ready.promise;
 
-    // When a ready stream ends, a newcomer joins before its replacement takes.
     first.onExit(0);
     await registry.terminalFrames.attach(recovering.client, attach);
-    // Then the real lifecycle marks the retained screen as recovering, without readiness.
     expect(recovering.frames.filter((frame) => ["output-recovering", "pty-data", "input-ready"].includes(frame.type))).toEqual([
       { type: "output-recovering", pane_id: "p" },
       { type: "pty-data", pane_id: "p", data: "retained screen", replay: true },
     ]);
 
-    // When herdr supplies the replacement terminal and its attach takes.
     ready = Promise.withResolvers<void>();
     lookup.resolve(snapshot("new"));
     const next = await restarted.promise;
@@ -599,7 +649,6 @@ it("marks a newcomer recovering after a ready stream ends and clears it when the
     next.onData("current screen");
     await ready.promise;
     await registry.terminalFrames.attach(recovered.client, attach);
-    // Then later newcomers get readiness and replay without a stale recovery mark.
     expect(recovered.frames.filter((frame) => ["output-recovering", "pty-data", "input-ready"].includes(frame.type))).toEqual([
       { type: "pty-data", pane_id: "p", data: "retained screencurrent screen", replay: true },
       { type: "input-ready", pane_id: "p" },
@@ -634,7 +683,6 @@ it("makes the new ID's first attach wait for the old ID's process, also while it
   });
   try {
     const attaching = registry.terminalFrames.attach(client, { type: "attach", pane_id: "A", cols: 80, rows: 24 });
-    // moved while its terminal is still looked up: the new ID waits from now
     registry.paneMoved("A", "B");
     const waitB = retiring?.get("B");
     expect(waitB).toBeDefined();
@@ -644,7 +692,6 @@ it("makes the new ID's first attach wait for the old ID's process, also while it
     });
     await attaching;
     await Promise.resolve();
-    // a second move before the first process exited carries the wait on
     registry.paneMoved("B", "C");
     const waitC = retiring?.get("C");
     expect(waitC).toBeDefined();

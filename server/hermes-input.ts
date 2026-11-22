@@ -1,6 +1,5 @@
 import { ANSI_RE } from "./dialogs/shared.ts";
 
-/** A screen row without its escapes, OSC sequences (titles, links) included. */
 const plainRow = (row: string): string => row.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "").replace(ANSI_RE, "");
 
 /** The screen's bottom-most row with a `❯`: Hermes' input, below every message it echoes. */
@@ -16,9 +15,7 @@ function hermesInputRow(screen: string): string | null {
  * bottom-most `❯` row, empty when nothing follows the `❯`. Hermes' own hint there is not a draft:
  * the classic CLI draws its placeholder italic (its skin's `placeholder: "{dim} italic"`), and the TUI
  * starts its hint with a synthetic cursor, a cell with a background color (ui-tui textInput.tsx
- * `hintCursorCell`); typed text has neither. `live` is the detection read; `colors` the viewport's
- * ANSI read, passed only once it is verified to show that screen (viewportShowsLive), else null, and
- * then any text after the `❯` counts as a draft. A screen without a `❯` row is not known to be empty.
+ * `hintCursorCell`); typed text has neither.
  */
 export function hermesInputDraft(live: string, colors: string | null): boolean {
   const row = hermesInputRow(live);

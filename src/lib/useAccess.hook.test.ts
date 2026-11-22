@@ -5,8 +5,6 @@ import type { BridgeHealth } from "../../shared/machines.ts";
 import type { SecuritySummary } from "../../shared/protocol.ts";
 import { useAccessState } from "./useAccess.ts";
 
-// The real hook over a stubbed fetch: each bridge health read stays out until the test answers or
-// fails it, in whatever order, so overlapping reads land the way a slow network lands them (#1604).
 type Hook = ReturnType<typeof useAccessState>;
 const FACTS: SecuritySummary = { token_configured: true, pairing_gate: "closed", bind_scope: "loopback", observed_ingress: "direct", public_exposure: "unknown" };
 const health = (security?: SecuritySummary): BridgeHealth => ({ ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1, ...(security ? { security } : {}) });

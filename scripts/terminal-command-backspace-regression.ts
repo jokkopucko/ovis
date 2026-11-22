@@ -1,11 +1,45 @@
 import assert from "node:assert/strict";
-import type { Browser } from "playwright-core";
+import type { Browser, Page, WebSocket } from "playwright-core";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneRead, paneSendKeys, paneSendText } from "../server/herdr/client.ts";
 
-/** Mac keyboard events in an isolated context, against a pane owned by the UI suite. */
+/**
+ * The returned wait settles once that frame has come (at once if it already has), or fails
+ * after 15 s; only the wait makes a promise and a timer, so nothing is left to reject when the page fails to load
+ * first.
+ */
+function watchInputReady(page: Page, paneId: string): () => Promise<void> {
+  let ready = false;
+  let settle: (() => void) | null = null;
+  const watched: Array<{ socket: WebSocket; onFrame: (frame: { payload: string | Buffer }) => void }> = [];
+  const onSocket = (socket: WebSocket): void => {
+    const onFrame = ({ payload }: { payload: string | Buffer }): void => {
+      const message = JSON.parse(String(payload));
+      if (message.type !== "input-ready" || message.pane_id !== paneId || message.ready === false) return;
+      ready = true;
+      settle?.();
+    };
+    socket.on("framereceived", onFrame);
+    watched.push({ socket, onFrame });
+  };
+  page.on("websocket", onSocket);
+  return () => new Promise<void>((resolve, reject) => {
+    const done = (error?: Error): void => {
+      clearTimeout(timer);
+      settle = null;
+      page.off("websocket", onSocket);
+      for (const { socket, onFrame } of watched) socket.off("framereceived", onFrame);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => done(new Error(`${paneId} never became ready for input`)), 15_000);
+    settle = () => done();
+    if (ready) done();
+  });
+}
+
 export async function checkCommandBackspace(browser: Browser, origin: string, paneId: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1100, height: 650 } });
   await context.addInitScript((id) => {
@@ -20,14 +54,16 @@ export async function checkCommandBackspace(browser: Browser, origin: string, pa
       const message = JSON.parse(String(payload));
       if (message.type === "input") inputs.push(message);
     }));
+    const ready = watchInputReady(page, paneId);
     await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
     await page.locator(".conn-live").waitFor();
+    await ready();
     const input = page.locator(".xterm-helper-textarea");
     await input.waitFor();
     for (const [shortcut, expected] of [
       ["Backspace", "\x7f"],
       ["Meta+Backspace", "\x15"],
-      ["Control+Backspace", "\b"],
+      ["Control+Backspace", "\x17"],
       ["Alt+Backspace", "\x1b\x7f"],
       ["Meta+Shift+Backspace", "\x7f"],
       ["Meta+Alt+Backspace", "\x1b\x7f"],
@@ -39,7 +75,6 @@ export async function checkCommandBackspace(browser: Browser, origin: string, pa
       assert.deepEqual(inputs.slice(before).map(({ pane_id, text }) => ({ pane_id, text })),
         [{ pane_id: paneId, text: expected }], `${shortcut} must send its sequence exactly once`);
     }
-    // compositionend's timer is still pending when the deletion key arrives.
     const beforeCommit = inputs.length;
     await input.evaluate(async (element) => {
       const textarea = element as HTMLTextAreaElement;
@@ -67,7 +102,6 @@ export async function checkCommandBackspace(browser: Browser, origin: string, pa
       assert.equal(inputs.slice(before).some(({ text }) => text === "\x15"), false,
         "an active composition must not receive a line-deletion sequence");
     }
-    // Also verify the effect in a real readline process inside the owned pane.
     const fixture = mkdtempSync(join(tmpdir(), "herdr-command-backspace-"));
     const result = join(fixture, "line.txt");
     const script = join(fixture, "readline.cjs");
@@ -81,7 +115,9 @@ process.stdin.on("data", (data) => {
 });
 `);
     try {
-      await paneSendKeys(paneId, ["ctrl+c"]);
+      // Ctrl+E and Ctrl+U empty the prompt line as keys, read in order with the command. Ctrl+C is a
+      // signal: when the command is there before bash handles it, bash runs the line without its first byte.
+      await paneSendText(paneId, "\x05\x15");
       await paneSendText(paneId, `node ${script}`);
       await paneSendKeys(paneId, ["Enter"]);
       const deadline = Date.now() + 10_000;
@@ -123,12 +159,21 @@ process.stdin.on("data", (data) => {
       const message = JSON.parse(String(payload));
       if (message.type === "input") inputs.push(message.text);
     }));
+    const ready = watchInputReady(page, paneId);
     await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
     await page.locator(".conn-live").waitFor();
+    await ready();
     await page.locator(".xterm-helper-textarea").press("Meta+Backspace");
     await page.waitForTimeout(300);
     assert.deepEqual(inputs, ["\x7f"], "non-macOS Meta+Backspace keeps its native sequence");
-    console.log("PASS non-macOS Meta+Backspace keeps native DEL");
+    await page.locator(".xterm-helper-textarea").press("Control+Backspace");
+    const deadline = Date.now() + 5_000;
+    while (inputs.length < 2) {
+      if (Date.now() > deadline) throw new Error("Ctrl+Backspace sent nothing");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.deepEqual(inputs, ["\x7f", "\x17"], "non-macOS Ctrl+Backspace erases a word with Ctrl+W");
+    console.log("PASS non-macOS Meta+Backspace keeps native DEL; Ctrl+Backspace sends Ctrl+W");
   } finally {
     await nonMac.close();
   }

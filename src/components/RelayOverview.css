@@ -1,12 +1,3 @@
-/*
- * Overview and feedback for the hosted relay app (RelayOverview.tsx):
- * three-cell filter strip (Ready, Needs you with its offline note, Relays in use) on --bg parted by
- * --divider hairlines in --space-6 gutters, bounded attention list on the plain surface with a
- * caption for a reason its rows share, directory error banner, static skeleton loading, empty state,
- * and the 44px connection map disclosure. Tokens only; no cards or resting shadows.
- */
-
-/* the summary, the attention list, the table and the Connection map disclosure sit a group apart: --space-6 */
 .relay-overview,
 .relay-overview-loading {
   display: flex;
@@ -38,7 +29,6 @@
 
 .relay-overview-strip[data-local] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
-/* top-aligned, so the labels share one line and the numerals one baseline across the cells; the Needs you note hangs under its numeral */
 .relay-overview-strip-btn {
   display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; gap: var(--space-2);
   min-width: 0; min-height: calc(2 * var(--space-8)); margin: 0; padding: var(--space-3) var(--space-6);
@@ -52,7 +42,6 @@
 .relay-overview-strip-btn[aria-pressed="true"] { background: var(--bg-elevated); color: var(--text-strong); }
 .relay-overview-strip-btn:focus-visible { outline: var(--ring); outline-offset: calc(-1 * var(--ring-offset)); }
 
-/* the label wraps rather than losing its end (a cell is the control's only name); the glyph sits on its first line */
 .relay-overview-strip-label {
   display: inline-flex;
   align-items: start;
@@ -82,7 +71,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* the offline count under the Needs you numeral: its own line, never clipped */
 .relay-overview-strip-note {
   display: block;
   max-width: 100%;
@@ -93,7 +81,6 @@
   overflow-wrap: break-word;
 }
 
-/* the relays and how many PCs this device reaches share one row under the strip */
 .relay-overview-connectivity {
   display: flex;
   flex-wrap: wrap;
@@ -143,10 +130,8 @@
 }
 
 .relay-overview-relay-rtt { color: var(--text); font-variant-numeric: tabular-nums; }
-/* one dim line under the relays: how many PCs this device reaches right now and by which way */
 .relay-overview-reach { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-xs)); line-height: var(--lh-base); font-variant-numeric: tabular-nums; }
 .relay-overview-attention-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
-/* one head row: the reason the shown rows share at the start, View all at the end */
 .relay-overview-attention-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); min-width: 0; }
 .relay-overview-attention-caption { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); line-height: var(--lh-base); overflow-wrap: break-word; }
 
@@ -196,7 +181,25 @@
 .relay-overview-empty-icon { width: calc(2 * var(--space-6)); height: calc(2 * var(--space-6)); color: var(--text-dim); }
 .relay-overview-empty-title { margin: 0; color: var(--text-strong); font-size: var(--fs-lg); font-weight: var(--fw-semibold); line-height: var(--lh-tight); }
 .relay-overview-empty-copy { max-width: 560px; margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-md)); line-height: var(--lh-base); }
+.relay-overview-empty-steps {
+  display: flex; flex-direction: column; gap: var(--space-3); width: 100%; max-width: 560px; margin: 0; padding-inline-start: var(--space-6);
+  color: var(--text); font-size: max(var(--relay-fs-body-min), var(--fs-md)); line-height: var(--lh-base); text-align: start; overflow-wrap: break-word;
+}
+.relay-overview-empty-steps > li { min-width: 0; }
+.relay-overview-empty-os { display: block; margin-top: var(--space-2); color: var(--text-dim); }
+.relay-overview-empty-command-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-2); }
+.relay-overview-empty-command {
+  /* a real basis, not 0: where the line has no room for it beside Copy, Copy wraps under the command instead of squeezing it to a few characters a line */
+  flex: 1 1 16rem; min-width: 0; margin: 0; padding: var(--space-2) var(--space-3);
+  background: var(--bg-input); border: var(--hairline) solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-strong); font-family: var(--font-mono); font-size: max(var(--relay-fs-min), var(--fs-xs));
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: all;
+}
 .relay-overview-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-1); }
+.btn.relay-overview-check-again[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+@media (hover: hover) {
+  .btn.relay-overview-check-again[aria-disabled="true"]:hover { background: var(--bg-elevated); border-color: var(--border); }
+}
 
 .relay-overview-map-disclosure {
   display: flex;
@@ -230,7 +233,6 @@
   .relay-overview-attention-row, .relay-overview-skeleton-row { min-height: var(--touch-target); }
 }
 
-/* narrower: Ready and Needs you side by side (they partition the PCs), Relays in use on a full-width row under them */
 @media (max-width: 1100px) {
   .relay-overview-strip:not([data-local]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .relay-overview-strip:not([data-local]) .relay-overview-strip-btn:nth-child(3) { grid-column: 1 / -1; border-inline-start: 0; border-top: var(--hairline) solid var(--divider); }
@@ -238,7 +240,6 @@
 
 @media (max-width: 768px) {
   .relay-overview-strip-btn { padding: var(--space-3) var(--space-4); }
-  /* the local strip's "Paired with this device" takes two lines on a phone; its neighbour's label keeps the same box, so both numerals stay on one baseline */
   .relay-overview-strip[data-local] .relay-overview-strip-label { min-height: calc(2 * var(--lh-tight) * max(var(--relay-fs-body-min), var(--fs-sm))); }
   .relay-overview-attention-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .relay-overview-attention-why { grid-column: 2; }

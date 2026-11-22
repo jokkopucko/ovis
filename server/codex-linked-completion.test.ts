@@ -55,7 +55,6 @@ const text = "The implementation preserves request metadata and trace identifier
 const url = "http://127.0.0.1:4317";
 const shownAs = (literal: string) => screen.replace(/• The local[\s\S]*?to sign in\./, `• ${literal.replaceAll("\n", "\n  ")}`);
 const owners = new Set(["own", "rendered", "other"]);
-// a conversation that was asked the prompt but whose read holds no finish for it, after an older finished turn or none
 const unfinished = (path: string, text: string, older: boolean) => ({ path, text: [
   ...older ? [event({ type: "task_complete", turn_id: "old", last_agent_message: "A previous unrelated result." })] : [],
   event({ type: "item_completed", turn_id: "t", item: { type: "UserMessage", content: [{ text: prompt }] } }),
@@ -73,9 +72,7 @@ const collisions: [string, string, { path: string; text: string }][] = [
   ["a reference link", `${text} Read report for details.`, candidate("rendered", `${text} Read [report][ref] for details.\n\n[ref]: https://example.com/report`)],
   ["an unfinished turn", spaced[0], unfinished("rendered", spaced[1], false)],
   ["an unfinished turn after an older finished one", spaced[0], unfinished("rendered", spaced[1], true)],
-  // its prompt pushed out of the tail read (by a large tool output) and its turn not finished in it
   ["its prompt cut from the read", spaced[0], { path: "rendered", text: unfinished("rendered", spaced[1], false).text.split("\n").slice(1).join("\n") }],
-  // its finished turn's prompt pushed out of the tail read
   ["its finished turn's prompt cut from the read", spaced[0], { path: "rendered", text: candidate("rendered", spaced[1]).text.split("\n").slice(1).join("\n") }],
 ];
 for (const [kind, literal, rendered] of collisions) {
@@ -84,7 +81,6 @@ for (const [kind, literal, rendered] of collisions) {
   });
 }
 
-// Accepted false refusal: whether another same-prompt answer renders otherwise is not judged, so the exact reply stays unbound
 test("keeps an exact reply unbound while a same-prompt conversation answered otherwise (accepted false refusal)", () => {
   for (const [literal, other] of [
     [`${text} Read report (docs/report.md) for details.`, `${text} Read [summary](/repo/docs/summary.md) for details.`],
@@ -116,18 +112,13 @@ test("matches an exact reply while another conversation asked the prompt only be
   for (const [shown, recorded] of [[shownAs(spaced[0]), spaced[0]], [screen, answer]] as const) {
     expect(matchCodexTranscript(shown, [candidate("own", recorded), later], new Set(), new Map(), false, owners)).toBe("own");
   }
-  // one whose last finished turn's prompt the tail read cut still counts, whatever its answer reads as: a reference
-  // link's definition, say, is not on screen, so its answer may still be the one shown
   const literal = `${text} Read report for details.`;
   for (const said of [notes, `${text} Read [report][ref] for details.\n\n[ref]: https://example.com/a-long-reference-target-not-on-screen`]) {
     const cut = { path: "other", text: turn("b", prompt, said).slice(1).join("\n") };
     expect(matchCodexTranscript(shownAs(literal), [candidate("own", literal), cut], new Set(), new Map(), false, owners)).toBeNull();
   }
-  // asked again as its latest turn, finished or not, it still counts
   const again = { path: "other", text: [...later.text.split("\n"), event({ type: "item_completed", turn_id: "c", item: { type: "UserMessage", content: [{ text: prompt }] } })].join("\n") };
   expect(matchCodexTranscript(screen, [candidate("own"), again], new Set(), new Map(), false, owners)).toBeNull();
-  // a later turn not read finished may have begun after the screen was read, which may show the earlier one: a
-  // new prompt after the shown turn, or a finish with no turn of its own, keeps every prompt counting
   const literal2 = `${text} Read report for details.`;
   const reference = `${text} Read [report][ref] for details.\n\n[ref]: https://example.com/a-long-reference-target-not-on-screen`;
   const begun = { path: "other", text: [...turn("a", prompt, reference), event({ type: "item_completed", turn_id: "b", item: { type: "UserMessage", content: [{ text: "Summarize the release notes." }] } })].join("\n") };

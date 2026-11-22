@@ -10,17 +10,12 @@ import { MACHINE_PROXY_PATH } from "./machine-api.ts";
 import { repoDiffFile, repoDiffFiles } from "./repo-diff.ts";
 import { REPO_LOG_MAX_LIMIT, repoBranches, repoCommit, repoLog } from "./repo-log.ts";
 
-/**
- * Real git repositories in a temp folder, as for the diff routes: what the history routes say is
- * what git prints. The developer's own git configuration is kept out.
- */
 process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
 process.env["GIT_CONFIG_NOSYSTEM"] = "1";
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "ovis-repo-log-")));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** git in `cwd`; `at` sets both of a commit's dates (seconds since the epoch), so the order is the fixture's own */
 function git(cwd: string, args: string[], at?: number): string {
   // a CI runner's own GIT_AUTHOR_* / GIT_COMMITTER_* would outrank `-c user.name`
   const people = { GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" };
@@ -70,7 +65,6 @@ describe("GET /api/workspace/git/log", () => {
     expect(first.commits[1]!.refs).toEqual(["refs/remotes/origin/main"]);
     expect(first.next_skip).toBe(2);
 
-    // a commit made between pages does not shift the next one
     commit(root, "commit 6", 1_700_000_000 + 6 * 60);
     const second = await repoLog(root, query({ limit: "2", oid: first.oid!, skip: String(first.next_skip) }));
     expect(second.commits.map((entry) => [entry.subject, entry.refs])).toEqual([["commit 3", ["refs/heads/feat/a,b"]], ["commit 2", []]]);
@@ -148,7 +142,6 @@ describe("GET /api/workspace/git/branches", () => {
     expect(listed.branches[0]).toMatchObject({ subject: "ahead on main", committed_at: "2023-11-15T07:15:00+09:00" });
     expect(listed.truncated).toBe(false);
 
-    // the current branch keeps its place at the top when the list is cut
     const cut = await repoBranches(root, { maxRefs: 1 });
     expect(cut.branches.map((branch) => branch.name)).toEqual(["refs/heads/main"]);
     expect(cut.truncated).toBe(true);

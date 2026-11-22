@@ -24,7 +24,6 @@ function fixture(name = "parent") {
 const json = (entry: unknown): string => `${JSON.stringify(entry)}\n`;
 const notice = (id: string, status = "completed"): string => json({ type: "queue-operation", operation: "enqueue", timestamp: "2026-10-01T12:00:00.000Z", content: `<task-notification><task-id>${id}</task-id><status>${status}</status><summary>Background command finished</summary></task-notification>` });
 const filler = json({ type: "progress", value: "x".repeat(1024) }).repeat(1024);
-/** Resolves on the first change of `path`'s history for which `test` holds. */
 function heard(path: string, test: () => boolean): Promise<void> {
   return new Promise((resolve) => {
     const stop = watchCommandHistory(path, () => { if (test()) { stop!(); resolve(); } });
@@ -83,14 +82,12 @@ it("times the recheck within a version's tick for a watch taken again after the 
   writeFileSync(s.path, notice("same"));
   utimesSync(s.path, tick, tick);
   await waitCommandHistory(s.path, s.limit());
-  // asked while nobody watches: the recheck is held back untimed
   commandHistory(s.path, s.limit());
   expect(commandHistorySize().timers).toBe(0);
   release.push(watchCommandHistory(s.path, () => {})!);
   expect(commandHistorySize().timers).toBe(1);
 });
 
-/** `body` written with a timestamp a minute ahead, so every check of the test begins within its tick, and read through. */
 async function racy(body: string) {
   const s = fixture();
   const tick = Math.ceil(Date.now() / 1000) + 60;
@@ -99,14 +96,12 @@ async function racy(body: string) {
   await waitCommandHistory(s.path, s.limit());
   return s;
 }
-/** The bytes `run` asks fs.readSync for, and how many reads. */
 function reads(run: () => unknown): Promise<{ bytes: number; calls: number }> {
   const spy = spyOn(fs, "readSync");
   return Promise.resolve(run()).then(() => ({ bytes: spy.mock.calls.reduce((sum, call) => sum + ((call as unknown[])[3] as number), 0), calls: spy.mock.calls.length })).finally(() => spy.mockRestore());
 }
 
 it("tells the ends whose lines it reads again within a tick, past the most it reads at once, and all to a request it checked for", async () => {
-  // five ends of 900 KB lines: more than one call reads again
   const big = (id: string) => json({ ...JSON.parse(notice(id)), pad: "x".repeat(900 * 1024) });
   const ids = ["a", "b", "c", "d", "e"];
   const s = await racy(ids.map(big).join(""));
@@ -144,7 +139,6 @@ it("rechecks a version whose mtime is far ahead of the clock within the check in
     expect(delays).toHaveLength(1);
     expect(delays[0]).toBeLessThanOrEqual(5000);
   } finally { timers.mockRestore(); }
-  // and once that interval is past, the check is due, not put off again
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 6000);
   try {
     commandHistory(s.path, s.limit());
@@ -161,7 +155,6 @@ it("reads again no more than its budget of bytes, the gaps between lines read at
 
 it("forgets every end once any byte it read is rewritten, though the transcript only grew", async () => {
   const s = fixture();
-  // the rewritten notice sits mid-file, far from the first and last bytes read
   const head = filler.repeat(2);
   writeFileSync(s.path, head + notice("same") + filler.repeat(2));
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["same"]);
@@ -184,7 +177,6 @@ it("tells no end it read before a rewrite that also grew the transcript until th
   writeSync(fd, Buffer.from(notice("else")), 0, Buffer.byteLength(notice("else")), Buffer.byteLength(head));
   closeSync(fd);
   appendFileSync(s.path, notice("next"));
-  // asked before any check of the grown transcript: what it read is unknown, not ended
   expect(commandHistory(s.path, limit)).toMatchObject({ complete: false, ends: [] });
   const checked = await waitCommandHistory(s.path, limit);
   expect(checked).toMatchObject({ complete: true });
@@ -208,7 +200,6 @@ it.each([["the newline after it", 0], ["the newline before it (joining it to the
 it("tells an end at once while the transcript grows, when its line begins exactly where a read chunk began", async () => {
   const s = fixture();
   const pad = json({ type: "progress", value: "" });
-  // the first record fills the first 1 MiB chunk exactly: the notice begins the next one
   const first = json({ type: "progress", value: "x".repeat(1024 * 1024 - Buffer.byteLength(pad)) });
   expect(Buffer.byteLength(first)).toBe(1024 * 1024);
   writeFileSync(s.path, first + notice("same") + filler);
@@ -225,7 +216,6 @@ it("tells the ends it read at once while the transcript only grows, before any c
   await waitCommandHistory(s.path, limit);
   appendFileSync(s.path, notice("next"));
   expect(commandHistory(s.path, limit, false)).toMatchObject({ complete: true, ends: [{ id: "same" }] });
-  // only the ids asked for
   expect(commandHistory(s.path, limit, false, new Set(["other"]))!.ends).toEqual([]);
 });
 
@@ -261,7 +251,6 @@ it("answers a request at once while a record waits to be written whole, and read
   const record = notice("finished");
   writeFileSync(s.path, record.slice(0, -4));
   const boundary = s.limit();
-  // the test's own timeout fails it if the request waits for its deadline
   const partial = await waitCommandHistory(s.path, boundary, 60_000);
   expect(partial).toMatchObject({ complete: false, through: 0, ends: [] });
   expect(commandHistorySize().waiting).toBe(0);
@@ -312,14 +301,12 @@ it("evicts the least recently used read, never a watched one", () => {
   for (const path of paths.slice(3)) { const watch = watchCommandHistory(path, () => {}); release.push(watch!); }
   const watched = watchCommandHistory(extra.path, () => {});
   release.push(watched!);
-  // every read is watched: a new one is refused, and nothing watched goes
   expect(commandHistory(paths[2]!, 0, false)).toBeNull();
   expect(commandHistorySize().sessions).toBe(16);
 });
 
 it("lets a small session finish before a large one, a slice each in turn", async () => {
   const large = fixture();
-  // every line a notice: the large read takes many slices
   writeFileSync(large.path, Array.from({ length: 40_000 }, (_, index) => notice(`l${index}`)).join(""));
   commandHistory(large.path, large.limit());
   let largeDone = false;
@@ -343,13 +330,11 @@ it("drops every read and timer once the last server lets go", async () => {
 
 const gate = () => { let open!: () => void; const opened = new Promise<void>((resolve) => { open = resolve; }); return { opened, open }; };
 type Work = (file: TranscriptFile) => Promise<unknown>;
-/** Runs every history read's work through `wrap`, for as long as the test lasts. */
 function wrapReads(wrap: (path: string, work: Work) => Work): void {
   const read = transcriptReader.read.bind(transcriptReader);
   const spy = spyOn(transcriptReader, "read").mockImplementation(((path: string, work: Work, options?: { deadline?: number }) => read(path, wrap(path, work), options)) as typeof transcriptReader.read);
   release.push(() => spy.mockRestore());
 }
-/** Holds every slice after its lease opened (its first stat taken) until `release` is called; `entered` opens as one is held. */
 function holdSlices() {
   const entered = gate(), held = gate();
   wrapReads((_, work) => async (file) => { entered.open(); await held.opened; return work(file); });
@@ -357,10 +342,7 @@ function holdSlices() {
 }
 /**
  * Every window read takes 10 ms of the clock (performance.now), more than a slice, and opening a
- * transcript `openMs`, though no time passes: storage as slow as an SSHFS home. Counts the reads of
- * each path, and the leases they were read in (`leases`); `read` hears of each read; `elapsed` is
- * the clock's time so far. With `look`, the clock moves by that much at each look at it instead
- * of with real time.
+ * transcript `openMs`, though no time passes: storage as slow as an SSHFS home.
  */
 function slowReads(read: (path: string, reads: number) => void = () => {}, openMs = 0, look?: number) {
   const real = performance.now.bind(performance), base = real();
@@ -381,7 +363,6 @@ function slowReads(read: (path: string, reads: number) => void = () => {}, openM
 }
 /** An open on remote storage: several round trips (open, stat, the path's stat), each slower than a read. */
 const OPEN_MS = 100;
-/** The clock's time `reads` reads take, and `opens` opens. */
 const took = (reads: number, opens: number) => reads * 10 + opens * OPEN_MS;
 const MIB = 1024 * 1024;
 
@@ -391,9 +372,8 @@ it("backs off a read the reader is too busy for without counting it a failure of
   let now = Date.now();
   const busy = spyOn(transcriptReader, "read").mockImplementation(() => Promise.reject(new TranscriptBusyError()));
   try {
-    // more refusals than the failures a read is given up after (and then told complete with no end)
     for (let round = 0; round < 6; round++) {
-      setSystemTime(new Date(now += 60_000)); // past any backoff
+      setSystemTime(new Date(now += 60_000));
       expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: false, through: 0, ends: [] });
     }
     expect(busy.mock.calls.length).toBeGreaterThanOrEqual(6);
@@ -408,12 +388,10 @@ it("backs off a read the reader is too busy for without counting it a failure of
 it("keeps the chunks it read and checked when a read gives up on its stat after a chunk", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("first") + filler.repeat(4));
-  // written a minute before: the read begins past the version's tick, and no recheck within it is due
   const past = Math.floor(Date.now() / 1000) - 60;
   utimesSync(s.path, past, past);
   const chunks = Math.ceil(s.limit() / MIB);
   let windows = 0, failed = false;
-  // the stat after the second chunk runs out of time (the reader's deadline): TranscriptBusyError
   wrapReads((_, work) => (file) => work({ ...file,
     window: async (position, length) => { windows++; return file.window(position, length); },
     stat: async () => { if (windows === 2 && !failed) { failed = true; throw new TranscriptBusyError(); } return file.stat(); } }));
@@ -421,11 +399,10 @@ it("keeps the chunks it read and checked when a read gives up on its stat after 
   try {
     expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: false });
     expect(failed).toBe(true);
-    setSystemTime(new Date(now += 60_000)); // past the backoff
+    setSystemTime(new Date(now += 60_000));
     const read = await waitCommandHistory(s.path, s.limit(), 60_000);
     expect(read).toMatchObject({ complete: true, through: s.limit() });
     expect(read!.ends.map((end) => end.id)).toEqual(["first"]);
-    // the chunk whose stat failed is read again, and nothing is checked over
     expect(windows).toBe(chunks + 1);
   } finally { setSystemTime(); }
 }, 5000);
@@ -437,7 +414,6 @@ it("lets the event loop run while a slice waits for the disk", async () => {
   let answered = false;
   const waiting = waitCommandHistory(s.path, s.limit(), 60_000).then((found) => { answered = true; return found; });
   await held.entered;
-  // a macrotask comes round while the read is still under way
   await new Promise<void>((resolve) => setImmediate(resolve));
   expect(answered).toBe(false);
   expect(commandHistorySize().draining).toBe(true);
@@ -448,7 +424,6 @@ it("lets the event loop run while a slice waits for the disk", async () => {
 it("queues a session asked for while its slice reads only once", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("slow") + filler.repeat(3));
-  // asked for again while its first read is under way; that read alone outlasts the slice
   const reads = slowReads((_, count) => { if (count === 1) commandHistory(s.path, s.limit()); });
   const waits: number[] = [];
   const waiting = waitCommandHistory(s.path, s.limit(), 60_000);
@@ -466,13 +441,11 @@ it("keeps what it read when a slice's stat is older than one a poll took while t
   const held = holdSlices();
   commandHistory(s.path, s.limit());
   await held.entered;
-  // the transcript grows on, and a status poll sees it: the held slice's stat is now behind
   appendFileSync(s.path, notice("later"));
   commandHistory(s.path, s.limit(), false);
   const changed = heard(s.path, () => true);
   held.release();
   await changed;
-  // an ordinary append never starts the read over: the end read before stays told
   expect(commandHistory(s.path, s.limit(), false)!.ends.map((end) => end.id)).toContain("kept");
   expect((await waitCommandHistory(s.path, s.limit()))!.ends.map((end) => end.id)).toEqual(["kept", "next", "later"]);
 }, 5000);
@@ -480,9 +453,7 @@ it("keeps what it read when a slice's stat is older than one a poll took while t
 it("starts over on a transcript cut short in place while a slice reads it", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("old") + filler.repeat(3));
-  // rewritten shorter, the same file, as the first read returns
   slowReads((_, count) => { if (count === 1) writeFileSync(s.path, notice("new")); });
-  // answered well before the test's timeout: a read that never starts over waits out the request
   const read = await waitCommandHistory(s.path, s.limit(), 3000);
   expect(read).toMatchObject({ complete: true, through: s.limit() });
   expect(read!.ends.map((end) => end.id)).toEqual(["new"]);
@@ -490,11 +461,8 @@ it("starts over on a transcript cut short in place while a slice reads it", asyn
 
 it("reads on by whole chunks when every read outlasts a slice, as on slow storage", async () => {
   const s = fixture();
-  // a notice every 2 KiB, about 3 MiB: each chunk is far less than a slice's work
   writeFileSync(s.path, Array.from({ length: 1500 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(2048) })).join(""));
-  // the clock moves by the reads alone (and 1 µs a look), so taking in a chunk takes less than a slice
   const reads = slowReads(undefined, 0, 0.001);
-  // the ends known each time the event loop runs
   const known: number[] = [];
   let probing = true;
   const probe = () => { if (!probing) return; known.push(commandHistory(s.path, s.limit(), false)?.ends.length ?? 0); setImmediate(probe); };
@@ -504,10 +472,7 @@ it("reads on by whole chunks when every read outlasts a slice, as on slow storag
   probing = false;
   expect(history).toMatchObject({ complete: true, through: s.limit() });
   expect(history!.ends).toHaveLength(1500);
-  // a read for each chunk, not one for each record
   expect(reads(s.path)).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
-  // each chunk, though it came after its slice's end, is taken in for a slice of its own before the
-  // event loop runs (several hundred ends), not a record at a time
   const heard = known.slice(1).map((ends, index) => ends - known[index]!).filter((more) => more > 0);
   expect(heard.length).toBeGreaterThan(0);
   expect(Math.min(...heard)).toBeGreaterThan(100);
@@ -515,10 +480,8 @@ it("reads on by whole chunks when every read outlasts a slice, as on slow storag
 
 it("takes in the rest of a window a slice ended in without reading it again", async () => {
   const s = fixture();
-  // a notice every 1 KiB or so, about 3 MiB
   const ids = Array.from({ length: 3000 }, (_, index) => `c${index}`);
   writeFileSync(s.path, ids.map((id) => notice(id) + json({ type: "progress", value: "x".repeat(1024) })).join(""));
-  // a clock that moves on at every look: slices end several times inside each window
   const clock = performance.now.bind(performance);
   let moved = 0;
   const now = spyOn(performance, "now").mockImplementation(() => clock() + (moved += 0.02));
@@ -537,7 +500,6 @@ it("starts over on a transcript rewritten and grown while it reads a window ahea
   let rewritten = false;
   wrapReads((_, work) => (file) => work({ ...file, ahead: (position, length) => {
     file.ahead(position, length);
-    // the same file, its first record another: whatever the read ahead finds, what was read before it is gone
     if (!rewritten) { rewritten = true; writeFileSync(s.path, notice("b") + filler.repeat(5)); }
   } }));
   const read = await waitCommandHistory(s.path, s.limit(), 60_000);
@@ -551,7 +513,6 @@ it("lets a small session have its turn after each slow read of a large one", asy
   writeFileSync(large.path, notice("large") + filler.repeat(8));
   const small = fixture("small");
   writeFileSync(small.path, notice("small"));
-  // the small one is asked for while the large one's first read is under way
   let answered: Promise<number> | undefined;
   const reads = slowReads((path, count) => {
     if (path === large.path && count === 1) answered = waitCommandHistory(small.path, small.limit(), 60_000).then((found) => {
@@ -562,7 +523,6 @@ it("lets a small session have its turn after each slow read of a large one", asy
   const reading = waitCommandHistory(large.path, large.limit(), 60_000);
   expect((await reading)!.complete).toBe(true);
   expect(reads(large.path)).toBeGreaterThan(8);
-  // read before the large one went on past the slice its first read began
   expect(await answered!).toBe(1);
 }, 5000);
 
@@ -571,7 +531,6 @@ it("keeps a transcript open across turns while no other session waits", async ()
   writeFileSync(s.path, notice("large") + filler.repeat(8));
   const reads = slowReads(undefined, OPEN_MS);
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
-  // a turn for every slow read, but the read takes the time of its reads and an open or two, not an open a turn
   expect(reads(s.path)).toBeGreaterThan(8);
   expect(reads.elapsed()).toBeLessThan(took(reads(s.path), 2));
 }, 5000);
@@ -589,7 +548,6 @@ it("lets go of a transcript it keeps open at the end of the turn another session
     });
   });
   expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
-  // the small one was read while the large one still had reads to go: it let go, and opened again after
   expect(await answered!).toBeLessThan(reads(large.path));
 }, 5000);
 
@@ -599,8 +557,6 @@ it("lets go of a transcript it keeps open well before the read's deadline", asyn
   let now = Date.now();
   setSystemTime(new Date(now));
   try {
-    // half the read's deadline passes during the second read, and as much again two reads later: a
-    // lease still held then would run out of time, and the read would give up for now
     slowReads((_, count) => { if (count === 2 || count === 4) setSystemTime(new Date(now += 5_000)); });
     expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, through: s.limit() });
   } finally { setSystemTime(); }
@@ -609,7 +565,6 @@ it("lets go of a transcript it keeps open well before the read's deadline", asyn
 it("lets go of a transcript it keeps open at the end of the turn another reader waits for it in", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));
-  // another reader of the same transcript (one lease a path) asks while the third read is under way
   let other: Promise<number> | undefined;
   const reads = slowReads((_, count) => { if (count === 3) other = transcriptReader.read(s.path, async () => reads(s.path)); });
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
@@ -630,11 +585,9 @@ it("lets go of a transcript it keeps open at the end of a turn that told a watch
 it("reads on in the same lease when the session it reads is asked for again", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));
-  // the clock's time as each read was made
   let at = 0;
   const reads = slowReads((_, count) => { at = reads.elapsed(); if (count === 3) commandHistory(s.path, s.limit()); }, OPEN_MS);
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
-  // the request at the third read cost no open: through its last read, the read took the time of its reads and one open
   expect(reads(s.path)).toBeGreaterThan(8);
   expect(at).toBe(took(reads(s.path), 1));
 }, 5000);
@@ -642,8 +595,6 @@ it("reads on in the same lease when the session it reads is asked for again", as
 it("gives each turn of a transcript it keeps open a slice of its own", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(16));
-  // storage that answers at once, so the event loop runs only when a turn ends, and a clock that
-  // moves only by 1 ms a read: four reads to a slice
   const bytes = readFileSync(s.path);
   let waited = 0;
   const base = performance.now();
@@ -653,7 +604,6 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
     waited += 1;
     return bytes.subarray(position, position + length);
   } }));
-  // the clock each time the event loop runs
   const runs: number[] = [];
   let probing = true;
   const probe = () => { runs.push(waited); if (probing) setImmediate(probe); };
@@ -662,23 +612,15 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
   probing = false;
   expect(waited).toBeGreaterThan(16);
-  // how long of the clock the event loop waited between one run and the next, where the read ran
   const held = runs.slice(1).map((at, index) => at - runs[index]!).filter((ms) => ms > 0);
-  // never longer than a slice and the read that ended it; and each turn but the last works a slice
-  // of its own, not just a read (the read's last may be short)
   expect(Math.max(...held)).toBeLessThanOrEqual(5);
   expect(held.slice(0, -1).every((ms) => ms >= 2)).toBe(true);
 }, 5000);
 
 it.skipIf(process.platform !== "linux")("holds the event loop no longer than a slice and the call that ended it when it reads on the event loop", async () => {
   const s = fixture();
-  // an end in every record, about 7 MiB: taking in a window takes several slices
   writeFileSync(s.path, Array.from({ length: 6000 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(1024) })).join(""));
-  // a clock that moves only as the read does: a read or a stat on the event loop takes 0.5 ms, and
-  // each look at the clock 0.01 ms
   let clock = performance.now();
-  // on a local filesystem (btrfs), where the reader reads on the event loop. Looking that up takes
-  // 2 ms of the clock: the first slice counts it, as main's counts its open
   const statfs = fsp.statfs;
   const local = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => {
     const found = { ...(await statfs(directory)), type: 0x9123683e };
@@ -690,7 +632,6 @@ it.skipIf(process.platform !== "linux")("holds the event loop no longer than a s
   const reads = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof readSync>) => { clock += 0.5; return readSync(...args); }) as typeof readSync);
   const stats = spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fstatSync>) => { clock += 0.5; return fstatSync(...args); }) as typeof fstatSync);
   release.push(() => { local.mockRestore(); now.mockRestore(); reads.mockRestore(); stats.mockRestore(); });
-  // the clock each time the event loop runs
   const runs: number[] = [];
   let probing = true;
   const probe = () => { runs.push(clock); if (probing) setImmediate(probe); };
@@ -698,11 +639,7 @@ it.skipIf(process.platform !== "linux")("holds the event loop no longer than a s
   probe();
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
   probing = false;
-  // a read on the event loop for each window
   expect(reads.mock.calls.length).toBeGreaterThanOrEqual(Math.ceil(s.limit() / MIB));
-  // never longer than a slice (4 ms, the lookup and the lease's first stat included) and the read
-  // and stat that ended it, with the clock's looks: a window read on the event loop after the
-  // slice's end has no slice of its own
   const held = runs.slice(1).map((at, index) => at - runs[index]!);
   expect(held.filter((ms) => ms > 4).length).toBeGreaterThan(4);
   expect(Math.max(...held)).toBeLessThanOrEqual(4 + 0.5 + 0.5 + 0.5);
@@ -714,7 +651,6 @@ it("reads one slice for a request nobody watches or waits for", async () => {
   slowReads();
   commandHistory(s.path, s.limit());
   await commandHistorySettled();
-  // read on some way, and nothing left to read it on
   const { through } = commandHistory(s.path, s.limit(), false)!;
   expect(through).toBeGreaterThan(0);
   expect(through).toBeLessThan(s.limit());
@@ -725,7 +661,6 @@ it("reads on in one lease for a tracker's watch after it hears the first end", a
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(9));
   const reads = slowReads();
-  // as a tracker asks: a read, and a watch of it until it is no longer needed
   commandHistory(s.path, s.limit());
   const done = gate();
   let first: number | null = null;
@@ -736,7 +671,6 @@ it("reads on in one lease for a tracker's watch after it hears the first end", a
   })!);
   await done.opened;
   expect(reads(s.path)).toBeGreaterThan(9);
-  // the end from the first chunk is heard while the read goes on
   expect(first).not.toBeNull();
   expect(first!).toBeLessThan(s.limit());
 }, 5000);
@@ -745,7 +679,6 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
   const s = fixture();
   writeFileSync(s.path, notice("a") + filler.repeat(16));
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.ends.map((end) => end.id)).toEqual(["a"]);
-  // a clock that moves only by 1 ms a read: four reads to a slice
   let waited = 0, reads = 0, heard = -1, through = -1;
   const base = performance.now();
   const now = spyOn(performance, "now").mockImplementation(() => base + waited);
@@ -757,22 +690,14 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
     return bytes;
   } }));
   release.push(watchCommandHistory(s.path, () => { if (heard < 0) { heard = reads; through = commandHistory(s.path, s.limit(), false)!.through; } })!);
-  // rewritten in place and grown: the same file, the record after the end's line another. Its line
-  // reads as it did (a request reading it again finds nothing): only a check finds the rewrite
   writeFileSync(s.path, notice("a") + json({ type: "progress", value: "y".repeat(1024) }) + filler.repeat(17));
   const read = await waitCommandHistory(s.path, s.limit(), 60_000);
   expect(read!.ends.map((end) => end.id)).toEqual(["a"]);
   expect(reads).toBeGreaterThan(16);
-  // the watcher hears of the start over in the turn it happened, not once the transcript is read again
   expect(heard).toBeGreaterThan(0);
   expect(through).toBeLessThan(s.limit());
 }, 5000);
 
-/**
- * Holds every window read of each of `paths` until its `release` is called, as a read stuck on its
- * disk; its `entered` opens as the first one is held.
- */
-/** setTimeout, Date and performance.now as the test moves them, for as long as it lasts (setImmediate stays real). */
 function controlledClock() {
   jest.useFakeTimers();
   release.push(() => jest.useRealTimers());
@@ -804,7 +729,6 @@ it("reads another transcript while one transcript's read is stuck on its disk", 
   const first = waitCommandHistory(a.path, a.limit(), 60_000);
   await held.entered;
   const other = waitCommandHistory(b.path, b.limit(), 60_000);
-  // the time a stuck slice is waited for passes: B is read beside it
   jest.advanceTimersByTime(50);
   const found = await other;
   expect(found).toMatchObject({ complete: true, through: b.limit() });
@@ -818,17 +742,12 @@ it("reads no other session beside a transcript it keeps open that takes its turn
   writeFileSync(large.path, notice("large") + filler.repeat(8));
   const small = fixture("small");
   writeFileSync(small.path, notice("small"));
-  // the clock moves only as the test moves it (and by each slow read)
   controlledClock();
   let answered: Promise<unknown> | undefined;
-  // the leases open as each read of the small one is made
   const open: number[] = [];
   const reads = slowReads((path, count) => {
     if (path === small.path) open.push(transcriptReader.size().active);
     else if (count === 3) {
-      // between two turns of the large read, after it saw nobody waiting: the small one asks, and
-      // the time a stuck slice is waited for passes. The large read took a turn since the drain
-      // last looked, so the drain waits on, and the large one lets go at the end of its next turn
       setImmediate(() => {
         answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
         jest.advanceTimersByTime(50);
@@ -837,7 +756,6 @@ it("reads no other session beside a transcript it keeps open that takes its turn
   });
   expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
   expect(await answered!).toBeLessThan(reads(large.path));
-  // the large one let go at the end of its turn, and the small one was read alone
   expect(open).toEqual([1]);
 }, 5000);
 
@@ -852,8 +770,6 @@ it("starts no more slices beside stuck ones than the reader has room for", async
   const second = waitCommandHistory(b.path, b.limit(), 60_000);
   jest.advanceTimersByTime(50);
   await heldB.entered;
-  // both of the reader's leases are stuck: the third session waits without a slice (none waits in
-  // the reader either), and has its slice once one ends
   const third = waitCommandHistory(c.path, c.limit(), 150);
   jest.advanceTimersByTime(50);
   for (let turn = 0; turn < 3; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -862,7 +778,6 @@ it("starts no more slices beside stuck ones than the reader has room for", async
   expect(transcriptReader.size()).toMatchObject({ active: transcriptReader.capacity, waiting: 0 });
   heldA.release();
   expect(await first).toMatchObject({ complete: true });
-  // A's slice ended; the drain, waiting on B's, looks again once the time passes and starts C's
   const after = waitCommandHistory(c.path, c.limit(), 60_000);
   jest.advanceTimersByTime(50);
   expect(await after).toMatchObject({ complete: true });
@@ -879,15 +794,11 @@ it("gives up a read stuck in flight once the last server lets go", async () => {
   const first = waitCommandHistory(a.path, a.limit(), 60_000);
   await held.entered;
   hold();
-  // the request gives up, and no slice is left waiting for the disk
   expect(await first).toBeNull();
   await commandHistorySettled();
   expect(commandHistorySize()).toMatchObject({ draining: false, sessions: 0, waiting: 0 });
-  // the read in flight cannot be interrupted: it keeps its lease of the reader until it settles,
-  // and other transcripts are read meanwhile
   expect(transcriptReader.size().active).toBe(1);
   expect(await waitCommandHistory(b.path, b.limit(), 1000)).toMatchObject({ complete: true, ends: [{ id: "b" }] });
-  // the stuck transcript itself waits for that lease (one a path), then is read anew
   const again = waitCommandHistory(a.path, a.limit(), 60_000);
   held.release();
   expect(await again).toMatchObject({ complete: true, ends: [{ id: "a" }] });
@@ -898,15 +809,10 @@ it("gives up a read stuck in flight once the last server lets go", async () => {
 it("waits out another reader's lease of the transcript, however long, and counts its own time from its lease", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));
-  // the clock and its timers move only as the test moves them
   controlledClock();
-  // another reader of the same transcript (one lease a path), an image lookup on a slow network
-  // home, holds it for longer than the read's deadline
   const held = gate(), entered = gate();
   const other = transcriptReader.read(s.path, async () => { entered.open(); await held.opened; });
   await entered.opened;
-  // and half the read's deadline passes at its third read: it lets go at the end of that turn, and
-  // reads on in another lease
   slowReads((_, count) => { if (count === 3) jest.advanceTimersByTime(5_000); });
   const reading = waitCommandHistory(s.path, s.limit(), 60_000);
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -929,7 +835,6 @@ it("gives up the wait for the lease of a read let go of meanwhile, and never ope
   commandHistory(s.path, s.limit());
   await new Promise<void>((resolve) => setImmediate(resolve));
   expect(transcriptReader.size()).toMatchObject({ active: 1, waiting: 1 });
-  // as many other sessions as are kept: the least recently used one, the read waiting, goes
   for (let index = 0; index < 16; index++) {
     const other = fixture(`other${index}`);
     writeFileSync(other.path, notice(`o${index}`));
@@ -945,11 +850,9 @@ it("gives up the wait for the lease of a read let go of meanwhile, and never ope
 
 it("drops a window read across a start over that a request made while the window waited for the disk", async () => {
   const s = fixture();
-  // one timestamp for both writes, a minute ahead: each request reads the lines of its ends again
   const tick = Math.ceil(Date.now() / 1000) + 60;
   writeFileSync(s.path, notice("a") + filler + notice("c") + filler);
   utimesSync(s.path, tick, tick);
-  // every window but the first is held: the second until `second` opens, the rest until `rest` does
   const second = gate(), secondEntered = gate(), rest = gate(), restEntered = gate();
   release.push(second.open, rest.open);
   let held = 0;
@@ -962,14 +865,11 @@ it("drops a window read across a start over that a request made while the window
   commandHistory(s.path, s.limit());
   release.push(watchCommandHistory(s.path, () => {})!);
   await secondEntered.opened;
-  // rewritten in place within the tick: the first end another, the version the same
   writeFileSync(s.path, notice("b") + filler + notice("c") + filler);
   utimesSync(s.path, tick, tick);
-  // a request reads the end's line again and finds it rewritten: the history starts over
   expect(commandHistory(s.path, s.limit(), false)!.ends).toEqual([]);
   second.open();
   await restEntered.opened;
-  // the window read from before the start over is not taken in as the transcript's first: it was read from the start again
   expect(commandHistory(s.path, s.limit(), false)!.ends.map((end) => end.id)).toEqual(["b"]);
   rest.open();
   expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, ends: [{ id: "b" }, { id: "c" }] });
@@ -983,7 +883,6 @@ it("reads another transcript while one on a network filesystem is stuck in its n
   const a = fixture("a"), b = fixture("b");
   writeFileSync(a.path, notice("a"));
   writeFileSync(b.path, notice("b"));
-  // A's reads, the native ones below the reader, answer only once released
   const entered = gate(), held = gate();
   release.push(held.open);
   const open = fsp.open;

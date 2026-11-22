@@ -39,11 +39,6 @@ interface GjcEntry {
   message?: { role?: unknown; stopReason?: unknown; content?: unknown; toolCallId?: unknown };
 }
 
-/**
- * The questions a gjc turn holds open for the user: an `ask` call opens one until the result
- * for its id arrives — an error result ends the asking the same, since nothing waits on the
- * user then. Assistant narration that carries no call leaves every question as it was.
- */
 function gjcAsksAfter(open: OmoAsks, entry: GjcEntry): OmoAsks {
   if (entry.type !== "message") return open;
   const message = entry.message;
@@ -62,9 +57,7 @@ function gjcAsksAfter(open: OmoAsks, entry: GjcEntry): OmoAsks {
 
 /**
  * One transcript record applied to the parent turn so far, from a whole line or a projected
- * record's complete JSON (never its text: a record too long to hold says nothing). An
- * assistant message without a readable stopReason keeps the turn as it was; a record that is
- * not an object (a bare value, a list) is no record at all.
+ * record's complete JSON (never its text: a record too long to hold says nothing).
  */
 export function gjcTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
   const text = "text" in line ? line.text : line.record;
@@ -91,12 +84,6 @@ export function gjcTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
 
 type ProcessInfo = { process_info?: { shell_pid?: unknown; foreground_processes?: { pid?: unknown; argv?: unknown }[] } } | null;
 
-/**
- * How `gjcPanes` finds out what it needs, each part unset meaning the real lookup: the pane's
- * process info and its transcript (herdr's RPCs), when a pid started (process-start.ts), the
- * gjc under a Windows pane's shell (gjc-runtime.ts), and the platform that decides between the
- * two process identities. Tests give their own, so no live RPC is needed to tell the cases.
- */
 export interface GjcDiscovery {
   processInfo?: (paneId: string) => Promise<ProcessInfo>;
   transcript?: (paneId: string, cwd: string) => Promise<string | null>;
@@ -149,7 +136,6 @@ export function createGjcStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | 
     ...deps,
     discover: async (panes) => {
       const found = await deps.discover(panes.filter((pane) => !nativeOmo?.runs(pane.pane_id)));
-      // Native discovery may have finished while gjc's process lookup was in flight.
       for (const paneId of found.keys()) if (nativeOmo?.runs(paneId)) found.delete(paneId);
       return found;
     },
@@ -164,14 +150,13 @@ export function createGjcStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | 
   });
 }
 
-/** Shared by GJC's periodic discovery and the combined snapshot: native OmO is found first. */
 export async function readOmoSnapshot(snapshot: OmoStatusDeps["snapshot"], omo: OmoStatus): Promise<SessionSnapshot> {
   const raw = await snapshot();
   await omo.refresh(raw.panes);
   return omo.apply(raw);
 }
 
-/** Provider labels cannot revoke native OmO; only discovery can. Discard any stale GJC hold. */
+/** Provider labels cannot revoke native OmO; only discovery can. */
 export function reconcileProviderStatus(omo: OmoStatus, gjc: OmoStatus, pane: Pick<HerdrPane, "pane_id" | "agent">): boolean {
   const native = omo.runs(pane.pane_id);
   const leftOmo = !native && omo.named(pane.pane_id, pane.agent ?? null);

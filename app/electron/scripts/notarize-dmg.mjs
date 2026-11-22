@@ -15,10 +15,10 @@
  *
  * Signing takes electron-builder's own: CSC_LINK (a .p12, as a path or base64) with
  * CSC_KEY_PASSWORD, or CSC_NAME for a Developer ID Application identity already in a keychain.
- * Without an identity the build is unsigned and this does nothing; a notary key without a signed
- * dmg stops the build, and so does a signed build without one when OVIS_REQUIRE_NOTARIZATION=1
- * (a release). Only the API key notarizes: electron-builder's Apple ID or keychain profile
- * credentials stop the build rather than ship it unnotarized.
+ * Without an identity the build is unsigned. A build without the notary key goes unnotarized,
+ * unless OVIS_REQUIRE_NOTARIZATION=1 (a release), which stops it, signed or not; a notary key
+ * without a signed dmg stops the build too. Only the API key notarizes: electron-builder's Apple ID
+ * or keychain profile credentials stop the build rather than ship it unnotarized.
  */
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -81,8 +81,7 @@ function notaryKey(env, file) {
 }
 
 /**
- * Submits `upload` and waits for Apple's answer; returns the submission ID once it is accepted.
- * @param {string} upload @param {string} file the app or dmg it stands for @param {string[]} key @param {Run} exec
+ * @param {string} upload @param {string} file @param {string[]} key @param {Run} exec
  */
 async function submit(upload, file, key, exec) {
   // notarytool may exit non-zero on a rejected submission; its JSON still names it, for the log below
@@ -131,7 +130,7 @@ async function staple(file, tools) {
 }
 
 /**
- * @param {string} app the signed .app electron-builder is about to package
+ * @param {string} app
  * @param {Options} [options]
  * @returns {Promise<"notarized" | "skipped">}
  */

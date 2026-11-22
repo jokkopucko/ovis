@@ -18,16 +18,13 @@ export function layoutActions({ selectedPaneId, offer, paneSplits, selection, ro
   offer: Pick<LayoutOffer, "split" | "arrange">;
   /** false for a pane in a tab of its own terminal, which herdr-core does not split (HerdrPane `own_tab`) */
   paneSplits: boolean;
-  /** App's selection as it is when herdr answers, not as it was when the call was made */
   selection: { readonly current: SelectionMark };
-  /** the selected PC's roster as it is when the shortcut is pressed: the zoom it names follows the tab's layout then */
   roster: { readonly current: Pick<SessionSnapshot, "panes" | "layouts"> | null };
   load: () => unknown;
   selectPane: (paneId: string) => void;
   layoutRefused: (what: string, err: unknown) => void;
 }): Pick<AppActions, "splitPane" | "zoomPane" | "toggleZoom"> {
   if (selectedPaneId === null) return { splitPane: null, zoomPane: null, toggleZoom: null };
-  // the shortcut's last zoom until the roster it reloads arrives: a second press before then undoes it
   let asked: { paneId: string; mode: ZoomMode } | null = null;
   const zoom = (mode: ZoomMode): void => {
     const { machineId, paneId } = selection.current;

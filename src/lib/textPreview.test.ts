@@ -71,7 +71,6 @@ describe("previewElements", () => {
 
   it("puts a file of the load limit's short list items past what a Preview draws", () => {
     expect(previewElements(parseMarkdown("- a\n".repeat(TEXT_PREVIEW_BYTES / 4)))).toBeGreaterThan(PREVIEW_ELEMENT_LIMIT);
-    // a long real document of the same size stays well under it: this repository's changelog
     const changelog = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "utf8").slice(0, TEXT_PREVIEW_BYTES);
     expect(previewElements(parseMarkdown(changelog, 0, true))).toBeLessThan(PREVIEW_ELEMENT_LIMIT * 0.75);
   });

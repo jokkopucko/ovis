@@ -7,19 +7,13 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A message the reader sends from this browser's composer brings the chat back to its end once
-// the bridge has accepted it (an immediate submit-result with ok and no pending), unless the reader
-// scrolls, pages or jumps before the receipt or before the transcript shows the turn. Remote
-// sends, queued and Send now deliveries, refusals, uncertain receipts, a pane switch and a reconnect
-// keep the reader's place. Run on the unmodified app over the demo's fixture transport, with the
-// submit receipts and the transcript reads gated so each ordering is forced rather than timed.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-local-follow-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const results: { name: string; ok: boolean; detail: Record<string, unknown> }[] = [];
-/** the step under way, named in the failure so a timeout says what it waited for */
 let step = "";
 
 const playwrightCore = "playwright-core";
@@ -37,7 +31,6 @@ interface Lab {
   releaseReceipts: () => number; releaseReads: () => number; remoteSend: (text: string) => Promise<void>; dropConnection: () => number;
 }
 
-/** What the chat's own geometry says: the end gap, the latest rendered row and the reader's anchor row. */
 interface Geometry {
   gap: number; scrollTop: number; scrollHeight: number;
   last: { key: string; top: number; bottom: number; text: string } | null;
@@ -62,7 +55,6 @@ const geometry = (page: Page): Promise<Geometry> => page.evaluate(() => {
   };
 });
 
-/** The latest row says `text` and sits wholly on screen at the chat's end. */
 const latestShows = (page: Page, text: string): Promise<unknown> => page.waitForFunction((words) => {
   const view = document.querySelector<HTMLElement>(".chat-view");
   if (!view) return false;
@@ -77,14 +69,12 @@ const latestShows = (page: Page, text: string): Promise<unknown> => page.waitFor
 const lab = <T,>(page: Page, fn: (lab: Lab) => T | Promise<T>): Promise<T> =>
   page.evaluate(`(${fn.toString()})(window.followLab)`) as Promise<T>;
 const until = (page: Page, condition: string): Promise<unknown> => page.waitForFunction(`(() => { const lab = window.followLab; return ${condition}; })()`, undefined, WAIT);
-/** Two painted frames: a state update the page already took has been committed and laid out. */
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 /** The agent took the last turn and answered it: the next send from the box goes out at once. */
 /** The chat proved its end is presented (no follow still pending in the list): a wheel now is the reader's alone. */
 const settled = (page: Page): Promise<void> => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
 const idle = (page: Page): Promise<unknown> => until(page, `lab.status !== "working"`);
 
-/** Scrolls the transcript up with the reader's own wheel, a notch at a time, as a mouse does. */
 const wheelUp = async (page: Page, by = 900): Promise<void> => {
   const view = await page.locator(".chat-view").boundingBox();
   assert.ok(view !== null);
@@ -110,7 +100,6 @@ const sameAnchor = (before: Geometry, after: Geometry, label: string): void => {
   assert.ok(after.gap > 200, `${label}: the view stays away from the end (gap ${after.gap})`);
 };
 
-/** Waits until a transcript read carrying more than before was committed and laid out. */
 const committed = async (page: Page, height: number): Promise<void> => {
   await page.waitForFunction((before) => (document.querySelector<HTMLElement>(".chat-view")?.scrollHeight ?? 0) > before, height, WAIT);
   await frames(page);
@@ -130,11 +119,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Over the demo's own transport: the omp pane's transcript reads answer forty-eight long filler
-  // turns ahead of its own, so the chat scrolls; each socket's submit-result can be held and
-  // released (window.followLab), refused before anything is typed, or answered as uncertain; and
-  // the pane's transcript reads can be held until released. A second demo socket stands for
-  // another browser on the same bridge. Everything else is the demo's.
   const gates = `<script>(() => {
     const target = ${JSON.stringify(PANE)};
     const demo = window.fetch;
@@ -204,17 +188,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -238,12 +212,8 @@ try {
           await composer.fill(text);
           await composer.press("Enter");
         };
-        // gates are always released, so a failed assertion never leaves a held read behind it
         const releaseAll = (): Promise<unknown> => lab(page, (l) => { l.holdReceipts = false; l.refuse = null; l.uncertain = null; return [l.releaseReceipts(), l.releaseReads()]; });
 
-        // 0. a reader at the end sends: the faded bubble is painted at the end, wholly above the
-        // composer, until its turn is read. The bubble is the chat's footer, no row, and the list's
-        // scroll to the end is aimed at the footer it measured before the bubble came.
         try {
           step = "a sent message's bubble is painted at the end: the reader follows the end";
           await settled(page);
@@ -286,7 +256,6 @@ try {
         } finally { await releaseAll(); }
         await idle(page);
 
-        // 1. accepted immediate local send resumes follow
         try {
           step = "accepted immediate local send resumes follow: the reader moves away";
           await settled(page);
@@ -302,13 +271,11 @@ try {
           assert.ok(pending.gap > 400, "nothing moves before the bridge accepted the message");
           step = "accepted immediate local send resumes follow: the accepted receipt brings the view to the end";
           await lab(page, (l) => { l.holdReceipts = false; return l.releaseReceipts(); });
-          // the follow is engaged at once: the end of what the transcript holds so far
           await page.waitForFunction(() => { const node = document.querySelector<HTMLElement>(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; }, undefined, WAIT);
           await lab(page, (l) => l.releaseReads());
           step = "accepted immediate local send resumes follow: the published turn is the latest row on screen";
           await latestShows(page, text);
           const latest = await geometry(page);
-          // the agent's answer arrives later and is followed too, with the focus left in the box
           await latestShows(page, REPLY);
           const answered = await geometry(page);
           assert.ok(answered.last !== null && latest.last !== null && answered.last.key !== latest.last.key, "the answer is a newer row than the send");
@@ -318,7 +285,6 @@ try {
         } finally { await releaseAll(); }
         await idle(page);
 
-        // 2. navigation before receipt cancels follow
         try {
           step = "navigation before receipt cancels follow";
           await settled(page);
@@ -341,14 +307,10 @@ try {
         } finally { await releaseAll(); }
         await idle(page);
 
-        // 2b. a scrollbar thumb held past the input window, then dragged up before the receipt, cancels follow:
-        // a small drag (inside the layout allowance) and a large one (past it), with the drag's scroll
-        // delivered before the thumb is let go and after it
         for (const [distance, scrollFirst] of [[30, true], [30, false], [200, true], [200, false]] as const) {
           const label = `held thumb dragged ${distance}px, scroll ${scrollFirst ? "before" : "after"} release, cancels follow`;
           try {
             step = label;
-            // back at the end and following before the send, as the previous step left the reader away
             await page.locator(".chat-new-messages").click();
             await latestShows(page, REPLY);
             await settled(page);
@@ -358,7 +320,6 @@ try {
             await page.locator(".chat-view").evaluate(async (node, [by, scrolledFirst]) => {
               if (!(node instanceof HTMLElement)) throw new Error("Missing chat scroller");
               node.dispatchEvent(new Event("scroll"));
-              // a press on the scrollbar: the scroller itself, right of its content box
               const bar = node.getBoundingClientRect();
               const pressed = { clientX: bar.left + node.clientWidth, clientY: bar.bottom - 20 };
               node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, buttons: 1, ...pressed }));
@@ -385,7 +346,6 @@ try {
           await idle(page);
         }
 
-        // 3. navigation before transcript publication cancels follow
         try {
           step = "navigation before transcript publication cancels follow";
           await page.locator(".chat-new-messages").click();
@@ -409,7 +369,6 @@ try {
         } finally { await releaseAll(); }
         await idle(page);
 
-        // 4. remote pending refused and hydrated sends preserve place
         const kept: Record<string, unknown> = {};
         try {
           step = "remote pending refused and hydrated sends preserve place: refused";
@@ -417,7 +376,6 @@ try {
           await latestShows(page, REPLY);
           await settled(page);
           await wheelUp(page, 2400);
-          // refused before anything was typed: the words stay in the box with the reason
           let before = await geometry(page);
           await lab(page, (l) => { l.refuse = "agent_not_ready"; });
           await send("Local follow: refused");
@@ -446,7 +404,6 @@ try {
           kept.uncertain = true;
           step = "remote pending refused and hydrated sends preserve place: remote";
 
-          // another browser's message (a remote prompt) moves the transcript, not this reader
           await composer.fill("");
           before = await geometry(page);
           await lab(page, (l) => l.remoteSend("Local follow: from another browser"));
@@ -455,8 +412,6 @@ try {
           kept.remote = true;
           step = "remote pending refused and hydrated sends preserve place: queued and Send now";
 
-          // while the agent works the box queues: an accepted pending receipt is no local follow,
-          // and neither is its Send now delivery
           await until(page, `lab.status === "working"`);
           before = await geometry(page);
           const delivered = await lab(page, (l) => l.delivered);
@@ -473,8 +428,6 @@ try {
           kept.queued = true;
           step = "remote pending refused and hydrated sends preserve place: pane switch";
 
-          // a pane switch before the receipt: the receipt lands on no chat, the other pane is not
-          // repinned, and coming back hydrates the remembered place rather than the end
           before = await geometry(page);
           await lab(page, (l) => { l.holdReceipts = true; });
           await send("Local follow: switched away");

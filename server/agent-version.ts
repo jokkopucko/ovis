@@ -11,7 +11,6 @@ import { opencodeSessionVersion } from "./opencode.ts";
 /** At most this much of a transcript is read: its start for Codex, its end for Claude. */
 export const VERSION_WINDOW_BYTES = 64 * 1024;
 
-/** Byte access to a file, injectable so a test can count what is read. */
 export interface ByteReader {
   size(path: string): number;
   read(path: string, position: number, length: number): Uint8Array;
@@ -31,7 +30,6 @@ export const fileReader: ByteReader = {
   },
 };
 
-/** The pane's session store: a transcript path (Claude, Codex) or a database and the bound session id (OpenCode). */
 export interface VersionSource {
   path: string;
   sessionId?: string | null;
@@ -75,7 +73,6 @@ function claudeVersion(path: string, reader: ByteReader): string | null {
   const size = reader.size(path);
   const start = Math.max(0, size - VERSION_WINDOW_BYTES);
   const lines = new TextDecoder().decode(reader.read(path, start, size - start)).split("\n");
-  // the window may begin inside a record: that partial first line is not one
   if (start > 0) lines.shift();
   for (let index = lines.length - 1; index >= 0; index--) {
     const version = versionOf(parse(lines[index]!)?.version);
@@ -91,8 +88,6 @@ export function storeAgentVersion(agent: string | null | undefined, source: Vers
     if (agent === "codex") return codexVersion(source.path, reader);
     if (agent === "opencode") return source.sessionId ? versionOf(opencodeSessionVersion(source.path, source.sessionId)) : null;
   } catch {
-    // a store we cannot read (missing, unreadable, a directory, a corrupt database): no version,
-    // so the commands stay unverified; the version never decides whether they are listed
     return null;
   }
   return null;

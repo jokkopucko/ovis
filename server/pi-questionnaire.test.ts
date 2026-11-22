@@ -28,10 +28,9 @@ test("pending questionnaires follow the indexed Pi branch, including branch summ
     append({ type: "branch_summary", id: "summary", parentId: "root", fromId: "old", summary: "Interrupted" });
     append(call("new", "summary", "current"));
     expect(pendingPiQuestionnaires(path)?.map(call => call.id)).toEqual(["current"]);
-    expect(pendingPiQuestionnaires(path)?.map(call => call.id)).toEqual(["current"]); // unchanged cache
+    expect(pendingPiQuestionnaires(path)?.map(call => call.id)).toEqual(["current"]);
     append(result("settled", "new", "current"));
     expect(pendingPiQuestionnaires(path)).toEqual([]);
-    // Returning to the earlier call branches before its result; that result is not active.
     append(entry("returned", "new", { role: "user", content: "Continue" }));
     expect(pendingPiQuestionnaires(path)?.map(call => call.id)).toEqual(["current"]);
     write([user, call("replaced", "root", "replacement")]);

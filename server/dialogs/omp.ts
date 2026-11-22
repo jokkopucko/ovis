@@ -2,40 +2,49 @@ import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
 import { piActiveTab } from "./pi-ask-tabs.ts";
 import { type InteractivePromptAnswer } from "../../shared/protocol.ts";
-import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, wrapped } from "./shared.ts";
+import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, type TypedEditorAnswer, cleanLine, editorRowsMatch, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, wrapped } from "./shared.ts";
 
-const OMP_OPTION_MARKER_RE = /^([ \t]*)(?:[❯›>]\s*)?([○●◉◯☐☑☒✓])/;
+/** the option markers: unicode, and the Nerd Font preset's icons (checkbox \uf096/\uf14a, radio \uf10c/\uf192, cursor \uf054) (#3282) */
+const OMP_MARKERS = "○●◉◯☐☑☒✓\uf096\uf14a\uf10c\uf192";
+const OMP_CHECKED_RE = /^[☑☒✓\uf14a]/u;
+const OMP_CURSOR = "❯›>\uf054";
+const OMP_OPTION_MARKER_RE = new RegExp(`^([ \\t]*)(?:[${OMP_CURSOR}]\\s*)?([${OMP_MARKERS}])`, "u");
+const OMP_CURSOR_MARKER_RE = new RegExp(`^\\s*[${OMP_CURSOR}]\\s*[${OMP_MARKERS}]`, "u");
+const OMP_MARKER_RE = new RegExp(`[${OMP_MARKERS}]`, "u");
+const OMP_CURSOR_PREFIX_RE = new RegExp(`^\\s*[${OMP_CURSOR}]\\s*$`, "u");
+const OMP_CURSOR_END_RE = new RegExp(`[${OMP_CURSOR}]\\s*$`, "u");
 
-export const OMP_SINGLE_HINT_RE = /(?:enter|⏎)\s+select.*↑\/↓\s*move.*(?:esc|⎋)\s*cancel/i;
+// The footer's keys as each symbol preset draws them: words (ascii), keycaps (unicode), Nerd Font icons (nerd, #3282)
+export const OMP_SINGLE_HINT_RE = /(?:enter|⏎|\u{f0311})\s+select.*↑\/↓\s*move.*(?:esc|⎋|\u{f12b7})\s*cancel/iu;
 
 // A legacy single-question footer can clip after the Tab keys or inside the cancel label.
-export const OMP_SINGLE_CLIPPED_HINT_RE = /enter select.*n note.*↑\/↓ move.*(?:tab\/←\/→|esc(?: c(?:a(?:n(?:c(?:e(?:l)?)?)?)?)?)?)(?:…|\.{3})$/i;
+export const OMP_SINGLE_CLIPPED_HINT_RE = /(?:enter|\u{f0311}) select.*n note.*↑\/↓ move.*(?:(?:tab|\u{f0312})\/←\/→|(?:esc|\u{f12b7})(?: c(?:a(?:n(?:c(?:e(?:l)?)?)?)?)?)?)(?:…|\.{3})$/iu;
 
 // A narrow footer can cut the question-navigation word at any letter, followed by an ellipsis.
-export const OMP_CLIPPED_SINGLE_HINT_RE = /(?:enter|⏎)\s+select.*\bn\s+note.*↑\/↓\s*move.*(?:tab|⇥).*\b(?:question…?|(?:q|qu|que|ques|quest|questi|questio)…)(?=\s|$)/i;
+export const OMP_CLIPPED_SINGLE_HINT_RE = /(?:enter|⏎|\u{f0311})\s+select.*\bn\s+note.*↑\/↓\s*move.*(?:tab|⇥|\u{f0312}).*\b(?:question…?|(?:q|qu|que|ques|quest|questi|questio)…)(?=\s|$)/iu;
 
-export const OMP_MULTI_HINT_RE = /(?:space\/enter toggle|(?:space|␠|␣)\s+toggle.*(?:enter|⏎)\s+(?:submit|next)).*↑\/↓\s*move.*(?:esc|⎋)\s*cancel/i;
+export const OMP_MULTI_HINT_RE = /(?:space\/enter toggle|(?:space|␠|␣|\u{f1050})\s+toggle.*(?:enter|⏎|\u{f0311})\s+(?:submit|next)).*↑\/↓\s*move.*(?:esc|⎋|\u{f12b7})\s*cancel/iu;
 
 // A narrow multi-select footer clips inside the cancel label after its question keys (omp 18.12.6 at 60 columns: `⎋ cance…`).
-export const OMP_MULTI_CLIPPED_HINT_RE = /(?:space|␠|␣)\s+toggle.*(?:enter|⏎)\s+(?:submit|next).*↑\/↓\s*move.*(?:esc|⎋)(?:\s+c(?:a(?:n(?:c(?:e(?:l)?)?)?)?)?)?(?:…|\.{3})(?=\s|$)/i;
+export const OMP_MULTI_CLIPPED_HINT_RE = /(?:space|␠|␣|\u{f1050})\s+toggle.*(?:enter|⏎|\u{f0311})\s+(?:submit|next).*↑\/↓\s*move.*(?:esc|⎋|\u{f12b7})(?:\s+c(?:a(?:n(?:c(?:e(?:l)?)?)?)?)?)?(?:…|\.{3})(?=\s|$)/iu;
 
-export const OMP_REVIEW_HINT_RE = /(?:enter|⏎)\s+submit.*↑\/↓\s*scroll.*(?:esc|⎋)\s*cancel/i;
+export const OMP_REVIEW_HINT_RE = /(?:enter|⏎|\u{f0311})\s+submit.*↑\/↓\s*scroll.*(?:esc|⎋|\u{f12b7})\s*cancel/iu;
 
 /** omp shows a question in at most this many rows, the last one cut with `…` (pi-tui ask-dialog.ts `MAX_HEADER_ROWS`) */
 const OMP_QUESTION_ROWS = 4;
 
 const OMP_EXPAND_HINT_RE = /\s\u00b7\s\S+\sexpand(?:\s\u00b7|$)/;
 
-export const OMP_TABS_HINT_RE = /(?:tab|⇥).*?(?:←|left).*?(?:→|right)|(?:←|left).*?(?:→|right).*?(?:tab|⇥)/i;
+export const OMP_TABS_HINT_RE = /(?:tab|⇥|\u{f0312}).*?(?:←|left).*?(?:→|right)|(?:←|left).*?(?:→|right).*?(?:tab|⇥|\u{f0312})/iu;
 
 /** OMP options have a marker; their descriptions and wrapped labels are indented below them. */
 function parseOmpRows(lines: string[], startDivider: number, endDivider: number): MenuRow[] | null {
   const rows: MenuRow[] = [];
-  const marker = "○●◉◯☐☑☒✓";
+  const marker = OMP_MARKERS;
   const selectedRows = lines.slice(startDivider + 1, endDivider).map((line, index) => {
     const raw = line.replace(ANSI_RE, "").replace(/^\s*│/, "").replace(/│\s*$/, "");
-    const match = raw.match(/^\s*(?:❯|›|>)\s*[○●◉◯☐☑☒✓]/);
-    return match ? { raw, lineIndex: startDivider + 1 + index, markerColumn: match[0].search(/[○●◉◯☐☑☒✓]/) } : null;
+    const match = raw.match(OMP_CURSOR_MARKER_RE);
+    return match ? { raw, lineIndex: startDivider + 1 + index, markerColumn: match[0].search(OMP_MARKER_RE) } : null;
   }).filter((row): row is { raw: string; lineIndex: number; markerColumn: number } => row !== null);
   if (selectedRows.length !== 1) return null;
   const markerColumn = selectedRows[0]!.markerColumn;
@@ -43,11 +52,11 @@ function parseOmpRows(lines: string[], startDivider: number, endDivider: number)
     const raw = lines[index]!.replace(ANSI_RE, "").replace(/^\s*│/, "").replace(/│\s*$/, "");
     const prefix = raw.slice(0, markerColumn);
     const glyph = raw[markerColumn] ?? "";
-    const option = marker.includes(glyph) && (/^\s*$/.test(prefix) || /^\s*(?:❯|›|>)\s*$/.test(prefix));
+    const option = marker.includes(glyph) && (/^\s*$/.test(prefix) || OMP_CURSOR_PREFIX_RE.test(prefix));
     if (option) {
       const label = normalizeText(raw.slice(markerColumn + 1));
       if (label) rows.push({
-        label, selected: /(?:❯|›|>)\s*$/.test(prefix), checked: /^[☑☒✓]/.test(glyph), lineIndex: index,
+        label, selected: OMP_CURSOR_END_RE.test(prefix), checked: OMP_CHECKED_RE.test(glyph), lineIndex: index,
       });
       continue;
     }
@@ -65,7 +74,6 @@ function parseOmpRows(lines: string[], startDivider: number, endDivider: number)
   return rows;
 }
 
-/** The question, and how many rows it takes in the panel (0 when it is not read from the panel's header). */
 function ompQuestionText(lines: string[], startDivider: number, hasQuestionTabs: boolean): { text: string | null; rows: number } {
   const panelTop = findLastIndex(lines, (_, index) => index < startDivider && /^\s*╭/.test(lines[index]!));
   const headerDivider = panelTop >= 0 ? panelTop
@@ -86,7 +94,7 @@ function ompQuestionText(lines: string[], startDivider: number, hasQuestionTabs:
   }
   const header = headerRows.map((line, index) => ({ line: cleanLine(line), index })).filter(({ line, index }) => line
     && !(hasQuestionTabs && index >= firstHeaderRow && index < firstHeaderRow + tabRows)
-    && !/^[←→].*Submit/i.test(line) && !/^[☐☑✔]\s+\S/.test(line) && !/^Question \d+\/\d+/i.test(line)).map(({ line }) => line);
+    && !/^[←→].*Submit/i.test(line) && !/^[☐☑✔\uf096\uf14a]\s+\S/u.test(line) && !/^Question \d+\/\d+/i.test(line)).map(({ line }) => line);
   if (header.length === 0) return { text: nearestQuestion(lines, startDivider), rows: 0 };
   const shown = headerRows.slice(Math.max(firstHeaderRow, 0) + tabRows);
   while (shown.length > 0 && !cleanLine(shown.at(-1)!)) shown.pop();
@@ -110,7 +118,6 @@ function ompTabRowText(rawLine: string): string {
   return rawLine.replace(ANSI_RE, "").replace(/^\s*│/, "").replace(/│\s*$/, "");
 }
 
-/** Only complete, independently styled TabBar cells prove stops; clipped/plain strips do not. */
 function ompSteps(screen: string, before: number) {
   const lines = screen.split(/\r?\n/);
   const top = findLastIndex(lines, (line, index) => index < before && /^\s*╭/.test(line.replace(ANSI_RE, "")));
@@ -154,8 +161,7 @@ const OMP_REVIEW_NOTE_RE = /^Note:\s*(.*)$/;
 
 /**
  * omp's review: a row per question (`1. Transport: Remote relay`), a `Note: …` under an answer
- * given one. omp cuts a long row at the pane's edge instead of wrapping it. Null when a line is
- * neither, so the panel is shown as drawn.
+ * given one. omp cuts a long row at the pane's edge instead of wrapping it.
  */
 function ompReviewAnswers(panel: string[]): InteractivePromptAnswer[] | null {
   const answers: InteractivePromptAnswer[] = [];
@@ -181,14 +187,12 @@ function parseOmpSubmit(screen: string): ParsedPrompt | null {
   if (heading < 0) return null;
   const submitRows = lines.flatMap((line, index) => {
     if (index <= heading || index >= hintIndex) return [];
-    return /^\s*[❯›>]\s*Submit\s*$/i.test(cleanLine(line)) ? [index] : [];
+    return /^\s*[❯›>\uf054]\s*Submit\s*$/iu.test(cleanLine(line)) ? [index] : [];
   });
   if (submitRows.length !== 1) return null;
   const submitRow = submitRows[0]!;
   const panel = lines.slice(heading + 1, submitRow).map(cleanLine).filter((line) => line && !isDivider(line));
   const answers = ompReviewAnswers(panel);
-  // without answers read, the panel as it is drawn; with them, only what is not an answer (the
-  // unanswered-questions warning)
   const body = (answers ? panel.filter((line) => !OMP_REVIEW_ROW_RE.test(line) && !OMP_REVIEW_NOTE_RE.test(line)) : panel).join("\n");
   const navigation = ompSteps(screen, heading);
   return finishPrompt("omp", {
@@ -205,12 +209,9 @@ function parseOmpSubmit(screen: string): ParsedPrompt | null {
     ...(navigation ? { nativeSteps: navigation.nativeSteps } : {}),
     responder: "omp-submit", menuLabels: ["Submit", "Cancel"], selectedIndex: 0,
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: 1,
-    // where the review stands among the tabs comes and goes with the colours read: not part of the card's id
   }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
 }
 
-/** A clipped legacy footer is enough to identify a menu only when every parsed row
- * starts with an option marker in the cursor row's physical column. */
 function ompRowsHaveAlignedMarkers(lines: string[], rows: MenuRow[]): boolean {
   const markerColumn = (lineIndex: number): number | null => {
     let line = lines[lineIndex]?.replace(ANSI_RE, "") ?? "";
@@ -234,6 +235,33 @@ function findMenuDividers(lines: string[], hintIndex: number): [number, number] 
   return null;
 }
 
+/** Other opens a HookEditor panel in place of Ask, with the active question in its title. */
+export function ompCustomEditorMatches(screen: string, { prompt, text }: TypedEditorAnswer): boolean {
+  const lines = screen.replace(ANSI_RE, "").trimEnd().split(/\r?\n/u);
+  const tail = lines.at(-1)?.trim() ?? "";
+  if (/^(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \S+|π) · /u.test(tail)) lines.pop();
+  while (lines.at(-1)?.trim() === "") lines.pop();
+  const bottom = lines.pop();
+  if (!bottom || !/^\s*╰─+╯\s*$/u.test(bottom)) return false;
+  const top = findLastIndex(lines, (line) => /^\s*╭/u.test(line));
+  const title = /^\s*╭─ Custom answer: (.*?) ─+╮\s*$/u.exec(lines[top] ?? "");
+  if (!title?.[1]) return false;
+  const panel = lines.slice(top + 1).map((line) => /^\s*│ (.*) │\s*$/u.exec(line)?.[1]?.trimEnd());
+  const field = panel.findIndex((line) => line === ">" || line?.startsWith("> "));
+  const hint = panel.findIndex((line, index) => index > field && /^(?:enter|⏎|\u{f0311})(?: or \S+)? submit\b/iu.test(line ?? ""));
+  if (field < 0 || hint < 0 || panel.some((line) => line === undefined)) return false;
+  const footer = panel.slice(hint).filter(Boolean).join(" ");
+  if (!/submit +(?:esc|⎋|\u{f12b7}) cancel +\S+ external editor$/iu.test(footer)
+    || !editorRowsMatch([title[1], ...panel.slice(0, field).flatMap((line) => line ? [line] : [])], normalizeText(prompt.question))) return false;
+  const first = panel[field]?.slice(2) ?? "";
+  const continuation = panel.slice(field + 1, hint);
+  if (!continuation.every((line) => line === "" || line?.startsWith("  "))) return false;
+  const rows = [first, ...continuation.map((line) => line?.slice(2) ?? "")];
+  // The default software caret adds a thin bar at the end of the last row.
+  const last = rows.pop()?.replace(/▏$/u, "") ?? "";
+  return editorRowsMatch([...rows, last], text) && !editorRowsMatch([...rows, last], "Type your answer");
+}
+
 function parseOmpQuestion(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const clippedHintIndex = findLastIndex(lines, (_, index) => OMP_SINGLE_CLIPPED_HINT_RE.test(wrapped(lines, index)));
@@ -252,7 +280,7 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
   const optionRows = rows.filter((_, index) => index !== customIndex);
   const hint = wrapped(lines, hintIndex);
   const multiSelect = OMP_MULTI_HINT_RE.test(hint) || OMP_MULTI_CLIPPED_HINT_RE.test(hint);
-  const currentMulti = /(?:space|␠|␣)\s+toggle.*(?:enter|⏎)\s+(?:submit|next)/i.test(hint);
+  const currentMulti = /(?:space|␠|␣|\u{f1050})\s+toggle.*(?:enter|⏎|\u{f0311})\s+(?:submit|next)/iu.test(hint);
   const { text: question, rows: questionRows } = ompQuestionText(lines, startDivider, OMP_TABS_HINT_RE.test(hint));
   const navigation = OMP_TABS_HINT_RE.test(hint) ? ompSteps(screen, startDivider) : null;
   if (!question || selectedIndex < 0 || optionRows.length === 0 || customIndex !== rows.length - 1
@@ -293,7 +321,6 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
       keys.push(KEY.enter);
       return keySteps(keys);
     } } : {}),
-    // the steps come and go with the colours read and the call found: not part of the card's id
   }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
 }
 
@@ -350,35 +377,33 @@ const OMP_PANEL_ROW_RE = /^[│|] ?(.*?)\s*[│|]$/;
 const CURSOR = "(?: [▏|])?";
 /** a rule as omp draws one, across the pane: a run of its glyphs, never a word that holds some (`-rw-r--r--`) */
 const OMP_RULE = /^(?:─{4,}|-{4,})$/u;
-/** a top rule (claude, rule): its run of glyphs, then the status' right group when it rides the rule, then the rule's last glyph */
 const OMP_STATUS_RULE = /^(?:─{4,}(?:[^─].*)?─|-{4,}(?:[^-].*)?-)$/u;
-/** the box's top border: a rule out of each corner, in one glyph set, the status between */
 const OMP_BOX_TOP = /^(?:╭─.*─╮|\+-.*-\+)$/u;
 const OMP_PROMPT = new RegExp(`^❯${CURSOR}$`, "u");
-const OMP_COMPOSERS: readonly (readonly (RegExp | null)[])[] = [
+const OMP_COMPOSERS: readonly { rows: readonly (RegExp | null)[]; prompt: number }[] = [
   // band (the default): the status band (an empty row without one), then the prompt's gutter
-  [null, new RegExp(`^╰─${CURSOR}$`, "u")],
-  [/^$/u, new RegExp(`^╰─${CURSOR}$`, "u")],
+  { rows: [null, new RegExp(`^╰─${CURSOR}$`, "u")], prompt: 1 },
+  { rows: [/^$/u, new RegExp(`^╰─${CURSOR}$`, "u")], prompt: 1 },
   // box: the status in the top border, then the prompt row merged into the bottom border; with IME-safe cursor
   // layout, the prompt row on its own over a whole bottom border
-  [OMP_BOX_TOP, /^(?:╰─? +(?:[▏|] *)?─?╯|\+-? +(?:[▏|] *)?-?\+)$/u],
-  [OMP_BOX_TOP, /^[│|](?: [▏|])?$/u, /^(?:╰─+╯|\+-+\+)$/u],
+  { rows: [OMP_BOX_TOP, /^(?:╰─? +(?:[▏|] *)?─?╯|\+-? +(?:[▏|] *)?-?\+)$/u], prompt: 1 },
+  { rows: [OMP_BOX_TOP, /^[│|](?: [▏|])?$/u, /^(?:╰─+╯|\+-+\+)$/u], prompt: 1 },
   // claude: a top rule, the prompt, a closing rule, the status' left group
-  [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE, null],
-  [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE],
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE, null], prompt: 1 },
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT, OMP_RULE], prompt: 1 },
   // rule: a top rule, the prompt, a gap, the status' left group
-  [OMP_STATUS_RULE, OMP_PROMPT, /^$/u, null],
-  [OMP_STATUS_RULE, OMP_PROMPT],
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT, /^$/u, null], prompt: 1 },
+  { rows: [OMP_STATUS_RULE, OMP_PROMPT], prompt: 1 },
   // pi: the prompt between two rules, then the status
-  [OMP_RULE, /^[▏|]?$/u, OMP_RULE, null],
-  [OMP_RULE, /^[▏|]?$/u, OMP_RULE],
+  { rows: [OMP_RULE, /^[▏|]?$/u, OMP_RULE, null], prompt: 1 },
+  { rows: [OMP_RULE, /^[▏|]?$/u, OMP_RULE], prompt: 1 },
   // borderless: never without its status, as a bare `❯` is also a shell's prompt
-  [OMP_PROMPT, null],
+  { rows: [OMP_PROMPT, null], prompt: 0 },
   // field (its right cap left off with IME-safe layout), then rail: one filled row, a gap, the status
-  [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u, /^$/u, null],
-  [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u],
-  [new RegExp(`^▎${CURSOR}$`, "u"), /^$/u, null],
-  [new RegExp(`^▎${CURSOR}$`, "u")],
+  { rows: [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u, /^$/u, null], prompt: 0 },
+  { rows: [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u], prompt: 0 },
+  { rows: [new RegExp(`^▎${CURSOR}$`, "u"), /^$/u, null], prompt: 0 },
+  { rows: [new RegExp(`^▎${CURSOR}$`, "u")], prompt: 0 },
 ];
 /**
  * the status row as drawn: the band's powerline cap (Nerd Font preset), the space omp pads a segment group with, or with
@@ -386,22 +411,32 @@ const OMP_COMPOSERS: readonly (readonly (RegExp | null)[])[] = [
  */
 const OMP_STATUS_ROW_RE = /^(?:[\ue0b0-\ue0d4] | +|─+|-+< )\S/u;
 
-/** the last row over omp's composer when the screen ends in one, else the screen's last row; `raw` holds the rows untrimmed */
-function ompAboveComposer(lines: string[], raw: string[]): number {
+function ompEmptyComposer(lines: string[], raw: string[]): { top: number; prompt: number } | null {
   const last = findLastIndex(lines, (line) => line !== "");
-  for (const rows of OMP_COMPOSERS) {
+  for (const { rows, prompt } of OMP_COMPOSERS) {
     const top = last - rows.length + 1;
-    if (top > 0 && rows.every((row, index) => row === null ? OMP_STATUS_ROW_RE.test(raw[top + index]!) : row.test(lines[top + index]!))) return top - 1;
+    if (top > 0 && rows.every((row, index) => row === null ? OMP_STATUS_ROW_RE.test(raw[top + index]!) : row.test(lines[top + index]!))) return { top, prompt: top + prompt };
   }
-  return last;
+  return null;
 }
-/** a choice row: the cursor (❯, its Nerd Font icon, or `>`) on the highlighted one, two spaces before the rest */
+
+function ompAboveComposer(lines: string[], raw: string[]): number {
+  const composer = ompEmptyComposer(lines, raw);
+  return composer === null ? findLastIndex(lines, (line) => line !== "") : composer.top - 1;
+}
+
+/**
+ * `lines` are the rows trimmed, `raw` the same rows untrimmed (the status row is read by its
+ * leading space).
+ */
+export function ompComposerPromptRow(lines: string[], raw: string[]): number | null {
+  return ompEmptyComposer(lines, raw)?.prompt ?? null;
+}
 const OMP_CHOICE_RE = /^(?:([❯\uf054>])|  )\s?(\S.*)$/u;
 const OMP_REMEMBER_RE = /^(?:[☐☑\uf096\uf14a]|\[[ x]\]) Remember across sessions$/u;
 /** the toggle ticked: the grants under it are kept across sessions */
 const OMP_REMEMBERED_RE = /^(?:[☑\uf14a]|\[x\]) /u;
 
-/** a modifier as omp draws it: a word with `+`, or a keycap or Nerd Font icon and the preset's joiner */
 const OMP_KEY_MODIFIERS: readonly [RegExp, string][] = [
   [/^(?:Ctrl\+|[⌃\u{f0634}] ?)/u, "ctrl"],
   [/^(?:Alt\+|Option\+|[⌥\u{f0635}] ?)/u, "alt"],
@@ -434,10 +469,8 @@ function ompHintKey(drawn: string): string | null {
  * whose key is none of these is answered by moving to its row, or the terminal answers it.
  */
 const OMP_DIRECT_KEY_RE = /^(?:esc|ctrl\+[a-gkln-z])$/;
-/** a select key arrives unchanged too: Enter or Space themselves, or a direct key */
 const OMP_SELECT_KEY_RE = /^(?:enter|space|ctrl\+[a-gkln-z])$/;
 
-/** every key of a slash-separated hint (`Ctrl+⏎/Ctrl+Q`), or null when one cannot be sent */
 function ompHintKeys(drawn: string): string[] | null {
   const keys = drawn.split("/").map(ompHintKey);
   return keys.some((key) => key === null) ? null : keys as string[];
@@ -473,7 +506,6 @@ function ompChoices(rows: string[]): { choices: OmpChoice[]; first: number; appr
 function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const raw = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const lines = raw.map((line) => line.trim());
-  // under 18.13's panel, the composer it mounts there, and nothing else
   const bottom = ompAboveComposer(lines, raw);
   if (bottom < 4 || !OMP_PANEL_RULE_RE.test(lines[bottom]!) || !OMP_PANEL_RULE_RE.test(lines[bottom - 2]!)) return null;
   const hintRow = OMP_PANEL_ROW_RE.exec(lines[bottom - 1]!);
@@ -521,14 +553,12 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
     options: offered.map((choice) => ({ label: choice.label, description: null })),
   }, {
     ...internal, menuLabels: offered.map((choice) => choice.label), selectedIndex: offered.findIndex((choice) => choice.cursor),
-    // Approve and Deny by their keys when those arrive as drawn, wherever the cursor is; every other row by moving to it
     optionSteps: offered.map((choice) => choice.row === approve && plainKey ? keySteps([plainKey])
       : directDeny && choice.row === choices.length - 1 ? keySteps([directDeny])
       : keySteps([...navigationKeys(choice.row - cursor), selectKey])),
   });
 }
 
-/** Whether omp's approval panel (not the older menu) is what the screen ends in. */
 export function ompApprovalPanelShown(screen: string): boolean {
   return parseOmpApprovalPanel(screen) !== null;
 }
@@ -586,14 +616,10 @@ function parseOmpApproval(screen: string): ParsedPrompt | null {
  */
 const OMP_MODEL_TOP_RE = /^╭─ Switch Model ─/;
 const OMP_MODEL_STATUS_RE = /^Session-only switch\b/;
-/** the search box: omp's search icon, then what was typed */
 const OMP_MODEL_SEARCH_RE = /^\S+ >(?: .*)?$/;
-/** the footer, cut at the pane's edge on a phone */
 const OMP_MODEL_HINT_RE = /^\S+ models · \S+ use for this session(?: ·|…|$)/;
 const OMP_MODEL_BOTTOM_RE = /^╰─+╯$/;
-/** a row: the cursor, `provider/id`, `●` on the model in use, then its figures */
 const OMP_MODEL_ROW_RE = /^(❯ )?(\S+\/\S+)( ●)?(?: |$)/;
-/** the scrollbar's thumb or track after a row */
 const OMP_MODEL_SCROLLBAR_RE = /[█│]$/;
 const OMP_MODEL_OVER_CONTEXT_RE = /⦸ context>(\S+)/;
 
@@ -606,7 +632,6 @@ function ompModelPicker(lines: string[]): { rows: { label: string; cursor: boole
   if (!OMP_MODEL_HINT_RE.test(cleanLine(lines[hint]!))) return null;
   const top = findLastIndex(lines, (line, index) => index < hint && OMP_MODEL_TOP_RE.test(line.trim()));
   if (top < 0 || !OMP_MODEL_STATUS_RE.test(cleanLine(lines[top + 1] ?? "")) || !OMP_MODEL_SEARCH_RE.test(cleanLine(lines[top + 2] ?? ""))) return null;
-  // the search box and a blank over the rows; a blank and the two lines on the cursor's row under them
   const window = lines.slice(top + 4, hint - 3);
   if (window.length === 0 || cleanLine(lines[top + 3]!) || cleanLine(lines[hint - 3]!)) return null;
   const rows: { label: string; cursor: boolean; current: boolean; overContext: string | null }[] = [];
@@ -616,7 +641,6 @@ function ompModelPicker(lines: string[]): { rows: { label: string; cursor: boole
     const shown = cleanLine(raw);
     const line = shown.replace(OMP_MODEL_SCROLLBAR_RE, "").trimEnd();
     if (line !== shown) more = true;
-    // the window's padding comes after its last row, never between two
     if (!line) { padding = true; continue; }
     if (padding) return null;
     if (isDivider(line)) continue;
@@ -713,7 +737,6 @@ export const readers: readonly DialogReader[] = [
     },
   },
   {
-    // Esc only while the handoff is still being written: the loop reads the screen again first
     id: "omp-handoff", agents: ["omp"], priority: 40,
     reread: "before-commit", list: "none",
     parse: parseOmpHandoff,

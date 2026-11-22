@@ -2,18 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 const READ_INTERVAL_MS = 500;
-/** reads in a row that fail before a watch ends (`prompt_watch_ended`) */
 const FAILED_READS_END = 10;
-/** panes read at the same time in one tick, however many are watched */
 const READS_AT_ONCE = 4;
 
 export interface PromptReader {
   snapshot(): Promise<SessionSnapshot>;
-  /** what the prompt on the pane's screen says (null: none shows), or undefined when the read raced a change and says nothing */
   read(pane: HerdrPane, panes: HerdrPane[]): Promise<string | null | undefined>;
 }
 
-/** `shown`: what the last read found ("" for no prompt), undefined until the watch's first read; `signature` is what the watchers were told of it */
 interface WatchedPrompt { shown?: string; signature?: string; failures: number }
 
 /**
@@ -33,14 +29,12 @@ export class PromptMonitor {
   constructor(
     private readonly reader: PromptReader,
     private readonly changed: (paneId: string, signature: string) => void,
-    /** the pane closed, or its reads kept failing: the watch is gone */
     private readonly ended: (paneId: string) => void,
     private readonly intervalMs = READ_INTERVAL_MS,
   ) {}
 
   get size(): number { return this.panes.size; }
 
-  /** what the watchers of the pane were last told, while it still stands: a newcomer is told the same */
   current(paneId: string): string | undefined {
     const state = this.panes.get(paneId);
     return state?.shown === undefined ? undefined : state.signature;
@@ -119,7 +113,6 @@ export class PromptMonitor {
     this.changed(paneId, state.signature);
   }
 
-  /** a read of a watch since ended, or replaced by a new watch of the pane, counts for nothing */
   private failed(paneId: string, state: WatchedPrompt): void {
     if (this.panes.get(paneId) !== state) return;
     state.failures += 1;

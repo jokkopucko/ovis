@@ -6,17 +6,12 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings → Appearance → File text size on the unmodified app over the demo's fixture transport,
-// at a phone's and a desktop's width, light and dark (#2005): with nothing chosen a Markdown preview
-// keeps the chat's size and a plain-text source the interface's; a chosen size draws both at it while
-// the chat and the viewer's header stay put; Reset gives the old sizes back. All files and HTTP
-// traffic stay in this disposable, loopback-only app; no herdr session is opened. Screenshots go to
-// UI_EVIDENCE_DIR when it is set.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "ovis-file-text-size-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 
-// the demo has no files: a Markdown and a plain-text one, with Korean, emoji and a long line
 const FILES_SCRIPT = `<script>(${(() => {
   const demoFetch = window.fetch;
   const body = "한국어 문장과 English words, 이모지 🙂🚀, and a long line: " + "word ".repeat(80);
@@ -44,7 +39,6 @@ const px = (page: Page, selector: string): Promise<number> =>
 async function open(browser: Browser, width: number, settings: Record<string, unknown>, query: string): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
-  // the file text size is kept in a key of its own (lib/settings.ts), not in ovis:settings
   const { fileFontSize, fileFontBase, ...main } = settings;
   await context.addInitScript(([value, size, base]) => {
     if (localStorage.getItem("ovis:settings") !== null) return;
@@ -95,17 +89,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${FILES_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   origin = `http://127.0.0.1:${server.port}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -114,13 +98,11 @@ try {
       for (const width of [390, 1280]) {
         for (const theme of ["light", "dark"] as const) {
           const base = await sizes(browser, width, { theme }, null);
-          // a chat size of its own moves the preview with it, as today, and leaves the source at the interface's
           const chat = await sizes(browser, width, { theme, chatFontSize: 21 }, `follow-${theme}`);
           assert.ok(Math.abs(chat.preview - base.preview * 1.5) < 0.1, `${width}px ${theme}: the preview follows the chat (${chat.preview} vs ${base.preview})`);
           assert.equal(chat.source, base.source, `${width}px ${theme}: the source keeps the interface's size until a file size is chosen`);
           assert.equal(chat.title, base.title);
           assert.ok(Math.abs(chat.chat - base.chat * 1.5) < 0.1, `${width}px ${theme}: the chat takes its own size (${chat.chat} vs ${base.chat})`);
-          // a file size of its own: preview and source at it, the chat and the header where they were
           const own = await sizes(browser, width, { theme, chatFontSize: 21, fileFontSize: 18 }, `own-${theme}`);
           assert.ok(Math.abs(own.preview - base.preview * 18 / 14) < 0.1, `${width}px ${theme}: the preview takes the file size (${own.preview})`);
           assert.ok(Math.abs(own.source - base.source * 18 / 21) < 0.1, `${width}px ${theme}: the source scales with it (${own.source})`);
@@ -129,8 +111,6 @@ try {
           console.log(`PASS ${width}px ${theme}: preview ${base.preview}→${own.preview}px, source ${base.source}→${own.source}px, chat ${own.chat}px, title ${own.title}px`);
         }
 
-        // a long file's source is virtualized: its rows, in a shadow root, take the size and the row estimate matches
-        // them, so its last line is drawn at the end; a size changed while it is open re-measures the rows
         {
           const { page, errors, close } = await open(browser, width, { fileFontSize: 24 }, "&file=long.log&settings=appearance&section=typography-more");
           try {
@@ -155,16 +135,17 @@ try {
             const big = await rowAt();
             assert.ok(Math.abs(big.row - big.host) < 0.5, `${width}px: a virtualized row is drawn at the measured line height (${big.row} vs ${big.host})`);
             assert.ok(big.last, `${width}px: the last line is in view at the end of a long file`);
-            // from the middle of the file, back to the chat's size at once: the estimate follows the new rows (3,000 of
-            // them) and the view keeps the line it showed, with no scroll of the reader's own after it
-            const topLine = (): Promise<number> => page.evaluate(() => {
+            // the first line drawn in view, once the virtualizer has drawn the rows of the scroll position; given
+            // `near`, once that line is within 3 of it, as the view's reveal ends a few frames after a size change
+            const topLine = async (near?: number): Promise<number> => (await page.waitForFunction((near) => {
               const view = document.querySelector<HTMLElement>(".virtual-source-scroll")!.getBoundingClientRect();
               const rows = [...document.querySelector("diffs-container")!.shadowRoot!.querySelectorAll<HTMLElement>("[data-line]")];
               const shown = rows.filter((row) => { const box = row.getBoundingClientRect(); return box.bottom > view.top + 1 && box.top < view.bottom; });
-              return Math.min(...shown.map((row) => Number(row.dataset["line"])));
-            });
+              if (shown.length === 0) return false;
+              const top = Math.min(...shown.map((row) => Number(row.dataset["line"])));
+              return near === undefined || Math.abs(top - near) <= 3 ? top : false;
+            }, near, { timeout: 10_000 })).jsonValue() as number;
             await page.evaluate((height) => { document.querySelector<HTMLElement>(".virtual-source-scroll")!.scrollTop = 1499 * height; }, big.host);
-            await page.waitForFunction(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))));
             const before = await topLine();
             assert.ok(before > 1400 && before < 1600, `${width}px: scrolled to the middle (${before})`);
             await page.locator(".settings-dialog").getByRole("button", { name: "Reset", exact: true }).click();
@@ -174,8 +155,7 @@ try {
               const scroll = document.querySelector<HTMLElement>(".virtual-source-scroll")!;
               return Math.abs(scroll.scrollHeight - 3000 * height) < 3000 * height * 0.05;
             }, small);
-            await page.waitForFunction(() => new Promise((done) => setTimeout(() => requestAnimationFrame(() => done(true)), 0)));
-            const after = await topLine();
+            const after = await topLine(before).catch(() => topLine());
             assert.ok(Math.abs(after - before) <= 3, `${width}px: the view keeps its line across the change (${before} → ${after})`);
             await page.keyboard.press("Escape");
             await page.locator(".settings-dialog").waitFor({ state: "detached" });
@@ -189,8 +169,6 @@ try {
           } finally { await close(); }
         }
 
-        // with a size chosen the source keeps it through a later chat size, and through a later interface size (#2984):
-        // its rows stay as they were and the long file's height with them
         {
           const { page, errors, close } = await open(browser, width, { fileFontSize: 24, fileFontBase: { size: 24, chat: 14, ui: 14 } }, "&file=long.log&settings=appearance&section=typography");
           try {
@@ -216,7 +194,6 @@ try {
           } finally { await close(); }
         }
 
-        // the control: a step sets a size of its own, kept for the device; Reset drops it
         const { page, errors, close } = await open(browser, width, { chatFontSize: 16 }, "&settings=appearance&section=typography-more");
         try {
           const dialog = page.locator(".settings-dialog");

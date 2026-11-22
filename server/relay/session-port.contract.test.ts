@@ -7,7 +7,6 @@ import * as tailscale from "../tailscale.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture } from "./test-helpers.ts";
 
 it("starts Portal through a relay session on the server's actual listening port", async () => {
-  // Given: a stand-in Portal runner records its expose arguments without reaching a public relay.
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-port-"));
   const bin = join(stateDir, "portal-runner");
   const seen = join(stateDir, "seen.json");
@@ -37,7 +36,6 @@ it("starts Portal through a relay session on the server's actual listening port"
   try {
     const link = await relayConnection(f);
     await link.auth(await relayDevice(f));
-    // When: a driving device starts Portal over its authenticated relay session.
     const request = link.open("/api/portal/start", {
       method: "POST", headers: [["content-type", "application/json"], ["x-herdr-update", "1"]], body: "stream",
     });
@@ -49,7 +47,6 @@ it("starts Portal through a relay session on the server's actual listening port"
     expect(response.status).toBe(202);
     await response.text();
     await bounded(exposed.promise);
-    // Then: both the upstream route and saved ownership name this listener, not the default port.
     expect(JSON.parse(readFileSync(seen, "utf8"))).toContain(`/=${f.app.port}`);
     expect(JSON.parse(readFileSync(join(stateDir, "portal", "state.json"), "utf8"))).toMatchObject({ port: f.app.port });
   } finally {
@@ -61,15 +58,12 @@ it("starts Portal through a relay session on the server's actual listening port"
 });
 
 it("reports the server's actual listening port for access over a relay session", async () => {
-  // Given: an ephemeral listener and isolated Tailscale discovery.
   const discovery = spyOn(tailscale, "readTailscale").mockResolvedValue(null);
   const f = relayFixture(false, { machines: false });
   try {
     const link = await relayConnection(f);
     await link.auth(await relayDevice(f));
-    // When
     const response = await link.open("/api/access").response;
-    // Then
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ port: f.app.port });
   } finally {

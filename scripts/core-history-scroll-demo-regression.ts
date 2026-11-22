@@ -2,7 +2,7 @@
  * A herdr-core server's terminal history (#2663): its `terminal-history` feature keeps the scrollback in
  * xterm, so the wheel and a phone's swipe scroll back through the history its attach replays first, a
  * replay erases the last one's instead of doubling it, and nothing is typed to the program. herdr's
- * own server keeps none (its TUI does). Demo fixtures only: no herdr, hc or user state.
+ * own server keeps none (its TUI does).
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -13,6 +13,9 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
+import { CLEAR_HISTORY } from "../server/herdr-core/attach-session.ts";
+import { SUPPORTED_ENTRIES } from "../src/lib/themes.generated.ts";
+import { serveDemo } from "./demo-server.ts";
 
 interface Frame { type: string; pane_id?: string; data?: string; features?: string[] }
 interface HistoryFixture {
@@ -21,13 +24,10 @@ interface HistoryFixture {
 }
 declare global { interface Window { historyFixture: HistoryFixture } }
 
-/** The demo serves the pane; only its feature list and the pane's bytes are replaced. */
-function installHistoryFixture(): void {
+function installHistoryFixture(clearHistory: string): void {
   const core = new URL(location.href).searchParams.get("server") === "core";
-  // what CoreAttachSession sends: an erased scrollback, then hc's history and screen
   const lines = Array.from({ length: 300 }, (_, index) => `HIST-${String(index + 1).padStart(3, "0")}`);
-  // CLEAR_HISTORY byte for byte (this function runs in the page, so it cannot import it)
-  const stream = `\x1b[?1049l\x1b[3J\x1b[H\x1b[2J${lines.join("\r\n")}`;
+  const stream = `${clearHistory}${lines.join("\r\n")}`;
   const sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> = [];
   let pane: string | null = null;
   // a server lists its features before any pane's bytes; the demo lists them in its snapshot, after
@@ -83,7 +83,6 @@ const drawn = (page: Page) => page.evaluate(() => {
   const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];
   return [...rows].map((row) => row.textContent ?? "");
 });
-/** the oldest history line in sight, as its number */
 const topShown = async (page: Page) => Math.min(...(await drawn(page)).flatMap((row) => /HIST-(\d{3})/.exec(row)?.[1] ?? []).map(Number));
 const showsNewest = (page: Page) => page.waitForFunction(() => {
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
@@ -92,12 +91,10 @@ const showsNewest = (page: Page) => page.waitForFunction(() => {
 });
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 interface History { scrollback: number; length: number; viewportY: number; baseY: number }
-/** the current pane's xterm buffer, from the test build's output probe */
 const history = (page: Page) => page.evaluate(() => {
   const host = document.querySelector(".pane-frame.is-current .pane-terminal") as (HTMLElement & { outputProbe?: () => { history: History } }) | null;
   return host?.outputProbe?.().history ?? null;
 });
-/** waits for the view to scroll above `viewportY`, and says what it saw when it does not */
 const scrolledAbove = async (page: Page, viewportY: number, at: { x: number; y: number }, step: string): Promise<void> => {
   try {
     await page.waitForFunction((last) => {
@@ -116,24 +113,20 @@ const scrolledAbove = async (page: Page, viewportY: number, at: { x: number; y: 
   }
 };
 const inputs = (page: Page) => page.evaluate(() => window.historyFixture.inputs);
+const atBottom = (page: Page) => page.waitForFunction(() => {
+  const host = document.querySelector(".pane-frame.is-current .pane-terminal") as (HTMLElement & { outputProbe?: () => { history: History } }) | null;
+  const now = host?.outputProbe?.().history;
+  return now !== undefined && now.viewportY === now.baseY;
+});
+const evidence = process.env["UI_EVIDENCE_DIR"];
 const app = mkdtempSync(join(tmpdir(), "herdr-core-history-demo-"));
 
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installHistoryFixture.toString()})()</script>\n<script type="module"`));
+  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installHistoryFixture.toString()})(${JSON.stringify(CLEAR_HISTORY)})</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -154,7 +147,6 @@ try {
           assert.ok(shown, `${kind}: the test build's output probe answers`);
           if (kind === "core") {
             assert.ok(shown.scrollback > 0, "core: the browser keeps the scrollback");
-            // the 300 replayed lines, less the screen's own rows, are history above it
             assert.ok(shown.baseY > 0 && shown.viewportY === shown.baseY, `core: the history sits above the screen, which shows the newest rows (${JSON.stringify(shown)})`);
             assert.ok(shown.length >= 300, `core: the buffer keeps all 300 replayed lines (${JSON.stringify(shown)})`);
           } else {
@@ -170,7 +162,6 @@ try {
           await settled(page);
           if (kind === "core") {
             await scrolledAbove(page, shown.viewportY, { x: box.x + box.width / 2, y: box.y + box.height / 3 }, "core: the wheel scrolls back");
-            // and the rows drawn follow it, whichever renderer draws them
             await page.waitForFunction((before) => {
               const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
               const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];
@@ -178,7 +169,6 @@ try {
             }, topBefore, { timeout: 5000 }).catch(async (cause: unknown) => {
               throw new Error(`core: the wheel moved xterm's view but the rows drawn still start at HIST-${topBefore}: ${JSON.stringify(await drawn(page))}`, { cause });
             });
-            // read up in the browser's own history, the way back to the newest rows shows; it takes the view there and goes
             const jump = page.locator(".pane-frame.is-current .terminal-jump-bottom");
             await jump.waitFor();
             await jump.click();
@@ -188,24 +178,20 @@ try {
               return now !== undefined && now.viewportY === now.baseY;
             });
             await jump.waitFor({ state: "detached" });
-            // the keyboard reaches it too: scrolled up again, Enter on the focused button returns to the bottom
             await page.mouse.wheel(0, -600);
             await jump.waitFor();
             await jump.focus();
             const sentBefore = (await inputs(page)).length;
             await page.keyboard.press("Enter");
             await jump.waitFor({ state: "detached" });
-            // it only scrolls: focus is not handed to the program, and the key reaches nobody
             assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea") ?? false), false, "core: the press leaves the terminal unfocused");
             assert.equal((await inputs(page)).length, sentBefore, "core: the press types nothing");
-            // back to the bottom: the newest rows again
             await page.mouse.wheel(0, 20000);
             await page.waitForFunction(() => {
               const host = document.querySelector(".pane-frame.is-current .pane-terminal") as (HTMLElement & { outputProbe?: () => { history: History } }) | null;
               const now = host?.outputProbe?.().history;
               return now !== undefined && now.viewportY === now.baseY;
             });
-            // a reattach replays the history again: it replaces the scrollback rather than doubling it
             await page.evaluate(() => window.historyFixture.replay());
             await showsNewest(page);
             await settled(page);
@@ -215,9 +201,7 @@ try {
             assert.equal((await history(page))?.viewportY, 0, "herdr: the wheel moves no local history");
           }
 
-          // a phone's swipe: a finger moving down shows older lines
           await page.setViewportSize({ width: 390, height: 844 });
-          // the refit at the phone's size moves the bottom: the swipe starts from where it settles
           let phone: History | null = null;
           for (let tries = 0; tries < 20; tries++) {
             await page.waitForTimeout(100);
@@ -242,6 +226,93 @@ try {
           if (kind === "core") assert.deepEqual(typed, [], "core: scrolling the history types nothing");
           assert.deepEqual(errors, [], `${kind}: no page errors`);
           console.log(`PASS ${kind}: ${kind === "core" ? "wheel, swipe and a replay keep the browser's history" : "no local history"}`);
+        } finally {
+          await context.close();
+        }
+      }
+      for (const theme of ["dark", "light"] as const) {
+        const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: theme, locale: "en-US" });
+        try {
+          await context.addInitScript((value) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value, alertsOn: false })), theme);
+          const page = await context.newPage();
+          page.setDefaultTimeout(10000);
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.api)}&view=terminal&server=core`);
+          await page.locator(".conn-live").waitFor();
+          await appFaces(page);
+          await showsNewest(page);
+          await settled(page);
+          const box = (await page.locator(".pane-frame.is-current .pane-terminal").boundingBox())!;
+          const at = { x: box.x + box.width / 2, y: box.y + box.height / 3 };
+          await page.mouse.move(at.x, at.y);
+          const start = (await history(page))!;
+          await page.mouse.wheel(0, -600);
+          await scrolledAbove(page, start.viewportY, at, `${theme}: read up before the switch`);
+          const jump = page.locator(".pane-frame.is-current .terminal-jump-bottom");
+          await jump.waitFor();
+          const still = await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
+          const measure = () => page.evaluate(async ({ entries, mode }) => {
+            const root = document.documentElement;
+            const was = { theme: root.dataset["theme"], palette: root.dataset["palette"] };
+            const rgb = (color: string): number[] => {
+              const probe = document.createElement("canvas").getContext("2d")!;
+              probe.fillStyle = color;
+              probe.fillRect(0, 0, 1, 1);
+              return [...probe.getImageData(0, 0, 1, 1).data].slice(0, 3);
+            };
+            const lum = (c: number[]): number => { const [r, g, b] = c.map((v) => v / 255).map((v) => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
+            const ratio = (a: string, b: string): number => { const [x, y] = [lum(rgb(a)), lum(rgb(b))].sort((p, q) => q - p); return (x! + 0.05) / (y! + 0.05); };
+            const jump = document.querySelector(".pane-frame.is-current .terminal-jump-bottom")!;
+            const found: { entry: string; edge: number }[] = [];
+            for (const entry of entries.filter((each) => each.mode === mode)) {
+              root.dataset["theme"] = entry.mode;
+              root.dataset["palette"] = entry.id;
+              const edge = getComputedStyle(jump).borderTopColor;
+              const ground = getComputedStyle(root).getPropertyValue("--term-bg").trim();
+              found.push({ entry: `${entry.id} ${entry.mode}`, edge: Math.round(ratio(edge, ground) * 100) / 100 });
+            }
+            root.dataset["theme"] = was.theme;
+            if (was.palette === undefined) delete root.dataset["palette"]; else root.dataset["palette"] = was.palette;
+            return found;
+          }, { entries: SUPPORTED_ENTRIES.map((entry) => ({ id: entry.id, mode: entry.mode })), mode: theme });
+          const resting = await measure();
+          await jump.hover();
+          const hovered = await measure();
+          await page.mouse.move(at.x, at.y);
+          await still.evaluate((node) => node.remove());
+          const contrasts = resting.map((each, index) => ({ entry: each.entry, edge: Math.min(each.edge, hovered[index]!.edge), rest: each.edge, hover: hovered[index]!.edge }));
+          if (evidence) await page.screenshot({ path: join(evidence, `terminal-jump-bottom-1440-${theme}.png`) });
+          await page.locator(".view-switch .lens-option.is-chat").click();
+          await page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]').waitFor();
+          await page.locator(".view-switch .lens-option.is-terminal").click();
+          await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
+          await atBottom(page).catch(async (cause: unknown) => { throw new Error(`${theme}: back on the terminal the view is not at its newest rows: ${JSON.stringify(await history(page))}`, { cause }); });
+          await jump.waitFor({ state: "detached" });
+          const landed = (await history(page))!;
+          await page.mouse.move(at.x, at.y);
+          await page.mouse.wheel(0, -600);
+          await scrolledAbove(page, landed.viewportY, at, `${theme}: read up after the switch`);
+          const readUp = (await history(page))!;
+          await settled(page);
+          assert.equal((await history(page))!.viewportY, readUp.viewportY, `${theme}: after the switch the reader's own scroll stands`);
+          await page.mouse.move(box.x + 40, box.y + box.height / 4);
+          await page.mouse.down();
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 4 + 60, { steps: 6 });
+          await page.mouse.up();
+          const selectionRows = () => page.evaluate(() => document.querySelectorAll(".pane-frame.is-current .xterm-selection div").length);
+          assert.ok(await selectionRows() > 0, `${theme}: a drag selects rows of the history`);
+          await page.locator(".view-switch .lens-option.is-chat").click();
+          await page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]').waitFor();
+          await page.locator(".view-switch .lens-option.is-terminal").click();
+          await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
+          await settled(page);
+          assert.ok(await selectionRows() > 0, `${theme}: the selection is still there back on the terminal`);
+          assert.equal((await history(page))!.viewportY, readUp.viewportY, `${theme}: a switch with a selection being made leaves the view on its rows`);
+          const faint = contrasts.filter((each) => each.edge < 3);
+          assert.deepEqual(faint, [], `${theme}: the way to the bottom stands out from the terminal in every theme, at rest and hovered (edge contrast ${JSON.stringify(contrasts)})`);
+          assert.deepEqual(errors, [], `${theme}: no page errors`);
+          console.log(`PASS ${theme}: from the chat back to the terminal shows its newest rows once (not under a selection being made), and the way to the bottom stands out over every theme's terminal (${contrasts.map((each) => `${each.entry} ${each.edge}`).join(", ")})`);
         } finally {
           await context.close();
         }

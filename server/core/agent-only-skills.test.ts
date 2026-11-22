@@ -8,8 +8,6 @@ import type { HerdrPane } from "../../shared/protocol.ts";
 
 afterEach(() => mock.restore());
 
-// #511: typing a message key by key to attach OpenCode's @skills checks the agent between writes, never with
-// them; a message for an agent alone goes whole through herdr's agent.prompt, its @skills left as text
 it("sends an agent-only message naming an OpenCode @skill through agent.prompt, typing nothing", async () => {
   const writes: string[] = [];
   const prompts: string[] = [];

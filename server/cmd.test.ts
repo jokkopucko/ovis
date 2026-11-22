@@ -111,10 +111,8 @@ describe("Command Code session resolution", () => {
   ];
 
   it.each(cases)("$name", async ({ changes, expected }) => {
-    // Given an isolated home and herdr report, without a live herdr connection.
     const script = `const { cmdTranscriptPath } = await import(${JSON.stringify(join(import.meta.dir, "cmd.ts"))});
       console.log(JSON.stringify(await cmdTranscriptPath("cmd-pane", { agent: ${JSON.stringify({ ...agent, ...changes })} })));`;
-    // When resolving the reported session through the real filesystem validation.
     const child = Bun.spawn([process.execPath, "-e", script], {
       env: { ...process.env, HOME: root, USERPROFILE: root },
       stdout: "pipe", stderr: "pipe", timeout: 5_000,
@@ -122,7 +120,6 @@ describe("Command Code session resolution", () => {
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
-    // Then the resolver returns only the session justified by the report and store.
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
     expect(JSON.parse(stdout)).toEqual(expected);
@@ -350,14 +347,11 @@ describe("Command Code's permission prompt is a card", () => {
     expect(harmless?.body).toContain("printf harmless | head -5");
     expect(replaced?.id).toBeString();
     expect(replaced?.id).not.toBe(harmless?.id);
-    // a command of several lines: the lines above its last one are no title and no body
     const multi = (first: string) => parseInteractivePrompt("cmd", run(`${first}\nrm -rf build`))?.id;
     expect(multi("cd /tmp/scratch &&")).toBeString();
     expect(multi("cd / &&")).not.toBe(multi("cd /tmp/scratch &&"));
-    // two heredocs that end alike
     const heredoc = (line: string) => parseInteractivePrompt("cmd", run(`cat > notes.txt <<EOF\n${line}\nEOF`))?.id;
     expect(heredoc("keep this")).not.toBe(heredoc("replace that"));
-    // a rule inside a heredoc is no dialog border, and a heredoc's indentation is part of the command
     const ruled = (first: string) => parseInteractivePrompt("cmd", run(`${first}\ncat <<'EOF'\n${"\u2500".repeat(16)}\nEOF\nprintf done`))?.id;
     expect(ruled("printf harmless")).not.toBe(ruled("rm -rf important-files"));
     const indented = (delimiter: string) => parseInteractivePrompt("cmd", run(`cat <<'EOF'\n${delimiter}\nrm -rf important-files\n: <<'EOF'\nEOF\nprintf done`))?.id;

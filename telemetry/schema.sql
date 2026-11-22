@@ -38,3 +38,18 @@ CREATE TABLE IF NOT EXISTS active (
   PRIMARY KEY (day, install_id)
 );
 CREATE INDEX IF NOT EXISTS active_day ON active (day);
+
+-- One row per install and finished UTC day whose counts were sent (POST /v1/counts), kept as first
+-- received. version is the app's that day. narrow and wide are each that width's counts as JSON
+-- ({"counts": {name: bucket 1-4}, "shown": [name]}, names from shared/telemetry.ts TELEMETRY_COUNTERS and
+-- TELEMETRY_SHOWN), or NULL when the app was not used at that width. No row: the day's counts are unknown.
+-- Join active on (day, install_id) for the day's agent kinds, screens and country.
+CREATE TABLE IF NOT EXISTS counts (
+  day TEXT NOT NULL,
+  install_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  narrow TEXT CHECK (narrow IS NULL OR json_valid(narrow)),
+  wide TEXT CHECK (wide IS NULL OR json_valid(wide)),
+  PRIMARY KEY (day, install_id)
+);
+CREATE INDEX IF NOT EXISTS counts_day ON counts (day);

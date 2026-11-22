@@ -13,7 +13,6 @@ describe("pane observing", () => {
     store.set("p", left, true);
     expect(store.known("p")).toBe(true);
     expect(store.has("p")).toBe(true);
-    // a second mount that types: its composer takes the note
     store.set("p", right, false);
     expect(store.has("p")).toBe(false);
     // the typing mount leaving does not clear the other's watch

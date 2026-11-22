@@ -4,6 +4,8 @@ import { applyToDraft, draftIsEmpty, DRAFT_TTL_MS, EMPTY_DRAFT, holdBefore, rest
 describe("holdBefore", () => {
   it("holds typing a connection lost unconfirmed ahead of what was typed after it, each chunk folded as typed (#2587)", () => {
     expect(holdBefore(["ls", "s", "\x7f", " -la"], EMPTY_DRAFT)).toEqual({ text: "ls -la", truncated: false, leftOut: false });
+    // Ctrl+Backspace's Ctrl+W erased a word before the disconnect (#3415)
+    expect(holdBefore(["echo alpha", "\x17", "beta"], EMPTY_DRAFT)).toEqual({ text: "echo beta", truncated: false, leftOut: false });
     expect(holdBefore(["echo", "\r"], { text: "hi", truncated: false, leftOut: false })).toEqual({ text: "echo hi", truncated: false, leftOut: true });
   });
 
@@ -27,16 +29,24 @@ describe("applyToDraft", () => {
   it("applies Backspace to the held text, one code point per key", () => {
     expect(applyToDraft({ text: "ab", truncated: false, leftOut: false }, "\x7f")).toEqual({ text: "a", truncated: false, leftOut: false });
     expect(applyToDraft({ text: "ab", truncated: false, leftOut: false }, "\b")).toEqual({ text: "a", truncated: false, leftOut: false });
-    // lss, Backspace, " -la" is held as typed
     let draft = EMPTY_DRAFT;
     for (const chunk of ["l", "s", "s", "\x7f", " -la"]) draft = applyToDraft(draft, chunk);
     expect(draft.text).toBe("ls -la");
-    // never half of a surrogate pair or a Hangul syllable
     expect(applyToDraft({ text: "a😀", truncated: false, leftOut: false }, "\x7f").text).toBe("a");
     expect(applyToDraft({ text: "한글", truncated: false, leftOut: false }, "\x7f").text).toBe("한");
     expect(applyToDraft({ text: "abc", truncated: false, leftOut: false }, "\x7f\x7f").text).toBe("a");
     // deletions and the text that replaces them in one chunk, as an autocorrect may send
     expect(applyToDraft({ text: "teh", truncated: false, leftOut: false }, "\x7f\x7f\x7fthe").text).toBe("the");
+  });
+
+  it("applies Ctrl+Backspace's Ctrl+W to the held text as a shell does: the blanks, then the word before them", () => {
+    const held = (text: string) => ({ text, truncated: false, leftOut: false });
+    expect(applyToDraft(held("git sta"), "\x17")).toEqual(held("git "));
+    expect(applyToDraft(held("echo held-b  "), "\x17")).toEqual(held("echo "));
+    expect(applyToDraft(held("git sta"), "\x17status").text).toBe("git status");
+    expect(applyToDraft(held("한글 단어"), "\x17\x7f").text).toBe("한글");
+    expect(applyToDraft(held("word"), "\x17")).toBe(EMPTY_DRAFT);
+    expect(applyToDraft(EMPTY_DRAFT, "\x17")).toBe(EMPTY_DRAFT);
   });
 
   it("leaves the empty draft as it is on Backspace", () => {
@@ -45,7 +55,6 @@ describe("applyToDraft", () => {
   });
 
   it("never holds an Enter, keeps the text on both sides, and says a break was left out", () => {
-    // ls, Enter, pwd: two commands are not run together, and nothing is held that would run them
     let draft = EMPTY_DRAFT;
     for (const chunk of ["l", "s", "\r", "p", "w", "d"]) draft = applyToDraft(draft, chunk);
     expect(draft).toEqual({ text: "ls pwd", truncated: false, leftOut: true });
@@ -56,23 +65,19 @@ describe("applyToDraft", () => {
     expect(applyToDraft(EMPTY_DRAFT, "\x1b\n")).toBe(EMPTY_DRAFT);
     const held = { text: "ls", truncated: false, leftOut: false };
     expect(applyToDraft(held, "\x1b\r")).toBe(held);
-    // nothing is flagged, so a Backspace after it still edits the draft
     expect(["ls", "\x1b\r", "\x7f", "x"].reduce(applyToDraft, EMPTY_DRAFT)).toEqual({ text: "lx", truncated: false, leftOut: false });
   });
 
   it("clears the left-out break with the text when Backspace erases everything held", () => {
     expect(["ls", "\r", "\x7f", "\x7f", "\x7f"].reduce(applyToDraft, EMPTY_DRAFT)).toEqual(EMPTY_DRAFT);
     expect(applyToDraft({ text: "a ", truncated: false, leftOut: true }, "\x7f\x7fb")).toEqual({ text: "b", truncated: false, leftOut: false });
-    // text still held keeps the break told
     expect(applyToDraft({ text: "a b", truncated: false, leftOut: true }, "\x7f")).toEqual({ text: "a ", truncated: false, leftOut: true });
   });
 
   it("changes nothing for an Enter with nothing held: there is no text it separates", () => {
-    // Enter pressed on a frozen terminal to see if it answers must not leave an empty notice behind
     expect(applyToDraft(EMPTY_DRAFT, "\r")).toBe(EMPTY_DRAFT);
     expect(draftIsEmpty(applyToDraft(EMPTY_DRAFT, "\r\r"))).toBe(true);
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~\n\n\x1b[201~")).toBe(EMPTY_DRAFT);
-    // Backspace that empties the draft, then Enter: still nothing to tell
     expect(applyToDraft(applyToDraft({ text: "a", truncated: false, leftOut: false }, "\x7f"), "\r")).toEqual(EMPTY_DRAFT);
   });
 
@@ -80,18 +85,14 @@ describe("applyToDraft", () => {
     expect(applyToDraft(EMPTY_DRAFT, "a\rb")).toEqual({ text: "a b", truncated: false, leftOut: true });
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~a\nb\x1b[201~")).toEqual({ text: "a b", truncated: false, leftOut: true });
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~one\r\ntwo\r\n\x1b[201~")).toEqual({ text: "one two ", truncated: false, leftOut: true });
-    // the text never carries a line break, so Send cannot press Enter
     expect(applyToDraft(EMPTY_DRAFT, "a\rb").text).not.toMatch(/[\r\n]/);
-    // a raw chunk with other controls among its lines is told as left out, text and break both
     expect(applyToDraft(EMPTY_DRAFT, "a\tb\nc")).toEqual({ text: "", truncated: true, leftOut: true });
-    // a pasted tab is held as a space: indented code keeps its text
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~if x:\n\tfoo\x1b[201~")).toEqual({ text: "if x:  foo", truncated: false, leftOut: true });
   });
 
   it("holds a single-line paste with a tab, and tells one with other controls instead of losing it in silence", () => {
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~a\tb\x1b[201~")).toEqual({ text: "a b", truncated: false, leftOut: false });
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~a\x1bb\x1b[201~")).toEqual({ text: "", truncated: true, leftOut: false });
-    // an empty paste holds and tells nothing
     expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~\x1b[201~")).toBe(EMPTY_DRAFT);
   });
 
@@ -113,13 +114,11 @@ describe("applyToDraft", () => {
   });
 
   it("leaves out whole a chunk the draft has no room for, and says so even with nothing held", () => {
-    // a paste that arrives as one chunk: half of a command is never held
     const pasted = applyToDraft(EMPTY_DRAFT, "x".repeat(1025));
     expect(pasted).toEqual({ text: "", truncated: true, leftOut: false });
     expect(draftIsEmpty(pasted)).toBe(false);
     const after = applyToDraft(applyToDraft(EMPTY_DRAFT, "ls "), "x".repeat(1022));
     expect(after).toEqual({ text: "ls ", truncated: true, leftOut: false });
-    // what still fits is held, and the loss stays told
     expect(applyToDraft(after, "-la")).toEqual({ text: "ls -la", truncated: true, leftOut: false });
   });
 
@@ -148,10 +147,8 @@ describe("draftIsEmpty", () => {
 it("holds multi-codepoint IME commits without splitting a surrogate at the limit", () => {
   for (const text of ["한글", "😀", "e\u0301", "abc"]) expect(applyToDraft(EMPTY_DRAFT, text).text).toBe(text);
   expect(applyToDraft({ text: "a".repeat(1023), truncated: false, leftOut: false }, "😀")).toEqual({ text: "a".repeat(1023), truncated: true, leftOut: false });
-  // a paste is held by its text, not lost with its frames
   expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~text\x1b[201~")).toEqual({ text: "text", truncated: false, leftOut: false });
   expect(applyToDraft(EMPTY_DRAFT, `\x1b[200~${"a".repeat(1025)}\x1b[201~`)).toEqual({ text: "", truncated: true, leftOut: false });
-  // a frame that never closes is a control chunk still
   expect(applyToDraft(EMPTY_DRAFT, "\x1b[200~text")).toEqual(EMPTY_DRAFT);
 });
 

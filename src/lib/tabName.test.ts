@@ -20,7 +20,6 @@ describe("tab names", () => {
     // tab 1 of two closed: herdr reports { number: 2, label: "1" } for the one left
     expect(customTabLabel({ label: "1", number: 2 }, 1)).toBeNull();
     expect(tabLabel({ label: "1", number: 2 }, t, 1)).toBe("Tab 1");
-    // a name that only looks like another place is a name
     expect(tabLabel({ label: "7", number: 2 }, t, 1)).toBe("7");
   });
 
@@ -64,14 +63,10 @@ describe("tab names", () => {
       expect(autoTabLabel(tab, [pane({ title: "Retry budget", terminal_title_stripped: "Other thread | app" })], "local", labels)).toBe("Retry budget");
       expect(autoTabLabel(tab, [pane({ label: "Payments", terminal_title_stripped: "Other thread | app" })], "local", labels)).toBe("Payments");
       expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Investigate the flaky retry test in CI | app" })], "local", {})).toBe("Investigate the flaky\u2026");
-      // a title that starts with the agent's name still names the conversation
       expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Codex login failure | app" })], "local", labels)).toBe("Codex login failure");
-      // the title herdr reports names any agent's tab, without the chrome a terminal title has
       expect(autoTabLabel(tab, [pane({ agent: "omp", title: "\u03c0 \u280b Review parser" })], "local", labels)).toBe("Review parser");
-      // an attachment in a title an agent made from the first message leaves with its path; "Code" alone is a title
       expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "@/Users/me/Library/Mobile Documents/.ovis/paste-20261104-101500-0a1b2c3d.png Fix footer | app" })], "local", labels)).toBe("Fix footer");
       expect(autoTabLabel(tab, [pane({ terminal_title_stripped: "Code | app" })], "local", labels)).toBe("Code");
-      // a pane's name is kept whole, as a tab's is
       expect(autoTabLabel(tab, [pane({ label: "/api" })], "local", labels)).toBe("/api");
     });
 

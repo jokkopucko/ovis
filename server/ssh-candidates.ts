@@ -26,26 +26,17 @@ export interface SshCandidate {
 }
 
 export interface SshCandidatesOptions {
-  /** the folder holding `config`; `~/.ssh` of the server's own account by default */
   sshDir?: string;
   /** the folder `~` stands for, and with `sshDir` the only one an Include may read in; the server account's own by default */
   home?: string;
-  /** `tailscale status --json`; null when Tailscale is not here */
   readStatus?: () => Promise<string | null>;
   /** the addresses a host name resolves to, as ssh would reach it (getaddrinfo: hosts file, DNS, MagicDNS) */
   resolve?: (host: string) => Promise<string[]>;
-  /** how long the list waits on `resolve` for every name together */
   resolveTimeoutMs?: number;
 }
 
-/** the listing each options object has in flight, so concurrent requests share one */
 const listings = new WeakMap<SshCandidatesOptions, Promise<SshCandidate[]>>();
 
-/**
- * The SSH tab's list: the ssh config's hosts, then the Tailscale PCs no config host already names (by alias,
- * HostName or MagicDNS name). Either source missing leaves the other. Concurrent calls with the same options share
- * one listing.
- */
 export function sshCandidates(options: SshCandidatesOptions = {}): Promise<SshCandidate[]> {
   const running = listings.get(options);
   if (running !== undefined) return running;
@@ -79,8 +70,6 @@ async function listCandidates(options: SshCandidatesOptions): Promise<SshCandida
     const owners = new Set(addresses.map((address) => peerByIp.get(address)));
     return owners.size === 1 ? [...owners][0] : undefined;
   };
-  // every Tailscale PC keeps a row within the list limit: the first config row that claims it, else its own Tailscale
-  // row; config rows that claim no PC not yet claimed fill only what is left
   const claimed = new Set<string>();
   const fromConfig: SshCandidate[] = [];
   for (const host of hosts) {

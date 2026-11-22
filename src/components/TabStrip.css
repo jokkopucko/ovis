@@ -1,4 +1,3 @@
-/* herdr's tab row, over the pane: quiet names on a hairline, the open one underlined in amber */
 .tab-strip {
   display: flex;
   align-items: stretch;
@@ -6,7 +5,6 @@
   flex: 0 0 auto;
   min-height: var(--control-h);
   padding: 0 var(--space-3);
-  /* the strip's surface, which the + that covers the scrolling tabs paints too */
   --strip-bg: var(--bg-panel);
   background: var(--strip-bg);
   border-bottom: var(--hairline) solid var(--border);
@@ -19,13 +17,10 @@
   display: none;
 }
 
-/* a split view half's row: its tabs scroll, as wide as they are, and the end (App's grip and
-   close) takes the rest of the row */
 .tab-strip-row {
   display: flex;
   flex: 0 0 auto;
   min-width: 0;
-  /* the strip's own surface (below), so the end around the close is no band of another colour */
   --strip-bg: var(--bg-panel);
   background: var(--strip-bg);
   border-bottom: var(--hairline) solid var(--border);
@@ -52,7 +47,6 @@
   flex: 0 0 auto;
 }
 
-/* the selected tab uses a tonal wash and weight instead of a one-sided accent stripe */
 .tab-strip-item.is-active {
   background: var(--bg-elevated);
 }
@@ -88,7 +82,6 @@
   font-weight: var(--fw-selected);
 }
 
-/* the name being typed, in the tab's own place */
 .tab-strip-rename {
   align-self: center;
   width: auto;
@@ -110,12 +103,8 @@
 .tab-strip-dot[data-status="working"] { background: var(--status-working); }
 .tab-strip-dot[data-status="blocked"] { background: var(--status-blocked); }
 .tab-strip-dot[data-status="done"] { background: var(--status-done); }
-/* waiting on its background work: something still runs, the agent does not */
 .tab-strip-dot[data-status="waiting"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--status-working); }
 
-/* a working agent's dot turns, as the Herdr app's tab does: a ring with a gap, a little larger than
-   the dot so the turn reads, drawn in steps like the other spinners (styles.css --dur-spin). Under
-   reduced motion it is the plain dot. Dots and Symbols keep their glyph, held still. */
 .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
   width: calc(var(--dot-size) + 3px);
   height: calc(var(--dot-size) + 3px);
@@ -135,7 +124,6 @@
   }
 }
 
-/* the tab's agent, as the Herdr app's tabs show the program: its mark before the name */
 .tab-strip-agent {
   display: inline-flex;
   flex: 0 0 auto;
@@ -147,8 +135,6 @@
   display: inline-flex;
 }
 
-/* the header's tab list (a phone's sheet): the state, then the agent, in a column of their own so
-   the names line up; a tab at rest keeps a hollow dot */
 .tab-sheet-marks {
   display: inline-grid;
   grid-template-columns: calc(var(--dot-size) + 3px) 18px;
@@ -162,8 +148,6 @@
   box-shadow: inset 0 0 0 1.5px var(--status-marker-idle);
 }
 
-/* Settings -> Status indicators, Dots or Symbols: the sidebar's herdr glyph and color, held still
-   (Sidebar.css .sidebar-status-glyph). Same specificity as the dot's rules, so order wins. */
 .tab-strip-glyph {
   width: auto;
   height: auto;
@@ -180,7 +164,6 @@
 .tab-strip-glyph[data-status="blocked"] { color: var(--indicator-blocked); }
 .tab-strip-glyph[data-status="done"] { color: var(--indicator-done); }
 
-/* The touch menu and + share the strip's small square controls. */
 .tab-strip-menu,
 .tab-strip-add {
   display: inline-flex;
@@ -198,8 +181,6 @@
   cursor: pointer;
 }
 
-/* Touch and narrow layouts keep the ellipsis in view; a mouse on a wide screen draws it on the
-   selected tab while the strip is hovered or the tab has keyboard focus (below). */
 .tab-strip-menu { display: none; }
 
 .tab-strip-error {
@@ -211,17 +192,13 @@
   white-space: nowrap;
 }
 
-/* the + stays at the strip's end while the tabs scroll under it: more tabs than fit must not
-   take it off the screen */
 .tab-strip-add {
   position: sticky;
   right: 0;
   background: var(--strip-bg);
-  /* the strip's own end padding, in the strip's colour: no tab shows past the + */
   box-shadow: var(--space-3) 0 0 var(--strip-bg);
 }
 
-/* over the shared hover below: the hover tint sits on the strip's colour, never on a tab */
 @media (hover: hover) {
   .tab-strip .tab-strip-add:hover:not(:disabled) {
     background: linear-gradient(var(--bg-hover), var(--bg-hover)) var(--strip-bg);
@@ -285,7 +262,6 @@
     min-height: var(--touch-target);
   }
 
-  /* a one- or two-character name (탭 1) is still a finger's width; the ⋯ beside it is its own */
   .tab-strip-tab {
     min-width: var(--touch-target);
     min-height: var(--touch-target);
@@ -294,14 +270,10 @@
   .tab-strip-item.is-active .tab-strip-tab { padding-right: var(--space-1); }
 }
 
-/* A mouse keeps its right-click and the keyboard its menu key; the ellipsis is the route in
-   plain sight. It holds its place at rest, hidden, so the strip never reflows under the pointer:
-   the pointer over the strip, the tab's keyboard focus, its own, or its open menu fade it in.
-   Hidden with visibility too: a Shift+Tab from the + lands on the tab, not on something unseen,
-   and nothing invisible takes a press. Between the tab's focus and the button's there is an
-   instant in which neither has it while the item still has it within, and a hidden button cannot
-   take the focus then: the fade's delay used to carry it over, reduced motion has no fade, so the
-   item's :focus-within without a focused child keeps the button in view through the handoff. */
+/* Between the tab's focus and the button's there is an instant in which neither has it while the
+   item still has it within, and a hidden button cannot take the focus then: the fade's delay used to
+   carry it over, reduced motion has no fade, so the item's :focus-within without a focused child
+   keeps the button in view through the handoff. */
 @media (hover: hover) and (pointer: fine) and (min-width: 769px) {
   .tab-strip-menu {
     display: inline-flex;
@@ -329,10 +301,6 @@
   .tab-strip-menu { transition: none; }
 }
 
-/* From 769px the header over the pane is the pane's surface (styles.css), and the strip under
-   it is the same one, not a band of the panel's colour between the two: the terminal's colour,
-   or the chat's, where the header has no rule and the strip's hairline is the one line over the
-   transcript. Below that the header is the panel's bar and the strip stays with it. */
 @media (min-width: 769px) {
   .tab-strip,
   .tab-strip-row {
@@ -347,7 +315,6 @@
   }
 }
 
-/* Only the insertion line moves before herdr acknowledges a drop. */
 .tab-strip-item.is-dragging { opacity: 0.55; }
 .tab-strip-item.is-drop-before::before,
 .tab-strip-item.is-drop-after::after {
@@ -362,7 +329,6 @@
 .tab-strip-item.is-drop-before::before { left: 0; }
 .tab-strip-item.is-drop-after::after { right: 0; }
 
-/* the tab's menu names the tab it is for above its items, where the menu covers the row (G-022); a phone's sheet draws it as its title */
 .tab-strip-menu-target {
   display: block;
   overflow: hidden;
@@ -377,4 +343,126 @@
   color: var(--text-strong);
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
+}
+
+.header-tabs.is-phone {
+  align-items: center;
+  gap: 0;
+  padding-right: 0;
+}
+
+.header-tabs.is-phone .tab-strip {
+  gap: 0;
+  height: var(--touch-target);
+  min-height: 0;
+  background: transparent;
+  overflow-x: auto;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: var(--space-3);
+  mask-image: linear-gradient(to right, var(--bg) calc(100% - var(--space-5)), transparent);
+}
+
+.header-tabs.is-phone .tab-strip-item {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 6rem;
+  height: var(--touch-target);
+  background: transparent;
+  border: 0;
+}
+
+.header-tabs.is-phone .tab-strip-item.is-active {
+  max-width: min(7rem, 100%);
+  background: transparent;
+  border: 0;
+}
+
+.header-tabs.is-phone .tab-strip-item.is-active::before {
+  content: "";
+  position: absolute;
+  inset: var(--space-1-5) 0;
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  pointer-events: none;
+}
+
+.header-tabs.is-phone .tab-strip-tab {
+  position: relative;
+  padding: 0 var(--space-2);
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.header-tabs.is-phone .tab-strip-item.is-active .tab-strip-tab {
+  padding-right: var(--space-2);
+}
+
+.header-tabs.is-phone .tab-strip-position {
+  order: 3;
+}
+
+/* a split tab's open pane, where one pane shows at a time (`1/2`, heard as "Pane 1 of 2") */
+.tab-strip-position {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  font-variant-numeric: tabular-nums;
+}
+
+.header-tabs-sheet {
+  flex: 0 0 auto;
+  gap: var(--space-half);
+  width: auto;
+  min-width: var(--touch-target);
+  height: var(--touch-target);
+  padding: 0 var(--space-1-5);
+}
+
+.header-tabs-sheet svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.header-tabs-count {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.header-tabs-watch {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+
+.header-tabs-watch svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.header-tabs-connection {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline: var(--space-1);
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-tabs-connection.is-reconnecting { color: var(--status-reconnecting); }
+.header-tabs-connection.is-connected { color: var(--status-done); }
+
+.header-tabs .tab-strip-notice {
+  position: fixed;
+  top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  right: 0;
+  left: 0;
+  z-index: var(--z-header);
+  background: var(--bg-panel);
 }

@@ -83,7 +83,7 @@ const withTimeout = async <T>(operation: Promise<T>, name: string, timeoutMs: nu
   }
 };
 
-/** Begin bounded collection for one test-owned page. Trace snapshots/network are deliberately off. */
+/** Trace snapshots/network are deliberately off. */
 export async function startBrowserEvidence(options: BrowserEvidenceOptions): Promise<BrowserEvidenceSession> {
   const directory = options.directory;
   const enabled = directory !== undefined && directory.length > 0;
@@ -122,7 +122,7 @@ export async function startBrowserEvidence(options: BrowserEvidenceOptions): Pro
           void startOperation.then(async () => {
             try {
               await withTimeout(tracing.stop(), "trace cleanup", TRACE_TIMEOUT_MS);
-            } catch { /* a late-started trace is best-effort cleanup */ }
+            } catch {}
           }).catch(() => {});
         }
       }
@@ -223,7 +223,7 @@ export async function startBrowserEvidence(options: BrowserEvidenceOptions): Pro
     finish: async () => {
       if (finished) return;
       finished = true;
-      try { await stopTrace(); } catch { /* optional success evidence is discarded */ }
+      try { await stopTrace(); } catch {}
     },
   };
 }

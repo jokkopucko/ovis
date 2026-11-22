@@ -41,7 +41,6 @@ afterEach(async () => {
   }
 });
 
-/** The HTTP boundary: GET /api/pane/docs answers as the server would; every URL asked is recorded. */
 function serve(answer: () => Response): string[] {
   const asked: string[] = [];
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: RequestInfo | URL) => {
@@ -80,7 +79,6 @@ test("narrows the list to the paths that hold the filter's words, in any case", 
   expect(textOf(bar)).toContain("Filter documents:/repo");
   await act(async () => { filter.props.onChange({ target: { value: "nothing-like-it" } }); });
   expect(rows()).toHaveLength(0);
-  // what is missing, then the way on, in one note
   expect(notes()).toEqual(["No matching documents" + "Clear or change the filter."]);
 });
 
@@ -98,14 +96,12 @@ test("retains the last folder path and skeleton placeholders while refreshing", 
   await act(async () => { refresh.props.onClick(); });
   const pathBar = renderer!.root.findByProps({ className: "dir-browser-path" });
   expect(textOf(pathBar)).toBe("/repo");
-  // the note stands in the first row's place, a placeholder in each other row's: the list keeps its two rows' height
   expect(textOf(renderer!.root.findByProps({ role: "status" }))).toBe("Loading documents…");
   expect(renderer!.root.findAllByProps({ className: "md-docs-skeleton" })).toHaveLength(1);
   await act(async () => { resolveNext?.(Response.json(LISTING)); });
   expect(rows()).toHaveLength(2);
 });
 
-// the rows shown before a refresh, each a document or the note standing for none: the refresh keeps as many
 test.each([
   ["no document", 0, "", 1],
   ["one document", 1, "", 1],
@@ -119,7 +115,6 @@ test.each([
   await act(async () => { renderer!.root.findByProps({ type: "search" }).props.onChange({ target: { value: filter } }); });
   reading = false;
   await act(async () => { renderer!.root.findByProps({ "aria-label": "Refresh documents" }).props.onClick(); });
-  // the note takes the first row's place
   expect(1 + renderer!.root.findAllByProps({ className: "md-docs-skeleton" }).length).toBe(shownRows);
 });
 

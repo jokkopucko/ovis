@@ -3,7 +3,6 @@ import { ANSI_RE, SOLID_RULE_RE, normalizeText, parsedByPublicPrompt } from "./d
 import { claudeRewindPanelBelow } from "./dialogs/claude.ts";
 import { paneRead } from "./herdr/client.ts";
 
-/** how long a prompt poll waits for the ANSI read behind Claude's suggestion before going without it */
 export const SUGGESTION_READ_MS = 1_500;
 
 /** Claude's new-session tip in the empty input (`Try "how does <filepath> work?"`), not a suggestion. */
@@ -16,23 +15,14 @@ const CLAUDE_TIP_RE = /^Try "/;
  */
 const CLAUDE_IDE_PILL_RE = /^[ \u00a0]?\[⧉ [^\]\n]+\] ?/;
 
-/** The text after the `❯` of an input row with Claude's IDE pill (CLAUDE_IDE_PILL_RE) taken out. */
 const withoutIdePill = (afterPrompt: string): string => afterPrompt.replace(CLAUDE_IDE_PILL_RE, " ");
 
-/**
- * How many characters after the `❯` of a plain input row Claude's IDE pill takes, with the space
- * before it: what a walk over that row skips. 0 without a pill.
- */
 function idePillChars(afterPrompt: string): number {
   const match = CLAUDE_IDE_PILL_RE.exec(afterPrompt);
   return match === null ? 0 : Array.from(match[0]).length;
 }
 
-/**
- * Whether each character of an ANSI line is drawn dim (SGR 2) and inverse (SGR 7), as
- * [text, dim, inverse] runs. Only SGR sequences change the state; 38/48 colors are skipped whole,
- * so the 2 of `38;2;r;g;b` is a color mode, not dim. Other escapes are dropped.
- */
+/** SGR 38/48/58 colors are skipped whole: the 2 of `38;2;r;g;b` is a color mode, not dim. */
 function sgrRuns(line: string): [string, boolean, boolean][] {
   const runs: [string, boolean, boolean][] = [];
   let dim = false;
@@ -107,7 +97,7 @@ function claudeGreyInput(ansi: string): string | null {
 /**
  * A labeled rule over an input box: Claude's named session (`──── my-session ─`), and OmO's own
  * box while it works (`── • Running eval (7s • esc to interrupt) ───`), which herdr reports as
- * Claude. Only the box reader takes the shorter lead; the task panel keeps LABELED_RULE_RE.
+ * Claude.
  */
 const BOX_LABELED_RULE_RE = /^─{2,}\s.*─$/;
 
@@ -129,7 +119,6 @@ function claudeInputBox(screen: string): { plain: string[]; raw: string[] } | "c
   return { plain: plain.slice(start + 1, end), raw: raw.slice(start + 1, end) };
 }
 
-/** Claude's new-session tip as a whole input row: `Try "how does <filepath> work?"`. */
 const CLAUDE_TIP_ROW_RE = /^Try "[^"]+"$/;
 
 /** Whether an ANSI read sets no color and no dim anywhere, as Claude Code draws under NO_COLOR. */
@@ -161,7 +150,7 @@ export function claudeInputDraft(live: string, colors: string | null): boolean {
   const afterPill = withoutIdePill(box.plain[0]!.slice(1));
   if ([afterPill, ...box.plain.slice(1)].join("\n").replace(/\u00a0/g, " ").trim() === "") return false;
   // a paste or an image Claude folded into a placeholder is content, however it is colored
-  if (/\[(?:Pasted text #\d+|Image #\d+)/.test(box.plain.join(" "))) return true;
+  if (foldedPlaceholder(box.plain.join("\n"))) return true;
   if (colors === null) return true;
   const shown = claudeInputBox(colors);
   if (shown === null || shown === "clipped" || shown.plain.join("\n") !== box.plain.join("\n")) return true;
@@ -191,7 +180,6 @@ export function claudeInputDraft(live: string, colors: string | null): boolean {
   return cursor && !grey;
 }
 
-/** Positive proof of an ordinary empty input box, never absence of a readable box. */
 export function claudeInputEmpty(live: string, colors: string | null): boolean {
   const box = claudeInputBox(live);
   return box !== null && box !== "clipped" && box.plain[0]?.startsWith("❯") === true
@@ -202,8 +190,6 @@ export function claudeInputEmpty(live: string, colors: string | null): boolean {
 export const CLAUDE_CLEAR_INPUT_KEYS = ["ctrl+k", "ctrl+u"];
 
 /**
- * The draft the chat may offer to clear before it sends (claudeInputDraft with the same reads):
- * typed text on the only row of a `❯` box, read with verified colors, as the user sees it there.
  * CLAUDE_CLEAR_INPUT_KEYS edit one screen row, so a draft on more rows (a long line wraps), bash
  * mode, a pasted or image placeholder and a box read without colors are not offered: null.
  */
@@ -211,9 +197,7 @@ export function claudeClearableDraft(live: string, colors: string | null): strin
   if (colors === null || !claudeInputDraft(live, colors)) return null;
   const box = claudeInputBox(live);
   if (box === null || box === "clipped" || box.plain.length !== 1 || !box.plain[0]!.startsWith("❯")) return null;
-  if (/\[(?:Pasted text #\d+|Image #\d+)/.test(box.plain[0]!)) return null;
-  // plain rows trim their right edge for screen parsing. Match the raw row instead: a
-  // trailing space, or another space after Claude's one separator, belongs to the user.
+  if (foldedPlaceholder(box.plain[0]!)) return null;
   const rowText = (row: string): string => row.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "");
   const row = rowText(box.raw[0]!);
   const shown = claudeInputBox(colors);
@@ -225,7 +209,6 @@ export function claudeClearableDraft(live: string, colors: string | null): strin
   return draft.trim() === "" ? null : draft;
 }
 
-/** How much of the box an input_draft refusal shows: enough to tell a draft from Claude's own text. */
 export const INPUT_BOX_SHOWN_CHARS = 200;
 
 /**
@@ -239,6 +222,30 @@ export function claudeInputBoxContent(live: string): string | null {
   return box.plain.map((row) => row.replace(/\u00a0/g, " ").trimEnd()).join("\n").trim();
 }
 
+/** Claude Code's placeholder for a paste or an image it folded, whole: `[Pasted text #1 +12 lines]`, `[Pasted text #1]`, `[Image #1]`, `[...Truncated text #1 +40 lines...]`. */
+const FOLDED_WHOLE = /\[(?:Pastedtext#\d+(?:\+\d+lines?)?|Image#\d+)\]|\[\.\.\.Truncatedtext#\d+(?:\+\d+lines?)?\.\.\.\]/;
+const FOLDED_START = /\[(?:Pastedtext#\d+|Image#\d+|(?:\.\.\.)?Truncatedtext#\d+)/;
+
+/**
+ * Claude wraps its box at the pane's width, also inside a placeholder, between words or inside one, any number of
+ * times: the text is read with every space and row break taken out, as are the placeholder patterns. Only the whole
+ * placeholder counts (`whole`, for Send anyway: a typed `[Image #1` is not one); the draft checks take its start.
+ */
+export function foldedPlaceholder(text: string, whole = false): boolean {
+  return (whole ? FOLDED_WHOLE : FOLDED_START).test(text.replace(/\s+/g, ""));
+}
+
+/**
+ * The box a refusal may offer to send anyway over, and a send anyway may go over (claudeInputBoxContent),
+ * or null where it may not: a paste or an image Claude Code folded into a placeholder (`[Pasted text #1 +12
+ * lines]`, `[Image #1]`) hides what it holds, so the user cannot see what the Enter would send along
+ * with the message (#3563).
+ */
+export function claudeSendAnywayBox(live: string): string | null {
+  const content = claudeInputBoxContent(live);
+  return content === null || foldedPlaceholder(content, true) ? null : content;
+}
+
 /**
  * Whether Claude Code's rewind dialog is open: the screen ends in its panel and Claude's own input box
  * is not drawn under it (the dialog takes its place in every recorded state). A reply that draws the
@@ -250,12 +257,10 @@ export function claudeRewindOpen(screen: string): boolean {
   return below !== null && claudeInputBoxContent(below) === null;
 }
 
-/** What the user is shown of a box's content: enough to tell a real draft from a box misread. */
 export function shownInputBox(content: string): string {
   return content.length > INPUT_BOX_SHOWN_CHARS ? `${content.slice(0, INPUT_BOX_SHOWN_CHARS)}…` : content;
 }
 
-/** The live input box as a refusal shows it (claudeInputBoxContent, cut by shownInputBox). */
 export function claudeInputBoxText(live: string): string {
   return shownInputBox(claudeInputBoxContent(live) ?? "");
 }
@@ -273,10 +278,7 @@ export function claudeRestoredDraft(live: string, colors: string | null, sent: s
   if (sent === null || sent.trim() === "" || colors === null || !claudeInputDraft(live, colors)) return null;
   const box = claudeInputBox(live);
   if (box === null || box === "clipped" || !box.plain[0]?.startsWith("❯")) return null;
-  if (/\[(?:Pasted text #\d+|Image #\d+)/.test(box.plain.join(" "))) return null;
-  // each row's own words exactly (the box's U+00A0 as a space), its marker, indentation and padding
-  // aside; where the terminal wrapped, a word split in two joins with nothing between, and a wrap
-  // between words with one space or line break. Any other change to the spaces is the user's edit.
+  if (foldedPlaceholder(box.plain.join("\n"))) return null;
   const rows = box.plain.map((row, index) => (index === 0 ? withoutIdePill(row.slice(1)) : row).replace(/\u00a0/g, " ").trim());
   // walked row by row over the set of places the sent text can be at, never a regex: one built from
   // the rows backtracks exponentially over a box of blank rows
@@ -294,13 +296,6 @@ export function claudeRestoredDraft(live: string, colors: string | null, sent: s
   return at.has(text.length) ? sent : null;
 }
 
-/**
- * Whether a colored viewport read shows the live screen, so claudeInputDraft may take its colors:
- * the viewport at the bottom of the pane's history before and after the colored read, or, only when
- * herdr reports no scroll for either read, the viewport's whole text equal to the live screen; and
- * the live screen the same before and after it. A scroll known for one read and not the other is
- * no proof.
- */
 export function viewportShowsLive(scrollBefore: { offset_from_bottom: number } | null, scrollAfter: { offset_from_bottom: number } | null,
   colors: string, before: string, live: string): boolean {
   const atBottom = scrollBefore !== null && scrollAfter !== null
@@ -309,7 +304,6 @@ export function viewportShowsLive(scrollBefore: { offset_from_bottom: number } |
   return atBottom && live === before;
 }
 
-/** A screen read's rows as plain text, each row's and the screen's right edge trimmed. */
 const screenLines = (text: string): string => text.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
   .split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();
 
@@ -329,7 +323,6 @@ export function historyEndShowsLive(colors: string, colorsAfter: string, lives: 
     && screenLines(colors) === screenLines(lives[0]!);
 }
 
-/** Whether a card is the one for a message Claude Code holds back (parseClaudeHeld). */
 export function isClaudeHeld(prompt: InteractivePrompt): boolean {
   return parsedByPublicPrompt.get(prompt)?.responder === "claude-held";
 }

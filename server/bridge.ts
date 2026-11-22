@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,13 +16,23 @@ import { attachableIdentity, sidecarAvailable } from "./pty/sidecar.ts";
  * `port` is on 127.0.0.1, the only address the app's SSH tunnel goes to (`loopbackRelay`).
  */
 export interface BridgeDescriptor { managed_remote?: boolean; port: number; token: string; pid: number; generation?: string; birth?: ProcessBirth; socket_path: string; bridge_protocol: number; bundle_version: string }
-export function bridgeRegistry(): string { return join(homedir(), ".config/herdr-web-ui/bridges"); }
+/**
+ * The bridges' folder. On Windows, Ovis's state migration leaves a junction at the legacy folder (to
+ * `.config\\ovis`), and a process an SSH session started may not traverse it ("untrusted mount point"):
+ * the junction's target is used, read without going through it (#3633).
+ */
+export function bridgeRegistry(): string {
+  const legacy = join(homedir(), ".config", "herdr-web-ui");
+  if (process.platform !== "win32") return join(legacy, "bridges");
+  let junction = false;
+  try { junction = lstatSync(legacy).isSymbolicLink(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  return join(junction ? resolve(dirname(legacy), readlinkSync(legacy)) : legacy, "bridges");
+}
 export function socketPath(): string {
   const path = resolve(herdrSocketPath());
   try { return realpathSync(path); } catch { return path; }
 }
 export function descriptorPath(socket = socketPath()): string { return join(bridgeRegistry(), createHash("sha256").update(socket).digest("hex") + ".json"); }
-/** `sidecar`: whether this bridge can run the PTY sidecar; the PC list reads its terminal lens from the herdr told here. */
 export async function bridgeIdentity(sidecar = sidecarAvailable()): Promise<BridgeIdentity> {
   const socket = socketPath();
   let stat;
@@ -49,7 +59,6 @@ export function descriptorLive(descriptor: Pick<BridgeDescriptor, "pid" | "birth
   return !ownerGone(descriptor);
 }
 
-/** One reading of the descriptor file; equal readings mean nobody replaced it in between. */
 function readDescriptor(path: string): { id: string; text: string } | null {
   try {
     const stat = statSync(path);
@@ -58,14 +67,13 @@ function readDescriptor(path: string): { id: string; text: string } | null {
 }
 function liveIn(reading: { text: string } | null): boolean {
   if (!reading) return false;
-  try { return descriptorLive(JSON.parse(reading.text) as BridgeDescriptor); } catch { return false; /* unreadable descriptor: replace it */ }
+  try { return descriptorLive(JSON.parse(reading.text) as BridgeDescriptor); } catch { return false; }
 }
 
 /**
  * `registered` says whether this server's descriptor was written: it is not while another live
  * bridge holds the descriptor, when the descriptor changed while this one started, or when its
- * guard cannot be taken. `options.path` places the descriptor elsewhere and `options.sampled` runs
- * between reading the old descriptor and taking the guard; both are test seams.
+ * guard cannot be taken.
  */
 export function registerBridge(port: number, token = randomBytes(32).toString("hex"), options: { path?: string; sampled?(): void } = {}): { token: string; registered: boolean; close(): void } {
   const path = options.path ?? descriptorPath();
@@ -79,7 +87,6 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
   try {
     const registered = withOwnerGuard(path, () => {
       const now = readDescriptor(path);
-      // another bridge registered while this one started: it is the registered one
       if (now?.id !== seen?.id || now?.text !== seen?.text || liveIn(now)) return false;
       const tmp = `${path}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["OVIS_REMOTE"] === "1", port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
@@ -104,7 +111,7 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
         withOwnerGuard(path, () => {
           let current: Partial<BridgeDescriptor> | null;
           try { current = JSON.parse(readFileSync(path, "utf8")) as Partial<BridgeDescriptor> | null; }
-          catch { return; /* already gone or unreadable: nothing of ours to remove */ }
+          catch { return; }
           if (current?.pid === process.pid && current.generation === record.generation) unlinkSync(path);
         });
       } catch (error) {
@@ -131,9 +138,7 @@ export function relayTarget(hostname: string): string | null {
  * largest request body the server reads (a picture at the attachment limit), twice over.
  */
 export const RELAY_CLIENT_AHEAD_BYTES = 2 * MAX_IMAGE_BODY_BYTES;
-/** `queue`: what this socket has not taken yet, `queued` bytes; `ending`: the other side closed, so this one ends once its queue is sent */
 interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; queued: number; closed?: boolean; ending?: boolean }
-/** writes `chunk` after what the socket has not taken yet (`drain` sends the rest); the bytes it holds now */
 function send(socket: Socket<Relayed>, chunk: Uint8Array): number {
   if (!socket.data.queue.length) {
     const written = Math.max(socket.write(chunk), 0);
@@ -155,7 +160,6 @@ function drain(socket: Socket<Relayed>): void {
   if (socket.data.ending) socket.end();
   else socket.data.peer?.resume();
 }
-/** ends `socket` after what it still has to send */
 function endAfterQueue(socket: Socket<Relayed> | undefined): void {
   if (!socket) return;
   socket.data.ending = true;
@@ -177,7 +181,6 @@ export function loopbackRelay(target: string, port: number): { port: number; sto
   const listener = Bun.listen<Relayed>({ hostname: "127.0.0.1", port: 0, socket: {
     open(client) {
       client.data = { queue: [], queued: 0 };
-      // read nothing from the client until the server's side is there to take it
       client.pause();
       void Bun.connect<Relayed>({ hostname: target, port, data: { queue: [], queued: 0 }, socket: {
         open(peer) {
@@ -202,6 +205,5 @@ export function loopbackRelay(target: string, port: number): { port: number; sto
     close(client) { client.data.closed = true; client.data.peer?.terminate(); },
     error(client) { client.data.closed = true; client.data.peer?.terminate(); },
   } });
-  // stopping closes every client, and each client's close takes its server's side with it
   return { port: listener.port, stop: () => listener.stop(true) };
 }

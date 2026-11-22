@@ -1,9 +1,5 @@
 /**
- * A new user's install, watched: a disposable Ubuntu 24.04 with nothing but curl, git and Node 18
- * (the distro's), a normal user, herdr and Bun from their installers, a headless herdr, then
- * `herdr plugin install` from GitHub exactly as the README says, the start action, /api/health,
- * and the startup hook after a herdr restart. Requires Docker and network; nothing on the host
- * changes. It installs a pushed ref, by default the current branch.
+ * Requires Docker and network; nothing on the host changes.
  *
  * ONE_LINE=1 is the other door: a box with curl and git but no Node, herdr or Bun, and this
  * checkout's install.sh piped into sh as `curl … | sh` would, before herdr ever runs. It installs
@@ -60,7 +56,6 @@ try {
   else await docker(["rm", "-f", name]).catch(() => {});
 }
 
-/** install.sh as `curl … | sh` runs it, before herdr ever ran; then herdr's startup hook starts the app */
 async function oneLineInstall(): Promise<void> {
   await docker(["cp", "install.sh", `${name}:/tmp/install.sh`]);
   const out = await step("install.sh: herdr, Bun, the plugin, and Node where the Rust PTY host cannot run", () => asUser(`cat /tmp/install.sh | OVIS_REF=${ref} sh 2>&1; echo "exit=$?"`));
@@ -76,8 +71,6 @@ async function oneLineInstall(): Promise<void> {
     console.log(`  ${/up after \d+s/.exec(health)?.[0] ?? health.trim().split("\n").pop()}`);
   });
   await step("a terminal through the sidecar, on install.sh's Node where it installed one", async () => {
-    // install.sh installs Node only when the Rust PTY host cannot run here; the server finds it by path
-    // and where it installed none, the Rust host has to open a pty itself (its own check, as install.sh's rust_host_runs runs it)
     const out = await asUser(`cd "${pluginRoot}" && node=~/.local/share/ovis/node/bin/node; if [ -x "$node" ]; then "$node" server/pty/smoke.mjs && echo PTY_OK; else echo NO_APP_NODE; timeout 10 bin/ovis-pty-sidecar 1 1 true </dev/null >/dev/null && echo RUST_PTY_OK; fi; true`);
     if (out.includes("NO_APP_NODE")) {
       assert.match(out, /RUST_PTY_OK/, `install.sh installed no Node, and the Rust PTY host opens no pty:\n${out.slice(-1500)}`);

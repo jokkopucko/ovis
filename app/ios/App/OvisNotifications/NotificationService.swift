@@ -2,11 +2,9 @@ import Foundation
 import OvisPushCore
 import UserNotifications
 
-/// Shows a PC's push. The relay's mutable-content alert carries the PC's ciphertext in "ovis"
+/// The relay's mutable-content alert carries the PC's ciphertext in "ovis"
 /// (RFC 8291, aes128gcm), opened here with the phone's keys from the keychain group shared with the
-/// app; the relay never holds a key that could read it. One alert per pane tag, as public/sw.js and
-/// the Android app show them. A push that cannot be opened still shows, with the relay's fallback
-/// line.
+/// app; the relay never holds a key that could read it.
 final class NotificationService: UNNotificationServiceExtension {
     private let lock = NSLock()
     private var handler: ((UNNotificationContent) -> Void)?
@@ -44,7 +42,6 @@ final class NotificationService: UNNotificationServiceExtension {
                     content.threadIdentifier = payload.tag.flatMap { $0.isEmpty ? nil : $0 } ?? "herdr"
                 }
             } catch {
-                // A missing key, damaged push or old subscription still gets a visible alert.
             }
         }
         lock.lock()
@@ -56,14 +53,13 @@ final class NotificationService: UNNotificationServiceExtension {
                 $0.request.content.threadIdentifier == content.threadIdentifier
             }.map { $0.request.identifier }
             center.removeDeliveredNotifications(withIdentifiers: ids)
-            finish()
+            deliverOnce()
         }
     }
 
-    override func serviceExtensionTimeWillExpire() { finish() }
+    override func serviceExtensionTimeWillExpire() { deliverOnce() }
 
-    /// Expiration and the delivered-notification lookup may finish together; deliver only once.
-    private func finish() {
+    private func deliverOnce() {
         lock.lock()
         let callback = handler
         let content = bestAttempt

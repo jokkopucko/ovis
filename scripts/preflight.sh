@@ -40,8 +40,6 @@ else
   echo "Install it (https://bun.sh), start herdr from a shell where 'bun --version' works, then install again."
   fail=1
 fi
-# Node is optional: terminals run on the Rust PTY host, which the next build step installs. An old
-# Node is only reported, since the server uses Node only when the Rust host cannot run.
 if command -v node >/dev/null 2>&1; then
   major=$(node --version 2>/dev/null | sed 's/^\([^0-9]*\)\([0-9]*\).*/\2/')
   if [ "${major:-0}" -lt 18 ]; then

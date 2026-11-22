@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +14,6 @@ import { closeOpenCodeNative, openCodeNativeState } from "./opencode-native.ts";
 import { forgetOpenCodeService, openCodeServiceOptions, OPENCODE_HTTP_TIMEOUT_MS } from "./opencode-service.ts";
 import { skillRowSelected } from "./opencode-skill-attach.ts";
 
-// Real herdr metadata + HTTP + an OpenCode store of the test's own, handed to the server (opencodeDb).
 const root = mkdtempSync(join(tmpdir(), "ovis-opencode-contract-"));
 const database = join(root, "opencode.db");
 const fakeOpencode = join(root, "bin", "opencode");
@@ -46,22 +45,21 @@ const turn = (prompt: string, answer: string, session = SESSION) => {
   add("idle", { time: { created: Date.now() }, outcome: "succeeded" }, session);
 };
 
-/** The pane's session, as herdr's OpenCode integration reports it (herdr-tui-session.js). */
 const reportSession = (session: string, targetPaneId = paneId) =>
   herdrRpc("pane.report_agent_session", { pane_id: targetPaneId, source: "herdr:opencode", agent: "opencode", agent_session_id: session, session_start_source: "select" });
 
-const startOpencode = async (session: string): Promise<string> => {
-  const created = await workspaceCreate({ cwd: root, label: `ovis-test-opencode-${session}` });
+const startOpencode = async (session: string | null, program = fakeOpencode): Promise<string> => {
+  const created = await workspaceCreate({ cwd: root, label: `ovis-test-opencode-${session ?? "home"}` });
   workspaces.push(created.workspace.workspace_id);
   const targetPaneId = created.root_pane.pane_id;
-  await herdrRpc("pane.send_text", { pane_id: targetPaneId, text: `${fakeOpencode}\n` });
+  await herdrRpc("pane.send_text", { pane_id: targetPaneId, text: `${program}\n` });
   for (const deadline = Date.now() + 10_000;;) {
     const pane = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === targetPaneId);
     if (pane?.agent === "opencode") break;
     if (Date.now() > deadline) throw new Error("test opencode did not start");
     await Bun.sleep(50);
   }
-  await reportSession(session, targetPaneId);
+  if (session !== null) await reportSession(session, targetPaneId);
   return targetPaneId;
 };
 
@@ -83,8 +81,6 @@ beforeAll(async () => {
   mkdirSync(join(root, "bin"), { recursive: true });
   writeFileSync(fakeOpencode, "#!/bin/sh\nsleep 600\n");
   chmodSync(fakeOpencode, 0o755);
-  // Keep paging on its own pane as well as session: a timeout does not cancel
-  // HTTP reads, and the other tests keep writing and switch their pane's session.
   [paneId, pagingPaneId] = await Promise.all([startOpencode(SESSION), startOpencode(PAGING_SESSION)]);
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), opencodeDb: database });
 });
@@ -121,7 +117,6 @@ it("serves an OpenCode pane's session over HTTP, and an unchanged one as 304", a
   const etag = first.headers.get("etag")!;
   const again = await fetch(url("/api/pane/conversation", {}), { headers: { "if-none-match": etag } });
   expect(again.status).toBe(304);
-  // a step that streams in place is a new answer
   turn("Check again", "Answer two");
   const changed = await fetch(url("/api/pane/conversation", {}), { headers: { "if-none-match": etag } });
   expect(changed.status).toBe(200);
@@ -129,8 +124,6 @@ it("serves an OpenCode pane's session over HTTP, and an unchanged one as 304", a
 });
 
 it("pages a long session, and answers 409 for a cursor from another history", async () => {
-  // Batch fixture writes to reduce WAL frame volume, not per-commit fsyncs:
-  // this store uses WAL + synchronous=NORMAL.
   db.transaction(() => {
     turn("Check chat", "Answer one", PAGING_SESSION);
     turn("Check again", "Answer two", PAGING_SESSION);
@@ -222,6 +215,31 @@ it("keeps the terminal for a session the store does not hold", async () => {
   expect((await read()).source).toBe("opencode-transcript");
 });
 
+it("greets an OpenCode at its home screen, which reports no session until its first prompt, and then shows that session (#3600)", async () => {
+  // a stand-in that draws OpenCode 2.2.2's recorded home screen (narrow: it fits any pane) on a screen of its own, and
+  // after a line typed, the recorded screen of a session, as when a stored one is opened with nothing reported
+  const recorded = (name: string) => `${readFileSync(join(import.meta.dir, "fixtures", `${name}.txt`), "utf8").trim()}\n`.replaceAll("\n", "\r\n");
+  writeFileSync(join(root, "home-screen.txt"), recorded("opencode-home-2.2.2-narrow"));
+  writeFileSync(join(root, "session-screen.txt"), recorded("opencode-session-2.2.2"));
+  const homeOpencode = join(root, "home-bin", "opencode");
+  mkdirSync(join(root, "home-bin"), { recursive: true });
+  writeFileSync(homeOpencode, `#!/bin/sh\nprintf '\\033[?1049h\\033[H'\ncat '${join(root, "home-screen.txt")}'\nread line\nprintf '\\033[2J\\033[H'\ncat '${join(root, "session-screen.txt")}'\nsleep 600\n`);
+  chmodSync(homeOpencode, 0o755);
+  const drawn = (pane: string, value: string) => herdrRpc("pane.wait_for_output", {
+    pane_id: pane, source: "visible", match: { type: "substring", value }, timeout_ms: 10000,
+  }, undefined, 12000);
+  const target = await startOpencode(null, homeOpencode);
+  await drawn(target, "Ask anything");
+  const greeting = await read({}, target);
+  expect(greeting).toMatchObject({ source: "opencode-transcript", turns: [], cursor: null, screen: true, metadata: { model: null, reasoning_effort: null } });
+  expect(greeting.history_id).toStartWith(`unwritten:opencode:${target}:`);
+  await herdrRpc("pane.send_text", { pane_id: target, text: "\n" });
+  await drawn(target, "esc interrupt");
+  expect(await read({}, target)).toMatchObject({ source: "scrollback", turns: [] });
+  await reportSession(SESSION, target);
+  expect(await read({}, target)).toMatchObject({ source: "opencode-transcript", history_id: `opencode-${SESSION}` });
+});
+
 it("counts an OpenCode pane's running subagent, holds the turn that ends meanwhile as BG, and leaves its card when it ends", async () => {
   const PARENT = "ses_contractSubagents";
   const CHILD = "ses_contractChild01";
@@ -232,9 +250,7 @@ it("counts an OpenCode pane's running subagent, holds the turn that ends meanwhi
   db.query("INSERT INTO session_v2 (id, project_id, parent_id, slug, directory, title, version, agent, time_created, time_updated) VALUES (?, 'global', ?, 'child', ?, 'Scan the repo', '2.0.32', 'explore', ?, ?)").run(CHILD, PARENT, root, Date.now(), Date.now());
   add("user", { time: { created: Date.now() }, text: "You are a subagent spawned by another session.\nscan" }, CHILD);
   const target = await startOpencode(PARENT);
-  // a server of its own, whose OpenCode state holds no service: never the machine's own service.json
   const own = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state-subagents"), opencodeDb: database, openCodeStateDir: join(root, "no-service") });
-  // its status subscription is up before the turn is reported, or the turn's events go by unseen
   await own.statusReady;
   const base = `http://127.0.0.1:${own.port}`;
   const ws = new WebSocket(`ws://127.0.0.1:${own.port}/ws`);
@@ -242,7 +258,6 @@ it("counts an OpenCode pane's running subagent, holds the turn that ends meanwhi
   const waiters = new Set<() => void>();
   ws.addEventListener("message", (event) => { frames.push(JSON.parse(String(event.data)) as Record<string, unknown>); for (const wake of waiters) wake(); });
   await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
-  // only a frame received after `from` (the frame count before the step it should follow) answers
   const frame = (match: (frame: Record<string, unknown>) => boolean, what: string, from = 0) => new Promise<Record<string, unknown>>((resolve, reject) => {
     const timeout = setTimeout(() => { waiters.delete(check); reject(new Error(`no frame: ${what}`)); }, 15_000);
     const check = () => { const found = frames.slice(from).find((seen) => seen.type === "pane-status" && seen.pane_id === target && match(seen)); if (found) { clearTimeout(timeout); waiters.delete(check); resolve(found); } };
@@ -254,13 +269,10 @@ it("counts an OpenCode pane's running subagent, holds the turn that ends meanwhi
     const started = frames.length;
     await reportState("working");
     await frame((seen) => seen.agent_status === "working", "the turn at work", started);
-    // a snapshot names the pane and its session to the tracker, which counts the child from the store:
-    // this one, or one the server took on its own since the turn started, which said it first
     await fetch(`${base}/api/session`);
     await frame((seen) => seen.background_tasks === 1, "the running subagent counted", started);
     let from = frames.length;
     await reportState("idle");
-    // the turn ended while its subagent runs: BG, not DONE
     expect(await frame((seen) => seen.background_wait === true, "the turn held on its subagent", from)).toMatchObject({ background_tasks: 1 });
     const { snapshot } = await (await fetch(`${base}/api/session`)).json() as { snapshot: { panes: { pane_id: string; background_tasks?: number; background_wait?: true }[] } };
     expect(snapshot.panes.find((pane) => pane.pane_id === target)).toMatchObject({ background_tasks: 1, background_wait: true });
@@ -291,8 +303,7 @@ it("counts an OpenCode pane's running subagent, holds the turn that ends meanwhi
 
 /**
  * OpenCode v2's own service, faked in the pinned OpenAPI shapes (843a6c51): /api/info, a session,
- * /api/command and /api/skill for a directory, and /api/event. The pane runs a stand-in that draws
- * the recorded 2.0.32 autocomplete once `@effect` is typed and logs every byte it is sent.
+ * /api/command and /api/skill for a directory, and /api/event.
  */
 describe("OpenCode v2 native service", () => {
   const NATIVE_SESSION = "ses_contractNative01";
@@ -304,25 +315,17 @@ describe("OpenCode v2 native service", () => {
   let fake: ReturnType<typeof Bun.serve>;
   let nativePane: string;
   let connected = Promise.withResolvers<void>();
-  /** runs once, inside the next session lookup, before the fake answers it */
   let duringLookup: (() => Promise<void>) | undefined;
-  /** every chunk the stand-in reads from its terminal, reported by the stand-in itself with when it read it (ms since the epoch) */
   let onTyped: ((chunk: string, start: number, at: number) => void) | undefined;
   const typedWaiters = new Set<() => void>();
-  /** while set, session lookups get no answer (the bridge's own request timeout ends them) */
   let withholdLookups = false;
-  /** while set, every request but /api/info gets no answer: a service that hangs */
   let hangAll = false;
   let onHungRequest: (() => void) | undefined;
-  /** other sessions the fake service holds besides NATIVE_SESSION */
   const extraSessions = new Set<string>();
   const withheld = new Set<() => void>();
-  /** how /api/event answers: normally, never (held), 404 or 503 */
   let eventMode: "ok" | "slow" | "absent" | "error" = "ok";
-  /** when the fake received each request of the bridge's (not the stand-in's reports), in ms since the epoch */
   const requestsAt: number[] = [];
   const typed = (): string => existsSync(typedLog) ? readFileSync(typedLog, "latin1") : "";
-  /** each event 10 ms after the last, so the evidence names exactly which event settled a send */
   let clock = 0;
   const push = (type: string, data: Record<string, unknown>): number => {
     clock = Math.max(clock + 10, Date.now());
@@ -334,7 +337,6 @@ describe("OpenCode v2 native service", () => {
     const context = await paneContext(nativePane);
     return mergeCatalogSources("opencode", context.pane, nativeRoot, base);
   };
-  /** the composer's own catalog request, which a send is classified against (it never discovers) */
   const browserCatalog = async (): Promise<void> => {
     const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/commands?pane_id=${encodeURIComponent(nativePane)}`);
     const { commands } = await response.json() as { commands: SlashCommand[] };
@@ -467,9 +469,7 @@ process.stdin.on("data", (chunk) => {
     });
     await new Promise((resolve) => ws.addEventListener("open", resolve, { once: true }));
     try {
-      // the send opens its own event stream (the test before closed the last one); events go to it
       connected = Promise.withResolvers<void>();
-      // no catalog request first: the cold send derives the skill from the verified service itself
       ws.send(JSON.stringify({ type: "submit", id: 1, pane_id: nativePane, text: "@effect apply it", payload: "@effect apply it" }));
       expect(await result.promise).toMatchObject({ ok: true });
       for (const deadline = Date.now() + 5_000; !(existsSync(typedLog) && typed().endsWith("\r"));) {
@@ -481,8 +481,7 @@ process.stdin.on("data", (chunk) => {
       expect((await outcomes()).map((outcome) => outcome.state)).toEqual(["accepted"]);
       await connected.promise;
       // the real 2.0.32 sequence (no session.skill.activated for an attached skill): the message is enqueued with its
-      // skills, delivered, and an execution succeeds. Another session's turn, a message without the skill, another
-      // text, and a turn that ends before our message was delivered settle nothing.
+      // skills, delivered, and an execution succeeds.
       const item = (text: string, skills: string[]) => ({ type: "user", payload: { text, skills: skills.map((id) => ({ id, name: id, mention: { start: 0, end: id.length + 1, text: `@${id}` }, text: "Use Effect." })) }, delivery: "steer" });
       push("session.inbox.enqueued", { sessionID: "ses_other", inboxID: "msg_a", item: item("@effect apply it", ["effect"]) });
       push("session.inbox.delivered", { sessionID: "ses_other", inboxID: "msg_a" });
@@ -491,7 +490,6 @@ process.stdin.on("data", (chunk) => {
       push("session.inbox.enqueued", { sessionID: NATIVE_SESSION, inboxID: "msg_c", item: item("something else", ["effect"]) });
       push("session.inbox.delivered", { sessionID: NATIVE_SESSION, inboxID: "msg_b" });
       push("session.inbox.delivered", { sessionID: NATIVE_SESSION, inboxID: "msg_c" });
-      // not this send's message either: a skill set that only contains ours, and text that differs only in spacing
       push("session.inbox.enqueued", { sessionID: NATIVE_SESSION, inboxID: "msg_e", item: item("@effect apply it", ["effect", "other"]) });
       push("session.inbox.delivered", { sessionID: NATIVE_SESSION, inboxID: "msg_e" });
       push("session.execution.succeeded", { sessionID: NATIVE_SESSION });
@@ -544,11 +542,9 @@ process.stdin.on("data", (chunk) => {
       await herdrRpc("pane.report_agent", { pane_id: nativePane, source: "herdr:opencode", agent: "opencode", agent_session_id: NATIVE_SESSION, state: "idle" });
       const delivered = await frame((message) => message.type === "pending-messages" && Array.isArray(message.removed) && message.removed.length > 0);
       expect(JSON.stringify(delivered.removed)).not.toContain("error");
-      // The receipt acknowledges the PTY write, not the stand-in reading its Enter.
       expect(await completed).toBe("@effect\t\u001b[200~apply it\u001b[201~\r");
     } finally { ws.close(); }
   });
-  // #511: a queued message for an agent alone is one guarded paste, never typed key by key through the autocomplete
   it("pastes a queued agent-only message whole when the pane is ready, its @effect left as text", async () => {
     const { ws, frame } = await socket();
     const before = typed().length;
@@ -572,6 +568,10 @@ process.stdin.on("data", (chunk) => {
     try {
       ws.send(JSON.stringify({ type: "attach", pane_id: nativePane, cols: 80, rows: 24 }));
       await frame((message) => message.type === "pty-data" && message.pane_id === nativePane);
+      // the turn the queue's last Enter started (the test before) is seen to start and end: a message sent to the queue
+      // while that wait is open waits behind it (#4118)
+      await reportState("working");
+      await untilStatus("working");
       await reportState("idle");
       // after an earlier turn herdr reads an idle report as done: either is a pane at rest
       await untilStatus("idle", "done");
@@ -582,7 +582,6 @@ process.stdin.on("data", (chunk) => {
       expect(await completed).toBe("\u001b[200~@effect apply it\u001b[201~\r");
     } finally { ws.close(); }
   });
-/** A socket recording every frame; `frame` resolves on the first one (already seen or next) matching. */
   async function socket() {
     const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
     const frames: Record<string, unknown>[] = [];
@@ -604,7 +603,6 @@ process.stdin.on("data", (chunk) => {
       await Bun.sleep(50);
     }
   };
-  /** herdr reports another OpenCode session for the pane while the bridge waits on the service */
   const switchSessionDuringLookup = () => {
     const switched = Promise.withResolvers<void>();
     duringLookup = async () => { await reportSession("ses_contractReplacement", nativePane); switched.resolve(); };
@@ -644,7 +642,6 @@ process.stdin.on("data", (chunk) => {
       const from = frames.length;
       await reportState("idle");
       await switched;
-      // the delivery ends unsent: held for review or removed, never typed
       const ended = await frame((message) => message.type === "pending-messages"
         && ((Array.isArray(message.removed) && message.removed.length > 0)
           || (Array.isArray(message.messages) && (message.messages as { state: string }[]).some((item) => item.state === "held" || item.state === "uncertain"))), from);
@@ -661,8 +658,6 @@ process.stdin.on("data", (chunk) => {
     const { ws, frame } = await socket();
     let settled = 0;
     let started = false;
-    // the barrier: once the first key reaches the terminal, no session lookup is answered, and the Enter byte
-    // itself releases the send's whole real 2.0.32 event sequence
     onTyped = (chunk) => {
       if (!started) { started = true; withholdLookups = true; }
       if (!chunk.includes("\r") || settled) return;
@@ -718,8 +713,6 @@ process.stdin.on("data", (chunk) => {
    * The stand-in redraws only as it is typed to, so a test that left @effect's row selected (as Tab leaving the skill
    * unconfirmed does) leaves it on screen for the next. A send reads its autocomplete and the agent named beside it
    * from the first screen showing that row, which could then be the old one, not the one its own @effect draws.
-   * This draws the prompt with the autocomplete closed: once the stand-in has read its Ctrl-L (typed.log ends with it,
-   * written before the redraw) and herdr shows no selected row, every screen after it is the next send's own.
    */
   const closedPrompt = async (): Promise<void> => {
     await herdrRpc("pane.send_text", { pane_id: nativePane, text: "\u000c" });
@@ -823,7 +816,6 @@ process.stdin.on("data", (chunk) => {
     const { ws, frame } = await socket();
     const before = typed().length;
     try {
-      // the composer fetched the catalog for the old session and does not refetch on a session change
       await browserCatalog();
       extraSessions.add("ses_contractNative02");
       await reportSession("ses_contractNative02", nativePane);
@@ -850,7 +842,6 @@ process.stdin.on("data", (chunk) => {
     }
     extraSessions.add("ses_contractFresh01");
     await reportSession("ses_contractFresh01", freshPane);
-    // a bridge started after the tab: nothing remembered for this pane
     const fresh = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state-fresh") });
     const ws = new WebSocket(`ws://127.0.0.1:${fresh.port}/ws`);
     const result = Promise.withResolvers<Record<string, unknown>>();
@@ -886,7 +877,6 @@ process.stdin.on("data", (chunk) => {
       deadline.reject(new Error("OpenCode attach budget or hung request was not observed"));
     }, 10_000);
     const ready = Promise.race([Promise.all([budget.promise, hung.promise]), deadline.promise]);
-    // Hold only the aggregate attach timer; all delivery and test deadlines remain real.
     const timers = spyOn(globalThis, "setTimeout").mockImplementation(Object.assign((...[callback, delay, ...args]: Parameters<typeof setTimeout>) => {
       if (delay !== CATALOG_SOURCE_BUDGET_MS) return realSetTimeout(callback, delay, ...args);
       const handle = realSetTimeout(callback, delay, ...args);
@@ -894,7 +884,6 @@ process.stdin.on("data", (chunk) => {
       budget.resolve(() => { expired = true; callback(...args); });
       return handle;
     }, realSetTimeout));
-    // The individual HTTP timeout must not rescue a missing aggregate budget.
     const httpTimeout = spyOn(AbortSignal, "timeout").mockImplementation((ms) =>
       ms === OPENCODE_HTTP_TIMEOUT_MS ? new AbortController().signal : realTimeout(ms));
     try {
@@ -904,7 +893,6 @@ process.stdin.on("data", (chunk) => {
       await reportSession("ses_contractHang01", nativePane);
       hangAll = true;
       onHungRequest = () => hung.resolve();
-      // Reports can arrive out of order; only this send's first byte counts.
       onTyped = (_chunk, start) => { if (start === before) first.resolve(expired); };
       ws.send(JSON.stringify({ type: "submit", id: 9, pane_id: nativePane, text: "@effect while hung", payload: "@effect while hung" }));
       const [expire] = await ready;
@@ -936,7 +924,6 @@ process.stdin.on("data", (chunk) => {
   });
 
   it("reads only its own server's OpenCode state, never the default one, for the list, a cold send and its watch", async () => {
-    // the default location (what a server without its own state would read) names a service that counts every request
     let defaultAsked = 0;
     const decoy = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { defaultAsked++; return Response.json({ version: "2.0.32", pid: process.pid }); } });
     const xdg = mkdtempSync(join(tmpdir(), "ovis-opencode-default-state-"));
@@ -961,7 +948,6 @@ process.stdin.on("data", (chunk) => {
       await reportSession("ses_contractOwnState01", nativePane);
       const listed = await (await fetch(`http://127.0.0.1:${own.port}/api/pane/commands?pane_id=${encodeURIComponent(nativePane)}`)).json() as { commands: SlashCommand[] };
       expect(listed.commands.find((row) => row.name === "shipit")?.provenance?.transport).toBe("native");
-      // a new session after the list: the send is cold again and looks the service up itself
       extraSessions.add("ses_contractOwnState02");
       await reportSession("ses_contractOwnState02", nativePane);
       ws.send(JSON.stringify({ type: "submit", id: 11, pane_id: nativePane, text: "@effect from own state", payload: "@effect from own state" }));
@@ -1004,43 +990,48 @@ process.stdin.on("data", (chunk) => {
     }
   });
 
-  it("answers the catalog and a cold @ send within budget while opencode.json is a FIFO", async () => {
+  it("answers the catalog and a cold @ send without opening an opencode.json that is a FIFO", async () => {
     const fifo = join(nativeRoot, "opencode.json");
     expect(await Bun.spawn(["mkfifo", fifo]).exited).toBe(0);
-    // a writer only after 5 s: a blocking read of the FIFO would hold the whole server until then
-    const writer = Bun.spawn(["sh", "-c", `sleep 5; printf '{}' > '${fifo}'`]);
+    // A writer waits at the FIFO from the start: its open returns only once something opens the FIFO to read,
+    // and that first reader is handed its text. A server that read opencode.json would be handed it at once,
+    // so nothing here waits on the FIFO and no time is counted: who got the text is the proof.
+    const text = crypto.randomUUID();
+    const writer = Bun.spawn(["sh", "-c", 'echo ready; printf %s "$2" > "$1"', "sh", fifo, text], { stdout: "pipe" });
+    expect(new TextDecoder().decode((await writer.stdout.getReader().read()).value)).toBe("ready\n");
+    for (const until = Date.now() + 5_000; existsSync(`/proc/${writer.pid}/stat`);) {
+      const stat = readFileSync(`/proc/${writer.pid}/stat`, "utf8");
+      if (stat.charAt(stat.lastIndexOf(") ") + 2) === "S") break;
+      if (Date.now() > until) throw new Error("the FIFO's writer never waited in its open");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     const { ws, frame } = await socket();
     const before = typed().length;
-    const first = Promise.withResolvers<number>();
-    let sentAt = 0;
     try {
-      const started = performance.now();
       const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/commands?pane_id=${encodeURIComponent(nativePane)}`);
       expect(response.status).toBe(200);
-      const routeMs = performance.now() - started;
-      // a cold send to a hung service must not scan opencode.json or invent a skill record
       closeOpenCodeNative();
       forgetOpenCodeService();
       extraSessions.add("ses_contractFifo01");
       await reportSession("ses_contractFifo01", nativePane);
       hangAll = true;
-      onTyped = () => first.resolve(performance.now() - sentAt);
-      sentAt = performance.now();
       ws.send(JSON.stringify({ type: "submit", id: 10, pane_id: nativePane, text: "@effect past the fifo", payload: "@effect past the fifo" }));
       expect(await frame((message) => message.type === "submit-result" && message.id === 10)).toMatchObject({ ok: true });
-      const gap = await first.promise;
-      console.log(`fifo: catalog ${Math.round(routeMs)} ms, first key ${Math.round(gap)} ms`);
-      // under the 5 s writer, so a blocked thread still fails; above the 1.5 s provider budget, so a slow host does not
-      expect(routeMs).toBeLessThan(4_000);
-      expect(gap).toBeLessThan(2_000);
       expect(await typedSince(before)).toContain("@effect past the fifo");
       const outcome = (await outcomesAt(server.port, nativePane)).find((entry) => entry.text === "@effect past the fifo");
       expect(outcome).toBeUndefined();
+      // The first to open the FIFO is this read (O_NONBLOCK: it waits for no writer): the writer was still
+      // waiting, and its text comes here. After any earlier open the writer has left and there is none.
+      const fd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        await writer.exited;
+        const handed = Buffer.alloc(text.length + 1);
+        expect(handed.subarray(0, readSync(fd, handed)).toString()).toBe(text);
+      } finally { closeSync(fd); }
     } finally {
       writer.kill();
       rmSync(fifo, { force: true });
       hangAll = false;
-      onTyped = undefined;
       for (const release of withheld) release();
       withheld.clear();
       ws.close();
@@ -1059,7 +1050,6 @@ process.stdin.on("data", (chunk) => {
       await frame((message) => message.type === "pty-data" && message.pane_id === nativePane);
       for (const mode of ["slow", "absent", "error"] as const) {
         for (const path of ["immediate", "queued", "prompt"] as const) {
-          // no stream open yet: a watcher that waited for one would wait here, before the first key
           closeOpenCodeNative();
           forgetOpenCodeService();
           eventMode = mode;
@@ -1071,10 +1061,6 @@ process.stdin.on("data", (chunk) => {
             await untilStatus("working");
           }
           const before = typed().length;
-          // Measured from the last thing this send itself waited on before its first byte: its submit, the
-          // queued send's idle report, or a request of the bridge's. A send that types before asking the
-          // service anything (a /command) was measured from the previous send's requests (#2143).
-          // Reports can arrive out of order; identify this send's first byte, regardless of chunking.
           let since = performance.timeOrigin + performance.now();
           requestsAt.length = 0;
           onTyped = (_chunk, start, at) => {
@@ -1089,7 +1075,6 @@ process.stdin.on("data", (chunk) => {
             await reportState("idle");
           }
           gaps[`${path}/${mode}`] = Math.round(await typedFirst.promise);
-          // Keep this delivery's observer and service alive until its whole send has reached the TUI.
           await completed;
           if (path === "queued") await frame((message) => message.type === "pending-messages"
             && Array.isArray(message.removed) && message.removed.some((item) => item.id === (answer.pending as { id: string }).id));
@@ -1116,7 +1101,7 @@ process.stdin.on("data", (chunk) => {
     const sleeper = join(lifecycleRoot, "bin", "opencode");
     writeFileSync(sleeper, "#!/bin/sh\nsleep 600\n");
     chmodSync(sleeper, 0o755);
-    // An OpenCode that leaves when the test says so. A ctrl+c typed into its pane is not sure to end it:
+    // A ctrl+c typed into its pane is not sure to end it:
     // in a loaded CI run herdr never saw the stand-in go, and the pane stayed OpenCode until it closed.
     mkdirSync(join(lifecycleRoot, "leaving"), { recursive: true });
     const leaver = join(lifecycleRoot, "leaving", "opencode");
@@ -1127,7 +1112,6 @@ process.stdin.on("data", (chunk) => {
     let opened = Promise.withResolvers<void>();
     let closed = Promise.withResolvers<void>();
     const sessions = new Set(["ses_lifecycleEnd", "ses_lifecycleAgent", "ses_lifecycleHandover"]);
-    // idleTimeout 0: a quiet event stream is closed only by the bridge, never by the fake itself
     const second = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: lifecycleRoot } });
@@ -1173,7 +1157,6 @@ process.stdin.on("data", (chunk) => {
     const started: string[] = [];
     let leaving: ReturnType<typeof Bun.spawn> | undefined;
     try {
-      // pane end: herdr's pane.ended reaches the collector's onPaneEnded
       const ending = await startPane("ses_lifecycleEnd");
       await verify(ending.paneId);
       await within(opened.promise, "the stream opening for the first pane");
@@ -1182,7 +1165,6 @@ process.stdin.on("data", (chunk) => {
       await within(closed.promise, "the stream closing after the last verified pane ended");
       expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
 
-      // agent change: OpenCode leaves the pane, so its status names no opencode agent any more
       opened = Promise.withResolvers<void>();
       closed = Promise.withResolvers<void>();
       const changing = await startPane("ses_lifecycleAgent", leaver);
@@ -1193,8 +1175,6 @@ process.stdin.on("data", (chunk) => {
       await within(closed.promise, "the stream closing after the last verified pane stopped being OpenCode");
       expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
 
-      // a replacement server, started before the old one stops (the last server's stop releases every pane):
-      // its collector learns the pane verified before it started, and ends it
       opened = Promise.withResolvers<void>();
       closed = Promise.withResolvers<void>();
       const handed = await startPane("ses_lifecycleHandover");
@@ -1209,7 +1189,6 @@ process.stdin.on("data", (chunk) => {
       await within(closed.promise, "the stream closing after the replacement collector saw the pane close");
       expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
     } finally {
-      // the ones the test closed already answer with an error
       for (const workspaceId of started) await workspaceClose(workspaceId).catch(() => {});
       leaving?.kill();
       rmSync(leave, { force: true });

@@ -19,7 +19,6 @@
 .usage-hub-login .input { width: 100%; min-width: 0; }
 .usage-hub-login a { color: var(--accent); }
 
-/* the in-browser sign-in (UsageSignInDialog): the page to open, Codex's code, Claude's code box */
 .usage-sign-in-steps { align-items: flex-start; }
 .usage-sign-in-open { display: inline-flex; align-items: center; gap: var(--space-2); text-decoration: none; }
 .usage-sign-in-open svg, .usage-sign-in-footer .btn svg, .usage-sign-in-code .btn svg { width: 16px; height: 16px; }

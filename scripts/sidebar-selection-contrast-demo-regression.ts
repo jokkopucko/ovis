@@ -20,6 +20,7 @@ import { chromium, type Browser, type Locator, type Page } from "playwright-core
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { SUPPORTED_ENTRIES } from "../src/lib/themes.ts";
+import { serveDemo } from "./demo-server.ts";
 
 type Mode = "dark" | "light";
 type RowKind = "workspace" | "agent";
@@ -30,14 +31,12 @@ const evidence = process.env["UI_EVIDENCE_DIR"];
 const only = process.env["SIDEBAR_SELECTION_CASE"];
 const CUE_MIN = 3;
 const TEXT_MIN = 4.5;
-// the row as a pointer and the keyboard reach it, and the box its selection paints
 const ROW: Record<RowKind, { painted: string; target: string }> = {
   workspace: { painted: ".workspace-group.is-selected > .workspace-header", target: ".workspace-group.is-selected > .workspace-header > .workspace-select" },
   agent: { painted: ".agents-sidebar .agent-item.is-selected", target: ".agents-sidebar .agent-item.is-selected > .agent-row" },
 };
 
 interface Measurement {
-  /** the strongest persistent cue: the fill against the panel, or a stroke against both the fill and the panel */
   cue: number;
   fill: number;
   stroke: { color: string; widthPx: number; exposedPx: number; againstFill: number; againstPanel: number } | null;
@@ -45,13 +44,8 @@ interface Measurement {
   outline: boolean;
 }
 
-/** a stroke counts only where at least this much of it is drawn, clear of a focus ring over it */
 const STROKE_MIN_PX = 2;
 
-/**
- * Everything read in the page: computed colors composited over what is really behind them, through the opacity
- * of every ancestor, WCAG 2 ratios. `target` is the element the keyboard focuses, whose ring may cover the stroke.
- */
 function measure(painted: Element, { target: targetSelector, strokeMinPx }: { target: string; strokeMinPx: number }): Measurement {
   type Color = [number, number, number, number];
   const parse = (value: string): Color => {
@@ -72,14 +66,11 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
     const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
     return Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
   };
-  /** the backgrounds from the page down to an element, each over the last, before any opacity */
   const backdrop = (element: Element | null): Color => {
     const chain: Element[] = [];
     for (let node = element; node; node = node.parentElement) chain.unshift(node);
     return chain.reduce<Color>((under, node) => over(parse(getComputedStyle(node).backgroundColor), under), [255, 255, 255, 1]);
   };
-  /** a color painted in `element` as the screen shows it: each translucent ancestor (itself included), innermost
-   *  first, blends what it painted with what is behind it (a dimmed offline PC's group, a faded row) */
   const seen = (color: Color, element: Element | null): Color => {
     let shown = color;
     for (let node = element; node; node = node.parentElement) {
@@ -93,7 +84,6 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
   const fill = seen(rawFill, painted);
   const style = getComputedStyle(painted);
   const box = painted.getBoundingClientRect();
-  // a leading stroke: an inset shadow pushed in from the left edge, or a left border, and the band it draws
   const strokes: { color: Color; from: number; to: number }[] = [];
   for (const layer of style.boxShadow === "none" ? [] : style.boxShadow.split(/,(?![^(]*\))/)) {
     if (!/\binset\b/.test(layer)) continue;
@@ -106,7 +96,6 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
   }
   const border = parseFloat(style.borderLeftWidth);
   if (border > 0 && style.borderLeftStyle !== "none") strokes.push({ color: seen(over(parse(style.borderLeftColor), rawFill), painted), from: box.left, to: box.left + border });
-  // a pseudo-element's leading border (laid out inside the row, from its left offset)
   for (const pseudo of ["::before", "::after"]) {
     const drawn = getComputedStyle(painted, pseudo);
     const width = parseFloat(drawn.borderLeftWidth);
@@ -114,7 +103,6 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
     const left = box.left + border + (parseFloat(drawn.left) || 0);
     strokes.push({ color: seen(over(parse(drawn.borderLeftColor), rawFill), painted), from: left, to: left + width });
   }
-  // a scrolling or clipping ancestor cuts off whatever lies outside its padding box
   let clipFrom = -Infinity, clipTo = Infinity;
   for (let node = painted.parentElement; node; node = node.parentElement) {
     const css = getComputedStyle(node);
@@ -123,7 +111,6 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
     clipFrom = Math.max(clipFrom, rect.left + parseFloat(css.borderLeftWidth));
     clipTo = Math.min(clipTo, rect.right - parseFloat(css.borderRightWidth));
   }
-  // the focus ring (an outline, inside when its offset is negative) covers this band of the leading edge
   const covered: [number, number][] = [];
   for (const element of [painted, document.querySelector(targetSelector)]) {
     if (!element) continue;
@@ -144,7 +131,6 @@ function measure(painted: Element, { target: targetSelector, strokeMinPx }: { ta
     .filter((stroke) => stroke.exposedPx >= strokeMinPx)
     .sort((a, b) => Math.min(b.againstFill, b.againstPanel) - Math.min(a.againstFill, a.againstPanel))[0] ?? null;
   const fillCue = ratio(fill, panel);
-  // every text the row shows: an element with a text node of its own, drawn, its color over what is behind it
   const text: Measurement["text"] = [];
   for (const element of [painted, ...painted.querySelectorAll("*")]) {
     const own = [...element.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent ?? "").join("").trim();
@@ -169,7 +155,6 @@ async function settle(page: Page): Promise<void> {
   });
 }
 
-/** The focus and the pointer leave the sidebar: the selection alone marks the row. */
 async function away(page: Page): Promise<void> {
   const main = await page.locator("main, .main, .pane-area").first().boundingBox();
   await page.mouse.move(main ? main.x + main.width / 2 : 1200, main ? main.y + main.height / 2 : 450);
@@ -216,7 +201,6 @@ async function open(browser: Browser, url: string, mode: Mode, phone: boolean): 
 }
 
 const usePalette = (page: Page, id: string, mode: Mode) => page.evaluate(({ id, mode }) => {
-  // as lib/themeBoot.ts applyThemeEntry sets them
   const root = document.documentElement;
   root.dataset["theme"] = mode;
   root.dataset["palette"] = id;
@@ -235,7 +219,6 @@ async function measureMode(browser: Browser, url: string, mode: Mode): Promise<v
       for (const kind of ["workspace", "agent"] as const) {
         for (const state of ["selected", "selected+hover", "selected+focus"] as const) {
           const painted = await enter(page, kind, state);
-          // any shown width counts here (measure rounds it to 0.01px): a theme draws no leading stroke at all
           const measured = await painted.evaluate(measure, { target: ROW[kind].target, strokeMinPx: 0.01 });
           const entry = `${id}/${mode}`;
           rows.push({ entry, row: kind, state, ...measured });
@@ -244,7 +227,6 @@ async function measureMode(browser: Browser, url: string, mode: Mode): Promise<v
           const stroke = measured.stroke ? `stroke ${measured.stroke.exposedPx}/${measured.stroke.widthPx}px shown` : "no stroke";
           console.log(`CONTRAST ${entry} ${kind} ${state}: fill ${measured.fill}:1 on the panel, ${stroke}, text ${weakest.contrast}:1 ("${weakest.text}")`);
           if (measured.stroke) failures.push(`${entry} ${kind} ${state}: a leading stroke is drawn (${measured.stroke.exposedPx}px shown in ${measured.stroke.color}); the fill alone marks the selection`);
-          // nothing but the fill is painted on the row: no shadow (blurred or not), no border, no drawn pseudo-element
           const extra = await painted.evaluate((element) => {
             const css = getComputedStyle(element);
             const found: string[] = [];
@@ -295,7 +277,6 @@ async function measureForced(browser: Browser, url: string, mode: Mode): Promise
   }
 }
 
-/** The Codex theme (the default) as a person sees it: the sidebar at 1280 and in a phone's drawer at 390. */
 async function screenshots(browser: Browser, url: string, dir: string): Promise<void> {
   for (const phone of [false, true]) for (const mode of ["dark", "light"] as const) {
     const { page, close } = await open(browser, url, mode, phone);
@@ -309,7 +290,6 @@ async function screenshots(browser: Browser, url: string, dir: string): Promise<
         await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
         await page.locator(".sidebar.is-open").waitFor();
       }
-      // a phone's drawer folds the Agents list by default: open it so the shot shows a selected agent row too
       const agentsToggle = page.locator(".agent-section-toggle");
       if (await agentsToggle.getAttribute("aria-expanded") === "false") {
         await agentsToggle.click();
@@ -330,14 +310,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {

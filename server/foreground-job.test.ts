@@ -1,10 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { jobProcessesBelow } from "./foreground-job.ts";
 
-/**
- * A shell with one child whose argv[0] is `claude`, which prints its pid once it runs under that name
- * and waits on the test's stdin. `ownGroup`: the shell's job control puts the child in a group of its own.
- */
+/** `ownGroup`: the shell's job control puts the child in a group of its own. */
 async function job(ownGroup: boolean): Promise<{ leader: number; child: number; stop: () => void }> {
   const child = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";
   const shell = Bun.spawn(["bash", "-c", `${ownGroup ? "set -m; " : ""}exec 3<&0; ${child} & wait`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
@@ -16,7 +13,7 @@ async function job(ownGroup: boolean): Promise<{ leader: number; child: number; 
     text += new TextDecoder().decode(value);
   }
   const pid = Number(text.trim());
-  return { leader: shell.pid, child: pid, stop: () => { for (const each of [pid, shell.pid]) { try { process.kill(each, "SIGKILL"); } catch { /* gone */ } } } };
+  return { leader: shell.pid, child: pid, stop: () => { for (const each of [pid, shell.pid]) { try { process.kill(each, "SIGKILL"); } catch { } } } };
 }
 
 // the kernel itself, on the platforms whose terminals have a foreground job (#3009)

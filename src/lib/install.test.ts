@@ -117,7 +117,6 @@ describe("related app refresh", () => {
 });
 
 describe("Ovis for Mac", () => {
-  // app/mac/Sources/OvisMac/WebPage.swift: WebPageController.userAgentSuffix
   const MAC_APP = `${IPAD} OvisMac/1.0.0`;
 
   it("counts its window as the app installed, and Safari on the same Mac as a tab", async () => {
@@ -163,7 +162,6 @@ describe("installHelp", () => {
 });
 
 describe("isAppWindow", () => {
-  // the window this page runs in, not whether the app is installed somewhere on the device
   const inWindow = (modes: string[], standalone = false): boolean => {
     const saved = { window: globalThis.window, navigator: globalThis.navigator };
     Object.assign(globalThis, {

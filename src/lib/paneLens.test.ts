@@ -18,14 +18,12 @@ describe("PaneLenses", () => {
   it("keeps a shell's terminal when an agent starts in it, with the default view on chat", () => {
     const lenses = new PaneLenses("chat");
     expect(lenses.of("local/w1:p2", false, false)).toBe("terminal");
-    // claude started in the split's shell: the pane in use stays on its terminal
     expect(lenses.of("local/w1:p2", true, false)).toBe("terminal");
   });
 
   it("answers a press without keeping its lens: a pane picked later still settles on its own", () => {
     const lenses = new PaneLenses("auto");
     expect(lenses.peek("local/w1:p4", true, true)).toBe("chat");
-    // the agent exited before anyone picked the pane: its first pick settles the shell's terminal
     expect(lenses.of("local/w1:p4", false, true)).toBe("terminal");
     expect(lenses.peek("local/w1:p4", true, true)).toBe("terminal");
   });

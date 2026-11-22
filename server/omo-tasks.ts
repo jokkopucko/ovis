@@ -31,7 +31,6 @@ const text = (value: unknown): string | null => typeof value === "string" && val
 const count = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 const time = (value: unknown): number => typeof value === "string" ? Date.parse(value) || 0 : 0;
 
-/** What the list shows of a record, its host process told apart when asked: it can die any time. */
 interface Kept { parent: unknown; hostPid: number | null; task: OmoTask | null }
 const taskCache = new Map<string, { key: string; kept: Kept }>();
 
@@ -62,13 +61,13 @@ function task(record: Row): OmoTask | null {
   };
 }
 
-/** Running tasks first (oldest first), then up to ten that ended in the last day (newest first). */
 export function omoTasks(cwd: string, sessionId: string, alive: (pid: number) => boolean, now = Date.now(), options: OmoStateOptions = {}): OmoTask[] {
   let dir: string;
   let names: string[];
   try { dir = join(omoStateDir(cwd, options), "tasks"); names = readdirSync(dir); } catch { return []; }
   const running: OmoTask[] = [];
   const ended: OmoTask[] = [];
+  // `st_` ids grow with time
   const newest = names.filter((name) => name.startsWith("st_") && name.endsWith(".json")).sort().reverse().slice(0, MAX_TASK_FILES);
   let budget = TASK_PARSE_BUDGET;
   for (const name of newest) {
@@ -83,10 +82,10 @@ export function omoTasks(cwd: string, sessionId: string, alive: (pid: number) =>
     } catch { continue; }
     let cached = taskCache.get(path);
     if (cached?.key !== key) {
-      if (budget < size) continue; // read on a later poll
+      if (budget < size) continue;
       budget -= size;
       let record: Row | null;
-      try { record = row(JSON.parse(readFileSync(path, "utf8"))); } catch { continue; } // being written
+      try { record = row(JSON.parse(readFileSync(path, "utf8"))); } catch { continue; }
       cached = { key, kept: record === null ? { parent: null, hostPid: null, task: null } : keep(record) };
       taskCache.set(path, cached);
     }
@@ -94,7 +93,6 @@ export function omoTasks(cwd: string, sessionId: string, alive: (pid: number) =>
     if (parent !== sessionId || kept === null) continue;
     // its host died with it running: lost, as OmO itself marks it, and ended when last heard of
     const found: OmoTask = kept.status === "running" && hostPid !== null && !alive(hostPid) ? { ...kept, status: "lost" } : kept.status === "running" ? { ...kept, ended_at: null } : kept;
-    // an ended task with no end time counts from its start; with neither, it is not known to be recent
     const at = time(found.ended_at) || time(found.started_at);
     if (found.status === "running") running.push(found);
     else if (at !== 0 && now - at <= RECENT_MS) ended.push(found);
@@ -123,7 +121,6 @@ const NODE_STATES = new Set(["pending", "scheduled", "running", "blocked", "comp
 const RUN_STATES = new Set(["pending", "running", "paused", "completed", "failed", "cancelled"]);
 const ACTIVE = new Set(["pending", "running", "paused"]);
 const PARENT = /"parentSessionId"\s*:\s*"([^"]+)"/;
-/** `run` undefined: another session's, not parsed */
 const runCache = new Map<string, { key: string; parent: string | null; run: OmoRun | null | undefined }>();
 
 function parseRun(record: Row): OmoRun | null {
@@ -162,7 +159,6 @@ function parseRun(record: Row): OmoRun | null {
   };
 }
 
-/** Workflows still going first (oldest first), then up to five that ended in the last day (newest first). */
 export function omoRuns(cwd: string, sessionId: string, now = Date.now(), options: OmoStateOptions = {}): OmoRun[] {
   let dir: string;
   let names: string[];
@@ -177,6 +173,7 @@ export function omoRuns(cwd: string, sessionId: string, now = Date.now(), option
       recent.push({ path, key: `${stat.mtimeMs}:${stat.size}`, size: stat.size, mtime: stat.mtimeMs });
     } catch { continue; }
   }
+  // `dag_` names are random
   recent.sort((a, b) => b.mtime - a.mtime);
   const active: OmoRun[] = [];
   const ended: OmoRun[] = [];
@@ -184,7 +181,7 @@ export function omoRuns(cwd: string, sessionId: string, now = Date.now(), option
   for (const file of recent) {
     let cached = runCache.get(file.path);
     if (cached?.key !== file.key || (cached.run === undefined && cached.parent === sessionId)) {
-      if (budget < file.size) continue; // read on a later poll
+      if (budget < file.size) continue;
       budget -= file.size;
       let content: string;
       try { content = readFileSync(file.path, "utf8"); } catch { continue; }
@@ -192,7 +189,7 @@ export function omoRuns(cwd: string, sessionId: string, now = Date.now(), option
       let run: OmoRun | null | undefined;
       if (parent !== sessionId) run = undefined;
       else {
-        try { const record = row(JSON.parse(content)); run = record === null ? null : parseRun(record); } catch { continue; } // being rewritten
+        try { const record = row(JSON.parse(content)); run = record === null ? null : parseRun(record); } catch { continue; }
       }
       cached = { key: file.key, parent, run };
       runCache.set(file.path, cached);

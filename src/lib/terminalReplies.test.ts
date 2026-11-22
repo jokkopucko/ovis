@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { userInputTracker } from "./terminalReplies.ts";
 
-/** Every onData of a real xterm, with whether the tracker counted it as someone's input. */
 function record(term: Terminal) {
   const tracker = userInputTracker(term);
   const seen: [string, boolean][] = [];

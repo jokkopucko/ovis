@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
@@ -7,7 +7,6 @@ import { omoSessionFolder } from "../omo.ts";
 import { processStartedAt } from "../process-start.ts";
 import { createSubmitText } from "./composer.ts";
 
-// The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
@@ -69,11 +68,6 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/**
- * A live omo holding a session: its store named in its environment and omo's holder record for its pid.
- * A child of its own, so the environment read from /proc is this one, not whatever ran the tests.
- */
-/** The first line a fixture prints: stdout can arrive in more than one chunk, so read up to the newline. */
 async function firstLine(stdout: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stdout.getReader();
   const decoder = new TextDecoder();
@@ -101,10 +95,8 @@ async function heldOmo(): Promise<{ pid: number; argv: string[]; cwd: string }> 
   return { pid: child.pid, argv: ["omo"], cwd: root };
 }
 
-// a script run from an omo-ai checkout: an omo-ai path in its argv, but no omo session of its own
 const OMO_AI_SCRIPT = { pid: 2147483645, argv: ["bun", "/checkout/omo-ai/scripts/helper.ts"], cwd: "" };
 
-// a Claude Code input box that holds a typed draft, as a detection read shows it
 const DRAFT_SCREEN = ["", "\u2500".repeat(60), "\u276f an unsent draft", "\u2500".repeat(60), "  \u23f5\u23f5 auto mode on"].join("\r\n");
 
 const submitter = () => createSubmitText({
@@ -112,7 +104,6 @@ const submitter = () => createSubmitText({
   SUBMIT_DEADLINE_MS: 20_000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 0, SUBMIT_DELAY_MS: 0,
 });
 
-// These need no /proc: they run on every platform
 it("keeps Claude's draft refusal when only a script from an omo-ai checkout runs beside Claude", async () => {
   screens["w:p1"] = DRAFT_SCREEN;
   panes["w:p1"] = { agent: "claude", process: [{ pid: 2147483646, argv: ["/usr/bin/claude"], cwd: root }, { ...OMO_AI_SCRIPT, cwd: root }] };
@@ -134,7 +125,6 @@ it("neither reads nor types into a Hermes pane once the device loses its access 
   expect(calls.some((call) => ["pane.read", "agent.prompt", "pane.send_text", "pane.send_keys"].includes(call.method))).toBeFalse();
 });
 
-// omo's identity is read from /proc (its environment) and its holder records
 describe.skipIf(process.platform !== "linux")("omo panes", () => {
 it("sends into a Claude-labelled omo pane without Claude's draft refusal, and still refuses a real Claude pane", async () => {
   screens["w:p1"] = DRAFT_SCREEN;
@@ -144,12 +134,32 @@ it("sends into a Claude-labelled omo pane without Claude's draft refusal, and st
   panes["w:p2"] = { agent: "claude", process: [{ pid: 2147483646, argv: ["/usr/bin/claude"], cwd: root }] };
   await submitter()("w:p1", "hello", "hello", Date.now());
   expect(calls.some((call) => call.method === "agent.prompt" && call.params.text === "hello")).toBeTrue();
-  expect(calls.some((call) => call.method === "pane.read")).toBeFalse();
+  expect(calls.filter((call) => call.method === "pane.read").map((call) => [call.params.source, call.params.format])).toEqual([["visible", "ansi"], ["detection", "text"]]);
   calls.length = 0;
   const refused = await submitter()("w:p2", "hello", "hello", Date.now()).catch((error: unknown) => error);
   expect(refused).toBeInstanceOf(HerdrError);
   expect((refused as HerdrError).code).toBe("input_draft");
   expect(calls.some((call) => call.method === "agent.prompt")).toBeFalse();
+});
+
+it("refuses a send to a Claude-labelled omo pane over text typed in OmO's box, typing nothing", async () => {
+  screens["w:p1"] = readFileSync(join(import.meta.dir, "../../src/lib/fixtures-input-rows/omo/draft-typed-119.ansi"), "utf8");
+  panes["w:p1"] = { agent: "claude", process: [await heldOmo()] };
+  const refused = await submitter()("w:p1", "hello", "hello", Date.now()).catch((error: unknown) => error);
+  expect((refused as HerdrError).code).toBe("input_draft");
+  expect(calls.some((call) => call.method === "agent.prompt")).toBeFalse();
+});
+
+it("refuses a send to a pi-labelled omo pane over text typed in OmO's box, typing nothing, and sends over its empty box", async () => {
+  const recorded = (file: string): string => readFileSync(join(import.meta.dir, "../../src/lib/fixtures-input-rows/omo", file), "utf8");
+  screens["w:p1"] = recorded("draft-typed-119.ansi");
+  panes["w:p1"] = { agent: "pi", process: [await heldOmo()] };
+  const refused = await submitter()("w:p1", "hello", "hello", Date.now()).catch((error: unknown) => error);
+  expect((refused as HerdrError).code).toBe("input_draft");
+  expect(calls.some((call) => call.method === "agent.prompt")).toBeFalse();
+  screens["w:p1"] = recorded("draft-empty-119.ansi");
+  await submitter()("w:p1", "hello", "hello", Date.now());
+  expect(calls.some((call) => call.method === "agent.prompt" && call.params.text === "hello")).toBeTrue();
 });
 
 it("pastes a multiline message into an unlabelled omo pane as one bracketed paste, and leaves another shell's bare", async () => {
@@ -158,7 +168,6 @@ it("pastes a multiline message into an unlabelled omo pane as one bracketed past
   panes["w:p3"] = { process: [{ pid: 2147483646, argv: ["/bin/bash"], cwd: root }, { ...OMO_AI_SCRIPT, cwd: root }] };
   const sent = async (paneId: string) => {
     calls.length = 0;
-    // the payload a composer shapes for a pane whose paste mode its browser never learned: bare lines joined by CR
     await submitter()(paneId, "a\nb", "a\rb", Date.now());
     return calls.find((call) => call.method === "pane.send_text")?.params.text;
   };

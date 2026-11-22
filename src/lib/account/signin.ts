@@ -6,7 +6,7 @@
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { AccountServiceError, requestToken } from "./service.ts";
-import type { AccountProvider, AccountSession, AccountStore, PendingSignIn } from "./store.ts";
+import type { AccountProvider, AccountSession, AccountStore, PendingPairing, PendingSignIn } from "./store.ts";
 
 /** A sign-in left at the provider's pages longer than this is not finished: its return is refused. */
 export const SIGN_IN_MS = 10 * 60_000;
@@ -27,14 +27,15 @@ function random(bytes: number): string {
 
 /**
  * Where to send the browser to sign in; the verifier and state wait in the store for the return.
- * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead.
+ * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead. `pairing` waits in the
+ * same record, so only this sign-in's return takes it, and it goes when the sign-in does.
  */
-export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string }): Promise<string> {
+export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; pairing?: PendingPairing }): Promise<string> {
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const now = (options.now ?? Date.now)();
-  const pending = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now };
+  const pending: PendingSignIn = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now, ...(options.pairing ? { pairing: options.pairing } : {}) };
   // one per state: another tab's sign-in stays, and only ones past their time are dropped
   await options.store.update("pending", (current) => ({
     ...Object.fromEntries(Object.entries(current ?? {}).filter(([, waiting]) => now - waiting.started_at <= SIGN_IN_MS)),
@@ -51,7 +52,6 @@ export async function beginSignIn(provider: AccountProvider, options: { store: A
 
 export type SignInReturn = { code: string; state: string } | { error: string; state: string };
 
-/** The sign-in a fragment (or a native callback's query) brings back, or null when it is not one. */
 export function signInReturn(params: string): SignInReturn | null {
   const fields = new URLSearchParams(params.replace(/^[#?]/, ""));
   const state = fields.get("state");
@@ -78,15 +78,25 @@ export interface FinishOptions {
   readonly bearer?: string;
 }
 
-export async function finishSignIn(returned: SignInReturn, options: FinishOptions): Promise<AccountSession> {
-  const now = options.now ?? Date.now;
+/** Takes the sign-in `state` names out of the store, in one transaction: a second take, or any other state, gets nothing. */
+export async function takePendingSignIn(store: AccountStore, state: string): Promise<PendingSignIn | undefined> {
   let pending: PendingSignIn | undefined;
-  await options.store.update("pending", (current) => {
-    pending = current?.[returned.state];
+  await store.update("pending", (current) => {
+    pending = current?.[state];
     if (pending === undefined) return current;
-    const { [returned.state]: _taken, ...rest } = current ?? {};
+    const { [state]: _taken, ...rest } = current ?? {};
     return rest;
   });
+  return pending;
+}
+
+export async function finishSignIn(returned: SignInReturn, options: FinishOptions): Promise<AccountSession> {
+  return redeemSignIn(await takePendingSignIn(options.store, returned.state), returned, options);
+}
+
+/** Trades the code of a sign-in already taken (takePendingSignIn) for a session; nothing of it is left in the store. */
+export async function redeemSignIn(pending: PendingSignIn | undefined, returned: SignInReturn, options: FinishOptions): Promise<AccountSession> {
+  const now = options.now ?? Date.now;
   if (pending === undefined) throw new SignInError("no_sign_in", "This sign-in was not started here, or has finished");
   if (now() - pending.started_at > SIGN_IN_MS) throw new SignInError("expired", "The sign-in took too long");
   if ("error" in returned && returned.error === "invalid_link") throw new SignInError("expired", "The link to add a sign-in method ran out");

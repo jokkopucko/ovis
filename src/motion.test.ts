@@ -5,7 +5,6 @@ import { join } from "node:path";
 const stylesheets = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
   entry.isDirectory() ? stylesheets(join(dir, entry.name)) : entry.name.endsWith(".css") ? [join(dir, entry.name)] : []);
 
-/** The endless `animation` declarations that are not stepped, whole and on one line. */
 function smoothEndless(css: string): string[] {
   return css.replace(/\/\*[\s\S]*?\*\//g, "").split(/[;{}]/).map((declaration) => declaration.replace(/\s+/g, " ").trim())
     .filter((declaration) => /^animation\s*:/.test(declaration) && /\binfinite\b/.test(declaration)
@@ -14,9 +13,7 @@ function smoothEndless(css: string): string[] {
 
 describe("motion", () => {
   // A smooth endless animation has the browser draw a frame at every display refresh while it
-  // runs (an agent works for minutes), which stutters a video playing next to the app. An endless
-  // one jumps between steps instead; only the bridge install's progress bar, shown while it
-  // installs, slides.
+  // runs (an agent works for minutes), which stutters a video playing next to the app.
   it("runs no endless animation smoothly, apart from the bridge install's progress bar", () => {
     expect(stylesheets(import.meta.dir).flatMap((file) =>
       smoothEndless(readFileSync(file, "utf8")).map((declaration) => `${file.slice(import.meta.dir.length + 1)}: ${declaration}`))).toEqual([]);

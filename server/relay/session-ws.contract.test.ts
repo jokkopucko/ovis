@@ -70,7 +70,6 @@ async function attach(link: Link, paneId: string, ack = true) {
   return { socket, get bytes() { return bytes; }, get frames() { return frames; }, get last() { return last; } };
 }
 
-/** Holds the core's next guarded key write before herdr is written to: the key is in flight, not yet typed. */
 function holdKeyWrite() {
   const entered = deferred<void>();
   const release = deferred<void>();
@@ -92,7 +91,6 @@ function holdKeyWrite() {
   };
 }
 
-/** Resolves once the pane's output from now on shows `text`. */
 function printed(socket: Awaited<ReturnType<typeof attach>>["socket"], paneId: string, text: string) {
   let output = "";
   const shown = deferred<void>();
@@ -102,7 +100,6 @@ function printed(socket: Awaited<ReturnType<typeof attach>>["socket"], paneId: s
   return bounded(shown.promise);
 }
 
-/** Clears the shell line, runs a marker through herdr and returns the pane's text once the marker printed. */
 async function textAfterMarker(socket: Awaited<ReturnType<typeof attach>>["socket"], paneId: string) {
   const done = printed(socket, paneId, "DONE");
   // ^U: the shell drops whatever is left on its line
@@ -243,7 +240,6 @@ it("drops a key not yet typed when the phone closes the socket, as a native sock
   const paneId = await pane(f);
   const terminal = await attach(link, paneId);
   const key = holdKeyWrite();
-  // the command line reaches the shell: only its Enter is in question
   const echoed = printed(terminal.socket, paneId, "ELAY_MAR");
   terminal.socket.send({ type: "input", pane_id: paneId, text: "printf 'R%sK\\n' ELAY_MAR" });
   terminal.socket.send({ type: "keys", pane_id: paneId, keys: ["Enter"] });
@@ -264,7 +260,6 @@ it("refuses a key not yet typed once observe is asked, as a native socket does",
   const paneId = await pane(f);
   const terminal = await attach(link, paneId);
   const key = holdKeyWrite();
-  // the command line reaches the shell: only its Enter is in question
   const echoed = printed(terminal.socket, paneId, "ELAY_MAR");
   terminal.socket.send({ type: "input", pane_id: paneId, text: "printf 'R%sK\\n' ELAY_MAR" });
   terminal.socket.send({ type: "keys", pane_id: paneId, keys: ["Enter"] });
@@ -326,7 +321,6 @@ it("drops queued frames on repeated carrier loss without resending them", async 
     await link.auth(device);
     const socket = link.openSocket();
     await socket.opened;
-    // Same turn: the mux has accepted the frame but its microtask sender has not submitted it.
     socket.send({ type: "ping", id: 700 + attempt });
     expect(socket.stream.queuedBytes).toBeGreaterThan(0);
     link.stop();
@@ -409,7 +403,6 @@ it("counts only serialized stream bytes, drains on receipts, and closes overflow
   await link.flush();
   expect(drains).toBe(1);
   expect(received).toEqual([text]);
-  // a phone that did not offer large messages cannot take a frame past the v1 limit: closed as stalled, once
   expect(socket.send("x".repeat(LIMITS_V1.max_ws_message_bytes + 1))).toBe(0);
   socket.close(4008);
   expect(closes).toBe(1);
@@ -440,7 +433,6 @@ it("delivers a frame over 1 MiB, and the frames behind it, to a phone that offer
   const both = deferred<void>();
   ws.onMessage = (raw) => { received.push(String(raw)); if (received.length === 2) both.resolve(); };
   const socket = await bounded(made.promise);
-  // a large session's snapshot, then the output the core sends while it still crosses
   const snapshot = JSON.stringify({ type: "snapshot", panes: "x".repeat(OUTPUT_HARD_BYTES) });
   expect(socket.send(snapshot)).not.toBe(0);
   expect(socket.send("after")).not.toBe(0);
@@ -524,7 +516,6 @@ it("ends the connection at the peer's close even while this side's close waits b
   });
   const stream = link.mux.openWs({ target: "/ws", headers: [], protocols: [] });
   const release = deferred<void>();
-  // the phone has not read the output yet: no CREDIT, so the server's own CLOSE waits behind it
   stream.onMessage = () => release.promise;
   const socket = await bounded(made.promise);
   try {
@@ -564,7 +555,7 @@ it("delivers revocation's 1008 even when graceful draining exhausts its budget",
   try {
     socket.send("x".repeat(700 * 1024));
     await link.flush();
-    expect(socket.getBufferedAmount()).toBe(0); // RECEIVED arrived, CREDIT did not.
+    expect(socket.getBufferedAmount()).toBe(0);
     socket.send("x".repeat(600 * 1024));
     await link.flush();
     expect(socket.getBufferedAmount()).toBeGreaterThan(0);
@@ -589,7 +580,6 @@ it("hands admitted messages over before a peer's graceful close, without waiting
       open() {},
       async message(socket, raw) {
         messages.push(String(raw));
-        // answered as connections.send answers: a send refused (0) closes the socket as stalled
         if (String(raw) === "ping" && socket.send("pong") === 0) socket.close(4008, "output delivery failed");
         if (messages.length === 1) { entered.resolve(); await release.promise; }
       },
@@ -600,12 +590,9 @@ it("hands admitted messages over before a peer's graceful close, without waiting
   const opened = deferred<void>();
   stream.onAccept = () => opened.resolve();
   const closed = deferred<number>();
-  // a reply the server still sends reaches a handler, so this side's close can finish
   stream.onMessage = () => {};
   stream.onClose = (event) => closed.resolve(event.code);
   await bounded(opened.promise);
-  // A carrier hands a burst over in one turn: the CLOSE then arrives before the messages
-  // before it were handed over, which the mux does one microtask apart.
   const held: (string | ArrayBuffer)[] = [];
   const burst = deferred<void>();
   const receive = link.session.receive.bind(link.session);

@@ -1,6 +1,4 @@
 name: Attach the Rust PTY host
-# Gives a published release that has none the Rust PTY host binaries and their manifest, built from
-# its tag by the Rust PTY host binaries workflow. Release attaches them itself; this is the repair.
 on:
   workflow_dispatch:
     inputs:
@@ -29,7 +27,7 @@ jobs:
   build:
     needs: gate
     uses: ./.github/workflows/pty-sidecar.yml
-    # its attest job signs each binary's build provenance
+    # its attest job signs each binary's build provenance, only when this run is dispatched from the tag itself
     permissions:
       contents: read
       id-token: write
@@ -48,12 +46,12 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
+          no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ovis-pty-sidecar
           path: pty-sidecar
-      # nothing is uploaded unless the release's assets were read (scripts/pty-sidecar.test.ts runs it with a failing gh)
       - name: Attach the Rust PTY host to the release
         env:
           GH_TOKEN: ${{ github.token }}

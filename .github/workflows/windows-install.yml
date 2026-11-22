@@ -1,12 +1,4 @@
 name: Windows install
-# The real installer on a clean Windows PC: herdr's and Bun's own installers, herdr's plugin build,
-# the app's first start, and an update. CI's "Native Windows install" job checks install.ps1's
-# decisions against stand-ins and downloads, builds and starts nothing.
-#
-# A pull request that touches what an install runs installs its own commit. Once a week the README's
-# command installs the latest release, and the release before it updates to it: herdr's and Bun's
-# installers change without a commit here. Everything comes from the network, so this is not a
-# required check.
 on:
   pull_request:
     paths:
@@ -14,6 +6,9 @@ on:
       - 'herdr-plugin.toml'
       - 'scripts/plugin.ps1'
       - 'scripts/plugin.ts'
+      - 'scripts/plugin-launch.ts'
+      - 'scripts/server-install.ts'
+      - 'scripts/server-manifest.ts'
       - 'scripts/preflight.ps1'
       - 'scripts/windows-install-e2e.ps1'
       - 'server/managed.ts'

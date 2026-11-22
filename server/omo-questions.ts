@@ -3,7 +3,6 @@ import { omoTranscriptForPane } from "./omo.ts";
 import { OmoAskReader, omoAsksAfter, type OmoAskCall, type OmoAsks } from "./omo-ask.ts";
 import type { OmoAsk } from "./dialogs/shared.ts";
 
-/** A call's questions, or null for arguments that are not the shape omo asks with. */
 export function omoAskOf(call: OmoAskCall): OmoAsk | null {
   const questions = (call.args as { questions?: unknown } | null | undefined)?.questions;
   if (!Array.isArray(questions) || questions.length === 0) return null;
@@ -20,14 +19,8 @@ export function omoAskOf(call: OmoAskCall): OmoAsk | null {
   return ask;
 }
 
-/** the records that can open or close a question; the rest of a session's tail is not parsed */
 const OMO_ASK_RECORD_RE = /"role":"(?:assistant|toolResult|user)"|ask-user:settlement/;
 
-/**
- * The questions omo's session (its .jsonl, or the tail of it) still has open (omo-ask.ts), newest
- * first: a waiting call until its tool result, a non-waiting call until it is settled. Calls whose arguments are not the shape omo asks
- * with are left out.
- */
 export function openOmoAsks(jsonl: string): OmoAsk[] {
   let open: OmoAsks = [];
   for (const line of jsonl.split("\n")) {
@@ -39,12 +32,10 @@ export function openOmoAsks(jsonl: string): OmoAsk[] {
   return open.flatMap((call) => omoAskOf(call) ?? []).reverse();
 }
 
-/** The newest question omo's session has open, or null. */
 export function pendingOmoAsk(jsonl: string): OmoAsk | null {
   return openOmoAsks(jsonl)[0] ?? null;
 }
 
-/** omo's form or widget hint: a narrow pane wraps it, including between "just" and "type". */
 export const OMO_FORM_RE = /\b1-9\s+select\b|enter\s+save\s+and\s+next|\btab\s+next\s+question\b|\bor\s+just\s+type\s+your\s+reply\b/;
 const omoAskReader = new OmoAskReader();
 

@@ -1,7 +1,5 @@
-/* The sidebar's two sections, PCs and Agents (MachineSidebar.tsx, AgentSidebar.tsx): the PCs a list that
-   starts right under the logo, Agents a head that stays put and a list that scrolls under it. */
 
-/* The rows keep their own scroll viewport, the section's one grid row. A grid, not a column flexbox:
+/* A grid, not a column flexbox:
    Safari sizes a column flexbox's max-content (Sidebar.css caps the section at it) from its 0 flex
    basis, which left the list one row tall (issue 3267). */
 .pcs-sidebar {
@@ -11,11 +9,6 @@
   padding-top: var(--space-2);
 }
 
-/* A list fades at an edge only while rows lie past it (lib/useEdgeFades.ts): at its top it fades its foot
-   alone, scrolled to its end its head alone, and a list that holds all its rows fades neither. A mask,
-   so the fade is the panel's whatever lies under it (a selected row, the pinned card); the mask reads
-   only the opaque panel colour's alpha, never its hue. Forced colors paint every edge in full: there a
-   fade would only take contrast from the words it covers. */
 .machine-list,
 .agent-list-contents {
   --fade-top: 0px;
@@ -30,6 +23,7 @@
 .machine-list[data-fade-bottom],
 .agent-list-contents[data-fade-bottom] { --fade-bottom: var(--space-4); }
 
+/* Forced colors paint every edge in full: there a fade would only take contrast from the words it covers. */
 @media (forced-colors: active) {
   .machine-list,
   .agent-list-contents {
@@ -38,14 +32,6 @@
   }
 }
 
-/* A PC's header at rest says how many agents run on it, in the +'s cell; a pointer over the header, or the
-   focus in it, trades that count for its actions (manage, fold, +), as the Codex app shows a row's actions
-   on hover. The fold and the + keep their cells while unseen, so the name never moves and a press lands on
-   them: the count lets presses through, and so has no tooltip, which a pointer could never show. Only a
-   fine pointer that hovers, with no touch screen beside it, gets the trade: anywhere else (a finger, a
-   hybrid laptop's touch screen, no hover) the actions always show, a disabled + dimmed as ever, and the
-   count stays out of sight, still read by a screen reader. A PC that is not connected counts nothing (its
-   snapshot is the last one seen) and keeps its manage button in view (Machines.css). */
 .machine-header { position: relative; }
 
 .machine-agent-count {

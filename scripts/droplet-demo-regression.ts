@@ -6,9 +6,9 @@ import { chromium } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openLens } from "./header-lens.ts";
 
-// Build the unmodified app and inject only the demo's fixture transport. All files and
-// HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-droplet-demo-"));
 try {
@@ -60,7 +60,6 @@ try {
           return { epoch: snapshot.finish_epoch, id: snapshot.panes.find((pane: { pane_id: string }) => pane.pane_id === id)?.finish_id };
         }, panes.api);
         assert.equal(typeof initialFinish.epoch, "string");
-        // the pane on screen draws its finish as ready (#1279): the working row going idle is that finish
         await page.locator(`.pane-item:has(.pane-select[title^="${panes.api} —"]) [data-status="idle"]`).first().waitFor({ state: "attached", timeout: 8_000 });
         const openedFinish = await page.evaluate(async (id) => {
           const { snapshot } = await (await fetch("/api/session")).json();
@@ -70,7 +69,7 @@ try {
         }, panes.api);
         assert.ok(openedFinish.finishId > 0);
         assert.equal(openedFinish.seen, openedFinish.finishId, "READY comes from acknowledging this server finish");
-        await page.getByTitle(/^Chat transcript \(.+\)$/).click();
+        await openLens(page, "chat");
         const message = page.getByRole("textbox", { name: "Message", exact: true });
         await message.fill("Demo geometry check");
         await page.getByRole("button", { name: "Send message", exact: true }).click();

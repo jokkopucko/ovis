@@ -38,7 +38,6 @@ function parse(value: string): unknown {
   try { return JSON.parse(value); } catch { return undefined; }
 }
 
-/** The goal one call left, or null when it left none the chat can show. */
 export function goalOf(part: Tool): GoalState | null {
   if (!isGoalTool(part.name) || part.error) return null;
   const goal = record(record(parse(part.output))?.["goal"]);
@@ -57,7 +56,6 @@ export function goalOf(part: Tool): GoalState | null {
   return asked === null ? null : { objective: asked, status: "active", tokensUsed: null, timeUsedSeconds: null, blockedReason: null };
 }
 
-/** `45s`, `12m`, `2h 5m`: how long omo has worked on the goal. */
 export function formatGoalTime(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const minutes = Math.floor(seconds / 60);
@@ -70,25 +68,21 @@ type GoalWait = Extract<ConversationPart, { kind: "goal_wait" }>;
 /** OmO writes `resumed` as its goal continues: a wait this long past due outlived the OmO that wrote it. */
 const GOAL_WAIT_GRACE_MS = 60_000;
 
-/** Until when the chat shows a goal's wait (ms since the epoch). */
 export function goalWaitUntil(wait: GoalWait): number {
   return Date.parse(wait.due_at) + GOAL_WAIT_GRACE_MS;
 }
 
-/** What a goal's wait waits on, kinds it waits on none of left out. */
 export function goalWaitSources(wait: GoalWait): [keyof GoalWaitSources, number][] {
   const kinds: (keyof GoalWaitSources)[] = ["tasks", "monitors", "terminals", "dags", "cells"];
   return kinds.flatMap((kind) => wait.waiting_on[kind] > 0 ? [[kind, wait.waiting_on[kind]] as [keyof GoalWaitSources, number]] : []);
 }
 
-/** A goal call that answered `{"goal": null}`: there is no goal (any more). */
 function saysNoGoal(part: Tool): boolean {
   if (!isGoalTool(part.name) || part.error) return false;
   const answer = record(parse(part.output));
   return answer !== null && answer["goal"] === null;
 }
 
-/** The goal as the turn's last goal call left it; a later call that says there is none clears it. */
 export function turnGoal(parts: readonly ConversationPart[]): GoalState | null {
   let latest: GoalState | null = null;
   for (const part of parts) {

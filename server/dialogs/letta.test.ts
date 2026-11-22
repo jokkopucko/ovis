@@ -43,7 +43,6 @@ describe("Letta Code's /model", () => {
   it("picks a row with the arrows from the cursor, then Enter", () => {
     const shown = screen("model-recents-cursor");
     const prompt = parseInteractivePrompt("letta", shown)!;
-    // the cursor is on the third row
     expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ keys: [KEY.up] }, { keys: [KEY.up] }, { keys: [KEY.enter] }]);
     expect(answerKeys(prompt, { option_index: 2 })).toEqual([{ keys: [KEY.enter] }]);
     expect(answerKeys(prompt, { option_index: 4 })).toEqual([{ keys: [KEY.down] }, { keys: [KEY.down] }, { keys: [KEY.enter] }]);
@@ -67,7 +66,6 @@ describe("Letta Code's /model", () => {
 
   it("answers a row only on the tab its card was read on", () => {
     const recents = screen("model-recents");
-    // a plan read on Recents does not take Recommended, whose cursor row has the same label
     const plan = registry.readerFor("letta-model")!.interaction!(parsedByPublicPrompt.get(parseInteractivePrompt("letta", recents)!)!)!;
     expect(plan.matches(recents)).toBe(true);
     expect(plan.matches(screen("model-recommended"))).toBe(false);
@@ -80,7 +78,6 @@ describe("Letta Code's /model", () => {
 
   it("tells a card apart by its search", () => {
     const recents = screen("model-recents");
-    // the same rows under another search are another card: its backspaces would leave a different search
     expect(parseInteractivePrompt("letta", recents.replace("(type to filter)", "o"))!.id).not.toBe(parseInteractivePrompt("letta", recents)!.id);
   });
 
@@ -117,7 +114,6 @@ describe("Letta Code's /model", () => {
     const recommended = "Recommended models currently available for this account";
     const all = "All models currently available for this account";
     expect(lettaSearchShown(on("Recents [2]    Recommended [3]    All models [4]", "Models you've recently used"), card, "o")).toBe(true);
-    // Recents still drawn: someone else switched
     expect(lettaSearchShown(on("Recents [2]    Recommended [3]    All models [4]", recommended), card, "o")).toBe(false);
     // Recents emptied: Letta moves to the first tab left, never another
     expect(lettaSearchShown(on("Recommended [3]    All models [4]", recommended), card, "o")).toBe(true);

@@ -15,7 +15,6 @@ let opened: string[];
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
 let panes = 0;
 
-/** the lookup the chat provides (ChatView), on the pane's PC */
 function ChatNames({ paneId, children }: { paneId: string; children: ReactNode }) {
   return createElement(FileNameLookupContext.Provider, { value: useFileNameLookup(paneId, "/project", 1), children });
 }
@@ -63,21 +62,17 @@ afterEach(async () => {
 
 it("draws a bare name the pane's PC has nothing of as code, and keeps the link for one it has (#2748)", async () => {
   await draw("The unit is `user-1000.slice`, see `README.md` and `src/app.ts`.", { pane: "w1:p1" });
-  // a path with a folder is not asked; the bare names are, from the pane's folder
   expect(requests.map(({ url }) => [url.pathname, url.searchParams.get("path"), url.searchParams.get("pane_id")])).toEqual([
     ["/api/fs/stat", "user-1000.slice", "w1:p1"],
     ["/api/fs/stat", "README.md", "w1:p1"],
   ]);
-  // until the PC answers, every name is the link it was
   expect(links()).toEqual(["Open user-1000.slice", "Open README.md", "Open src/app.ts"]);
 
-  // no file: the viewer would list a folder of that name next, so that is asked too
   await answer(0, { error: { code: "not_found", message: "no readable file at that path" } }, 404);
   expect(requests[2]!.url.pathname).toBe("/api/workspace/directories");
   expect(requests[2]!.url.searchParams.get("path")).toBe("user-1000.slice");
   expect(links()).toContain("Open user-1000.slice");
   await answer(2, { error: { code: "not_a_directory", message: "not a folder" } }, 400);
-  // several files of that name: the viewer lists them, so it stays a link
   await answer(1, { error: { code: "ambiguous_path", message: "several files have that name", candidates: ["/project/a/README.md", "/project/b/README.md"] } }, 409);
 
   expect(links()).toEqual(["Open README.md", "Open src/app.ts"]);
@@ -93,7 +88,6 @@ it("draws a name known to be nothing as code at once, without asking again", asy
   await answer(1, { error: { code: "not_a_directory", message: "no" } }, 400);
   expect(plainCode()).toEqual(["foo.service"]);
   await act(async () => { renderer!.update(createElement("div")); });
-  // a row scrolled back into view: drawn as code from its first frame
   const frames: string[][] = [];
   const row = createElement(Profiler, { id: "row", onRender: () => { frames.push(plainCode()); }, children: createElement(Markdown, { children: "`foo.service`" }) });
   const tree = createElement(SettingsProvider, { children: createElement(MachineContext.Provider, { value: "local", children:

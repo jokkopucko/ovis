@@ -3,7 +3,6 @@ import { startDemo, type Demo } from "./ideal-state-behaviour-harness.ts";
 import { probeIdleState } from "./ideal-state-idle.ts";
 
 const demo = await startDemo();
-/** The demo with one 44x44 block drawn in the danger colour as `css` says (its background, or one border side alone). */
 const injecting = (className: string, css: string): Demo => ({
   ...demo,
   async open(options) {
@@ -38,7 +37,6 @@ try {
   console.log(`${danger.status} IS-018 injected: ${danger.value}`);
   assert.equal(danger.status, "FAIL", danger.value);
   assert.equal(danger.value, "all agents idle: 0 running animations [], 1 danger elements [div.reviewer-danger]");
-  // danger said by the bottom border alone (no top or left border, no fill) is still danger
   const border = await probeIdleState(injecting("reviewer-danger-border", "border-bottom:3px solid var(--status-blocked)"));
   console.log(`${border.status} IS-018 border only: ${border.value}`);
   assert.equal(border.status, "FAIL", border.value);

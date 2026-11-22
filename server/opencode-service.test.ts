@@ -37,9 +37,8 @@ describe("opencode-service", () => {
     let disconnects = 0;
     const socketCount = () => readdirSync("/proc/self/fd").filter((fd) => {
       try { return readlinkSync(`/proc/self/fd/${fd}`).startsWith("socket:"); }
-      catch { return false; } // The directory read's own descriptor has already closed.
+      catch { return false; }
     }).length;
-    // A wedged service does not send its half of the FIN handshake.
     const service = createServer({ allowHalfOpen: true }, (socket) => {
       sockets.add(socket);
       socket.once("data", () => { if (++requests === 5) connected.resolve(); });
@@ -56,11 +55,9 @@ describe("opencode-service", () => {
       await connected.promise;
       expect(socketCount() - before - sockets.size).toBe(5);
       expect(await result).toEqual([null, null, null, null, null]);
-      // Subscribe before the request; the bound is a failure deadline, not a delay.
       await Promise.race([ended.promise, new Promise<never>((_, reject) => {
         deadline = setTimeout(() => reject(new Error("Timed-out client did not disconnect")), 500);
       })]);
-      // Discount the fixture's accepted socket, which deliberately stays half open.
       expect(socketCount() - before - sockets.size).toBe(0);
     } finally {
       clearTimeout(deadline);
@@ -190,7 +187,6 @@ describe("opencode-service", () => {
       writeFileSync(join(tmp, "service.json"), JSON.stringify({ port: 4000, pid: 1234 }));
       expect(readOpenCodeService(tmp)).toBeNull();
 
-      // With port
       writeFileSync(join(tmp, "service.json"), JSON.stringify({ port: 4000, pid: process.pid, password: "test-password" }));
       expect(readOpenCodeService(tmp)).toEqual({ baseUrl: "http://127.0.0.1:4000", port: 4000, pid: process.pid, password: "test-password" });
 
@@ -271,7 +267,6 @@ describe("opencode-service", () => {
         skills: [{ id: "effect", name: "effect", description: "Apply Effect", path: "/home/u/.config/opencode/skills/effect/SKILL.md" }],
       });
       expect(seen.sort()).toEqual(["/api/command?/work/proj", "/api/skill?/work/proj"]);
-      // a location still loading answers no skills at all, not even the bundled ones
       skills = [];
       expect(await listOpenCodeCatalog(config, "/work/proj")).toBeNull();
     });
@@ -340,7 +335,6 @@ describe("opencode-service", () => {
         chmodSync(file, 0o000);
         forgetOpenCodeService();
         expect((await openCodeService(root))?.version).toBe("2.0.32");
-        // a changed file is read again
         utimesSync(file, mtime, new Date(mtime.getTime() + 2_000));
         forgetOpenCodeService();
         expect(await openCodeService(root)).toBeNull();
@@ -360,10 +354,8 @@ describe("opencode-service", () => {
       Object.defineProperty(process, "platform", { value: "win32" });
       try {
         forgetOpenCodeService();
-        // the catalog and its observers keep scan rows on Windows
         expect(await openCodeService(root)).toBeNull();
         forgetOpenCodeService();
-        // the question card and its answer: the same HTTP identity check, on Windows too
         expect((await openCodeService(root, undefined, { onWindows: true }))?.version).toBe("2.0.32");
       } finally {
         Object.defineProperty(process, "platform", platform);
@@ -385,7 +377,6 @@ describe("opencode-service", () => {
           start(controller) {
             const encoder = new TextEncoder();
             controller.enqueue(encoder.encode("data: {\"type\":\"server.connected\",\"data\":{}}\n\n"));
-            // one event that never ends, past the 4 MiB buffer; the stream itself stays open
             if (first) controller.enqueue(encoder.encode(`data: ${"x".repeat(5 * 1024 * 1024)}`));
           },
         }), { headers: { "content-type": "text/event-stream" } });

@@ -3,9 +3,7 @@ import type { AlertSoundKind } from "./alertSound.ts";
 const WINDOW_MS = 150;
 const LOOKBACK_MS = 1_500;
 const RESCUE_MS = 600;
-/** a winner that said it plays can wait behind its own chime this long before another tab rescues */
 const PLAYING_HOLD_MS = 5_000;
-/** a chime another tab played this long before this tab heard the alert was for the same one */
 const CHIMED_BEFORE_MS = 400;
 const CHANNEL = "ovis:alert-turns";
 
@@ -18,21 +16,16 @@ export interface AlertTurnMessage {
 interface Play { type: "play"; key: string; kind: AlertSoundKind }
 interface Pending { kind: AlertSoundKind; due: number; rescue: boolean }
 
-/** Decision state only. Every time is supplied by this tab, never by a sender. */
 export class AlertTurns {
   private claims = new Map<string, Map<string, number>>();
   private chimed = new Map<string, number>();
   private pending = new Map<string, Pending>();
-  /** when this tab last played each alert: another tab's chime of it soon after is a late duplicate */
   private played = new Map<string, number>();
-  /** when another tab said it plays each alert: its chime can wait behind one it still plays */
   private announced = new Map<string, number>();
   constructor(private tab: string) {}
 
   start(key: string, kind: AlertSoundKind, now: number): AlertTurnMessage[] {
     this.prune(now);
-    // Only a chime just before this alert told it: the same pane can ask again soon after,
-    // when the tab that chimed the first question no longer takes part.
     const chimedAt = this.chimed.get(key);
     if (this.pending.has(key) || (chimedAt !== undefined && now - chimedAt <= CHIMED_BEFORE_MS)) return [];
     this.pending.set(key, { kind, due: now + WINDOW_MS, rescue: false });
@@ -62,7 +55,6 @@ export class AlertTurns {
         // ignoring it would let this tab's rescue chime it a second time.
         if (this.played.has(message.key) && !this.pending.has(message.key)) return [];
         this.chimed.set(message.key, now);
-        // that alert is settled: its claims must not defer the pane's next one
         this.claims.delete(message.key);
         this.announced.delete(message.key);
         // Cancel the actual pending turn, not just its short-lived lookback. A suspended
@@ -85,19 +77,17 @@ export class AlertTurns {
     for (const [key, pending] of this.pending) {
       if (pending.due > now) continue;
       if (!pending.rescue && this.lowerClaim(key)) {
-        // A finish waits like a question: the winning tab may not be able to play it.
         // Each lower claimant gets its own turn first, so two deferring tabs never rescue together.
         pending.rescue = true;
         pending.due = now + Math.max(RESCUE_MS * this.lowerClaims(key), this.announced.has(key) ? this.hold(key) : 0);
         continue;
       }
-      pending.due = Infinity; // awaiting the local player's result
+      pending.due = Infinity;
       plays.push({ type: "play", key, kind: pending.kind });
     }
     return plays;
   }
 
-  /** Said before this tab's audio starts: a tab waiting on it then waits for its chime or withdrawal. */
   announce(key: string, kind: AlertSoundKind): AlertTurnMessage {
     return { type: "playing", tab: this.tab, key, kind };
   }
@@ -130,7 +120,6 @@ export class AlertTurns {
     return Math.min(...[...this.pending.values()].map((pending) => pending.due));
   }
 
-  /** the wait on a winner that said it plays: each lower claimant past the first still gets its own turn after it */
   private hold(key: string): number {
     return PLAYING_HOLD_MS + RESCUE_MS * Math.max(0, this.lowerClaims(key) - 1);
   }
@@ -164,7 +153,6 @@ function isMessage(value: unknown): value is AlertTurnMessage {
 
 /** Browser wiring. No Web Locks or secure-context-only UUID API: LAN HTTP works too. */
 export function createAlertTurnPlayer(options: {
-  /** `key` is the one the chime was asked with: false (not played) when it no longer should sound */
   play: (kind: AlertSoundKind, key: string) => boolean | Promise<boolean>;
   channel?: BroadcastChannel | null;
 }) {
@@ -188,8 +176,6 @@ export function createAlertTurnPlayer(options: {
       playing.set(key, attempt);
       send([turns.announce(key, kind)]);
       const finish = (played: boolean) => {
-        // A queued question can start later. Its result belongs to this claim only,
-        // never to a new claim for the same pane after pagehide or another chime.
         if (playing.get(key) !== attempt) return;
         playing.delete(key);
         send(turns.finish(key, played, performance.now()));

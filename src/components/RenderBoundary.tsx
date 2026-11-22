@@ -9,7 +9,6 @@ import { Component, type ReactNode } from "react";
  */
 interface Props {
   resetKey: unknown;
-  /** what to draw instead; `error` is what was thrown, for a fallback that offers to copy it */
   fallback: (retry: () => void, error: unknown) => ReactNode;
   children: ReactNode;
 }

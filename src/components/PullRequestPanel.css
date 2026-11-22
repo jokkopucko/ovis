@@ -1,4 +1,3 @@
-/* the Pull request tab of the Files dialog: title and state, checks, open review threads, Merge; one column at every width */
 .pull-request {
   display: flex;
   flex-direction: column;
@@ -164,7 +163,6 @@
   font-size: var(--fs-md);
 }
 
-/* a thread's path is what the row is about: it wraps rather than being cut */
 .pull-request-thread-place {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
@@ -236,7 +234,6 @@
   padding: var(--space-2);
 }
 
-/* Merge closes the view, its reason (when it is off) above it */
 .pull-request-merge {
   display: flex;
   flex-direction: column;
@@ -262,7 +259,6 @@
   }
 }
 
-/* a phone: Merge as wide as the column, a thumb's target */
 @media (max-width: 480px) {
   .pull-request-merge {
     align-items: stretch;

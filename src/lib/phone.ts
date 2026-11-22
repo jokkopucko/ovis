@@ -1,28 +1,20 @@
 import type { AccountOs } from "../../shared/account-asker.ts";
 import type { RemoteAccess } from "../../shared/protocol.ts";
 
-/** What the page knows about its own address. */
 export interface PageLocation {
   protocol: string;
   hostname: string;
   origin: string;
-  /** window.isSecureContext */
   secure: boolean;
-  /** the hosted relay shell (app.ovis.sh): its address is the shell's front page, never this PC's */
   shell?: boolean;
 }
 
-/** What Settings → Phone shows: an address to open, a command to run, or what is in the way. */
 export type PhonePlan =
-  /** this very page is on an HTTPS address a phone can open */
   | { kind: "here"; url: string }
-  /** Tailscale on the PC already proxies this server */
   | { kind: "served"; url: string }
-  /** one command on the PC publishes it; `url` is where it will be, when the DNS name is known */
   | { kind: "command"; command: string; url: string | null }
   | { kind: "stopped" }
   | { kind: "missing" }
-  /** the server did not say (an older server, or the request failed) */
   | { kind: "unknown" };
 
 export function isLoopbackHost(hostname: string): boolean {
@@ -39,14 +31,12 @@ export function phonePlan(page: PageLocation, access: RemoteAccess | null): Phon
   return { kind: "unknown" };
 }
 
-/** The system a browser runs on, as the account service names it (shared/account-asker.ts), or null. */
 export function deviceOs(userAgent: string, maxTouchPoints = 0): AccountOs | null {
   const ua = userAgent;
   return /iPhone|iPad/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1) ? "ios" : /Android/.test(ua) ? "android" : /Macintosh/.test(ua) ? "macos"
     : /Windows/.test(ua) ? "windows" : /CrOS/.test(ua) ? "chromeos" : /Linux/.test(ua) ? "linux" : null;
 }
 
-/** A name for this device to pair under, from its user agent: "iPhone · Safari", "Windows · Chrome". */
 export function deviceLabel(userAgent: string, maxTouchPoints = 0): string {
   const ua = userAgent;
   const device = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1) ? "iPad" : /Android/.test(ua) ? "Android" : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "Device";

@@ -30,19 +30,16 @@ export function herdrLifetime(identity: string): string {
   return createHash("sha256").update(`herdr-lifetime:${identity}`).digest("hex").slice(0, 32);
 }
 
-/** Only final client-visible statuses enter here, never raw herdr statuses or activity counters. */
 export class Finishes {
   private generation = crypto.randomUUID();
   private identity: string | null;
   private readonly panes = new Map<string, { status: AgentStatus; id: number }>();
-  /** moved panes' old IDs, with the new ID, until the new one is heard of itself (moved) */
   private readonly movedTo = new Map<string, string>();
 
   constructor(private readonly herdr: () => string | null = finishHerdrIdentity) {
     this.identity = herdr();
   }
 
-  /** herdr's identity read now; null proves nothing */
   herdrIdentity(): string | null { return this.herdr(); }
 
   get epoch(): string {
@@ -63,10 +60,7 @@ export class Finishes {
   }
 
   private observe(paneId: string, status: AgentStatus): number {
-    // the new ID speaks for itself now
     for (const [from, to] of this.movedTo) if (to === paneId) this.movedTo.delete(from);
-    // a status the old ID still reports after its move (a late event) is the moved pane's: work begun there ends a
-    // finish under the new ID, so its next one is counted as new
     const moved = this.movedTo.get(paneId);
     const target = moved === undefined ? undefined : this.panes.get(moved);
     if (moved !== undefined && target !== undefined && status !== "done") this.panes.set(moved, { ...target, status });
@@ -79,8 +73,6 @@ export class Finishes {
   snapshot(snapshot: SessionSnapshot, completions: CompletionTracker): SessionSnapshot {
     const finish_epoch = this.epoch;
     const live = new Set(snapshot.panes.map((pane) => pane.pane_id));
-    // readSnapshot retains observations newer than its read, including panes absent from an
-    // older roster. Only an absence reconciled by that tracker is an authoritative ending.
     for (const paneId of this.panes.keys()) {
       if (!live.has(paneId) && completions.current(paneId) === undefined) this.ended(paneId);
     }
@@ -89,7 +81,6 @@ export class Finishes {
     })) };
   }
 
-  /** The collector's authoritative recovery observations, before any pending refresh can finish. */
   resync(completions: CompletionTracker, panes: readonly HerdrPane[], newer: ReadonlySet<string>): void {
     completions.resync(panes, newer);
     for (const pane of panes) if (!newer.has(pane.pane_id)) {
@@ -99,14 +90,13 @@ export class Finishes {
 
   /**
    * herdr moved the pane under a new ID: its finishes go on counting there, so a finish a browser read
-   * under the old ID keeps its number and stays read (#1503). The old ID keeps its count, as an ended pane's.
+   * under the old ID keeps its number and stays read (#1503).
    */
   moved(from: string, to: string): (id: number) => number {
     const before = this.panes.get(from);
     if (!before || from === to) return (id) => id;
     const after = this.panes.get(to);
     this.ended(from);
-    // a pane moved again: what still spoke for it under an earlier ID speaks for the newest one
     for (const [earlier, next] of this.movedTo) if (next === from) this.movedTo.set(earlier, to);
     this.movedTo.set(from, to);
     if (after === undefined || after.id < before.id) {

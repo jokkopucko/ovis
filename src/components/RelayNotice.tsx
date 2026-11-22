@@ -37,11 +37,6 @@ export function relayNoticeText(t: Translate, notice: RelayNoticeInfo, locale?: 
   }
 }
 
-/**
- * Over the pane when this PC uses the Ovis-hosted relay without a signed-in account, or when its
- * account's relay pass reports not_listed, limit or new_sessions: false. Dismissible like
- * LanExposureNotice's direct line (useRelayNotice).
- */
 export function RelayNotice({ notice, onOpen, onDismiss }: { notice: RelayNoticeInfo; onOpen: () => void; onDismiss: () => void }) {
   const t = useT();
   const locale = useLocale();

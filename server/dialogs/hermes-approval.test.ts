@@ -14,7 +14,6 @@ const fixture = (name: string): string => readFileSync(join(import.meta.dir, "..
 const card = (screen: string) => parseInteractivePrompt("hermes", screen);
 const ALL = ["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"];
 const rowOf = (screen: string, label: string): string => screen.split("\n").find((line) => line.includes(`. ${label} `))!;
-/** the screen with the box row that holds `from` drawn holding `to` instead, at the box's own width */
 const swapRow = (screen: string, from: string, to: string): string => screen.split("\n").map((line) => {
   if (!line.startsWith("│ ") || !line.includes(from)) return line;
   const inner = [...line].length - 4;
@@ -28,7 +27,6 @@ describe("Hermes's dangerous-command approval", () => {
     expect(prompt.kind).toBe("approval");
     expect(prompt.fallback).toBeUndefined();
     expect(prompt.title).toBe("Dangerous Command");
-    // Hermes's own warning, and the command as it runs
     expect(prompt.question).toBe("recursive delete");
     expect(prompt.body).toBe("rm -rf ./scratch");
     expect(prompt.options.map((option) => option.label)).toEqual(ALL);
@@ -47,7 +45,6 @@ describe("Hermes's dangerous-command approval", () => {
     const prompt = card(fixture("long-38"))!;
     expect(prompt.body).toBe("rm -rf ./scratch/build-\nartifacts-from-the-previous-\nrelease ./scratch/nightly-cache");
     expect(prompt.options.map((option) => option.label)).toEqual(ALL);
-    // the cursor moved in the terminal: the same asking, answered from where the cursor is
     const moved = card(fixture("long-cursor-38"))!;
     expect(moved.id).toBe(prompt.id);
     expect(answerKeys(moved, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
@@ -72,7 +69,6 @@ describe("Hermes's dangerous-command approval", () => {
     expect(card(without(["Add to permanent allowlist"]))?.options.map((option) => option.label)).toEqual(["Allow once", "Allow for this session", "Deny"]);
     const two = without(["Add to permanent allowlist", "Allow for this session"]).replace("  3. Deny", "  2. Deny");
     expect(card(two)?.options.map((option) => option.label)).toEqual(["Allow once", "Deny"]);
-    // any other set or order is not Hermes's
     expect(card(without(["Allow once"]).replace("│   2. Allow for", "│ ❯ 1. Allow for").replace("  3. Add", "  2. Add"))).toBeNull();
   });
 
@@ -83,10 +79,8 @@ describe("Hermes's dangerous-command approval", () => {
     const spanish = words.reduce((shown, [from, to]) => swapRow(shown, from, to), screen)
       .replace(/^ {2}↑\/↓ to select, Enter to confirm.*$/mu, "  ↑/↓ para seleccionar, Enter para confirmar  (3593s)");
     const cases: [string, string][] = [
-      // the command cut to make room, by Hermes's own words
       ["cut-38", fixture("cut-38")],
       ["command truncated", swapRow(screen, "rm -rf ./scratch", "… (command truncated — use /logs or")],
-      // the description cut to make room, or dropped from a pane too short for it
       ["description truncated", swapRow(screen, "recursive delete", "… (description truncated)")],
       ["compact-14-rows", fixture("compact-14-rows")],
       ["no description", screen.replace(/│ +│\n│ recursive delete +│\n/u, "")],
@@ -121,18 +115,13 @@ describe("Hermes's dangerous-command approval", () => {
   it("reads the panel only while it holds Hermes's input, with only Hermes's own lines under it", () => {
     const screen = fixture("once-120");
     const variants: [string, string][] = [
-      // answered: the input is Hermes's prompt again, the panel's last drawing left above it
       ["answered", screen.replace(/^⚠ ❯$/mu, "❯ ")],
       ["text typed into the input", screen.replace(/^⚠ ❯$/mu, "⚠ ❯ hello")],
       ["no hint", screen.replace(/^ {2}↑\/↓ to select, Enter to confirm.*$/mu, "  something else")],
       ["a line under the hint", screen.replace(/^( ☤ fixture-model)/mu, "  ▸ subagent: tidy\n$1")],
-      // more than the spinner's lines between the panel and its hint: not the panel over the input
       ["lines over the hint", screen.replace(/^( {2}💻 rm -rf)/mu, "  one\n  two\n  three\n$1")],
-      // a line shaped like Hermes's spinner but not it: no icon, no timer of its own
       ["a forged spinner", screen.replace(/^ {2}💻 rm -rf \.\/scratch {2}\(.*\)$/mu, "  X forged output  (1)")],
-      // even one line that is not Hermes's spinner, right under the panel
       ["one line under the panel", (() => {
-        // the panel's bottom border, the last one: the banner's box comes first
         const lines = screen.split("\n");
         let bottom = lines.length - 1;
         while (bottom >= 0 && !/^╰─+╯$/u.test(lines[bottom]!)) bottom -= 1;
@@ -145,7 +134,6 @@ describe("Hermes's dangerous-command approval", () => {
     // a draft in the input: the arrows may move through it instead, so no card, and no generic one either
     expect(registry.waits("hermes", variants[1]![1])).toBe(true);
     expect(registry.waits("hermes", screen.replace(/^⚠ ❯$/mu, "⚠ draft"))).toBe(true);
-    // another agent's screen is never Hermes's panel
     expect(parseInteractivePrompt("codex", screen)).toBeNull();
     expect(registry.waits("codex", screen)).toBe(false);
   });
@@ -221,7 +209,6 @@ describe("Hermes's dangerous-command approval", () => {
       expect(wrapped).not.toBe(screen);
       expect(card(wrapped)).toBeNull();
       expect(registry.waits("hermes", wrapped)).toBe(true);
-      // however many rows it takes, blank-looking ones among them
       const long = screen.replace(/^⚠$/mu, ["⚠ a long draft", ...Array.from({ length: 14 }, (_, row) => `row ${row}`), "", "the last row"].join("\n"));
       expect(registry.waits("hermes", long)).toBe(true);
     });
@@ -229,7 +216,6 @@ describe("Hermes's dangerous-command approval", () => {
   });
 
   it("is what the generic card would have offered as raw keys before (#857)", () => {
-    // on main the screen got a fallback card of ↑, ↓, Enter and Esc, whose Enter took Allow once
     expect(parseFallbackPrompt("hermes", fixture("once-120")).options.map((option) => option.label)).toEqual(["↑", "↓", "Enter", "Esc"]);
     expect(card(fixture("once-120"))?.fallback).toBeUndefined();
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { exportPublicKey, generateKeyPair } from "./relay-e2ee.ts";
-import { decodeOffer, encodeOffer, type RelayOffer } from "./relay-offer.ts";
+import { decodeOffer, encodeOffer, validateOffer, type RelayOffer } from "./relay-offer.ts";
 
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const OTHER_ID = "fedcba9876543210fedcba9876543210";
@@ -21,6 +21,16 @@ describe("relay offer", () => {
     expect(decodeOffer(url)).toEqual(full);
     const bare = offer();
     expect(decodeOffer(encodeOffer(bare, APP))).toEqual(bare);
+  });
+
+  it("keeps the mark that the PC checks new devices with the account, and adds none to an offer without it", () => {
+    const marked = offer({ code: "012345", admission: 1 });
+    expect(validateOffer(marked)).toEqual(marked);
+    expect(decodeOffer(encodeOffer(marked, APP))?.admission).toBe(1);
+    expect("admission" in validateOffer(offer({ code: "012345" }))).toBe(false);
+    for (const admission of [0, 2, "1", true, null]) {
+      expect(() => validateOffer({ ...offer(), admission })).toThrow("Invalid offer admission");
+    }
   });
 
   it("returns null without an offer fragment", () => {
@@ -56,5 +66,13 @@ describe("relay offer", () => {
     expect(() => decodeOffer(urlWith(payload, OTHER_ID))).toThrow();
     expect(() => decodeOffer(`${APP}/#offer=${payload}`)).toThrow();
     expect(decodeOffer(urlWith(payload))?.server_id).toBe(SERVER_ID);
+  });
+
+  it("keeps the mark that the PC asks its account about the device, refuses any other value, and reads past a field it does not know", () => {
+    const marked = offer({ code: "012345", admission: 1 });
+    expect(decodeOffer(encodeOffer(marked, APP))).toEqual(marked);
+    for (const admission of [0, 2, "1", true]) expect(() => decodeOffer(urlWith(b64url({ ...offer(), admission })))).toThrow("Invalid offer admission");
+    const plain = offer({ code: "012345" });
+    expect(decodeOffer(urlWith(b64url({ ...plain, later: "x" })))).toEqual(plain);
   });
 });

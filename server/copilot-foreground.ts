@@ -17,6 +17,7 @@ interface TcpEntry { address: string; port: number; remoteAddress: string; remot
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LOOPBACK: Readonly<Record<string, string>> = { "0100007F": "127.0.0.1", "00000000000000000000000001000000": "::1" };
 const MAX_MESSAGE = 64 * 1024;
+export const COPILOT_RPC_TIMEOUT_MS = 2000;
 const clients = new Map<number, ForegroundClient>();
 class Unavailable extends Error {
   constructor(readonly diagnostic: Diagnostic) { super(diagnostic); }
@@ -135,11 +136,11 @@ class ForegroundClient {
         this.close(error instanceof Unavailable ? error : new Unavailable("malformed_rpc"));
       }
     });
-    const timer = setTimeout(() => this.close(new Unavailable("rpc_timeout")), 2000);
+    const timer = setTimeout(() => this.close(new Unavailable("rpc_timeout")), COPILOT_RPC_TIMEOUT_MS);
     this.ready = (async () => {
       try {
         await connected;
-        const deadline = performance.now() + 2000;
+        const deadline = performance.now() + COPILOT_RPC_TIMEOUT_MS;
         while (!acceptedByOwner(expected, socket)) {
           this.check();
           if (performance.now() > deadline) throw new Unavailable("rpc_timeout");
@@ -213,7 +214,7 @@ class ForegroundClient {
     this.check();
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
-      const timer = setTimeout(() => this.close(new Unavailable("rpc_timeout")), 2000);
+      const timer = setTimeout(() => this.close(new Unavailable("rpc_timeout")), COPILOT_RPC_TIMEOUT_MS);
       this.pending = { id, timer, resolve, reject };
       const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params: {} }));
       this.socket.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]));

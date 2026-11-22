@@ -49,7 +49,6 @@ const snapshot = (panes: PaneInfo[]): SessionSnapshot => ({
   tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1, pane_count: panes.length, focused: false, agent_status: "unknown" }],
   workspaces: [{ workspace_id: "w1", label: "ovis", number: 1, active_tab_id: "w1:t1", focused: false, agent_status: "unknown", pane_count: panes.length, tab_count: 1 }],
 });
-// a shell in front is its own process group; "vim" runs in front of pane "editing"; "typed" has text in its input line
 const facts: MoveFacts = {
   findResume: async (agent, id) => id === "listed" ? [agent, "--resume", id] : null,
   processInfo: async (id) => id === "editing"
@@ -88,7 +87,6 @@ describe("planMove", () => {
       queued: { kind: "busy", reason: "agent_working", agent: "claude", command: null },
       typed: { kind: "needs_you", agent: "claude" },
       copilot: { kind: "needs_you", agent: "copilot" },
-      // ended by the person: reopened, nothing typed
       ended: { kind: "resume", agent: "pi", session_id: "listed", argv: ["pi", "--resume", "listed"], ended: true },
       "ended-elsewhere": { kind: "shell" },
       live: { kind: "busy", reason: "agent_working", agent: "codex", command: null },

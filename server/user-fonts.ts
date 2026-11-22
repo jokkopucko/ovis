@@ -43,7 +43,6 @@ async function listUserFonts(dir: string): Promise<UserFont[]> {
   try {
     names = await readdir(dir);
   } catch (error) {
-    // no folder is the default: nothing to serve
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
@@ -78,7 +77,7 @@ export async function handleUserFontsRequest(request: Request, pathname: string,
     const font = fonts.find((candidate) => candidate.file === file);
     const missing = () => jsonResponse({ error: { code: "not_found", message: "no such font" } }, 404);
     if (!font) return missing();
-    // opened without following a link and checked again as opened: a link swapped in after the listing is refused
+    // where the platform has O_NOFOLLOW, a link swapped in after the listing is refused by the open itself
     const handle = await open(join(dir, font.file), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ELOOP" || error.code === "ENOENT") return null;
       throw error;
@@ -87,7 +86,6 @@ export async function handleUserFontsRequest(request: Request, pathname: string,
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > USER_FONT_MAX_BYTES) return missing();
-      // kept for good only under the font's version, which the client puts in the address: a changed file is a new address
       const versioned = new URLSearchParams(search).get("v") === font.version;
       return new Response(await handle.readFile(), {
         headers: { "content-type": FONT_TYPES[extname(font.file).toLowerCase()]!, "cache-control": versioned ? "private, max-age=31536000, immutable" : "private, no-cache" },

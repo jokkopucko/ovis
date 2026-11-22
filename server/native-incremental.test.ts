@@ -1,12 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ConversationTurn } from "../shared/protocol.ts";
+import * as cmd from "./cmd.ts";
 import { forgetTranscriptState, HistoryChanged, liveTurnCacheUsage, transcriptPage } from "./conversation.ts";
 
 const SOURCES = ["omp-transcript", "omo-transcript", "gjc-transcript", "claude-transcript"] as const;
-type Source = typeof SOURCES[number];
+type Source = typeof SOURCES[number] | "pi-transcript" | "cmd-transcript";
 const roots: string[] = [];
 const jsonl = (...entries: unknown[]) => entries.map(entry => JSON.stringify(entry) + "\n").join("");
 const fixture = (text: string) => {
@@ -96,7 +97,6 @@ for (const source of SOURCES) {
   test(`${source}: an evicted session reconnects delayed results without borrowing another session's state`, () => {
     const first = fixture(jsonl(prompt(source, "first"), call(source, "shared-id")));
     const original = transcriptPage(source, first);
-    // ten of each budget's sources: more than its eight entries
     for (let i = 0; i < 20; i++) {
       const otherSource = SOURCES[i % SOURCES.length]!;
       const other = fixture(jsonl(prompt(otherSource, `other ${i}`), call(otherSource, "shared-id"), result(otherSource, "shared-id", `other result ${i}`)));
@@ -149,8 +149,6 @@ for (const source of ["omp-transcript", "omo-transcript", "gjc-transcript"] as c
       const grown = transcriptPage(source, path);
       expect(textParts(grown.turns)).toEqual(["Run every check", "All checks passed"]);
       expect(toolParts(grown.turns)).toHaveLength(50);
-      // the fold and the metadata parse the new record once each, plus two tries on an empty line
-      // (4 calls in all); reparsing the live task parses its 101 records for both again (205)
       expect(parse.mock.calls.length).toBeLessThan(20);
     } finally {
       parse.mockRestore();
@@ -158,7 +156,131 @@ for (const source of ["omp-transcript", "omo-transcript", "gjc-transcript"] as c
   });
 }
 
-/** How many records one read parses: a few for a cached live task, all of it again for a reparse. */
+// pi and Command Code keep a tree: a record names its parent, and the chat reads the branch ending
+// at the last record written
+const tree = () => {
+  let parent: string | null = null;
+  let next = 0;
+  return (entry: object, parentId: string | null = parent) => {
+    parent = `e${next++}`;
+    return JSON.stringify({ id: parent, parentId, ...entry }) + "\n";
+  };
+};
+
+for (const source of ["pi-transcript", "cmd-transcript"] as const) {
+  test(`${source}: a read after an append parses the appended record, not the whole live task again`, () => {
+    const record = tree();
+    const work = Array.from({ length: 50 }, (_, i) => [call(source, `call-${i}`), result(source, `call-${i}`, `output ${i}`)]).flat();
+    const path = fixture([prompt(source, "Run every check"), ...work].map(entry => record(entry)).join(""));
+    transcriptPage(source, path);
+    appendFileSync(path, record(answer(source, "All checks passed")));
+    const parse = spyOn(JSON, "parse");
+    try {
+      const grown = transcriptPage(source, path);
+      expect(textParts(grown.turns)).toEqual(["Run every check", "All checks passed"]);
+      expect(toolParts(grown.turns)).toHaveLength(50);
+      expect(parse.mock.calls.length).toBeLessThan(20);
+    } finally {
+      parse.mockRestore();
+    }
+    forgetTranscriptState();
+    expect(textParts(transcriptPage(source, path).turns)).toEqual(["Run every check", "All checks passed"]);
+  });
+
+  test(`${source}: a branch move inside the live task drops what the old branch answered`, () => {
+    const record = tree();
+    const path = fixture(record(prompt(source, "Start")) + record(call(source, "one")) + record(result(source, "one", "first try")));
+    transcriptPage(source, path);
+    appendFileSync(path, record(answer(source, "abandoned answer")));
+    expect(textParts(transcriptPage(source, path).turns)).toEqual(["Start", "abandoned answer"]);
+    appendFileSync(path, record(answer(source, "branch answer"), "e2"));
+    const moved = transcriptPage(source, path);
+    expect(textParts(moved.turns)).toEqual(["Start", "branch answer"]);
+    forgetTranscriptState();
+    expect(transcriptPage(source, path).turns).toEqual(moved.turns);
+  });
+}
+
+test("pi-transcript: a live task's context window follows the agent dir it is read with", () => {
+  const dirs = [100_000, 200_000].map((window) => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-native-incremental-agent-"));
+    roots.push(dir);
+    writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: window }] } } }));
+    return dir;
+  });
+  const record = tree();
+  const used = { type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } };
+  const path = fixture(record(prompt("pi-transcript", "Start")) + record(used));
+  const read = (dir: string) => transcriptPage("pi-transcript", path, {}, undefined, dir).metadata.context;
+  expect(read(dirs[0]!)).toEqual({ used: 50_000, window: 100_000 });
+  expect(read(dirs[1]!)).toEqual({ used: 50_000, window: 200_000 });
+  appendFileSync(path, record(answer("pi-transcript", "Done")));
+  expect(read(dirs[1]!)).toEqual({ used: 50_000, window: 200_000 });
+  expect(read(dirs[0]!)).toEqual({ used: 50_000, window: 100_000 });
+});
+
+test("pi-transcript: a live task's context window follows an edited catalog and a provider named before the append", () => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-native-incremental-agent-"));
+  roots.push(dir);
+  const catalog = (window: number) => writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: window }] } } }));
+  catalog(100_000);
+  const record = tree();
+  const path = fixture(record({ type: "model_change", provider: "lwsa", modelId: "qwen-test" }) + record(prompt("pi-transcript", "Start")));
+  const read = () => transcriptPage("pi-transcript", path, {}, undefined, dir).metadata.context;
+  read();
+  const unnamed = (used: number) => record({ type: "message", message: { role: "assistant", model: "qwen-test", usage: { totalTokens: used }, content: [{ type: "text", text: "Working" }] } });
+  appendFileSync(path, unnamed(40_000));
+  expect(read()).toEqual({ used: 40_000, window: 100_000 });
+  appendFileSync(path, unnamed(50_000));
+  expect(read()).toEqual({ used: 50_000, window: 100_000 });
+  catalog(1_000_000);
+  appendFileSync(path, record(answer("pi-transcript", "Still working")));
+  const warm = read();
+  expect(warm).toEqual({ used: 50_000, window: 1_000_000 });
+  forgetTranscriptState();
+  expect(read()).toEqual(warm);
+});
+
+test("cmd-transcript: a live task's context window follows an edited Command Code catalog, and an unchanged one keeps the live parse", () => {
+  const home = mkdtempSync(join(tmpdir(), "herdr-native-incremental-home-"));
+  roots.push(home);
+  const catalogPath = join(home, "commandcode-models.json");
+  const located = spyOn(cmd, "cmdModelCatalogPath").mockReturnValue(catalogPath);
+  try {
+    const catalog = (window: number, at: number) => {
+      writeFileSync(catalogPath, JSON.stringify({ version: 2, models: [{ id: "cat-jam", contextWindow: window }] }));
+      utimesSync(catalogPath, at, at);
+    };
+    catalog(100_000, 1_700_000_000);
+    const record = tree();
+    // a live task long enough that a full reparse could not stay under the parse bound below
+    const work = Array.from({ length: 30 }, (_, i) => [call("cmd-transcript", `work-${i}`), result("cmd-transcript", `work-${i}`, `output ${i}`)]).flat();
+    const path = fixture([prompt("cmd-transcript", "Start"), ...work].map(entry => record(entry)).join("")
+      + record({ type: "message", message: { role: "assistant", model: "cat-jam", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } }));
+    expect(transcriptPage("cmd-transcript", path).metadata.context).toEqual({ used: 50_000, window: 100_000 });
+    appendFileSync(path, record(call("cmd-transcript", "one")));
+    expect(parses(() => expect(transcriptPage("cmd-transcript", path).metadata.context).toEqual({ used: 50_000, window: 100_000 }))).toBeLessThan(10);
+    catalog(200_000, 1_700_000_100);
+    appendFileSync(path, record(result("cmd-transcript", "one", "done")));
+    const warm = transcriptPage("cmd-transcript", path);
+    expect(warm.metadata.context).toEqual({ used: 50_000, window: 200_000 });
+    forgetTranscriptState();
+    expect(transcriptPage("cmd-transcript", path).metadata).toEqual(warm.metadata);
+  } finally {
+    located.mockRestore();
+  }
+});
+
+test.skipIf(process.platform === "win32")("pi-transcript: a catalog that is a link loop counts as absent, and the others still answer", () => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-native-incremental-agent-"));
+  roots.push(dir);
+  writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: 100_000 }] } } }));
+  symlinkSync(join(dir, "models-store.json"), join(dir, "models-store.json"));
+  const record = tree();
+  const path = fixture(record(prompt("pi-transcript", "Start")) + record({ type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } }));
+  expect(transcriptPage("pi-transcript", path, {}, undefined, dir).metadata.context).toEqual({ used: 50_000, window: 100_000 });
+});
+
 const parses = (read: () => unknown) => {
   const parse = spyOn(JSON, "parse");
   try {
@@ -171,7 +293,6 @@ const parses = (read: () => unknown) => {
 const busyTask = (source: Source) => jsonl(prompt(source, "Run every check"), ...Array.from({ length: 50 }, (_, i) => [call(source, `call-${i}`), result(source, `call-${i}`, `output ${i}`)]).flat());
 
 test("OMO and GJC chats never take the live cache entries of OMP and Claude chats read in turn", () => {
-  // eight chats fill the Codex/OMP/Claude budget; two more of OMO and GJC would make ten in one
   const chats = Array.from({ length: 10 }, (_, i) => ({ source: (i < 8 ? SOURCES[i % 2 ? 3 : 0] : SOURCES[i - 7])!, path: "" }));
   for (const chat of chats) chat.path = fixture(busyTask(chat.source));
   for (const { source, path } of chats) transcriptPage(source, path);
@@ -185,7 +306,6 @@ test("OMO and GJC chats never take the live cache entries of OMP and Claude chat
 });
 
 test("large OMO and GJC live tasks make room among themselves, never by evicting OMP's", () => {
-  // live tasks of about 11 MiB: two fit in a budget's 32 MiB, a third does not
   const output = "x".repeat(1024 * 1024);
   const large = (source: Source) => ({ source, path: fixture(jsonl(prompt(source, "Read the logs"), ...Array.from({ length: 11 }, (_, i) => [call(source, `log-${i}`), result(source, `log-${i}`, output)]).flat())) });
   const chats = (["omp-transcript", "omp-transcript", "omo-transcript", "gjc-transcript"] as const).map(large);
@@ -196,7 +316,6 @@ test("large OMO and GJC live tasks make room among themselves, never by evicting
       expect(parses(() => expect(toolParts(transcriptPage(source, path).turns)).toHaveLength(11))).toBeLessThan(20);
     }
   }
-  // the OMO chat grows and is read again, so a third large OMO task evicts the GJC entry, read least recently
   appendFileSync(chats[2]!.path, jsonl(answer("omo-transcript", "once more")));
   transcriptPage(chats[2]!.source, chats[2]!.path);
   const third = large("omo-transcript");
@@ -217,7 +336,6 @@ for (const source of ["omo-transcript", "gjc-transcript"] as const) {
     appendFileSync(path, jsonl(prompt(source, "Next")));
     const settled = transcriptPage(source, path).turns;
     expect(settled.slice(0, live.length)).toEqual(live);
-    // omo's pictures are answered from its file (#3420); gjc's would name pictures nothing answers, so it names none
     const pictured = source === "omo-transcript";
     for (const turns of [live, settled]) {
       expect(turns.flatMap(turn => turn.parts).filter(part => part.kind === "image")).toEqual(pictured ? [{ kind: "image", media_type: "image/png", ref: "pi-prompt:look:0" }] : []);
@@ -235,7 +353,6 @@ test("OMO: a growing rewrite of the live task forgets a task title only the old 
   const head = jsonl(prompt(source, "first"), answer(source, "done"), prompt(source, "second"), spawn);
   const path = fixture(head + jsonl(started({ task_id: "x", task_summary: "Old title" })));
   transcriptPage(source, path);
-  // same inode and a longer file: the settled turns stay, and only the live task is read again
   const wake = { type: "custom_message", customType: "omo-senpi:wake", display: false,
     details: [{ customType: "senpi-task.completion", details: [{ task_id: "x", status: "completed", agent_type: "explorer", final_response: "Nothing left" }] }] };
   writeFileSync(path, head + jsonl(started({ task_id: "x", note: "no title this time, and longer" }), wake));
@@ -254,7 +371,6 @@ test("OMO task completions ignore a discarded title preview and retain the commi
   const title = (id: string, summary: string) => ({
     type: "message", message: { role: "toolResult", toolName: "task", toolCallId: "spawn", content: "Started", details: { task_id: id, task_summary: summary } },
   });
-  // the preview names its own task, so a title that leaked from it could not be overwritten below
   appendFileSync(path, JSON.stringify(title("preview", "Discarded title")));
   const preview = transcriptPage(source, path);
   expect(toolParts(preview.turns)[0]?.output).toBe("Started");

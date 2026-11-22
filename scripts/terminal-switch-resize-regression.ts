@@ -1,24 +1,18 @@
-/**
- * A recent tab kept live off-screen while another viewer drives the pane at another size: once the
- * tab is selected again its screen must match what a fresh attach at the same size shows.
- */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
-import { createServer } from "../server/index.ts";
 import { paneSendText, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
-import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { pickTab } from "./tab-pick.ts";
+import { gridTestServer, terminalGrid } from "./terminal-grid.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-switch-resize-")));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 if (evidence) mkdirSync(evidence, { recursive: true });
-// Draws a screen for the pty's current width: a right-edge marker per row and a line long enough to wrap.
 const draw = join(root, "draw.sh");
 writeFileSync(draw, [
   "label=$1; set -- $(stty size); c=$2",
@@ -28,12 +22,11 @@ writeFileSync(draw, [
   "printf '\\nDRAWN-%s\\n' \"$label\"",
   "",
 ].join("\n"));
-const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), usage: new UsageService(undefined, []) });
+let server: Awaited<ReturnType<typeof gridTestServer>> | undefined;
 const browsers: Browser[] = [];
 let workspace: string | null = null;
 
-type Viewer = { page: Page; sent: { type: string; pane_id?: string }[]; close: () => Promise<void> };
-async function viewer(width: number, pane: string, panes: string[]): Promise<Viewer> {
+async function viewer(origin: string, width: number, pane: string, panes: string[], allowReplay = false) {
   // Separate browsers: each viewer keeps its own window focus, as two devices do.
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   browsers.push(browser);
@@ -48,9 +41,10 @@ async function viewer(width: number, pane: string, panes: string[]): Promise<Vie
   page.on("websocket", (ws) => ws.on("framesent", ({ payload }) => { sent.push(JSON.parse(String(payload))); }));
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
+  const waitForGrid = await terminalGrid(page, pane);
+  const [grid] = await Promise.all([waitForGrid(15_000, allowReplay), page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`)]);
   await page.locator(`[data-layout-pane="${pane}"] [data-pane-content]`).waitFor();
-  return { page, sent, close: async () => { assert.deepEqual(errors, [], "no browser errors"); await context.close(); } };
+  return { page, sent, grid, waitForGrid, close: async () => { assert.deepEqual(errors, [], "no browser errors"); await context.close(); } };
 }
 const rows = (page: Page, pane: string): Promise<string[]> => page.locator(shownRow(`[data-layout-pane="${pane}"]`))
   .evaluateAll((divs) => divs.map((div) => (div.textContent ?? "").replace(/\s+$/, "")));
@@ -64,6 +58,8 @@ const shows = async (page: Page, pane: string, text: string): Promise<void> => {
 };
 
 try {
+  server = await gridTestServer(root);
+  const origin = `http://127.0.0.1:${server.port}`;
   const made = await workspaceCreate({ cwd: root, label: "switch-resize-fixture" });
   workspace = made.workspace.workspace_id;
   const other = await tabCreate({ workspaceId: workspace, label: "other" });
@@ -75,27 +71,20 @@ try {
     await page.locator(`[data-layout-pane="${id}"] [data-pane-content]`).waitFor();
   };
   const failures: string[] = [];
-  // Each direction: the viewer whose tab is cached, then the one that drives the pty meanwhile.
   for (const [cachedWidth, driverWidth] of [[1280, 390], [390, 1280]] as const) {
     const round = `${cachedWidth}-${driverWidth}`;
-    const cached = await viewer(cachedWidth, target, panes);
-    await paneSendText(target, `sh ${draw} before-${round}\n`);
-    await shows(cached.page, target, `DRAWN-before-${round}`);
+    const cached = await viewer(origin, cachedWidth, target, panes);
+    await Promise.all([shows(cached.page, target, `DRAWN-before-${round}`), paneSendText(target, `sh ${draw} before-${round}\n`)]);
     await select(cached.page, panes[1]!);
-    // The other device drives the pane at its own size and the program draws for it.
-    const driver = await viewer(driverWidth, target, panes);
-    await paneSendText(target, `sh ${draw} hidden-${round}\n`);
-    await shows(driver.page, target, `DRAWN-hidden-${round}`);
+    const driver = await viewer(origin, driverWidth, target, panes);
+    const marker = `DRAWN-hidden-${round}`;
+    await Promise.all([shows(driver.page, target, marker), paneSendText(target, `sh ${draw} hidden-${round}\n`)]);
     await driver.close();
-    // Back on the tab: whatever it paints on the way (the screen it left, the pane as herdr shows it
-    // now, the pane at its own size) is drawn for one grid, never output for another grid parsed
-    // into its own (a row with two edge markers, the long line twice), and it ends as a fresh attach.
     await cached.page.evaluate(({ pane, row }) => {
       const frames: string[][] = [];
       const matched = Promise.withResolvers<void>();
       const state: { frames: string[][]; expected?: string; matched: Promise<void> } = { frames, matched: matched.promise };
       Object.assign(window, { switchState: state });
-      // armed before the switch: every frame painted from the press on, until one is the fresh attach's screen
       document.addEventListener("pointerdown", () => {
         const grab = () => {
           const frame = document.querySelector(`[data-layout-pane="${pane}"]`);
@@ -109,13 +98,22 @@ try {
         requestAnimationFrame(grab);
       }, { once: true, capture: true });
     }, { pane: target, row: shownRow() });
-    await select(cached.page, target);
-    const truth = await viewer(cachedWidth, target, panes);
-    const expected = await rows(truth.page, target);
+    // Starting the reference attach earlier can snapshot the replay for the driver's grid.
+    // Capture the return from pointerdown as before, but open the reference after the
+    // cached device has taken back its grid and parsed herdr's live whole-screen redraw.
+    const [returnedGrid] = await Promise.all([cached.waitForGrid(15_000), select(cached.page, target)]);
+    const truth = await viewer(origin, cachedWidth, target, panes, true);
+    assert.deepEqual(truth.grid, returnedGrid, `${round}: both viewers use the same grid`);
+    const painted = await truth.page.waitForFunction(({ row, count, marker }) => {
+      const lines = [...document.querySelectorAll(row)].map(div => (div.textContent ?? "").replace(/\s+$/, ""));
+      return lines.length === count && lines.some(line => line.includes(marker)) ? lines : null;
+    }, { row: shownRow(`[data-layout-pane="${target}"]`), count: truth.grid.rows, marker }, { timeout: 15_000 });
+    const expected = await painted.jsonValue();
+    await painted.dispose();
+    assert.ok(expected);
     const settled = await cached.page.evaluate(async (expected) => {
       const state = (window as unknown as { switchState: { frames: string[][]; expected?: string; matched: Promise<void> } }).switchState;
       state.expected = expected;
-      // the screen may already match from an earlier frame; the next frame resolves it
       const bound = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000));
       return { matched: await Promise.race([state.matched.then(() => true), bound]), painted: state.frames };
     }, expected.join("\n"));
@@ -140,7 +138,7 @@ try {
   assert.deepEqual(failures, [], failures.join("\n\n"));
 } finally {
   for (const browser of browsers) await browser.close();
-  server.stop();
+  server?.stop();
   if (workspace !== null) await workspaceClose(workspace);
   rmSync(root, { recursive: true, force: true });
 }

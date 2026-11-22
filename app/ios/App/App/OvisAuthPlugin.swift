@@ -27,7 +27,6 @@ public class OvisAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationPre
             return
         }
         DispatchQueue.main.async {
-            // one sign-in at a time: a new one ends the one before
             self.session?.cancel()
             let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "ovis") { callback, error in
                 self.session = nil

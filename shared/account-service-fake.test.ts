@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import nacl from "tweetnacl";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { exportAccountKey, newRecordId, signAccountRecord, type AccountRecord } from "./account-records.ts";
-import { ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
+import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type AccountRecord } from "./account-records.ts";
+import { assembleSnapshot, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
+import { SNAPSHOT_PAGE, ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
 import { answerServerChallenge, deriveServerId, serverChallenge, verifyServerProof, type ProofRoute } from "./relay-server-proof.ts";
 
 const BASE = "https://account.test";
@@ -135,6 +136,28 @@ describe("the fake account service", () => {
     expect(first.admissions?.map(({ key }) => key)).toEqual([waiting.spki]);
     now += ADMISSION_TTL_MS;
     expect(((await pull(service, machine, null)).body as { admissions?: unknown[] }).admissions).toEqual([]);
+  });
+
+  test("a quiet admission is kept apart from the ordinary ones and reaches the PC in a field of its own while the account lists it", async () => {
+    const service = new FakeAccountService();
+    const [mine, phone] = [service.issueToken("acct_1"), service.issueToken("acct_1")];
+    await service.fetch(new Request(`${BASE}/v1/push`, { method: "PUT", body: JSON.stringify({ endpoint: "https://push.test/1", keys: { p256dh: "B".repeat(87), auth: "A".repeat(22) } }), headers: { authorization: `Bearer ${phone}` } }));
+    const machine = pc();
+    await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "PUT", body: JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" }), headers: { authorization: `Bearer ${mine}` } }));
+    const rings = service.rings().length;
+    const [quiet, ordinary] = [await client(), await client()];
+    expect((await service.fetch(post("/v1/admissions", { server_id: machine.serverId, label: "Mac", key: quiet.spki, quiet: "yes" }, mine))).status).toBe(400);
+    expect((await service.fetch(post("/v1/admissions", { server_id: machine.serverId, label: "Mac", key: quiet.spki, quiet: true }, mine))).status).toBe(200);
+    expect(service.rings().length).toBe(rings);
+    await service.fetch(post("/v1/admissions", { server_id: machine.serverId, label: "Mac", key: ordinary.spki }, mine));
+    expect(service.rings().length).toBe(rings + 1);
+    const listed = await (await service.fetch(new Request(`${BASE}/v1/admissions`, { headers: { authorization: `Bearer ${mine}` } }))).json() as { admissions: { key: string }[] };
+    expect(listed.admissions.map(({ key }) => key)).toEqual([ordinary.spki]);
+    const read = async () => (await pull(service, machine, null)).body as { admissions: { key: string }[]; quiet_admissions: { key: string }[] };
+    const first = await read();
+    expect([first.admissions.map(({ key }) => key), first.quiet_admissions.map(({ key }) => key)]).toEqual([[ordinary.spki], [quiet.spki]]);
+    await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${mine}` } }));
+    expect((await read()).quiet_admissions).toEqual([]);
   });
 
   test("an admission lists the system the device sent and the place its request came from; an unknown system is kept as unknown", async () => {
@@ -286,6 +309,22 @@ describe("signing in to the fake account service", () => {
     expect((await poll()).error?.code).toBe("expired_token");
   });
 
+  test("a sign-in made with a device code cannot delete the account, before and after a refresh (web_sign_in_required)", async () => {
+    let now = 0;
+    const service = new FakeAccountService(() => now);
+    const started = await (await service.fetch(post("/v1/signin/github/device", {}))).json() as { device_code: string; user_code: string };
+    service.approveDevice(started.user_code, "acct_head");
+    now += 60_000;
+    const session = await (await token(service, { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: started.device_code })).json() as { access_token: string; refresh_token: string };
+    const del = (access: string) => service.fetch(new Request(`${BASE}/v1/account`, { method: "DELETE", headers: { authorization: `Bearer ${access}` } }));
+    const refused = await del(session.access_token);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("web_sign_in_required");
+    const refreshed = await (await token(service, { grant_type: "refresh_token", refresh_token: session.refresh_token })).json() as { access_token: string };
+    expect((await del(refreshed.access_token)).status).toBe(403);
+    expect(service.deleted("acct_head")).toBe(false);
+  });
+
   test("a device sign-in started with a challenge says so, and redeems only with its verifier", async () => {
     let now = 0;
     const service = new FakeAccountService(() => now);
@@ -366,5 +405,150 @@ describe("the fake account service's doorbell and limits", () => {
     expect(((await (await put(service, token, `/v1/pcs/${extra.serverId}`, { label: "pc", public_key: extra.publicKey, relay: "wss://relay.ovis.sh" })).json()) as { error: { code: string } }).error.code).toBe("directory_full");
     for (let index = 0; index < ADMISSIONS_PER_WINDOW; index++) expect((await service.fetch(post("/v1/admissions", { server_id: last.serverId, label: "Mac", key: (await client()).spki }, token))).status).toBe(200);
     expect((await service.fetch(post("/v1/admissions", { server_id: last.serverId, label: "Mac", key: (await client()).spki }, token))).status).toBe(429);
+  });
+});
+
+describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
+  async function read(service: FakeAccountService, machine: ReturnType<typeof pc>, ask: { snapshot?: string; page?: number }, listed = true) {
+    // only a PC the account lists reads its snapshot
+    if (listed) {
+      const body = JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" });
+      await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "PUT", body, headers: { authorization: `Bearer ${service.issueToken("acct_1")}` } }));
+    }
+    const challenge = await (await service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: machine.publicKey }))).json() as { challenge_id: string; frame: string };
+    const proof = answerServerChallenge(challenge.frame, machine.keys.secretKey, { server_id: machine.serverId, role: "account", connection_id: challenge.challenge_id });
+    const response = await service.fetch(post("/v1/pc/snapshot", { server_id: machine.serverId, challenge_id: challenge.challenge_id, proof, account: "acct_1", ...ask }));
+    return { status: response.status, body: await response.json() as AccountSnapshotPage & { error?: { code: string } } };
+  }
+
+  test("with the flag off the routes do not exist", async () => {
+    const service = new FakeAccountService();
+    expect((await read(service, pc(), {}, false)).status).toBe(404);
+    expect((await service.fetch(post("/v1/safety-records", { record: {} }, service.issueToken("acct_1")))).status).toBe(404);
+  });
+
+  test("every page of a read is one snapshot, and a dropped snapshot answers snapshot_gone", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const machine = pc();
+    const keys = await Promise.all(Array.from({ length: SNAPSHOT_PAGE + 1 }, client));
+    keys.forEach((device, index) => expect(service.registerDevice("acct_1", device.spki, `Device ${index}`)).toBe(index + 1));
+    const first = await read(service, machine, {});
+    service.registerDevice("acct_1", (await client()).spki, "Later");
+    const second = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
+    const whole = assembleSnapshot([parseSnapshotPage(first.body), parseSnapshotPage(second.body)], { account: "acct_1", server_id: machine.serverId, lastApplied: null });
+    expect(whole.devices.map((device) => device.no)).toEqual(keys.map((_, index) => index + 1));
+    const elsewhere = await read(service, pc(), { snapshot: first.body.snapshot, page: 1 });
+    expect({ status: elsewhere.status, code: elsewhere.body.error?.code }).toEqual({ status: 410, code: "snapshot_gone" });
+    service.dropSnapshots();
+    const gone = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
+    expect({ status: gone.status, code: gone.body.error?.code }).toEqual({ status: 410, code: "snapshot_gone" });
+  });
+
+  test("a PC the account does not list reads nothing of it", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    service.registerDevice("acct_1", (await client()).spki, "Phone");
+    const stranger = await read(service, pc(), {}, false);
+    expect({ status: stranger.status, code: stranger.body.error?.code }).toEqual({ status: 403, code: "not_listed" });
+  });
+
+  test("removed keys are paged like devices, so no page passes the page size", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const machine = pc();
+    const keys = await Promise.all(Array.from({ length: SNAPSHOT_PAGE + 1 }, client));
+    for (const [index, device] of keys.entries()) {
+      service.registerDevice("acct_1", device.spki, `Device ${index}`);
+      service.removeDevice("acct_1", device.spki);
+    }
+    const first = await read(service, machine, {});
+    expect({ last: first.body.last, removed: first.body.removed.length }).toEqual({ last: false, removed: SNAPSHOT_PAGE });
+    const second = await read(service, machine, { snapshot: first.body.snapshot, page: 1 });
+    const whole = assembleSnapshot([parseSnapshotPage(first.body), parseSnapshotPage(second.body)], { account: "acct_1", server_id: machine.serverId, lastApplied: null });
+    expect(whole.removed.length).toBe(SNAPSHOT_PAGE + 1);
+  });
+
+  test("only a list-eligible older device lifts a block; otherwise the freeze stays (T52)", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const token = service.issueToken("acct_1");
+    const [eligibleOld, unready, blocked] = [await client(), await client(), await client()];
+    const eligibleNo = service.registerDevice("acct_1", eligibleOld.spki, "Phone");
+    const unreadyNo = service.registerDevice("acct_1", unready.spki, "Old tablet", false);
+    const blockedNo = service.registerDevice("acct_1", blocked.spki, "Laptop");
+    const signed = { v: 1 as const, account: "acct_1", signed_at: new Date().toISOString() };
+    const block = await signSafetyRecord({ ...signed, kind: "block", target: blocked.spki, target_no: blockedNo, signer: eligibleOld.spki, signer_no: eligibleNo, nonce: newRecordId() }, eligibleOld.pair.privateKey);
+    expect((await service.fetch(post("/v1/safety-records", { record: block }, token))).status).toBe(200);
+    const early = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: unready.spki, signer_no: unreadyNo }, unready.pair.privateKey);
+    const response = await service.fetch(post("/v1/safety-records", { record: early }, token));
+    expect({ status: response.status, code: ((await response.json()) as { error?: { code: string } }).error?.code }).toEqual({ status: 403, code: "not_eligible" });
+    const machine = pc();
+    const body = JSON.stringify({ label: "pc", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" });
+    await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } }));
+    expect(parseSnapshotPage((await read(service, machine, {})).body).freezes.map((line) => line.block)).toEqual([block.id]);
+  });
+
+  test("a block from an older device commits whole and a lift ends its freeze line", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const token = service.issueToken("acct_1");
+    const [older, newer] = [await client(), await client()];
+    const olderNo = service.registerDevice("acct_1", older.spki, "Phone");
+    const newerNo = service.registerDevice("acct_1", newer.spki, "Laptop");
+    const signed = { v: 1 as const, account: "acct_1", signed_at: new Date().toISOString() };
+    const refusal = async (record: unknown) => {
+      const response = await service.fetch(post("/v1/safety-records", { record }, token));
+      return { status: response.status, code: ((await response.json()) as { error?: { code: string } }).error?.code };
+    };
+    const wrongWay = await signSafetyRecord({ ...signed, kind: "block", target: older.spki, target_no: olderNo, signer: newer.spki, signer_no: newerNo, nonce: newRecordId() }, newer.pair.privateKey);
+    expect(await refusal(wrongWay)).toEqual({ status: 403, code: "signer_not_older" });
+    expect(await refusal({ ...wrongWay, kind: "rename" })).toEqual({ status: 400, code: "record_invalid" });
+    const block = await signSafetyRecord({ ...signed, kind: "block", target: newer.spki, target_no: newerNo, signer: older.spki, signer_no: olderNo, nonce: newRecordId() }, older.pair.privateKey);
+    expect((await service.fetch(post("/v1/safety-records", { record: block }, token))).status).toBe(200);
+    expect((await service.fetch(post("/v1/safety-records", { record: block }, token))).status).toBe(200);
+    const again = await signSafetyRecord({ ...signed, kind: "block", target: newer.spki, target_no: newerNo, signer: older.spki, signer_no: olderNo, nonce: newRecordId() }, older.pair.privateKey);
+    expect(await refusal(again)).toEqual({ status: 409, code: "target_removed" });
+    const after = parseSnapshotPage((await read(service, pc(), {})).body);
+    expect({ devices: after.devices.map((d) => d.no), removed: after.removed.map((r) => r.no), blocks: after.blocks.map((b) => b.id), freezes: after.freezes })
+      .toEqual({ devices: [olderNo], removed: [newerNo], blocks: [block.id], freezes: [{ block: block.id, target: newer.spki, after: newerNo }] });
+    // P16, G12: while the freeze stands, a key above its line is not list-eligible and signs nothing
+    const later = await client();
+    const laterNo = service.registerDevice("acct_1", later.spki, "Tablet");
+    const frozen = parseSnapshotPage((await read(service, pc(), {})).body);
+    expect(frozen.devices.map((d) => [d.no, d.eligible])).toEqual([[olderNo, true], [laterNo, false]]);
+    const fromFrozen = await signSafetyRecord({ ...signed, kind: "block", target: older.spki, target_no: olderNo, signer: later.spki, signer_no: laterNo, nonce: newRecordId() }, later.pair.privateKey);
+    expect(await refusal(fromFrozen)).toEqual({ status: 403, code: "frozen" });
+    const lift = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: older.spki, signer_no: olderNo }, older.pair.privateKey);
+    expect((await service.fetch(post("/v1/safety-records", { record: lift }, token))).status).toBe(200);
+    const lifted = parseSnapshotPage((await read(service, pc(), {})).body);
+    expect({ freezes: lifted.freezes, lifts: lifted.lifts.map((l) => l.id), version: lifted.version > after.version }).toEqual({ freezes: [], lifts: [lift.id], version: true });
+  });
+
+  test("P16, G12: a key above an active freeze line is left off the list, and a frozen key's block or lift is refused frozen", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const token = service.issueToken("acct_1");
+    const [older, target, newest, later] = [await client(), await client(), await client(), await client()];
+    const olderNo = service.registerDevice("acct_1", older.spki, "Phone");
+    const targetNo = service.registerDevice("acct_1", target.spki, "Laptop");
+    const newestNo = service.registerDevice("acct_1", newest.spki, "Tablet");
+    const laterNo = service.registerDevice("acct_1", later.spki, "Watch");
+    const signed = { v: 1 as const, account: "acct_1", signed_at: new Date().toISOString() };
+    const send = async (record: unknown) => {
+      const response = await service.fetch(post("/v1/safety-records", { record }, token));
+      return { status: response.status, code: ((await response.json()) as { error?: { code: string } }).error?.code };
+    };
+    const block = await signSafetyRecord({ ...signed, kind: "block", target: target.spki, target_no: targetNo, signer: older.spki, signer_no: olderNo, nonce: newRecordId() }, older.pair.privateKey);
+    expect((await send(block)).status).toBe(200);
+    const frozen = parseSnapshotPage((await read(service, pc(), {})).body);
+    expect(frozen.devices.filter((device) => device.eligible).map((device) => device.no)).toEqual([olderNo]);
+    const byFrozen = await signSafetyRecord({ ...signed, kind: "block", target: later.spki, target_no: laterNo, signer: newest.spki, signer_no: newestNo, nonce: newRecordId() }, newest.pair.privateKey);
+    expect(await send(byFrozen)).toEqual({ status: 403, code: "frozen" });
+    const liftByFrozen = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: newest.spki, signer_no: newestNo }, newest.pair.privateKey);
+    expect(await send(liftByFrozen)).toEqual({ status: 403, code: "frozen" });
+    const lift = await signSafetyRecord({ ...signed, kind: "lift", target: block.id, signer: older.spki, signer_no: olderNo }, older.pair.privateKey);
+    expect((await send(lift)).status).toBe(200);
+    expect(parseSnapshotPage((await read(service, pc(), {})).body).devices.filter((device) => device.eligible).map((device) => device.no)).toEqual([olderNo, newestNo, laterNo]);
   });
 });

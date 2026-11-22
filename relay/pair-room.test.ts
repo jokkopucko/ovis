@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { startBunRelay, type BunRelay } from "./bun.ts";
-import { KEEPALIVE_PING, KEEPALIVE_PONG } from "./core.ts";
+import { IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG } from "./core.ts";
 import { PAIR_CLOSE, PAIR_GUESTS_PER_ROOM, PAIR_MAX_FRAME, ATTEMPT_BYTES } from "./pair-room.ts";
 import { Peer, newServer, type TestServer } from "./relay-test-client.ts";
 import { PAIR_ATTEMPT_BYTES, PAIR_CLOSE as SHARED_PAIR_CLOSE } from "../shared/relay-pair-code.ts";
+import { PAIR_APPROVAL_MS } from "../shared/relay-pair-sas.ts";
 import { SERVER_KEY_MISMATCH, SERVER_PROOF_CLOSE, answerServerChallenge, type ProofRoute } from "../shared/relay-server-proof.ts";
 
 let relay: BunRelay;
@@ -15,7 +16,6 @@ beforeAll(() => {
 afterAll(() => relay.stop());
 
 let counter = 0;
-/** a nameplate no other test uses */
 const nameplate = () => { counter++; return `${"0123456789ABCDEFGHJKMNPQRSTVWXYZ"[counter >> 5]}${"0123456789ABCDEFGHJKMNPQRSTVWXYZ"[counter & 31]}Q`; };
 const open = (plate: string, role: "host" | "guest") => Peer.open(`${base}/v1/pair?nameplate=${plate}&role=${role}&v=1`);
 const hex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -192,4 +192,8 @@ describe("pairing rooms beside PC rooms", () => {
       host.socket.close();
     } finally { await small.stop(); }
   });
+});
+
+test("a digit comparison ends before the relay closes the socket as idle", () => {
+  expect(PAIR_APPROVAL_MS).toBeLessThan(IDLE_MS);
 });

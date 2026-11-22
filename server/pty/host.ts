@@ -2,14 +2,13 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { version as builtVersion } from "../../package.json";
+import { COMPILED, ROOT } from "../entries.ts";
 import { legacyName } from "../legacy-env.ts";
 
-/** Where `cargo build --release` in crates/pty-sidecar puts the Rust PTY host. */
-export const RUST_SIDECAR_BUILD = join(import.meta.dir, "..", "..", "crates", "pty-sidecar", "target", "release", "ovis-pty-sidecar");
-/** Where a release's host is installed beside the server (scripts/pty-sidecar.ts install, a remote PC bundle's bin/). */
-export const RUST_SIDECAR_INSTALLED = join(import.meta.dir, "..", "..", "bin", "ovis-pty-sidecar");
+export const RUST_SIDECAR_BUILD = join(ROOT, "crates", "pty-sidecar", "target", "release", "ovis-pty-sidecar");
+export const RUST_SIDECAR_INSTALLED = join(ROOT, "bin", "ovis-pty-sidecar");
 
-/** each installed binary's SHA-256, one entry per path, kept while its file state stays the same */
 const digests = new Map<string, { state: string; sha256: string }>();
 
 /** the binary's SHA-256, hashed again only when its mtime, size or inode moved (the installers replace it by rename, never in place) */
@@ -26,14 +25,14 @@ function binaryDigest(installed: string): string {
 /**
  * Whether the installed host is the one its record (`<binary>.json`, written by scripts/pty-sidecar.ts
  * install or the remote bundle's builder) vouches for: the same SHA-256, for the version in the
- * package.json beside the server. The record and the version are read on every call (both are small),
+ * package.json beside the server (the compiled binary's own version). The record and the version are read on every call (both are small),
  * so a rewrite of either within one tick of the file clock still counts; only the binary's hash is
  * cached, so attaches do not hash it again.
  */
-export function installedHostVouched(installed: string, packageJson = join(dirname(installed), "..", "package.json")): boolean {
+export function installedHostVouched(installed: string, packageJson: string | null = COMPILED ? null : join(dirname(installed), "..", "package.json")): boolean {
   try {
     const record = JSON.parse(readFileSync(`${installed}.json`, "utf8")) as { sha256?: unknown; version?: unknown };
-    const version = (JSON.parse(readFileSync(packageJson, "utf8")) as { version?: unknown }).version;
+    const version = packageJson === null ? builtVersion : (JSON.parse(readFileSync(packageJson, "utf8")) as { version?: unknown }).version;
     return typeof record.sha256 === "string" && record.version === version && binaryDigest(installed) === record.sha256;
   } catch {
     return false;
@@ -51,20 +50,17 @@ const verdicts = new Map<string, RustHostVerdict>();
 const said = new Set<string>();
 let disabled = false;
 
-/** Says `message` once per process: a warning (or log line) about the host, never one per attach. */
 function once(message: string, print: (message: string) => void = console.error): void {
   if (said.has(message)) return;
   said.add(message);
   print(message);
 }
 
-/** Why a spawn threw: its errno code (ENOENT, EACCES, ENOEXEC) when it has one. */
 export function spawnErrorReason(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   return "code" in error && error.code != null ? String(error.code) : error.message;
 }
 
-/** The configured binary, expanding only a leading home-directory shorthand. */
 export function rustSidecarPath(env: Record<string, string | undefined> = process.env, home = homedir()): string {
   const binary = env["OVIS_PTY_SIDECAR_BIN"] || defaultRustSidecar();
   if (binary === "~") return home;
@@ -100,8 +96,7 @@ export function probeRustHost(binary: string, env: Record<string, string | undef
 }
 
 /**
- * The Rust PTY host to run (OVIS_PTY_SIDECAR_BIN, else the installed release's, else a local build): it
- * takes pty-host.mjs's arguments and frames. It is the default on Linux and macOS once it passes its
+ * It is the default on Linux and macOS once it passes its
  * check; OVIS_PTY_SIDECAR=node asks for the Node sidecar, which is also the fallback.
  */
 export function rustSidecar(env: Record<string, string | undefined> = process.env): string | null {
@@ -120,7 +115,6 @@ export function rustSidecar(env: Record<string, string | undefined> = process.en
     verdicts.set(binary, verdict);
   }
   if (!verdict.ok) {
-    // a checkout nobody installed a release's host into (a fork, a branch, an offline install) says it once, quietly
     if (!choice) {
       once(`Rust PTY host unavailable (${binary}: ${verdict.reason})`, console.log);
       return null;
@@ -132,14 +126,12 @@ export function rustSidecar(env: Record<string, string | undefined> = process.en
   return binary;
 }
 
-/** Stops starting Rust hosts until this server restarts. */
 export function disableRustHost(reason: string): void {
   if (disabled) return;
   disabled = true;
   once(`Rust PTY host: ${reason}; using the Node PTY sidecar until this server restarts`);
 }
 
-/** Forgets cached verdicts, the disable and what was said. Tests only. */
 export function resetPtyHostForTests(): void {
   verdicts.clear();
   said.clear();

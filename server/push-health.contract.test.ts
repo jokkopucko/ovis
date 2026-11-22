@@ -8,12 +8,6 @@ import { DeviceStore } from "./devices.ts";
 import { createServer } from "./index.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 
-/**
- * POST /api/push/status through the real server: who may read a subscription's delivery record.
- * Every server here keeps its push state in a temp dir and delivers to the fake push service of
- * push.fake.ts; no real device is paged. The herdr session behind the server is the isolated
- * test one (scripts/test-herdr.ts); nothing here touches a pane.
- */
 const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
 const NOT_FOUND = { error: { code: "subscription_not_found", message: "this device is not subscribed" } };
 
@@ -29,7 +23,6 @@ it("answers a paired device, a token sign-in and a watching device about their o
   const store = new DeviceStore(root);
   const watch = store.pair(store.startPairing().code, "Watch", "watch")!;
   store.match(watch.token);
-  // the push service's clock: advanced by the test, so two deliveries never share a millisecond by chance
   let clock = Date.now();
   const server = createServer({ port: 0, stateDir: root, token: "test-push-health", tailscaleOwner: null, machines: false, pushLoopbackHttp: true, statusNow: () => clock });
   const base = `http://127.0.0.1:${server.port}`;
@@ -48,7 +41,6 @@ it("answers a paired device, a token sign-in and a watching device about their o
     const b = { cookie: (await pair("B")).cookie };
     const watching = { cookie: `${DEVICE_COOKIE}=${watch.token}` };
 
-    // the paired owner: registered, then the test push it sent is its last success
     expect((await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: { ...guard, ...a }, body: JSON.stringify({ subscription: phone.subscription }) })).status).toBe(204);
     expect(await status(base, a, phone.subscription)).toEqual({ status: 200, body: { registered: true, last_success_at: null, last_failure_at: null, last_failure: null } });
     expect((await fetch(`${base}/api/push/test`, { method: "POST", headers: { ...guard, ...a }, body: JSON.stringify({ endpoint: phone.subscription.endpoint }) })).status).toBe(204);
@@ -163,7 +155,6 @@ it("never lets a watching device clear another owner's retired endpoint and regi
   const watching = { ...guard, cookie: `${DEVICE_COOKIE}=${watch.token}` };
   const victim = await startFakePushService();
   try {
-    // the owner's subscription is retired by its push service
     expect((await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: owner, body: JSON.stringify({ subscription: victim.subscription }) })).status).toBe(204);
     victim.answerWith(410);
     expect((await fetch(`${base}/api/push/test`, { method: "POST", headers: owner, body: JSON.stringify({ endpoint: victim.subscription.endpoint }) })).status).toBe(410);

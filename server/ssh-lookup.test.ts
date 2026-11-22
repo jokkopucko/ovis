@@ -3,7 +3,6 @@ import { expect, it, jest } from "bun:test";
 import { sshCandidates } from "./ssh-candidates.ts";
 import { resolver, sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 
-// the SSH list's name lookups (server/ssh-lookup.ts), through the list that waits on them
 it("shares one listing between concurrent requests and keeps the lookups in flight bounded across listings", async () => {
   const dir = sshDir({ config: Array.from({ length: 40 }, (_, index) => `Host n${index}`).join("\n") });
   let statusReads = 0;
@@ -46,7 +45,6 @@ it("never hands a lookup no listing waits on any more to a later listing, which 
   const resolve = (host: string): Promise<string[]> => {
     looked.push(host);
     if (host === "box" && answerOld === undefined) return new Promise((answer) => { answerOld = answer; });
-    // the first lookup answers what box resolved to before the change, once the second listing has asked for box
     if (host === "probe") answerOld?.(["100.64.0.1"]);
     return Promise.resolve(table[host] ?? []);
   };
@@ -65,11 +63,6 @@ it("leaves a host whose lookup is late or fails unclaimed, never matched by its 
   }
 });
 
-/**
- * A resolver whose calls stay unanswered until `answer(name)` (which answers later calls at once), except the names
- * `ready` answers; `unanswered` counts the calls outstanding now and at most, and `called(count)` settles once that
- * many calls were made
- */
 function heldResolver(ready: Record<string, string[]>) {
   const looked: string[] = [];
   const held = new Map<string, (addresses: string[]) => void>();

@@ -24,26 +24,29 @@ async function linkToken(fake: FakeAccountService, bearer: string, provider: Acc
 describe("the sign-ins a service offers", () => {
   it("lists Google only when the service says it is set up for it, and a PC's page only the device ones", async () => {
     const fake = new FakeAccountService();
-    fake.offer(["github", "google"], ["github"]);
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github", "google"], device: ["github"], page: [] });
-    fake.offer(["github"], ["github"]);
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github"], device: ["github"], page: [] });
+    fake.offerSignIns(["github", "google"], ["github"]);
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github", "google"], listed: ["github", "google"], device: ["github"], page: [] });
+    fake.offerSignIns(["github"], ["github"]);
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).toEqual({ providers: ["github"], listed: ["github"], device: ["github"], page: [] });
   });
 
   it("names the sign-ins the Ovis link page offers, only among those set up", async () => {
     const fake = new FakeAccountService();
-    fake.offer(["github", "google"], ["github"]);
+    fake.offerSignIns(["github", "google"], ["github"]);
     fake.offerLinkPage(["github", "google", "apple"]);
     expect((await offeredProviders(SERVICE, ["github"], { fetch: fake.fetch })).page).toEqual(["github", "google"]);
   });
 
   it("keeps the build's own list when the service cannot say, so no Google button leads nowhere", async () => {
     const down = async () => new Response("", { status: 404 });
-    expect(await offeredProviders(SERVICE, ["github", "apple"], { fetch: down })).toEqual({ providers: ["github", "apple"], device: ["github"], page: [] });
+    expect(await offeredProviders(SERVICE, ["github", "apple"], { fetch: down })).toEqual({ providers: ["github", "apple"], listed: null, device: ["github"], page: [] });
     const offline = async (): Promise<Response> => { throw new TypeError("offline"); };
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: offline })).toEqual({ providers: ["github"], device: ["github"], page: [] });
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: offline })).toEqual({ providers: ["github"], listed: null, device: ["github"], page: [] });
     const odd = async () => Response.json({ providers: ["gitlab"], device: "google" });
-    expect(await offeredProviders(SERVICE, ["github"], { fetch: odd })).toEqual({ providers: ["github"], device: ["github"], page: [] });
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: odd })).toEqual({ providers: ["github"], listed: null, device: ["github"], page: [] });
+    // an answer naming none keeps the build's buttons, and says it named none
+    const none = async () => Response.json({ providers: [], device: [] });
+    expect(await offeredProviders(SERVICE, ["github"], { fetch: none })).toEqual({ providers: ["github"], listed: [], device: ["github"], page: [] });
   });
 });
 
@@ -156,7 +159,6 @@ describe("sign-in methods", () => {
       start: async () => "http://127.0.0.1:4567/callback",
       open: async (url: string) => new URL((await fake.fetch(url)).headers.get("location") ?? "").search.slice(1),
     };
-    // the page redeems with the browser's fetch, as the desktop app's page does
     const real = globalThis.fetch;
     globalThis.fetch = Object.assign(fake.fetch, { preconnect: real.preconnect });
     try {
@@ -206,7 +208,6 @@ describe("sign-in methods", () => {
     let linked: Awaited<ReturnType<typeof redirectSignIn>> | undefined;
     await expect(service.addMethod("google", async (token, bearer) => {
       linked = await redirectSignIn(fake, "google", store, { linkToken: token, bearer });
-      // another tab signs out while the token answer is still on its way
       await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
       return linked;
     })).rejects.toBeInstanceOf(SignedOutError);

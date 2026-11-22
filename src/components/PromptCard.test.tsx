@@ -123,7 +123,6 @@ describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
     expect(html).toContain("<strong><span>route</span></strong>");
     expect(html).toContain('href="https://example.com/guide"');
     expect(html).toContain("<code>local</code>");
-    // an option answers when clicked: its link is its words
     expect(html).not.toContain("https://example.com/relay");
     expect(html).toContain("the relay");
   });
@@ -193,7 +192,6 @@ describe("a question's typed answer survives a page reload (G-008)", () => {
     const savedAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
     Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { ...listen, matchMedia: () => ({ matches: false, ...listen }), sessionStorage: storage(session), localStorage: storage(local) } });
-    // the owner's copy (ChatView's ovis:card-text:, kept across a reload)
     let owned: string | undefined;
     const card = (initialText?: string) => createElement(PromptCard, {
       paneId: "w1:p1", prompt: asked, onPromptChanged: () => {}, onAnswered: () => {}, onTextChange: (text) => { owned = text; }, ...(initialText === undefined ? {} : { initialText }),
@@ -206,7 +204,6 @@ describe("a question's typed answer survives a page reload (G-008)", () => {
       expect(owned).toBe("이 질문의 답변 초안 보존 시험");
       expect([...session.keys(), ...local.keys()].filter((key) => key.startsWith("ovis:prompt-draft:"))).toEqual([]);
 
-      // the page reloads: a new card, with only what its owner hands it
       await act(async () => { renderer!.unmount(); });
       await act(async () => { renderer = create(card(owned)); });
       expect(field(renderer!).props.value).toBe("이 질문의 답변 초안 보존 시험");

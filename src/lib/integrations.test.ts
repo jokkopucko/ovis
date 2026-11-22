@@ -16,7 +16,6 @@ it("answers an unsupported bridge's 404 as unsupported, and any other failure as
 it("shows an outcome only for the PC it was asked of", () => {
   const failed = { machineId: "pc-a", outcome: { kind: "error", message: "boom" } } as const;
   expect(outcomeFor(failed, "pc-a")).toEqual(failed.outcome);
-  // after a switch to another PC nothing of the old one is left: loading, not its rows or its error
   expect(outcomeFor(failed, "pc-b")).toBeNull();
   expect(outcomeFor(null, "pc-b")).toBeNull();
 });

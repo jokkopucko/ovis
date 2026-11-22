@@ -34,7 +34,6 @@ it("validates breadcrumbs against process age, canonical cwd and the native sess
     expect(terminalBreadcrumb(agent, "/", "ttys003", 0)).toBeNull();
     expect(terminalBreadcrumb(agent, home, "../sessions/session.jsonl", 0)).toBeNull();
     utimesSync(marker, new Date(0), new Date(0));
-    // a session written after the start, by whichever process, does not refresh a breadcrumb older than it
     const startedAt = Date.now() - 60_000;
     utimesSync(path, new Date(), new Date());
     expect(terminalBreadcrumb(agent, home, "ttys003", startedAt)).toBeNull();
@@ -302,7 +301,6 @@ it("shares one fresh Windows process-table read between concurrent final checks"
     const options = {
       platform: "win32",
       now: f.options.now,
-      // Hold both lookups' final process_info reads until both arrive, so their final checks overlap.
       processInfo: async () => {
         if (++infoReads > 2) {
           if (infoReads === 4) bothFinal();
@@ -329,7 +327,6 @@ it("starts another fresh Windows read when the pending read predates its initial
   const gate = Promise.withResolvers<void>();
   const firstFresh = Promise.withResolvers<void>();
   try {
-    // Given a final read already pending before the second lookup starts.
     const path = f.sessionFile("session-a");
     f.publish(f.record(200, "session-a", path));
     const rows = [{ pid: 200, parent: 100, path: "gjc.exe", commandLine: "gjc.exe", started: 1_000 }];
@@ -347,7 +344,6 @@ it("starts another fresh Windows read when the pending read predates its initial
     const first = gjcTranscriptForPane("pane-a", f.cwd, f.home, options);
     await firstFresh.promise;
 
-    // When a second lookup reaches its own final check while that read is pending.
     let infoReads = 0;
     const second = gjcTranscriptForPane("pane-b", f.cwd, f.home, {
       ...options,
@@ -355,8 +351,6 @@ it("starts another fresh Windows read when the pending read predates its initial
         const final = ++infoReads === 2;
         return { process_info: {
           get shell_pid() {
-            // Release at the exact final-check entry, before it chooses a table.
-            // Promise settlement cannot clear the pending entry in this synchronous call.
             if (final) gate.resolve();
             return 100;
           },
@@ -364,7 +358,6 @@ it("starts another fresh Windows read when the pending read predates its initial
       },
     });
 
-    // Then it starts its own read instead of sharing evidence older than its initial check.
     expect(await second).toBeNull();
     expect(tableReads).toBe(3);
     expect(await first).toBe(realpathSync(path));
@@ -393,11 +386,9 @@ it("cancels a running identity read when its pane ends", async () => {
   } finally { forgetGjcState(); f.done(); }
 });
 
-/** macOS, where a start is read with `ps`: answered by an awaited child, and any synchronous spawn recorded */
 async function onDarwinKernel<T>(startedMs: number, run: (spawned: { mock: { calls: unknown[] } }, blocking: { mock: { calls: unknown[] } }) => Promise<T>): Promise<T> {
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   Object.defineProperty(process, "platform", { value: "darwin" });
-  // the kernel's process record answers; no ps runs, awaited or not (#1404)
   const kernel = spyOn(darwinProcess, "darwinStartTime").mockReturnValue(BigInt(startedMs) * 1000n);
   const blocking = spyOn(Bun, "spawnSync");
   const spawned = spyOn(Bun, "spawn");
@@ -409,7 +400,6 @@ async function onDarwinKernel<T>(startedMs: number, run: (spawned: { mock: { cal
   }
 }
 
-// GJC discovery runs this lookup for every snapshot a pending message is checked against (#1545)
 it("reads the GJC process's birth from the kernel on macOS, with no ps child", async () => {
   const f = nativeFixture();
   const clock = spyOn(Date, "now").mockReturnValue(61_000);

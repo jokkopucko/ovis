@@ -3,7 +3,6 @@ import { createDayStore, localDayKey, msUntilNextLocalMidnight, type DayClock } 
 import { formatChatTimestamp } from "./chatTimestamp.ts";
 import { translate } from "./i18n.ts";
 
-/** a fake clock: time moves only by `advance`, which runs the timers that come due on the way */
 function fakeClock(startMs: number) {
   let now = startMs;
   let nextId = 1;
@@ -27,7 +26,6 @@ function fakeClock(startMs: number) {
     }
     now = end;
   };
-  /** the clock jumps without running timers, as when a device sleeps and its timer clock stops */
   const sleep = (ms: number): void => { now += ms; };
   const resume = (): void => { for (const fn of [...resumers]) fn(); };
   return { clock, advance, sleep, resume, timers, resumers };
@@ -60,7 +58,6 @@ describe("createDayStore", () => {
     fake.advance(MIN);
     expect(calls).toBe(1);
     expect(store.getSnapshot()).toBe(new Date(2026, 9, 14).getTime());
-    // and again the next midnight, from the re-armed timer
     fake.advance(24 * 60 * MIN);
     expect(calls).toBe(2);
     stop();
@@ -99,7 +96,6 @@ describe("createDayStore", () => {
     expect(store.getSnapshot()).toBe(new Date(2026, 9, 14).getTime());
     fake.resume();
     expect(calls).toBe(1);
-    // the stale timer was dropped for one aimed at the next midnight: no second announcement
     fake.advance(60 * MIN);
     expect(calls).toBe(1);
     expect(fake.timers.size).toBe(1);

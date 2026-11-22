@@ -4,11 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installStatusline, removeStatusline } from "./statusline-install.ts";
 
-/**
- * Changes to the status line in separate processes, interleaved at the points where taking over an
- * abandoned lock could let two of them hold it at once. Each contender stops at its point, says so on
- * stdout, and waits on a FIFO the test writes to; nothing waits on time.
- */
 const ROLE = process.env["STATUSLINE_LOCK_ROLE"];
 const ORIGINAL = JSON.stringify({ statusLine: { type: "command", command: "printf original" } });
 
@@ -28,7 +23,6 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
     const read = fs.readFileSync as Fs;
     const write = fs.writeFileSync as Fs;
     let once = false;
-    // takeover: stops right after reading the owner of the lock it found held
     if (ROLE === "takeover") {
       spyOn(fs, "readFileSync").mockImplementation(((path: unknown, ...rest: unknown[]) => {
         const value = read(path, ...rest);
@@ -36,8 +30,6 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
         return value;
       }) as typeof fs.readFileSync);
     }
-    // discard (a takeover) and release (an install letting go): stop part way through deleting a lock,
-    // its owner file already gone
     if (ROLE === "discard" || ROLE === "release") {
       const remove = fs.rmSync as Fs;
       spyOn(fs, "rmSync").mockImplementation(((path: unknown, ...rest: unknown[]) => {
@@ -50,14 +42,12 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
         return remove(path, ...rest);
       }) as typeof fs.rmSync);
     }
-    // install: stops while holding the lock, part way through
     if (ROLE === "install") {
       spyOn(fs, "writeFileSync").mockImplementation(((path: unknown, ...rest: unknown[]) => {
         if (!once && String(path).includes("/.statusline-capture.ts.")) { once = true; stop("installing"); }
         return write(path, ...rest);
       }) as typeof fs.writeFileSync);
     }
-    // remove: stops while holding the lock, after reading settings.json
     if (ROLE === "remove") {
       spyOn(fs, "readFileSync").mockImplementation(((path: unknown, ...rest: unknown[]) => {
         const value = read(path, ...rest);
@@ -124,9 +114,9 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
       fs.mkdirSync(join(config, ".herdr-statusline.lock"));
       fs.writeFileSync(join(config, ".herdr-statusline.lock", "owner"), `${Bun.spawnSync(["true"]).pid}:${crypto.randomUUID()}`);
       const takeover = contender("takeover");
-      expect(await takeover.next()).toBe("read-owner"); // has judged the lock abandoned
+      expect(await takeover.next()).toBe("read-owner");
       const install = contender("install");
-      expect(await install.next()).toMatch(/^RESULT_ERROR:.*in progress/); // a second takeover meanwhile is refused
+      expect(await install.next()).toMatch(/^RESULT_ERROR:.*in progress/);
       takeover.resume();
       expect(await takeover.next()).toMatch(/^RESULT:installed/);
       expect(await takeover.exited()).toBe(0);
@@ -148,9 +138,9 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
       fs.mkdirSync(join(config, ".herdr-statusline.lock"));
       fs.writeFileSync(join(config, ".herdr-statusline.lock", "owner"), `${Bun.spawnSync(["true"]).pid}:${crypto.randomUUID()}`);
       const discard = contender("discard");
-      expect(await discard.next()).toBe("emptied"); // deleting the abandoned lock, its owner file gone
+      expect(await discard.next()).toBe("emptied");
       const install = contender("install");
-      expect(await install.next()).toBe("installing"); // took the lock meanwhile and holds it
+      expect(await install.next()).toBe("installing");
       const held = lockOwner();
       expect(held).not.toBeNull();
       discard.resume();
@@ -168,9 +158,9 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
     const { config, contender, cleanup, lockOwner } = setup();
     try {
       const release = contender("release");
-      expect(await release.next()).toBe("emptied"); // installed, deleting its own lock, owner file gone
+      expect(await release.next()).toBe("emptied");
       const remove = contender("remove");
-      expect(await remove.next()).toBe("removing"); // took the lock meanwhile and holds it
+      expect(await remove.next()).toBe("removing");
       const held = lockOwner();
       expect(held).not.toBeNull();
       release.resume();
@@ -189,18 +179,18 @@ describe.skipIf(process.platform === "win32")("status-line lock", () => {
     const { config, contender, cleanup, lockOwner } = setup();
     try {
       const install = contender("install");
-      expect(await install.next()).toBe("installing"); // holds the lock
+      expect(await install.next()).toBe("installing");
       const takeover = contender("takeover");
-      expect(await takeover.next()).toBe("read-owner"); // has read the install's owner, still live
+      expect(await takeover.next()).toBe("read-owner");
       install.resume();
-      expect(await install.next()).toMatch(/^RESULT:installed/); // released the lock
-      expect(await install.exited()).toBe(0); // and its process is gone
+      expect(await install.next()).toMatch(/^RESULT:installed/);
+      expect(await install.exited()).toBe(0);
       const remove = contender("remove");
-      expect(await remove.next()).toBe("removing"); // took the free lock and holds it
+      expect(await remove.next()).toBe("removing");
       const held = lockOwner();
       expect(held).not.toBeNull();
       takeover.resume();
-      expect(await takeover.next()).toMatch(/^RESULT_ERROR:.*in progress/); // the lock it judged is not the one held now
+      expect(await takeover.next()).toMatch(/^RESULT_ERROR:.*in progress/);
       expect(lockOwner()).toBe(held);
       remove.resume();
       expect(await remove.next()).toMatch(/^RESULT:removed/);

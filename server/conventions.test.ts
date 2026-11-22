@@ -2,14 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { posix } from "node:path";
 import { fail, files, lineOf, read, stripComments } from "../scripts/source-scan.ts";
 
-// Server rules from AGENTS.md and server/AGENTS.md that used to be prose only. Each failure says
-// what to change; client rules are in src/conventions.test.ts, repo-wide ones in
-// scripts/conventions.test.ts.
-
-/** Server code that ships: not tests, not test stand-ins. */
 const serverCode = (): string[] => files("server/**/*.{ts,mjs,js}").filter((file) => !/\.test\.ts$|\.fake\.ts$/.test(file));
 
-/** Every match of `pattern` in each file's code (comments removed), as `file:line: text`. */
 function matches(fileList: string[], pattern: RegExp): { file: string; at: string; index: number; code: string }[] {
   return fileList.flatMap((file) => {
     const code = stripComments(read(file));
@@ -27,8 +21,7 @@ describe("PTY sidecar boundary", () => {
   const LOAD = /\bfrom\s*["'](?:@lydell\/)?node-pty[^"']*["']|\bimport\s*\(?\s*["'](?:@lydell\/)?node-pty[^"']*["']|\b(?:require|createRequire\s*\([^()]*(?:\([^()]*\))?[^()]*\))\s*\(\s*["'](?:@lydell\/)?node-pty[^"']*["']/;
 
   it("loads node-pty only in the Node sidecar", () => {
-    // this file names the package in its own examples
-    const code = [...files("{server,src,shared,scripts,site,telemetry}/**/*.{ts,tsx,mjs,cjs,js}"), "vite.config.ts"].filter((file) => file !== "server/conventions.test.ts");
+    const code = [...files("{server,src,shared,scripts,site,telemetry,tui}/**/*.{ts,tsx,mjs,cjs,js}"), "vite.config.ts"].filter((file) => file !== "server/conventions.test.ts");
     const loads = matches(code, LOAD);
     fail(loads.filter((load) => !NODE_SIDE.has(load.file)).map((load) => load.at),
       "node-pty must never load inside Bun (AGENTS.md, Bridge invariants). PTY work goes through the Node sidecar server/pty/pty-host.mjs via PtySession (server/pty/session.ts).");
@@ -52,7 +45,14 @@ describe("web push", () => {
   });
 });
 
-/** The text of the `{ … }` that opens at `open`, strings respected. */
+describe("account service fake", () => {
+  it("is imported by tests and their helpers only", () => {
+    const shipped = files("{server,src,shared,app}/**/*.{ts,tsx,mjs,js}").filter((file) => !/\.test\.tsx?$|\.test-helpers\.ts$/.test(file) && file !== "shared/account-service-fake.ts" && !file.includes("/node_modules/"));
+    fail(matches(shipped, /(?:from|import)\s*\(?\s*["'][^"']*account-service-fake(?:\.ts)?["']/).map((match) => match.at),
+      "shared/account-service-fake.ts is test support: import it from a test or a *.test-helpers.ts file only.");
+  });
+});
+
 function braces(code: string, open: number): string {
   let depth = 0;
   for (let i = open; i < code.length; i++) {
@@ -68,17 +68,12 @@ function braces(code: string, open: number): string {
 }
 
 describe("error bodies", () => {
-  // Every error body is `{ error: { code, message } }` (AGENTS.md, Changing a contract): the
-  // client reads `code` to decide and shows `message`. JSON answers go through jsonResponse or
-  // its wrappers in server/http.ts, so the content type and the envelope stay one shape.
   it("builds JSON answers only through server/http.ts", () => {
     fail(matches(serverCode().filter((file) => file !== "server/http.ts"), /\bResponse\.json\s*\(|new Response\s*\(\s*JSON\.stringify/).map((match) => match.at),
       "Answer JSON with jsonResponse, errorResponse, badRequest or conflictResponse from server/http.ts, not Response.json or new Response(JSON.stringify(…)).");
   });
 
-  /** An answer built from an object literal: jsonResponse or a local wrapper around it (`reply`, `fail`). */
   const ANSWER = /\b(?:jsonResponse|reply|fail)\s*\(\s*\{/;
-  /** The value of the object's own top-level `error` key (strings blanked), or null when it has none. */
   const errorValue = (object: string): string | null => {
     for (let i = 1, depth = 0; i < object.length; i++) {
       const ch = object[i]!;
@@ -90,7 +85,6 @@ describe("error bodies", () => {
     }
     return null;
   };
-  /** Whether the answer at `at` has an error body other than `{ error: { code, message } }`. */
   const malformed = (code: string, at: number): boolean => {
     const blank = stripComments(code.slice(at), { strings: true });
     const object = braces(blank, blank.indexOf("{"));
@@ -119,14 +113,8 @@ describe("error bodies", () => {
   });
 });
 
-/**
- * Unix-socket connections opened in `code` (comments removed): Bun.connect with `unix:` or with
- * options it cannot read, and node:net's connect or createConnection (named, default or namespace
- * import, or require) called with `path:` or with a single path-like argument.
- */
 function unixConnects(file: string, code: string): { file: string; at: string; bun: boolean }[] {
   const at = (index: number) => `${file}:${lineOf(code, index)}: ${code.split("\n")[lineOf(code, index) - 1]!.trim().slice(0, 160)}`;
-  /** The first argument of the call whose `(` ends at `open`. */
   const argument = (open: number): string => {
     const rest = code.slice(open).trimStart();
     return rest.startsWith("{") ? braces(rest, 0) : /^[^,)]*/.exec(rest)![0].trim();
@@ -147,7 +135,6 @@ function unixConnects(file: string, code: string): { file: string; at: string; b
   if (!names.length) return found;
   for (const match of code.matchAll(new RegExp(`(?<![\\w.])(?:${names.map((name) => name.replace(".", "\\.")).join("|")})\\s*\\(`, "g"))) {
     const arg = argument(match.index + match[0].length);
-    // TCP is `{ host, port }` or `(port, host)`; a path, an options object with `path:` or anything unreadable is a unix socket
     if (arg.startsWith("{") ? /\bpath\s*:/.test(arg) : !/^\d|port/i.test(arg)) found.push({ file, at: at(match.index), bun: false });
   }
   return found;
@@ -160,11 +147,14 @@ describe("herdr socket", () => {
   const UNIX_CONNECT_ALLOWED: Record<string, string> = {
     "server/herdr/client.ts": "the one herdr RPC client: one connection per call, plus subscribeEvents",
     "server/herdr-marker.ts": "a liveness probe: connects and ends at once, sends no request",
+    "server/account/recovery.ts": "ovis recover's own private recovery socket in this PC's state folder, not herdr's",
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
+    "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
+    "server/browser-mcp.ts": "the desktop app's built-in browser socket (app/electron/src/browserBroker.ts), not herdr's: one call per connection",
   };
 
   it("opens herdr's socket only in server/herdr/client.ts", () => {
@@ -185,12 +175,6 @@ describe("herdr socket", () => {
     expect(found("import { connect as tcpConnect, createServer } from \"node:net\";\ntcpConnect({ host, port });\ntcpConnect(port, host);")).toBe(0);
   });
 
-  // Server code calls herdr through the typed wrappers in server/herdr/client.ts (paneProcessInfo,
-  // agentGet, paneSendText, paneSendKeys, …), never through herdrRpc itself: the wrapper is where a
-  // method's params are typed (server/herdr/methods.ts), so `{ target }` to pane.process_info does
-  // not compile there. herdrRpc's untyped fallback still takes any params given an explicit result
-  // type, so this guard is what keeps server code off it. These files still call herdrRpc because
-  // open PRs change them; a follow-up PR moves them to the wrappers once those PRs land.
   const HERDR_RPC_ALLOWED: Record<string, string> = {
     "server/conversation.ts": "open PRs #869 #912 #923 change it",
     "server/gjc-runtime.ts": "open PR #912 changes it",
@@ -198,9 +182,6 @@ describe("herdr socket", () => {
     "server/omo.ts": "open PR #923 changes it",
     "server/shell-agent.ts": "open PRs #885 #923 change it",
   };
-  // Files that do not call herdrRpc on main yet but whose open PR adds a `pane.process_info` call.
-  // They are exempt from the "no longer calls" check below. Remove an entry when its PR switches to
-  // paneProcessInfo(paneId) (the better outcome), merges, or closes.
   const HERDR_RPC_PENDING: Record<string, string> = {
     "server/gjc-status.ts": "open PR #928 adds a call",
     "server/index.ts": "open PR #859 adds a call",
@@ -217,11 +198,6 @@ describe("herdr socket", () => {
 
   it("subscribes to status only in server/collector.ts", () => {
     const subscribers = matches(serverCode(), /\bsubscribeEvents\b/).filter((match) => match.file !== "server/herdr/client.ts" && match.file !== "server/collector.ts");
-    // server/herdr-core/adapter.ts is the other end: it answers herdr's events.subscribe (the
-    // collector's own, reaching it through HERDR_SOCKET) from hc's event stream of the same name;
-    // hc's generated types, their generator and the hc connection only name that hc method as a type
-    // server/herdr-core/pin-label.ts reads hc's own `labels` events for pins, never a pane's status;
-    // server/herdr-core/machine-scope.ts only narrows hc's stream to one machine's events for that adapter
     const HC_STREAM_TYPES = ["server/herdr-core/adapter.ts", "server/herdr-core/hc-api.generated.ts", "scripts/hc-types.ts", "server/herdr-core/connection.ts", "server/herdr-core/pin-label.ts", "server/herdr-core/machine-scope.ts"];
     const raw = matches(files("{server,src,shared,scripts}/**/*.{ts,tsx,mjs,js}").filter((file) => !file.endsWith(".test.ts")), /["']events\.subscribe["']/).filter((match) => match.file !== "server/herdr/client.ts" && !HC_STREAM_TYPES.includes(match.file));
     fail([...subscribers, ...raw].map((match) => match.at),
@@ -229,11 +205,54 @@ describe("herdr socket", () => {
   });
 });
 
+describe("runtime gates", () => {
+  const NAMED = /[!=]== ?"herdr-core"|\bcase "herdr-core"\s*:|\bcapabilities\(\)\.runtime\b|\bruntime\(\)\s*[!=]==/;
+
+  const RUNTIME_NAMED: Record<string, string> = {
+    "server/runtime-move.ts": "the move goes from herdr to herdr-core",
+    "server/runtime-move-run.ts": "the move goes from herdr to herdr-core",
+    "server/runtime-move-service.ts": "the move goes from herdr to herdr-core",
+    "server/index.ts": "a saved choice of herdr-core falls back to herdr when no hc is found",
+    "server/machines.ts": "a remote PC's own Ovis is taken by the runtime its identity names",
+    "server/conversation.ts": "the name of hc's program in an attach client's argv",
+    "server/agents-routes.ts": "herdr itself starts two agent kinds without a manifest",
+    "server/herdr-update.ts": "`herdr update` updates herdr, no other runtime",
+  };
+
+  it("asks the runtime for an ability, never for its name", () => {
+    const named = matches([...serverCode(), ...files("shared/**/*.ts")].filter((file) => !file.startsWith("server/herdr-core/") && file !== "server/runtime/capabilities.ts"), NAMED);
+    fail(named.filter((use) => !(use.file in RUNTIME_NAMED)).map((use) => use.at),
+      "Do not branch on the runtime's name: read the ability the code needs from capabilities() (server/runtime/capabilities.ts), adding a field to RuntimeCapabilities and to each runtime's record when none fits.");
+    const users = new Set(named.map((use) => use.file));
+    fail(Object.keys(RUNTIME_NAMED).filter((file) => !users.has(file)),
+      "These files no longer compare the runtime's name: remove them from RUNTIME_NAMED in server/conventions.test.ts.");
+  });
+
+  it("knows a gate on the runtime's name from another use of the word", () => {
+    for (const gate of [
+      'if (identity.runtime !== "herdr-core") return;',
+      'if (capabilities().runtime === "herdr") kinds.add("omp");',
+      'const other = capabilities().runtime !== "herdr";',
+      'if (runtime() !== "herdr") return null;',
+      'if (runtime() === "herdr-core") start();',
+      'switch (served) { case "herdr": return 1; case "herdr-core": return 2; }',
+      'switch (capabilities().runtime) { case "herdr": return 1; default: return 2; }',
+    ]) expect(NAMED.test(gate)).toBe(true);
+    for (const other of [
+      "return jsonResponse({ ok: true, runtime: runtime() });",
+      'const discover = url.searchParams.get("discover") === "herdr";',
+      'if (source === "herdr" && tracked) return;',
+      'switch (signal.source) { case "herdr": return turns.chat; default: return turns.herdr; }',
+      'const command = process.env["OVIS_HERDR_BIN"] || "herdr";',
+      'if (capabilities().attach === "pty-cli") watch();',
+    ]) expect(NAMED.test(other)).toBe(false);
+  });
+});
+
 describe("remote PC bundle boundary", () => {
   // scripts/build-remote-bundle.ts ships server/, shared/ and integrations/ but not src/ or relay/: code
   // there that imports either loads from a checkout, where every check runs, and not on a remote PC (#2220)
   const SRC_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*)["']((?:\.\.\/)+(?:src|relay)\/[^"']*)["']/;
-  // server/relay/ is in the bundle: only a path that resolves to the checkout's own src/ or relay/ counts
   const leavesBundle = (file: string, spec: string) => /^(?:src|relay)\//.test(posix.normalize(posix.join(posix.dirname(file), spec)));
 
   it("never imports src/ or relay/ from code the remote bundle carries", () => {
@@ -251,5 +270,32 @@ describe("remote PC bundle boundary", () => {
     expect(SRC_IMPORT.test("import { a } from \"./src-files.ts\";")).toBe(false);
     expect(leavesBundle("server/relay/pair-code.ts", "../../relay/pair-room.ts")).toBe(true);
     expect(leavesBundle("server/account/mailbox.ts", "../relay/identity.ts")).toBe(false);
+  });
+});
+
+describe("server entries", () => {
+  // The compiled binary (scripts/build-server.ts) has no .ts files: a child started by a source file's
+  // path works only from a checkout.
+  const START_BY_PATH = /\bprocess\.execPath\s*,\s*\[?\s*(?:join\s*\(|resolve\s*\(|["'`][^"'`\n]*\.(?:ts|tsx|js|mjs)["'`])/;
+  const ALLOWED: Record<string, string> = {
+    "server/supervisor.ts": "installs the Rust PTY host with the script of a release checked out from source, which only the source updater makes",
+    "server/updater.ts": "builds a release checked out from source with that release's own scripts",
+  };
+
+  it("starts the server's own entries only through entryCommand", () => {
+    const starts = matches([...serverCode(), "scripts/plugin.ts"].filter((file) => file !== "server/entries.ts"), START_BY_PATH);
+    fail(starts.filter((start) => !(start.file in ALLOWED)).map((start) => start.at),
+      "Start the server's own code with entryCommand(name) from server/entries.ts (add the entry to ENTRIES), never with process.execPath and a .ts path: the compiled binary has no such file.");
+    const users = new Set(starts.map((start) => start.file));
+    fail(Object.keys(ALLOWED).filter((file) => !users.has(file)), "These files no longer start a file by path: remove them from ALLOWED in server/conventions.test.ts.");
+  });
+
+  it("knows a start by path from other uses of process.execPath", () => {
+    expect(START_BY_PATH.test("Bun.spawn([process.execPath, join(import.meta.dir, \"machine-entry.ts\")], {")).toBe(true);
+    expect(START_BY_PATH.test("Bun.spawn([process.execPath, \"server/index.ts\"], {")).toBe(true);
+    expect(START_BY_PATH.test("spawn(process.execPath, [join(ROOT, \"server\", \"managed.ts\")], {")).toBe(true);
+    expect(START_BY_PATH.test("run([process.execPath, \"install\", \"--frozen-lockfile\"])")).toBe(false);
+    expect(START_BY_PATH.test("[process.execPath, \"-e\", SCRIPT, String(pid)]")).toBe(false);
+    expect(START_BY_PATH.test("Bun.spawn(entryCommand(\"machine\"), {")).toBe(false);
   });
 });

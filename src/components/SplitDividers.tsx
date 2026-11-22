@@ -2,11 +2,6 @@ import type { KeyboardEvent, PointerEvent, RefObject } from "react";
 import { useT } from "../lib/i18n.ts";
 import { SPLIT_RATIO_STEP, MIN_SPLIT_RATIO, type SplitDivider } from "../lib/split.ts";
 
-/**
- * The boundaries between the split view's slots, with rows and columns (lib/split.ts): a thin line
- * to the eye and a wider band to the pointer, dragged to move it, or focused and moved with the
- * arrow keys, as a sidebar's resize line is (SidebarSplit.tsx).
- */
 export function SplitDividers({ dividers, areaRef, onResize }: {
   dividers: SplitDivider[];
   areaRef: RefObject<HTMLDivElement | null>;
@@ -46,7 +41,6 @@ export function SplitDividers({ dividers, areaRef, onResize }: {
     };
     return <div key={path} className="pane-split-divider" data-dir={dir} style={style}
       role="separator" tabIndex={0} aria-label={t("Resize the split")}
-      // a row's boundary is a vertical line; a column's a horizontal one
       aria-orientation={dir === "row" ? "vertical" : "horizontal"}
       aria-valuemin={Math.round(MIN_SPLIT_RATIO * 100)} aria-valuemax={Math.round((1 - MIN_SPLIT_RATIO) * 100)} aria-valuenow={Math.round(ratio * 100)}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onKeyDown={onKeyDown} />;

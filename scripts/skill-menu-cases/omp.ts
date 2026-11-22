@@ -11,7 +11,6 @@ export const commands: SlashCommand[] = [
   { name: "skill:project-check", description: "Check this project's release conventions and report the changes needed before publishing the release notes", source: "skill", origin: "project" },
   { name: "skill:plugin-check", description: "Check the plugin's assets. Keep their full description in the tooltip.", source: "skill", origin: "plugin" },
 ];
-// Fictional demo transport checks chip rendering independently of transcript reconstruction.
 export const turnText = "/skill:probe-skill hello";
 export const chips = ["/skill:probe-skill"];
 

@@ -3,7 +3,6 @@ import { describe, expect, it } from "bun:test";
 const read = (path: string) => Bun.file(new URL(path, import.meta.url)).text();
 const css = await read("./styles.css");
 
-/** Body of the first `@media <query> { ... }` block, found by matching braces. */
 function mediaBody(query: string, source = css, file = "styles.css"): string {
   const start = source.indexOf(`@media ${query} {`);
   if (start < 0) throw new Error(`no @media ${query} block in ${file}`);

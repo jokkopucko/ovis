@@ -64,7 +64,6 @@ describe("RPC diagnostic wiring", () => {
     expect(f.records()[1]).toMatchObject({ event: "herdr.rpc.recovered", episode_id: f.records()[0].episode_id, failures: 2, suppressed: 1 });
     expect(f.lines.join("\n")).not.toContain(f.root);
     expect(f.lines.join("\n")).not.toContain("private-input-secret");
-    // one request per call, none sent again
     expect(f.requests()).toBe(2);
     // the first, with 500 ms, always arrives; the second's 30 ms may run out before it is written
     expect(f.stalled()).toBeGreaterThanOrEqual(1);

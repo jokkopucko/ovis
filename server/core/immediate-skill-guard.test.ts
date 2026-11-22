@@ -13,14 +13,6 @@ afterEach(() => mock.restore());
 
 const PROMPT = "Enter passphrase for key '/tmp/key': ";
 
-/**
- * A chat message naming an OpenCode @skill, sent at once (not queued) to an idle OpenCode pane: its skill is typed key by
- * key. `race` changes the pane while it is typed: `masked` puts a masked prompt on the autocomplete read the skill key is
- * decided on, `live` puts one on the live screen while the scrolled viewport still shows the row, `first` shows one
- * before the first key, `wrapped` shows one wrapped at a width this send has no attachment to tell, `wide` the same with
- * wide (two-column) characters in the wrapped row. Returns what was written, how the send ended and whether its OpenCode
- * watch was let go.
- */
 async function send(race: "masked" | "live" | "first" | "wrapped" | "wide") {
   const pane = { pane_id: "p", terminal_id: "t", agent: "opencode", agent_status: "idle" } as HerdrPane;
   spyOn(herdr, "paneGet").mockImplementation(async () => pane);
@@ -37,7 +29,6 @@ async function send(race: "masked" | "live" | "first" | "wrapped" | "wide") {
   let visible = 0;
   spyOn(herdr, "paneRead").mockImplementation(async (options) => {
     if (options.source !== "visible") return { text: live } as Awaited<ReturnType<typeof herdr.paneRead>>;
-    // the second read is the one right before the skill key
     if (++visible === 2 && race === "live") live = PROMPT;
     return { text: race === "masked" && visible >= 2 ? `${selected}\n${PROMPT}` : selected } as Awaited<ReturnType<typeof herdr.paneRead>>;
   });
@@ -54,7 +45,6 @@ async function send(race: "masked" | "live" | "first" | "wrapped" | "wide") {
 it("sends no skill-accept key when its autocomplete read shows a masked prompt", async () => {
   const { writes, code } = await send("masked");
   expect(writes).toEqual(["@effect"]);
-  // part of the message was typed: the user is told to check the terminal
   expect(code).toBe("submit_partial");
 });
 

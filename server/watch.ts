@@ -3,7 +3,6 @@ export interface WatchStreamOptions {
   onEnd: () => void;
 }
 
-/** Incremental NDJSON and frame decoder, independent of the observer process. */
 export class WatchStreamParser {
   private pending = "";
   private readonly decoder = new TextDecoder();
@@ -25,7 +24,6 @@ export class WatchStreamParser {
     this.pending = this.ended ? "" : this.pending.slice(start);
   }
 
-  /** Consume a final record without a newline and flush any incomplete UTF-8. */
   finish(): void {
     if (this.ended) return;
     this.line(this.pending);
@@ -65,9 +63,15 @@ export interface PaneWatchOptions extends WatchStreamOptions {
   rows: number;
   /** The same socket the bridge's RPCs use, not the CLI's default session. */
   socketPath: string;
+  killGraceMs?: number;
 }
 
 const STDERR_TAIL_CHARS = 4096;
+/**
+ * Its exit is waited for: a pane's next view starts after it, and its place among a connection's watches is its
+ * until then (core/connections.ts), so one that ignored the request would hold both for good.
+ */
+const KILL_GRACE_MS = 1_000;
 
 /** A read-only viewport; unlike terminal attach it never owns the pane's size. */
 export class PaneWatch {
@@ -75,6 +79,10 @@ export class PaneWatch {
   private readonly proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   private killed = false;
   private ended = false;
+  /** the process itself has exited; a child of its own may still hold its pipes open */
+  private gone = false;
+  private killer: ReturnType<typeof setTimeout> | undefined;
+  private readonly readers: Array<{ cancel(): Promise<void> }> = [];
   private stderrTail = "";
 
   constructor(private readonly options: PaneWatchOptions) {
@@ -92,9 +100,16 @@ export class PaneWatch {
         this.stopChild();
       },
     });
-    // Drain both pipes before reporting exit: the last frame and failure diagnostics
-    // can arrive after the process-exit notification.
-    this.exited = Promise.all([this.proc.exited, this.readStdout(parser), this.readStderr()]).then(([code]) => {
+    // Drain both pipes before reporting the exit of a process that ended by itself: the last frame and
+    // failure diagnostics can arrive after the process-exit notification. One asked to end, or whose
+    // terminal closed, has nothing more to say: its exit is its process's own, whoever still holds its
+    // pipes (a launcher that does not `exec` leaves its child holding them for as long as that runs).
+    const drained = Promise.all([this.readStdout(parser), this.readStderr()]);
+    this.exited = this.proc.exited.then(async (code) => {
+      clearTimeout(this.killer);
+      this.gone = true;
+      if (this.killed || this.ended) this.dropOutput();
+      await drained;
       if (!this.killed && !this.ended && code !== 0) {
         console.warn(`[watch] ${options.paneId} exited (${code}): ${this.stderrTail.trim()}`);
       }
@@ -102,8 +117,15 @@ export class PaneWatch {
     });
   }
 
+  private dropOutput(): void {
+    for (const reader of this.readers) {
+      try { void reader.cancel().catch(() => {}); } catch {}
+    }
+  }
+
   private async readStdout(parser: WatchStreamParser): Promise<void> {
     const reader = this.proc.stdout.getReader();
+    this.readers.push(reader);
     const decoder = new TextDecoder();
     try {
       for (;;) {
@@ -127,6 +149,7 @@ export class PaneWatch {
 
   private async readStderr(): Promise<void> {
     const reader = this.proc.stderr.getReader();
+    this.readers.push(reader);
     const decoder = new TextDecoder();
     try {
       for (;;) {
@@ -136,7 +159,6 @@ export class PaneWatch {
       }
       this.stderrTail = (this.stderrTail + decoder.decode()).slice(-STDERR_TAIL_CHARS);
     } catch {
-      // The process can close the pipe underneath us; retain the tail already read.
     } finally {
       reader.releaseLock();
     }
@@ -149,12 +171,19 @@ export class PaneWatch {
   }
 
   private stopChild(): void {
-    try { this.proc.kill(); } catch { /* already exited */ }
+    if (this.gone) return;
+    try { this.proc.kill(); } catch {}
+    if (this.killer) return;
+    this.killer = setTimeout(() => {
+      try { this.proc.kill("SIGKILL"); } catch {}
+    }, this.options.killGraceMs ?? KILL_GRACE_MS);
+    this.killer.unref?.();
   }
 
   kill(): void {
     if (this.killed) return;
     this.killed = true;
+    if (this.gone) this.dropOutput();
     this.stopChild();
   }
 }

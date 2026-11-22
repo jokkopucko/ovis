@@ -39,7 +39,6 @@ describe("process start time", () => {
       expect(upper!).toBeGreaterThanOrEqual(before);
       expect(upper!).toBeLessThanOrEqual(Date.now() + 25);
       expect(processStartUpperBound(2147483647)).toBeNull();
-      // the async form a send's process check awaits is the same bound from above, never the one from below
       const awaited = await processStartUpperBoundAsync(child.pid);
       expect(awaited).not.toBeNull();
       expect(awaited!).toBeGreaterThanOrEqual(before);

@@ -8,12 +8,6 @@ import * as herdr from "./herdr/client.ts";
 import { ConnectionDiagnostics } from "./connection-diagnostics.ts";
 import { INSERT_MAX_UNITS } from "../shared/terminal-insert.ts";
 
-/**
- * Contract test for the terminal input line's "insert" frame (feature "terminal-insert"), against
- * the real herdr server: the text reaches the pane's program as the keyboard would have typed it,
- * with no Enter after it, and the answer comes once herdr holds the bytes. Each pane runs a
- * raw-mode recorder that logs every chunk of input it reads, so the test sees the exact bytes.
- */
 const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-insert-"));
 let server: { port: number; stop: () => void };
 /** a bridge beside the first, on the same herdr: the pane's terminal is held by whichever attached first */
@@ -35,7 +29,6 @@ process.stdin.on("data", (chunk) => appendFileSync(out, JSON.stringify({ at: Dat
 interface Chunk { at: number; data: string }
 interface Recorder { pane: string; log: string }
 
-/** the chunks logged so far; a line still being written is left for the next read */
 const chunks = (recorder: Recorder): Chunk[] => readFileSync(recorder.log, "utf8").split("\n").filter(Boolean).flatMap((line) => {
   try { return [JSON.parse(line) as Chunk]; } catch { return []; }
 });
@@ -47,7 +40,6 @@ const typed = (recorder: Recorder, from: number) => chunks(recorder).slice(from)
  * wait ran out with the text already in the log (#1948).
  */
 
-/** Settles once `file` exists. */
 async function appears(file: string, ms = 15_000): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -57,7 +49,6 @@ async function appears(file: string, ms = 15_000): Promise<void> {
   }
 }
 
-/** The bytes the recorder read since `from`, once `wanted` holds of them. */
 async function recorded(recorder: Recorder, from: number, wanted: (text: string) => boolean, ms = 10_000): Promise<string> {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -121,11 +112,9 @@ class Socket {
   result(id: number): Promise<any> {
     return this.waitFor((message) => message.type === "insert-result" && message.id === id);
   }
-  /** this connection's answers so far to the insert of `id` */
   answers(id: number): any[] {
     return this.seen.filter((message) => message.type === "insert-result" && message.id === id);
   }
-  /** attaches to `pane` and waits until it may type there; the frames from then on start at the returned mark */
   async attached(pane: string): Promise<number> {
     const mark = this.seen.length;
     this.send({ type: "attach", pane_id: pane, cols: 80, rows: 24 });
@@ -135,7 +124,6 @@ class Socket {
   close(code?: number): void {
     this.ws.close(code);
   }
-  /** settles once the server has handled every frame this connection sent before it */
   async flushed(): Promise<void> {
     const ping = id();
     this.send({ type: "ping", id: ping });
@@ -147,10 +135,6 @@ const paste = (text: string) => `\u001b[200~${text}\u001b[201~`;
 let nextId = 1;
 const id = () => nextId++;
 
-/**
- * Proves that nothing refused reached the pane: a later insert the recorder is seen to take
- * shows every earlier byte that was going to arrive has arrived, and what it read is exactly that.
- */
 async function barrier(socket: Socket, recorder: Recorder, from: number, expected: string): Promise<void> {
   const marker = `barrier-${id()}`;
   const request = id();
@@ -159,7 +143,6 @@ async function barrier(socket: Socket, recorder: Recorder, from: number, expecte
   expect(await recorded(recorder, from, (text) => text.endsWith(marker))).toBe(expected + marker);
 }
 
-/** Every read of `paneId` shows `screen` (a function gives the screen at each read). */
 function mockScreen(paneId: string, screen: string | (() => string)) {
   const originalRead = herdr.paneRead;
   return spyOn(herdr, "paneRead").mockImplementation(async (options, socketPath) => {
@@ -168,16 +151,9 @@ function mockScreen(paneId: string, screen: string | (() => string)) {
   });
 }
 
-/** a close code the server reports as abnormal (anything but 1000 and 1001), which a client may send */
 const ABNORMAL_CLOSE = 4000;
 type Failed = ConnectionDiagnostics["failed"];
 
-/**
- * Closes `socket` and settles once the server's close handler has run. The handler reports an
- * abnormal close code (ConnectionDiagnostics.failed) and ends the connection in that same call, so
- * the report, subscribed before the close is sent, is the event to wait for: this settles a
- * microtask after it, with the connection ended.
- */
 async function closedOnServer(socket: Socket, ms = 15_000): Promise<void> {
   const report = ConnectionDiagnostics.prototype.failed;
   let seen!: () => void;
@@ -279,7 +255,6 @@ describe("WebSocket insert", () => {
         socket.send({ type: "insert", id: request, pane_id: bare.pane, text });
         expect(await socket.result(request)).toMatchObject({ ok: false, code });
       }
-      // one line still goes, as typed: nothing of the refused blocks arrived before it, and no CR, LF or ESC at all
       await barrier(socket, bare, from, "");
       expect(typed(bare, from)).not.toMatch(/[\r\n\u001b]/);
     } finally { socket.close(); }
@@ -305,7 +280,6 @@ describe("WebSocket insert", () => {
         socket.send({ type: "insert", id: request, pane_id: shell.pane, text });
         expect(await socket.result(request)).toMatchObject({ ok: false, code });
       }
-      // the longest line the draft holds goes whole, cut nowhere
       const longest = `${"b".repeat(INSERT_MAX_UNITS - 1)}c`;
       const request = id();
       socket.send({ type: "insert", id: request, pane_id: shell.pane, text: longest });
@@ -350,9 +324,6 @@ describe("WebSocket insert", () => {
       const original = herdr.paneSendText;
       const guards: (boolean | undefined)[] = [];
       // herdr's guard is asked right before the write: what happened to the sender meanwhile decides.
-      // The change is made while the write waits, and the write goes on once the bridge has answered
-      // for it (the role's ack, a ping answered behind the detach, the close handler's report), so the
-      // real guard decides
       const race = (change: () => Promise<void>) => spyOn(herdr, "paneSendText").mockImplementationOnce(async (pane, text, socketPath, guard) => {
         await change();
         guards.push(guard?.());
@@ -396,7 +367,6 @@ describe("WebSocket insert", () => {
       const from = chunks(shell).length;
       let now = 1_800_000_000_000;
       spyOn(Date, "now").mockImplementation(() => now);
-      // the screen read is where the wait happens here: by the time it answers, the deadline has passed
       const screen = mockScreen(shell.pane, () => { now += 46_000; return "$ "; });
       const late = id();
       socket.send({ type: "insert", id: late, pane_id: shell.pane, text: "late" });

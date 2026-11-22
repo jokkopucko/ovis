@@ -3,7 +3,6 @@ import type { ParsedPrompt } from "./shared.ts";
 import { navigateNativeSteps } from "./step-navigate.ts";
 
 const labels = ["Color", "Size", "Shape", "Submit"];
-/** omp's card at a stop of its strip; bound to its call unless `unbound` */
 function card(index: number, { unbound = false, call = "call-a", strip = labels }: { unbound?: boolean; call?: string; strip?: string[] } = {}): ParsedPrompt {
   return {
     id: `card-${index}${unbound ? "-unbound" : ""}`, agent: "omp", kind: "question", title: "", question: "", body: null, options: [], multi_select: false,
@@ -13,7 +12,6 @@ function card(index: number, { unbound = false, call = "call-a", strip = labels 
   } as unknown as ParsedPrompt;
 }
 
-/** A move whose reads after its key are `after`, in order, then the last one again. */
 async function moveWith(after: ParsedPrompt[]): Promise<{ landed: ParsedPrompt | null; sent: string[] }> {
   const sent: string[] = [];
   let reads = 0;
@@ -21,7 +19,6 @@ async function moveWith(after: ParsedPrompt[]): Promise<{ landed: ParsedPrompt |
     read: async () => sent.length === 0 ? card(0) : after[Math.min(reads++, after.length - 1)]!,
     send: async (key) => { sent.push(key); },
     active: () => true,
-    // far past the test's own time limit: a move that waited for it would fail the test
     deadline: Date.now() + 60_000,
   });
   return { landed, sent };

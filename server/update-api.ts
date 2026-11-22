@@ -1,29 +1,17 @@
-import { INSTALL_ID, noInstalledNotes, noUpdateNotes, readInstalledNotes, readUpdateNotes, REVISION, unmanagedUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateRequest, type UpdateStatus } from "../shared/update.ts";
+import { INSTALL_ID, noInstalledNotes, noUpdateNotes, readInstalledNotes, readUpdateNotes, REVISION, unmanagedUpdateStatus, updateIpcMessage, type InstalledNotes, type UpdateNotes, type UpdateRequest, type UpdateStatus } from "../shared/update.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
+import { ASSETS, COMPILED } from "./entries.ts";
 
 export interface UpdateService {
   status(): UpdateStatus;
-  /** what the available update brings, from the supervisor's last check */
   notes(): UpdateNotes;
-  /** what the last update brought, from the supervisor that runs it */
   installed(): InstalledNotes;
   request(request: UpdateRequest): void;
-  /** The commit the client build in the served `dist/` was made from (see `servedRevision`); absent when unmanaged. */
   servedRevision?(): Promise<string | null>;
 }
 
-/**
- * The commit the client build in `<directory>/dist` was made from, read from the `build.json` the
- * build writes (vite.config.ts) each time a tab asks. The bridge serves `dist/` from its directory
- * on every request, so a source checkout rebuilt under it (a plugin reinstall, or `git pull` and a
- * build) is served at once while the server still runs the revision it started with: a tab
- * reloaded then must already be told that only a restart helps. Only a build written after
- * `since` (the bridge's start) counts: one already there was not replaced under the server, and a
- * restart would not change it (a pull without a build, then a restart). A build older than the
- * file, or outside Git, answers null too.
- */
 export function servedRevision(directory: string, since = Date.now()): () => Promise<string | null> {
   const file = join(directory, "dist", "build.json");
   return async () => {
@@ -36,15 +24,12 @@ export function servedRevision(directory: string, since = Date.now()): () => Pro
   };
 }
 
-/** The bridge's line to the supervisor that runs it: the process's IPC channel, or a test's stand-in. */
 export interface SupervisorChannel {
   send(message: unknown): void;
   onMessage(listener: (message: unknown) => void): void;
 }
 
-/** Only the managed entrypoint connects IPC; importing createServer in tests does not. */
 export function connectUpdater(channel?: SupervisorChannel): UpdateService {
-  // the desktop app starts its server itself (app/electron/src/children.ts) and updates it with the app
   let status = unmanagedUpdateStatus(process.env["OVIS_DESKTOP_APP"] === "1");
   let notes = noUpdateNotes();
   let installed = noInstalledNotes();
@@ -58,7 +43,6 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
       // revision asked for: an older one would install whatever its own check finds
       const { revision_bound_install: bound, ...told } = value.status;
       status = bound === true ? { ...told, revision_bound_install: true } : told;
-      // a supervisor older than the notes sends none: the one being replaced, or a fallback
       notes = readUpdateNotes(value.notes);
       installed = readInstalledNotes(value.installed);
     });
@@ -68,12 +52,8 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
     status: () => status,
     notes: () => notes,
     installed: () => installed,
-    // an install goes as a message an older supervisor does not know, never as its unbound `install`
-    request: (request) => supervisor?.send(request.command === "install"
-      ? { type: "update-install-revision", expected_revision: request.expected_revision, ...(request.install_id ? { install_id: request.install_id } : {}) }
-      : request.command === "cancel" ? { type: "update-cancel-v2", install_id: request.install_id } : { type: "update-command", command: "check" }),
-    // the supervisor starts the bridge in the directory it serves: the release's, or the source checkout
-    ...(managed ? { servedRevision: servedRevision(process.cwd()) } : {}),
+    request: (request) => supervisor?.send(updateIpcMessage(request)),
+    ...(managed ? { servedRevision: servedRevision(COMPILED ? ASSETS : process.cwd()) } : {}),
   };
 }
 
@@ -104,19 +84,16 @@ async function withServed(status: UpdateStatus, service?: UpdateService): Promis
 /** An install's body is one revision: more than this is not one. */
 const INSTALL_BODY_LIMIT = 1024;
 
-/** The revision an install asks for, from a JSON body of at most INSTALL_BODY_LIMIT bytes; null when it names none. */
 async function expectedRevision(request: Request): Promise<string | null> {
   const revision = (await smallBody(request))?.["expected_revision"];
   return typeof revision === "string" && REVISION.test(revision) ? revision : null;
 }
 
-/** The install a cancel names (its install_id, as its 202 gave it); null when it names none. */
 async function cancelledInstall(request: Request): Promise<string | null> {
   const id = (await smallBody(request))?.["install_id"];
   return typeof id === "string" && INSTALL_ID.test(id) ? id : null;
 }
 
-/** A JSON object body of at most INSTALL_BODY_LIMIT bytes, or null. */
 async function smallBody(request: Request): Promise<Record<string, unknown> | null> {
   if (!request.body) return null;
   const reader = request.body.getReader();
@@ -155,7 +132,6 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (pathname === "/api/updates" && request.method === "GET") {
     setRequestRoute(pathname);
-    // a failed lookup leaves the status as it was: the connection server then asks /api/access as of an older server
     return Promise.all([withServed(status, service), where?.().catch(() => undefined)]).then(([value, at]) => reply(at ? { ...value, ...at } : value));
   }
   if (pathname === "/api/updates/notes" && request.method === "GET") { setRequestRoute(pathname); return reply(service?.notes() ?? noUpdateNotes()); }

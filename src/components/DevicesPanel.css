@@ -28,8 +28,6 @@
   flex-direction: column;
 }
 
-/* one pill: beside a name that fills the line it moves to the next line whole, never split across two lines.
-   Its own words wrap inside it only in a column narrower than the pill (a phone's row with Revoke? open) */
 .devices-current {
   display: inline-block;
   margin-left: var(--space-2);
@@ -44,20 +42,31 @@
   vertical-align: middle;
 }
 
-/* Check now sits above the list's right edge, over the rows it refreshes, where no PC row of its own holds it */
 .devices-check {
   display: flex;
   justify-content: flex-end;
 }
 
-/* Check now at the end of this PC's own row (SettingsDialog's MyPcRows): no line of its own, sized to the row's text */
 .my-device-check:empty {
   display: none;
 }
 
-/* beside it, this PC's name wraps even where it is one long word (a host name without hyphens) */
 .my-device-self .settings-label {
   overflow-wrap: anywhere;
+}
+
+/* this PC's name stands alone on its row (no ID line): it takes the row's height, so Check now beside it is never
+   the taller of the two (a finger-sized button on a phone included), and sits centred in it */
+.devices-row.my-device-self {
+  align-items: stretch;
+}
+
+.my-device-self .devices-name {
+  justify-content: center;
+}
+
+.my-device-self .my-device-check {
+  align-self: center;
 }
 
 .my-device-check .btn {
@@ -66,8 +75,6 @@
   font-size: var(--fs-xs);
 }
 
-/* a finger keeps the touch target through an invisible expander, as the segmented options do (styles.css): the
-   button stays the row's size, and the two-line row is taller than the target */
 @media (pointer: coarse), (any-pointer: coarse) {
   .my-device-check .btn {
     position: relative;
@@ -133,7 +140,6 @@
   }
 }
 
-/* the one action that ends every pairing at once: parted from the pairing controls above it by a hairline */
 .devices-revoke-all {
   padding-top: var(--space-3);
   border-top: var(--hairline) solid var(--border);
@@ -162,12 +168,10 @@
   color: var(--accent);
 }
 
-/* a wallet address or an email is one long word */
 .devices-portal {
   overflow-wrap: anywhere;
 }
 
-/* on the phone itself the code is what the other device types: as large as the screen allows, read at a glance */
 .devices-pairing-phone {
   flex-direction: column;
   gap: var(--space-2);
@@ -178,7 +182,6 @@
   font-size: calc(var(--fs-pairing) * 1.25);
 }
 
-/* what a row is (PC, phone, browser): the same pill as `via relay`, in neutral tones */
 .devices-kind {
   display: inline-block;
   margin-left: var(--space-2);
@@ -196,13 +199,6 @@
   color: var(--accent);
 }
 
-/* this PC's relay ID, what a device that typed its code compares */
-.my-device-id {
-  font-family: var(--font-mono);
-  overflow-wrap: anywhere;
-}
-
-/* Connected to this PC: this PC, the phones and browsers (the one in use first), then the other PCs, as one list */
 .my-devices {
   display: flex;
   flex-direction: column;
@@ -214,13 +210,11 @@
   border-top: 0;
 }
 
-/* Add a connection: the page's one way to connect anything, under the list it adds to */
 .devices-add .btn {
   width: 100%;
   justify-content: center;
 }
 
-/* a PC, phone or browser that is not connected now stays in the list, its name dimmed (its state stays readable), with its remove button */
 .devices-row.is-away > .devices-name > .settings-label {
   opacity: 0.55;
 }

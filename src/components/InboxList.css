@@ -1,0 +1,605 @@
+.mode-inbox {
+  --inbox-gutter: calc(var(--space-4) + var(--space-1) / 2);
+  --inbox-inset: calc(var(--inbox-gutter) + var(--space-1));
+  --inbox-avatar: var(--touch-target);
+  --inbox-top-gap: var(--space-2);
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+/* the pane keeps its size under the list (never display: none: a terminal refit to nothing would resize its pty) */
+.pane-split.is-under-inbox > .pane-slot {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* and the box it was shown in (lib/coveredPane.ts, written on the slot's own style, where a split's slot carries
+   its rectangle): the list takes the shell's bars away, and from 769px it draws its column whether or not the
+   classic sidebar was open, so laid out again the pane would have another box than the one its pty was sized to */
+.pane-split.is-under-inbox {
+  overflow: hidden;
+}
+
+.pane-split.is-under-inbox > .pane-slot[data-kept-box] {
+  flex: none;
+}
+
+.mode-inbox .inbox-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-block: calc(var(--inbox-top-gap) + var(--inbox-control) + var(--space-4)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
+  scroll-padding-block: calc(var(--inbox-top-gap) + var(--inbox-control) + var(--space-2)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
+}
+
+.mode-inbox .inbox-top,
+.mode-inbox .inbox-foot {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  padding-inline: var(--inbox-gutter);
+  pointer-events: none;
+}
+
+.mode-inbox .inbox-top > *,
+.mode-inbox .inbox-foot > * {
+  pointer-events: auto;
+}
+
+.mode-inbox .inbox-top {
+  top: var(--inbox-top-gap);
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.mode-inbox .inbox-top > .inbox-connection {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc(var(--inbox-gutter) + var(--inbox-control) + var(--space-2));
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  padding: var(--space-1) var(--space-2-5);
+  overflow: hidden;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.mode-inbox .inbox-top > .inbox-add:first-child {
+  margin-inline-start: auto;
+}
+
+.mode-inbox .inbox-foot {
+  bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  gap: var(--space-3);
+}
+
+.icon-button.inbox-round {
+  width: var(--inbox-control);
+  height: var(--inbox-control);
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-card);
+  color: var(--text-strong);
+}
+
+.icon-button.inbox-round:active,
+.icon-button.inbox-round[aria-expanded="true"] {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+@media (hover: hover) {
+  .icon-button.inbox-round:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .icon-button.inbox-round:active:not(:disabled) {
+    background: var(--border-strong);
+  }
+}
+
+.mode-inbox:not(.is-wide) .icon-button.inbox-round:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
+.icon-button.inbox-filter-toggle.is-on,
+.icon-button.inbox-filter-toggle.is-on:active,
+.icon-button.inbox-filter-toggle.is-on[aria-expanded="true"] {
+  background: var(--text-strong);
+  border-color: var(--text-strong);
+  color: var(--bg);
+}
+
+@media (hover: hover) {
+  .icon-button.inbox-filter-toggle.is-on:hover:not(:disabled) {
+    background: var(--text);
+    border-color: var(--text);
+  }
+
+  .icon-button.inbox-filter-toggle.is-on:active:not(:disabled) {
+    background: var(--text-strong);
+    border-color: var(--text-strong);
+  }
+}
+
+.inbox-filter-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.inbox-filter-mark > .sidebar-status {
+  flex: none;
+  width: auto;
+  height: auto;
+}
+
+.mode-inbox .inbox-search {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mode-inbox .inbox-search-glass {
+  position: absolute;
+  top: 50%;
+  inset-inline-start: var(--space-4);
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.mode-inbox .inbox-search-input {
+  --field-fs: var(--fs-input);
+  width: 100%;
+  height: var(--inbox-control);
+  min-height: var(--inbox-control);
+  padding-inline: calc(var(--space-4) + var(--icon-size) + var(--space-2-5)) var(--inbox-control);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-card);
+}
+
+/* the clear is the field's own, drawn once below; the browser's cancel glyph would make two */
+.mode-inbox .inbox-search-input::-webkit-search-cancel-button,
+.mode-inbox .inbox-search-input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.mode-inbox .inbox-search-clear {
+  position: absolute;
+  top: 0;
+  inset-inline-end: 0;
+  display: grid;
+  place-items: center;
+  width: var(--inbox-control);
+  height: var(--inbox-control);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.mode-inbox .inbox-search-clear svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+/* A row is as wide as the list, whatever the scroller's own scrollbar takes: under a scrollbar that takes room
+   (Chrome's own on Windows and Linux) the rows keep their width and their place, and the scrollbar stands in the
+   end inset beside them. The list is the size container its rows read (cqi). */
+.mode-inbox {
+  container-type: inline-size;
+}
+
+.mode-inbox .inbox-rows {
+  width: 100cqi;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mode-inbox .inbox-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-height: calc(var(--inbox-avatar) + var(--inbox-gutter) * 2);
+  padding: 0 var(--inbox-inset);
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.mode-inbox .inbox-row:active {
+  background: var(--bg-hover);
+}
+
+@media (hover: hover) {
+  .mode-inbox .inbox-row:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+}
+
+.mode-inbox .inbox-row:focus-visible {
+  outline-offset: calc(var(--ring-offset) * -1);
+}
+
+.mode-inbox .inbox-row:disabled {
+  cursor: default;
+}
+
+.mode-inbox .inbox-item.is-offline {
+  opacity: 0.55;
+}
+
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar {
+  flex: 0 0 auto;
+  width: var(--inbox-avatar);
+  height: var(--inbox-avatar);
+}
+
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar-face {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+}
+
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar .agent-mark {
+  display: grid;
+}
+
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar-face svg {
+  width: calc(var(--inbox-avatar) * 0.6);
+  height: calc(var(--inbox-avatar) * 0.6);
+}
+
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar.is-tile .inbox-avatar-face {
+  border: 0;
+}
+
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar.is-tile .inbox-avatar-face svg {
+  width: var(--inbox-avatar);
+  height: var(--inbox-avatar);
+}
+
+.mode-inbox .inbox-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-half);
+  min-width: 0;
+}
+
+.mode-inbox .inbox-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mode-inbox .inbox-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-inbox .inbox-time {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  font-variant-numeric: var(--font-numeric);
+  white-space: nowrap;
+}
+
+.mode-inbox .inbox-sub {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.mode-inbox .inbox-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-row-sub);
+  line-height: var(--lh-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-inbox .inbox-item.is-asking .inbox-words {
+  color: var(--text);
+}
+
+.mode-inbox .inbox-state {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.mode-inbox .inbox-state.is-drawn {
+  margin-inline-start: var(--space-2);
+}
+
+.mode-inbox .inbox-state:not(.is-drawn) {
+  position: absolute;
+}
+
+.mode-inbox .inbox-state > .sidebar-status {
+  flex: none;
+  width: auto;
+  height: auto;
+}
+
+/* an unread finish's check is a box turned 45 degrees (Sidebar.css), which draws it about 2.5px wider on each side
+   than its layout box: it gets that room here, so its drawn edge stands on the row's inset as a dot's does */
+.mode-inbox .inbox-state > .sidebar-status[data-status="done"] .sidebar-status-dot {
+  margin-inline: calc(var(--space-half) + var(--hairline) / 2);
+}
+
+.mode-inbox .inbox-empty {
+  margin: var(--space-8) var(--space-4);
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+.mode-inbox .inbox-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.mode-inbox .inbox-failed-words {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.mode-inbox .inbox-failed-line {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--fs-md);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.mode-inbox .inbox-failed-cause {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.mode-inbox .inbox-failed-words.is-loading .inbox-failed-line {
+  color: var(--text-dim);
+}
+
+.mode-inbox .inbox-failed-words.is-loading .inbox-failed-cause {
+  visibility: hidden;
+}
+
+.mode-inbox .inbox-retry-words {
+  display: inline-grid;
+}
+
+.mode-inbox .inbox-retry-words > span {
+  grid-area: 1 / 1;
+}
+
+.mode-inbox .inbox-retry-words > [aria-hidden="true"] {
+  visibility: hidden;
+}
+
+.mode-inbox .btn.inbox-retry[aria-disabled="true"] {
+  opacity: 1;
+  color: var(--text-dim);
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .mode-inbox .btn.inbox-retry[aria-disabled="true"]:hover {
+    background: var(--bg-elevated);
+    border-color: var(--border);
+  }
+}
+
+.mode-inbox .inbox-empty > span {
+  display: block;
+  text-wrap: balance;
+}
+
+.mode-inbox.is-wide {
+  --inbox-avatar: var(--avatar-size);
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-nav);
+}
+
+.mode-inbox.is-wide .inbox-top {
+  --inbox-top-controls: calc(var(--inbox-control) * 3);
+  --inbox-top-inset: clamp(var(--space-3), calc((100cqi - var(--inbox-top-controls) - var(--space-2-5) * 2) / 2), var(--space-4));
+  --inbox-top-pad-start: var(--inbox-top-start, var(--inbox-top-inset));
+  --inbox-top-pad-end: calc(var(--inbox-top-inset) - var(--hairline));
+  position: static;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: clamp(0px, calc((100cqi - var(--inbox-top-controls) - var(--inbox-top-pad-start) - var(--inbox-top-pad-end)) / 2), var(--space-2-5));
+  height: var(--inbox-zone-h);
+  padding-inline: var(--inbox-top-pad-start) var(--inbox-top-pad-end);
+  pointer-events: auto;
+}
+
+.mode-inbox.is-wide .inbox-top > .icon-button.inbox-round {
+  flex: 0 1 auto;
+  min-width: var(--pointer-target);
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.mode-inbox.is-wide .inbox-top > .inbox-search {
+  flex-basis: 0;
+  min-width: calc(var(--space-3) + var(--inbox-control) + var(--hairline) * 2);
+}
+
+/* A list with the room for it (256px and more: the default sidebar with a mouse) always shows its search field at the
+   row's start, before the filter and New workspace, and draws no Search button: the rail has no magnifier, so the
+   field is the only one on the screen. A narrower list, in which the field could not hold its own placeholder, folds it
+   into Search: the field is drawn only while it is open, and then takes the row, the filter and New workspace giving
+   way until it is put away. */
+@container (min-width: 256px) {
+  .mode-inbox.is-wide .inbox-top > .inbox-search-toggle {
+    display: none;
+  }
+}
+
+@container (max-width: 255.98px) {
+  .mode-inbox.is-wide .inbox-top:not(.is-search-open) > .inbox-search,
+  .mode-inbox.is-wide .inbox-top.is-search-open > .inbox-filter-toggle,
+  .mode-inbox.is-wide .inbox-top.is-search-open > .inbox-add {
+    display: none;
+  }
+}
+
+.mode-inbox.is-wide .icon-button.inbox-round {
+  box-shadow: none;
+}
+
+.mode-inbox.is-wide .icon-button.inbox-round svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.mode-inbox.is-wide .inbox-search-input {
+  --field-fs: var(--fs-sm);
+  padding-inline: var(--space-3) var(--inbox-control);
+  box-shadow: none;
+}
+
+.mode-inbox.is-wide .inbox-search-clear svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.mode-inbox.is-wide .inbox-scroll {
+  position: static;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-1) 0 calc(var(--space-3) + env(safe-area-inset-bottom, 0px)) var(--space-3);
+  scroll-padding-block: var(--space-1);
+}
+
+.mode-inbox.is-wide .inbox-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: calc(100cqi - var(--space-3) * 2 + var(--hairline));
+}
+
+.mode-inbox.is-wide .inbox-row {
+  gap: var(--space-2-5);
+  min-height: var(--row-h);
+  padding: var(--space-2);
+  border-radius: var(--radius-lg);
+}
+
+@media (hover: hover) {
+  .mode-inbox.is-wide .inbox-row:hover:not(:disabled) {
+    background: var(--side-hover);
+  }
+}
+
+.mode-inbox.is-wide .inbox-row:active:not(:disabled) {
+  background: color-mix(in srgb, var(--side-selected), var(--border-strong));
+}
+
+.mode-inbox.is-wide .inbox-name {
+  font-size: var(--fs-md);
+}
+
+.mode-inbox.is-wide .inbox-words {
+  font-size: var(--fs-sm);
+}
+
+.mode-inbox.is-wide .inbox-state.is-drawn {
+  margin-inline-start: var(--space-half);
+}
+
+.mode-inbox.is-wide .inbox-item.is-current .inbox-row,
+.mode-inbox.is-wide .inbox-item.is-current .inbox-row:hover {
+  background: var(--side-selected);
+}
+
+.mode-inbox.is-wide .inbox-item.is-current .inbox-row:active:not(:disabled) {
+  background: color-mix(in srgb, var(--side-selected), var(--border-strong));
+}
+
+.mode-inbox.is-wide .inbox-item.is-current .inbox-name {
+  font-weight: var(--fw-selected);
+}
+
+@media (pointer: coarse) {
+  .mode-inbox.is-wide .inbox-row {
+    min-height: max(var(--row-h), var(--touch-target));
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .mode-inbox .inbox-row:active:not(:disabled),
+  .icon-button.inbox-round:active:not(:disabled) {
+    opacity: 1;
+  }
+}

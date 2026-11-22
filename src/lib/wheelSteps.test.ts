@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
 
-/** wheel reports a gesture of these moves sends, as the touch handler gathers them */
 function reports(moves: number[], cellHeight: number): number {
   let pixels = 0;
   let sent = 0;

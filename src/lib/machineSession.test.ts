@@ -36,14 +36,14 @@ const snapshot: ServerMessage = { type: "snapshot", features: ["submit", "pendin
 const message = (id: string, state: PendingMessage["state"] = "queued"): PendingMessage => ({ id, request_id: 1, text: "review this next", state, created_at: "2026-10-11T00:00:00Z" });
 function setup(machineId = "local", sharedStore?: PendingMessageStore) {
   const data = new Map<string, string>();
-  const store = sharedStore ?? new PendingMessageStore(() => ({ getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value); }, removeItem: (key) => { data.delete(key); } }));
+  const port = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
+  const store = sharedStore ?? new PendingMessageStore(() => port);
   const socket = new FakeSocket();
   const session = new MachineSession(machineId, { socket: socket as unknown as HerdrSocket, pendingStore: store });
-  return { session, socket, store };
+  return { session, socket, store, port };
 }
 function start(session: MachineSession, socket: FakeSocket): void { session.connect(); socket.receive(snapshot); }
 const named = (herdr_lifetime: string): ServerMessage => ({ type: "snapshot", features: ["submit", "pending-input"], snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [], herdr_lifetime } });
-/** a page's localStorage, where the herdr fence finds what each pane kept */
 function withStorage(run: () => void): void {
   const data = new Map<string, string>();
   const storage = {
@@ -71,7 +71,6 @@ describe("PC connection ownership", () => {
     expect(pasteFolder("local")).toBeUndefined();
     socket.receive({ type: "features", features: ["pending-input"], connection: "c2" });
     expect(pasteFolder("paste-folder-pc")).toBeUndefined();
-    // a lost connection forgets it: an older bridge behind the next one names none, only its snapshot
     socket.receive({ type: "features", features: ["pending-input"], connection: "c3", paste_dir: "/tmp/shots.png backup" });
     socket.disconnect();
     expect(pasteFolder("paste-folder-pc")).toBeUndefined();
@@ -79,19 +78,84 @@ describe("PC connection ownership", () => {
     session.close();
     expect(pasteFolder("paste-folder-pc")).toBeUndefined();
   });
-  it.each(["sent", "discarded"] as const)("settles a reloaded copy after the snapshot proves an early resumed %s receipt's lifetime", (outcome) => {
+  it.each(["sent", "discarded", "held"] as const)("settles a reloaded copy after the snapshot proves an early resumed %s receipt's lifetime", (outcome) => {
     const { session, socket, store } = setup(`reload-receipt-${outcome}`);
     const owner = paneStorageId(session.machineId, "w1:p1");
     store.accept(owner, message("saved"), null);
     session.connect();
     socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "reload-herdr" });
     expect(session.scope).toBeNull();
-    // Open's attach replay can finish while the server still awaits clientSnapshot().
-    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "saved", outcome, resumed: true }] });
-    expect(store.read(owner)).toHaveLength(1);
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], ...(outcome === "held" ? { held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: Date.now() + 60_000 }, server_time: Date.now() } : { removed: [{ id: "saved", outcome, resumed: true }] }) });
+    expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain", serverOwned: false }]);
     socket.receive(named("reload-herdr"));
-    expect(store.read(owner)).toEqual([]);
+    expect(store.read(owner)).toMatchObject(outcome === "held" ? [{ id: "saved", state: "held", serverOwned: false }] : []);
     session.close();
+  });
+  it("keeps one PC's proven held copy held when another PC's connection drops", () => {
+    const a = setup("pc-a"), b = setup("pc-b", a.store), store = a.store;
+    const ownerA = paneStorageId("pc-a", "w1:p1"), ownerB = paneStorageId("pc-b", "w1:p1");
+    const connect = ({ session, socket }: typeof a, lifetime: string): void => {
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: lifetime, herdr_lifetime: lifetime, server_time: Date.now() });
+      socket.receive(named(lifetime));
+    };
+    connect(a, "herdr-a");
+    connect(b, "herdr-b");
+    a.session.acceptPending("w1:p1", message("on-a"), a.session.epoch);
+    b.session.acceptPending("w1:p1", message("on-b"), b.session.epoch);
+    b.socket.disconnect();
+    connect(b, "herdr-b");
+    b.socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["on-b"], held_ms: { "on-b": 60_000 }, held_until: { "on-b": Date.now() + 60_000 }, server_time: Date.now() });
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "held" }]);
+    a.socket.disconnect();
+    expect(store.read(ownerA)).toMatchObject([{ id: "on-a", state: "uncertain" }]);
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "held" }]);
+    b.socket.disconnect();
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "uncertain" }]);
+    a.session.close(); b.session.close();
+  });
+  it("holds a resumed copy only until the bridge's end, whichever frame came late, and never past a later disconnect", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const { session, socket, store } = setup("held-clock");
+      const owner = paneStorageId(session.machineId, "w1:p1");
+      store.accept(owner, message("saved"), null);
+      const bridgeEnd = now + 10 * 60 * 1000;
+      session.connect();
+      const featuresSent = now;
+      now += 60_000;
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c1", herdr_lifetime: "clock-herdr", server_time: featuresSent });
+      socket.receive(named("clock-herdr"));
+      now = bridgeEnd - 10_000;
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 10_000 }, held_until: { saved: bridgeEnd }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      now = bridgeEnd + 1;
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 5_000 }, held_until: { saved: bridgeEnd }, server_time: bridgeEnd - 5_000 });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      now += 1_000;
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: now + 60_000 }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      socket.disconnect();
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c2", herdr_lifetime: "clock-herdr", server_time: now });
+      socket.receive(named("clock-herdr"));
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c3", herdr_lifetime: "clock-herdr", server_time: now + 10 * 60 * 1000 });
+      socket.receive(named("clock-herdr"));
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c4", herdr_lifetime: "clock-herdr", server_time: now });
+      socket.receive(named("clock-herdr"));
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: now + 60_000 }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      session.close();
+    } finally { clock.mockRestore(); }
   });
   it("settles durable reload state only after the lifetime fence exposes that herdr's storage", () => {
     withStorage(() => {
@@ -121,7 +185,6 @@ describe("PC connection ownership", () => {
     if (scenario === "disconnected") { socket.disconnect(); session.connect(); }
     socket.receive(scenario === "no lifetime" ? snapshot : named(scenario === "different lifetime" ? "other-herdr" : "early-herdr"));
     expect(store.read(owner)).toMatchObject([{ id: "saved", serverOwned: false }]);
-    // A later matching snapshot cannot resurrect a rejected receipt.
     socket.receive(named("early-herdr"));
     expect(store.read(owner)).toHaveLength(1);
     session.close();
@@ -150,7 +213,6 @@ describe("PC connection ownership", () => {
     expect(session.connection).toBe("c1");
     socket.disconnect();
     expect(session.connection).toBeNull();
-    // an older bridge names none
     session.connect();
     socket.receive(snapshot);
     expect(session.connection).toBeNull();
@@ -167,7 +229,6 @@ describe("PC connection ownership", () => {
       expect(socket.trusts(features)).toBe(true);
       socket.receive(features);
       expect(session.connection).toBe("c1");
-      // the send left once the features were known; its receipt and the live list come before the snapshot
       session.acceptPending("w1:p1", message("p1"), session.epoch);
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1")] });
       expect(pendingMessages.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["queued", true]]);
@@ -175,7 +236,6 @@ describe("PC connection ownership", () => {
       socket.receive(named("known-herdr-a"));
       expect(session.scope).toBe(scope);
       expect(pendingMessages.isOwned(owner, "p1", session.scope)).toBe(true);
-      // the same herdr: nothing live is offered again as unsent text
       expect(paneLifetimes.unsent().filter((item) => item.machine_id === "known-herdr-pc")).toEqual([]);
       session.close();
     });
@@ -197,7 +257,6 @@ describe("PC connection ownership", () => {
         expect(session.scope).toBeNull();
         expect(session.connection).toBeNull();
       }
-      // the snapshot runs the herdr fence first, then opens the connection's scope
       socket.receive({ ...named("replaced-herdr-b"), connection: "c1" } as ServerMessage);
       expect(paneLifetimes.generation("replaced-herdr-pc")).toBe("replaced-herdr-b");
       expect(session.scope).not.toBeNull();
@@ -237,7 +296,6 @@ describe("PC connection ownership", () => {
     const off = session.on(() => {});
     socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1")] });
     off();
-    // Detach's reply can arrive after the component and its xterm have gone away.
     socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "held")] });
     expect(session.scope).toBe(scope);
     expect(socket.closes).toBe(0);
@@ -279,14 +337,11 @@ describe("PC connection ownership", () => {
     socket.receive(removal);
     socket.receive(removal);
     expect(sentCount).toBe(1);
-    // A delayed acceptance receipt cannot recreate an already delivered item.
     session.acceptPending("w1:p1", message("p1"), session.epoch);
     expect(store.read(owner)).toEqual([]);
     session.close();
   });
 
-  // a queued row typed by the turn end's drain or Send now leaves the row list before the transcript
-  // holds its turn: the chat shows it as the user's waiting message meanwhile, as a composer send
   it("keeps a typed row in the chat as a waiting message, timed from when it went out", () => {
     const { session, socket } = setup("drain-pc");
     const key = waitingKey("drain-pc", "w1:p1");
@@ -300,7 +355,6 @@ describe("PC connection ownership", () => {
       socket.receive(removal);
       socket.receive(removal);
       expect(currentWaitingSends(key)).toMatchObject([{ text: "review this next", at: 1000 }]);
-      // a discarded row was never typed
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p2")] });
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p2", outcome: "discarded" }] });
       expect(currentWaitingSends(key)).toHaveLength(1);
@@ -314,7 +368,6 @@ describe("PC connection ownership", () => {
     try {
       start(session, socket);
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
-      // not typed (a draft in the box): held, and sent with Send now long after
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "held")] });
       clock.mockReturnValue(90_000);
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [message("p1", "sending")] });
@@ -333,16 +386,11 @@ describe("PC connection ownership", () => {
     const clock = spyOn(Date, "now").mockReturnValue(pc + 1_200_000);
     try {
       start(session, socket);
-      // the chat was opened ten minutes after its newest turn: those times alone allow ten minutes of skew
       settleWaitingSends(key, [earlier], pc + 600_080, true);
-      // Send now: the PC took the row at pc + 1_200_000 and its turn was written at +400. The socket dropped
-      // before the row's `sending` came, and the reconnect replays it 1.5 s after the Enter, by when a
-      // read had the PC's clock past the turn
       observeWaitingClock(key, new Date(pc + 1_201_450).toISOString());
       clock.mockReturnValue(pc + 1_201_500);
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [{ ...message("p1", "sending"), sending_at: new Date(pc + 1_200_000).toISOString() }] });
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
-      // another device wrote the same words 300 ms before the PC took the row
       settleWaitingSends(key, [earlier, user("review this next", pc + 1_199_700)], pc + 1_201_550, true);
       expect(currentWaitingSends(key)).toHaveLength(1);
       settleWaitingSends(key, [earlier, user("review this next", pc + 1_199_700), user("review this next", pc + 1_200_400)], pc + 1_201_600, true);
@@ -360,7 +408,6 @@ describe("PC connection ownership", () => {
       start(session, socket);
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [{ ...message("p1", "sending"), sending_at: new Date(pc).toISOString() }] });
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
-      // the chat opens on the pane after the row went out: another device's same words before it, then its own turn
       settleWaitingSends(key, [user("review this next", pc - 300)], pc + 60_500, true);
       expect(currentWaitingSends(key)).toHaveLength(1);
       settleWaitingSends(key, [user("review this next", pc - 300), user("review this next", pc + 400)], pc + 60_600, true);
@@ -368,7 +415,6 @@ describe("PC connection ownership", () => {
     } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
   });
 
-  // sent through another connection: this one never saw it go out, and its turn may be read already
   it("keeps no waiting message for a row removed as sent that this connection never saw sending", () => {
     const { session, socket } = setup("elsewhere-pc");
     const key = waitingKey("elsewhere-pc", "w1:p1");
@@ -393,24 +439,28 @@ describe("PC connection ownership", () => {
     session.close();
   });
 
-  it("suspends ownership on a real disconnect before view callbacks and never revives it on reconnect", () => {
-    const { session, socket, store } = setup();
+  it("suspends ownership on a real disconnect before view callbacks and never revives it on reconnect; a hold its sender asked for stays held", () => {
+    const { session, socket, store, port } = setup();
     start(session, socket);
     const epoch = session.epoch, oldScope = session.scope;
     const owner = paneStorageId("local", "w1:p1");
     session.acceptPending("w1:p1", message("queued"), epoch);
-    session.acceptPending("w1:p1", message("held", "held"), epoch);
+    session.acceptPending("w1:p1", { ...message("held", "held"), error: { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" } }, epoch);
+    session.acceptPending("w1:p1", message("asked", "held"), epoch);
+    const rows = () => store.read(owner).map(({ id, state, serverOwned }) => [id, state, serverOwned]);
     session.onDisconnect(() => {
       expect(session.scope).toBeNull();
       expect(session.epoch).toBe(epoch + 1);
-      expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+      expect(rows()).toEqual([["queued", "uncertain", false], ["held", "uncertain", false], ["asked", "held", false]]);
     });
     socket.disconnect();
     start(session, socket);
     expect(session.scope).not.toBe(oldScope);
     socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
     session.acceptPending("w1:p1", message("queued"), epoch);
-    expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+    expect(rows()).toEqual([["queued", "uncertain", false], ["held", "uncertain", false], ["asked", "held", false]]);
+    expect(new PendingMessageStore(() => port).read(owner).map(({ id, state }) => [id, state]))
+      .toEqual([["queued", "uncertain"], ["held", "uncertain"], ["asked", "held"]]);
     session.close();
   });
 
@@ -502,12 +552,10 @@ describe("PC connection ownership", () => {
       session.connect();
       socket.receive({ type: "snapshot", snapshot: { ...bare, herdr_lifetime: "ingress-herdr-a" } });
       paneLifetimes.paneStorage.setItem(draft("w1:p1"), "A's own draft");
-      // the connection comes back with a snapshot that proves no herdr
       socket.disconnect();
       session.connect();
       socket.receive({ type: "snapshot", snapshot: bare });
       expect(paneLifetimes.paneStorage.getItem(draft("w1:p1"))).toBeNull();
-      // typed meanwhile, in a pane that had no draft
       paneLifetimes.paneStorage.setItem(draft("w1:p2"), "unidentified new draft");
       socket.disconnect();
       session.connect();

@@ -8,7 +8,6 @@ export const STAGES: ReadonlyArray<{ stage: SetupProgress["stage"]; label: strin
   { stage: "restart", label: "Restarting the bridge" },
 ];
 
-/** Sizes of bundles (MB) and of single files (a few bytes up): the unit is the largest that fits. */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -17,23 +16,18 @@ export function formatBytes(bytes: number): string {
   return `${megabytes < 10 ? Math.round(megabytes * 10) / 10 : Math.round(megabytes)} MB`;
 }
 
-/** "about 2 min" / "about 40 s": a rate is a guess, so no more precision than that. */
 export function formatRemaining(seconds: number): string {
   if (seconds >= 60) return `about ${Math.round(seconds / 60)} min`;
   return `about ${Math.max(5, Math.round(seconds / 5) * 5)} s`;
 }
 
 export interface ProgressView {
-  /** "Step 2 of 4" */
   step: string;
   label: string;
-  /** 0-100 when the stage has a size */
   percent: number | null;
-  /** "45 MB of 130 MB · about 1 min left" */
   detail: string | null;
 }
 
-/** What a bridge install is doing, in words; null before it has a stage. */
 export function describeProgress(progress: SetupProgress | null | undefined): ProgressView | null {
   if (!progress) return null;
   const index = STAGES.findIndex((entry) => entry.stage === progress.stage);

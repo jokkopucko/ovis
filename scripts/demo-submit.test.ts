@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "bun:test";
 
-/** Drives owner-only transport events and a fake clock without a DOM, network or live herdr. */
 it("the demo refuses draft clearing, drains accepted pending IDs once, and never resumes a lost owner lease", async () => {
   const saved = new Map(["setTimeout", "clearTimeout", "window", "location", "PushManager"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const opened: any[] = [];
@@ -65,7 +64,6 @@ it("the demo refuses draft clearing, drains accepted pending IDs once, and never
         resend_id: "demo-retry-copy", resend_generation: generation, ...(clearDraft ? { clear_draft: clearDraft } : {}) }));
       return peer.frames.findLast((frame) => frame.type === "submit-result" && frame.id === id);
     };
-    // regression: separate demo connections share a generation's definitive refusal.
     assert.equal(resend(owner, 541, 0, "named draft").code, "unsupported");
     assert.equal(resend(retryPeer, 542, 0, "named draft").code, "unsupported");
     const claudeBefore = await json("/api/pane/conversation?pane_id=" + claude);
@@ -89,7 +87,6 @@ it("the demo refuses draft clearing, drains accepted pending IDs once, and never
     owner.socket.send(JSON.stringify({ type: "role", mode: "interact" }));
     assert.equal((await transcript()).turns.length, before.turns.length);
 
-    // Another agent's in-progress fixture uses the same accepted pending contract.
     owner.socket.send(JSON.stringify({ type: "attach", pane_id: claude }));
     const claudePending = owner.send(claude, "also run the tests", "queue").pending;
     assert.equal(claudePending.state, "queued");
@@ -100,7 +97,6 @@ it("the demo refuses draft clearing, drains accepted pending IDs once, and never
     const prompt = (await json("/api/pane/prompt?pane_id=" + codex)).prompt;
     assert.equal((await demo.fetch("/api/pane/prompt/answer", { method: "POST", body: JSON.stringify({ pane_id: codex, prompt_id: prompt.id, option_index: 0 }) })).status, 200);
     runTimer(2600);
-    // regression: generation 0 stays refused; the recovered generation delivers once.
     assert.equal(resend(retryPeer, 543, 0).code, "unsupported");
     assert.equal(resend(owner, 544, 1).ok, true);
     assert.equal(resend(retryPeer, 545, 1).ok, true);
@@ -159,7 +155,6 @@ it("the demo refuses draft clearing, drains accepted pending IDs once, and never
     assert.equal(other.pending().messages[0].state, "held");
     assert.equal(other.action(detached.id, "discard").ok, true);
 
-    // A close landing in the sending notification cancels the claim before text reaches the turn.
     assert.equal(other.send(codex, "claim race current").ok, true);
     const race = other.send(codex, "closed claim must not run", "queue").pending;
     other.socket.addEventListener("message", (event: MessageEvent) => {
@@ -198,7 +193,6 @@ it("the demo refuses draft clearing, drains accepted pending IDs once, and never
     assert.equal(framed(553, "hello framing", "framing-accepted").ok, true);
     assert.equal(framed(554, "hello framing\r", "framing-accepted").code, "invalid_submit_text", "a cached receipt must not bypass framing validation");
     assert.equal(await framedTurns(), 2);
-    // regression: a resend is the same message when its normalized text matches, as at the bridge
     const equivalent = (id: number, text: string) => {
       combinationPeer.socket.send(JSON.stringify({ type: "submit", id, pane_id: claude, text, payload: "hello\rworld", resend_id: "canonical-id" }));
       return combinationPeer.frames.findLast((frame) => frame.type === "submit-result" && frame.id === id);

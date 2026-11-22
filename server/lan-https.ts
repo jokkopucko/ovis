@@ -15,6 +15,10 @@ import { BlockList, isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 
+const EXTENDED_KEY_USAGE_OID = "2.5.29.37";
+const SERVER_AUTH_OID = "1.3.6.1.5.5.7.3.1";
+const SUBJECT_ALT_NAME_OID = "2.5.29.17";
+
 export interface LanHttpsConfig {
   readonly port: number;
   /** one address to bind instead of every private interface address; `0.0.0.0` only when written */
@@ -30,7 +34,6 @@ export interface LanHttpsCertificate {
   readonly sha256: string;
 }
 
-/** The listener's settings from the environment: null when not asked for, `{ error }` when asked for wrongly. */
 export function lanHttpsConfig(env: Record<string, string | undefined>): LanHttpsConfig | { error: string } | null {
   const portText = env["OVIS_LAN_HTTPS_PORT"]?.trim() ?? "";
   if (portText === "") return null;
@@ -81,7 +84,6 @@ export function lanHttpsCertificate(stateDir: string, config: LanHttpsConfig, ad
       return kept;
     }
   } catch {
-    // missing or unreadable: made again below
   }
   const made = selfSignedCertificate(addresses);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -113,10 +115,8 @@ export function selfSignedCertificate(addresses: readonly string[], now = new Da
   const ips = [...new Set(["127.0.0.1", ...addresses])].map((address) => tlv(0x87, Buffer.from(address.split(".").map(Number))));
   // no keyUsage: one without keyCertSign stops a verifier trusting the certificate as its own issuer, the way a pinned or installed self-signed one is trusted
   const extensions = seq(
-    // extendedKeyUsage: serverAuth
-    seq(oid("2.5.29.37"), tlv(0x04, seq(oid("1.3.6.1.5.5.7.3.1")))),
-    // subjectAltName: DNS localhost and every address
-    seq(oid("2.5.29.17"), tlv(0x04, seq(tlv(0x82, Buffer.from("localhost")), ...ips))),
+    seq(oid(EXTENDED_KEY_USAGE_OID), tlv(0x04, seq(oid(SERVER_AUTH_OID)))),
+    seq(oid(SUBJECT_ALT_NAME_OID), tlv(0x04, seq(tlv(0x82, Buffer.from("localhost")), ...ips))),
   );
   const tbs = seq(
     tlv(0xa0, tlv(0x02, Buffer.from([2]))),

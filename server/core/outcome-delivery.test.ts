@@ -58,7 +58,6 @@ for (const scenario of ["unpolled replacement", "wrapper restart", "first turn",
     const readsAtSend = processes.mock.calls.length;
     if (scenario !== "unpolled replacement") expect(await poll()).toMatchObject([{ state: "accepted" }]);
     if (scenario === "suspended") {
-      // Ctrl+Z, then fg: the same process out of the foreground for one poll is not a replacement
       foreground = false;
       expect(await poll()).toMatchObject([{ state: "accepted" }]);
       foreground = true;
@@ -72,7 +71,6 @@ for (const scenario of ["unpolled replacement", "wrapper restart", "first turn",
     else expect(shown).toBeUndefined();
     expect(readsAtSend).toBe(1);
     if (scenario === "settled") {
-      // its session found and its window over, the send needs the pane's processes no more
       const reads = processes.mock.calls.length;
       const later = Date.now() + 600_000;
       spyOn(Date, "now").mockImplementation(() => later);
@@ -100,7 +98,8 @@ it("does not preview an unchanged pi screen after immediate delivery without a s
   });
   await submitter()(target.pane_id, "/myext", "/myext", now);
   expect(delivered).toHaveBeenCalledTimes(1);
-  expect(screen).not.toHaveBeenCalled();
+  const sentAt = delivered.mock.invocationCallOrder[0]!;
+  expect(screen.mock.invocationCallOrder.filter((order) => order > sentAt)).toEqual([]);
   now++;
   const url = new URL(`http://localhost/api/pane/prompt?pane_id=${target.pane_id}`);
   const shown = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;
@@ -121,6 +120,7 @@ it("keeps repeated omp model outcomes under the original command rather than its
   let now = 50_000;
   spyOn(Date, "now").mockImplementation(() => now);
   spyOn(client, "paneGet").mockResolvedValue(target);
+  spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
   const deliver = spyOn(client, "agentPrompt").mockResolvedValue();
   const prepare = spyOn(prompt, "prepareCommandSend");
   await submitter()(target.pane_id, "/model", "/model", now);
@@ -141,6 +141,7 @@ it("does not rewrite /model when the resolved pane agent is OmO", async () => {
   spyOn(client, "paneGet").mockResolvedValue(target);
   spyOn(client, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ pid: process.pid, argv: ["omo"], cwd: dir }] } } as never);
   spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: ["session-1"], custom: true, held: true });
+  spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
   const deliver = spyOn(client, "agentPrompt").mockResolvedValue();
   try {
     await submitter()(target.pane_id, "/model", "/model", Date.now());
@@ -169,7 +170,7 @@ for (const dependency of ["process-info", "transcript", "catalog", "snapshot"] a
       if (dependency === "transcript") transcript.mockImplementation(async () => { disrupt(); return null; });
       if (dependency === "catalog") catalog.mockImplementation(() => { disrupt(); return []; });
       if (dependency === "snapshot") snapshot.mockImplementation(async () => {
-        disrupt(); return screen;
+        if (delivered.mock.calls.length > 0) disrupt(); return screen;
       });
       const result = await submitter()(pane.pane_id, "/myext", "/myext", now).then(() => "delivered", (error: unknown) => error);
       expect(result).toBe("delivered");
@@ -182,15 +183,11 @@ for (const dependency of ["process-info", "transcript", "catalog", "snapshot"] a
   }
 }
 
-// The send-time process read (bindCommandProcess) and the history row read (outcome.ts scrolledAnchor) only record
-// the send: neither may hold its delivery. `slow` answers 2 s after it is asked, once the send has been delivered.
 for (const dependency of ["send-time process", "scroll"] as const) {
   for (const failure of ["slow", "failing", "never answering"] as const) {
     it(`delivers before a ${failure} ${dependency} read for its outcome can affect its deadline`, async () => {
       let now = 10_000;
       spyOn(Date, "now").mockImplementation(() => now);
-      // a Claude Code pane keeps a send-time screen, whose history row the scroll read confirms; its box reads
-      // empty, so the box checks before delivery read no row of their own
       const target: HerdrPane = dependency === "scroll"
         ? { ...pane, pane_id: `delivery-scroll-${failure}`, agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: "known" },
           scroll: { max_offset_from_bottom: 7, offset_from_bottom: 0, viewport_rows: 40 } }
@@ -208,7 +205,6 @@ for (const dependency of ["send-time process", "scroll"] as const) {
       let answer = (): void => {};
       let reads = 0;
       let sendRead: Promise<unknown> = Promise.resolve();
-      // only the send's own read is disrupted: a later poll's read answers at once
       const read = <T>(value: T): Promise<T> => {
         if (reads++ > 0) return Promise.resolve(value);
         const disrupted = failure === "failing" ? Promise.reject(new Error(`fixture: ${dependency} failed`))
@@ -227,9 +223,7 @@ for (const dependency of ["send-time process", "scroll"] as const) {
       const sent = noted.mock.calls[0]?.[2];
       if (!sent) throw new Error("fixture command was not recorded");
       answer();
-      // the composer's handler was attached to the read first, so it has run once awaiting the read returns
       if (failure !== "never answering") await sendRead.catch(() => {});
-      // a row that answers after the send, and still equals the snapshot's, is kept; none is never invented
       if (dependency === "scroll") expect(sent.top).toBe(failure === "slow" ? 7 : undefined);
       const url = new URL(`http://localhost/api/pane/prompt?pane_id=${target.pane_id}`);
       const shown = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;

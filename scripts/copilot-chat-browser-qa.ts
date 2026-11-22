@@ -1,4 +1,3 @@
-/** Owned native Copilot-shaped fixture -> Herdr -> HTTP -> built React chat. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -100,7 +99,6 @@ console.log("fixture ready");`);
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
   await log.locator(".work-row-head").first().click();
   await log.locator(".chat-tool-more").click();
-  // a long whole output opens folded to its head: its own Show all unfolds it
   await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/COPILOT_OUTPUT_END/).waitFor();
   await log.locator(".work-row-head").nth(1).click();
@@ -110,14 +108,22 @@ console.log("fixture ready");`);
   appendFileSync(transcript, event("session.resume", { selectedModel: "fixture-model" })
     + event("user.message", { content: "Follow-up prompt" })
     + event("assistant.message", { content: "Follow-up answer.", phase: "final_answer", model: "fixture-model" }));
-  await log.getByText("Follow-up answer.", { exact: true }).waitFor();
+  // The opened tool output is reading there (#1388): unless the view is back at the end by then, the
+  // turn arrives under New messages, and the list does not draw a row that far below the view.
+  const followUp = log.getByText("Follow-up answer.", { exact: true });
+  const newMessages = page.locator(`.pane-frame[data-layout-pane="${pane}"]`).getByRole("button", { name: "New messages" });
+  await followUp.or(newMessages).first().waitFor();
+  // looked up and clicked in one step in the page: the list settling at its end in between unmounts the
+  // button, and a locator click would wait on a button that is gone. New messages only, not the icon-only
+  // Jump to latest that shares its class
+  await page.evaluate((pane) => document.querySelector<HTMLButtonElement>(`.pane-frame[data-layout-pane="${pane}"] .chat-new-messages:not(.is-icon)`)?.click(), pane);
+  await followUp.waitFor();
   appendFileSync(transcript, event("user.message", { content: "Finish task" })
     + event("assistant.message", { toolRequests: [{ toolCallId: "finish-call", name: "task_complete",
       arguments: { summary: "Autopilot finished this task." } }] })
     + event("tool.execution_complete", { toolCallId: "finish-call", success: true, result: { content: "done" } })
     + event("session.task_complete", { summary: "Autopilot finished this task." }));
   await log.getByText("Autopilot finished this task.", { exact: true }).waitFor();
-  // Capture readable conversation, not a 6 KiB expanded tool detail.
   if (await head.getAttribute("aria-expanded") === "true") await head.click();
   if (process.env.UI_EVIDENCE_DIR) {
     mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });

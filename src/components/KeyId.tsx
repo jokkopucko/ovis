@@ -2,7 +2,6 @@ import "./KeyId.css";
 
 import { useT } from "../lib/i18n.ts";
 
-/** A relay id in groups of four, the way a person compares two of them aloud. */
 export function keyIdGroups(id: string): string[] {
   return id.match(/.{1,4}/g) ?? [];
 }

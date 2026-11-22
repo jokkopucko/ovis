@@ -48,7 +48,6 @@ export class Recorder {
     return { frames: this.frames, cues: this.cues, start: this.start, end: now(), width: this.width, height: this.height };
   }
 
-  /** The pointer glides to (x, y) on an eased path, as a hand would. */
   async moveTo(x: number, y: number, ms = 650): Promise<void> {
     const steps = Math.max(8, Math.round(ms / 16));
     const [fromX, fromY] = [this.x, this.y];
@@ -84,7 +83,6 @@ export class Recorder {
     await this.page.locator(selector).first().tap();
   }
 
-  /** A one-finger drag, drawn as a touch that follows the finger. */
   async drag(x: number, fromY: number, toY: number, ms = 450): Promise<void> {
     const cdp = this.cdp!;
     const steps = Math.round(ms / 25);
@@ -99,7 +97,6 @@ export class Recorder {
     await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   }
 
-  /** The camera eases to `zoom` around (x, y); zoom 1 is the whole window. */
   camera(zoom: number, x = this.width / 2, y = this.height / 2): void {
     this.cues.push({ t: now(), kind: "camera", zoom, x, y });
   }

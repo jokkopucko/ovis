@@ -11,13 +11,10 @@ import "./VirtualSource.css";
 export interface VirtualSourceProps {
   /** the file's name or path: the virtualizer infers the language from it */
   name: string;
-  /** the source, normalized to "\n" line ends */
   text: string;
-  /** colored in the virtualizer's worker; false draws plain rows (the setting off, or too long, which the host says) */
   colored: boolean;
   wrap: boolean;
   theme: "dark" | "light";
-  /** a requested line, within the source: marked, and brought to the middle of the view */
   markedLine: number | null;
 }
 
@@ -37,13 +34,11 @@ function VirtualizerProbe({ onInstance }: { onInstance: (instance: VirtualizerIn
 }
 
 /**
- * A source too long for an element per line, as a window of rows from the package's virtualizer:
- * the DOM holds a few hundred rows whatever the file's length. The file object keeps its identity
- * while name and contents are unchanged, as the virtualizer renders by identity; its host fills the
- * scroll root, so it has a box before the first anchor pass; a requested line is revealed against
- * its mounted row, since positions past the measured rows are estimates; and a wrap toggle or a
- * width change, which re-measure the rows, keeps the marked line in view when it was, else the
- * top line in place.
+ * The file object keeps its identity while name and contents are unchanged, as the virtualizer
+ * renders by identity; its host fills the scroll root, so it has a box before the first anchor
+ * pass; a requested line is revealed against its mounted row, since positions past the measured
+ * rows are estimates; and a wrap toggle or a width change, which re-measure the rows, keeps the
+ * marked line in view when it was, else the top line in place.
  */
 export default function VirtualSource({ name, text, colored, wrap, theme, markedLine }: VirtualSourceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -51,16 +46,12 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   const containerRef = useRef<HTMLElement | null>(null);
   const virtualizerRef = useRef<VirtualizerInstance | undefined>(undefined);
   const reveal = useRef<Reveal | null>(null);
-  // the reader's wheel, finger, scrollbar and key presses so far: a size change's anchor taken before one is stale
   const readerInputs = useRef(0);
-  // what a wrap toggle or a width change keeps in place: the marked line if it was in view, else the
-  // line at the top of the view; read after each render and scroll, before the rows re-measure
   const anchor = useRef<{ width: number | null; top: number | null; markedInView: boolean }>({ width: null, top: null, markedInView: false });
   const markedRef = useRef(markedLine);
   markedRef.current = markedLine;
   // the row estimate is the host's line-height, measured when the file mounts and again when Settings → File text size
   // changes it: the metrics are read when the file mounts, so a new height mounts the file again (keyed on it below)
-  // the source's size follows the chosen size over the chat's, and the interface's through --fs-xs
   const { fileFontSize, chatFontSize, uiFontSize, density } = useSettings().settings;
   const [lineHeight, setLineHeight] = useState<number | null>(null);
   const lineHeightRef = useRef<number | null>(null);
@@ -81,7 +72,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     return root instanceof HTMLElement ? root : null;
   }, []);
 
-  /** Scrolls the virtualizer's root; false when the scroll was clamped and nothing moved. */
   const scrollTo = useCallback((top: number): boolean => {
     const virtualizer = virtualizerRef.current;
     const root = virtualizer?.getRoot();
@@ -99,10 +89,9 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   }, []);
 
   /**
-   * Reads the anchor from the virtualizer's layout of the mounted rows; a stale range (a scroll not
-   * yet rendered) keeps the last top line. A width change re-measures the rows, and the virtualizer
-   * renders and scrolls for it before our observer sees it: a reading at another width than the
-   * anchor's is the layout after the change, so the anchor from before it stands until re-anchored.
+   * A width change re-measures the rows, and the virtualizer renders and scrolls for it before our
+   * observer sees it: a reading at another width than the anchor's is the layout after the change,
+   * so the anchor from before it stands until re-anchored.
    */
   const readAnchor = useCallback((): void => {
     const file = fileRef.current;
@@ -127,11 +116,9 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   }, []);
 
   /**
-   * One pass of the pending reveal: a mounted row within a pixel of its place ends it; one further
-   * off is scrolled into place, and an unmounted one to its estimated position (or, already there,
-   * waits for the render that draws its window). The render a scroll
-   * causes settles the next pass, which also catches the virtualizer moving the row again as it
-   * re-measures; a scroll that changes nothing renders nothing, so a frame later looks once more.
+   * The render a scroll causes settles the next pass, which also catches the virtualizer moving the
+   * row again as it re-measures; a scroll that changes nothing renders nothing, so a frame later
+   * looks once more.
    */
   const settle = useCallback((): void => {
     const pending = reveal.current;
@@ -162,7 +149,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     }
     if (pending.passes >= MAX_REVEAL_PASSES) { reveal.current = null; return; }
     pending.passes += 1;
-    // a clamped scroll (the line is too near an end to sit where asked) is as settled as it gets
     if (!scrollTo(target)) { reveal.current = null; return; }
     requestAnimationFrame(() => requestAnimationFrame(settle));
   }, [scrollRoot, scrollTo]);
@@ -224,7 +210,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     return () => cancelAnimationFrame(frame);
   }, [fileFontSize, chatFontSize, uiFontSize, density, measureLine, anchoredReveal]);
 
-  // the wrap toggle re-measures the rows: the anchor is taken before the new option renders
   const lastWrap = useRef(wrap);
   if (lastWrap.current !== wrap) {
     lastWrap.current = wrap;

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import * as herdr from "./herdr/client.ts";
-import { HerdrError } from "./herdr/client.ts";
-import { errorResponse } from "./http.ts";
+import { HerdrError, herdrFault } from "./herdr/client.ts";
+import { errorResponse, layoutResponse, requestFault, requestIdContext, wordHerdrFailures } from "./http.ts";
 import { createServer } from "./index.ts";
 
 describe("errorResponse", () => {
@@ -17,7 +17,6 @@ describe("errorResponse", () => {
     expect(body.error.code).toBe("internal_error");
     expect(body.error.message).not.toContain("ENOENT");
     expect(body.error.message).not.toContain("/home/");
-    // the handle the user can quote, and one answer per failure
     expect(body.error.message).toMatch(/^internal error \([0-9a-f]{12}\)$/);
     expect(errorResponse(new Error(secret)).status).toBe(500);
     const second = await errorResponse(new Error(secret)).json() as { error: { message: string } };
@@ -60,11 +59,8 @@ describe("pane find HTTP validation", () => {
     { previous: { ...previous, extra: "discard" }, content_revision: 0 },
   ]) {
     it(`forwards validated optional fields for ${JSON.stringify(patch)}`, async () => {
-      // given
       const expected = { ...request, ...patch, ...("previous" in patch ? { previous } : {}) };
-      // when
       const response = await post(patch);
-      // then
       expect(find).toHaveBeenCalledTimes(1);
       expect(find).toHaveBeenCalledWith(expected);
       expect(response.status).toBe(409);
@@ -90,13 +86,33 @@ describe("pane find HTTP validation", () => {
     ]),
   ] satisfies [Record<string, unknown>, string][]) {
     it(`rejects ${JSON.stringify(patch)} before calling herdr`, async () => {
-      // given: malformed optional navigation state
-      // when
       const response = await post(patch);
-      // then
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({ error: { code } });
       expect(find).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("a failed herdr call's answer", () => {
+  const failed = () => new HerdrError("connect_failed", "herdr's own words", false, true);
+  it("is the error's own envelope with no view, byte for byte", async () => {
+    const response = errorResponse(failed());
+    expect([response.status, await response.text(), response.headers.get("cache-control")]).toEqual([502, '{"error":{"code":"connect_failed","message":"herdr\'s own words"}}', null]);
+  });
+  it("is the view's words, never stored, for a failed call inside a request that words them", async () => {
+    const view = () => ({ code: "worded", message: "the view's words" });
+    await requestIdContext.run({ id: "r", route: "" }, async () => {
+      wordHerdrFailures(view, (reason) => `worded ${reason}`);
+      const worded = errorResponse(failed());
+      expect([worded.status, await worded.json(), worded.headers.get("cache-control")]).toEqual([502, { error: view() }, "no-store"]);
+      expect(await errorResponse(new HerdrError("read_only", "this device can only watch")).json()).toEqual({ error: { code: "read_only", message: "this device can only watch" } });
+      expect(requestFault(failed(), "unused")).toEqual(view());
+      const layout = layoutResponse({ ok: true, changed: false, reason: "herdr's reason" });
+      expect([await layout.json(), layout.headers.get("cache-control")]).toEqual([{ ok: true, changed: false, reason: "worded herdr's reason" }, "no-store"]);
+    });
+    expect(herdrFault(failed(), undefined)).toEqual({ code: "connect_failed", message: "herdr's own words" });
+    const plain = layoutResponse({ ok: true, changed: false, reason: "herdr's reason" });
+    expect([await plain.text(), plain.headers.get("cache-control")]).toEqual(['{"ok":true,"changed":false,"reason":"herdr\'s reason"}', null]);
+  });
 });

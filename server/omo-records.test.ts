@@ -27,7 +27,6 @@ describe("OmO question replay", () => {
     expect(reader.read(path).map((ask) => ask.id)).toEqual(["old"]);
     expect(read(path).reduce(omoTurnAfter, noTurn()).asks.map((ask) => ask.id)).toEqual(["old"]);
     expect(new OmoAskReader().read(path).map((ask) => ask.id)).toEqual(["old"]);
-    // An unfinished final settlement must not close anything yet.
     const settlement = record({ type: "custom", customType: "ask-user:settlement", data: { requestId: "old" } });
     appendFileSync(path, settlement.slice(0, -1));
     expect(reader.read(path)).toHaveLength(1);

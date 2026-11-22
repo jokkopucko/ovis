@@ -1,4 +1,3 @@
-/** Paging only: the production client over fictional demo transcripts; no live panes. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,9 +7,9 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { appFaces } from "./app-faces.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-pane-paging-demo-"));
-// Capture only fictional paging fixtures for PR evidence.
 const evidence = process.env.UI_EVIDENCE_DIR;
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 const returnControl = (page: Page) => page.locator(".pane-frame.is-current .chat-new-messages");
@@ -73,21 +72,10 @@ try {
   })();</script>`;
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n${record}\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      // Rounded DOM heights must not trap explicit paging at a fractional physical end.
       const fractionalBrowser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox", "--force-device-scale-factor=1.25"] });
       const fractional = await fractionalBrowser.newContext({ viewport: { width: 1024, height: 600 }, deviceScaleFactor: 1.25, locale: "en-US" });
       try {
@@ -112,7 +100,6 @@ try {
           const content = node.firstElementChild as HTMLElement;
           content.style.minHeight = "0"; content.style.height = "200.75px"; content.style.overflow = "hidden";
           const style = document.createElement("style");
-          // a line taller than the view leaves each page one pixel
           style.textContent = "[data-fractional-paging]::before { display: none; } [data-fractional-paging] :is(.chat-turn-agent > .markdown, .chat-bubble) { line-height: 1000px; }";
           document.head.append(style);
           node.scrollTop = node.scrollHeight;
@@ -133,7 +120,6 @@ try {
         assert.ok(Math.abs(await transcript.evaluate((node) => node.scrollTop) - paged) < 0.5, "one-pixel upward intent survives deferred scroll and fractional resize");
         await transcript.evaluate((node: HTMLElement) => { node.style.height = "100.25px"; });
         await settled(page);
-        // Reach the physical end and ask PageDown before its deferred scroll event arrives.
         const clamped = await transcript.evaluate((node) => {
           node.scrollTop = node.scrollHeight;
           const before = node.scrollTop;
@@ -221,7 +207,6 @@ try {
           });
           await settled(page);
           assert.equal(await page.evaluate(() => document.activeElement?.id), "owned-paging-editable");
-          // The extra field changes the pane's flex layout before the key is pressed.
           const editableBottom = await transcript.evaluate((node) => node.scrollTop);
           await page.keyboard.press("PageUp");
           await settled(page);
@@ -237,7 +222,6 @@ try {
             const bottom = await transcript.evaluate((node) => node.scrollTop);
             const step = await transcript.evaluate((node) => Math.max(1, node.clientHeight - parseFloat(getComputedStyle(node.querySelector(".chat-turn-agent > .markdown, .chat-bubble") ?? node).lineHeight)));
             await page.keyboard.press("Meta+Shift+PageUp");
-            // The first frame already has the new position and has stopped following output.
             assert.ok(Math.abs(bottom - await transcript.evaluate((node) => node.scrollTop) - step) <= 1, "chat instantly pages, keeping one line");
             await settled(page);
             assert.ok(Math.abs(bottom - await transcript.evaluate((node) => node.scrollTop) - step) <= 1, "the bottom-pinning effect leaves paged history in place");
@@ -278,7 +262,6 @@ try {
           await page.reload();
           await page.locator(".conn-live").waitFor();
           await composer.waitFor();
-          // the reload starts the demo's turn over
           await demoTurnEnded(page);
           await page.keyboard.press("Meta+Shift+Comma");
           await openSettingsPage(page, "Shortcuts");
@@ -296,8 +279,14 @@ try {
           await openSettingsPage(page, "Shortcuts");
           await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).selectOption("default");
           await page.keyboard.press("Escape");
-          await transcript.evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll", { bubbles: true })); });
-          await settled(page);
+          await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor({ state: "hidden" });
+          for (let pages = 0; ; pages++) {
+            assert.ok(pages < 128, "repeated upward pages reach the history start within a bound");
+            await page.keyboard.press("Meta+Shift+PageUp");
+            await settled(page);
+            if (await transcript.evaluate((node) => node.scrollTop === 0)) break;
+          }
+          await returnControl(page).waitFor();
           await page.keyboard.press("Meta+Shift+PageUp");
           await settled(page);
           assert.equal(await transcript.evaluate((node) => node.scrollTop), 0, "PageUp at the history start has no movement");

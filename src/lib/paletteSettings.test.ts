@@ -5,11 +5,9 @@ import { actionAliases, rankByTitle, requestedSettingsPage, requestSettingsPage,
 import type { Language, Translate } from "./i18n.ts";
 
 const identity = (key: string): string => key;
-/** The Settings pages and groups as the palette searches them, in the language `t` speaks: a group as `page#section`. */
 const pagesIn = (t: Translate) => settingsPageEntries(t).map((entry) => ({ item: entry.section === undefined ? entry.id : `${entry.id}#${entry.section}`, title: entry.label, aliases: entry.aliases }));
 const languageT = (language: Language): Translate => (key, vars) => translate(language, key, vars);
 
-/** What a user types for a setting, by language, and the page (and group, or `-`) its first result opens. */
 const MATRIX: readonly (readonly [Language, string, SettingsPageId, string])[] = [
   ["en", "theme", "appearance", "-"],
   ["en", "palette", "appearance", "-"],
@@ -93,7 +91,6 @@ describe("settings entries", () => {
     const pages = pagesIn(identity);
     expect(rankByTitle("theme", pages)).toEqual(["appearance"]);
     expect(rankByTitle("palette", pages)).toEqual(["appearance"]);
-    // every font row is in Appearance's Typography group: the Chat and Terminal pages no longer hold one
     expect(rankByTitle("font", pages)).toEqual(["appearance#typography"]);
   });
 
@@ -110,16 +107,13 @@ describe("settings entries", () => {
 
   it("ranks titles before section aliases", () => {
     const pages = pagesIn(identity);
-    // a group's heading holds the word: it leads the page that has it only as an alias
     expect(rankByTitle("composer", pages)).toEqual(["chat#composer", "chat#composer-more", "chat"]);
-    // a group found only by its setting's label comes after the page whose title holds the word
     expect(rankByTitle("interface", pages)).toEqual(["appearance#typography"]);
     expect(rankByTitle("chat", pages)[0]).toBe("chat");
     expect(rankByTitle("enter", pages)).toEqual(["chat", "chat#composer"]);
   });
 
   it("finds Appearance by the literal word palette in every language, and by the language's own word", () => {
-    // the translated alias is a bag of search words, so it keeps the English word next to its own, as it keeps openai and ssh
     const words = { en: "palette", ko: "팔레트", ja: "パレット", zh: "调色板" } as const;
     for (const [language, word] of Object.entries(words) as [keyof typeof words, string][]) {
       const pages = pagesIn((key, vars) => translate(language, key, vars));
@@ -144,7 +138,6 @@ describe("requested page", () => {
   it("clears a section request before an unrelated open", () => {
     requestSettingsPage({ page: "chat", section: "quick-replies" });
     expect(requestedSettingsPage()).toEqual({ page: "chat", section: "quick-replies" });
-    // the palette's own opening clears what it asked before, so Settings opened another way finds nothing
     requestSettingsPage(null);
     expect(requestedSettingsPage()).toBeNull();
     requestSettingsPage({ page: "terminal" });

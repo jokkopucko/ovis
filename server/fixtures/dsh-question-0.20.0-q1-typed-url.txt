@@ -1,0 +1,39 @@
+
+                                            ██████ ██████ ██████ ██████ ██████ ██████ ██████ ██  ██
+                                            █▓  █▓ █▓     █▓     █▓  █▓ ▓▓     █▓     █▓     █▓ █▓
+                                            █▓  █▓ █████  █████  ████▓▓  ▓████ █████  █████  ███
+                        ▄▀▄       ▄         █▓  █▓ █▓     █▓     █▓         █▓ █▓     █▓     █▓ ██
+                        ▀▀▀▀▄  ▄▄▀▀▀        ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓     ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓▓▓▓▓ ▓▓  ▓▓
+        ▄▄▄▄▄▄▄▄▄       ▀▀▀▀▀▀▀▀▀▀▀▀
+      ▄▀▀▀▀▀▀▀▀▀▀▀▀▄▄     ▀▀▀▀▀▀▀▀▀         ██  ██   ████   ██████  ██  ██  ██████  ██████  ██████
+    ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄  ▄▀▀▀▀▀            █▓  █▓  █▓  ██  █▓  █▓  ███ █▓  █▓      ▓▓      ▓▓
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀            █████▓  █████▓  █████▓  █▓ ██▓  █████    ▓████   ▓████
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀             █▓  █▓  █▓  █▓  █▓ ▓▓   █▓  █▓  █▓          █▓      █▓
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀              ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓▓▓▓▓  ▓▓▓▓▓▓  ▓▓▓▓▓▓
+     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀               deepseek-flash · Max effort
+       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄              ~/work
+          ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀              Tip: Ctrl+P toggles the startup loaded-context panel · /tips more tips
+
+          Explore the uncharted!
+
+  ❯ Ask me now.
+
+  🌑 Checking with you · 1m48s · ↑ 10 · ↓ 0 tokens
+
+    ─────────────────────────────────────────────▾  📋 Question 1/1   ─────────────────────────────────────────────
+
+    ◈ Choose Approach
+    Which headless approach should I build?
+
+     ○ Device + WebDriverAgent (Recommended)
+       Uses iphone172 and the MacBook; no App Attest workaround, no ToS risk, durable.
+     ○ Dev API + Firebase token
+       No hardware, but depends on an unprotected staging API.
+
+    ❯✎ Custom     ：see https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+       answer       aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ok
+
+    Type answer · Ctrl+V paste · Enter submit · ↑ back to options · Esc cancel · Ctrl+K to fold / click the header
+                                                                                                       123/1.0M 0.0%
+   deepseek-flash · max · cache 0.0% · ≈¥0.00 idle · work                                        ctx 0.0% (123/1.0m)
+   esc to interrupt

@@ -21,7 +21,6 @@ it("keeps a status event when an older machines poll resolves afterwards", async
   response.resolve(old);
   await poll;
   expect(state.panes[0]!.agent_status).toBe("working");
-  // A later poll still catches up normally when the stream is silent.
   await requests.read(async () => applyPaneStatus(state, "p1", "done"), (next) => { state = next; });
   expect(state.panes[0]!.agent_status).toBe("done");
 });

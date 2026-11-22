@@ -10,8 +10,6 @@ class MemoryStorage implements Storage {
   clear(): void { this.items.clear(); }
 }
 
-// the module moves window's stores as it loads; a test window keeps that step away from Bun's own,
-// and is taken away again so later test files see the global they expect
 const host = globalThis as { window?: unknown };
 const previousWindow = host.window;
 host.window = { localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage() };

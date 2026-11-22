@@ -3,7 +3,6 @@ import { keySequence, type KeyBarExtra, type KeyBarKey, type StickyModifiers } f
 export interface KeyBarKeyItem {
   type: "key";
   key: string;
-  /** Absent: combine with held modifiers. Present: send this exact chord. */
   modifiers?: StickyModifiers;
 }
 
@@ -13,7 +12,6 @@ export type KeyBarItem =
 
 export const KEY_BAR_ITEMS_MAX = 32;
 
-/** Named keys supported by our input paths; other printable scalar characters are valid too. */
 export const KEY_BAR_KEYS: readonly string[] = [
   "Escape", "Tab", "Enter", "BackTab", "Backspace", "Delete", "Insert",
   "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown",
@@ -28,7 +26,6 @@ function isScalarKey(key: string): boolean {
     && !(code >= 0xd800 && code <= 0xdfff) && (key === " " || key.trim() !== "");
 }
 
-/** Feed xterm once; PaneTerminal selects a logical chord or the attach bytes afterwards. */
 export function keyBarInputSequence(key: string, applicationCursorKeys: boolean): string | null {
   if (isScalarKey(key)) return key;
   if (/^F(?:[1-9]|1[0-2])$/.test(key)) {
@@ -39,7 +36,6 @@ export function keyBarInputSequence(key: string, applicationCursorKeys: boolean)
   return KEY_BAR_KEYS.includes(key) ? keySequence(key as KeyBarKey, applicationCursorKeys) : null;
 }
 
-/** Preserve the old full bar and the selected extras, splitting paired extras into individual keys. */
 export function migrateKeyBarItems(extras: readonly KeyBarExtra[]): KeyBarItem[] {
   const has = (extra: KeyBarExtra): boolean => extras.includes(extra);
   const items: KeyBarItem[] = [{ type: "key", key: "Escape" }, { type: "key", key: "Tab" }];
@@ -64,22 +60,15 @@ export const DEFAULT_KEY_BAR_ITEMS: KeyBarItem[] = [
   { type: "key", key: "ArrowUp" }, { type: "key", key: "ArrowDown" }, { type: "key", key: "ArrowLeft" }, { type: "key", key: "ArrowRight" },
 ];
 
-/** The expanded bar's second row: keys a phone keyboard hides behind its symbol pages. */
 export const KEY_BAR_SECOND_ROW: readonly string[] = ["Escape", "Tab", "pipe", "tilde", "slash", "-"];
-/** The expanded bar's arrow pad, an inverted T: Up over Left, Down and Right. */
 export const KEY_BAR_ARROW_PAD: readonly string[] = ["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"];
 
-/**
- * The first row's keys. Expanded, a plain key the second row or the arrow pad already shows is left
- * out of it; a saved combination stays, since it sends its own chord.
- */
 export function keyBarRowItems(items: readonly KeyBarItem[], expanded: boolean): readonly KeyBarItem[] {
   if (!expanded) return items;
   return items.filter((item) => item.type === "modifier" || item.modifiers !== undefined
     || (!KEY_BAR_SECOND_ROW.includes(item.key) && !KEY_BAR_ARROW_PAD.includes(item.key)));
 }
 
-/** Stable descriptor identity; an inherited key and an exact bare key have different behavior. */
 export function keyBarItemId(item: KeyBarItem): string {
   if (item.type === "modifier") return `modifier:${item.modifier}`;
   const modifiers = item.modifiers;
@@ -93,7 +82,6 @@ const CAPS: Readonly<Record<string, string>> = {
   "ctrl-c": "^C", "ctrl-d": "^D", "ctrl-z": "^Z", pipe: "|", tilde: "~", slash: "/", " ": "Space",
 };
 
-/** Key caps are keyboard notation rather than translated prose. */
 export function keyBarItemLabel(item: KeyBarItem): string {
   if (item.type === "modifier") return ({ ctrl: "Ctrl", alt: "Alt", shift: "Shift" })[item.modifier];
   const cap = CAPS[item.key] ?? item.key;

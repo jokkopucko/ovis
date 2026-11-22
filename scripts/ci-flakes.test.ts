@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { aggregateFailures, parseLaneLog } from "./ci-flakes.ts";
+import { aggregateFailures, flaggedJobs, isMainRun, parseLaneLog } from "./ci-flakes.ts";
 
 describe("Browser lane log parsing", () => {
   it("reads a pre-retry final failure", () => {
@@ -36,16 +36,52 @@ TypeError: broken`)).toEqual([
   });
 });
 
+describe("A script the lane stopped at its time limit", () => {
+  it("has the limit as its message and no site, whatever error its log ends with", () => {
+    expect(parseLaneLog(`FAILED scripts/ui-contexts-regression.ts (exit 124), full log: /tmp/ui.log; Timed out after 600s
+HerdrError: server is shutting down
+    at stop (/w/ovis/scripts/alert-sound-regression.ts:273:9)
+FAILED scripts/a-regression.ts (exit 124, twice), full log: /tmp/a.log
+TypeError: closed
+    at end (/w/ovis/scripts/a-regression.ts:9:1)
+FAILED scripts/b-regression.ts (exit 1), full log: /tmp/b.log
+TypeError: closed
+    at end (/w/ovis/scripts/b-regression.ts:9:1)
+`)).toEqual([
+      { script: "scripts/ui-contexts-regression.ts", outcome: "failed", site: null, message: "Timed out after 600s (the lane's limit)" },
+      { script: "scripts/a-regression.ts", outcome: "failed", site: null, message: "Timed out (the lane's limit)" },
+      { script: "scripts/b-regression.ts", outcome: "failed", site: "scripts/b-regression.ts:9", message: "TypeError: closed" },
+    ]);
+  });
+});
+
 describe("Failure ranking", () => {
-  it("ranks combined frequency and keeps the most recent run and branch", () => {
+  it("takes only the default branch's own runs as main's, never a pull request from a branch of that name", () => {
+    const runs = [{ event: "push", head_branch: "main" }, { event: "pull_request", head_branch: "main" }, { event: "push", head_branch: "fix/x" }];
+    expect(runs.map((run) => isMainRun(run, "main"))).toEqual([true, false, false]);
+  });
+
+  it("ranks combined frequency, counts the default branch's own runs and keeps the most recent run and branch", () => {
     const common = { script: "scripts/ui-regression.ts", site: "scripts/ui-regression.ts:10", message: "AssertionError: broken" };
     const rows = aggregateFailures([
-      { ...common, outcome: "flaky", runId: 3, branch: "new", createdAt: "2026-10-14T03:00:00Z" },
-      { ...common, outcome: "failed", runId: 1, branch: "old", createdAt: "2026-10-14T01:00:00Z" },
-      { ...common, site: null, outcome: "failed", runId: 4, branch: "other", createdAt: "2026-10-14T04:00:00Z" },
+      { ...common, outcome: "flaky", main: false, runId: 3, branch: "new", createdAt: "2026-10-14T03:00:00Z" },
+      { ...common, outcome: "failed", main: true, runId: 1, branch: "main", createdAt: "2026-10-14T01:00:00Z" },
+      { ...common, site: null, outcome: "failed", main: false, runId: 4, branch: "other", createdAt: "2026-10-14T04:00:00Z" },
     ]);
-    expect(rows.map((row) => [row.site, row.failed, row.flaky, row.runId, row.branch])).toEqual([
-      ["scripts/ui-regression.ts:10", 1, 1, 3, "new"], [null, 1, 0, 4, "other"],
+    expect(rows.map((row) => [row.site, row.failed, row.flaky, row.main, row.runId, row.branch])).toEqual([
+      ["scripts/ui-regression.ts:10", 1, 1, 1, 3, "new"], [null, 1, 0, 0, 4, "other"],
     ]);
+  });
+});
+
+describe("Flaky warnings read from check suites", () => {
+  it("flags each job by its warning, and leaves out a job whose warning may be past the annotations read", () => {
+    const run = (databaseId: number, titles: (string | null)[], totalCount = titles.length) => ({ databaseId, annotations: { totalCount, nodes: titles.map((title) => ({ title })) } });
+    const flagged = flaggedJobs({ data: { nodes: [
+      { checkRuns: { nodes: [run(1, ["Flaky browser script: scripts/ui-regression.ts"]), run(2, [null, "Node.js 20 is deprecated"])] } },
+      null,
+      { checkRuns: { nodes: [run(3, ["Something else"], 20), run(4, ["Something else", "Flaky browser script: scripts/a.ts"], 20)] } },
+    ] } });
+    expect([...flagged].sort(([a], [b]) => a - b)).toEqual([[1, true], [2, false], [4, true]]);
   });
 });

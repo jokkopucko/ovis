@@ -1,4 +1,3 @@
-/** Shared raw Activity order and acknowledgement of server-identified finishes, shared by the browsers of this server. */
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
@@ -19,12 +18,9 @@ export const useSidebarActivity = (): SidebarActivity => useContext(SidebarActiv
 
 interface MachineSeen { epoch: string; record: SeenRecord }
 interface SharedFinish extends SeenFinish {
-  /** how the next send tells it: `held` once put off or retried, a look made earlier (shared/seen.ts SeenPresentation) */
   presented: SeenPresentation;
-  /** how the server was told it, once it answered; an answer upgrade keeps a `new` told of the share it replaced */
   told?: SeenPresentation;
   retry?: () => Promise<boolean>;
-  /** how a send still waiting for its answer tells it */
   sending?: SeenPresentation;
 }
 interface ShareRecovery {
@@ -33,7 +29,6 @@ interface ShareRecovery {
   running: boolean;
   wait: number;
 }
-/** whether the pane is in front of a person: `covered` by an overlay (closing it is a new look), or in view with its content still `loading` */
 export type PanePresence = "front" | "loading" | "covered";
 const unobscured = (): PanePresence => "front";
 
@@ -62,14 +57,9 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
   const seenRef = useRef(seen); seenRef.current = seen;
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === "visible");
   const epochs = useRef(new Map<string, string>());
-  // One latest acknowledgement per pane; bounded independently of how many finishes arrive.
   const shared = useRef(new Map<string, SharedFinish>());
   const recovery = useRef<ShareRecovery>({ timer: undefined, unauthorized: false, running: false, wait: 1_000 });
   const shareRef = useRef(share); shareRef.current = share;
-  // the pane selected, uncovered, on a visible page at the last look ([pc, epoch, pane]), and the one
-  // brought into view since that has not been presented yet: a finish that arrives while its pane stays
-  // so is `held`, even across a reconnect or content still loading; closing an overlay brings it into
-  // view again (shared/seen.ts SeenPresentation)
   const front = useRef<string | null>(null);
   const arriving = useRef<string | null>(null);
   useEffect(() => {
@@ -84,8 +74,6 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
           if (checked.has(scope)) continue;
           checked.add(scope);
           const before = (next ?? current).get(pc);
-          // An epoch retired since this state was set is replaced by the effect; reading it here
-          // would only cache its scope again.
           if (!before || before.epoch !== epoch || epochs.current.get(pc) !== epoch) continue;
           const record = loadSeen(pc, epoch);
           if (before.record === record) continue;
@@ -118,15 +106,12 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
     const recover = async () => {
       gate.running = true;
       try {
-        // All finishes pause behind one authentication observation, not one poll per pane.
         if (gate.unauthorized) {
           const health = await fetchBridgeHealth();
           if (recovery.current !== gate) return;
           if (!health.auth.authenticated) { gate.wait = Math.min(gate.wait * 2, 30_000); return; }
           gate.unauthorized = false;
         }
-        // Probe an outage with one queued finish. A failure ends this window; success drains
-        // the remaining finishes serially, so neither retry volume nor concurrency fans out.
         for (const finish of shared.current.values()) {
           const resend = finish.retry;
           if (!resend) continue;
@@ -149,7 +134,6 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
       const epoch = machine.snapshot?.finish_epoch;
       if (!epoch) continue;
       const previousEpoch = epochs.current.get(machine.id);
-      // Before cleanSeen: its notification can run the subscriber's state update right away.
       epochs.current.set(machine.id, epoch);
       if (previousEpoch && previousEpoch !== epoch) {
         cleanSeen([{ pc: machine.id, epoch: previousEpoch }]);
@@ -177,13 +161,11 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         const key = JSON.stringify([finish.pc, finish.epoch, finish.pane]);
         const previous = shared.current.get(key);
         const answerUpgrade = previous?.id === finish.id && previous.answer === undefined && answer !== undefined;
-        // a finish told (or being told) as `held`, or waiting for its retry, its pane now brought into view: someone looked again
         const shownAgain = previous?.id === finish.id && presented === "new"
           && previous.told !== "new" && (previous.told === "held" || previous.sending === "held" || previous.retry !== undefined);
         if (!previous || finish.id > previous.id || answerUpgrade || shownAgain) {
           const sender = shareRef.current;
           if (sender) {
-            // an answer upgrade of the same finish keeps a look told of it (one still in flight, once it answers)
             const sent: SharedFinish = { ...finish, presented, ...(answerUpgrade && previous.told === "new" ? { told: "new" as const } : {}) };
             shared.current.delete(key);
             shared.current.set(key, sent);
@@ -191,9 +173,6 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
               const oldest = shared.current.keys().next().value!;
               shared.current.delete(oldest);
             }
-            // a send put off or retried tells a look made earlier: as `held`, so it cannot overrule an
-            // unread told since. A return is not put off behind a retry, its own or another pane's: told
-            // late as `held`, it would add nothing to the finish already shared. A sign-in pause holds it.
             const send = async () => {
               if (shared.current.get(key) !== sent || recovery.current !== gate) return true;
               if (gate.unauthorized) { sent.presented = "held"; sent.retry = send; return false; }
@@ -203,7 +182,6 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
                 sent.sending = how;
                 try { await sender(finish, how); } finally { delete sent.sending; }
                 if (sent.told !== "new") sent.told = how;
-                // an answer upgrade made while this look was in flight
                 const current = shared.current.get(key);
                 if (how === "new" && current !== sent && current?.id === sent.id) current.told = "new";
               } catch (error) {
@@ -221,7 +199,6 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
             else void send();
           }
         } else if (finish.id === previous.id) {
-          // Keep frequently observed panes in the bounded latest-state window.
           shared.current.delete(key);
           shared.current.set(key, previous);
         }
@@ -229,8 +206,6 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
     }
     front.current = nextFront;
     schedule();
-    // Read after every acknowledgement and epoch retirement: a later machine can evict an
-    // earlier machine's oldest entry while enforcing the shared cap.
     const next = new Map<string, MachineSeen>();
     for (const machine of machines) {
       const epoch = machine.snapshot?.finish_epoch;

@@ -72,7 +72,6 @@ describe("operator-local client diagnostic endpoint", () => {
     const data = new TextEncoder().encode(JSON.stringify(body()));
     for (const controller of controllers.slice(0, 16)) { controller.enqueue(data); controller.close(); }
     expect((await Promise.all(reading)).map((response) => response.status)).toEqual(Array(16).fill(204));
-    // the slots are free again: a malformed body is read and refused, not rate limited
     expect((await log.handle(request({ ...body(), target: "x" }), "after")).status).toBe(400);
   });
 
@@ -80,7 +79,6 @@ describe("operator-local client diagnostic endpoint", () => {
     let now = 1000;
     const log = new ClientConnectionLog(() => {}, () => now);
     const space = new TextEncoder().encode(" ");
-    // each chunk arrives 4 s after the last: no gap is long, but the body never ends on its own
     const trickle = new ReadableStream<Uint8Array>({ pull(controller) { now += 4_000; controller.enqueue(space); } });
     const response = await log.handle(new Request("http://fixture/api/connection-diagnostics", { method: "POST", headers: { "content-type": "application/json" }, body: trickle }), "slow");
     expect(response.status).toBe(408);

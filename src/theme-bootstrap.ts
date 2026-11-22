@@ -24,7 +24,4 @@ if (regional !== null) {
 const root = document.documentElement;
 const entry = savedThemeEntry(() => window.localStorage);
 applyThemeEntry(root, entry);
-// the frames before the stylesheet arrives: the row's own surface, until the app hands it back to
-// the theme blocks (applyToDocument in lib/settings.ts), or keeps it on the current row when the
-// stylesheet never loaded, so later theme changes are not held by it
 root.style.backgroundColor = entry.bg;

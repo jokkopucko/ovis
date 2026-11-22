@@ -39,8 +39,7 @@
   height: var(--icon-size);
 }
 
-/* herdr's Goto picker filters as chips: All, then each state in its badge colours, each with its count.
-   One row that scrolls sideways where it does not fit, so a phone keeps every chip in reach. */
+/* herdr's Goto picker filters as chips: All, then each state in its badge colours, each with its count. */
 .palette-filters {
   display: flex;
   flex: 0 0 auto;
@@ -80,7 +79,6 @@
     color var(--dur-fast) var(--ease-out);
 }
 
-/* a chip no pane answers to is still there to choose, quieter */
 .palette-filter[data-empty] {
   border-style: dashed;
 }
@@ -103,7 +101,6 @@
   }
 }
 
-/* the chosen chip reads as its badge does: the state's tint and text, All and READY in the neutral fill; its weight is the non-colour cue */
 .palette-filter[aria-checked="true"] {
   background: var(--bg-hover);
   border-color: var(--border-strong);
@@ -138,7 +135,6 @@
   padding: var(--space-1);
 }
 
-/* a workspace's heading: its name, a linked worktree's branch when the name does not say it, its row count */
 .palette-section-heading {
   display: flex;
   align-items: baseline;
@@ -176,7 +172,6 @@
   margin-left: auto;
 }
 
-/* every row is the full menu width: the hover fill and the right-aligned badge/shortcut line up */
 .command-palette .menu-item {
   width: 100%;
 }
@@ -185,7 +180,6 @@
   min-height: var(--row-h);
 }
 
-/* a folder row (a path typed in the search): its glyph quieter than the name, the path under a jump */
 .palette-folder > svg {
   flex: 0 0 auto;
   color: var(--text-dim);
@@ -219,7 +213,6 @@
   font-weight: var(--fw-medium);
 }
 
-/* the name shrinks and ends in an ellipsis; the Selected mark after it keeps its width */
 .palette-row-name {
   flex: 0 1 auto;
   min-width: 0;
@@ -250,9 +243,6 @@
   margin-left: auto;
 }
 
-/* a plugin action that failed: said above the list, which stays open to run it again. A traceback
-   scrolls inside a quarter of the screen a phone's keyboard leaves (--app-height), so the list
-   below keeps its room. */
 .palette-error {
   flex: 0 0 auto;
   max-height: calc(var(--app-height, 100dvh) * 0.25);
@@ -350,7 +340,6 @@
     min-height: var(--touch-target);
   }
 
-  /* each chip is a finger tall in its own box (the gate measures the element box, not an expander) */
   .palette-filter {
     height: var(--touch-target);
     min-height: var(--touch-target);
@@ -363,8 +352,6 @@
     padding-top: 0;
   }
 
-  /* a sheet of one height: the chips and the footer stay where the thumb learnt them while the list changes.
-     Its top, and the search field there, stays below the status bar or Dynamic Island */
   .command-palette {
     width: 100%;
     height: calc(100% - max(var(--space-8), calc(env(safe-area-inset-top, 0px) + var(--space-2))));
@@ -385,7 +372,6 @@
   }
 }
 
-/* a phone-width screen is touched, not typed on: the key hints only take the row's room */
 @media (max-width: 480px) {
   .palette-shortcut { display: none; }
 }
@@ -394,7 +380,6 @@
   .palette-footer-keys { display: none; }
 }
 
-/* The PC stays visible beside its workspace, including matching names on different PCs. */
 .palette-section-machine {
   flex: 0 1 auto;
   min-width: 0;

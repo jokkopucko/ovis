@@ -10,7 +10,6 @@ import { processStartedAtAsync } from "./process-start.ts";
 import { GJC_NATIVE_DIRECTORY } from "../shared/gjc-native.ts";
 import type { HerdrPane, PanePromptResponse, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 
-// taken before any test spies on fs: a Claude resolver proves the file its path names when it is asked (#3402)
 const realStat = fs.statSync;
 const claudeAt = (path: string) => async () => {
   const proven = realStat(path, { bigint: true });
@@ -100,7 +99,6 @@ it.each(["claude-transcript", "omp-transcript"] as const)("reads clear boundarie
     : { type: "custom", customType: "context_clear" };
   fs.writeFileSync(path, [{ type: "model_change", modelId: "before" }, clear, { type: "model_change", modelId: "after" }]
     .map((entry) => JSON.stringify(entry)).join("\n"));
-  // omp's resolver names the file it authorized
   const written = fs.statSync(path, { bigint: true });
   const binding = spyOn(conversation, "paneTranscript").mockImplementation(source === "omp-transcript" ? async () => ({ source, path, ompFile: `${written.dev}:${written.ino}` }) : claudeAt(path));
   const reads = spyOn(fs, "readSync");
@@ -179,7 +177,6 @@ it.each(["foreign", "fifo"] as const)("does not observe /context from a file swa
     content: "<command-name>/context</command-name>\n<command-message>command</command-message>" }) + "\n";
   const stdout = JSON.stringify({ type: "system", subtype: "local_command", timestamp: new Date(at + 20).toISOString(),
     content: "<local-command-stdout>foreign-context-output</local-command-stdout>" }) + "\n";
-  // the verified transcript, as long as the foreign one, holds no /context of its own
   const filler = (row: string) => JSON.stringify({ type: "progress", uuid: "x".repeat(Buffer.byteLength(row) - 30) }) + "\n";
   fs.writeFileSync(path, filler(echo) + filler(stdout));
   expect(fs.statSync(path).size).toBe(Buffer.byteLength(echo + stdout));
@@ -246,7 +243,6 @@ it("does not observe an omp command from a transcript swapped in after its resol
     if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
     throw new Error(`unexpected RPC: ${method}`);
   });
-  // the resolver has authorized the pane's own file when another is renamed over it
   conversation.betweenAuthorizationForTests((stage) => { if (stage === "after") fs.renameSync(foreign, path); });
   const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
     forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
@@ -290,8 +286,6 @@ it("does not observe a pi command from a transcript renamed over the one its res
     if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
     throw new Error(`unexpected RPC: ${method}`);
   });
-  // the resolver's proof is its exact fstat of the file it opened (authorizedTranscript): the foreign file
-  // is renamed over the pane's right after it
   const fstat = fs.fstatSync;
   let swapped = false;
   const proofs = spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
@@ -322,7 +316,6 @@ it("does not observe an omp command from a transcript its resolver could not aut
   const path = join(root, "held.jsonl");
   const at = Date.parse("2026-10-20T00:00:00Z");
   fs.writeFileSync(path, JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
-  // ompTranscriptPath's answer for a held path authorizedTranscript refused (a link out of the store): no identity
   const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "omp-transcript", path, ompBlobs: null });
   const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
     forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
@@ -358,7 +351,6 @@ it("does not observe /context from an opened file whose exact identity only roun
   const stat = fs.statSync;
   const fstat = fs.fstatSync;
   let swappedFd: number | null = null;
-  // the resolver proved the file this test's stat names: dev 7, index 2^60
   const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "claude-transcript", path, claudeFile: `7:${own}` });
   const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
     if (args[0] !== path) return open(...args);
@@ -404,7 +396,6 @@ it("does not observe a gjc command from a transcript renamed over the one its re
   const header = JSON.stringify({ type: "session", id: "session-a", cwd }) + "\n";
   fs.writeFileSync(path, header);
   fs.writeFileSync(foreign, header + JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
-  // this test process stands in for the pane's gjc: its own pid and start, and the binding its extension publishes
   const birth = await processStartedAtAsync(process.pid);
   fs.writeFileSync(join(home, ".gjc/agent", GJC_NATIVE_DIRECTORY, `${process.pid}.json`), JSON.stringify({ version: 1, pid: process.pid,
     processStartedAt: birth, instanceId: "extension-test", sequence: 1, updatedAt: Date.now(), session: { id: "session-a", path, cwd } }));
@@ -414,8 +405,6 @@ it("does not observe a gjc command from a transcript renamed over the one its re
     if (method === "pane.process_info") return { process_info: { foreground_processes: [{ pid: process.pid, argv: ["/usr/bin/gjc"] }] } } as never;
     throw new Error(`unexpected RPC: ${method}`);
   });
-  // the resolver's last proof ends with its lstat of the session file (readSessionHeader, run once per binding read):
-  // the foreign file is renamed over it right after the second
   const lstat = fs.lstatSync;
   let proofs = 0;
   const lstats = spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
@@ -456,7 +445,6 @@ it("does not observe an omo command from a transcript renamed over the one its l
   const header = JSON.stringify({ type: "session", id: "session-a", cwd, timestamp: new Date(at).toISOString() }) + "\n";
   fs.writeFileSync(path, header);
   fs.writeFileSync(foreign, header + JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
-  // the pane's omo: a stand-in holding its session file open, as omo does, with no store of the test runner's own
   const holder = Bun.spawn([process.execPath, "-e", `require("node:fs").openSync(${JSON.stringify(path)}, "r"); console.log("ready"); setInterval(() => {}, 1000);`],
     { cwd, env: { HOME: home, PATH: process.env["PATH"] ?? "" }, stdout: "pipe", stderr: "ignore", stdin: "ignore" });
   const ready = await holder.stdout.getReader().read();
@@ -467,8 +455,6 @@ it("does not observe an omo command from a transcript renamed over the one its l
     if (method === "pane.process_info") return { process_info: { foreground_processes: [{ pid: holder.pid, argv: ["/usr/bin/omo"], cwd }] } } as never;
     throw new Error(`unexpected RPC: ${method}`);
   });
-  // the lookup's proof is the header it reads through its own open of the session file: the foreign file is renamed
-  // over it right after that open
   const open = fs.openSync;
   let swapped = false;
   const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
@@ -533,7 +519,6 @@ it("does not read a claude transcript renamed over the one its resolver proved (
   fs.writeFileSync(path, row("<command-name>/version</command-name>", 5));
   fs.writeFileSync(foreign, row("<command-name>/context</command-name>", 10) + row("<local-command-stdout>foreign</local-command-stdout>", 20));
   const foreignIno = realStat(foreign).ino;
-  // the resolver proves the pane's own file, then another one is renamed over that path before the outcome read
   const binding = spyOn(conversation, "paneTranscript").mockImplementation(async () => {
     const proven = await claudeAt(path)();
     fs.renameSync(foreign, path);
@@ -571,7 +556,6 @@ it("keeps reading a codex rollout its resolver proved no identity for, by the ex
   const root = fs.mkdtempSync(join(tmpdir(), "command-codex-unproven-"));
   const path = join(root, "rollout.jsonl");
   fs.writeFileSync(path, JSON.stringify({ type: "session_meta", payload: { id: "own" } }) + "\n");
-  // a remembered, reported or resumed rollout: chosen without its process holding it or a read through one descriptor
   const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "codex-transcript", path, codexHome: root });
   try {
     expect(await conversation.readCommandTranscript("pane-codex")).not.toBeNull();

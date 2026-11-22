@@ -1,11 +1,7 @@
 /**
  * The sessions Resume started a moment ago (lib/sessionHistory.ts RecentResume), kept by App for as
  * long as they stand: across the session list's openings, so a list reopened before herdr has
- * reported the new pane's session offers Open (the new pane) and not a second Resume. A record is
- * marked seen once the PC's roster lists its pane (and ran once that pane runs the resumed agent),
- * and leaves once it is over on evidence (the session reported, the agent stopped after it ran, the
- * pane closed after being seen) or, for a pane the roster never listed,
- * past RECENT_RESUME_MS; a pane still listed without a session keeps it however long ago.
+ * reported the new pane's session offers Open (the new pane) and not a second Resume.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HerdrPane } from "../../shared/protocol.ts";
@@ -14,7 +10,6 @@ import { observeRecentResume, recentResumeEnded, type RecentResume } from "./ses
 interface RosteredMachine { id: string; snapshot?: { panes: readonly HerdrPane[] } | null }
 
 export function useRecentResumes(machines: readonly RosteredMachine[]): {
-  /** the records that stand now, for the dialog */
   standing: readonly RecentResume[];
   remember: (record: Omit<RecentResume, "at" | "seen" | "ran">) => void;
 } {

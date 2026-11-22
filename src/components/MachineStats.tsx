@@ -9,17 +9,14 @@ import { useSystemStats } from "../lib/system.ts";
 import { formatBytes, formatPercentValue, formatUptime, fullestDisk, SYSTEM_HIGH_PERCENT } from "../lib/systemReport.ts";
 import "./MachineStats.css";
 
-// on the figure as shown: 84.6 reads "85%", and so is red
 const high = (percent: number | null): string => percent !== null && Math.round(percent) >= SYSTEM_HIGH_PERCENT ? " is-high" : "";
 
-/** One figure with its bar. It is only drawn: the button around it carries the numbers for a screen reader. */
 function Meter({ label, percent }: { label: string; percent: number | null }) {
   const value = percent === null ? 0 : Math.max(0, Math.min(100, percent));
   return <span className={`stats-meter${high(percent)}`}>
     <span className="stats-meter-label">{label}</span>
     <span className="stats-meter-value">{formatPercentValue(percent)}</span>
     <span className="stats-bar" aria-hidden="true">
-      {/* a sliver above 0 still shows as a bar, not a dot */}
       <span style={{ width: value > 0 ? `max(3px, ${value}%)` : 0 }} />
     </span>
   </span>;
@@ -47,7 +44,6 @@ function Details({ report }: { report: SystemReport }) {
   </div>;
 }
 
-/** "CPU 4%, Memory 22%, Disk 50%": what the button says aloud, since its meters are only drawn. */
 function spoken(t: Translate, report: SystemReport): string {
   const disk = fullestDisk(report.disks);
   return [
@@ -57,7 +53,6 @@ function spoken(t: Translate, report: SystemReport): string {
   ].join(", ");
 }
 
-/** "CPU 4% · Memory 22% · Disk 50%": one compact line for the status bar. */
 export function formatPcLoad(t: Translate, report: SystemReport): string | null {
   const disk = fullestDisk(report.disks);
   const parts = [
@@ -69,7 +64,6 @@ export function formatPcLoad(t: Translate, report: SystemReport): string | null 
 }
 
 /**
- * The selected PC's CPU, memory and fullest disk as one compact status-bar line while `active` is on.
  * Asks only while `active` (lib/system.ts), and draws nothing for a herdr-core PC (whose server runs
  * on this PC and cannot read that machine's load: server/system-stats.ts) or a PC that cannot say.
  */
@@ -84,11 +78,6 @@ export function PcLoadStatus({ machine, active = true }: { machine: Machine | nu
   return <span className="status-bar-item status-bar-text status-bar-load">{line}</span>;
 }
 
-/**
- * The load of a PC under its name: CPU, memory and its fullest disk as three small meters, and
- * on a tap the numbers behind them. It asks only while `active` (the sidebar, the PCs list and this
- * PC are shown: lib/system.ts), and draws nothing for a PC that cannot say.
- */
 export function MachineStats({ machine, active }: { machine: Machine; active: boolean }) {
   const t = useT();
   const id = useId();
@@ -112,10 +101,6 @@ export function MachineStats({ machine, active }: { machine: Machine; active: bo
   </div>;
 }
 
-/**
- * Settings → Devices and PCs' switch for the selected PC's load in the status bar, on this device only.
- * It stays off until it is flipped.
- */
 export function PcLoadSetting({ machines }: { machines: readonly Machine[] }) {
   const t = useT();
   const { settings, update } = useSettings();

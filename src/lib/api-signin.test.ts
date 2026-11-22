@@ -13,7 +13,6 @@ afterAll(() => fetchSpy.mockRestore());
 afterEach(() => { status = 204; calls.length = 0; fetchSpy.mockClear(); for (const trace of opened.splice(0)) trace.close(); });
 
 const context = () => ({ connection: 1, socket_state: 1, visibility: "visible" as const, online: true });
-// A macrotask turn: every promise continuation of the report has run, whatever its depth.
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 async function signedOutTrace() {
   let now = 1000; let reports = 0;

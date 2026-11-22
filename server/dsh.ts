@@ -4,6 +4,7 @@ import { readdir, readlink, realpath, open, stat, lstat } from "node:fs/promises
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
+import { jobProcessesBelow } from "./foreground-job.ts";
 import { ompProcessMemory, processStartTicks } from "./omp-process.ts";
 import { processAlive } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -91,8 +92,16 @@ function explicitResume(argv: readonly unknown[], environ: readonly string[]): b
     || environ.some((word) => /^DSH_TUI_RESUME_SESSION=\S/.test(word));
 }
 
-/** Reset process history between independent fixture sessions. */
 export function forgetDshProcesses(): void { boundProcesses.clear(); }
+
+/**
+ * The dsh processes below a herdr-core terminal's foreground process, in its job (foreground-job.ts):
+ * hc names only the job's first process, and `dsh-tui` runs its host, which holds the session lock,
+ * behind two launcher shims (#3939). None when the job cannot be read.
+ */
+export async function jobDsh(pid: number): Promise<{ pid: number; argv: string[] }[]> {
+  return ((await jobProcessesBelow(pid)) ?? []).filter((entry) => isDshProcess(entry.argv)).map(({ pid, argv }) => ({ pid, argv }));
+}
 
 /** A held lock binds the foreground process to its session; modification times do not. */
 /** `serverStart`: this server's start tick, or unknown; a lock-free dsh counts as new only when it started strictly after it. */
@@ -297,13 +306,14 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
       outputs.set(ref, output); trimOutput(tool, output, ref);
       tool.error = message.isError === true; tool.state = tool.error ? "error" : "ok";
     } else if (row.type === "turn/end") {
-      // a turn that failed before any reply (a provider error) still says so
       if (!assistant && data?.reason?.kind !== "completed" && turns.at(-1)?.role === "user") ensureAssistant(row);
       if (assistant) {
         const ts = time(row); if (ts) assistant.end_ts = ts;
         if (data?.reason?.kind === "completed") {
           const part = [...assistant.parts].reverse().find((p) => p.kind === "text"); if (part?.kind === "text") part.phase = "final_answer";
-        } else assistant.parts.push({ kind: "notice", text: `Turn ended: ${typeof data?.reason?.kind === "string" ? data.reason.kind : "unknown"}` });
+        } else if (data?.reason?.kind === "error" && typeof data.reason.error?.message === "string" && data.reason.error.message.trim() !== "") {
+          assistant.parts.push({ kind: "text", text: `Error: ${data.reason.error.message}`, failed: true });
+        } else assistant.parts.push({ kind: "notice", source: "dsh-turn-end", text: `Turn ended: ${typeof data?.reason?.kind === "string" ? data.reason.kind : "unknown"}` });
       }
       assistant = undefined;
     } else if (row.surfaceOp !== undefined && row.type !== "system/message" && row.type !== "developer/message") {

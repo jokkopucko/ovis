@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 
 import { narrowPaneFontSize } from "./narrowPaneFont.ts";
 
-/** A pane `width` px wide whose cells are 0.6 of the font size, as a monospace face's are. */
 const pane = (width: number) => (size: number): number => Math.floor(width / (size * 0.6));
 
 describe("narrowPaneFontSize", () => {
@@ -11,7 +10,7 @@ describe("narrowPaneFontSize", () => {
   });
 
   it("keeps the user's chosen size when a split narrows below 80 columns", () => {
-    const colsAt = pane(565); // 72 columns at 13px
+    const colsAt = pane(565);
     expect(colsAt(13)).toBe(72);
     expect(narrowPaneFontSize(13, colsAt)).toBe(13);
     expect(narrowPaneFontSize(16, colsAt)).toBe(16);

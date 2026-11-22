@@ -24,7 +24,6 @@ describe("tapDismisses", () => {
   });
 });
 
-/** The transcript's listeners, on a stand-in node and document, with the keyboard up. */
 describe("dismissKeyboardOn", () => {
   type Handler = (event: unknown) => void;
   const names = ["window", "document", "HTMLElement"] as const;
@@ -98,7 +97,6 @@ describe("scrolledDown", () => {
   });
 });
 
-/** #1045: the keyboard takes the bottom of the screen, not the pane; the shared pty keeps its grid */
 describe("keyboardHoldsGrid", () => {
   test("a host that only lost height under the keyboard keeps its grid (regression: fails on main)", () => {
     expect(keyboardHoldsGrid(true, 390, 390)).toBe(true);

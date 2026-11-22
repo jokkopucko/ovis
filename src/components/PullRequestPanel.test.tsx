@@ -55,7 +55,6 @@ afterEach(async () => {
   }
 });
 
-/** The HTTP boundary: the view and the log answer as the server would; every request is recorded. */
 function serve(view: PullRequestView): { method: string; url: string }[] {
   const requests: { method: string; url: string }[] = [];
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -75,7 +74,6 @@ test("puts a failing check's name and the end of its log into the pane's draft, 
   composerDrafts.set(draftKey, "my own words");
   await act(async () => { renderer = create(panel()); });
   const send = buttonNamed("Send to agent");
-  // only the failing check offers it
   expect(send).toHaveLength(1);
   await act(async () => { send[0]!.props.onClick(); });
   const draft = composerDrafts.read(draftKey).text;

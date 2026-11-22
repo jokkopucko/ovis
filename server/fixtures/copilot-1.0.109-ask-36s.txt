@@ -1,0 +1,40 @@
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                   │
+│  ╭─╮╭─╮                             │  Getting started                                                            │
+│  ╰─╯╰─╯  Copilot v1.0.109 uses AI.  │  Use the tabs above to explore your sessions and pull requests              │
+│  █ ▘▝ █  Check for mistakes.        │  /model — Switch models across providers, or use Copilot Fusion             │
+│   ▔▔▔▔                              │                                                                             │
+│                                                                                                                   │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ● MCP Servers reloaded: 1 server connected
+
+ ❯ Use your ask_user tool to ask me ONE question: 'Which color?' with choices red and blue. Wait for my answer, 15:31
+   then reply with just the color.
+
+ ● Copilot Fusion selected MAI-Code-1.1-Flash because it was the best choice out of the models available in your
+   plan.
+
+ ○ Asking user Waiting for response                                                                               36s
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Copilot needs information.
+ Which color?
+
+ Color:
+ ❯ red
+   blue
+   Other (type your answer)
+
+ ↑/↓ select · enter accept · ctrl+d decline · esc cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

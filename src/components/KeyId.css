@@ -1,9 +1,3 @@
-/*
- * A relay id in groups of four (KeyId.tsx): monospace so the groups line up between two ids, four
- * to a row on a phone and all eight on one line where they fit. Only tokens from the styles.css
- * :root block.
- */
-
 .key-id {
   display: grid;
   grid-template-columns: repeat(4, max-content);

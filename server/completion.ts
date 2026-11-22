@@ -1,13 +1,11 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 
 import type { AgentStatus, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
 import { isNamedPipe, pipeIdentity } from "./herdr-core/pipe.ts";
+import { writeStateDocument } from "./state-document.ts";
 
 /**
- * `done` for agents herdr loses track of on the way, and for the pane herdr has focused.
- *
  * herdr reports `done` for an agent that went back to idle while its pane was not being
  * looked at (not focused), and `idle` once it is. It follows the agent it saw working, so
  * an agent recognised from its screen and processes rather than an integration can
@@ -20,9 +18,6 @@ import { isNamedPipe, pipeIdentity } from "./herdr-core/pipe.ts";
  * which never move it: an agent finishing in that pane finished as plain `idle`, READY
  * and no alert, whoever was looking.
  *
- * So each pane's "worked since it was last idle" is kept here, and an idle that follows
- * work is reported as `done` until the pane works again or focus moves onto it (`seen`):
- * what herdr itself reports for an agent it did not lose in a pane it has not in front.
  * And the `unknown` in between, while another agent is there, is reported as `working`
  * (omo's whole turn read `claude/unknown` after `pi/working`, and the sidebar showed no RUN).
  *
@@ -38,42 +33,21 @@ import { isNamedPipe, pipeIdentity } from "./herdr-core/pipe.ts";
  * panes still working are not: what became of them while this server was down (finished,
  * and seen at herdr's terminal?) is unknown, and a DONE nobody needs is an alert too.
  */
-/**
- * Why an OmO pane is at rest, where its session records tell more than `idle` does (#687).
- * `failed`: its turn ended in an error (the model gave up after its retries, or timed out). The
- * work is over, but nothing finished: READY, and a DONE still kept from an earlier turn is gone
- * too, since a turn came after it. `failed-before`: the same, read from a session file found
- * anew (a restart, /resume): when that error was written against the DONE kept here is not
- * known, so the DONE stays. `answered`: an answer written after such a rest (a retry that got
- * through) ended the turn after all. That is a finish, though the work was never told as RUN
- * (told as RUN now, its turn would be of no length, which the default alerts leave untold), but
- * only while nothing was told of the pane since the rest: work and a finish told meanwhile from
- * herdr's word (the session could not be told) were that answer's already. A turn that never read
- * RUN is of unknown length to the alerts, which tell it even after a short retry.
- */
+
 export type OmoRest = "failed" | "failed-before" | "answered";
 
 export class CompletionTracker {
-  /** panes that worked (or were blocked) since they were last idle, done or seen, with the agent that did */
   private readonly worked = new Map<string, string | null>();
-  /** panes reported here as `done` while herdr says `idle` or `unknown` */
   private readonly finished = new Map<string, string | null>();
-  /** OmO panes at rest after an error with nothing told since: an answer now is that turn's finish */
   private readonly failedRest = new Set<string>();
-  /** Last reported statuses, and changes that must take precedence over an in-flight snapshot. */
   private readonly reported = new Map<string, AgentStatus>();
   private readonly pending = new Map<number, Map<string, AgentStatus | null>>();
   private order = 0;
-  /** what the file holds, so it is written only when that changes */
   private saved = "";
 
   /**
-   * `file` keeps the state across restarts (none: memory only); `herdr` names the herdr
-   * the panes live in, the identity of its socket file by default. `reportedOnly` (herdr-core):
-   * a status is the program's own report (OSC 7501) or one its own session files give (OmO, GJC,
-   * a resting Claude), never a guess from the screen. Only the same program's working then idle is
-   * a finish; a pause it reports as blocked, a cleared report, or another program's idle is none,
-   * and no badge is kept without a report.
+   * `reportedOnly` (herdr-core): a status is the program's own report (OSC 7501) or one its own session files give (OmO, GJC,
+   * a resting Claude), never a guess from the screen.
    */
   constructor(private readonly file: string | null = null, private readonly herdr: () => string | null = herdrSocketId, private readonly reportedOnly: () => boolean = () => false) {
     if (file === null) return;
@@ -90,10 +64,6 @@ export class CompletionTracker {
     } catch { /* none yet, or unreadable: start empty */ }
   }
 
-  /**
-   * A status change as herdr sent it, to the status to report. `rest` says more of an idle where
-   * the agent's own records do (OmO's, #687); see `OmoRest`.
-   */
   observe(paneId: string, status: AgentStatus, agent: string | null = null, rest?: OmoRest): AgentStatus {
     if (status === "idle" && (rest === "failed" || rest === "failed-before")) {
       this.worked.delete(paneId);
@@ -108,10 +78,6 @@ export class CompletionTracker {
     return reported;
   }
 
-  /**
-   * Focus moved onto a pane: a finish reported here as `done` has been seen and is
-   * `idle` again, as herdr does for its own. True when that changed what the pane reads.
-   */
   seen(paneId: string): boolean {
     const changed = this.finished.delete(paneId);
     const current = this.reported.get(paneId);
@@ -120,12 +86,6 @@ export class CompletionTracker {
     return changed;
   }
 
-  /**
-   * The pane's agent is now known under another name (an OmO pane herdr called `claude` or
-   * `pi`): what it worked on and finished stays its own. A finish is matched by identity, and
-   * would otherwise be dropped as another agent's. What another agent did in the pane before
-   * (Codex, then OmO started in its place) is not OmO's: that is dropped.
-   */
   adopt(paneId: string, agent: string, from: readonly string[]): void {
     let kept = false;
     for (const state of [this.finished, this.worked]) {
@@ -135,8 +95,6 @@ export class CompletionTracker {
       else state.delete(paneId);
     }
     if (!kept) {
-      // nothing of its own to go on from: what the pane was last reported as may be another
-      // agent's, in a snapshot still being read too, and its status is settled anew
       this.reported.delete(paneId);
       for (const changes of this.pending.values()) changes.delete(paneId);
     }
@@ -144,66 +102,44 @@ export class CompletionTracker {
   }
 
   /**
-   * A status the collector read back from a snapshot around a gap between subscriptions,
-   * no event having said it: is it news? A pane never reported here (the server just
-   * started), or reported only from a snapshot taken once its work had ended, first takes
-   * what it was before, so a finish after work is a finish. Between
-   * two statuses at rest it is news only while the pane is shown as working (`unknown`
+   * Between two statuses at rest it is news only while the pane is shown as working (`unknown`
    * under another agent's name reads as work going on): herdr reads a finish nobody saw
    * as `done` in one place and `idle` in another, and that difference must not undo a DONE.
-   * A change from work to rest is always news, even where a snapshot served to a browser
-   * settled it here first: that told no device.
    */
   replayed(paneId: string, status: AgentStatus, before: { before: AgentStatus; agent: string | null }): boolean {
     const busy = (value: AgentStatus): boolean => value === "working" || value === "blocked";
     const shown = this.reported.get(paneId);
-    // never reported, or only from a snapshot taken after the work ended: the work it did is not known here yet
     const unseenWork = busy(before.before) && !busy(status) && !this.worked.has(paneId) && !this.finished.has(paneId) && (shown === undefined || !busy(shown));
     if (shown === undefined || unseenWork) {
       this.observe(paneId, before.before, before.agent);
       return true;
     }
-    // reported only: every change is the program's own word, and a cleared report must clear its finish
     if (this.reportedOnly() && status !== shown) return true;
-    // a finish a browser's snapshot settled first is still one nobody was alerted of: it goes on, and stays DONE
     return busy(shown) || busy(status) || busy(before.before);
   }
 
-  /**
-   * Status events were lost for a stretch of unknown length and this snapshot is the truth
-   * now (the collector's resync), but for the `newer` panes, which had an event since. Each
-   * pane is settled against it without telling anyone, as the alerts are corrected without
-   * alerting: work kept from before the loss would otherwise make a finish of the next
-   * change the pane shows, long after it ended.
-   */
   resync(panes: readonly { pane_id: string; agent_status: AgentStatus; agent?: string | null }[], newer: ReadonlySet<string>): void {
     const live = new Set(panes.map((pane) => pane.pane_id));
     for (const pane of panes) {
       if (newer.has(pane.pane_id)) continue;
       const agent = pane.agent ?? null;
-      // at rest now: the work known from before the loss is over, whoever is in the pane. `unknown`
-      // under another agent's name would otherwise read as that work still going on
       if (pane.agent_status !== "working" && pane.agent_status !== "blocked" && this.worked.has(pane.pane_id)) {
         const worker = this.worked.get(pane.pane_id);
         this.worked.delete(pane.pane_id);
-        // reported only: a finish is the same program's own working then idle
         if (agent !== null && (!this.reportedOnly() || (pane.agent_status === "idle" && worker === agent))) this.finished.set(pane.pane_id, agent);
       }
       this.record(pane.pane_id, this.settle(pane.pane_id, pane.agent_status, agent), ++this.order);
     }
-    // a pane that went during the loss: a snapshot still being read must not bring it back
     for (const paneId of new Set([...this.worked.keys(), ...this.finished.keys(), ...this.reported.keys()])) {
       if (!live.has(paneId) && !newer.has(paneId)) this.drop(paneId, ++this.order);
     }
     this.save();
   }
 
-  /** What the pane was last reported as, if it was. */
   current(paneId: string): AgentStatus | undefined {
     return this.reported.get(paneId);
   }
 
-  /** Read an asynchronous snapshot without undoing statuses or focus changes made while it was pending. */
   async readSnapshot(read: () => Promise<SessionSnapshot>, label?: (snapshot: SessionSnapshot) => Promise<SessionSnapshot>): Promise<SessionSnapshot> {
     const order = ++this.order;
     const newer = new Map<string, AgentStatus | null>();
@@ -216,7 +152,6 @@ export class CompletionTracker {
     finally { this.pending.delete(order); }
   }
 
-  /** Present a fresh synchronous snapshot. Async readers must use readSnapshot. */
   present(snapshot: SessionSnapshot): SessionSnapshot {
     return this.project(snapshot, new Map(), ++this.order);
   }
@@ -279,13 +214,10 @@ export class CompletionTracker {
     const state = this.serialize(herdr);
     if (state === this.saved) return;
     try {
-      mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-      const temporary = `${this.file}.${process.pid}.tmp`;
-      writeFileSync(temporary, state, { mode: 0o600 });
-      renameSync(temporary, this.file);
+      // flushed before the rename, and the rename recorded after it: a power cut never leaves it empty
+      writeStateDocument(this.file, state, false);
       this.saved = state;
     } catch (error) {
-      // a full disk costs the state after a restart, never the status itself
       console.error(`completion state: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -293,7 +225,6 @@ export class CompletionTracker {
   private settle(paneId: string, status: AgentStatus, agent: string | null): AgentStatus {
     if (this.finished.has(paneId)) {
       const finishedAgent = this.finished.get(paneId);
-      // Older state files have no identity: retain their idle finishes, but never apply them to unknown agents.
       if (agent === null || (finishedAgent === null ? status !== "idle" : finishedAgent !== agent)) this.finished.delete(paneId);
     }
     switch (status) {
@@ -310,26 +241,21 @@ export class CompletionTracker {
         this.finished.delete(paneId);
         return status;
       case "idle":
-        // reported only: another program's idle, or one naming no program, is not the finish of the work
         if (this.reportedOnly() && this.worked.has(paneId) && (agent === null || this.worked.get(paneId) !== agent)) this.worked.delete(paneId);
         if (this.worked.delete(paneId)) this.finished.set(paneId, agent);
         return this.finished.has(paneId) ? "done" : status;
       default:
         if (this.reportedOnly()) {
-          // no report: no finish, and no badge kept from an earlier one
           this.worked.delete(paneId);
           this.finished.delete(paneId);
           return status;
         }
         if (this.worked.has(paneId)) {
-          // with no agent left, the pane is a shell again
           if (agent === null) {
             this.worked.delete(paneId);
             return status;
           }
-          // `unknown` right after work under another identity is the work going on there
           if (this.worked.get(paneId) !== agent) return "working";
-          // the agent that worked is at rest: it finished
           this.worked.delete(paneId);
           this.finished.set(paneId, agent);
         }

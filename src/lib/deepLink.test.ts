@@ -25,7 +25,6 @@ describe("deep links", () => {
     expect(linkSearch(link)).toBe("?ws=w2&pane=w2%3Ap1&view=terminal");
     expect(readLink(linkSearch(link))).toEqual(link);
     expect(linkSearch({ ...link, machine: "box" }, "?debug=1&pane=old")).toBe("?debug=1&machine=box&ws=w2&pane=w2%3Ap1&view=terminal");
-    // a lens means nothing without a pane; nothing to say is no query at all
     expect(linkSearch({ machine: "local", workspace: null, pane: null, view: "chat", settings: null })).toBe("");
     expect(linkSearch({ machine: "local", workspace: null, pane: null, view: null, settings: "about" })).toBe("?settings=about");
   });
@@ -33,7 +32,6 @@ describe("deep links", () => {
   it("lands a link to the pages Agents replaced on Agents, keeping the group it names", () => {
     expect(readLink("?settings=usage&section=accounts-claude")).toMatchObject({ settings: "agents", section: "accounts-claude" });
     expect(readLink("?settings=integrations&section=guide")).toMatchObject({ settings: "agents", section: "guide" });
-    // Voice input became Chat's group and Remote PCs a group of Devices and PCs
     expect(readLink("?settings=voice&section=openai-key")).toMatchObject({ settings: "chat", section: "openai-key" });
     expect(readLink("?settings=remote&section=sidebar-pcs")).toMatchObject({ settings: "devices", section: "sidebar-pcs" });
     expect(readLink("?settings=voice")).toMatchObject({ settings: "chat", section: "voice" });
@@ -107,7 +105,6 @@ describe("resolving a link", () => {
 
   it("opens the linked pane when it is still in the linked workspace", () => {
     expect(resolveLink(two, { workspace: "w2", workspaceSlug: "herdr-web-ui", pane: "w2:p2" })).toEqual({ pane: "w2:p2", workspace: "w2", note: null });
-    // a renamed workspace keeps its links: no other workspace has the old slug
     expect(resolveLink(two, { workspace: "w3", workspaceSlug: "old-name", pane: "w3:p1" })).toEqual({ pane: "w3:p1", workspace: "w3", note: null });
   });
 
@@ -131,6 +128,19 @@ describe("the New workspace dialog", () => {
   it("reads what a link puts in its fields, and only what a person could type", () => {
     expect(readLink("?new=workspace&cwd=%2Fhome%2Fben%2FLocally&name=VOR-12&agent=claude").create).toEqual({ kind: "workspace", cwd: "/home/ben/Locally", name: "VOR-12", agent: "claude" });
     expect(readLink("?new=tab&ws=w2&agent=shell").create).toEqual({ kind: "tab", cwd: null, name: null, agent: "" });
+    // no network share as the folder, however it is written: Start would read what the address named
+    for (const share of ["//host/share/repo", "\\\\host\\share\\repo", "/\\host/share", "~///host/share", "~/\\\\host\\share"]) {
+      expect(readLink(`?new=workspace&cwd=${encodeURIComponent(share)}&name=x&agent=claude`).create, share).toEqual({ kind: "workspace", cwd: null, name: "x", agent: "claude" });
+    }
+    // WSL's own folders are this PC's, not another host's share (#3634)
+    for (const wsl of ["//wsl$/Ubuntu/home/me/project", "\\\\wsl.localhost\\Ubuntu\\home\\me", "//WSL.LOCALHOST/Ubuntu/home"]) {
+      expect(readLink(`?new=workspace&agent=claude&cwd=${encodeURIComponent(wsl)}`).create?.cwd, wsl).toBe(wsl);
+    }
+    for (const share of ["//wsl$.evil/share", "//wsl/share", "///wsl$/Ubuntu", "\\\\?\\UNC\\wsl$\\Ubuntu"]) {
+      expect(readLink(`?new=workspace&agent=claude&cwd=${encodeURIComponent(share)}`).create?.cwd, share).toBeNull();
+    }
+    expect(readLink("?new=workspace&cwd=~%2F%2Fnotes").create?.cwd).toBe("~//notes");
+    expect(readLink("?new=workspace&cwd=%2Fsrv%2F%2Fapp").create?.cwd).toBe("/srv//app");
     expect(readLink(`?new=workspace&name=${"x".repeat(300)}&agent=rm%20-rf%20%2F`).create).toEqual({ kind: "workspace", cwd: null, name: "x".repeat(120), agent: null });
     expect(readLink("?new=window").create).toBeNull();
     expect(readLink("?cwd=%2Ftmp").create).toBeNull();

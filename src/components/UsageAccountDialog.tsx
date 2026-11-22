@@ -5,6 +5,7 @@ import type { CLIProxyStatus, UsageProviderId } from "../../shared/protocol.ts";
 import type { UsageLoginProvider } from "../../shared/usage-login.ts";
 import { fetchUsageLoginProviders } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { PROVIDER_MARK, PROVIDER_NAME } from "../lib/usage.ts";
 import { AgentMark } from "./AgentMark.tsx";
@@ -18,7 +19,6 @@ type Step = { readonly kind: "provider" } | { readonly kind: "hub"; readonly ret
 
 export function UsageAccountDialog({ editHub, provider: preset = null, hub, onHubChanged, onAccountsChanged, onLocalLogin, onClose }: {
   readonly editHub: boolean;
-  /** an agent's own Add account or Sign in: the dialog starts at that provider's methods, past the choice of provider */
   readonly provider?: UsageProviderId | null;
   readonly hub: CLIProxyStatus | null;
   readonly onHubChanged: (status: CLIProxyStatus) => void;
@@ -41,6 +41,7 @@ export function UsageAccountDialog({ editHub, provider: preset = null, hub, onHu
     return () => controller.abort();
   }, [t, preset, editHub]);
   const surface = useFocusTrap<HTMLDivElement>(true);
+  usePhoneSheetBack(() => { onClose(); });
   const content = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     (content.current?.querySelector<HTMLElement>("input, button") ?? surface.current)?.focus();

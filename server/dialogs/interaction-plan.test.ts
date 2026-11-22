@@ -86,8 +86,6 @@ describe("picker interaction plans", () => {
         active: () => active,
         cancelled: () => false,
         read: async () => {
-          // The screen was accepted, but a queued status change ends this asking before
-          // the awaiting executor resumes. No timer or changed screen is involved.
           queueMicrotask(() => { active = false; });
           return screen;
         },
@@ -183,8 +181,6 @@ describe("picker interaction plans", () => {
       read: async () => null,
       send: async () => { cursors.push(plan.cursor); },
     });
-    // each move sees where the ones before it left the cursor: another key leaves it, and ↑ and ←
-    // stop at the first row. The commit never goes out: the screen read shows no list
     expect(cursors).toEqual([1, 2, 2, 3, 3, 2, 1, 0]);
     expect(plan.cursor).toBe(0);
     expect(plan.toggles).toBe(1);

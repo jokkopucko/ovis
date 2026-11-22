@@ -55,6 +55,23 @@ recovery. Older bridges cannot silently turn a working queue request into immedi
 path; each agent controls when it consumes that input. It is not a native app-server steering API.
 
 Direct input arriving before readiness or during a disconnect is held for explicit Send/Discard.
+The promise is scoped to what the app knows: keys typed while it knows the link is down are never
+sent by themselves. It knows when the terminal's connection has ended, or when the browser reports
+its network gone (on any path but a direct local connection to a server on this device: a server on
+this device reached through the relay is held too), until the connection answers again
+with the network back (`HerdrSocket.takesKey` in `src/lib/ws.ts`). A key typed then, or queued
+before then and not yet sent (an idle pane's attach, a new terminal's first keys), stays in the
+draft; keys queued behind a held one stay with it, Enter included. A file's path counts as typed at
+the pick, drop or paste that started its upload. Known limit: text an input method, dictation or a
+paste lets out of the terminal's field (a composition's commit, a replacement, a key reported as
+229) counts as typed when it comes out, so text begun while the link was down and let out after the
+connection answered is sent as usual. Keys the terminal takes as they are typed, Enter included,
+are always held. A connection that stalls while the browser still reports a network and the
+socket stays open is known to be down only when its liveness probe goes unanswered: after 20 s of
+silence, two pings 3 s apart, or 6 s and then 12 s apart after earlier unanswered probes, until an
+answered probe resets this. Keys typed before its probe starts are sent as usual, and reach the pane
+if the same connection recovers; keys typed while the probe waits for its pong are held in the
+draft.
 An IME may commit several code points at once, so printable chunks (including emoji) are retained.
 Control sequences are left out, never saved for later execution, and not counted: xterm's own
 answers to a program (cursor position, focus, mouse) arrive the same way. Send transmits the held

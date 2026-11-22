@@ -1,4 +1,3 @@
-/** Account setup and hub OAuth against an isolated backend and deterministic provider fixture. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,20 +77,17 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   const modal = page.locator(".usage-account-dialog");
   const before = await page.locator(".usage-accounts-row").count();
 
-  // Given: Plan limits closes the page, the status-line switch after the meters' last option; Add heads Other accounts.
   const statusline = page.getByRole("switch", { name: "Read Claude's limits from its status line", exact: true });
   await statusline.waitFor();
   await page.getByRole("button", { name: "Session", exact: true }).focus();
   await page.keyboard.press("Tab");
   assert.equal(await statusline.evaluate((toggle) => toggle === document.activeElement), true);
   await add.focus();
-  // When: Enter walks provider -> method.
   await page.keyboard.press("Enter");
   await modal.waitFor();
   await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Claude");
   await page.keyboard.press("Enter");
   await modal.getByRole("button", { name: /^On this PC/ }).waitFor();
-  // Then: Escape closes just the picker and returns to Add.
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
   assert.equal(await add.evaluate((button) => button === document.activeElement), true);
@@ -167,7 +163,6 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
   await modal.getByRole("button", { name: "Close", exact: true }).click();
   await page.waitForFunction(() => document.activeElement === document.querySelector("[data-section='other-accounts'] .settings-row .btn"));
 
-  // Given: a hub session is still waiting when its dialog is dismissed.
   await add.click();
   await modal.getByRole("button", { name: /^Claude/ }).click();
   const dismissedReady = page.waitForEvent("popup");
@@ -183,11 +178,9 @@ return (u.pathname==='/api/usage'||u.pathname==='/api/cliproxy'||u.pathname.star
     return url.pathname === "/api/cliproxy/login" && url.searchParams.get("state") === dismissedState
       && response.request().method() === "DELETE";
   }, { timeout: 5000 });
-  // When: Escape unmounts the account dialog, rather than pressing Cancel.
   await modal.getByRole("button", { name: "Close", exact: true }).focus();
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
-  // Then: cancellation reaches the backend and releases that exact fixture session.
   assert.equal((await dismissedCancel).status(), 200);
   assert.equal(fake.sessions.has(dismissedState), false);
   await dismissed.close();

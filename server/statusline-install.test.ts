@@ -21,7 +21,6 @@ const own = (configDir = join(home, ".claude")) => join(configDir, "herdr-status
 const tee = (configDir?: string) => join(own(configDir), "statusline-tee.sh");
 const capture = () => join(home, ".herdr", "statusline-last.json");
 const env = (configDir = "") => ({ ...process.env, HOME: home, CLAUDE_CONFIG_DIR: configDir });
-/** the switch, as the server turns it on or off: exit 0 with what it did, or exit 1 with why not */
 function run(args: string[], configDir?: string) {
   const options = { home, configDir };
   try {
@@ -192,7 +191,6 @@ describe("status-line switch and capture", () => {
     install("--remove");
     writeFileSync(settings(), JSON.stringify({ statusLine: { type: "command", command: "echo second" } }));
     install();
-    // replaced by hand while installed: the next install wraps this one
     writeFileSync(settings(), JSON.stringify({ statusLine: { type: "command", command: "echo third" } }));
     install();
     expect(draw("{}")).toBe("third\n");
@@ -284,12 +282,10 @@ describe("status-line switch and capture", () => {
       install();
       const command = spelling(tee());
       writeFileSync(settings(), JSON.stringify({ statusLine: { type: "command", command } }));
-      // nothing is removed while the changed line may still run the wrapper, and the switch says so
       const kept = run(["--remove"]);
       expect(kept.exitCode).toBe(1);
       expect(kept.stderr).toContain("nothing was removed");
       expect(settingsCommand()).toBe(command);
-      // the wrapper stays, so the line it draws keeps working, and it is never wrapped again
       expect(existsSync(tee())).toBe(true);
       expect(run([]).exitCode).toBe(1);
       expect(settingsCommand()).toBe(command);
@@ -376,7 +372,6 @@ describe("status-line switch and capture", () => {
     install();
     const gate = join(home, "gate");
     expect(Bun.spawnSync(["mkfifo", gate]).exitCode).toBe(0);
-    // the capture blocks until the test opens the gate, after the wrapper has already ended
     writeFileSync(join(own(), "statusline-capture.ts"), `require("node:fs").readFileSync(${JSON.stringify(gate)});\n`);
     const result = Bun.spawnSync(["sh", tee()], { env: env(), stdin: Buffer.from("{}"), timeout: 10_000 });
     writeFileSync(gate, "go");
@@ -492,7 +487,6 @@ describe("status-line switch and capture", () => {
   it("removes what an install killed before its record left, without touching settings.json", () => {
     const before = readFileSync(settings(), "utf8");
     install();
-    // as an install cut short after its own files and before its record and settings.json
     rmSync(join(own(), "install.json"));
     writeFileSync(settings(), before);
     install("--remove");
@@ -501,8 +495,6 @@ describe("status-line switch and capture", () => {
   });
 
   it.skipIf(process.getuid?.() === 0)("removes an install that failed after its record and before settings.json", () => {
-    // settings.json is a dotfiles link whose directory cannot take the new file: the record is
-    // written, the settings write fails, as a crash between the two would leave it
     const dotfiles = join(home, "dotfiles");
     mkdirSync(dotfiles);
     const before = readFileSync(settings(), "utf8");
@@ -537,12 +529,10 @@ describe("status-line switch and capture", () => {
   it("takes one change at a time across processes, and leaves a lock it cannot vouch for to be removed by hand", () => {
     const lock = join(home, ".claude", ".herdr-statusline.lock");
     const before = readFileSync(settings(), "utf8");
-    // a lock is published with its owner: an empty one holds no change, and is replaced
     mkdirSync(lock);
     install();
     expect(existsSync(lock)).toBe(false);
     install("--remove");
-    // one that names no holder it can check is refused, saying what to delete when nothing holds it
     mkdirSync(lock);
     writeFileSync(join(lock, "owner"), "not a token");
     const refused = run([]);
@@ -626,7 +616,6 @@ describe("status-line switch and capture", () => {
   });
 
   it("writes no reading from a capture helper that is not the installer's own", () => {
-    // the shipped source, run where the installed (marked) copy was replaced or removed
     const result = Bun.spawnSync([process.execPath, new URL("./statusline-capture.ts", import.meta.url).pathname], {
       env: env(), stdin: Buffer.from(JSON.stringify({ rate_limits: { five_hour: { used_percentage: 40 } } })), timeout: 10_000,
     });

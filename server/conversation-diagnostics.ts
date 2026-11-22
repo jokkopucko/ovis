@@ -5,7 +5,6 @@ const REASONS = [
   ...UNAVAILABLE_DIAGNOSTICS, "branch_unreadable", "transcript_missing", "no_session_path",
   "no_session_id", "no_recognized_transcript", "pane_not_found", "session_not_written", "copilot_resume_unknown",
 ];
-/** A pane with no agent conversation (a plain shell): its scrollback is the expected view, not a failure. */
 const EXPECTED = new Set(["no_recognized_transcript"]);
 const INTERVAL_MS = 30_000;
 const MAX_LINES = 16;
@@ -17,7 +16,6 @@ export class ConversationDiagnostics {
   private lines = 0;
 
   constructor(write: (line: string) => void = (line) => console.warn(line), private now: () => number = () => performance.now()) {
-    // The budget bounds the output only: episodes still open and close while it is spent.
     this.episodes = new ConnectionDiagnostics("conversation", (line) => {
       if (!this.available()) return false;
       this.lines++;

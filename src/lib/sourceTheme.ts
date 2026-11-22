@@ -1,11 +1,5 @@
 import { createCSSVariablesTheme, registerCustomTheme } from "@pierre/diffs";
 
-/**
- * What the virtualized source (components/VirtualSource.tsx) and the repository diff
- * (components/RepoDiff.tsx) share of the package: the app's tokens as its theme, the shadow CSS
- * that carries them into its rows, the worker pool that colors them, and the row fixes both need.
- */
-
 export const SOURCE_THEME = "herdr-source";
 registerCustomTheme(SOURCE_THEME, async () => {
   const theme = createCSSVariablesTheme({
@@ -58,7 +52,6 @@ export const SHADOW_CSS = `
 }
 `;
 
-/** The window of rows the virtualizer keeps mounted around the view, in pixels. */
 export const SCROLL_CONFIG = { overscrollSize: 600, intersectionObserverMargin: 1200 };
 
 /**
@@ -70,7 +63,6 @@ export const SCROLL_CONFIG = { overscrollSize: 600, intersectionObserverMargin: 
  * be megabytes of heap, and stepping through a repository's changes keeps the pool alive.
  */
 export const POOL_OPTIONS = { workerFactory: (): Worker => new Worker(new URL("@pierre/diffs/worker/worker.js", import.meta.url), { type: "module" }), poolSize: 2, totalASTLRUCacheSize: 12 };
-/** The JavaScript regex engine: the app's CSP allows no WebAssembly compilation. */
 export const HIGHLIGHTER_OPTIONS = { theme: SOURCE_THEME, preferredHighlighter: "shiki-js" as const };
 
 /** A key for the worker's highlight cache: two contents of one name and length must not share one (FNV-1a, 32 bit). */

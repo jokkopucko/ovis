@@ -62,7 +62,6 @@ describe("trackDesktopActivity", () => {
     const deadline = Date.now() + 5_000;
     while (!settled) {
       if (Date.now() > deadline) throw new Error("the reads did not settle");
-      // the read asked last answers first
       answers.pop()?.();
       await Bun.sleep(1);
     }

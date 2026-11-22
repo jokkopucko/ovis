@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 
 import { changeTree, changeTreeFolders, type ChangeTreeEntry } from "./changeTree.ts";
 
-/** `name` for a file, `name/` with what it holds for a folder: the tree as it reads. */
 const outline = (entries: readonly ChangeTreeEntry[]): unknown[] =>
   entries.map((entry) => (entry.kind === "file" ? entry.name : { [`${entry.name}/`]: outline(entry.entries) }));
 
@@ -24,7 +23,6 @@ describe("changeTree", () => {
       { "src/": ["big.ts", "gone.ts"] },
       "README.md",
     ]);
-    // the file rows still read top to bottom as the flat list did
     const files = (entries: readonly ChangeTreeEntry[]): number[] => entries.flatMap((entry) => (entry.kind === "file" ? [entry.index] : files(entry.entries)));
     expect(files(tree)).toEqual([0, 1, 5, 2, 4, 3]);
   });

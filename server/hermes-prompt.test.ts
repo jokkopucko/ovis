@@ -53,9 +53,7 @@ describe("hermes clarify", () => {
     expect(prompt.multi_select).toBe(true);
     expect(prompt.custom_option_index).toBeNull();
     expect(prompt.options.map((option) => option.label)).toEqual(["Red", "Blue"]);
-    // Blue is ticked already: Red is ticked, Blue left as it is
     expect(answerKeys(prompt, { option_indices: [0, 1] })).toEqual([{ keys: ["space"] }, { keys: ["enter"] }]);
-    // only Red: tick it, untick Blue
     expect(answerKeys(prompt, { option_indices: [0] })).toEqual([{ keys: ["space"] }, { keys: ["down"] }, { keys: ["space"] }, { keys: ["enter"] }]);
     // the cursor on Other: back up to a choice, since Enter there opens the text line
     const onOther = multi.replace("▸ [ ] 1. Red", "  [ ] 1. Red").replace("  3. Other", "▸ 3. Other");

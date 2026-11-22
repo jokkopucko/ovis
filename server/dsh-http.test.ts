@@ -9,9 +9,10 @@ import * as processProbe from "./omp-process.ts";
 import { forgetDshProcesses } from "./dsh.ts";
 import * as herdr from "./herdr/client.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
+import * as served from "./runtime/capabilities.ts";
+import { HERDR_CORE } from "./runtime/capabilities.ts";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
-/** What herdr reports for a TUI launched through the npm-installed launcher. */
 const DSH_ARGV = ["node", "/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js", "--profile", "tui"];
 
 for (const mode of ["mixed", "gjc-only", "gjc-under-shell", "dsh-only"] as const) linuxTest(`preserves the unlabeled pane route for ${mode}`, async () => {
@@ -35,7 +36,6 @@ for (const mode of ["mixed", "gjc-only", "gjc-under-shell", "dsh-only"] as const
     throw new Error(`unexpected herdr RPC ${method}`);
   }) as typeof herdr.herdrRpc);
   const memory = spyOn(processProbe, "ompProcessMemory").mockResolvedValue({ argv: [], environ: [`DSH_HOME=${root}`] });
-  // Keep real routing and dsh binding; isolate only GJC's separate native-record resolver.
   const nativeGjc = spyOn(gjc, "gjcTranscriptFileForPane").mockResolvedValue({ path: gjcPath, identity: "fixture" });
   const underShell = spyOn(gjc, "gjcPidUnderShell").mockResolvedValue(mode === "gjc-under-shell" ? { pid: process.ppid, started: null } : null);
   try {
@@ -146,7 +146,6 @@ for (const [label, agent, argv, source] of [
     const body = await response.json();
     expect(body.source).toBe(source);
     if (source === "dsh-transcript") expect(body.turns[0].parts[0]).toEqual({ kind: "text", text: "Hello" });
-    // a dsh pane costs one process_info per lookup, asked by pane_id, whichever path found its processes
     const asked = calls.filter(([method]) => method === "pane.process_info").length + processInfo.mock.calls.length;
     if (source === "dsh-transcript") expect(asked).toBe(1);
     for (const [, params] of calls) expect(params).toEqual({ pane_id: pane.pane_id });
@@ -159,6 +158,67 @@ for (const [label, agent, argv, source] of [
     forgetPaneTranscriptState(pane.pane_id);
     forgetTranscriptState();
     await lock.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// herdr-core names only the first process of the foreground job: for dsh-tui that is its npm shim, and the host that holds the lock runs below it (#3939)
+linuxTest("reads a dsh-tui pane on herdr-core from the host below the shim it names in front", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ovis-dsh-core-"));
+  const restores: (() => void)[] = [];
+  let shim: ReturnType<typeof Bun.spawn> | null = null;
+  let host: number | null = null;
+  const pane = { pane_id: "dsh-core-fixture", agent: "dsh-tui", agent_status: "idle", cwd: root };
+  try {
+    const session = "1dacc7bc-68e8-4934-baec-ba181b8251f9";
+    const folder = join(root, "sessions", "--workspace--", session);
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, "session.v4.jsonl"), [
+      { type: "session", version: 4, id: session, delegationDepth: 0 },
+      { type: "user/message", seq: 0, data: { source: { kind: "user" }, content: [{ type: "text", text: "Hello" }] } },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    await writeFile(join(folder, "session.lock"), "");
+    const entry = join(root, "node_modules", "@deepseek-harness-tui", "dsh-tui", "lib", "types", "dsh-adapter", "host-entry.js");
+    await mkdir(join(entry, ".."), { recursive: true });
+    await writeFile(entry, 'process.stdout.write(`dsh-host-ready ${process.pid}\\n`); process.stdin.resume();');
+    // the shim's stand-in runs the host's in its own job with the lock open, as /proc names it: `node …/host-entry.js`
+    shim = Bun.spawn(["bash", "-c", 'exec 3<"$1"; (exec -a /usr/bin/node "$2" "$3"); :', "shim", join(folder, "session.lock"), process.execPath, entry], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    const reader = (shim.stdout as ReadableStream<Uint8Array>).getReader();
+    restores.push(() => reader.releaseLock());
+    let said = "";
+    while (host === null) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`the host stand-in ended early: ${said}`);
+      said += new TextDecoder().decode(value);
+      const ready = /^dsh-host-ready (\d+)\n/m.exec(said);
+      if (ready) host = Number(ready[1]);
+    }
+    const foreground = { pane_id: pane.pane_id, shell_pid: process.pid, foreground_processes: [{ pid: shim.pid, name: "node", argv: ["node", "/home/user/.nvm/versions/node/v24/bin/dsh-tui"] }] };
+    const mocks = [
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [] } as unknown as SessionSnapshot),
+      spyOn(herdr, "paneProcessInfo").mockResolvedValue(foreground as Awaited<ReturnType<typeof herdr.paneProcessInfo>>),
+      spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => {
+        if (method === "pane.process_info") return { process_info: foreground };
+        throw new Error(`unexpected herdr RPC ${method}`);
+      }) as typeof herdr.herdrRpc),
+      spyOn(processProbe, "ompProcessMemory").mockResolvedValue({ argv: [], environ: [`HOME=${root}`, `DSH_HOME=${root}`] }),
+      spyOn(served, "capabilities").mockReturnValue(HERDR_CORE),
+    ];
+    for (const mock of mocks) restores.push(() => mock.mockRestore());
+    const url = new URL("http://x/api/pane/conversation?pane_id=" + pane.pane_id);
+    const body = await (await handlePaneRequest(new Request(url), url, url.pathname, {}))!.json();
+    expect(body.source).toBe("dsh-transcript");
+    expect(body.turns[0].parts[0]).toEqual({ kind: "text", text: "Hello" });
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    forgetDshProcesses();
+    forgetPaneTranscriptState(pane.pane_id);
+    forgetTranscriptState();
+    if (host !== null) try { process.kill(host, "SIGKILL"); } catch { /* already gone */ }
+    if (shim !== null) {
+      shim.kill("SIGKILL");
+      await shim.exited;
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -122,7 +122,6 @@ const GROK_AGENT_HIDDEN = Object.entries(GROK_COMMANDS)
   .filter(([, command]) => command.hidden || (RELEASE_BUILD && command.releaseHidden))
   .map(([name]) => name);
 
-/** `~` and `~/x` as the person's home, an absolute path as itself; relative paths are not resolvable here. */
 function absolute(path: unknown, home: string): string | null {
   if (typeof path !== "string") return null;
   if (path === "~") return home;
@@ -130,7 +129,6 @@ function absolute(path: unknown, home: string): string | null {
   return path.startsWith("/") ? resolve(path) : null;
 }
 
-/** `[skills] paths` and `ignore` from the user's config.toml. */
 function skillsTable(configDir: string, home: string): { paths: string[]; ignore: string[] } {
   try {
     const table = (Bun.TOML.parse(readFileSync(join(configDir, "config.toml"), "utf8")) as { skills?: { paths?: unknown; ignore?: unknown } }).skills;
@@ -146,7 +144,6 @@ interface Root {
   readonly commands: boolean;
 }
 
-/** Plugin skill roots and their user-facing plugin names. */
 function pluginRoots(root: string, installed: boolean): Root[] {
   const result: Root[] = [];
   try {
@@ -154,7 +151,7 @@ function pluginRoots(root: string, installed: boolean): Root[] {
       const path = join(root, entry.name);
       if (statSync(path).isDirectory()) result.push({ path: join(path, "skills"), origin: "plugin", scope: entry.name, commands: false });
     }
-  } catch { /* no plugin directory */ }
+  } catch {}
   if (installed) {
     try {
       const plugins = (JSON.parse(readFileSync(join(root, "installed_plugins.json"), "utf8")) as {
@@ -167,7 +164,7 @@ function pluginRoots(root: string, installed: boolean): Root[] {
           });
         }
       }
-    } catch { /* no installed plugin list */ }
+    } catch {}
   }
   return result;
 }
@@ -263,7 +260,7 @@ export const source: AgentCommandSource = {
         continue;
       }
       let rootIsFile = false;
-      try { rootIsFile = statSync(root.path).isFile(); } catch { /* missing root */ }
+      try { rootIsFile = statSync(root.path).isFile(); } catch {}
       const skills = rootIsFile
         ? (() => {
           const fields = readFrontmatter(root.path);

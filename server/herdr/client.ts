@@ -1,6 +1,5 @@
-import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, win32 } from "node:path";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ConnectionDiagnostics, transportFailureCode } from "../connection-diagnostics.ts";
 import type {
@@ -17,7 +16,11 @@ import type {
 } from "../../shared/protocol.ts";
 import type { AgentInfo, AgentManifestInfo, AgentStartParams, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, PaneScrollInfo, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import type { HerdrMethod, HerdrMethods, SingleHerdrMethod, UntypedHerdrMethod } from "./methods.ts";
-import type { HerdrCoreLayout, HerdrIdentity } from "../../shared/machines.ts";
+import type { HerdrIdentity } from "../../shared/machines.ts";
+import { runtimeIdentity } from "../runtime/capabilities.ts";
+import { makeLineReader } from "./line-reader.ts";
+import type { WorktreeInfo } from "./worktree-info.ts";
+import { liveSessionsRefused, sameSocket } from "./test-session.ts";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const diagnostics = new ConnectionDiagnostics("herdr.rpc");
@@ -28,23 +31,6 @@ export function herdrSocketPath(): string {
   if (process.env.HERDR_SOCKET) return process.env.HERDR_SOCKET;
   if (process.platform === "win32") return `${process.env.APPDATA ?? ""}\\herdr\\herdr.sock`;
   return `${process.env.HOME ?? ""}/.config/herdr/herdr.sock`;
-}
-
-/**
- * Whether this process asked for an isolated herdr (HERDR_TEST_SESSION) and did not say the user's own
- * session is meant (OVIS_ALLOW_LIVE_HERDR=1, or the tests' HERDR_TEST_LIVE=1): its herdr and herdr-core
- * connections then never reach the user's own sessions.
- */
-export function liveSessionsRefused(env: Record<string, string | undefined> = process.env): boolean {
-  return Boolean(env["HERDR_TEST_SESSION"]) && env["OVIS_ALLOW_LIVE_HERDR"] !== "1" && env["HERDR_TEST_LIVE"] !== "1";
-}
-
-/** One spelling of a socket: absolute, through the links of its folder, and on Windows the pipe's name in one case. */
-export function sameSocket(path: string): string {
-  // Windows resolves `..` and `.` in a \\.\ device path, a pipe's too: one name, in one case
-  if (process.platform === "win32") return win32.normalize(path.replace(/^\\\\\.\\pipe\\/i, "")).toLowerCase();
-  const absolute = resolve(path);
-  try { return join(realpathSync(dirname(absolute)), basename(absolute)); } catch { return absolute; }
 }
 
 /**
@@ -76,8 +62,19 @@ function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefi
  */
 export function socketAddress(socketPath: string): string {
   refuseLiveHerdr(socketPath);
-  return process.platform === "win32" && !socketPath.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${socketPath}` : socketPath;
+  const checked = checkedHerdrSocket(socketPath);
+  return process.platform === "win32" && !checked.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${checked}` : checked;
 }
+
+/**
+ * The machine profile's check of a herdr socket before each connection to it, set once it pins its session
+ * (server/machine-profile.ts): the address to use instead, where nothing listens, while the socket fails it.
+ * An ordinary server sets none.
+ */
+let socketCheck: ((socketPath: string) => string) | null = null;
+export function checkHerdrSockets(check: (socketPath: string) => string): void { socketCheck = check; }
+/** Where a connection to herdr, or a herdr command it starts, goes: `socketPath`, unless the profile's check refuses it. */
+export function checkedHerdrSocket(socketPath: string): string { return socketCheck?.(socketPath) ?? socketPath; }
 
 /** herdr's `terminal attach` exists on Unix only (herdrdev/herdr#4821); its ping does not say so yet. */
 export function terminalAttachSupported(capabilities?: Record<string, unknown>): boolean {
@@ -87,18 +84,63 @@ export function terminalAttachSupported(capabilities?: Record<string, unknown>):
 
 export class HerdrError extends Error {
   readonly code: string;
+  declare readonly fromReply: boolean;
+  declare readonly failedCall?: true;
+  declare readonly outcome?: string;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, fromReply = false, failedCall = false, outcome?: string) {
     super(message);
     this.name = "HerdrError";
     this.code = code;
+    Object.defineProperty(this, "fromReply", { value: fromReply, enumerable: false });
+    if (failedCall) markFailedCall(this);
+    if (outcome !== undefined) Object.defineProperty(this, "outcome", { value: outcome, enumerable: false });
   }
+}
+
+function markFailedCall(error: HerdrError): void { Object.defineProperty(error, "failedCall", { value: true, enumerable: false }); }
+
+export type HerdrFailureView = (error: HerdrError) => { code: string; message: string };
+export function herdrFault(error: HerdrError, view: HerdrFailureView | undefined): { code: string; message: string } {
+  return view !== undefined && error.failedCall === true ? view(error) : { code: error.code, message: error.message };
+}
+export function faultOf(error: unknown, code: string, view: HerdrFailureView | undefined): { code: string; message: string } {
+  if (error instanceof HerdrError) return herdrFault(error, view);
+  return { code, message: view !== undefined ? view(new HerdrError(code, "")).message : error instanceof Error ? error.message : String(error) };
 }
 
 let requestCounter = 0;
 function nextId(): string {
   requestCounter += 1;
   return `br-${Date.now().toString(36)}-${requestCounter}`;
+}
+
+export function herdrRpcCountRequested(env: Record<string, string | undefined> = process.env): boolean {
+  return env["HERDR_RPC_COUNT"] === "1";
+}
+
+let rpcCounts: Map<string, number> | null = null;
+
+export function herdrRpcCounts(): Readonly<Record<string, number>> {
+  return Object.fromEntries(rpcCounts ?? []);
+}
+
+export function herdrRpcCountingForTests(enabled: boolean): void {
+  rpcCounts = enabled ? new Map() : null;
+}
+
+/**
+ * The tally's one reader: as the process exits (the server's shutdown ends in process.exit), one
+ * JSON line on stderr, the sink herdr.rpc's ConnectionDiagnostics writes to, e.g.
+ * {"time":"…","event":"herdr.rpc.counts","counts":{"pane.read":42}}. Counts and method names
+ * only, which are code-owned literals; nothing else reads them or sends them anywhere. A process
+ * that made no request (the plugin's supervisor imports this module too) writes nothing.
+ */
+if (herdrRpcCountRequested()) {
+  rpcCounts = new Map();
+  process.once("exit", () => {
+    if (rpcCounts?.size) console.warn(JSON.stringify({ time: new Date().toISOString(), event: "herdr.rpc.counts", counts: herdrRpcCounts() }));
+  });
 }
 
 /**
@@ -121,71 +163,6 @@ function nextId(): string {
 export const LARGE_REPLY_BYTES = 64 * 1024 * 1024;
 export const LINE_BYTES = 16 * 1024 * 1024;
 const LARGE_REPLY_METHODS = new Set(["pane.read", "pane.selection.read", "session.snapshot"]);
-
-/**
- * Splits incoming bytes into newline-terminated lines of at most `limit` bytes each.
- * herdr frames arrive split across reads, so a partial tail is kept as bytes and decoded only
- * once its line is complete, which keeps a UTF-8 character split between reads whole. A line
- * that passes `limit` before its newline is reported once through `onOversize`, its bytes are
- * dropped, and the reader ignores everything after it. A chunk is split, and its partial tail kept,
- * before any callback runs, so a callback that throws loses no other line: every line of the chunk
- * is still delivered, and the first throw is rethrown after the last. Exported for
- * server/herdr/seam.test.ts.
- */
-export function makeLineReader(
-  limit: number,
-  onLine: (line: string, bytes: number) => void,
-  onOversize: (bytes: number) => void,
-): (chunk: Uint8Array) => void {
-  const decoder = new TextDecoder();
-  let parts: Uint8Array[] = [];
-  let held = 0;
-  let failed = false;
-  return (chunk: Uint8Array) => {
-    const lines: Uint8Array[] = [];
-    let oversize: number | null = null;
-    let start = 0;
-    while (!failed && start < chunk.length) {
-      const end = chunk.indexOf(0x0a, start);
-      const piece = chunk.subarray(start, end === -1 ? chunk.length : end);
-      if (held + piece.length > limit) {
-        failed = true;
-        oversize = held + piece.length;
-        parts = [];
-        held = 0;
-        break;
-      }
-      if (end === -1) {
-        // the socket may reuse its read buffer: keep a copy
-        parts.push(piece.slice());
-        held += piece.length;
-        break;
-      }
-      lines.push(held === 0 ? piece : Buffer.concat([...parts, piece]));
-      parts = [];
-      held = 0;
-      start = end + 1;
-    }
-    let thrown: { error: unknown } | null = null;
-    for (const bytes of lines) {
-      const line = decoder.decode(bytes).trim();
-      if (line.length === 0) continue;
-      try {
-        onLine(line, bytes.length);
-      } catch (error) {
-        thrown ??= { error };
-      }
-    }
-    if (oversize !== null) {
-      try {
-        onOversize(oversize);
-      } catch (error) {
-        thrown ??= { error };
-      }
-    }
-    if (thrown) throw thrown.error;
-  };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -262,6 +239,7 @@ export async function herdrRpc(
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   guard?: () => boolean,
 ): Promise<unknown> {
+  if (rpcCounts) rpcCounts.set(method, (rpcCounts.get(method) ?? 0) + 1);
   const id = nextId();
   const started = performance.now();
   const key = JSON.stringify([socketPath, method]); // private bookkeeping only; never logged
@@ -288,7 +266,6 @@ export async function herdrRpc(
         try {
           socket?.end();
         } catch {
-          /* the server may already have closed it */
         }
         fn();
       };
@@ -315,7 +292,7 @@ export async function herdrRpc(
         }
         const reply = readReply(frame, id);
         if (typeof reply === "string") invalid(reply, bytes);
-        else if ("error" in reply) finish(() => reject(new HerdrError(reply.error.code, reply.error.message)));
+        else if ("error" in reply) finish(() => reject(new HerdrError(reply.error.code, reply.error.message, true)));
         else finish(() => resolve(reply.result));
       };
 
@@ -376,7 +353,6 @@ export async function herdrRpc(
             try {
               sock.end();
             } catch {
-              /* already gone */
             }
             return;
           }
@@ -388,6 +364,7 @@ export async function herdrRpc(
   } catch (error) {
     const code = error instanceof HerdrError ? transportFailureCode(error.code) : null;
     if (code !== null) diagnostics.failed(key, code, fields());
+    if (error instanceof HerdrError && error.failedCall !== true) markFailedCall(error);
     throw error;
   } finally {
     pendingRpcs--;
@@ -418,16 +395,10 @@ export async function herdrAcceptsConnection(socketPath: string): Promise<boolea
   } catch { return false; }
 }
 
-export async function ping(socketPath?: string): Promise<HerdrIdentity> {
-  const result = await herdrRpc<{ version: string; protocol: number; capabilities?: Record<string, unknown> }>("ping", {}, socketPath);
+export async function ping(socketPath?: string, timeoutMs?: number): Promise<HerdrIdentity> {
+  const result = await herdrRpc<{ version: string; protocol: number; capabilities?: Record<string, unknown> }>("ping", {}, socketPath, timeoutMs);
   const attach = terminalAttachSupported(result.capabilities);
-  // without attach the web server repaints the pane's screen instead (server/mirror.ts)
-  const core = result.capabilities?.["runtime"] === "herdr-core";
-  // herdr-core's layout calls (shared/machines.ts HerdrCoreLayout): each one it did not say yes to is off
-  const offered = result.capabilities?.["layout"];
-  const said = (call: keyof HerdrCoreLayout): boolean => typeof offered === "object" && offered !== null && (offered as Record<string, unknown>)[call] === true;
-  const layout: HerdrCoreLayout = { rename: said("rename"), split: said("split"), move: said("move"), arrange: said("arrange"), worktrees: said("worktrees") };
-  return { version: result.version, protocol: result.protocol, terminal_attach: attach, ...(attach ? {} : { terminal_mirror: true }), ...(core ? { runtime: "herdr-core" as const, layout } : {}) };
+  return { version: result.version, protocol: result.protocol, terminal_attach: attach, ...(attach ? {} : { terminal_mirror: true }), ...runtimeIdentity(result.capabilities) };
 }
 
 export async function sessionSnapshot(socketPath?: string, timeoutMs?: number): Promise<SessionSnapshot> {
@@ -436,8 +407,8 @@ export async function sessionSnapshot(socketPath?: string, timeoutMs?: number): 
 }
 
 /** One pane's metadata; an unknown pane rejects with herdr's `pane_not_found`. */
-export async function paneGet(paneId: string, socketPath?: string): Promise<PaneInfo> {
-  const result = await herdrRpc<{ pane: PaneInfo }>("pane.get", { pane_id: paneId }, socketPath);
+export async function paneGet(paneId: string, socketPath?: string, timeoutMs?: number): Promise<PaneInfo> {
+  const result = await herdrRpc<{ pane: PaneInfo }>("pane.get", { pane_id: paneId }, socketPath, timeoutMs);
   return result.pane;
 }
 
@@ -445,7 +416,6 @@ export async function agentManifests(socketPath?: string): Promise<{ manifests: 
   return herdrRpc("server.agent_manifests", {}, socketPath);
 }
 
-/** herdr's `InstalledPluginInfo`, the fields the bridge reads. */
 export interface InstalledPluginInfo {
   plugin_id: string;
   name: string;
@@ -484,7 +454,6 @@ export interface PluginInvocationContext {
   invocation_source?: string;
 }
 
-/** herdr's `PluginCommandLogInfo`. */
 export interface PluginCommandLog {
   log_id: string;
   plugin_id: string;
@@ -520,8 +489,8 @@ export async function pluginLogList(pluginId: string, limit: number, socketPath?
 }
 
 /** herdr's built-in agent integrations and whether each is installed. Read only: this bridge never installs one. */
-export async function integrationList(socketPath?: string): Promise<AgentIntegration[]> {
-  return (await herdrRpc<{ integrations: AgentIntegration[] }>("integration.list", {}, socketPath)).integrations;
+export async function integrationList(socketPath?: string, timeoutMs?: number): Promise<AgentIntegration[]> {
+  return (await herdrRpc<{ integrations: AgentIntegration[] }>("integration.list", {}, socketPath, timeoutMs)).integrations;
 }
 
 export interface WorkspaceCreateResult {
@@ -643,18 +612,6 @@ export async function worktreeRemove(workspaceId: string, force: boolean, socket
   return queueHerdrFocus(socketPath, (socket) => herdrRpc("worktree.remove", { workspace_id: workspaceId, force }, socket, WORKTREE_GIT_TIMEOUT_MS));
 }
 
-/** herdr's view of one git checkout: `worktree.list` entries, and what create/open hand back. */
-export interface WorktreeInfo {
-  path: string;
-  branch: string | null;
-  label: string;
-  is_linked_worktree: boolean;
-  is_bare: boolean;
-  is_detached: boolean;
-  is_prunable: boolean;
-  open_workspace_id: string | null;
-}
-
 export interface WorktreeSourceInfo {
   repo_key: string;
   repo_name: string;
@@ -673,7 +630,6 @@ export interface WorktreeOpenResult {
   already_open?: boolean;
 }
 
-/** A git worktree of the workspace's repository, opened as a new workspace grouped with it. */
 export async function worktreeCreate(
   options: { workspaceId: string; branch: string; base?: string; label?: string; path?: string },
   socketPath?: string,
@@ -711,7 +667,6 @@ export interface PaneReadOptions {
   format?: ReadFormat;
   lines?: number;
   stripAnsi?: boolean;
-  /** how long the answer is waited for; herdrRpc's default otherwise */
   timeoutMs?: number;
 }
 
@@ -731,13 +686,11 @@ export async function paneRead(options: PaneReadOptions, socketPath?: string): P
 /** A cell in a pane's whole history: rows count from the top of the scrollback. */
 export interface PaneTextPoint { row: number; col: number }
 
-/** Where the pane's viewport sits in its scrollback; null when herdr reports none. */
-export async function paneScrollInfo(paneId: string, socketPath?: string): Promise<PaneScrollInfo | null> {
-  const pane = await paneGet(paneId, socketPath);
+export async function paneScrollInfo(paneId: string, socketPath?: string, timeoutMs?: number): Promise<PaneScrollInfo | null> {
+  const pane = await paneGet(paneId, socketPath, timeoutMs);
   return pane.scroll ?? null;
 }
 
-/** Where a screen read starts in the pane's history: rows scrolled off above it, counted by herdr. */
 export function viewportTop(scroll: { max_offset_from_bottom: number; offset_from_bottom: number } | null | undefined): number | undefined {
   return scroll ? scroll.max_offset_from_bottom - scroll.offset_from_bottom : undefined;
 }
@@ -816,7 +769,6 @@ export async function paneSelectionRead(paneId: string, anchor: PaneTextPoint, c
   return result.text;
 }
 
-/** What herdr knows of the processes in a pane's terminal (`pane.process_info`). */
 export type ProcessInfo = PaneProcessInfo;
 
 /**
@@ -830,15 +782,12 @@ export async function paneProcessInfo(paneId: string, socketPath?: string): Prom
   return info;
 }
 
-/** When each answer paneProcessInfo gave was asked for (Date.now, taken before the ask): herdr's sample is no older. */
 const processInfoAsks = new WeakMap<ProcessInfo, number>();
 
-/** When `info` was asked of herdr, or undefined for an answer paneProcessInfo did not give. */
 export function processInfoAskedAt(info: ProcessInfo): number | undefined {
   return processInfoAsks.get(info);
 }
 
-/** The agent herdr tracks in a pane (`agent.get`), including the session it reported. */
 export async function agentGet(paneId: string, socketPath?: string): Promise<AgentInfo> {
   return (await herdrRpc("agent.get", { target: paneId }, socketPath)).agent;
 }
@@ -867,7 +816,6 @@ export async function paneClose(paneId: string, socketPath?: string): Promise<vo
 
 const focusQueues = new Map<string, Promise<void>>();
 
-/** One ordering for Ovis focus writers, including an explicit swap's snapshot and restore. */
 function queueHerdrFocus<T>(socketPath: string | undefined, action: (socket: string) => Promise<T>): Promise<T> {
   const socket = socketAddress(socketPath ?? herdrSocketPath());
   const pending = (focusQueues.get(socket) ?? Promise.resolve()).then(() => action(socket));
@@ -882,28 +830,22 @@ export async function paneFocus(paneId: string, socketPath?: string): Promise<vo
   await queueHerdrFocus(socketPath, (socket) => herdrRpc("pane.focus", { pane_id: paneId }, socket));
 }
 
-/**
- * A new pane beside `paneId` (herdr's prefix+v / prefix+-), answered as herdr's snapshot lists it.
- * herdr's focus stays where it is unless `focus` asks for the new pane, as its --focus does.
- */
-/**
- * `move`: the id of a move from herdr (runtime-move-run.ts), which only Ovis's herdr-core adapter
- * reads: it labels the terminal it starts with it. herdr itself is never asked with one.
- */
 const moveParam = (move: string | undefined): Record<string, string> => move === undefined ? {} : { move };
 
-/** A split on Ovis's herdr-core adapter, its new side started in `cwd` and labeled with the move (adapter.ts pane.split). */
 export async function paneSplitForMove(paneId: string, direction: SplitPaneDirection, options: { cwd?: string; move: string }, socketPath: string): Promise<PaneInfo> {
   const result = await herdrRpc<{ pane: PaneInfo }>("pane.split", { target_pane_id: paneId, direction, focus: false, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...moveParam(options.move) }, socketPath);
   return result.pane;
 }
 
+/**
+ * A new pane beside `paneId` (herdr's prefix+v / prefix+-), answered as herdr's snapshot lists it.
+ * herdr's focus stays where it is unless `focus` asks for the new pane, as its --focus does.
+ */
 export async function paneSplit(paneId: string, direction: SplitPaneDirection, focus: boolean, socketPath?: string): Promise<PaneInfo> {
   const result = await queueHerdrFocus(socketPath, (socket) => herdrRpc<{ pane: PaneInfo }>("pane.split", { target_pane_id: paneId, direction, focus }, socket));
   return result.pane;
 }
 
-/** How herdr answers a layout change: whether anything moved, why not, and the tab's layout after it. */
 export interface PaneLayoutOutcome {
   changed: boolean;
   reason: string | null;
@@ -925,7 +867,6 @@ export async function paneSwap(paneId: string, direction: PaneDirection, socketP
   });
 }
 
-/** Serialize explicit swaps per herdr so none snapshots another swap's temporary focus. */
 export async function paneSwapWith(paneId: string, targetPaneId: string, socketPath?: string): Promise<PaneLayoutOutcome & { target_pane_id: string | null }> {
   return queueHerdrFocus(socketPath, async (socket) => {
     const focusedPaneId = (await sessionSnapshot(socket)).focused_pane_id;
@@ -933,7 +874,6 @@ export async function paneSwapWith(paneId: string, targetPaneId: string, socketP
     const result = await herdrRpc<{ swap: PaneLayoutOutcome & { target_pane_id?: string | null; reason?: string | null } }>("pane.swap", { source_pane_id: paneId, target_pane_id: targetPaneId }, socket);
     if (result.swap.changed && focusedPaneId && focusedPaneId !== paneId) {
       try {
-        // A user may have selected something else while the swap was in flight.
         if ((await sessionSnapshot(socket)).focused_pane_id === paneId) {
           // Already inside the focus queue: do not enqueue recursively.
           await herdrRpc("pane.focus", { pane_id: focusedPaneId }, socket);
@@ -950,14 +890,11 @@ export async function paneSwapWith(paneId: string, targetPaneId: string, socketP
 /**
  * The panes of a tab whose focused pane `paneMoveBeside` takes out and back in: herdr hands one of
  * them its focus for a moment (a pane_focused event, measured on 0.9.5) that the user never gave.
- * A hold lasts until herdr's focus lands on the moved pane, or the move ends without asking herdr
- * for that focus; a lost event costs it at most PASSING_FOCUS_MS.
  */
 interface PassingFocus { moved: Set<string>; siblings: Set<string> }
 const passingFocus = new Set<PassingFocus>();
 const PASSING_FOCUS_MS = 5_000;
 
-/** Whether herdr's focus on `paneId` is a move's passing one, not the user's. The moved pane's focus ends its hold. */
 export function focusFromMove(paneId: string): boolean {
   let held = false;
   for (const hold of passingFocus) {
@@ -1006,15 +943,10 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         console.warn("pane move focus restore failed", error);
       }
     };
-    // where herdr's focus went when the focused pane left its tab: the move's doing, not the user's
     let left: string | null = null;
-    // the panes herdr's focus may pass over (`passingFocus`), and whether herdr was asked to focus
-    // the moved pane, whose pane_focused then ends the hold
     let hold: PassingFocus | null = null;
     let refocused = false;
-    /** Whether herdr's snapshot lists `out` in its tab again; false without one. */
     const inTab = (now: { panes: PaneInfo[] } | null, out: string) => now?.panes.some((candidate) => candidate.pane_id === out && candidate.tab_id === target.tab_id) === true;
-    /** A pane out of its tab and not beside its target goes back beside the target, else beside any pane still there; the error says where it is. */
     const strayed = async (out: string, why: HerdrError): Promise<never> => {
       const now = await sessionSnapshot(socket).catch(() => null);
       // a move herdr made without its answer arriving may have brought it back already
@@ -1024,17 +956,19 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         back = await move(out, { type: "tab", tab_id: target.tab_id, target_pane_id: beside.pane_id, split: "right" }).then((home) => home.changed !== false, () => false);
         if (back) break;
       }
-      // or one of these moves did, so herdr answered the next same_tab
       let read = now;
       if (!back && panes.length > 0) {
         read = await sessionSnapshot(socket).catch(() => null);
         back = inTab(read, out);
       }
-      if (!back) throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`);
+      if (!back) {
+        throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`, why.fromReply, why.failedCall === true,
+          read === null ? "The pane was not moved and may be in a tab of its own" : "The pane was not moved and is in a tab of its own");
+      }
       if (left !== null) await restore(out, (at) => at === left);
-      throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`);
+      throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`, why.fromReply, why.failedCall === true, "The pane was not moved and is back in its tab");
     };
-    const failed = (error: unknown) => error instanceof HerdrError ? error : new HerdrError("pane_not_moved", error instanceof Error ? error.message : String(error));
+    const failed = (error: unknown) => error instanceof HerdrError ? error : new HerdrError("pane_not_moved", error instanceof Error ? error.message : String(error), false, true);
     try {
       let moved = await move(paneId, into);
       if (moved.changed === false && moved.reason === "same_tab") {
@@ -1067,7 +1001,7 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         } catch (error) {
           return await strayed(out, failed(error));
         }
-        if (moved.changed === false) return await strayed(out, new HerdrError("pane_not_moved", `herdr answered ${moved.reason ?? "unchanged"}`));
+        if (moved.changed === false) return await strayed(out, new HerdrError("pane_not_moved", `herdr answered ${moved.reason ?? "unchanged"}`, false, true));
       }
       if (moved.changed === false) return { changed: false, reason: moved.reason ?? null };
       const id = moved.pane.pane_id;
@@ -1101,7 +1035,6 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
       } else if (left !== null) await restore(id, (at) => at === left);
       return { changed: true, reason: null };
     } finally {
-      // herdr's focus back outside the hold ends it with its pane_focused; else the move gave it nowhere
       const ended = hold;
       if (ended !== null) {
         if (!refocused) passingFocus.delete(ended);
@@ -1128,7 +1061,6 @@ export async function paneResize(paneId: string, direction: PaneDirection, amoun
   return { ...result.resize, reason: result.resize.reason ?? null };
 }
 
-/** Clears the pane's terminal screen, as herdr's own `pane clear` does. */
 export async function paneClear(paneId: string, socketPath?: string): Promise<void> {
   await herdrRpc("pane.clear", { pane_id: paneId }, socketPath);
 }
@@ -1164,13 +1096,14 @@ export function subscribeEvents(
   handlers: SubscribeHandlers,
   socketPath: string = herdrSocketPath(),
 ): Subscription {
+  if (rpcCounts) rpcCounts.set("events.subscribe", (rpcCounts.get("events.subscribe") ?? 0) + 1);
   let closed = false;
   let socket: { end: () => void } | null = null;
   let started = false;
   const id = nextId();
 
   // A frame that breaks the protocol ends this subscription, reported once as `bad_frame` and
-  // then closed; it is no proof that herdr stopped. The subscriber decides whether to reopen.
+  // then closed; it is no proof that herdr stopped.
   const invalid = (reason: string, bytes: number) => {
     if (closed) return;
     closed = true;
@@ -1182,14 +1115,12 @@ export function subscribeEvents(
       try {
         socket?.end();
       } catch {
-        /* already gone */
       }
       handlers.onClose?.();
     }
   };
 
   const onData = makeLineReader(LINE_BYTES, (line, bytes) => {
-    // closed by the caller: frames still buffered belong to a subscription it replaced
     if (closed) return;
     let frame: unknown;
     try {
@@ -1205,7 +1136,7 @@ export function subscribeEvents(
     if (!started || (!isEvent && isRecord(frame) && Object.hasOwn(frame, "error"))) {
       const reply = readReply(frame, id);
       if (typeof reply === "string") invalid(reply, bytes);
-      else if ("error" in reply) handlers.onError?.(new HerdrError(reply.error.code, reply.error.message));
+      else if ("error" in reply) handlers.onError?.(new HerdrError(reply.error.code, reply.error.message, true));
       else if (started || !isRecord(reply.result) || reply.result["type"] !== "subscription_started") invalid("unexpected acknowledgement", bytes);
       else {
         started = true;
@@ -1244,7 +1175,6 @@ export function subscribeEvents(
         try {
           sock.end();
         } catch {
-          /* already gone */
         }
         return;
       }
@@ -1268,7 +1198,6 @@ export function subscribeEvents(
       try {
         socket?.end();
       } catch {
-        /* already gone */
       }
     },
   };

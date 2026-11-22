@@ -27,7 +27,6 @@ export class AgyUnavailable extends Error { constructor() { super("Agy history i
 interface Step { index: number; start: number; end: number; type: string; status: string; digest: string; activity?: "working" | "idle" }
 interface Index { identity: string; size: number; changed: string; scanned: number; revision: string; steps: Step[]; visible: Step[]; retired: Set<number> }
 const indexes = new Map<string, Index>();
-/** The last snapshot read per catalog, keyed on the stats of the files it copied. */
 const catalogs = new Map<string, { key: string; rows: number[] }>();
 const MAX_CATALOGS = 32;
 // Timestamps tick coarsely, so a same-size rewrite just after a read can keep both of them. Only a
@@ -37,13 +36,11 @@ export function forgetAgyState(path?: string): void {
   if (path === undefined) { indexes.clear(); catalogs.clear(); } else { indexes.delete(path); catalogs.delete(agyDatabasePath(path)); }
 }
 
-/** The catalog beside this resolved native ledger; also watched for saved rewinds. */
 export function agyDatabasePath(path: string): string {
   const sessionDir = dirname(dirname(dirname(path)));
   return join(dirname(dirname(sessionDir)), "conversations", `${basename(sessionDir)}.db`);
 }
 
-/** The database supplies only the active indices, never payloads or guessed numeric statuses. */
 export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
   const dbPath = agyDatabasePath(path);
   let db: Database | undefined;
@@ -83,15 +80,12 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
       }
       const snapshotFiles = files.slice(0, 2);
       if (snapshotFiles.reduce((bytes, file) => bytes + file.stat.size, 0n) > BigInt(CATALOG_BYTES)) throw new AgyUnavailable();
-      // Unchanged pinned files hold the bytes the last validated copy read.
       const key = snapshotFiles.map(({ stat }) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join("|");
       const cached = catalogs.get(dbPath);
-      // A reused catalog still passes the same final checks on every pinned file below.
       if (cached?.key === key) { reused = cached.rows; catalogKey = key; }
       else if (snapshotFiles.every(({ stat }) => began - Number(stat.mtimeNs / 1_000_000n) >= CATALOG_SETTLED_MS
         && began - Number(stat.ctimeNs / 1_000_000n) >= CATALOG_SETTLED_MS)) catalogKey = key;
       // macOS: tmpdir() is under the /var symlink, which SQLITE_OPEN_NOFOLLOW refuses
-      // (assigned before resolving, so a failed realpath still removes the directory)
       if (reused === undefined) {
         snapshot = mkdtempSync(join(tmpdir(), "ovis-agy-catalog-"));
         snapshot = realpathSync(snapshot);
@@ -167,7 +161,6 @@ export async function agyCatalogOffThread(path: string): Promise<Set<number>> {
 }
 
 export interface AgyProjection { segments: { start: number; end: number }[]; promptStarts: number[]; revision: string; indices: number[]; activity: "working" | "idle" }
-/** The ledger's index, scanned on to the end of the file `fd` holds. */
 function agyScan(path: string, fd: number): Index {
   const stat = fstatSync(fd);
   const identity = `${stat.dev}:${stat.ino}`;
@@ -227,14 +220,9 @@ function agyReduce(index: Index, catalog: Set<number>): AgyProjection {
   // DB-only steps are normal; equality or a strict prefix would reject healthy logs.
   const physicalStarts = new Set(index.steps.map((step) => step.start));
   for (const start of index.retired) if (!physicalStarts.has(start)) index.retired.delete(start);
-  // Once the active DB removed a displayed step, its old bytes cannot return merely
-  // because the replacement DB row precedes the replacement export. Never-published
-  // lagging steps remain eligible. The set is bounded by the active physical index.
   for (const step of index.visible) if (!catalog.has(step.index) && physicalStarts.has(step.start)) index.retired.add(step.start);
   const retained = index.steps.filter((step) => catalog.has(step.index) && !index.retired.has(step.start));
   const visible = retained.at(-1)?.status !== "DONE" ? retained.slice(0, -1) : retained;
-  // A DB snapshot can lag an exported append. Keep the physical index intact so the
-  // next poll can admit it. Only changes to already published spans invalidate paging.
   if (index.visible.some((step, at) => visible[at]?.start !== step.start || visible[at]?.end !== step.end)) index.revision = randomUUID();
   index.visible = visible;
   const segments: AgyProjection["segments"] = [];
@@ -256,8 +244,6 @@ function agyReduce(index: Index, catalog: Set<number>): AgyProjection {
 const historyReads = new Map<string, Promise<unknown>>();
 
 /**
- * Keep one fd through projection and page reads, and reject a cut during the read. One read of a
- * ledger at a time: each updates the ledger's shared index, and each now waits for its catalog.
  * With `authorized`, only that file is read: another one at the path (renamed over it while this
  * read waited) is pending, for the next read to authorize afresh.
  */
@@ -277,7 +263,6 @@ async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection,
     if (authorized !== undefined && (before.dev !== authorized.dev || before.ino !== authorized.ino)) throw new ConversationReadPending();
     const index = agyScan(path, fd);
     const catalog = await agyCatalogOffThread(path);
-    // forgotten or evicted while the catalog was read: parsing and output refs look it up by path
     if (indexes.get(path) !== index) {
       indexes.delete(path); indexes.set(path, index);
       if (indexes.size > 16) indexes.delete(indexes.keys().next().value!);
@@ -285,7 +270,6 @@ async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection,
     const projection = agyReduce(index, catalog);
     const result = read(projection, fd);
     const current = await agyCatalogOffThread(path);
-    // after the wait, so a ledger cut or replaced during it is seen
     const after = statSync(path), pinned = fstatSync(fd);
     if (before.dev !== after.dev || before.ino !== after.ino || pinned.size < before.size
       || (pinned.size === before.size && (pinned.mtimeMs !== before.mtimeMs || pinned.ctimeMs !== before.ctimeMs))
@@ -315,6 +299,8 @@ function outputRef(path: string, step: Step): string {
 export function parseAgyTranscript(text: string, path?: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const steps = path ? new Map(indexes.get(path)?.visible.map((step) => [step.index, step])) : undefined;
+  let idle = false;
+  let woken = false;
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     const value = entry(line);
@@ -325,6 +311,13 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
       const envelope = agyEnvelope(content);
       const skills = envelope === null ? [] : agyInvokedSkills(envelope.request, envelope.metadata).map((skill) => ({ kind: "skill" as const, skill }));
       turns.push({ role: "user", ts, parts: [{ kind: "text", text: envelope?.request ?? content }, ...skills] });
+      idle = false;
+      woken = false;
+      continue;
+    }
+    if (value.type === "SYSTEM_MESSAGE") {
+      // A background task, timer or subagent notification after a tool-free answer resumes the planner in a new turn.
+      if (idle) { woken = true; idle = false; }
       continue;
     }
     if (value.type !== "PLANNER_RESPONSE" && value.type !== "GENERIC") continue;
@@ -341,7 +334,7 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
       for (const call of Array.isArray(value.tool_calls) ? value.tool_calls : []) {
         const tool = record(call), input = record(tool.args);
         if (typeof tool.name !== "string") continue;
-        const mapped = { ...input, command: input.CommandLine, file_path: input.AbsolutePath ?? input.TargetFile };
+        const mapped = { ...input, command: input.CommandLine, file_path: input.Path ?? input.AbsolutePath ?? input.TargetFile };
         const part: Extract<ConversationPart, { kind: "tool" }> = { kind: "tool", name: tool.name, summary: toolSummary(tool.name, mapped), input: JSON.stringify(input), output: "" };
         // the ledger ties no output step to its call, so a read stays requested
         const skill = tool.name === "read_file" ? skillDocument(input.Path) : null;
@@ -350,9 +343,18 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
       }
     }
     if (!parts.length) continue;
+    if (value.type === "PLANNER_RESPONSE") {
+      idle = (!Array.isArray(value.tool_calls) || value.tool_calls.length === 0) && content.trim().length > 0;
+    }
     const previous = turns.at(-1);
-    if (previous?.role === "assistant") { previous.parts.push(...parts); previous.end_ts = ts ?? undefined; }
-    else turns.push({ role: "assistant", ts, end_ts: ts ?? undefined, parts });
+    const opens = woken && value.type === "PLANNER_RESPONSE";
+    if (previous?.role === "assistant" && !opens) {
+      previous.parts.push(...parts);
+      if (!woken && (!idle || value.type === "PLANNER_RESPONSE")) previous.end_ts = ts ?? undefined;
+    } else {
+      turns.push({ role: "assistant", ts, end_ts: ts ?? undefined, parts });
+      woken = false;
+    }
   }
   return turns;
 }
@@ -362,7 +364,6 @@ export async function agyToolOutput(path: string, ref: string): Promise<string |
   try {
     return await withAgyHistory(path, (projection, fd) => {
       const visible = new Set(projection.indices);
-      // forgotten (forgetAgyState) while this read waited for its catalog
       for (const step of indexes.get(path)?.visible ?? []) {
         if (step.type !== "GENERIC" || !visible.has(step.index) || outputRef(path, step) !== ref) continue;
         const bytes = Buffer.alloc(step.end - step.start);
@@ -374,7 +375,6 @@ export async function agyToolOutput(path: string, ref: string): Promise<string |
       return null;
     });
   } catch (error) {
-    // every file thread busy: worth another try soon (http.ts answers 503), not a missing output
     if (error instanceof FileBusyError) throw error;
     return null;
   }

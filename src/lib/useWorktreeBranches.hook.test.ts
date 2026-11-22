@@ -7,7 +7,6 @@ import type { WorkspaceBranch } from "./worktreeBranches.ts";
 
 const repository = { workspace_id: "w1", worktree: { repo_key: "repo", repo_name: "repo", repo_root: "/work/repo", checkout_path: "/work/repo", is_linked_worktree: false } } as WorkspaceInfo;
 const snapshot = { workspaces: [repository], tabs: [], panes: [], agents: [] } as unknown as SessionSnapshot;
-/** two repositories and a git workspace herdr has not marked (w3) */
 const other = { workspace_id: "w2", worktree: { repo_key: "other", repo_name: "other", repo_root: "/work/other", checkout_path: "/work/other", is_linked_worktree: false } } as WorkspaceInfo;
 const wide = { workspaces: [repository, other, { workspace_id: "w3" } as WorkspaceInfo], tabs: [], panes: [], agents: [] } as unknown as SessionSnapshot;
 const listings: Record<string, unknown> = {
@@ -16,10 +15,8 @@ const listings: Record<string, unknown> = {
   w3: { source: { repo_key: "loose", source_checkout_path: "/work/loose" }, worktrees: [{ path: "/work/loose", branch: "spike", is_detached: false, open_workspace_id: null }] },
 };
 
-// Keep React, the hook, its cache and the API function real; only the network is a stand-in.
 describe("useWorktreeBranches", () => {
   let renderer: ReactTestRenderer | null = null;
-  /** while set, every listing is refused as a watching device's is (#2250) */
   let refused = false;
   /** while set, the PC's bridge is from before GET /api/worktree/inventory and answers it as an unknown endpoint */
   let before = false;
@@ -30,14 +27,12 @@ describe("useWorktreeBranches", () => {
   const unmarked = new Set(["w3"]);
   function Wide({ online = true }: { online?: boolean }) { shown = useWorktreeBranches(wide, online, false, unmarked).branches; return null; }
   const words = () => [...shown].map(([id, branch]) => `${id}:${branch.branch}`).sort();
-  /** Lets the read's promise chain finish: a bounded number of turns, each inside act. */
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
 
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   beforeAll(() => {
     for (const key of ["document", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    // a page on screen: the poll runs only while it is
     Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } });
   });
   afterAll(() => {
@@ -93,7 +88,6 @@ describe("useWorktreeBranches", () => {
     await act(async () => { jest.advanceTimersByTime(60_000); });
     await settle(() => false);
     expect(fetchSpy.mock.calls.length).toBe(0);
-    // a refusal seen before the page learns the role does not outlive the role either
     refused = true;
     await act(async () => { renderer!.update(createElement(Probe, { watching: false })); });
     await settle(() => fetchSpy.mock.calls.length >= 1);
@@ -115,13 +109,11 @@ describe("useWorktreeBranches", () => {
     await settle(() => false);
     expect(asked().map((url) => [url.pathname, url.searchParams.getAll("workspace_id")])).toEqual([
       ["/api/worktree/inventory", ["w2", "w1", "w3"]],
-      // the next poll starts one further on: a herdr too slow for the whole read still reaches every workspace
       ["/api/worktree/inventory", ["w1", "w3", "w2"]],
     ]);
   });
 
   it("applies the reads that answered when a later inventory read of the same poll fails (#2661)", async () => {
-    // an unmarked id this long is read alone, after the repository's read
     const long = "l".repeat(2100);
     listings[long] = listings["w3"];
     const fetched = fetchSpy.getMockImplementation()!;
@@ -138,7 +130,6 @@ describe("useWorktreeBranches", () => {
       await settle(() => words().length === 1);
       await settle(() => false);
       expect(words()).toEqual(["w1:main"]);
-      // the failed read is not asked again workspace by workspace
       expect(asked().map((url) => url.pathname)).toEqual(["/api/worktree/inventory", "/api/worktree/inventory"]);
     } finally { delete listings[long]; }
   });
@@ -170,7 +161,6 @@ describe("useWorktreeBranches", () => {
     await act(async () => { renderer = create(createElement(Wide)); });
     await settle(() => fetchSpy.mock.calls.length >= 1);
     await act(async () => { renderer!.update(createElement(Wide, { online: false })); });
-    // the old bridge's 404 lands while the PC is offline; it comes back updated
     await act(async () => { release(); });
     await settle(() => false);
     before = false;

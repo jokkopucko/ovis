@@ -13,8 +13,6 @@
   border-radius: var(--radius-sm);
 }
 
-/* no QR code to draw (no address a phone can open, or the code is still on its way): the box
-   keeps its place and says which, so the code and buttons beside it never move */
 .compact-pair-qr-empty {
   display: grid;
   place-items: center;

@@ -1,16 +1,33 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Monitor } from "lucide-react";
 
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
+import { useSettings } from "../lib/settings.ts";
 import type { KeyMismatch } from "../lib/relay/shellState.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
-import { AccountFinePrint, AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
+import { AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
+import { JoinWait } from "./JoinWait.tsx";
 import { KeyId } from "./KeyId.tsx";
+import { KeyFingerprintWait } from "./PendingKeys.tsx";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
+import { RelayAddPc } from "./RelayAddPc.tsx";
+import { SheepMascot } from "./SheepMascot.tsx";
+
+function PcCard({ name, detail = null }: { readonly name: string; readonly detail?: string | null }) {
+  return (
+    <div className="relay-step-cards">
+      <div className="relay-step-card">
+        <span className="relay-step-card-icon"><Monitor aria-hidden="true" /></span>
+        <span className="relay-step-card-text"><span className="relay-step-card-name">{name}</span>{detail !== null && <span className="relay-step-card-detail">{detail}</span>}</span>
+      </div>
+    </div>
+  );
+}
 
 export interface TypedDigitsProps {
   readonly pc: string;
@@ -74,7 +91,6 @@ export function KeyIds({ mismatch, named }: { readonly mismatch: KeyMismatch; re
   );
 }
 
-/** How a PC whose Ovis does not update itself is brought up to date: the installer, or herdr's plugin. */
 export const INSTALLER_COMMAND = "curl -fsSL https://ovis.sh/install.sh | sh";
 export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin action invoke devswha.ovis.stop\nherdr plugin action invoke devswha.ovis.start";
 
@@ -98,19 +114,72 @@ function CopyableCommand({ command }: { readonly command: string }) {
 }
 
 export interface RelayShellCardContentProps {
-  readonly props: RelayShellProps; readonly view: "sign-in" | "pair" | "saved" | null;
-  readonly signInFirst: boolean; readonly saved: number; readonly addingPc: boolean;
-  readonly setSignedOutView: (view: "sign-in" | "pair" | "saved") => void; readonly setAddingPc: (adding: boolean) => void;
+  readonly props: RelayShellProps; readonly view: "sign-in" | "pair" | null;
+  readonly signInFirst: boolean; readonly addingPc: boolean;
+  readonly setSignedOutView: (view: "sign-in" | "pair") => void; readonly setAddingPc: (adding: boolean) => void;
 }
 
-export function RelayShellCardContent({ props, view, signInFirst, saved, addingPc, setSignedOutView, setAddingPc }: RelayShellCardContentProps) {
+/** What continuing agrees to: Ovis's privacy policy (ovis.sh/privacy, in English and Korean), linked. */
+function AgreementLine() {
+  const t = useT();
+  const { resolvedLanguage } = useSettings();
+  const privacy = resolvedLanguage === "ko" ? "https://ovis.sh/ko/privacy/" : "https://ovis.sh/privacy/";
+  const [before = "", after = ""] = t("By continuing, you agree to the {privacy}.").split("{privacy}");
+  return <p className="relay-shell-agreement">{before}<ExternalLink kind="ovis" href={privacy}>{t("Privacy Policy")}</ExternalLink>{after}</p>;
+}
+
+/**
+ * While the sign-in is read nothing is claimed and the button is held; while a press is checked, the wording it was
+ * made on stays up (`pressed`), so the question does not change under it.
+ */
+function PairConfirm({ state, pc, onPair }: { state: Extract<RelayShellProps["state"], { kind: "confirm" }>; pc: string; onPair: () => void }) {
+  const t = useT();
+  const checking = state.account === "checking";
+  const said = checking ? state.pressed : state.account ?? "own";
+  return (
+    <>
+      <SheepMascot screen="header" size={56} badge />
+      <h1 className="relay-shell-title">{said === "unlisted" ? t("Add {name} to your account?", { name: pc }) : t("Pair with {name}?", { name: pc })}</h1>
+      {said === "unlisted" && <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}</p>}
+      {said === "listed" && <p className="relay-shell-copy">{t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+      {said === "own" && <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+      <PcCard name={pc} detail={said === "unlisted" ? t("Your Ovis account") : null} />
+      {/* the PC's ID is there for whoever wants to compare it, not in the way; the frame's Back says Not now */}
+      {said === "unlisted" && (
+        <details className="relay-step-details">
+          <summary>{t("Details")}</summary>
+          <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>
+        </details>
+      )}
+      {/* a device whose confirm spoke of no account is told of none */}
+      {checking && said !== "own" && <p className="relay-shell-detail" role="status">{t("Checking your account…")}</p>}
+      <div className="relay-shell-actions">
+        <button type="button" className="btn btn-primary" disabled={checking} aria-busy={checking || undefined} onClick={onPair}>{said === "unlisted" ? t("Add and pair") : t("Pair")}</button>
+      </div>
+    </>
+  );
+}
+
+/** Where a PC's QR code is, for a page with no scanner of its own, and the way to pair with a code instead. */
+export function ScanQrStep({ onCodeStart, back }: { readonly onCodeStart: () => void; readonly back: ReactNode }) {
+  const t = useT();
+  return (
+    <>
+      <h1 className="relay-shell-title">{t("Scan the QR code on your PC")}</h1>
+      <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and scan the QR code.")}</p>
+      <div className="relay-shell-actions"><button type="button" className="btn btn-primary" data-action="add-code" onClick={onCodeStart}>{t("Pair with a code")}</button>{back}</div>
+    </>
+  );
+}
+
+export function RelayShellCardContent({ props, view, signInFirst, addingPc, setSignedOutView, setAddingPc }: RelayShellCardContentProps) {
   const { state, pcStatus, onCheckPcs, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, onSignIn, accountProviders } = props;
   const t = useT();
   const account = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
   const signingIn = account?.kind === "signing-in";
   const signInError = account?.kind === "signed-out" ? account.error : null;
   const signIn = (account?.kind === "signed-out" || signingIn) && onSignIn
-    ? <AccountSignIn onSignIn={onSignIn} error={signInError} busy={signingIn} busyProvider={signingIn ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
+    ? <AccountSignIn onSignIn={onSignIn} error={signInError} notice={account?.kind === "signed-out" ? (account.notice ?? null) : null} busy={signingIn} busyProvider={signingIn ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");
@@ -118,11 +187,19 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
   const progress = state.kind === "outdated" && state.update.phase === "installing" ? describeUpdate({ phase: "building", step: state.update.step }) : null;
   const retry = <button type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button>;
   const failure = state.kind === "failed" ? relayFailureText(t, state.failure, pc, state.detail) : null;
-  const statusText = signingIn ? t("Signing in…") : state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? t("Connecting to {name}…", { name: pc })
+  // a marked pairing that stopped for a sign-in signs in right here, and goes on after it without a new scan
+  const pairSignIn = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn ? state.account ?? null : undefined;
+  const statusText = signingIn ? t("Signing in…") : state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? (state.approved ? t("Approved. {name} opens in a moment.", { name: pc }) : t("Connecting to {name}…", { name: pc }))
     : state.kind === "compare" && state.confirmed ? t("Approve this device on {name} within 90 seconds to finish.", { name: pc })
     : state.kind === "outdated" && state.update.phase === "reading" ? t("Checking {name}…", { name: pc })
     : state.kind === "outdated" && state.update.phase === "installing" ? (progress ? `${progress.step}: ${t(progress.label)}` : t("Asking the PC to update…"))
     : state.kind === "outdated" && state.update.phase === "restarting" ? t("Waiting for {name} to restart…", { name: pc }) : null;
+  // the press removes the button that had the focus: the heading of what follows takes it, so a keyboard keeps its place
+  const pressedTitle = useRef<HTMLHeadingElement>(null);
+  const pressed = state.kind === "compare" && state.confirmed;
+  useEffect(() => {
+    if (pressed && (document.activeElement === null || document.activeElement === document.body)) pressedTitle.current?.focus();
+  }, [pressed]);
   const announcedStatus = useAnnouncedText(statusText);
 
   return (
@@ -131,12 +208,10 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
       {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} state={state} retry={onRetry} />}
       {signInFirst && (
         <>
-          <h1 className="relay-shell-title relay-shell-signin-title">{t("Sign in to Ovis")}</h1>
+          <h1 className="relay-shell-hero relay-shell-signin-hero"><span>{t("Your PCs, anywhere.")}</span>{" "}<span className="relay-shell-hero-quiet">{t("Sign in to your Ovis account")}</span></h1>
           {signIn}
-          {saved > 0 && <button type="button" className="btn account-continue-saved" disabled={signingIn} data-action="continue-local" onClick={() => setSignedOutView("saved")}>{saved === 1 ? t("Continue without an account (1 PC)") : t("Continue without an account ({count} PCs)", { count: saved })}</button>}
-          <hr className="account-divider" />
-          <div className="relay-shell-sign-in-links"><button type="button" className="btn btn-ghost account-link" data-action="pair-qr" disabled={signingIn} onClick={() => setSignedOutView("pair")}>{t("Pair with a QR or code")}</button></div>
-          <AccountFinePrint />
+          <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>
+          <button type="button" className="btn btn-ghost account-link relay-shell-no-account" data-action="no-account" disabled={signingIn} onClick={() => setSignedOutView("pair")}>{t("Start without signing in")}</button>
         </>
       )}
       {state.kind === "list" && account === null && (
@@ -163,19 +238,14 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
         </>
       )}
-      {(account === null ? state.kind === "empty" : view === "pair" || addingPc) && (
-        <>
-          <h1 className="relay-shell-title">{t("Scan the QR code on your PC")}</h1>
-          <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and scan the QR code.")}</p>
-          <div className="relay-shell-actions">
-            <button type="button" className="btn btn-primary" onClick={onCodeStart}>{t("Pair with a code")}</button>
-            {back}
-            {account && (addingPc
-              ? <button type="button" className="btn btn-ghost" onClick={() => setAddingPc(false)}>{t("Back")}</button>
-              : <button type="button" className="btn btn-ghost" onClick={() => setSignedOutView("sign-in")}>{t("Sign in instead")}</button>)}
-          </div>
-        </>
+      {(account === null ? state.kind === "empty" : view === "pair" && !addingPc) && (
+        <RelayAddPc
+          onBack={account ? () => setSignedOutView("sign-in") : scoped ? onBack : undefined}
+          devices={state.kind === "list" ? state.devices : []}
+          qr={(qrBack) => <ScanQrStep onCodeStart={onCodeStart} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />}
+        />
       )}
+      {account && addingPc && <ScanQrStep onCodeStart={onCodeStart} back={<button type="button" className="btn btn-ghost" onClick={() => setAddingPc(false)}>{t("Back")}</button>} />}
       {(state.kind === "code-entry" || state.kind === "code-looking") && (
         <CodeEntry failure={state.kind === "code-entry" ? state.failure : null} looking={state.kind === "code-looking"} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>} />
       )}
@@ -187,17 +257,20 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}
-      {state.kind === "confirm" && (
+      {state.kind === "confirm" && <PairConfirm state={state} pc={pc} onPair={onPair} />}
+      {/* the frame's Back cancels a connecting pairing */}
+      {state.kind === "connecting" && state.pairing && (
         <>
-          <h1 className="relay-shell-title">{t("Pair with {name}?", { name: pc })}</h1>
-          <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>
-          <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onPair}>{t("Pair")}</button><button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button></div>
+          <SheepMascot screen="connecting" size={56} badge />
+          <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
+          {state.approved && <p className="relay-shell-copy">{t("Approved. {name} opens in a moment.", { name: pc })}</p>}
+          {state.keyFingerprint === undefined ? <PcCard name={pc} /> : <KeyFingerprintWait pc={pc} fingerprint={state.keyFingerprint} />}
         </>
       )}
-      {state.kind === "connecting" && (
+      {state.kind === "connecting" && !state.pairing && (
         <>
           <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
-          <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>
+          {state.hold === undefined ? <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div> : <JoinWait pc={pc} hold={state.hold} />}
           <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}
@@ -210,18 +283,39 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           </>
         ) : <TypedDigits pc={pc} challenge={state.challenge} onSubmit={onMatch} cancel={<button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>} />
       )}
+      {/* until this phone says the numbers match the pairing waits on its press; after it, only on the PC's approval */}
       {state.kind === "compare" && !(state.typed && !state.confirmed) && (
         <>
-          <h1 className="relay-shell-title">{t("Does {name} show this number?", { name: pc })}</h1>
-          <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
-          {state.confirmed ? <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Approve this device on {name} within 90 seconds to finish.", { name: pc })}</p></div> : <p className="relay-shell-copy">{t("If they match, approve this device on {name}.", { name: pc })}</p>}
-          <div className="relay-shell-actions">{!state.confirmed && <button type="button" className="btn btn-primary" onClick={() => onMatch()}>{t("The numbers match")}</button>}<button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
+          <SheepMascot screen="waiting" size={56} badge />
+          <h1 className="relay-shell-title" ref={pressedTitle} tabIndex={-1}>{state.confirmed ? t("Approve on the PC if it shows the same number") : t("Does {name} show this number?", { name: pc })}</h1>
+          {!state.confirmed && <p className="relay-shell-copy">{t("If they match, approve this device on {name}.", { name: pc })}</p>}
+          <div className="relay-step-cards">
+            <div className="relay-step-card relay-step-number">
+              {/* a typed comparison's digits are only on the PC's screen: the card keeps the 90 seconds line alone */}
+              {!state.typed && <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>}
+              {state.confirmed && <p className="relay-shell-detail">{t("Approve this device on {name} within 90 seconds to finish.", { name: pc })}</p>}
+            </div>
+          </div>
+          <div className="relay-shell-actions">{!state.confirmed && <button type="button" className="btn btn-primary" onClick={() => onMatch()}>{t("The numbers match")}</button>}<button type="button" className="btn relay-step-quiet" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}
-      {state.kind === "failed" && failure !== null && (
+      {state.kind === "failed" && failure !== null && pairSignIn !== undefined && onSignIn && (
+        <div className="relay-shell-pair-signin">
+          <h1 className="relay-shell-hero"><span>{t("Your PCs, anywhere.")}</span>{" "}<span className="relay-shell-hero-quiet">{t("Sign in to your Ovis account")}</span></h1>
+          <AccountSignIn nameOnly onSignIn={onSignIn} error={pairSignIn?.kind === "signed-out" ? pairSignIn.error : null} busy={pairSignIn?.kind === "signing-in"}
+            busyProvider={pairSignIn?.kind === "signing-in" ? (pairSignIn.provider ?? null) : null} failedProvider={pairSignIn?.kind === "signed-out" ? (pairSignIn.provider ?? null) : null}
+            {...(accountProviders ? { providers: accountProviders } : {})} />
+          <AgreementLine />
+          {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
+          {back && <div className="relay-shell-actions relay-shell-quiet">{back}</div>}
+        </div>
+      )}
+      {state.kind === "failed" && failure !== null && pairSignIn === undefined && (
         <>
+          {state.pairing && <SheepMascot screen="refused" size={56} badge />}
           <h1 className="relay-shell-title">{failure.title}</h1>
           <p className="relay-shell-copy">{failure.copy}</p>
+          {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
           {state.failure === "identity-changed" ? (
             <>
               {state.mismatch && <KeyIds mismatch={state.mismatch} named="paired" />}
@@ -257,7 +351,6 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           {back && <div className="relay-shell-actions">{back}</div>}
         </>
       )}
-      {state.kind === "failed" && failure?.detail !== null && failure?.detail !== undefined && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
       {iosTab && scoped && <p className="relay-shell-hint">{t("Add to Home Screen to stay paired: Safari may clear this page's storage after a week without a visit.")}</p>}
     </>
   );

@@ -10,8 +10,6 @@ import { MachineManager, OWN_UPDATES_AT_ONCE } from "./machines.ts";
 import { offerFromStatus } from "./pc-update.ts";
 import type { PushService } from "./push.ts";
 
-// Update all's queue and the cancel route on a manager with saved SSH PCs: no SSH runs, the bridge update itself is a
-// stand-in whose end each test decides, and an own Ovis is a loopback stand-in. No PC, herdr or real state is touched.
 const A = "00000000-0000-4000-8000-00000000000a";
 const B = "00000000-0000-4000-8000-00000000000b";
 type Runtime = { machine: Machine; endpoint?: { url: string; token: string }; ownOffer?: PcUpdateOffer | null; offerRevision?: string };
@@ -27,9 +25,7 @@ function fixture() {
   const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
   const internals = manager as unknown as Internals;
   cleanups.push(() => { manager.stop(); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
-  // both wait for a bridge update, as a PC refused on the version check does
   for (const id of [A, B]) Object.assign(internals.machines.get(id)!.machine, { state: "error", action_required: "update_bridge", error: "This PC runs a bridge from a different version." });
-  /** each bridge update asked for, by PC, and how to end it */
   const asked: string[] = [];
   const ends = new Map<string, () => void>();
   spyOn(manager, "updateBridge").mockImplementation((id: string) => {
@@ -68,7 +64,6 @@ it("does not repeat an automatic bridge update already waiting for a PC, nor one
   await until(() => asked.length === 1);
   ends.get(B)!();
   internals.autoQueued.delete(A);
-  // both wait again; B's update is done another way before its turn comes, so its queued step asks for nothing
   Object.assign(pc(B), { state: "error", action_required: "update_bridge" });
   expect((await (await request("update-all")).json() as PcUpdateAll).queued).toEqual([A, B]);
   await until(() => asked.length === 2);
@@ -88,7 +83,6 @@ it("takes a PC out of the queue on cancel, or when it is disabled or removed, an
   ends.get(A)!();
   await until(() => !pc(A).updating);
   expect(asked).toEqual([A]);
-  // again, with B removed while it waits
   Object.assign(pc(A), { state: "error", action_required: "update_bridge" });
   await request("update-all");
   manager.remove(B);
@@ -118,7 +112,6 @@ it("ends the wait of a running own update on cancel, and says it may still finis
   await until(() => installing && pc(A).updating?.step.includes("building") === true);
   expect(await (await request(`${A}/update`, "DELETE")).json()).toEqual({ cancelled: true });
   await until(() => !pc(A).updating);
-  // an older Ovis that cannot stop it (no install_cancellable): never told as ended
   expect(pc(A).update_error).toContain("may still finish it there");
 });
 
@@ -139,7 +132,6 @@ it("runs at most a few PCs' own updates at once with Update all, starting the ne
   const reconnect = spyOn(MachineManager.prototype as unknown as Internals, "reconnect").mockImplementation(async () => {});
   const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); }, { ownUpdate: { pollMs: 5 } });
   cleanups.push(() => { manager.stop(); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
-  // each PC's own Ovis installs once asked, then stays installing until the test lets it finish
   const offered = "a".repeat(40);
   const finished = new Set<string>();
   const asked: string[] = [];
@@ -179,13 +171,11 @@ it("cancels an automatic bridge update still waiting its turn, so it never start
 
 it("counts an SSH PC's own update through its setup against the same limit, and installs only the release it was queued for", async () => {
   const { manager, internals, asked, ends, pc, until } = fixture();
-  // A and B: SSH PCs whose own Ovis, older than this app, offers a release (an own update through their setup)
   for (const [id, revision] of [[A, "a".repeat(40)], [B, "b".repeat(40)]] as const) {
     const runtime = internals.machines.get(id)! as Runtime & { remoteRevision?: string };
     runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
     runtime.remoteRevision = revision;
   }
-  // two places are taken already by other SSH PCs' own updates through setup: one more of those may start (one setup slot stays free)
   const spare = 2;
   (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup = new Set(Array.from({ length: spare }, (_, i) => `other-${i}`));
   const all = manager.updateAll();
@@ -193,7 +183,6 @@ it("counts an SSH PC's own update through its setup against the same limit, and 
   expect(all.queued).toEqual([B]);
   expect(asked).toEqual([A]);
   expect(pc(B).updating).toMatchObject({ queued: true });
-  // B offers another release before its turn: it is told, and nothing is installed there
   (internals.machines.get(B)! as Runtime & { remoteRevision?: string }).remoteRevision = "c".repeat(40);
   ends.get(A)!();
   await until(() => typeof pc(B).update_error === "string");
@@ -203,14 +192,12 @@ it("counts an SSH PC's own update through its setup against the same limit, and 
 
 it("keeps going past a PC whose update cannot start, and tells it under skipped", async () => {
   const { manager, internals, asked } = fixture();
-  // A: an SSH PC whose own Ovis offers a release, started at once through its setup, which cannot start (no slot free)
   const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
   runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
   runtime.remoteRevision = "a".repeat(40);
   (manager.updateBridge as unknown as { mockImplementationOnce(fn: () => never): void }).mockImplementationOnce(() => { throw new Error("Finish or cancel the current connection jobs first"); });
   const all = manager.updateAll();
   expect(all.skipped).toEqual([{ machine_id: A, reason: "Finish or cancel the current connection jobs first" }]);
-  // B was still reached after A failed to start, and A holds no place among those running at once
   expect(all.queued).toEqual([B]);
   expect(internals.machines.get(B)!.machine.updating).toBeTruthy();
   expect((manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup.has(A)).toBe(false);
@@ -222,7 +209,6 @@ it("offers an SSH PC's own update only where this app may connect and manage it,
   const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
   runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
   runtime.remoteRevision = "a".repeat(40);
-  // a PC saved in herdr whose bridge this app was never approved to manage
   const internalsOf = manager as unknown as { mayManageBridge(runtime: unknown): boolean };
   spyOn(internalsOf, "mayManageBridge").mockImplementation((r) => (r as Runtime).machine.id !== A);
   expect(pc(A).ovis_update).toMatchObject({ how: "own", updatable: false, reason: expect.stringContaining("Review") });
@@ -239,11 +225,9 @@ it("lets a PC cancelled and queued again run on its new entry, not on the stale 
   const slots = (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup;
   for (let i = 0; i < OWN_UPDATES_AT_ONCE; i++) slots.add(`other-${i}`);
   expect(manager.updateAll().queued).toEqual([A, B]);
-  // B: cancelled, its offer moves on to another release, and it is queued again for that one
   manager.cancelUpdate(B);
   (internals.machines.get(B)! as Runtime & { remoteRevision?: string }).remoteRevision = "b".repeat(40);
   expect(manager.updateAll().queued).toEqual([B]);
-  // places free up: the stale entry asks nothing and tells nothing, the new one runs
   slots.clear();
   (manager as unknown as { nextOwn(): void }).nextOwn();
   expect(asked).toEqual([A, B]);
@@ -269,7 +253,6 @@ it("never offers an SSH PC's own update to a release newer than this app, which 
   runtime.machine.remote_ovis = { version: "0.4.9", latest_version: ahead(999), updatable: true, reason: null, address: "pc.invalid:7317", url: null };
   runtime.remoteRevision = "a".repeat(40);
   expect(pc(A).ovis_update).toMatchObject({ how: "own", updatable: false, reason: expect.stringContaining("newer than this app") });
-  // connected, as its own Ovis tells it through its tunnel: the same
   const connected = internals.machines.get(B)!;
   Object.assign(connected.machine, { state: "connected", action_required: null, error: null });
   connected.ownOffer = { how: "own", current_version: "0.5.0", latest_version: ahead(999), updatable: true, reason: null };
@@ -284,7 +267,6 @@ it("leaves a setup slot free: SSH own updates through setup run fewer at once th
     runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
     runtime.remoteRevision = "a".repeat(40);
   }
-  // two of the four places held by other SSH own updates through setup: one more may start, not two
   const slots = (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup;
   slots.add("other-1"); slots.add("other-2");
   const all = manager.updateAll();
@@ -306,19 +288,15 @@ it("refuses an update-bridge of an SSH PC's own Ovis to a release newer than thi
 it("reads a beta release as its updater offers it, and refuses one newer than this app, or one it cannot tell", async () => {
   const { manager, internals, pc } = fixture();
   const told = (latest_version: string | null) => offerFromStatus({ ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true, latest_revision: "a".repeat(40), latest_version, revision_bound_install: true });
-  // a PC on the beta channel offers the next release's beta: newer than this app (0.5.1), so it is not offered from here
   expect(told("999.0.0-beta.2")).toMatchObject({ latest_version: "999.0.0-beta.2", updatable: true });
   const connected = internals.machines.get(B)!;
   Object.assign(connected.machine, { state: "connected", action_required: null, error: null });
   connected.ownOffer = told("999.0.0-beta.2")!;
   expect(pc(B).ovis_update).toMatchObject({ updatable: false, reason: expect.stringContaining("newer than this app") });
-  // a beta of a release this app already is, or is past, is older than it: offered
   connected.ownOffer = told("0.5.1-beta.3")!;
   expect(pc(B).ovis_update).toMatchObject({ updatable: true });
-  // a release whose version it does not tell cannot be checked: not offered from here
   connected.ownOffer = told("next")!;
   expect(pc(B).ovis_update).toMatchObject({ updatable: false, reason: expect.stringContaining("does not tell its version") });
-  // the same before it connects, and in update-bridge
   const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
   runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "999.0.0-beta.2", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
   runtime.remoteRevision = "a".repeat(40);

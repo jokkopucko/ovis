@@ -12,8 +12,8 @@ Extension, a later build; see [Later builds](#later-builds)).
 | Setting | Value | Where |
 |---|---|---|
 | Bundle ID | `sh.ovis.app` | `PRODUCT_BUNDLE_IDENTIFIER`, `app/ios/App/App.xcodeproj` |
-| Version | `1.0` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
-| Build | `7` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
+| Version | `1.0.2` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
+| Build | `11` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
 | Devices | iPhone and iPad | `TARGETED_DEVICE_FAMILY = "1,2"`, so the listing needs iPad screenshots too |
 | Minimum iOS | 15.0 | `IPHONEOS_DEPLOYMENT_TARGET` |
 | Signing | Automatic, no team yet | the owner picks the team in Xcode (section 3) |
@@ -21,7 +21,7 @@ Extension, a later build; see [Later builds](#later-builds)).
 | Microphone text | "Dictate messages and commands to your agents with voice input." | `NSMicrophoneUsageDescription`, `Info.plist` |
 | Speech recognition text | "Turn what you say into text for your agents when no OpenAI key is set." | `NSSpeechRecognitionUsageDescription`, `Info.plist` |
 | Export compliance | no non-exempt encryption (only Apple's HTTPS) | `ITSAppUsesNonExemptEncryption = false`, so uploads skip the question |
-| Privacy manifest | no tracking; product interaction, device ID and coarse location collected for analytics, linked to the PC's install ID, not tracking (the PC's usage counts, section 5); UserDefaults for the app's own settings (reason `CA92.1`) | `app/ios/App/App/PrivacyInfo.xcprivacy` |
+| Privacy manifest | no tracking; product interaction, device ID and coarse location collected for analytics, linked to the PC's install ID, not tracking (the PC's usage counts, section 5); user ID collected for app functionality, linked, not tracking (the account sign-in, section 5); UserDefaults for the app's own settings (reason `CA92.1`) | `app/ios/App/App/PrivacyInfo.xcprivacy` |
 
 ## 2. Apple's sites, click by click (the owner)
 
@@ -39,9 +39,9 @@ Extension, a later build; see [Later builds](#later-builds)).
 
 ## 3. Build and upload (the owner, on his Mac with Xcode)
 
-Build 7 is prepared for the next upload. The last upload is version 1.0 build 6, built from main
-`a7bd6ed3` and sent to TestFlight for internal testers on 2026-11-07. Check App Store Connect before uploading in case a later build
-has already been uploaded. The App and OvisNotifications targets inherit the same project-level
+The last upload is version 1.0.2 build 11, built from main at `d30527fd` (the app opens on the
+account sign-in, #4256, with the privacy manifest of #4273), approved and on the App Store
+since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
 build number in Debug and Release.
 
 ```bash
@@ -81,7 +81,7 @@ testers need a short beta review.
 > - The app connects only to your own PC: over Tailscale or your own network, or, once you turn it
 >   on on the PC, through the Ovis relay, end-to-end encrypted.
 >
-> No account, no ads, no tracking. Try the demo on the first screen to look around without a PC.
+> Sign in with GitHub, Google or Apple, or start without an account. No ads, no tracking.
 >
 > Ovis is open source: https://github.com/devswha/ovis
 
@@ -133,25 +133,40 @@ last browser or phone that opened it into its anonymous usage counts, which it s
 developer's telemetry Worker (`server/telemetry.ts`, stored by `telemetry/worker.ts`). They are on
 by default (opt-out), start only after the client has shown its notice, and stop when turned off
 under Settings > About > Anonymous usage counts (in the app or on the PC), or with
-`OVIS_TELEMETRY=0` on the PC. They hold a random ID made on the PC, the Ovis version, the PC's
+`OVIS_TELEMETRY=0` on the PC. They hold a random ID made on the PC, the Ovis version (and the one an update replaced, left out of an update still owed across an off and on or made while off, and of a new state's first message; other updates name it), the
+terminal runtime it serves (herdr or herdr-core), the PC's
 operating system, CPU and install method, the allowlisted settings snapshot (no free-form text,
-paths or account names), the kinds of coding agents running, and the country the receiver reads
-from the PC's address (the address is not stored).
+paths or account names), the kinds of coding agents running, the kinds of screen the app was opened on and how they reached
+the PC, how many prompt answers were sent and alerts delivered and tapped, once a day has ended how often the
+app's buttons were used that day (fixed names, each count a rough range, narrow and wide screens apart, for a few actions whether by button, menu, shortcut or palette,
+and the list of which of these controls were shown, never what was typed or which pane), and the country the receiver reads from the PC's address (the address is not stored).
+A second route reaches the developer only once the user signs in (signing in is optional): the
+app signs in with the developer's account service, `account.ovis.sh` (`docs/account.md`), which
+keeps a random account ID and, for each sign-in method added, a one-way hash of that provider's
+ID for the user (never the email, name or the provider's tokens); one-way hashes of each signed-in
+device's tokens and the push subscription it registered; for each PC added, its name, relay ID and
+public key; and, for a join or link-page request, the device's name and public key and the country
+and city Cloudflare saw it come from, deleted within about a day, so an approval can show roughly
+where it came from (`https://ovis.sh/privacy/#account` lists it all). The device and PC names the user types and the system a device reports (such as iOS or Linux) are
+labels for the approval card, not personal info or a device identifier, so they add no data type. Delete account (Devices >
+Account) erases it at once, as App Review asks of an app that lets people make an account.
 
 Get Started > *Do you or your third-party partners collect data from this app?* **Yes, we collect
 data from this app.** Then declare:
 
 | Data type | Use | Linked to the user | Tracking |
 |---|---|---|---|
-| Usage Data > Product Interaction (the settings chosen in the app, and daily use) | Analytics | Yes | No |
-| Identifiers > Device ID (the random install ID the PC makes) | Analytics | Yes | No |
-| Location > Coarse Location (the country, two letters) | Analytics | Yes | No |
+| Usage Data > Product Interaction (the settings chosen in the app, daily use, how often its buttons are used, whether by button, menu, shortcut or palette, and which of them were shown) | Analytics | Yes | No |
+| Identifiers > Device ID (the random install ID the PC makes; once signed in, the account service's device push subscriptions and PC relay IDs and keys) | Analytics, App Functionality | Yes | No |
+| Location > Coarse Location (the country, two letters, of the usage counts; once signed in, the country and city of a join or link-page request) | Analytics, App Functionality | Yes | No |
+| Identifiers > User ID (the random account ID, only when signed in) | App Functionality | Yes | No |
 
-They count as linked: Apple's definition covers data tied to a device-level identifier, and the
+The usage counts count as linked: Apple's definition covers data tied to a device-level identifier, and the
 receiver stores them with the PC's persistent install ID (random, with no account, name or contact
 behind it). None is used for tracking: nothing is combined with other companies' data or shared
-with data brokers or advertisers. The privacy manifest lists the same three types, and
-`https://ovis.sh/privacy/` describes the same route. Privacy policy URL:
+with data brokers or advertisers. What the account service keeps is
+linked to the account. The privacy manifest lists the same four types with the same purposes, and
+`https://ovis.sh/privacy/` describes both routes in full. Privacy policy URL:
 `https://ovis.sh/privacy/`.
 
 ## 6. Age rating (App Information > Age Rating > Edit)
@@ -166,16 +181,16 @@ refuse addresses that are not an Ovis server, which is an app change, not a form
 
 ## 7. App Review information (version page > App Review Information)
 
-- Sign-in required: **No** (no account exists).
+- Sign-in required: **No** (signing in is optional, and the demo below needs no account).
 - Contact: your name, phone and email.
 - Notes:
 
 > Ovis is the phone app for Ovis, an open-source program people run on their own computer to
 > watch and control their coding agents and terminals (https://ovis.sh). The app connects only
 > to the user's own computer, directly or through the end-to-end encrypted Ovis relay that
-> computer turns on, so there is no account to give you. To review the whole app without
-> a computer, tap "Try the demo" on the first screen: it runs the full interface with made-up
-> agents and terminals, entirely on the phone. "Scan QR code" uses the camera only to read the
+> computer turns on. Signing in is optional. To review the whole app without a computer, tap
+> "Start without signing in", then "Enter an address", type demo and tap Open: it runs the full
+> interface with made-up agents and terminals, entirely on the phone. "Scan QR code" uses the camera only to read the
 > pairing code a computer shows. The app uses the microphone for voice input the user chooses:
 > turning Voice input on in Settings briefly opens it to ask for access; the mic button or the
 > keyboard shortcut starts dictation.

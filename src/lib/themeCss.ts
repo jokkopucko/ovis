@@ -1,16 +1,6 @@
-/**
- * Reading the theme blocks of src/styles.css as data. Pure: no DOM and no file access, callers pass
- * the CSS text. Runtime code never imports this module.
- */
-
 import { LIGHT_ANSI_ROLES, ROLES } from "./themeRoles.ts";
 import type { Mode } from "./themes.ts";
 
-/**
- * The one spelling every theme value is compared in: whitespace collapsed, hex lowercased, and
- * `rgba(r,g,b,a)` written `rgba(r, g, b, a)` with the alpha's trailing zeros dropped. Nothing else
- * normalizes theme values for a comparison.
- */
 export function normalizeThemeValue(value: string): string {
   return value
     .replace(/\s+/g, " ")
@@ -41,7 +31,6 @@ function isColor(value: string): boolean {
   return rgba !== null && rgba.slice(1, 4).every((channel) => Number(channel) <= 255);
 }
 
-/** Parse the small authored value language, never guessing at an unknown CSS function. */
 export function parseThemeValue(entry: string, role: string, raw: string): ThemeValue {
   for (const [, args] of raw.matchAll(/rgba\(([^()]*)\)/gi)) {
     if (args === undefined || !/^\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?:\d+(?:\.\d+)?|\.\d+)\s*$/.test(args)) {
@@ -71,7 +60,6 @@ export type ThemeBlock = {
   readonly declared: Readonly<Record<string, string>>;
 };
 
-/** Only top-level table selectors count; component rules and nested @media are not entries. */
 export function parseThemeBlocks(css: string): Record<string, ThemeBlock> {
   const blocks: Record<string, ThemeBlock> = {};
   const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -103,7 +91,6 @@ export function parseThemeBlocks(css: string): Record<string, ThemeBlock> {
           const expected = role === "bar-bg" ? "color-mix(in srgb, var(--bg-panel) 72%, transparent)" : "color-mix(in srgb, var(--bg-elevated) 80%, transparent)";
           if (value !== expected) throw new ThemeValueError(entry, role, raw);
         } else if (role in COLOR_ROLES || /^(indicator-|droplet-|pdf-page$|syntax-(comment|inserted|deleted)$)/.test(role) || id !== "amber") {
-          // The one existing shorthand is a global token, not a per-theme color.
           const parsed = parseThemeValue(entry, role, role === "droplet-bg" && value === "#000" ? "#000000" : raw);
           const expectedKind = Object.entries(COLOR_ROLES).find(([name]) => name === role)?.[1];
           if (expectedKind && parsed.kind !== "alias" && parsed.kind !== expectedKind) throw new ThemeValueError(entry, role, raw);
@@ -120,7 +107,6 @@ export function parseThemeBlocks(css: string): Record<string, ThemeBlock> {
   return blocks;
 }
 
-/** Resolve the same entry -> light -> root cascade as the legacy settings tests. */
 export function resolveEntry(css: string | Readonly<Record<string, ThemeBlock>>, id: string, mode: Mode): {
   declared: Record<string, string>;
   resolved: Record<string, string>;

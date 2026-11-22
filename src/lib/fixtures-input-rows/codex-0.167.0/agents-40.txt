@@ -1,0 +1,15 @@
+  Agent command center  Group: Projec…
+   All 2   Needs you 0   Working 0   ›
+  ────────────────────────────────────
+      Tasks
+  /home/tester0/…/codex-cap/work  2
+  › ○ Untitled task
+    ○ Untitled task
+
+
+
+
+
+
+
+  ? help  esc back  ↑/↓ move  enter o…

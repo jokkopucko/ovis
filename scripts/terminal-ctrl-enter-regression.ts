@@ -7,7 +7,6 @@ import { paneSendKeys, paneSendText } from "../server/herdr/client.ts";
 import { shownRows } from "./shown-rows.ts";
 
 const MODIFIED_CTRL_ENTER = "\x1b[27;5;13~";
-/** how long a send that should not happen gets to show up */
 const NO_SEND_WAIT_MS = 300;
 
 async function until(check: () => boolean, label: string): Promise<void> {
@@ -21,9 +20,6 @@ async function until(check: () => boolean, label: string): Promise<void> {
 type Sent = { type: "input"; pane_id: string; text: string } | { type: "keys"; pane_id: string; keys: string[] };
 
 /**
- * Ctrl+Enter against a pane owned by the UI suite: plain Enter until the program asks for
- * modifyOtherKeys, then xterm's CSI 27;5;13~ (Claude Code's "send now"), in the browser's
- * frames and in the bytes a raw-mode program reads in the pane.
  * A mirrored pane (no terminal attach on its PC, #924) never shows the browser the program's
  * request, so there Ctrl+Enter goes as herdr's `ctrl+enter` key, which herdr encodes in the
  * program's own mode: the program reads the same bytes either way.
@@ -38,7 +34,6 @@ export async function checkCtrlEnter(browser: Browser, origin: string, paneId: s
   const fixture = mkdtempSync(join(tmpdir(), "herdr-ctrl-enter-"));
   const received = join(fixture, "received.txt");
   const script = join(fixture, "keys.cjs");
-  // asks for modifyOtherKeys like Claude Code, gives it up on "o", and writes down every read
   writeFileSync(script, `const fs = require("node:fs");
 process.stdin.setRawMode(true);
 process.stdout.write("\\x1b[2J\\x1b[H\\x1b[>4;2mOwned Ctrl+Enter test: modifyOtherKeys on\\r\\n");
@@ -59,11 +54,9 @@ process.stdin.on("data", (data) => {
     let inputReady = false;
     page.on("websocket", (socket) => {
       socket.on("framesent", ({ payload }) => {
-        // `id` is the per-connection receipt number ("input-receipt"), not what was sent
         const { id: _receipt, ...message } = JSON.parse(String(payload));
         if (message.type === "input" || message.type === "keys") inputs.push(message);
       });
-      // a mirror's fixed grid is told before input-ready, on the same socket
       socket.on("framereceived", ({ payload }) => {
         const message = JSON.parse(String(payload));
         if (message.pane_id !== paneId) return;
@@ -77,7 +70,6 @@ process.stdin.on("data", (data) => {
     await input.waitFor();
     await until(() => inputReady, "input-ready");
     const typed = (text: string): Sent => ({ type: "input", pane_id: paneId, text });
-    /** Ctrl+Enter's frame: herdr's key on a mirror, else what the program asked for */
     const ctrlEnter = (modified: boolean): Sent => mirrored ? { type: "keys", pane_id: paneId, keys: ["ctrl+enter"] }
       : typed(modified ? MODIFIED_CTRL_ENTER : "\r");
     const isModifiedCtrlEnter = (sent: Sent): boolean => sent.type === "keys" ? sent.keys.includes("ctrl+enter")
@@ -91,13 +83,11 @@ process.stdin.on("data", (data) => {
       assert.deepEqual(inputs.slice(before), [expected], `${shortcut} must send ${JSON.stringify(expected)} exactly once`);
     };
     const reads = (): string[] => readFileSync(received, "utf8").split("\n").filter(Boolean);
-    /** the program read `expected` after its first `since` reads */
     const read = async (expected: string, since: number): Promise<void> => {
       const hex = Buffer.from(expected, "latin1").toString("hex");
       await until(() => reads().slice(since).includes(hex), `the pane reads ${JSON.stringify(expected)}`);
     };
 
-    // a shell asked for nothing: Ctrl+Enter is the Enter it always was
     await press("Control+Enter", ctrlEnter(false));
     await paneSendText(paneId, `node ${script}`);
     await paneSendKeys(paneId, ["Enter"]);
@@ -108,7 +98,6 @@ process.stdin.on("data", (data) => {
     for (const [shortcut, expected] of [["Enter", "\r"], ["Shift+Enter", "\x1b\r"], ["Alt+Enter", "\x1b\r"]]) {
       await press(shortcut!, typed(expected!));
     }
-    // a composition's Enter belongs to the IME
     for (const composition of [{ isComposing: true, keyCode: 13 }, { isComposing: false, keyCode: 229 }]) {
       const before = inputs.length;
       await input.dispatchEvent("keydown", {
@@ -118,7 +107,6 @@ process.stdin.on("data", (data) => {
       assert.equal(inputs.slice(before).some(isModifiedCtrlEnter), false,
         "an IME commit must not receive the modified Ctrl+Enter");
     }
-    // pending IME text goes before the key
     const beforeCommit = inputs.length;
     await input.evaluate(async (element) => {
       const textarea = element as HTMLTextAreaElement;
@@ -136,7 +124,6 @@ process.stdin.on("data", (data) => {
     await page.waitForTimeout(NO_SEND_WAIT_MS); // fixed wait: nothing beyond the commit and one Ctrl+Enter may arrive
     assert.deepEqual(inputs.slice(beforeCommit), [typed("한"), ctrlEnter(true)],
       "pending IME text must precede Ctrl+Enter without duplicates");
-    // the program gives modifyOtherKeys up: Enter again
     await paneSendText(paneId, "o");
     await screen("modifyOtherKeys off");
     since = reads().length;

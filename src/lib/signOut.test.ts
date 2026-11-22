@@ -12,9 +12,7 @@ describe("which sign-ins this browser can end", () => {
   });
 
   it("does not offer it where there is nothing to forget or it would come right back", () => {
-    // a proxy sends its token with every request
     expect(canSignOut(in_({ via: "token", bearer: true }))).toBe(false);
-    // this PC, the Tailscale login and an open server hold no sign-in of this browser's
     for (const via of ["local", "tailscale", "open"] as const) expect(canSignOut(in_({ via }))).toBe(false);
     expect(canSignOut(in_({}))).toBe(false);
     expect(canSignOut({ required: true, authenticated: false, reason: "token_required" })).toBe(false);
@@ -24,11 +22,9 @@ describe("which sign-ins this browser can end", () => {
 
 describe("ending a sign-in", () => {
   const calls: { url: string; method: string | undefined }[] = [];
-  // what the app says about this browser once its own sign-in is gone
   let left: HealthAuth["via"] = undefined;
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (url: URL | RequestInfo, init?: RequestInit) => {
     calls.push({ url: String(url), method: init?.method });
-    // herdr is down: only the bridge's health answers, and signing out must not need more
     if (String(url) === "/api/health") return new Response(null, { status: 502 });
     return String(url) === "/api/health?scope=bridge" ? Response.json({ auth: in_({ via: left }) }) : new Response(null, { status: 204 });
   }, { preconnect: globalThis.fetch.preconnect }));

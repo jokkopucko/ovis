@@ -66,7 +66,6 @@ describe("catalog sources", () => {
   });
 
   test("an empty answer from a provider that owns skills removes the scanned skills; null keeps them", async () => {
-    // Codex with every skill disabled: the agent's own word is that there are none
     register({ agent: "x", owns: ["skills"], rows: async () => [] });
     expect((await mergeCatalogSources("x", pane, "/w", base)).map((r) => r.name)).toEqual(["clear", "mine"]);
     undo.pop()?.();

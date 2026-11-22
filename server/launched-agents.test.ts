@@ -25,7 +25,6 @@ describe("LaunchedAgents", () => {
     launched.launched("w1:p1", "codex", 0);
     expect(launched.notBegun("w1:p1", "idle", 5_000)).not.toBeNull();
     expect(launched.notBegun("w1:p1", "working", 6_000)).toBeNull();
-    // the turn is over and still no transcript was found: the terminal stands in, as before
     expect(launched.notBegun("w1:p1", "done", 60_000)).toBeNull();
   });
 

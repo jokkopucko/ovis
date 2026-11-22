@@ -55,7 +55,6 @@ describe("a tab opened on its last selection, on a PC hidden here", () => {
   it("keeps a pane an alert opened on that PC before the roster came", async () => {
     const props = { selected: { current: "work" }, picks: { current: 0 }, restored: true, calls: [] as Array<[string, string | null]> };
     await open(props);
-    // a tapped notification selects Work's pane while the roster is still on its way
     props.picks.current = 1;
     await rosterArrives(props);
     expect(props.calls).toEqual([]);

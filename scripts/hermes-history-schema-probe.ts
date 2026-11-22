@@ -41,7 +41,6 @@ function hermesPython(): string {
 }
 const git = (...args: string[]) => Bun.spawnSync(["git", "-C", hermesDir, ...args], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
 
-/** `name = (...)` and what follows it up to the next blank line, or a top-level `def name(...)` and its whole body, with its place in the file */
 function definition(file: string, start: RegExp): { file: string; line: number; text: string } {
   const lines = readFileSync(join(hermesDir, file), "utf8").split("\n");
   const at = lines.findIndex((line) => start.test(line));

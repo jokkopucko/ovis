@@ -40,8 +40,6 @@ it.skipIf(process.platform !== "linux")("prefers the OS cwd over stale pane dire
 });
 
 it("keeps a held claim's store when its own file cannot be read as a candidate", () => {
-  // A custom holder in store A names sess-x; the pane's other, legacy process resolves
-  // the default store B, where another pane's session happens to share the id.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-scope-")));
   try {
     const home = join(root, "home");
@@ -51,7 +49,6 @@ it("keeps a held claim's store when its own file cannot be read as a candidate",
     const dirB = join(home, ".omo", "agent", "sessions", omoSessionFolder(cwd));
     const pid = process.pid;
     holdRecord(dirA, "sess-x", pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
-    // the held session's own file is present in A but unreadable as a candidate
     writeFileSync(join(dirA, "2026-10-02T16-47-10-905Z_sess-x.jsonl"), "{");
     writeSession(dirB, "sess-x", cwd);
     const pane = { pane_id: "w:p1", cwd } as HerdrPane;
@@ -89,14 +86,11 @@ it("binds a structured claim to its store and a legacy string claim to none", ()
   const a = { path: "/a/s.jsonl", id: "same", createdAt: 100, store: "/store-a" };
   const b = { path: "/b/s.jsonl", id: "same", createdAt: 100, store: "/store-b" };
   const runtime = { paneId: "p", startedAt: 10, paths: [] as string[], ids: [] as string[] };
-  // a scoped claim selects its own store's file, and still selects it when the pane
-  // owns both stores: the other store's same-id file never counts
   const scoped = heldRuntime(runtime, [{ id: "same", store: "/store-b" }], [a, b]);
   expect(selectOmoTranscript("p", [a, b], [scoped])).toBe("/b/s.jsonl");
   expect(selectOmoTranscript("p", [a], [heldRuntime(runtime, [{ id: "same", store: "/store-b" }], [a])])).toBeNull();
   // a claim whose file is gone still binds: it never resolves to another store's file
   expect(selectOmoTranscript("p", [a], [heldRuntime(runtime, [{ id: "same", store: "/store-b" }], [a, b])])).toBeNull();
-  // legacy callers that know no store keep matching by id alone
   const unscoped = heldRuntime(runtime, ["same"], [a]);
   expect(selectOmoTranscript("p", [a], [unscoped])).toBe("/a/s.jsonl");
 });
@@ -141,7 +135,6 @@ it("lets an ambiguous peer's claims still block a pane claiming a known file", (
       ["w:p2", info([{ pid: pidB, argv: NEUTRAL, cwd }])],
     ]);
     const out = omoTranscriptsOfCwd(cwd, panes, infos, home, () => [`OMO_CODING_AGENT_DIR=${storeA}`]);
-    // p2 is ambiguous and selects nothing; its claims still block p1's known file
     expect(out.get("w:p1")?.path).toBeNull();
     expect(out.get("w:p2")?.path).toBeNull();
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -157,11 +150,8 @@ it("rejects a holder the pane's cwd names when the process runs elsewhere", () =
     const dirA = join(storeA, "sessions", omoSessionFolder(cwd));
     const pid = process.pid;
     const env = [`OMO_CODING_AGENT_DIR=${storeA}`];
-    // a stale record under the pane's cwd names this pid, but the process runs in
-    // /other: the process's own cwd wins and the pane-scoped holder is not its
     holdRecord(dirA, "stale", pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
     expect(omoProcessIdentity({ pid, argv: NEUTRAL, cwd: other }, cwd, home, () => env)).toBeNull();
-    // once the record names where the process actually runs, it is recognized
     holdRecord(join(storeA, "sessions", omoSessionFolder(other)), "moved", pid, { pid, processStartedAtMs: processStartedAt(pid), cwd: other });
     expect(omoProcessIdentity({ pid, argv: NEUTRAL, cwd: other }, cwd, home, () => env))
       .toEqual({ agentDir: storeA, heldIds: ["moved"], custom: true, held: true });
@@ -180,13 +170,10 @@ it("binds the folder a moved process runs in and resolves the session it holds t
     holdRecord(dirOther, "moved", pid, { pid, processStartedAtMs: processStartedAt(pid), cwd: other });
     const file = writeSession(dirOther, "moved", other);
     const env = () => [`OMO_CODING_AGENT_DIR=${storeA}`];
-    // the pane's cwd is stale; herdr reports the process's own cwd
     const pane = { pane_id: "w:p1", cwd } as HerdrPane;
     const infos = new Map([[pane.pane_id, info([{ pid, argv: NEUTRAL, cwd: other }])]]);
     expect(omoTranscriptsOfCwd(other, [pane], infos, home, env).get(pane.pane_id)?.path).toBe(realpathSync(file));
-    // the folder the pane left behind claims nothing of it
     expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, env).has(pane.pane_id)).toBeFalse();
-    // a foreground cwd herdr reports for the pane reaches the same answer
     const moved = { pane_id: "w:p1", cwd, foreground_cwd: other } as HerdrPane;
     const processCwd = new Map([[moved.pane_id, info([{ pid, argv: NEUTRAL, cwd: other }])]]);
     expect(omoTranscriptsOfCwd(other, [moved], processCwd, home, env).get(moved.pane_id)?.path).toBe(realpathSync(file));
@@ -206,7 +193,6 @@ it("still rejects conflicting claims among peers that moved to one cwd", () => {
     holdRecord(dirOther, "shared", pidA, { pid: pidA, processStartedAtMs: processStartedAt(pidA), cwd: other });
     holdRecord(dirOther, "shared", pidB, { pid: pidB, processStartedAtMs: processStartedAt(pidB), cwd: other });
     writeSession(dirOther, "shared", other);
-    // one pane kept its old pane cwd; its process runs in the other's folder
     const panes = [{ pane_id: "w:p1", cwd } as HerdrPane, { pane_id: "w:p2", cwd: other } as HerdrPane];
     const infos = new Map([
       ["w:p1", info([{ pid: pidA, argv: NEUTRAL, cwd: other }])],

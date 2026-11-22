@@ -11,13 +11,14 @@
   overflow-wrap: anywhere;
 }
 
-/* the bare update row: version, state and button wrap inside the row, never clip (G-013) */
-.settings-updates .settings-row {
+.settings-updates .settings-row,
+.settings-herdr-update .settings-row {
   flex-wrap: wrap;
   row-gap: var(--space-2);
 }
 
 .settings-updates .settings-row > .settings-fact {
+  flex-shrink: 1;
   max-width: none;
   overflow-wrap: normal;
 }
@@ -36,14 +37,12 @@
   font-size: var(--fs-xs);
 }
 
-/* the text takes the room, the buttons keep to the end of the line and wrap under it on a phone */
 .update-notice > span {
   flex: 1 1 12rem;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-/* a release's line never wraps: its sentence is cut with an ellipsis, its buttons keep their width */
 .update-notice.is-line {
   flex-wrap: nowrap;
 }
@@ -60,8 +59,6 @@
   white-space: nowrap;
 }
 
-/* a line whose sentence is itself a button (the usage counts' line opens Settings): it reads as
-   the sentence, cut like one, and shows it is a link only under the pointer or the focus */
 .update-notice.is-line > .update-notice-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -80,7 +77,6 @@
   .update-notice-text:hover { text-decoration: underline; }
 }
 
-/* the reload warning is read in full on a phone: its sentence wraps instead of being cut */
 .update-notice.is-line.is-warning { flex-wrap: wrap; }
 .update-notice.is-line.is-warning > span { white-space: normal; overflow: visible; text-overflow: clip; }
 
@@ -88,14 +84,11 @@
   margin-inline-end: calc(var(--space-2) * -1);
 }
 
-/* a phone's notices (install hint, alerts, update): their 44px buttons set the height, so the line's own
-   padding stays small; the buttons keep their size and place (G-195, G-103) */
 @media (pointer: coarse) {
   .update-notice {
     padding-block: var(--space-1);
   }
 
-  /* the sentence that is a button takes a tap over the line's whole height, as its buttons do */
   .update-notice.is-line > .update-notice-text {
     min-height: var(--touch-target);
   }
@@ -105,7 +98,6 @@
   max-width: 32rem;
 }
 
-/* on the line: the step and its count, then the bar in the rest of the row */
 .update-notice .update-progress {
   max-width: none;
   flex-direction: row;
@@ -146,13 +138,10 @@
   overflow-wrap: anywhere;
 }
 
-/* focused from code when a button points at the section: it is where reading starts, not a control */
 .settings-updates:focus {
   outline: none;
 }
 
-/* a release's notes: their short summary scrolls with Settings; only the full changelog is read in a
-   box of its own (G-145) */
 .update-notes {
   --chat-fs-body: var(--fs-sm);
   display: flex;
@@ -182,7 +171,6 @@
   font-weight: var(--fw-regular);
 }
 
-/* a release as patch notes: short lines under what is new, improved and fixed */
 .update-summary {
   display: flex;
   flex-direction: column;
@@ -210,12 +198,10 @@
   padding-inline-start: var(--space-4);
 }
 
-/* the release's changelog section, on request */
 .update-details {
   margin-top: var(--space-2);
 }
 
-/* the full changelog: long, so it scrolls in its own box and the buttons under it stay in reach */
 .update-changelog {
   max-height: min(24rem, calc(var(--app-height, 100dvh) * 0.5));
   overflow-y: auto;
@@ -236,7 +222,6 @@
   margin-bottom: var(--space-2);
 }
 
-/* Added, Changed, Fixed: labels over their lists, as the dialog's own section titles */
 .update-notes .markdown h3 {
   margin: var(--space-3) 0 var(--space-1);
   color: var(--text-dim);

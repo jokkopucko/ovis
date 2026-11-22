@@ -26,13 +26,11 @@ export function markerOwner(marker: string): MarkerOwner | null {
 }
 
 export interface RunningProcess { name: string; startedMs: number | null }
-/** `name|unixMs`, as the probe in remote-entry.ts prints a running process; nothing for a pid nobody has. */
 export function parseProcessLine(output: string): RunningProcess | null {
   const match = /^([^|\r\n]+)\|(\d+)\s*$/m.exec(output);
   return match ? { name: match[1]!.trim(), startedMs: Number(match[2]) } : null;
 }
 
-/** how far the marker's start may sit from the process's creation time and still be the same daemon */
 export const MARKER_START_SLACK_MS = 30_000;
 
 /**

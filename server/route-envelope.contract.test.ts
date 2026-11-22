@@ -22,7 +22,6 @@ const JSON_ROUTES = [
   "/api/pane/clear", "/api/pane/focus", "/api/pane/image",
 ] as const;
 
-/** a GET here is a route of its own, not the wrong method for the POST */
 const OWN_GET: Partial<Record<(typeof JSON_ROUTES)[number], [number, string | null]>> = {
   "/api/workspace/directories": [200, null],
   "/api/plugin/action": [400, "missing_plugin_id"],

@@ -1,0 +1,6 @@
+/target/
+# the pinned hc-tui source with our patches, made by prepare.sh
+/upstream/
+/.upstream.new.*/
+/.upstream.old.*/
+/.prepare.lock/

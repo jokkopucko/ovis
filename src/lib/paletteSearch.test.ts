@@ -70,7 +70,6 @@ describe("rankPanes", () => {
     expect(ids(rankPanes("Tab 2", roster, workspaces, { tabs: numbered }))).toEqual(["delta"]);
     expect(ids(rankPanes("탭 2", roster, workspaces, { tabs: numbered, t: (key, vars) => translate("ko", key, vars) }))).toEqual(["delta"]);
     expect(ids(rankPanes("탭 2", roster, workspaces, { tabs: numbered }))).toEqual([]);
-    // the shown name adds to the label herdr holds, it does not replace it
     expect(ids(rankPanes("2", roster, workspaces, { tabs: numbered }))).toContain("delta");
     expect(ids(rankPanes("Tab 2", roster, workspaces, { tabs }))).toEqual([]);
   });
@@ -170,7 +169,6 @@ describe("groupByWorkspace", () => {
       ["w2", ["b1"]],
       ["w1", ["a1", "a2"]],
     ]);
-    // the workspaces' own order does not pull the top result down the list
     expect(groupByWorkspace(ranked, [workspaces[0]!, workspaces[1]!], true).map((section) => section.workspaceId)).toEqual(["w2", "w1"]);
   });
 

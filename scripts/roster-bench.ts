@@ -1,20 +1,4 @@
 /**
- * Large-roster benchmark (#772): what a burst of agent status changes costs the server and the
- * browser when herdr holds many panes with agents in them.
- *
- * For each roster size it opens that many panes in the test herdr (four to a workspace), reports
- * a Claude agent at rest in each (`pane.report_agent`, as a plugin does), starts an Ovis server
- * of its own in a child process (a temp state dir and HOME, port 0 on loopback) and opens the
- * built client in headless Chrome at a desktop size. Each run is two bursts: every pane reports
- * `working`, then every pane reports `idle` (a finish). A burst is measured from its first report
- * until the browser shows every row in its new state and the event stream has been quiet for a
- * moment:
- *
- * - browser main-thread time (Chrome's TaskDuration; ScriptDuration, layout and style beside it)
- *   and long tasks;
- * - time until the last row showed the new status;
- * - server CPU time over the same window, and its memory after the runs.
- *
  * Needs a built client (`dist/`) and the isolated herdr of a check run:
  *
  *   bun run check run --build bun scripts/roster-bench.ts --panes 20,100,300 --runs 5 --out <file.json>
@@ -89,7 +73,6 @@ async function bench(): Promise<void> {
     if (rejected) throw rejected.reason;
   };
   const report = (paneId: string, state: Phase) => herdrRpc("pane.report_agent", { pane_id: paneId, source: "roster-bench", agent: "claude", state });
-  // what a roster size opened, undone last first when it ends or fails: its workspaces, server and page
   const undo: (() => unknown)[] = [];
   const unwind = async (): Promise<void> => {
     for (let step = undo.pop(); step !== undefined; step = undo.pop()) await Promise.resolve().then(step).catch(() => undefined);

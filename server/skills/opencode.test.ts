@@ -94,7 +94,6 @@ describe("OpenCode's menu", () => {
     const { root, home } = fixture();
     const custom = join(root, "custom");
     const lattice = join(custom, "commands", "lattice");
-    // 12 levels of two links each, then 32 links to one file: 2^11 * 32 = 65,536 command paths in 12 folders
     const levels = 12;
     for (let level = 0; level < levels; level++) mkdirSync(join(lattice, `d${level}`), { recursive: true });
     for (let level = 0; level < levels - 1; level++) {

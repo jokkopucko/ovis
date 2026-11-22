@@ -6,12 +6,8 @@ import { chromium } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// A plugin action that outlasts the server's wait, on the unmodified app over the demo's fixture
-// transport. The demo's own plugin answers at once, so the two plugin routes are patched here, in
-// the test only: the POST answers `running`, and the run's status says `running` once more and
-// then how it ended. "Apply layout" ends in a failure with a traceback, "Save layout" well.
-// The phone is as tall as one with its keyboard up: the traceback must not take the list's room.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-plugin-actions-demo-"));
 const TRACEBACK = ["Traceback (most recent call last):", ...Array.from({ length: 40 }, (_, line) => `  File "/opt/example/layout.py", line ${line + 1}, in apply`), "RuntimeError: no layout saved for this workspace"].join("\n");
@@ -46,17 +42,7 @@ try {
   writeFileSync(join(app, "plugin-run-patch.js"), patch);
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./plugin-run-patch.js"></script>\n    <script type="module"'));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -81,7 +67,6 @@ try {
         const apply = palette.getByRole("option", { name: /Apply layout/ });
         await apply.evaluate((row: HTMLElement) => row.click());
         await palette.locator('.palette-plugin-action[aria-busy="true"]').waitFor();
-        // the server's own answer was `running`: the palette is asked to stay, not to close as on success
         await page.waitForFunction(() => (window as unknown as { pluginCalls: Calls }).pluginCalls.asked.length >= 1);
         assert.equal(await palette.isVisible(), true, "a run the server calls running keeps the palette open");
         assert.match(await palette.locator('.palette-plugin-action[aria-busy="true"]').textContent() ?? "", /Running…/);
@@ -110,20 +95,17 @@ try {
         assert.ok(geometry.error.height <= geometry.viewport * 0.25 + 1, `the traceback takes at most a quarter of the screen: ${JSON.stringify(geometry)}`);
         assert.ok(geometry.error.scrolls && geometry.error.overflow === "auto", `the rest of the traceback is reached by scrolling it: ${JSON.stringify(geometry)}`);
         assert.ok(geometry.palette.bottom <= geometry.viewport + 0.5 && geometry.results.bottom <= geometry.palette.bottom + 0.5, `the palette ends on the screen: ${JSON.stringify(geometry)}`);
-        // room for two finger-sized rows (--touch-target each); the footer keeps its path line (CommandPalette.css)
         assert.ok(geometry.results.height >= 2 * 44, `the list keeps room under the traceback: ${JSON.stringify(geometry)}`);
         assert.ok(geometry.row.hit && geometry.row.bottom <= geometry.viewport + 0.5, `a plugin action is still on screen to tap: ${JSON.stringify(geometry)}`);
         if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "plugin-action-traceback-phone-keyboard.png") });
         console.log(`PASS a ${TRACEBACK.split("\n").length}-line traceback at 390x420 scrolls in ${Math.round(geometry.error.height)}px and leaves the list ${Math.round(geometry.results.height)}px`);
 
-        // run again from the open palette: a late success closes it
         await palette.getByRole("option", { name: /Save layout/ }).evaluate((row: HTMLElement) => row.click());
         await palette.locator('.palette-plugin-action[aria-busy="true"]').waitFor();
         await palette.waitFor({ state: "hidden", timeout: 10_000 });
         assert.deepEqual((await calls()).asked.filter((log) => log === "log-save"), ["log-save", "log-save"]);
         console.log("PASS a command that ends well after the server stopped waiting closes the palette then, not before");
 
-        // closed while a run is under way: its answer is no one's, and nothing is asked again
         await open();
         await palette.getByRole("option", { name: /Apply layout/ }).evaluate((row: HTMLElement) => row.click());
         await palette.locator('.palette-plugin-action[aria-busy="true"]').waitFor();
@@ -137,7 +119,6 @@ try {
           seen.paletteErrors = document.querySelectorAll(".palette-error").length;
           new MutationObserver(() => { seen.paletteErrors += document.querySelectorAll(".palette-error").length; }).observe(document.body, { childList: true, subtree: true });
         });
-        // "Save layout" takes two more asks to end: longer than the abandoned run needed to fail
         await palette.getByRole("option", { name: /Save layout/ }).evaluate((row: HTMLElement) => row.click());
         await palette.waitFor({ state: "hidden", timeout: 10_000 });
         assert.equal(await page.evaluate(() => (window as unknown as { paletteErrors: number }).paletteErrors), 0, "the abandoned run's failure is said in no later opening");

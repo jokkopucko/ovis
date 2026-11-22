@@ -1,13 +1,3 @@
-/*
- * In-app alert (Droplet.tsx). A black pill appears below the header, spreads into a card,
- * and folds away when it leaves. The card's text is a separate layer over the shape.
- *
- * Geometry clears the measured native safe area and app header; neither the compact drop nor
- * the expanded card overlaps the header controls. In the phone layout the card is one line and
- * as wide as its text: Droplet.tsx measures it into --droplet-fit, which the shape follows.
- * The card is island black in both themes, so its colors are the --droplet-* group.
- */
-
 .droplet {
   --droplet-top: 12px;
   --droplet-w: min(396px, calc(100vw - 2 * var(--space-4) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
@@ -135,7 +125,6 @@
   transition: translate 240ms var(--ease-out);
 }
 
-/* a hairline that lifts the card off a dark page, shown with the text */
 .droplet-card::before {
   content: "";
   position: absolute;
@@ -280,7 +269,6 @@
   to { opacity: 0; }
 }
 
-/* no spreading: the card fades in and out where it rests */
 @media (prefers-reduced-motion: reduce) {
   .droplet-goo { filter: drop-shadow(0 10px 14px var(--droplet-shadow)); }
   .droplet-blob,

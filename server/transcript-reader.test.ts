@@ -139,7 +139,6 @@ it("reads owned explicit-position windows and identifies replacement after the l
   const reader = new TranscriptReader();
   const before = await reader.read(path, async (file) => {
     const before = await file.stat();
-    // the same handle's whole stat, change time included
     const stats = await file.stats();
     expect(transcriptVersion(stats)).toEqual(before);
     expect(stats.ctimeMs).toBeGreaterThan(0);
@@ -180,7 +179,6 @@ it("keeps pinned bytes distinct from a changed named identity and rejects mismat
 
 it("checks a path by its own entry unless told to follow a link to the transcript", async () => {
   const b = backend(); const reader = new TranscriptReader(b.io);
-  // a link: its own entry is no file; the file it names is the one the handle pinned
   const link = { ...stat, ino: 9, isFile: () => false } as Stats;
   const asked: (boolean | undefined)[] = [];
   b.io.stat = async (_path, follow) => { asked.push(follow); return follow ? stat : link; };
@@ -206,7 +204,6 @@ it("enforces the absolute deadline before a late callback can publish ahead of i
   restores.push(() => setSystemTime());
   setSystemTime(new Date(now));
   await expect(reader.read("a", async () => {
-    // the clock passes the deadline within the callback's turn: the timer has not run when it returns
     setSystemTime(new Date(deadline + 1));
     return "late";
   }, { deadline })).rejects.toBeInstanceOf(TranscriptBusyError);
@@ -227,7 +224,6 @@ it("checks the absolute deadline after a pending close settles before the timer 
   setSystemTime(new Date(now));
   const pending = reader.read("a", async () => "late", { deadline });
   await tick(); expect(b.closed).toEqual(["a"]);
-  // the clock passes the deadline while the close is pending, before its timer runs
   setSystemTime(new Date(deadline + 1));
   gate.resolve(); await expect(pending).rejects.toBeInstanceOf(TranscriptBusyError);
   expect(reader.size().active).toBe(0);
@@ -250,7 +246,6 @@ it("hands a window's buffer to another lease only once every read into it has se
   held.resolve(); await reader.settled();
   await reader.read("last", (file) => file.window(0, 4));
   expect([buffers[0], buffers[1]]).toContain(buffers[2]);
-  // a reset lets the spare buffers go
   reader.reset();
   await reader.read("after", (file) => file.window(0, 4));
   expect(buffers.slice(0, 3)).not.toContain(buffers[3]);
@@ -260,7 +255,6 @@ it("never keeps the process alive for a read's deadline alone", async () => {
   const b = backend(); const reader = new TranscriptReader(b.io);
   const timers = spyOn(globalThis, "setTimeout");
   try {
-    // looked at while the read goes on: once it settles, its timer is cleared
     const kept = await reader.read("a", async () => (timers.mock.results.at(-1)!.value as ReturnType<typeof setTimeout>).hasRef(), { deadline: Date.now() + 60_000 });
     expect(timers).toHaveBeenCalled();
     expect(kept).toBe(false);
@@ -270,21 +264,18 @@ it("never keeps the process alive for a read's deadline alone", async () => {
 it("counts a read's budget from its lease, not from its wait behind another read of the path", async () => {
   const b = backend(); const reader = new TranscriptReader(b.io);
   const held = deferred(); b.reading.set("a", held);
-  // the timers and the clock move only as the test moves them
   jest.useFakeTimers();
   restores.push(() => jest.useRealTimers());
   const first = reader.read("a", (file) => file.read(0, 4));
   const queued = reader.read("a", async (file) => file.deadline, { budget: 10 });
   await tick();
   expect(reader.size()).toEqual({ active: 1, waiting: 1, paths: 1 });
-  // the lease ahead outlasts the budget many times over: no timer runs for the wait
   expect(jest.getTimerCount()).toBe(0);
   jest.advanceTimersByTime(1_000);
   const leased = Date.now();
   held.resolve(); await first;
   expect(await queued).toBe(leased + 10);
   expect(jest.getTimerCount()).toBe(0);
-  // within the lease the budget's timer runs: spent, it gives the read up, as a deadline does
   const work = deferred(), entered = deferred();
   const spent = reader.read("a", async () => { entered.resolve(); await work.promise; return "late"; }, { budget: 10 }).catch((e) => e);
   await entered.promise;
@@ -294,13 +285,11 @@ it("counts a read's budget from its lease, not from its wait behind another read
   expect(await spent).toBeInstanceOf(TranscriptBusyError);
   work.resolve(); await reader.settled();
   expect(jest.getTimerCount()).toBe(0);
-  // with a deadline too, the sooner one counts
   expect(await reader.read("a", async (file) => file.deadline, { deadline: Date.now() + 5, budget: 10 })).toBe(Date.now() + 5);
   expect(await reader.read("a", async (file) => file.deadline)).toBe(Infinity);
   expect(reader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
 });
 
-/** A backend whose reads at `held` positions wait for that position's gate; `log` has each read's start and end. */
 function heldReads(held: Map<number, Promise<void>>) {
   const b = backend(); const base = b.io.open;
   const log: string[] = [], buffers: ArrayBufferLike[] = [];
@@ -322,22 +311,18 @@ it("reads ahead while the lease awaits a stat, and hands the bytes to the window
   await reader.read("file", async (file) => {
     const first = await file.window(0, 2);
     file.ahead(2, 2);
-    // the stat is answered while the read ahead is still on its way
     await file.stat();
     expect(b.log).toEqual(["read 0", "done 0", "read 2"]);
     gate.resolve(); await tick();
-    // filled in the lease's other buffer: the last window's bytes are as they were
     expect(b.log).toEqual(["read 0", "done 0", "read 2", "done 2"]);
     expect(first.toString()).toBe("ab");
     const second = await file.window(2, 2);
     expect(second.toString()).toBe("cd");
-    // the next read ahead fills the buffer the first window was in, not this one
     file.ahead(0, 2);
     await file.stat(); await tick();
     expect(b.log.at(-1)).toBe("done 0");
     expect(second.toString()).toBe("cd");
   });
-  // the window read ahead is not read again
   expect(b.reads).toEqual(["file", "file", "file"]);
   expect(b.buffers[1]).not.toBe(b.buffers[0]);
 });
@@ -349,7 +334,6 @@ it("lets a read ahead settle before a window that asks for other bytes", async (
     file.ahead(2, 2);
     const other = file.window(1, 2);
     await tick();
-    // its read waits: the buffer it reads into may be the one the read ahead fills next time
     expect(b.log).toEqual(["read 0", "done 0", "read 2"]);
     gate.resolve();
     expect((await other).toString()).toBe("bc");
@@ -362,7 +346,6 @@ it("closes a lease and gives its buffers to another only once a read ahead nobod
   const pending = reader.read("file", async (file) => { await file.window(0, 2); file.ahead(2, 2); return "done"; });
   await tick(); await tick();
   expect(b.closed).toEqual([]);
-  // a lease that starts meanwhile reads into a buffer of its own
   await reader.read("other", (file) => file.window(0, 4));
   expect(b.buffers.slice(0, 2)).not.toContain(b.buffers[2]);
   gate.resolve();
@@ -389,10 +372,6 @@ it("ends a cancelled lease's read ahead without an unhandled rejection", async (
   } finally { process.off("unhandledRejection", hear); }
 });
 
-/**
- * A synthetic transcript of `bytes` whose directory's filesystem is of `type` (statfs f_type),
- * known once `known` settles.
- */
 function onFilesystem(type: number, bytes = "abcdefgh\n", known: Promise<void> = Promise.resolve()) {
   const root = mkdtempSync(join(tmpdir(), "ovis-transcript-reader-")); roots.push(root);
   const path = join(root, "session.jsonl");
@@ -402,10 +381,6 @@ function onFilesystem(type: number, bytes = "abcdefgh\n", known: Promise<void> =
   restores.push(() => statfs.mockRestore());
   return path;
 }
-/**
- * A clock (performance.now) that moves only as the test moves it, so a call preempted on a busy
- * host takes no time on it. Returns the move.
- */
 function stillClock() {
   const base = performance.now();
   let moved = 0;
@@ -413,7 +388,6 @@ function stillClock() {
   restores.push(() => spy.mockRestore());
   return (ms: number) => { moved += ms; };
 }
-/** Counts the transcripts opened through the thread pool. */
 function opensAsync() {
   const real = fsp.open;
   let count = 0;
@@ -421,7 +395,6 @@ function opensAsync() {
   restores.push(() => spy.mockRestore());
   return () => count;
 }
-/** Counts the reads made on the event loop. */
 function readsNow(during: (count: number) => void = () => {}) {
   const real = fs.readSync;
   let count = 0;
@@ -444,7 +417,6 @@ it.skipIf(process.platform !== "linux")("reads a transcript on a local filesyste
 });
 
 it.skipIf(process.platform !== "linux")("reads into the caller's buffer on the event loop and through the thread pool, short at the end of the file", async () => {
-  // btrfs: on the event loop; FUSE (sshfs): through the thread pool
   for (const [type, local] of [[0x9123683e, true], [0x65735546, false]] as const) {
     const path = onFilesystem(type);
     stillClock();
@@ -453,12 +425,10 @@ it.skipIf(process.platform !== "linux")("reads into the caller's buffer on the e
     const into = Buffer.alloc(12, "-");
     const [middle, short, past] = await reader.read(path, async (file) => [
       await file.read(2, 4, into.subarray(0, 4)),
-      // the file ends 3 bytes in: what there is, at the start of the buffer it was given
       await file.read(6, 6, into.subarray(4, 10)),
       await file.read(20, 2, into.subarray(10, 12)),
     ]);
     expect([middle!.toString(), short!.toString(), past!.length]).toEqual(["cdef", "gh\n", 0]);
-    // read in place: what is returned is the caller's buffer, and nothing past a short read is written
     expect(middle!.buffer).toBe(into.buffer);
     expect(into.toString()).toBe("cdefgh\n-----");
     expect(now() > 0).toBe(local);
@@ -489,14 +459,11 @@ it.skipIf(process.platform !== "linux")("counts two slow reads in a row with a f
   expect(reads()).toBe(2);
 });
 it.skipIf(process.platform !== "linux")("leaves the event loop on the second slow call in a row, not on one alone (a pause of the process's own)", async () => {
-  // a buffer of the caller's whose subarray, which a read takes once it has read, holds the clock 3 ms:
-  // a call that stalls, as one a garbage collection lands in does
   const into = (stalls: boolean, advance: (ms: number) => void) => {
     const buffer = Buffer.alloc(1);
     if (stalls) buffer.subarray = function (this: Buffer, ...args: Parameters<Buffer["subarray"]>) { advance(3); return Buffer.prototype.subarray.apply(this, args); };
     return buffer;
   };
-  // which reads stall, and how many of them are on the event loop
   for (const [stalls, onLoop] of [[[true, false, false, false], 4], [[true, true, false, false], 2], [[true, false, true, false], 4]] as const) {
     const path = onFilesystem(0x9123683e);
     const advance = stillClock();
@@ -509,7 +476,6 @@ it.skipIf(process.platform !== "linux")("leaves the event loop on the second slo
     });
     expect(text).toBe("abcd");
     expect(reads()).toBe(onLoop);
-    // the next lease within the second: on the event loop unless the last one left it
     expect((await reader.read(path, (file) => file.read(4, 1))).toString()).toBe("e");
     expect(reads()).toBe(onLoop === 4 ? 5 : 2);
     for (const restore of restores.splice(0).reverse()) restore();
@@ -518,16 +484,13 @@ it.skipIf(process.platform !== "linux")("leaves the event loop on the second slo
 
 it.skipIf(process.platform !== "linux")("reads through the thread pool for a second once two reads on the event loop in a row were slow, then tries the event loop again", async () => {
   const path = onFilesystem(0x9123683e);
-  // the first two reads on the event loop take 3 ms of the clock each: the disk answered them, not the page cache
   const advance = stillClock();
   const reads = readsNow((count) => { if (count <= 2) advance(3); });
   const reader = new TranscriptReader();
   const read = (from: number) => reader.read(path, async (file) => (await file.window(from, 1)).toString() + (await file.window(from + 1, 1)).toString() + (await file.window(from + 2, 2)).toString());
-  // the rest of that lease, and the next lease within the second, through the thread pool
   expect(await read(0)).toBe("abcd");
   expect(await read(2)).toBe("cdef");
   expect(reads()).toBe(2);
-  // a second later, the first lease tries the event loop again
   const later = Date.now() + 1000;
   restores.push(() => setSystemTime());
   setSystemTime(new Date(later));
@@ -543,13 +506,11 @@ it.skipIf(process.platform !== "linux")("gives up a read on the event loop betwe
   const abort = new AbortController();
   let windows = 0;
   const read = reader.read(path, async (file) => {
-    // a parser that reads on and on, never waiting for anything but its reads
     while (windows < 100) { await file.window(0, 4); if (++windows === 3) abort.abort(); }
     return "read on past the cancel";
   }, { signal: abort.signal }).catch((error) => error);
   expect(await read).toBeInstanceOf(TranscriptBusyError);
   await reader.settled();
-  // the lease ended at the next window, before its read: no window was read after the cancel
   expect(windows).toBe(3);
   expect(now()).toBe(3);
   expect(reader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
@@ -564,24 +525,20 @@ it.skipIf(process.platform !== "linux")("opens a transcript while its filesystem
   const now = readsNow();
   const reader = new TranscriptReader();
   const read = reader.read(path, async (file) => (await file.window(0, 4)).toString());
-  // the open is not held back for the lookup
   for (let turn = 0; turn < 100 && opens() === 0; turn++) await tick();
   expect(opens()).toBe(1);
   expect(now()).toBe(0);
   lookup.resolve();
   expect(await read).toBe("abcd");
-  // the lease that opened through the thread pool reads on the event loop once its filesystem is known to be local
   expect(now()).toBe(1);
 });
 
 it.skipIf(process.platform !== "linux")("tells the work whether the event loop ran while the lease waited", async () => {
-  // let in at once on a local filesystem: nothing waited, before a call or after one
   const local = onFilesystem(0x9123683e);
   stillClock();
   readsNow();
   const reader = new TranscriptReader(undefined, 1);
   expect(await reader.read(local, async (file) => [file.waited(), (await file.window(0, 4), file.waited())])).toEqual([false, false]);
-  // let in after another lease ended: it waited for its turn, though its calls do not
   const held = deferred();
   const first = reader.read(local, async () => { await held.promise; });
   const second = reader.read(local, async (file) => [file.waited(), (await file.window(0, 4), file.waited())]);
@@ -589,19 +546,16 @@ it.skipIf(process.platform !== "linux")("tells the work whether the event loop r
   await first;
   expect(await second).toEqual([true, false]);
   for (const restore of restores.splice(0).reverse()) restore();
-  // on a network filesystem every call goes through the thread pool
   const network = onFilesystem(0x6969);
   stillClock();
   expect(await new TranscriptReader().read(network, async (file) => [file.waited(), (await file.window(0, 4), file.waited())])).toEqual([true, true]);
   for (const restore of restores.splice(0).reverse()) restore();
-  // two reads on the event loop the disk answered (3 ms of the clock each): the calls after them go through the thread pool
   const slow = onFilesystem(0x9123683e);
   const advance = stillClock();
   readsNow(() => advance(3));
   expect(await new TranscriptReader().read(slow, async (file) => [(await file.window(0, 4), file.waited()), (await file.window(0, 4), file.waited()), (await file.stat(), file.waited())])).toEqual([false, false, true]);
 });
 
-/** Takes `ms` of the clock in each call to `name` (on the event loop), or throws once `fails` is set. */
 function slowCalls(name: "openSync" | "closeSync", advance: (ms: number) => void) {
   const real = (fs as any)[name] as (...args: unknown[]) => unknown;
   const state = { ms: 0, fails: false };
@@ -627,22 +581,16 @@ for (const name of ["openSync", "closeSync"] as const) {
     const reads = readsNow();
     const reader = new TranscriptReader();
     const read = () => reader.read(path, async (file) => (await file.window(0, 4)).toString());
-    // the first lease looks the filesystem up, and opens through the thread pool meanwhile
     expect(await read()).toBe("abcd");
     expect([opens(), reads()]).toEqual([1, 1]);
-    // the next opens and closes on the event loop
     expect(await read()).toBe("abcd");
     expect([opens(), reads()]).toEqual([1, 2]);
-    // one that takes 3 ms of the clock: the disk answered it, not the page cache
     calls.ms = 3;
     expect(await read()).toBe("abcd");
     calls.ms = 0;
-    // after a slow open, the rest of that lease went through the thread pool
     if (name === "openSync") expect(reads()).toBe(2);
-    // the next lease, within the second, goes through the thread pool
     expect(await read()).toBe("abcd");
     expect(opens()).toBe(2);
-    // a second later the event loop again, and a call there that throws
     restores.push(() => setSystemTime());
     setSystemTime(new Date(Date.now() + 1000));
     calls.fails = true;
@@ -667,10 +615,8 @@ it.skipIf(process.platform !== "linux")("reads a transcript on another device th
   const reads = readsNow();
   const reader = new TranscriptReader();
   const read = () => reader.read(path, async (file) => (await file.window(0, 4)).toString());
-  // its first stat, before any read, finds the other device: the read goes through the thread pool
   expect(await read()).toBe("abcd");
   expect(reads()).toBe(0);
-  // and so does the next lease's, open included
   expect(await read()).toBe("abcd");
   expect([opens(), reads()]).toEqual([2, 0]);
 });
@@ -689,7 +635,6 @@ it.skipIf(process.platform !== "linux")("reads through the thread pool for a sec
   const reader = new TranscriptReader();
   const read = () => reader.read(path, async (file) => (await file.window(0, 4)).toString());
   await expect(read()).rejects.toThrow("readSync failed");
-  // the next lease, within the second, opens and reads through the thread pool
   expect(await read()).toBe("abcd");
   expect([opens(), reads.mock.calls.length]).toEqual([2, 1]);
 });

@@ -1,6 +1,3 @@
-/* One PC per group: its name is the head of its workspaces. The monitor sits in the rows'
-   leading cell, over the workspaces' folders, and the state line starts where the name does.
-   The fold and the + close the header at its right. */
 .machine-list {
   position: relative;
   min-height: 0;
@@ -9,17 +6,12 @@
   scroll-padding-bottom: var(--space-4);
 }
 
-/* a list that is cut fades at the edge that cuts it (SidebarSections.css) */
-
 .machine-list > .tree-state { padding-left: calc(var(--side-gutter) + var(--side-box)); }
 
 .machine-group {
   --machine-indent: calc(var(--side-gutter) + var(--side-box));
 }
 
-/* A folded PC is one row, with no gap to the next: a gap of its own made each about a row and a half
-   (issue 2617). An open PC's workspaces end with a short gap before the next PC's header. A PC the
-   filter hides stays in the list, hidden, and keeps no gap. */
 .machine-group:not(.is-folded):not([hidden]) { padding-bottom: var(--space-2); }
 
 .machine-header {
@@ -28,7 +20,6 @@
   padding: 0 var(--side-gutter);
 }
 
-/* the name is the fold's one control, a button (G-036): drawn as the title it was, no box of its own */
 .machine-title {
   display: flex;
   align-items: center;
@@ -51,7 +42,6 @@
 button.machine-title { cursor: pointer; }
 button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
-
 .machine-name {
   min-width: 0;
   overflow: hidden;
@@ -59,8 +49,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   white-space: nowrap;
 }
 
-/* Rename… (MachineSidebar.tsx): the name's field takes the name's place in the header, as a workspace's
-   rename field takes its row's */
 .machine-rename-input {
   flex: 1 1 auto;
   min-width: 0;
@@ -70,8 +58,10 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   font-weight: var(--fw-semibold);
 }
 
-/* a sidebar menu's head, in the popover and in a phone's sheet: Manage PC's names the PC, its state and how it is
-   reached, and for a PC herdr manages where the rest is done; the PCs head's hidden menu says what it lists */
+.machine-rename-input:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
 .machine-menu-head {
   display: flex;
   flex-direction: column;
@@ -89,7 +79,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   white-space: nowrap;
 }
 
-/* a phone's sheet names its row a size up (RowMenu.css .row-sheet-title) */
 .row-sheet-head .machine-menu-name { font-size: var(--fs-md); }
 
 .machine-menu-state,
@@ -129,12 +118,8 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }
 
-/* the + fills the rows' status cell */
 .machine-new { width: var(--side-box); }
 
-/* The lone Host's group has no header (MachineSidebar.tsx): its + is this last row of the list, on the rows'
-   grid, the + in the folders' leading cell and its words as dim as a section head's, so it reads as an action
-   and not as one more workspace. Hover and focus are a row's. */
 .machine-new-row {
   display: flex;
   align-items: center;
@@ -174,8 +159,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   .machine-new-row { min-height: var(--touch-target); }
 }
 
-/* An SSH PC's manage button takes no room until its header is hovered or focused, its menu is
-   open or the PC is not connected. It stays in the focus order. */
 .machine-manage {
   width: 0;
   overflow: hidden;
@@ -198,8 +181,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   }
 }
 
-/* a touch screen, even beside a mouse, has no hover to find it: it stays shown, as the fold and + do
-   (SidebarSections.css) */
 @media (any-pointer: coarse) {
   .machine-manage {
     width: var(--side-action);
@@ -216,12 +197,22 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   }
 }
 
-/* in one-line rows the phone drawer's header has the + for a new workspace: a PC's own + there would only widen
-   its line. The fold then keeps the column a workspace row's ... stands in, the status cell's width short of the
-   edge. Two-line rows draw no header +, so each PC keeps its own */
+@media (max-width: 768px) and (pointer: coarse) {
+  .machine-group:not(.is-two-line) .machine-new { margin-right: calc((var(--space-6) - var(--touch-target)) / 2); }
+  .machine-group:not(.is-two-line) .machine-toggle { padding-inline-start: calc(var(--touch-target) - var(--space-6)); }
+}
+
+/* a + that is off (its PC away, a device that only watches) rests in view there wherever a finger may come, beside a
+   mouse too (SidebarSections.css hides a PC's actions at rest only where none can): it keeps more ink than the 0.55
+   of a row action (Sidebar.css), the least round step that holds its glyph at 3:1 on the drawer's surface in every
+   shipped theme */
+@media (max-width: 768px) and (any-pointer: coarse) {
+  .machine-header > .machine-new:disabled { opacity: 0.75; }
+}
+
 @media (max-width: 768px) {
-  .machine-group:not(.is-two-line) .machine-new { display: none; }
-  .machine-group:not(.is-two-line) .machine-toggle { margin-right: var(--side-box); }
+  .machine-new-row:disabled { cursor: default; }
+  .machine-new-row:disabled > .sidebar-mark { opacity: 0.75; }
 }
 
 .machine-state {
@@ -234,8 +225,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   line-height: var(--lh-tight);
 }
 
-/* clipped while connected, it keeps no padding: the one under the last PC would otherwise lengthen the
-   list's scroll by it, and its edge would fade with nothing past it */
 .machine-state.visually-hidden { padding: 0; }
 
 .machine-state-word {
@@ -247,9 +236,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
 .machine-state.is-connecting .machine-state-word,
 .machine-state.is-reconnecting .machine-state-word { color: var(--status-working); }
 
-/* the server's own words can run long (socket paths): two lines at a reading line height (G-196), the full
-   text on hover, and the words themselves selectable to copy into a report, also on a phone whose sidebar
-   chrome is otherwise not text (G-030) */
 .machine-state-detail {
   display: -webkit-box;
   overflow: hidden;
@@ -263,7 +249,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   -webkit-touch-callout: default;
 }
 
-/* ssh's own line under the plain words (G-031): in the command's face, selectable, never cut */
 .machine-state-raw {
   color: var(--text-dim);
   font-family: var(--font-mono);
@@ -275,12 +260,47 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   -webkit-touch-callout: default;
 }
 
-/* the step to take when the server's words name one (MachineSidebar.tsx): a notch above its words */
 .machine-state-next {
   color: var(--text);
 }
 
-/* drawn outside the faded roster (G-029): a sentence a person reads keeps its contrast */
+.machine-off {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
+}
+
+/* a narrow sidebar puts Check again under the words rather than squeezing them */
+.machine-off .machine-state {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 0;
+}
+
+/* why it is off is the row's point, and a touch screen has no tooltip: shown whole */
+.machine-off .machine-state-detail {
+  display: block;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.machine-recheck {
+  flex: none;
+}
+
+.btn.machine-recheck[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .btn.machine-recheck[aria-disabled="true"]:hover {
+    background: var(--bg-elevated);
+  }
+}
+
 .machine-empty {
   padding: 0 var(--side-gutter) var(--space-2) var(--machine-indent);
 }
@@ -311,9 +331,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   }
 }
 
-/* the phone's keyboard is up (lib/viewport.ts): as the sheet does, this one ends where the
-   keyboard begins instead of sitting behind it — the same reason styles.css drops the sheet's
-   bottom padding here */
 @media (max-width: 640px) {
   [data-keyboard] .machine-dialog {
     inset-block-start: 0;
@@ -342,13 +359,23 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
 
 .machine-advanced { padding-top: var(--space-3); }
 
+.machine-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--pointer-target);
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .machine-check { min-height: var(--touch-target); }
+}
+
 .machine-dialog summary {
   padding: var(--space-2) 0;
   cursor: pointer;
 }
 
-/* a finger's floor (G-091): the disclosure row takes a --touch-target height by its own padding, its words and
-   marker where they were in the row */
 @media (pointer: coarse) {
   .machine-dialog summary {
     min-height: var(--touch-target);
@@ -362,7 +389,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   overflow-wrap: anywhere;
 }
 
-/* the host-key question: the fingerprint to compare, one sentence, ssh's own words folded */
 .machine-fingerprint-label {
   margin: 0 0 var(--space-1);
   color: var(--text-dim);
@@ -389,8 +415,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   cursor: pointer;
 }
 
-/* a finger's floor (G-091): the toggle keeps its one line and takes a --touch-target height by its own padding and
-   at least that width, the words where they were */
 @media (pointer: coarse) {
   .machine-ssh-fold > summary {
     min-width: var(--touch-target);
@@ -410,7 +434,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   overflow-wrap: anywhere;
 }
 
-/* what ssh printed while it waits: a check URL to visit, a banner; bounded, the newest lines stay */
 .machine-ssh-output {
   max-height: 9em;
   margin: var(--space-2) 0 0;
@@ -461,7 +484,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   .machine-dot.is-reconnecting { animation: none; }
 }
 
-/* a PC that retrying cannot reconnect: the next step, spelled out, with its button */
 .machine-action {
   display: flex;
   flex-direction: column;
@@ -489,7 +511,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   font-weight: var(--fw-medium);
 }
 
-
 .machine-action-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -500,12 +521,15 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   overflow-wrap: anywhere;
 }
 
+.machine-action-more { align-self: stretch; }
+.machine-action-more summary { cursor: pointer; color: var(--text-dim); }
+.machine-action-more[open] summary { margin-bottom: var(--space-2); }
+
 .machine-action.is-updating {
   border-color: var(--border);
   width: calc(100% - var(--space-3) - var(--machine-indent));
 }
 
-/* a bridge install: the step, a bar, the bytes and time left */
 .bridge-progress {
   display: flex;
   flex-direction: column;
@@ -545,7 +569,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   transition: width 0.3s ease;
 }
 
-/* no size to measure (install, restart): a band that keeps moving */
 .bridge-progress-bar span.is-indeterminate {
   width: 35%;
   animation: bridge-progress-slide 1.4s ease-in-out infinite;
@@ -561,13 +584,11 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   .bridge-progress-bar span.is-indeterminate { left: 0; width: 100%; animation: none; opacity: 0.5; }
 }
 
-/* an update in progress is news, not an error */
 .machine-action.is-updating .machine-action-text strong { color: var(--status-working); }
 
 .machine-action.is-setup { border-color: var(--border); }
 .machine-action.is-setup .machine-action-text strong { color: var(--text); }
 
-/* where a PC's own Ovis answers: a link it gave, or its address to copy */
 .machine-own-address {
   display: flex;
   flex-direction: column;
@@ -596,25 +617,12 @@ p.machine-own-address {
   font-family: var(--font-mono);
 }
 
-/* the compact sidebar's New workspace, its + alone: held at the foot of the list while it scrolls, so it is always in reach */
-.machine-new-row.is-compact {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  background: var(--bg-nav);
-}
-
-/* one line (the default): a PC's header is a quiet label over its workspaces, as herdr-app draws it, so the names
-   under it lead */
 .machine-header.is-compact .machine-title {
   color: var(--text-dim);
   font-size: var(--fs-xs);
   font-weight: var(--fw-regular);
 }
 
-/* the PC the selected pane is on (G-035), among several: on two lines its name keeps the head's weight and
-   the strong ink while the others step down to medium; on one line the quiet label takes the selected weight
-   and the text ink. aria-current on the title says the same to a screen reader. A lone PC's head is as it was. */
 .machine-list:has(.machine-group:nth-of-type(2)) .machine-header:not(.is-compact) .machine-title:not(.is-current) {
   color: var(--text);
   font-weight: var(--fw-medium);

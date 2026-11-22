@@ -28,12 +28,11 @@ import { openAuthorized, ownedFolders, release, resolveFilePath } from "./file-v
  * disk the file was just read from; a disk that stalls during it holds the server for that long.
  */
 
-/** A request this route will not carry out, with the status and code it answers. */
 export class TextEditRefused extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly revision?: string) { super(message); }
 }
 
-/** Test seams: `platform` stands in for the process's own; `beforeRename` runs between the last look and the rename. Never set outside tests. */
+/** Never set outside tests. */
 export const textSaveHooks: { platform?: NodeJS.Platform; beforeRename?: () => void } = {};
 
 const platform = (): NodeJS.Platform => textSaveHooks.platform ?? process.platform;
@@ -85,7 +84,6 @@ function locate(input: string, cwd: string): { root: string; requested: string }
   return { root, requested };
 }
 
-/** Up to `limit` bytes of the file open at `fd`, from its start. */
 function readUpTo(fd: number, limit: number): Buffer {
   const buffer = Buffer.alloc(limit);
   let filled = 0;
@@ -111,7 +109,6 @@ function readCurrent(requested: string, root: string): { file: string; stat: Big
   } finally { release(opened.fd); }
 }
 
-/** The text of a whole file, with LF line endings, and the endings it uses; a binary file, or one that mixes endings, is refused. */
 function decode(bytes: Uint8Array): { text: string; lineEndings: "lf" | "crlf" } {
   if (bytes.includes(0)) throw new TextEditRefused(415, "not_text", "Only a text file can be edited here");
   let text: string;
@@ -160,7 +157,6 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     const { root, requested } = locate(input, cwd);
     located = { root, requested, current: readCurrent(requested, root) };
   } catch (error) {
-    // a file gone since it was opened is a change like any other: the editor offers to reload
     if (error instanceof TextEditRefused && error.code === "not_found") throw new TextEditRefused(409, "stale_revision", "The file was moved or removed since it was opened");
     throw error;
   }
@@ -192,7 +188,6 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     closeSync(openSame(join(anchor, name), constants.O_WRONLY, current.stat));
     // and its attributes and access list are read from it, for the new file
     original = openSame(join(anchor, name), constants.O_RDONLY, current.stat);
-    // a name of its own, short whatever the file's is
     temp = `.ovis-edit-${randomBytes(6).toString("hex")}.tmp`;
     const fd = openSync(join(anchor, temp), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
@@ -220,7 +215,7 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
   } catch (error) {
     throw refusedWrite(error);
   } finally {
-    if (temp !== null) try { unlinkSync(join(anchor, temp)); } catch { /* never created, or already gone */ }
+    if (temp !== null) try { unlinkSync(join(anchor, temp)); } catch { }
     if (original !== -1) closeSync(original);
     if (folderFd !== null) closeSync(folderFd);
   }

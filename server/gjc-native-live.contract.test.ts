@@ -161,7 +161,7 @@ function ownedProcesses(home: string): number[] {
 async function stopOwnedProcesses(home: string): Promise<void> {
   const signal = (pids: number[], value: NodeJS.Signals) => {
     for (const pid of pids) {
-      try { process.kill(pid, value); } catch { /* exited between enumeration and signal */ }
+      try { process.kill(pid, value); } catch { }
     }
   };
   const waitGone = async (deadline: number): Promise<number[]> => {

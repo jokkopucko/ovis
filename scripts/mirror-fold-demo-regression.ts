@@ -2,10 +2,7 @@
  * A mirrored pane wider than a phone (a Windows PC: herdr has no terminal attach there, so the bridge
  * repaints the pane at its size on that PC) is drawn folded to the screen's width, with nothing cut off
  * on the right; the pane menu's "Original width" draws the grid as it is again, remembered for this
- * device, and a desktop keeps the original width until it chooses "Wrap to screen". An attached pane
- * whose pty another device sized wider than the phone folds the same way while the phone does not drive
- * it (watching, or under its keyboard), and never while it drives. On the unmodified app over the demo's
- * fixture transport: no herdr, no user state.
+ * device, and a desktop keeps the original width until it chooses "Wrap to screen".
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,6 +15,7 @@ import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { openMoreGroup } from "./header-more.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const COLS = 120;
 const ROWS = 40;
@@ -34,12 +32,6 @@ interface FoldFixture {
 }
 declare global { interface Window { foldFixture: FoldFixture } }
 
-/**
- * The demo owns metadata and auth; this makes its PC a mirror, as a Windows PC is, and gives `fixedPane`
- * a fixed grid of its own and a stand-in for herdr's history. `?fold=off` leaves the demo as it is: an
- * attached PC. `?fold=attached` keeps the PC attached but gives the pane the same wide pty grid, which a
- * watching phone adopts.
- */
 function installFoldFixture(screen: string, cols: number, rows: number, fixedPane: string): void {
   const mode = new URL(location.href).searchParams.get("fold");
   if (mode === "off") return;
@@ -70,7 +62,6 @@ function installFoldFixture(screen: string, cols: number, rows: number, fixedPan
     socket.push = (frame) => {
       if (frame.pane_id !== fixedPane) push(frame);
       else if (frame.type === "pane-geometry") push({ ...frame, cols, rows, ...(fixed ? { fixed: true } : {}) });
-      // the demo's own recording would draw over the fixture's screen
       else if (frame.type === "pty-data" && frame.fixture !== "fold") return;
       else if (frame.type === "pty-data") {
         const { fixture: _, ...output } = frame;
@@ -95,7 +86,6 @@ function installFoldFixture(screen: string, cols: number, rows: number, fixedPan
 }
 
 const cellWidth = (text: string): number => [...text].reduce((sum, char) => sum + (/[\u1100-\u115f\uac00-\ud7a3\u3000-\u303f\uff00-\uff60]/u.test(char) ? 2 : 1), 0);
-/** `head`, filled with `fill` to the grid's width less the row's END marker, then the marker */
 const row = (index: number, head: string, fill = "."): string => {
   const marker = `END${index}`;
   let text = head;
@@ -108,7 +98,6 @@ for (let index = 1; index <= ROWS; index++) {
   if (index === 3) screenRows.push(`\x1b[31mRED-SEGMENT\x1b[0m${row(index, " ").slice("RED-SEGMENT".length)}`);
   else if (index === 5) screenRows.push(row(index, "한글 줄바꿈: 오른쪽 끝까지 보여야 합니다 ", "가"));
   else if (index === 7) screenRows.push(row(index, `R07 ${LINK} `));
-  // a labelled OSC 8 hyperlink: the row shows OSC8-LABEL, its target is OSC8
   // an OSC 8 hyperlink whose label is itself an address: its target, not the label, is what opens
   else if (index === 11) screenRows.push(`R11 \x1b]8;;${OSC8_REAL}\x1b\\${OSC8_SHOWN}\x1b]8;;\x1b\\${row(index, " ").slice(`R11 ${OSC8_SHOWN}`.length)}`);
   else if (index === 9) screenRows.push(`R09 \x1b]8;;${OSC8}\x1b\\OSC8-LABEL\x1b]8;;\x1b\\${row(index, " ").slice("R09 OSC8-LABEL".length)}`);
@@ -116,10 +105,8 @@ for (let index = 1; index <= ROWS; index++) {
   else screenRows.push(row(index, `R${String(index).padStart(2, "0")} the quick brown fox `));
 }
 for (const text of screenRows) assert.equal(cellWidth(plain(text)), COLS, `a fixture row is the grid's width: ${plain(text)}`);
-// what server/mirror.ts sends for a whole screen: line wrap off while the rows are drawn
 const frameOf = (rows: string[]): string => `\x1b[?25l\x1b[0m\x1b[H\x1b[2J\x1b[?7l${rows.join("\r\n")}\x1b[0m\x1b[?7h`;
 const SCREEN = frameOf(screenRows);
-// a full-screen program's frame, as btop draws one: a box as wide as the grid, on the alternate screen
 const tuiRows = Array.from({ length: ROWS }, (_, index) => index === 0 ? `┌${"─".repeat(COLS - 2)}┐`
   : index === ROWS - 1 ? `└${"─".repeat(COLS - 2)}┘` : `│${` cpu${String(index).padStart(2, "0")} ${"#".repeat(index)}`.padEnd(COLS - 2)}│`);
 for (const text of tuiRows) assert.equal(cellWidth(text), COLS, `a TUI row is the grid's width: ${text}`);
@@ -128,7 +115,6 @@ const TUI = `\x1b[?1049h${frameOf(tuiRows)}`;
 const HERDR_MOUSE = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 
 interface Visible { folded: boolean; cut: string[]; hostScrollWidth: number; hostClientWidth: number }
-/** Whether every row's END marker is inside the pane's visible width, in whichever view draws it. */
 const visibleMarkers = (page: Page): Promise<Visible> => page.evaluate(({ rows, grid }) => {
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
   const folded = host.hasAttribute("data-folded");
@@ -167,7 +153,6 @@ const visibleMarkers = (page: Page): Promise<Visible> => page.evaluate(({ rows, 
   return { folded, cut, hostScrollWidth: host.scrollWidth, hostClientWidth: host.clientWidth };
 }, { rows: ROWS, grid: shownRows() });
 
-/** The rectangle of `text` in the folded rows, and the pane's visible box, both in viewport pixels. */
 const foldedText = (page: Page, text: string): Promise<{ rect: { left: number; top: number; right: number; bottom: number } | null; box: { top: number; bottom: number } }> => page.evaluate((wanted) => {
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
   const box = host.getBoundingClientRect();
@@ -190,9 +175,7 @@ const foldState = (page: Page, folded: boolean): Promise<unknown> => page.waitFo
   const host = document.querySelector(".pane-frame.is-current .pane-terminal");
   return host !== null && host.hasAttribute("data-folded") === want && (!want || host.querySelector(".terminal-fold-row") !== null);
 }, folded);
-// kept in a key of its own (lib/settings.ts MIRROR_WRAP_STORAGE_KEY), out of an older tab's whole-record save
 const savedWrap = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:mirror-wrap") ?? "null"));
-/** Every row's END marker inside the pane's visible width, waited for: the view settles a frame or a resize after it is drawn. */
 const rowsWhole = async (page: Page, label: string): Promise<Visible> => {
   let seen = await visibleMarkers(page);
   for (const deadline = Date.now() + 10_000; seen.cut.length > 0 && Date.now() < deadline;) {
@@ -202,18 +185,15 @@ const rowsWhole = async (page: Page, label: string): Promise<Visible> => {
   assert.deepEqual(seen.cut, [], `${label}: rows cut off on the right ${JSON.stringify(seen)}`);
   return seen;
 };
-/** Picks `label` from the pane's actions: a phone's header More (a bottom sheet of buttons; its title lists the tabs), a desktop's tab menu (a popover of menu items, RowMenu). */
 const choose = async (page: Page, label: string, phone: boolean): Promise<void> => {
   // a phone layout is waited for, not sampled: just after a resize from a desktop-wide window the header
   // still holds the desktop's tab row, which the phone layout then takes away
   if (phone) {
-    await page.locator(".app-header .context-tabs").waitFor();
+    await page.locator(".app-header .header-tabs-sheet").waitFor();
     await page.locator(".header-more-button").click();
     await page.locator(".row-sheet").waitFor();
-    // the pane's actions are under More's Pane and tab… (G-143)
     await openMoreGroup(page, "pane");
   } else {
-    // a desktop's tab strip shows the selected tab's actions button under the pointer (ui-regression.ts)
     await page.locator(".tab-strip").first().hover();
     const button = page.locator(".tab-strip-item.is-active .tab-strip-menu").first();
     await button.waitFor({ state: "visible" });
@@ -228,10 +208,9 @@ const choose = async (page: Page, label: string, phone: boolean): Promise<void> 
   await item.click();
 };
 /**
- * Taps a character of `text` in the folded row that holds it (`at`: its index in `text`, `-1` the last one),
- * three quarters across the glyph, where the caret lies after it. The point is measured against the row and
- * Playwright clicks the row there once it holds still, so the view scrolling between measuring and tapping
- * (a late resize settling, the rows following the cursor) cannot move the tap off the glyph.
+ * The point is measured against the row and Playwright clicks the row there once it holds still, so the
+ * view scrolling between measuring and tapping (a late resize settling, the rows following the cursor)
+ * cannot move the tap off the glyph.
  */
 const tapFolded = async (page: Page, text: string, at: number): Promise<void> => {
   const row = page.locator(".pane-frame.is-current .terminal-fold-row").filter({ hasText: text }).first();
@@ -253,7 +232,6 @@ const tapFolded = async (page: Page, text: string, at: number): Promise<void> =>
   }, { text, at });
   await row.click({ position });
 };
-/** Taps with `tap` and waits for `url` to open in a tab; when none opens, says what the tap reached and what the page tried to open. */
 const opensTab = async (page: Page, url: string, tap: () => Promise<void>): Promise<void> => {
   const opened = page.context().waitForEvent("page", { timeout: 15_000 });
   await tap();
@@ -268,12 +246,10 @@ const opensTab = async (page: Page, url: string, tap: () => Promise<void>): Prom
   await tab.close();
 };
 const pushScreen = (page: Page, data: string): Promise<void> => page.evaluate(({ pane, data }) => window.foldFixture.sockets.at(-1)!.push({ type: "pty-data", fixture: "fold", pane_id: pane, data }), { pane: panes.shell, data });
-/** Whether the pane is drawn folded, and whether what it draws fits its width (nothing to pan sideways). */
 const fitState = (page: Page): Promise<{ folded: boolean; fold: boolean; fits: boolean }> => page.evaluate(() => {
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
   return { folded: host.hasAttribute("data-folded"), fold: host.querySelector(".terminal-fold") !== null, fits: host.scrollWidth <= host.clientWidth + 1 };
 });
-/** A one-finger swipe across the middle of the pane by (dx, dy), in the moves a phone sends. */
 const swipe = async (page: Page, dx: number, dy: number): Promise<void> => {
   const box = await page.locator(".pane-frame.is-current .pane-terminal").boundingBox();
   assert.ok(box);
@@ -289,7 +265,6 @@ const hostScroll = (page: Page): Promise<{ top: number; left: number }> => page.
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
   return { top: host.scrollTop, left: host.scrollLeft };
 });
-/** The labels of the pane's actions on a phone (its header More: the title lists the tabs; Pane and tab… under it, G-143), closed again with Escape. */
 const sheetItems = async (page: Page): Promise<string[]> => {
   await page.locator(".header-more-button").click();
   await page.locator(".row-sheet").waitFor();
@@ -299,7 +274,6 @@ const sheetItems = async (page: Page): Promise<string[]> => {
   await page.locator(".row-sheet").waitFor({ state: "detached" });
   return items;
 };
-/** A Korean syllable composed in xterm's focused input: in view, and drawn over the folded rows. The composition is cancelled after. */
 const preeditOverFold = async (page: Page, label: string): Promise<void> => {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Input.imeSetComposition", { text: "한글", selectionStart: 2, selectionEnd: 2 });
@@ -313,7 +287,6 @@ const preeditOverFold = async (page: Page, label: string): Promise<void> => {
     return { rect: { top: rect.top, bottom: rect.bottom }, view: { top: box.top + host.clientTop, bottom: box.top + host.clientTop + host.clientHeight }, onTop: top === view || view.contains(top), topmost: top?.className ?? null };
   });
   assert.ok(preedit.onTop && preedit.rect.top >= preedit.view.top - 1 && preedit.rect.bottom <= preedit.view.bottom + 1, `${label}: the preedit is in view and drawn over the folded rows ${JSON.stringify(preedit)}`);
-  // the composition cancelled: nothing reaches the pane
   await cdp.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
   await page.locator(".pane-frame.is-current .composition-view.active").waitFor({ state: "detached" });
   await cdp.detach();
@@ -322,11 +295,10 @@ const SETTINGS = { language: "en", defaultView: "terminal", terminalInputMode: "
 
 async function open(browser: Browser, origin: string, viewport: { width: number; height: number }, phone: boolean, query = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const context = await browser.newContext({ viewport, isMobile: phone, hasTouch: phone, locale: "en-US" });
-  // fixed metrics: the 120-column grid fits a 1440px desktop and no phone
   await context.addInitScript((settings) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(settings));
+    localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
   }, SETTINGS);
-  // what a tap reached and which links the page tried to open, for a failure to report
   await context.addInitScript(() => {
     const seen = { taps: [] as string[], anchors: [] as string[] };
     (window as unknown as { foldSeen: typeof seen }).foldSeen = seen;
@@ -371,17 +343,7 @@ try {
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () =>
     `<script src="./demo-transport.js"></script>\n<script>(${installFoldFixture.toString()})(${JSON.stringify(SCREEN)}, ${COLS}, ${ROWS}, ${JSON.stringify(panes.shell)})</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   const origin = `http://127.0.0.1:${server.port}${prefix}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -391,7 +353,6 @@ try {
       try {
         await drawnScreen(page);
 
-        // a phone: every row whole, folded to the screen's width, and nothing to pan sideways
         let seen = await rowsWhole(page, "390px phone");
         assert.ok(seen.folded, "390px phone: the mirror is drawn folded");
         assert.ok(seen.hostScrollWidth <= seen.hostClientWidth, `390px phone: the folded pane has nothing to pan sideways ${JSON.stringify(seen)}`);
@@ -404,7 +365,6 @@ try {
         assert.deepEqual(fold.rows, screenRows.map((text) => plain(text).trimEnd()), "the folded rows hold the grid's rows, each whole and in order");
         assert.ok(fold.red !== null && fold.red !== fold.plain, `a coloured run keeps its colour when folded (${fold.red} against ${fold.plain})`);
         assert.ok(inView(await foldedText(page, "FOLD-LAST")), "the cursor's row, the last one with text, is in view");
-        // the hidden grid holds xterm's input (its helper textarea, an IME's preedit): its cursor row is in view too
         const gridCursor = await page.evaluate((rows) => {
           const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
           const screen = host.querySelector<HTMLElement>(".xterm-screen")!.getBoundingClientRect();
@@ -413,7 +373,6 @@ try {
         }, ROWS);
         assert.ok(gridCursor.top >= gridCursor.viewTop - 1 && gridCursor.bottom <= gridCursor.viewBottom + 1, `the grid's cursor row stays in view under the folded rows ${JSON.stringify(gridCursor)}`);
 
-        // a cleared shell, its prompt on the first row: the folded rows keep it in sight, not the blank rows under it
         await page.setViewportSize({ width: 390, height: 600 });
         await pushScreen(page, frameOf(["PROMPT-TOP C:\\>"]));
         await page.waitForFunction(() => document.querySelector(".pane-frame.is-current .terminal-fold")?.textContent?.includes("PROMPT-TOP"));
@@ -425,19 +384,14 @@ try {
         await page.setViewportSize({ width: 390, height: 844 });
         await settled(page);
 
-        // a link in the folded rows opens as the grid's own does: tapped on its last character's right half
         await opensTab(page, LINK, () => tapFolded(page, LINK, -1));
-        // a labelled OSC 8 hyperlink opens its target, as on the grid
         await opensTab(page, OSC8, () => tapFolded(page, "OSC8-LABEL", 3));
         await opensTab(page, OSC8_REAL, () => tapFolded(page, OSC8_SHOWN, 12));
 
-
-        // a wheel past the folded rows' top scrolls herdr's history at the chosen speed (2), as on the grid
         await page.waitForFunction(() => window.foldFixture.reads > 0);
         const box = await page.locator(".pane-frame.is-current .pane-terminal").boundingBox();
         assert.ok(box);
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        // up through the folded rows by wheel, as a user reads back: that pans them, and sends herdr nothing
         const scrollTop = (): Promise<number> => page.evaluate(() => document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop);
         for (let turns = 0; await scrollTop() > 1; turns++) {
           assert.ok(turns < 40, "the folded rows pan up to their top");
@@ -450,18 +404,15 @@ try {
           throw new Error(`a wheel past the folded rows' top scrolled no history: ${JSON.stringify(await page.evaluate(() => ({ ...window.foldFixture, sockets: undefined, scrollTop: document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop })))}`, { cause });
         });
         assert.equal(await page.evaluate(() => window.foldFixture.offset), 6, "one wheel step moves 3 lines at speed 2");
-        // back down: the folded rows pan to their end first, as an oversized grid does, then history returns
         for (let turns = 0; await page.evaluate(() => window.foldFixture.offset) !== 0; turns++) {
           assert.ok(turns < 40, "wheeling down returns the history to its end");
           await page.mouse.wheel(0, 400);
           await settled(page);
         }
 
-        // a smaller Android phone, then the phone on its side: still folded, still whole
         for (const [width, height] of [[360, 800], [844, 390]] as const) {
           const before = await page.evaluate(() => document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.clientWidth);
           await page.setViewportSize({ width, height });
-          // 844px is past the phone layout: the pane is narrower than the window, and still narrower than the grid
           await page.waitForFunction((was) => {
             const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
             return host !== null && host.clientWidth !== was && host.hasAttribute("data-folded");
@@ -469,7 +420,6 @@ try {
           await rowsWhole(page, `${width}x${height}`);
         }
 
-        // the pane menu's way back, for a full-screen program: the grid at its width, panned sideways
         await page.setViewportSize({ width: 390, height: 844 });
         await foldState(page, true);
         await choose(page, "Original width", true);
@@ -489,7 +439,6 @@ try {
         await foldState(page, true);
         assert.equal(await savedWrap(page), true, "Wrap to screen is kept too");
 
-        // a phone that only watches the pane folds it too: a mirror's grid is the PC's either way
         await page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "observe" })));
         await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor();
         await settled(page);
@@ -498,20 +447,16 @@ try {
         await page.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "interact" })));
         await page.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
 
-        // a Korean syllable composed on the cursor's row shows over the folded rows, where it will be typed
-        // a tap on text that is no link: the terminal takes the typing
         await tapFolded(page, "FOLD-LAST", 2);
         await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea"));
         await preeditOverFold(page, "a mirror");
 
-        // a desktop the grid fits: drawn as it is, as before
         await page.setViewportSize({ width: 1440, height: 900 });
         await foldState(page, false);
         await rowsWhole(page, "1440px desktop, the grid fits");
         assert.deepEqual(phone.errors, []);
       } finally { await phone.close(); }
 
-      // a desktop window narrower than the grid keeps the original width until its menu says Wrap to screen
       const desk = await open(browser, origin, { width: 1000, height: 800 }, false);
       try {
         await drawnScreen(desk.page);
@@ -527,7 +472,6 @@ try {
         assert.deepEqual(desk.errors, []);
       } finally { await desk.close(); }
 
-      // an attached PC's pane (no mirror) on a phone: fitted to the screen as before, never folded
       const attached = await open(browser, origin, { width: 390, height: 844 }, true, "&fold=off");
       try {
         await attached.page.waitForFunction((grid) => (document.querySelector(grid)?.textContent?.trim().length ?? 0) > 0, shownRows(".pane-frame.is-current"));
@@ -541,16 +485,12 @@ try {
         assert.deepEqual(attached.errors, []);
       } finally { await attached.close(); }
 
-      // an attached PC's pane whose pty another device sized wider than the phone (`fold=attached`: every
-      // geometry of the pane says 120x40, as a desktop holding the size would)
       const wide = await open(browser, origin, { width: 390, height: 844 }, true, "&fold=attached");
       try {
         const { page: phone } = wide;
         const host = (): Promise<{ width: number }> => phone.evaluate(() => ({ width: document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.clientWidth }));
         await phone.waitForFunction((grid) => window.foldFixture?.sockets.length > 0 && (document.querySelector(grid)?.textContent?.trim().length ?? 0) > 0, shownRows(".pane-frame.is-current"));
         await settled(phone);
-        // driving: the phone sizes the pty and the program draws at its width (the other device's grid is not
-        // adopted), so there is nothing to fold, and the menu has no width to choose
         assert.deepEqual(await fitState(phone), { folded: false, fold: false, fits: true }, "a driving phone's grid is its own, fitted: nothing folded");
         assert.ok(!(await sheetItems(phone)).includes("Original width"), "a driving phone's menu offers no Original width");
 
@@ -568,7 +508,6 @@ try {
         assert.ok(watching.hostScrollWidth <= watching.hostClientWidth, `a watched pane folded has nothing to pan sideways ${JSON.stringify(watching)}`);
         assert.deepEqual(await phone.evaluate(() => [...document.querySelectorAll(".pane-frame.is-current .terminal-fold-row")].map((node) => node.textContent ?? "")),
           screenRows.map((text) => plain(text).trimEnd()), "the folded rows are the attach stream's rows, each whole and in order");
-        // Korean folds at its spaces, each word whole (word-break: keep-all), its wide glyphs inside the screen
         const broken = await phone.evaluate((words) => {
           const row = [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .terminal-fold-row")].find((node) => node.textContent?.includes(words[0]!))!;
           const text = row.textContent ?? "";
@@ -591,7 +530,6 @@ try {
         }, ["한글", "줄바꿈:", "오른쪽", "끝까지", "보여야", "합니다"]);
         assert.deepEqual(broken, [], "a watched pane's Korean words fold whole");
         assert.ok((await sheetItems(phone)).includes("Original width"), "a watching phone's menu offers Original width for the wide pane");
-        // a larger Android phone, both phones on their side, and back: still folded, still whole
         for (const [width, height] of [[412, 915], [915, 412], [844, 390], [390, 844]] as const) {
           const before = (await host()).width;
           await phone.setViewportSize({ width, height });
@@ -602,13 +540,11 @@ try {
           await rowsWhole(phone, `watching at ${width}x${height}`);
         }
 
-        // Original width: the pty's grid as the other device sized it, panned sideways; a full-screen program's boxes whole
         await choose(phone, "Original width", true);
         await foldState(phone, false);
         assert.equal(await savedWrap(phone), false, "the choice is the same device setting as a mirror's");
         await pushScreen(phone, TUI);
         await phone.waitForFunction(({ top, row }) => document.querySelector(row)?.textContent === top, { top: tuiRows[0], row: shownRow(".pane-frame.is-current") });
-        // a finger pans the grid sideways to the box's right edge
         for (let turns = 0; ; turns++) {
           const before = (await hostScroll(phone)).left;
           await swipe(phone, -240, 0);
@@ -632,7 +568,6 @@ try {
         }, shownRow());
         assert.ok(corner.scrollWidth > corner.clientWidth && corner.scrollLeft > 0, `Original width: the watched grid pans sideways ${JSON.stringify(corner)}`);
         assert.ok(corner.glyph === "┐" && corner.left >= corner.viewLeft - 1 && corner.right <= corner.viewRight + 1, `a TUI's right edge comes into view when panned ${JSON.stringify(corner)}`);
-        // Wrap to screen again: the boxes fold with the text, nothing cut off or panned
         await choose(phone, "Wrap to screen", true);
         await foldState(phone, true);
         await phone.waitForFunction(() => document.querySelector(".pane-frame.is-current .terminal-fold")?.textContent?.includes("┌"));
@@ -640,7 +575,6 @@ try {
         assert.ok((await fitState(phone)).fits, "a folded TUI has nothing to pan sideways");
         await pushScreen(phone, `\x1b[?1049l${SCREEN}`);
 
-        // driving again: the phone fits the pty once more, unfolded
         await phone.evaluate(() => window.foldFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "interact" })));
         await phone.locator(".pane-frame.is-current .terminal-banner-observe").waitFor({ state: "detached" });
         await phone.waitForFunction(() => {
@@ -648,8 +582,6 @@ try {
           return node !== null && !node.hasAttribute("data-folded") && node.scrollWidth <= node.clientWidth + 1;
         });
 
-        // under its soft keyboard a driving phone keeps the grid it shows (#1045) and draws the pane at the grid
-        // another device left the pty at: folded until the keyboard goes, xterm's input where its text will show
         await phone.evaluate(({ pane, cols, rows }) => window.foldFixture.sockets.at(-1)!.push({ type: "pane-geometry", pane_id: pane, cols, rows }), { pane: panes.shell, cols: COLS, rows: ROWS });
         // the mouse reported, as herdr's attach always has it: the fold does not wait for a program that takes no clicks
         await pushScreen(phone, HERDR_MOUSE);
@@ -662,7 +594,6 @@ try {
         await rowsWhole(phone, "under the keyboard, at another device's grid");
         assert.ok(inView(await foldedText(phone, "FOLD-LAST")), "under the keyboard, the cursor's row is in view");
         await preeditOverFold(phone, "under the keyboard, at another device's grid");
-        // the folded rows pan under the keyboard too, by wheel and by finger, before a swipe scrolls the program
         const bottom = await hostScroll(phone);
         const middle = await phone.locator(".pane-frame.is-current .pane-terminal").boundingBox();
         assert.ok(middle);
@@ -674,8 +605,6 @@ try {
         await settled(phone);
         const swiped = await hostScroll(phone);
         assert.ok(swiped.top > wheeled.top, `under the keyboard, a swipe pans the folded rows (${wheeled.top} -> ${swiped.top})`);
-        // a shell's caret in a long command line that folds into several lines, moved back into its first one,
-        // then onto its last: the caret is drawn where it is, and a preedit stands on it, not at the line's end
         const command = `$ CARET-LINE ${"x".repeat(COLS - 30)} TAIL`;
         for (const at of [{ col: 6, glyph: "E", first: true }, { col: command.indexOf(" TAIL") + 2, glyph: "T", first: false }]) {
           await pushScreen(phone, `\x1b[?25l\x1b[0m\x1b[H\x1b[2J${[...Array.from({ length: ROWS - 1 }, (_, index) => `R${index + 1}`), command].join("\r\n")}\x1b[${ROWS};${at.col}H\x1b[?25h`);
@@ -703,7 +632,6 @@ try {
             const box = view.getBoundingClientRect();
             const host = view.closest<HTMLElement>(".pane-terminal")!;
             const xterm = host.querySelector<HTMLElement>(".xterm")!;
-            // where the grid and the input stood, for a failure to say
             return { top: box.top, bottom: box.bottom, left: box.left, at: view.style.left, gridLeft: host.querySelector(".xterm-screen")!.getBoundingClientRect().left, shift: xterm.style.left, scrolled: xterm.scrollLeft };
           });
           const preeditMiddle = (preedit.top + preedit.bottom) / 2;
@@ -713,7 +641,6 @@ try {
           await phone.locator(".pane-frame.is-current .composition-view.active").waitFor({ state: "detached" });
           await ime.detach();
         }
-        // the keyboard goes: the catch-up fit takes the pane back to the phone's grid, unfolded
         await phone.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
         await phone.setViewportSize({ width: 390, height: 844 });
         await phone.waitForFunction(() => !document.documentElement.hasAttribute("data-keyboard"));

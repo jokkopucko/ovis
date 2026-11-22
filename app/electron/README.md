@@ -19,7 +19,8 @@ The Mac (`app/mac`) and Windows (`app/windows`) shells stay as they are; this ap
    `hc update --from`, as hc's own installer does, and the terminals keep running. A copy newer than
    the bundled one (left by a newer app before a rollback) is kept, since hc does not go back.
 2. Starts the Ovis server on the bundled Bun with `OVIS_RUNTIME=herdr-core`, `OVIS_HC_BIN` set to
-   that hc, `HOST=127.0.0.1` and its own state folder (`<user data>/server`, or
+   that hc with `OVIS_HC_BIN_BUNDLED=1` (the app's own hc gets 10 seconds to answer, and the server
+   finds another and says so in its log when it does not), `HOST=127.0.0.1` and its own state folder (`<user data>/server`, or
    `OVIS_STATE_DIR`), and `OVIS_DESKTOP_APP=1`, so Settings → About says updates come with the app. The
    server is the same code the installer runs; the app only starts it.
 3. Opens a window on the server's address. It keeps the port it had last time while that port is
@@ -30,11 +31,11 @@ Until the server answers, or when it stops, the window shows the connection scre
 **Show logs**. The logs are in `<user data>/logs/ovis.log` (the run before in `ovis.log.1`),
 with the app's update lines (why updates are off, a failed check or download).
 
-The tray and the menu bar speak the system's language when the Ovis pages have it (Korean,
-Japanese, Chinese; `src/text.ts`), English otherwise.
+The tray, the menu bar and the notification of a downloaded update speak the system's language
+when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English otherwise.
 
 - **Tray**: Open Ovis, Open in Browser, Keep Computer Awake, Restart Ovis Server, Restart to Update
-  (once an update is downloaded), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
+  (once an update is downloaded, see [Updates](#updates)), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
   On a Linux desktop without a tray (GNOME without an AppIndicator extension), starting the app
   again shows the window: only one copy runs.
 - **Keep Computer Awake** (tray, off by default): **While an Agent Is Working** holds off system sleep
@@ -48,6 +49,47 @@ Japanese, Chinese; `src/text.ts`), English otherwise.
   default browser. A blank window a page opens for a sign-in sends its address to the default
   browser and closes. Only the microphone (dictation, never the camera), the clipboard,
   notifications and full screen are granted, and only to the server's own pages.
+- **Browser for links** (Settings → Chat → Files, system default unless chosen): a web link the
+  page opens (`kind` link in `src/lib/externalLink.ts`, through the `ovisBrowsers` bridge) opens in
+  the browser chosen there; sign-ins, Ovis pages and mailto stay with the default browser.
+  `src/browsers.ts` lists the browsers: Linux's `.desktop` files that take https, Windows'
+  `StartMenuInternet` clients, the apps a Mac's LaunchServices opens https with, and agent-browser
+  when its program is on the PC (headed, in a session `ovis-links` of its own). A page names one by
+  its id, and only the server's own page (its main frame, by its real origin) may ask; the program
+  runs without a shell, the address as one argument. A registration that names a shell or another
+  interpreter, or puts the address inside a larger or quoted argument, is not offered. When the chosen browser
+  is gone or fails at once, the default browser opens the link and a notification says so. The
+  choice is kept in `<user data>/link-browser.json`.
+- **Links to a pane**: another program on the PC shows a pane in the window, instead of a browser
+  tab, with an `ovis://open` link: `ws` (the workspace's id), `pane`, and optionally `view`
+  (`terminal` or `chat`) and `machine` (another PC), as the server's own deep links name them. The
+  window comes forward and selects the pane without reloading, as the address bar's own link does:
+  only once the PC is connected and its list says the pane is in the workspace the link names, and
+  no pane until then;
+  a pane that has closed opens its workspace. A link starts the app when it is not running.
+
+  ```sh
+  open "ovis://open?ws=3&pane=t3&view=terminal"                      # macOS
+  xdg-open "ovis://open?ws=3&pane=t3&view=terminal"                  # Linux (.deb; an AppImage: ./Ovis-linux-x64.AppImage "ovis://open?…")
+  start "" "ovis://open?ws=3&pane=t3&view=terminal"                  # Windows (cmd)
+  ```
+
+  The link is passed on as those four names alone (`src/openLink.ts`): it never sends the window to
+  another address, a file, a dialog or Settings, and one that names no pane does nothing. `ws` may
+  carry the workspace's slug (`3-my-app`), as the address bar writes it: herdr hands its ids out
+  again, and the slug picks the workspace meant, as a deep link's does.
+
+  On Windows the app registers the scheme for the user as it starts, and only while no program has
+  it: the installer registers nothing, so a link is handled only once the app has been started at
+  least once after installing. Removing the app removes the registration only when it still starts
+  that install. An install whose folder was deleted without its uninstaller can leave its
+  registration behind, which the app then does not take over: delete `HKCU\Software\Classes\ovis` and start the app again.
+
+  The scheme is shared by host: `ovis://open` is the desktop app's, `ovis://account/callback` the
+  phone apps' sign-in (`src/lib/account/native.ts`); any other host only brings the window forward.
+  A web page can open the link too, once its browser has asked to open Ovis (and not again, when
+  that was allowed for good): it brings the window forward with a pane selected, and can do
+  nothing else.
 - **Open files**: the core and the server start through `/bin/bash`, which closes every descriptor
   Chromium left open before it becomes the program, so the core (which outlives the app) holds none
   of the app's files or sockets.
@@ -120,11 +162,44 @@ when it has a feed:
 | `OVIS_UPDATE_URL=https://…` | run | checks that feed instead of the built-in one (a build without a feed stays off) |
 | `OVIS_UPDATES=0` | run | no checks |
 
-A development run never checks. The app checks after it starts and every 6 hours, downloads in the
-background, and offers **Restart to Update** in the tray. On Linux the AppImage replaces itself; a
-.deb install installs the new .deb with `apt-get install --no-remove` behind the system's password
-prompt (pkexec, or sudo), only from **Restart to Update**, never on a plain quit, and cancelling the
-prompt keeps Ovis running as it was. On macOS an update needs a signed app.
+A development run never checks. The app checks after it starts and every hour (nothing pushes a
+release to it), and downloads in the background. A version it already holds is not downloaded
+again by the next check, unless the updater reported a failure since. An update whose file is
+gone from the updater's folder (a later download that fails empties it) is no longer offered,
+anywhere, until it is downloaded again. Once the app is on its way out for an update, it checks
+no more.
+
+On a Mac the update is offered only once Squirrel, the system's side of the updater, says it
+holds it: the download alone is not enough there, and Squirrel can refuse it (an app run from
+its disk image, a signature it does not accept). An error before that leaves nothing offered,
+and the next check hands the download over again.
+
+A downloaded update says so, in three places:
+
+- **A system notification**, once per version: "Ovis X.Y.Z is ready" with "Restart to update."
+  under it. Its click opens the window. Which version was announced is kept in
+  `<user data>/update-notice.json`, so the next start does not say it again.
+- **A line in the window**: "Ovis X.Y.Z is ready." with **Restart to Update**, on the row where
+  the Ovis pages show their own release line (the server the app carries offers none). Its close
+  button closes it for that version, in the app, so later starts keep it closed; the next
+  version shows it again. The connection screen shows the line too, also once closed: an update
+  may be what a server that cannot start needs. A window a page opens has no line.
+- **Restart to Update** in the tray, as long as the update waits.
+
+The line is drawn by the pages, from what the app's preload tells them (`ovisUpdate`): the
+downloaded version and whether its line was closed. Only the connection screen and the server's
+own pages are answered.
+
+On Linux the AppImage replaces itself, so one kept in a folder the user cannot write (under
+`/opt`, say) does not update itself: the log says why its updates are off. A .deb install
+installs the new .deb with `apt-get install --no-remove` behind the system's password prompt
+(pkexec, or sudo), only from **Restart to Update** (the tray's or the line's), never on a plain
+quit, and cancelling the prompt keeps Ovis running as it was. On macOS an update needs a signed
+app, and so does its notification.
+
+Except for a .deb, Restart to Update stops the server before it installs, since the new copy
+starts at once. An install that then cannot go ahead (the downloaded file gone meanwhile, an
+installer that fails at once) starts Ovis again as it was.
 
 ## Build
 
@@ -139,7 +214,7 @@ bun run dist                 # stage, bundle, then dist/Ovis-<version>-<arch>.Ap
                              # installs to %LOCALAPPDATA%\Programs\ovis-desktop)
 ```
 
-`bun scripts/build.ts stage` downloads herdr-core 0.1.17 and Bun 1.4.2 for this machine
+`bun scripts/build.ts stage` downloads herdr-core 0.1.17 and Bun 1.4.4 for this machine
 (`scripts/runtimes.ts` pins their SHA-256; a mismatch stops the build), checks that each runs and
 says its version, builds the client (`bun run build` at the repository root) and copies the server
 with its production packages into `stage/`. Each build checks the cached downloads against their
@@ -182,16 +257,24 @@ bun scripts/e2e.ts dist/Ovis-*.AppImage       # Linux
 bun scripts/e2e.ts dist/mac-arm64/Ovis.app    # macOS, from a logged-in desktop session
 bun scripts/e2e.ts --update                   # Linux: packages 0.0.1 and 0.0.2 from stage/ and out/,
                                               # then updates the first from a local https feed
+bun scripts/e2e.ts --update --from-tray       # the same, restarting from the tray with the line closed
 ```
 
 It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
 stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
-stays), the tray's items, a killed app (the next start ends the server left behind) and, with
-`--update`, Restart to Update. The app's main process is driven through its inspector. Terminals
-are made and typed into through the server's API, and the window is checked to list them. Tray
-items are pressed through their menu (enabled, with their handlers); whether the desktop draws the
-tray icon is not checked. The update feed uses a certificate made for the run, which the app is
-told to accept, and `--update` packages with electron-builder's usual caches.
+stays), the tray's items, Browser for links on Linux (a browser of the run's own is listed, chosen
+and given a link as one argument), a killed app (the next start ends the server left behind) and, with
+`--update`, the app's updates: an AppImage in a folder that cannot be written keeps them off; a
+downloaded update's one notification and that notification's click, its line in the window and
+on the connection screen, a later check that leaves the held version alone, the downloaded file
+lost while the server stops for the install (Ovis starts again, and the next check brings the
+update back), and Restart to Update from the line (with `--from-tray` the line is closed first,
+stays closed, and the tray restarts). The app's main process is driven
+through its inspector. Terminals are made and typed into through the server's API, and the window
+is checked to list them. Tray items are pressed through their menu (enabled, with their handlers);
+whether the desktop draws the tray icon is not checked. The notification is read as the app shows
+it; whether the desktop draws it is not checked. The update feed uses a certificate made for the
+run, which the app is told to accept, and `--update` packages with electron-builder's usual caches.
 
 Screenshots, the app's output and `results.json` go to `--out` (by default a new temporary
 folder, kept); the exit code is 0 when every check passed. A check that fails for a filed bug says

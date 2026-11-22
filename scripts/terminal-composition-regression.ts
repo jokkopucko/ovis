@@ -1,15 +1,9 @@
 /**
- * A long IME or dictation composition never pushes the terminal sideways, and the grid fills the
- * pane's width. At 412 and 720 wide, DPR 2.625, in Input line and Direct typing modes, with the
+ * At 412 and 720 wide, DPR 2.625, in Input line and Direct typing modes, with the
  * default font and with the bundled "JetBrains Mono Web": a long composition (CDP
  * Input.imeSetComposition, as Gboard's voice typing sends one) leaves the page and the terminal host
  * at scroll 0, keeps xterm's composition box inside the grid, and the grid is the pane's width less
- * its padding and less than one cell. The box keeps its newest character in view: a composition too
- * long for the room right of the cursor moves left, and one wider than the grid shows its end. A
- * Japanese composition from a cursor far along its row, longer than the room to the edge but
- * narrower than the grid, is shown whole (an odd number of cells to the edge, where the old box cut
- * a wide character in half). On the isolated test herdr; UI_EVIDENCE_DIR=<dir> keeps
- * the screenshots.
+ * its padding and less than one cell.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -20,7 +14,6 @@ import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/clien
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 
-/** Where xterm's composition box and its first and last characters are drawn, in viewport px. */
 function compositionGlyphs(): { left: number; right: number; first: { left: number; right: number }; last: { left: number; right: number } } | null {
   const view = document.querySelector(".composition-view.active");
   const text = view?.firstChild;
@@ -37,10 +30,6 @@ function compositionGlyphs(): { left: number; right: number; first: { left: numb
   return { left: box.left, right: box.right, first: glyph(0, 1), last: glyph(length - 1, length) };
 }
 
-/**
- * Composes in a pane of its own at each width, mode and font, then from a cursor far along a row,
- * and checks that nothing scrolls sideways and the composition's newest characters stay in view.
- */
 export async function checkTerminalComposition(browser: Browser, origin: string): Promise<void> {
   const out = process.env["UI_EVIDENCE_DIR"];
   if (out) mkdirSync(out, { recursive: true });
@@ -55,7 +44,6 @@ export async function checkTerminalComposition(browser: Browser, origin: string)
       await page.goto(`${origin}/?pane=${encodeURIComponent(ws.root_pane.pane_id)}`);
       await page.locator(shownRows()).first().waitFor();
       await page.waitForFunction((rows) => document.querySelector(rows)?.textContent?.includes("400") ?? false, shownRows(), { timeout: 15_000 });
-      // simulate long dictation composition
       const cdp = await ctx.newCDPSession(page);
       const target = mode === "line" ? ".terminal-input-text" : ".xterm-helper-textarea";
       await page.locator(target).focus();
@@ -65,7 +53,6 @@ export async function checkTerminalComposition(browser: Browser, origin: string)
         composed = long.slice(0, i);
         await cdp.send("Input.imeSetComposition", { text: composed, selectionStart: i, selectionEnd: i });
       }
-      // the box shows the whole composition and has been fitted to the grid (Direct), or the line holds it
       await page.waitForFunction(([m, text]) => m === "line"
         ? (document.querySelector(".terminal-input-text") as HTMLTextAreaElement | null)?.value.includes(text) ?? false
         : document.querySelector(".composition-view.active")?.textContent === text, [mode, composed] as const, { timeout: 10_000 });
@@ -78,14 +65,12 @@ export async function checkTerminalComposition(browser: Browser, origin: string)
       const view = await page.evaluate(() => {
         const box = document.querySelector(".composition-view.active")?.getBoundingClientRect();
         const screen = document.querySelector(".xterm-screen")!.getBoundingClientRect();
-        // the cell the user sees: libghostty's, while it draws the pane, else xterm's row width over its characters
         const layer = document.querySelector<HTMLElement>(".pane-terminal[data-renderer='ghostty'] .ghostty-layer");
         const cell = layer
           ? parseFloat(layer.style.getPropertyValue("--ghostty-cw"))
           : screen.width / (document.querySelector(".xterm-rows")!.firstElementChild!.textContent!.length || 1);
         const host = document.querySelector<HTMLElement>(".pane-terminal")!;
         const pad = getComputedStyle(document.querySelector(".pane-terminal .xterm")!);
-        // the width the fit gives the grid: the pane's, less the gutter on .xterm
         const room = host.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
         return { right: box?.right ?? null, screenRight: screen.right, screen: screen.width, room, cell, host: host.scrollLeft };
       });
@@ -103,7 +88,6 @@ export async function checkTerminalComposition(browser: Browser, origin: string)
       await cdp.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 }).catch(() => {});
       await ctx.close();
     }
-    // a Japanese word from far along the row: too long for the room to the edge, short enough for the grid
     await herdrRpc("pane.send_text", { pane_id: ws.root_pane.pane_id, text: "clear\r" });
     await herdrRpc("pane.send_text", { pane_id: ws.root_pane.pane_id, text: "x".repeat(31) });
     {

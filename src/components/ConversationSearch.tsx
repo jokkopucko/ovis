@@ -17,14 +17,10 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AgentMark } from "./AgentMark.tsx";
 
-/** a query shorter than this matches too much to be worth a read of the whole conversation */
 const MIN_QUERY = 2;
-/** the search waits this long after the last key before it reads */
 const TYPING_MS = 250;
-/** the list stops here: a query that matches more is too broad to scroll through */
 const MAX_RESULTS = 200;
 
-/** What the pick did: its turn is in the chat now, the conversation no longer holds it, or a page could not be read. */
 export type RevealResult = "shown" | "missing" | "failed";
 
 interface Search {
@@ -36,20 +32,15 @@ interface Search {
 interface ConversationSearchProps {
   paneId: string;
   agent: string | null;
-  /** the history the chat shows: the search reads that one, and a replaced one is said */
   historyId: string | undefined;
-  /** the pane's own name, as the header shows it: the field says whose conversation it searches; null or the pane id: none to say */
   title?: string | null;
   onClose: () => void;
-  /** brings the picked turn into the chat; the dialog closes once it is there */
   onPick: (match: ConversationSearchMatch) => Promise<RevealResult>;
 }
 
 /**
- * Search in the pane's conversation (#2018): what the user wrote and the agent's answers, older
- * pages included, listed as snippets; a pick opens the chat at that message. The Codex app's Find in
- * chat searches the same parts on its server; this lists the matches instead of stepping through
- * them, and marks nothing in the chat.
+ * The Codex app's Find in chat searches the same parts on its server; this lists the matches instead
+ * of stepping through them, and marks nothing in the chat.
  */
 export function ConversationSearch({ paneId, agent, historyId, title = null, onClose, onPick }: ConversationSearchProps) {
   const t = useT();
@@ -61,13 +52,11 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
   const [active, setActive] = useState(0);
   const [retry, setRetry] = useState(0);
   const [picking, setPicking] = useState<{ index: number; result: RevealResult | null } | null>(null);
-  /** bumped by each pick and each new search: a pick that lands after another search began leaves the sheet open */
   const pickSerial = useRef(0);
   const surface = useFocusTrap<HTMLElement>(true, { initialFocus: inputRef });
   useSheetSwipe(surface, onClose);
   usePhoneSheetBack(() => { onClose(); });
 
-  // Escape belongs to this dialog even while the terminal under it holds the focus
   useLayoutEffect(() => {
     const dismiss = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
@@ -79,7 +68,6 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
     return () => window.removeEventListener("keydown", dismiss, true);
   }, [onClose]);
 
-  // each answer searches a few pages: the next one goes on from its cursor, while the query stays
   useEffect(() => {
     const words = query.trim();
     setActive(0);
@@ -143,8 +131,6 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
     document.getElementById(`conversation-search-${active}`)?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  // before a search: what the field reaches (the placeholder says whose conversation), and the
-  // floor a query must pass once something is typed
   const status = search === null ? (query.trim().length > 0 ? t("Type at least {n} characters.", { n: MIN_QUERY }) : t("Finds a word in what you wrote and in the answers, earlier messages included."))
     : search.state === "unsupported" ? t("This PC's bridge cannot search conversations yet. Update it to search here.")
     : search.state === "changed" ? t("The conversation was replaced while it was searched.")
@@ -153,13 +139,11 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
     : search.state === "capped" ? t("Showing the newest {n} matches.", { n: MAX_RESULTS })
     : matches.length === 0 ? t("No message or answer holds this.")
     : t("Searched the whole conversation.");
-  // displayPaneTitle falls back to the pane id for a pane with nothing else to call it
   const paneName = title !== null && title.trim() !== "" && title.trim() !== paneId ? title.trim() : null;
   const pickLine = picking === null ? null
     : picking.result === null ? t("Loading earlier messages…")
     : picking.result === "missing" ? t("This message is no longer in the conversation.")
     : t("Couldn't load the earlier messages.");
-  // with no match the list shows the status: the footer's live region still says it, drawn as nothing
   const listShows = pickLine === null && matches.length === 0;
   const footerLine = listShows ? "" : pickLine ?? status;
   const canRetry = search !== null && (search.state === "failed" || search.state === "changed");

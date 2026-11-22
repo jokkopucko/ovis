@@ -38,7 +38,6 @@ describe("omo's loaded commands", () => {
     expect(builtins).toEqual(["account", "answer", "btw", "changelog", "claude-account", "clone", "compact", "computer", "copy", "cursor-account", "dag", "diff", "doctor", "dream", "efforts", "exit", "export", "facts", "fallback", "fast", "favorite-models", "files", "fork", "goal", "gpt-account", "help", "history", "hotkeys", "import", "init", "ir", "keybindings", "login", "logout", "lookat", "loop", "mcp", "memfs", "memory", "memory-repository", "model", "name", "nested-agents", "new", "palace", "people", "quit", "reasoning", "recompile", "reflect", "reload", "reload-rules", "remember", "rename", "resume", "rules", "scoped-models", "search", "session", "sessions", "settings", "share", "sleeptime", "task-kill", "tasks", "thinking", "todo", "tree", "trust", "ttsr", "tui", "websearch"]);
     expect(commands.filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:root-0", "skill:root-1", "skill:root-2", "skill:shared"]);
     expect(commands.find((command) => command.name === "skill:shared")?.description).toBe(`From ${join(agentDir, "skills")}`);
-    // the person's own roots, then omo's bundled one; a name both hold is the person's
     expect(commands.filter((command) => command.source === "skill").map((command) => [command.name, command.origin])).toEqual([["skill:root-0", "user"], ["skill:root-1", "user"], ["skill:root-2", "bundled"], ["skill:shared", "user"]]);
     expect(paneCommands("claude", null, home).some((command) => command.origin !== undefined)).toBe(false);
   });
@@ -245,7 +244,6 @@ describe("skills and plugins", () => {
     const previousPiAgentDir = process.env["PI_CODING_AGENT_DIR"];
     process.env["PI_CODING_AGENT_DIR"] = join(home, ".pi", "agent");
     try {
-      // reached through ~/.pi/agent/skills and ~/.agents/skills, the one file is one row
       expect(paneCommands("pi", null, home).filter((command) => command.source !== "builtin")).toMatchObject([
         { name: "skill:linked", description: "Shared skill", source: "skill", origin: "user" },
       ]);
@@ -306,7 +304,6 @@ describe("skills and plugins", () => {
     expect(said("hint")).toBe("With hint");
     expect(said("colon")).toBe("Use when: the user asks");
     expect(said("sibling")).toBe("Still here");
-    // no description line at all: the body's first line, as before
     expect(said("none")).toBe("Body line");
     // a ` #` in a plain value is part of the text, not a YAML comment; a quoted value is YAML's
     expect(said("hash")).toBe("Close issue #102 and its PR");
@@ -328,7 +325,6 @@ describe("skills and plugins", () => {
 describe("catalog rows", () => {
   const write = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, text); };
   const SCAN = { transport: "scan", verified: false } as const;
-  // a source registered only for one test, so the rules are checked apart from any agent's scanner
   function withSource<T>(source: AgentCommandSource, run: (agent: string) => T): T {
     const agent = "catalog-test-agent";
     AGENT_SOURCES[agent] = source;
@@ -360,12 +356,10 @@ describe("catalog rows", () => {
     const row = (dir: string): SlashCommand => ({ name: "same", description: dir, source: "skill", id: realpathSync(join(root, dir, "SKILL.md")) });
     const rows = withSource({ builtins: [], discover: () => [row("a"), row("link"), row("b")] }, (agent) => paneCommands(agent, null, root));
     expect(rows.map(({ description }) => description)).toEqual(["a", "b"]);
-    // rows without an id are never taken for one another
     const anonymous = withSource({ builtins: [], discover: () => [{ name: "same", description: "1", source: "skill" }, { name: "same", description: "2", source: "skill" }] }, (agent) => paneCommands(agent, null, root));
     expect(anonymous.map(({ description }) => description)).toEqual(["1", "2"]);
   });
 
-  // skills with the same name and description, as files: `a` reached again through `alias`, and `b`
   const sameNamedSkills = () => {
     const home = temp("catalog-walk-");
     const skill = "---\nname: shared\ndescription: One description\n---\n";
@@ -386,16 +380,13 @@ describe("catalog rows", () => {
   it("collapses rows carrying the same walked id and keeps different files apart, however the scanner orders them", () => {
     const { home, a, b, walkAll } = sameNamedSkills();
     const origins = ["user", "project", "bundled"] as const;
-    // the scanner walks and maps inside discover, carrying the walked id into its rows
     const rows = () => walkAll().map((skill, index): SlashCommand => ({ name: skill.name, description: skill.description, source: "skill", origin: origins[index], id: skill.id }));
     const listed = (discover: () => SlashCommand[]) => withSource({ builtins: [], discover }, (agent) => paneCommands(agent, null, home)).map(({ origin, id }) => [origin, id]);
     expect(listed(rows)).toEqual([["user", a], ["project", b]]);
-    // AV5-4: a scanner that reorders its rows ([a, alias, b]) still keeps b and drops only the alias
     expect(listed(() => { const [first, second, third] = rows(); return [first!, third!, second!]; })).toEqual([["user", a], ["project", b]]);
   });
 
   it("never merges two different files of one name and description that a real scanner lists without ids", () => {
-    // AV5-3: pi lists a walked SKILL.md and a Markdown file named in its settings, both `shared`
     const home = temp("catalog-pi-");
     const agentDir = join(home, ".pi", "agent");
     const skill = "---\nname: shared\ndescription: One description\n---\n";
@@ -475,7 +466,6 @@ describe("pi's slash commands", () => {
       visibility: "terminal",
       forms: [{ match: "bare", interaction: "terminal" }],
     }));
-    // its own verbs, not the omp/codex wording shared by the rest
     expect(commands).toContainEqual(expect.objectContaining({ name: "quit", description: "Quit pi", source: "builtin" }));
     expect(commands.map((command) => command.name)).not.toContain("sessions");
     expect(commands.every((command) => command.source === "builtin")).toBeTrue();
@@ -521,7 +511,6 @@ describe("pi's slash commands", () => {
     put(join(elsewhere, "deep.md"), "---\ndescription: nested under a linked folder\n---\n");
     mkdirSync(join(home, ".pi", "agent", "prompts"), { recursive: true });
     symlinkSync(join(elsewhere, "gone.md"), join(home, ".pi", "agent", "prompts", "broken.md"));
-    // named .md so the name test alone cannot pass it: only the stat knows it is a folder
     symlinkSync(elsewhere, join(home, ".pi", "agent", "prompts", "folder.md"));
     symlinkSync(join(elsewhere, "deep.md"), join(home, ".pi", "agent", "prompts", "ok.md"));
     const names = paneCommands("pi", null, home).filter((command) => command.source === "user").map((command) => command.name);
@@ -584,7 +573,6 @@ describe.skipIf(process.platform === "win32")("Command Code discovery stays boun
 
   it("walks a configured skill folder whose sibling links share folders in bounded time", () => {
     const repo = repoIn(temp("cmd-lattice-"));
-    // twenty levels, each linking twice to the next: 2^20 paths to the one skill at the bottom
     const level = (index: number) => join(repo, "lattice", `l${index}`);
     for (let index = 0; index <= 20; index += 1) mkdirSync(level(index), { recursive: true });
     for (let index = 0; index < 20; index += 1) for (const name of ["a", "b"]) symlinkSync(level(index + 1), join(level(index), name), "dir");
@@ -593,7 +581,6 @@ describe.skipIf(process.platform === "win32")("Command Code discovery stays boun
     const result = cmdInChild(temp("cmd-home-"), repo);
     expect(result.exitCode).toBe(0);
     expect(result.names).toContain("deep-skill");
-    // the same folder listed a thousand times is walked once, within one budget
     writeFileSync(join(repo, ".commandcode", "settings.json"), JSON.stringify({ skills: Array.from({ length: 1000 }, () => "./lattice/l0") }));
     const repeated = cmdInChild(temp("cmd-home-"), repo);
     expect(repeated.exitCode).toBe(0);
@@ -602,12 +589,10 @@ describe.skipIf(process.platform === "win32")("Command Code discovery stays boun
 
   it("counts links back to an ancestor and every project folder up to the root against one budget", () => {
     const root = temp("cmd-flood-");
-    // a smaller lattice whose last level holds 200 links back to itself
     const level = (index: number) => join(root, "lattice", `l${index}`);
     for (let index = 0; index <= 14; index += 1) mkdirSync(level(index), { recursive: true });
     for (let index = 0; index < 14; index += 1) for (const name of ["a", "b"]) symlinkSync(level(index + 1), join(level(index), name), "dir");
     for (let index = 0; index < 200; index += 1) symlinkSync(level(14), join(level(14), `self${index}`), "dir");
-    // a repository nesting 24 projects, each linking its skills and commands to the lattice
     const repo = repoIn(root);
     let cwd = repo;
     for (let depth = 0; depth < 24; depth += 1) {
@@ -622,7 +607,6 @@ describe.skipIf(process.platform === "win32")("Command Code discovery stays boun
 
   it("reads custom commands whose header is never closed in bounded time", () => {
     const home = temp("cmd-unclosed-");
-    // a header cut at the 64 KiB read: its closing `---` lies past what is read
     for (const name of ["one", "two", "three"]) {
       mkdirSync(join(home, ".commandcode", "commands"), { recursive: true });
       writeFileSync(join(home, ".commandcode", "commands", `${name}.md`), `---\n${"\n".repeat(65536)}---\nA normal command body.\n`);

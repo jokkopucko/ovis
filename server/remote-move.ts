@@ -4,7 +4,6 @@ import { isJsonObject } from "./http.ts";
 import type { MachineManager } from "./machines.ts";
 import { discard, parseJson, readCapped, REMOTE_LIMITS } from "./remote-json.ts";
 
-/** the move routes the PC proxy forwards, under /api/machines/:id/ (docs/runtime-move.md, "On another PC") */
 export const PC_MOVE_PATH = /^runtime\/move(?:\/(?:stop|stop-all|install))?$/;
 export const PC_UPDATE_REQUIRED = "Update Ovis on that PC first, then move it.";
 const MOVE_UNKNOWN = "That PC did not answer in time; it may have started. Look at its move status before trying again.";
@@ -60,7 +59,6 @@ export async function readMoveOffer(endpoint: { url: string; token: string }): P
   const status = moveSummary(answer.status);
   const reason = answer.available === true ? null : answer.reason;
   if (status === null || reason !== null && (typeof reason !== "string" || !MOVE_REASONS.has(reason))) return null;
-  // a move is refused as not_herdr exactly when that server serves herdr-core (server/runtime-move.ts moveUnavailable)
   return { serving: reason === "not_herdr" ? "herdr-core" : "herdr", offered: answer.available === true || answer.install !== undefined, reason: reason as MoveUnavailable | null, status };
 }
 
@@ -91,7 +89,6 @@ async function startMove(manager: MachineManager, id: string, revision: string):
   if (tooOldToMove(machine.kind, response.status, code)) return { outcome: "refused", code: "pc_update_required", message: PC_UPDATE_REQUIRED };
   let message: unknown;
   try { message = body ? parseJson<{ error?: { message?: unknown } }>(body).error?.message : undefined; } catch { message = undefined; }
-  // that PC's own words (plan_changed, already_moving, ...), as the proxied route passes them on
   return {
     outcome: "refused",
     code: code?.slice(0, 64) ?? "move_failed",
@@ -99,7 +96,6 @@ async function startMove(manager: MachineManager, id: string, revision: string):
   };
 }
 
-/** POST /api/machines/runtime/move-all: every PC's move at once, each through that PC's own route. */
 export async function moveAll(manager: MachineManager, plans: { machine_id: string; revision: string }[]): Promise<MoveAllResponse> {
   const answers = await Promise.all(plans.map(async ({ machine_id, revision }) => ({ machine_id, ...await startMove(manager, machine_id, revision) })));
   const answer: MoveAllResponse = { started: [], refused: [], unknown: [] };
@@ -111,7 +107,6 @@ export async function moveAll(manager: MachineManager, plans: { machine_id: stri
   return answer;
 }
 
-/** The plans of a move-all request: each PC once, and never more than `most` (the PCs this server knows); null otherwise. */
 export function moveAllPlans(body: unknown, most: number): { machine_id: string; revision: string }[] | null {
   if (!isJsonObject(body) || !Array.isArray(body.plans) || body.plans.length > most) return null;
   const plans: { machine_id: string; revision: string }[] = [];

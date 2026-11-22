@@ -13,8 +13,7 @@ const spies: { mockRestore(): void }[] = [];
 afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
 
 /**
- * Records every filesystem call the writer makes, on the real filesystem, with descriptors
- * named by what they were opened for. `fail` throws instead of calling through, once, for the
+ * `fail` throws instead of calling through, once, for the
  * first call of that operation that `when` accepts; a failing close still releases the
  * descriptor first, as close(2) does on Linux.
  */
@@ -139,7 +138,6 @@ describe("writePrivateState", () => {
       writeFileSync(path, "[]\n", { mode: 0o600 });
       const { ops, open } = trace({ fail, when: (args) => fail !== "openSync" || String(args[0]).endsWith(".tmp") });
       expect(() => writePrivateState(path, value, "linux")).toThrow("EIO");
-      // a descriptor whose close failed is released anyway and is never closed twice
       expect(ops.filter((op) => op === "closeSync file").length).toBe(fail === "openSync" ? 0 : 1);
       expect(ops).not.toContain(`openSync ${root.replace(dir, "")}`);
       expect(open.size).toBe(0);
@@ -165,7 +163,6 @@ describe("writePrivateState", () => {
       expect(ops.indexOf(`${fail} threw`)).toBeGreaterThan(ops.findIndex((op) => op.startsWith("renameSync")));
       expect(ops.some((op) => op.startsWith("unlinkSync"))).toBe(false);
       expect(open.size).toBe(0);
-      // the renamed document is in place and usable, only less certain to survive power loss
       expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(value);
       expect(readdirSync(root)).toEqual(["devices.json"]);
     }

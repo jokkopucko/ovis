@@ -7,6 +7,8 @@ import { agyCatalog } from "./agy.ts";
 import type { HistoryEvidence } from "./claude-command-history.ts";
 import { wholeClaudeSubagents } from "./claude-subagents.ts";
 import { paneCommands } from "./commands.ts";
+import type { FileIdentity } from "./conversation-shared.ts";
+import { type LettaScanCutAnswer, lettaToolOutputIn } from "./letta.ts";
 import type { ProcessRoots } from "./skills/index.ts";
 import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pageWithLocalFiles, pathsByName, release, STREAM_CHUNK_BYTES, type PageMedia, type PageMediaGrant } from "./file-view.ts";
 import { readMarkdownDocuments, walkFiles } from "./files.ts";
@@ -14,15 +16,19 @@ import { readEditableText, TextEditRefused } from "./file-edit.ts";
 import type { EditableText } from "../shared/files.ts";
 
 /**
- * How long a Claude task list reads on before it answers with what it read so far: well inside the
- * long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s), so its one scan thread is free by then.
+ * How long a Claude task list reads on, from when a thread takes it, before it answers with what it
+ * read so far. The long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s) counts from the request,
+ * its wait for a thread included, so a scan that waited may keep its thread after its request is
+ * refused.
  */
 const CLAUDE_TASKS_READ_MS = 10_000;
-
 /**
- * What a file thread (`file-pool.ts`) does: each synchronous filesystem step of the file routes,
- * named so that a request can ask for it and wait without holding the server's thread.
+ * How long a Letta transcript is scanned for one call's output, from when a thread takes it, so a
+ * scan on a slow disk stops then, not at the end of the file. Like the Claude budget, it may run on
+ * after its request's deadline, which counts the wait for a thread too.
  */
+const LETTA_OUTPUT_READ_MS = 10_000;
+
 export type FileTask =
   | { op: "info"; path: string }
   | { op: "named"; path: string }
@@ -30,11 +36,14 @@ export type FileTask =
   /** a file the scratch fallback found, described from what was opened in `folder` (`describeWithin`); `opened` as for `open` */
   | { op: "describe"; path: string; folder: string; opened?: Int32Array<SharedArrayBuffer> }
   | { op: "walk"; cwd: string }
-  /** the Markdown files of `paths` (relative to `cwd`), or of a Markdown walk of `cwd` when null, with their sizes and times (GET /api/pane/docs); `budgetMs`: how long it reads (tests) */
   | { op: "documents"; cwd: string; paths: string[] | null; budgetMs?: number }
-  /** an Agy ledger's catalog (`agyCatalogOffThread`): its active step indices */
   | { op: "agy-catalog"; path: string }
-  /** A Claude agent session's background-task list, read whole with the thread's own parser caches (`wholeClaudeSubagents`). */
+  /**
+   * The whole output of the call `ref` names in a Letta transcript (`lettaToolOutputOffThread`), read
+   * only from the file `file` names at `path` and cut to `max` characters before it is answered;
+   * `budgetMs`: how long it reads (tests).
+   */
+  | { op: "letta-output"; path: string; ref: string; file: FileIdentity; max: number; budgetMs?: number }
   | { op: "claude-tasks"; path: string; live: boolean; since: number | null; history?: HistoryEvidence | null }
   /**
    * The commands `agent` offers in `cwd`: its skill and command folders scanned (`paneCommands`,
@@ -45,9 +54,6 @@ export type FileTask =
   /** `within`: the folder a page found in it must have been opened in (`pageWithLocalFiles`) */
   | { op: "render"; path: string; media: PageMedia | null; within?: string | null }
   /**
-   * `get`: a GET's Range and whether it came with If-Range (null for a HEAD, which reads nothing);
-   * `opened`: where the thread names the descriptor as soon as it has it (`file-pool.ts`);
-   * `fastDiskMs`: how quickly the disk must answer for a large body to be sent whole (tests);
    * `within`: the folder the file must be opened in (`openAuthorized`), for a file the scratch
    * fallback found
    */
@@ -65,14 +71,7 @@ function textTask(run: () => EditableText): TextTaskResult {
   }
 }
 
-/** A page drawn with its own files put into it (null when it cannot be), and the media addresses that render gave out. */
 export interface RenderedPage { html: Uint8Array<ArrayBuffer> | null; grants: PageMediaGrant[] }
-/**
- * A file opened to serve: its size, the range a GET asked for (`byteRange`), and its bytes when
- * they fit in one read; for a larger body, either `fast` (its disk answered at once: send it whole
- * from the path, with its length) or its descriptor to stream it from (a slow disk). None of these
- * for a HEAD or an unsatisfiable range.
- */
 export interface OpenedFile { size: number; range: [number, number] | "unsatisfiable" | null; bytes: Uint8Array<ArrayBuffer> | null; fd: number | null; fast: boolean }
 
 /**
@@ -83,7 +82,7 @@ export interface OpenedFile { size: number; range: [number, number] | "unsatisfi
 export const FAST_DISK_MS = 50;
 const PROBE_BYTES = 64 * 1024;
 
-export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
+export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | string | LettaScanCutAnswer | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
 
 export function runFileTask(task: FileTask): FileTaskResult {
   switch (task.op) {
@@ -94,6 +93,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "walk": return walkFiles(task.cwd);
     case "documents": return readMarkdownDocuments(task.cwd, task.paths, task.budgetMs);
     case "agy-catalog": return [...agyCatalog(task.path)];
+    case "letta-output": return lettaToolOutputIn(task.path, task.ref, task.file, task.max, task.budgetMs ?? LETTA_OUTPUT_READ_MS);
     case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS, Date.now, task.history ?? null);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
     case "render": return render(task.path, task.media, task.within ?? null);
@@ -102,7 +102,6 @@ export function runFileTask(task: FileTask): FileTaskResult {
   }
 }
 
-/** What a thread hands over rather than copies: a rendered page's or a small file's bytes. */
 export function transferablesOf(result: FileTaskResult): ArrayBuffer[] {
   if (result !== null && typeof result === "object" && "html" in result && result.html !== null) return [result.html.buffer];
   if (result !== null && typeof result === "object" && "bytes" in result && result.bytes !== null) return [result.bytes.buffer];
@@ -146,7 +145,6 @@ function open(path: string, get: { range: string | null; ifRange: boolean } | nu
     if (opened !== undefined) Atomics.store(opened, 0, fd);
     pageFileHooks.opened?.(fd);
   }
-  // not handed over: closed by whoever takes it from the cell first, here or `abandon` (file-pool.ts)
   const close = () => { if (opened === undefined || Atomics.compareExchange(opened, 0, fd, -1) === fd) release(fd); };
   let size: number;
   try {
@@ -177,6 +175,5 @@ function open(path: string, get: { range: string | null; ifRange: boolean } | nu
     }
   } catch { got = -1; }
   close();
-  // shorter than it was when opened, or unreadable: gone, as a file that vanished
   return got === length ? { size, range, bytes, fd: null, fast: false } : null;
 }

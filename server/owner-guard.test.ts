@@ -10,10 +10,6 @@ const windows = process.platform === "win32";
 const ERRORS = { running: "already running", starting: "another start" };
 const MODULE = pathToFileURL(join(import.meta.dir, "owner-guard.ts")).href;
 
-/**
- * A starter in its own process. It reports each step as a JSON line, and at every step named in
- * its gates it waits, synchronously, for a line on stdin: the test decides when it moves on.
- */
 const FIXTURE = `
 import { readFileSync, readSync, statSync, writeSync } from "node:fs";
 const [module, lock, gateList = "", library = ""] = process.argv.slice(2);
@@ -51,7 +47,6 @@ try {
 }
 `;
 
-/** A well-formed birth no running process has: this platform's form, at the epoch. */
 const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
 
 type Event = { event: string; pid: number; session: number | null; [key: string]: unknown };
@@ -62,7 +57,6 @@ function within<T>(promise: Promise<T>, what: string, ms = 30_000): Promise<T> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/** The JSON-line events of one starter, from its stdout or from a socket. */
 class Events {
   readonly seen: Event[] = [];
   private waiters: { name: string; resolve(event: Event): void }[] = [];
@@ -96,7 +90,6 @@ class Events {
   }
   has(name: string) { return this.seen.some((event) => event.event === name); }
   detail(): string { return ""; }
-  /** Lets the starter past the gate it waits at. */
   release() { this.send("\n"); }
 }
 
@@ -116,7 +109,6 @@ class Starter extends Events {
     starters.push(this);
   }
   override detail() { return this.stderr; }
-  /** Killed outright, as a crash or a forced shutdown would: no finally, no cleanup. */
   async kill() {
     if (windows) Bun.spawnSync(["taskkill", "/PID", String(this.proc.pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" });
     else this.proc.kill("SIGKILL");
@@ -141,7 +133,6 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A live process that is not the owner: it now holds the PID a crashed owner recorded. */
 function unrelated() {
   const other = Bun.spawn([process.execPath, "-e", "for await (const _ of console) break;"], { stdin: "pipe", stdout: "ignore", stderr: "ignore", windowsHide: true });
   others.push(other);
@@ -156,7 +147,6 @@ function refusing(pid: number) {
     return kill(target, signal);
   }) as typeof process.kill);
 }
-/** The lock a crashed owner left, whose PID another process now holds. */
 function staleLock(lock: string, pid: number) {
   mkdirSync(lock);
   writeFileSync(join(lock, "pid"), String(pid));
@@ -181,8 +171,6 @@ describe("owner guard", () => {
   });
 
   it("reclaims a lock whose PID a process it may not signal now holds", () => {
-    // regression: a refused probe (EPERM) once kept the lock, so a start failed for as long as
-    // another user's process (or, after a forced Windows shutdown, a SYSTEM service) held the PID
     const other = unrelated();
     const lock = join(root, "supervisor.lock");
     staleLock(lock, other.pid);
@@ -193,7 +181,6 @@ describe("owner guard", () => {
       const lease = acquireOwnerDirectory(lock, ERRORS);
       expect(ownerOf(lock)).toEqual(lease.record);
       lease.release();
-      // control: refused, but of the recorded birth, the owner is live
       mkdirSync(lock);
       writeFileSync(join(lock, "pid"), String(other.pid));
       writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: other.pid, generation: "refused-owner", birth: reading.birth }));
@@ -210,7 +197,6 @@ describe("owner guard", () => {
     acquireOwnerDirectory(lock, ERRORS).release();
     mkdirSync(lock);
     writeFileSync(join(lock, "pid"), "4");
-    // control: written after that process started, the PID-only record may still be its own
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`already running (lock ${lock}, owner pid 4)`);
     utimesSync(join(lock, "pid"), new Date("2001-01-01T00:00:00Z"), new Date("2001-01-01T00:00:00Z"));
     acquireOwnerDirectory(lock, ERRORS).release();
@@ -221,14 +207,11 @@ describe("owner guard", () => {
     const other = unrelated();
     const lock = join(root, "supervisor.lock");
     const lease = acquireOwnerDirectory(lock, ERRORS);
-    // a live owner of matching birth
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`already running (lock ${lock}, owner pid ${process.pid} generation ${lease.record.generation})`);
     lease.release();
-    // a PID-only record from an older version, whose PID runs
     mkdirSync(lock);
     writeFileSync(join(lock, "pid"), String(other.pid));
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`already running (lock ${lock}, owner pid ${other.pid})`);
-    // a malformed record stays unknown
     writeFileSync(join(lock, "owner.json"), "{");
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`already running (lock ${lock}, owner pid ${other.pid})`);
     writeFileSync(join(lock, "pid"), "not a pid");
@@ -238,14 +221,11 @@ describe("owner guard", () => {
   });
 
   it.skipIf(!windows)("reclaims a birth-less record whose PID a later process holds", () => {
-    // the owner could not read its own birth, then a forced shutdown left its lock and Windows
-    // handed its PID to a process that started after the record was written
     const other = unrelated();
     const lock = join(root, "supervisor.lock");
     mkdirSync(lock);
     writeFileSync(join(lock, "pid"), String(other.pid));
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: other.pid, generation: "birthless-owner" }));
-    // control: written after that process started, the record may still be its own
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`already running (lock ${lock}, owner pid ${other.pid} generation birthless-owner)`);
     utimesSync(join(lock, "pid"), new Date("2001-01-01T00:00:00Z"), new Date("2001-01-01T00:00:00Z"));
     const lease = acquireOwnerDirectory(lock, ERRORS);
@@ -255,7 +235,6 @@ describe("owner guard", () => {
   });
 
   it("reclaims abandoned record-less state", () => {
-    // an older version's directory before it wrote its PID, or an interrupted one
     const lock = join(root, "supervisor.lock");
     mkdirSync(lock);
     const lease = acquireOwnerDirectory(lock, ERRORS);
@@ -267,12 +246,10 @@ describe("owner guard", () => {
   it("does not release another generation", () => {
     const lock = join(root, "supervisor.lock");
     const first = acquireOwnerDirectory(lock, ERRORS);
-    // a later owner took over the directory (same PID, new generation)
     const later = JSON.stringify({ ...first.record, generation: "later-owner" });
     writeFileSync(join(lock, "owner.json"), later);
     first.release();
     expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(later);
-    // control: its own generation is released
     rmSync(lock, { recursive: true });
     const second = acquireOwnerDirectory(lock, ERRORS);
     second.release();
@@ -319,17 +296,15 @@ describe("owner guard", () => {
     staleLock(lock, other.pid);
     const a = new Starter("A", lock, ["observed"]);
     const b = new Starter("B", lock, ["observed", "validated", "published"]);
-    // both see the same stale owner before either takes the guard
     await Promise.all([a.next("observed"), b.next("observed")]);
     b.release();
-    await b.next("validated"); // B holds the guard
+    await b.next("validated");
     a.release();
-    await a.next("acquiring"); // A goes to the kernel lock B holds
+    await a.next("acquiring");
     expect(a.has("locked")).toBe(false);
     b.release();
     const published = await b.next("published");
     const refused = await a.next("refused");
-    // A got the guard only after B published, saw B's live record and left it alone
     expect((await a.next("locked"))["owner"]).toEqual(published["record"]);
     expect(refused["message"]).toBe(`another start (lock ${lock}, owner pid ${b.proc.pid} generation ${(published["record"] as { generation: string }).generation})`);
     expect(a.has("validated")).toBe(false);
@@ -364,7 +339,6 @@ describe("owner guard", () => {
     const lock = join(root, "supervisor.lock");
     staleLock(lock, other.pid);
     const fixtureOwner = readFileSync(join(lock, "owner.json"), "utf8");
-    // a holder that dies with its record staged leaves the old lock, never a partial one
     const dying = new Starter("dying", lock, ["staged"]);
     const staged = String((await dying.next("staged"))["staging"]);
     expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(fixtureOwner);
@@ -372,7 +346,6 @@ describe("owner guard", () => {
     expect(readFileSync(join(staged, "pid"), "utf8")).toBe(String(dying.proc.pid));
     await dying.kill();
     expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(fixtureOwner);
-    // the next starter reclaims it, and the final lock appears only with its complete record
     const next = new Starter("next", lock, ["staged"]);
     const nextStaged = String((await next.next("staged"))["staging"]);
     expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(fixtureOwner);
@@ -458,7 +431,6 @@ describe("owner guard", () => {
     try {
       schtasks("/Create", "/TN", task, "/SC", "ONCE", "/ST", time, "/RU", user, "/IT", "/TR", command, "/F");
       schtasks("/Run", "/TN", task);
-      // the SSH-session starter spells the same lock in another letter case
       ssh = new Starter("ssh", lock.toUpperCase(), ["observed"]);
       const [mine, theirs] = await Promise.all([ssh.next("observed"), interactive.next("observed")]);
       console.log(`sessions: ssh ${mine.session}, interactive ${theirs.session}`);
@@ -481,7 +453,6 @@ describe("owner guard", () => {
       expect(ownerOf(lock)).toEqual(published["record"] as never);
     } finally {
       Bun.spawnSync(["schtasks", "/Delete", "/TN", task, "/F"], { stdout: "ignore", stderr: "ignore" });
-      // closing the relay's connection ends the interactive starter's stdin; it exits, then the relay closes
       if (relayed) {
         void connected.promise.then((socket) => socket.end());
         await within(interactive.ended, "the interactive starter to exit");
@@ -493,14 +464,9 @@ describe("owner guard", () => {
   }, 60_000);
 });
 
-/**
- * Native calls that fail on demand. Every failing call still makes the real one where a resource is
- * involved (a close really closes), so no descriptor or handle outlives the test.
- */
 describe("owner guard native failures", () => {
   const LOCK_EX = 2, LOCK_UN = 8, EBADF = 9, ERROR_NOT_LOCKED = 158, ERROR_INVALID_HANDLE = 6, ERROR_LOCK_VIOLATION = 33;
   let closes = 0;
-  /** The calls of this platform, `fail` naming the ones that report failure. */
   function failing(...fail: ("lock" | "unlock" | "close")[]) {
     closes = 0;
     let code: number | null = null;
@@ -530,7 +496,6 @@ describe("owner guard native failures", () => {
   const unlockFailed = windows ? `unlocking failed (error ${ERROR_NOT_LOCKED})` : `unlocking failed (errno ${EBADF})`;
   const closeFailed = windows ? `closing failed (error ${ERROR_INVALID_HANDLE})` : "closing failed (EIO)";
   afterEach(() => { delete guardLibrary.posix; delete guardLibrary.windows; });
-  /** The guard is free again: taking it now (in this process, on a new descriptor or handle) does not block. */
   const free = (lock: string) => expect(withOwnerGuard(lock, () => "taken")).toBe("taken");
 
   it("reports a failed unlock and still closes the guard", () => {
@@ -585,7 +550,6 @@ describe("owner guard native failures", () => {
     const lock = join(root, "supervisor.lock");
     staleLock(lock, other.pid);
     failing("unlock");
-    // the start does not pass for a success; what it published names this process, so it is reclaimed once this process exits
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`another start (lock ${lock}; ${guardPath(lock)} was not released cleanly: ${unlockFailed})`);
     expect(ownerOf(lock)?.pid).toBe(process.pid);
     expect(closes).toBe(1);
@@ -597,7 +561,6 @@ describe("owner guard native failures", () => {
     let message = "";
     try { lease.release(); message = String(logged.mock.calls[0]?.[0]); } finally { logged.mockRestore(); }
     expect(message).toBe(`Releasing the startup lock ${lock} failed: ${guardPath(lock)} was not released cleanly: ${closeFailed}`);
-    // the removal itself ran under the guard; only handing the guard back failed
     expect(existsSync(lock)).toBe(false);
     expect(alive(other.pid)).toBe(true);
     failing();
@@ -605,7 +568,6 @@ describe("owner guard native failures", () => {
   });
 });
 
-/** `holder` takes `lock`, a second starter spelling it `alias` waits in the kernel, then finds the holder's record and refuses. */
 async function contend(lock: string, alias: string) {
   const holder = new Starter("holder", lock, ["validated", "published"]);
   const held = await holder.next("locked");

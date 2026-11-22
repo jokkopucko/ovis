@@ -11,8 +11,6 @@ const PANE = "w1:p1";
 const controls = window as unknown as { setChat?: (next: Partial<Props>) => void; composerDraft?: () => string };
 controls.composerDraft = () => composerDrafts.read(composerDraftKey(PANE)).text;
 
-// A real ChatView whose props the browser script steers: unmounted for the Terminal lens, the
-// socket down and up, herdr's status and session for the pane.
 function Fixture() {
   const [props, setProps] = useState<Props>({ mounted: true, connected: true, agentStatus: (new URLSearchParams(location.search).get("status") ?? "blocked") as AgentStatus, agentSession: "session-a" });
   const [dock, setDock] = useState<HTMLDivElement | null>(null);

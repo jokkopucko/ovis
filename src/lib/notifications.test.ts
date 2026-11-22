@@ -10,7 +10,6 @@ describe("alertStatus", () => {
     expect(alertStatus("blocked", true)).toBe("blocked");
     expect(alertStatus("done", false)).toBe("done");
     expect(alertStatus("done", undefined)).toBe("done");
-    // a wait that ends with no new turn is a finish
     expect(shouldNotifyStatus(alertStatus("done", true), alertStatus("done", false))).toBe(true);
   });
 });
@@ -34,7 +33,6 @@ describe("shouldNotifyStatus", () => {
   });
 
   it("does not notify on first sight of a pane", () => {
-    // the app just opened or the pane is new: not news
     expect(shouldNotifyStatus(undefined, "blocked")).toBe(false);
   });
 
@@ -57,7 +55,6 @@ describe("alertsAllow", () => {
     expect(alertsAllow({ input: false, done: "off" }, "blocked", "permission")).toBe(false);
     expect(alertsAllow({ input: false, done: "off", permission: true }, "blocked", "permission")).toBe(true);
     expect(alertsAllow({ input: true, done: "off", permission: false }, "blocked", "permission")).toBe(false);
-    // a question, or an agent that does not say: Needs input
     expect(alertsAllow({ input: true, done: "off", permission: false }, "blocked", "question")).toBe(true);
     expect(alertsAllow({ input: false, done: "off", permission: true }, "blocked")).toBe(false);
   });
@@ -82,16 +79,12 @@ describe("alert kinds and PCs", () => {
 
 describe("paneAlertsMuted", () => {
   it("all four paths suppress only the keyed pane", () => {
-    // one predicate for the in-app alert, the chime, the tab notification (App.tsx) and web push (server/push.ts):
-    // the shared list keys a pane with its PC, so the same pane id on another PC is not muted with it
     const muted = [paneStorageId("local", "w1:p1"), paneStorageId("pc-2", "w1:p2")];
     expect(paneAlertsMuted(muted, "local", "w1:p1")).toBe(true);
     expect(paneAlertsMuted(muted, "pc-2", "w1:p1")).toBe(false);
     expect(paneAlertsMuted(muted, "local", "w1:p2")).toBe(false);
     expect(paneAlertsMuted(muted, "pc-2", "w1:p2")).toBe(true);
-    // a bare remote pane id never matches its key
     expect(muted).not.toContain("w1:p2");
-    // no list (an older server, or none heard yet) mutes nothing
     expect(paneAlertsMuted(null, "local", "w1:p1")).toBe(false);
     expect(paneAlertsMuted(undefined, "local", "w1:p1")).toBe(false);
     expect(paneAlertsMuted([], "local", "w1:p1")).toBe(false);
@@ -108,7 +101,6 @@ describe("tab alerts shown through the worker", () => {
       else delete (globalThis as Record<string, unknown>)[key];
     }
   });
-  /** A hidden tab with a worker: what each alert asked the worker to show. */
   function hiddenTabWithWorker(): Array<{ data: unknown }> {
     const shown: Array<{ data: unknown }> = [];
     (globalThis as { Notification?: unknown }).Notification = { permission: "granted" };

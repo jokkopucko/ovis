@@ -1,6 +1,10 @@
 import type { TailnetPcsOptions } from "./tailnet-pcs.ts";
 import type { SshCandidatesOptions } from "./ssh-candidates.ts";
 import "./adopt-legacy-env.ts";
+import { claimServerState, machineEngine, machineFailure, machineHerdrBinary, machineSnapshot, machineSocket, machineSocketRefusal, machineUnauthorized, MACHINE_DIRECT_CARRIER_ENABLED, ownerSocketPath } from "./machine-profile.ts";
+import { ProfileFolderError, profileFolderRefusal } from "./profile-marker.ts";
+import { holdForLife, OwnerGuardBusy } from "./owner-guard.ts";
+import { fleetPreview } from "./preview.ts";
 import type { RelaySocket } from "../shared/relay-channel.ts";
 import { createCore, type SocketData } from "./core/index.ts";
 import { ClientConnectionLog } from "./client-connection-log.ts";
@@ -9,14 +13,16 @@ import { RelayReceiptIds } from "./machine-relay.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { OrderSequence } from "./order-sequence.ts";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
-import { accessSync, constants, readFileSync, rmSync, statSync } from "node:fs";
+import { accessSync, chmodSync, constants, mkdirSync, rmSync, statSync } from "node:fs";
+import { version } from "../package.json";
 import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
-import { DeviceStore, mergeAccountTombstones } from "./devices.ts";
+import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
+import { readBrowserToolSetting } from "./agent-launch.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -28,7 +34,8 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { coreConnection, coreSeenMarker, hcBin, hcMachine, NoHerdrCoreError, runtime, servingCore, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
+import { coreConnection, coreSeenMarker, hcBin, hcMachine, NoAltRuntimeError, NoHerdrCoreError, runtime, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
+import { capabilities } from "./runtime/capabilities.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { moveService, type HcInstaller } from "./runtime-move-service.ts";
 import { moveLockPath } from "./runtime-move-lock.ts";
@@ -38,7 +45,7 @@ import { HC_RELEASE, hcInstallTarget, installHc } from "./herdr-core/install.ts"
 import { userHome } from "./user-home.ts";
 import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
-import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
+import { mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
 import { OpenCodePromptState } from "./prompt.ts";
@@ -47,8 +54,28 @@ import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
 import { RelayService } from "./relay/service.ts";
 import { AccountMailbox, accountServiceUrl, passAccountService } from "./account/mailbox.ts";
+import { accountOpensAll } from "../shared/account-devices-api.ts";
+import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
+import { PcAccountState } from "./account/pc-binding.ts";
+import { savedServerId } from "./relay/identity.ts";
+import { snapshotPorts } from "./account/snapshot-ports.ts";
+import type { Readmission } from "./account/readmission.ts";
+import { AccountOrder } from "./account/account-order.ts";
+import { accountRowsFor } from "./account/account-devices.ts";
+import { listNotices } from "./account/list-notices.ts";
+import { AccountCatchUp } from "./account/account-catch-up.ts";
+import { RemovalEvidence } from "./account/removal-evidence.ts";
+import { DeviceJournal } from "./account/device-journal.ts";
+import { mergeAccountState } from "./account/account-merge.ts";
 import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
+import { RecoveryReleases } from "./account/recovery.ts";
+import { openPcRecovery } from "./account/recovery-server.ts";
+import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
+import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
+import { lockRoutes } from "./account/lock-routes.ts";
+import { LockSignal } from "./lock-boundary.ts";
+import { desktopOwnerChannel, desktopOwnerFdChannel, LOCAL_CONFIRM_FILE, LocalConfirms, openConfirmListener, takeDesktopOwnerFd } from "./account/local-confirm.ts";
 import { Telemetry } from "./telemetry.ts";
 import { UsageService } from "./usage.ts";
 import { createSystemSampler, type SystemSampler } from "./system-stats.ts";
@@ -69,7 +96,6 @@ import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPee
 
 
 
-/** The gap between a composer message's text and its Enter (see submitText). */
 export const SUBMIT_DELAY_MS = 120;
 /**
  * herdr holds a lone ESC typed through the attach pty ~150ms (measured) to tell it from
@@ -92,7 +118,6 @@ export const KEY_SETTLE_MS = 40;
  * reaches the pane later.
  */
 export const SUBMIT_DEADLINE_MS = 45_000;
-/** How long a cleared Claude input box may take to read empty before the send is refused after all. */
 const DRAFT_CLEAR_WAIT_MS = 1_500;
 const DRAFT_CLEAR_POLL_MS = 50;
 
@@ -105,13 +130,11 @@ const DRAFT_CLEAR_POLL_MS = 50;
  */
 const BUN_BODY_CEILING = 64 * 1024 * 1024;
 
-/** herdr-core installed for the move to it, offered once a look for hc found none and herdr-core has a build for this PC. */
 export function herdrCoreInstaller(): HcInstaller {
   return {
     offer: () => hcInstallTarget() !== null && herdrCoreFacts()?.version === null ? { version: HC_RELEASE.version } : null,
     install: async () => {
       const installed = await installHc({ home: userHome() });
-      // one Ovis's own look does not find: taken out again, so the row offers the install once more
       if ((await rediscoverHc()) === null) {
         installed.undo();
         throw new Error("herdr-core was installed, but Ovis does not find it; it was taken out again");
@@ -121,41 +144,30 @@ export function herdrCoreInstaller(): HcInstaller {
 }
 
 export interface ServerInstance {
-  /** A socket context with this server's services, also usable with transport operations replaced. */
   readonly context: ServerContext;
   port: number;
   hostname: string;
-  /** the opt-in LAN HTTPS listener when it is up (server/lan-https.ts), else null */
   lanHttps: { port: number; addresses: readonly string[]; sha256: string } | null;
   statusReady: Promise<void>;
   focusReady: Promise<void>;
   alertsSettled: () => Promise<void>;
-  /** Start background version reads; only the real entrypoints opt in. */
   warmAgentCatalog: () => void;
-  /**
-   * queues a create request's first message for a pane's agent, as POST /api/workspace/create and /api/tab/create do with
-   * `first_message` and `first_message_connection` (`requester`, a connection's id from its first snapshot): for tests that start no agent
-   */
   queueFirstMessage: (paneId: string, text: string, kind: string, requester?: string | null, launchedPid?: number | null) => Promise<PendingMessage>;
   stop: () => void;
 }
 
 export function createServer(
-  options: {
+  provided: {
+    profile?: "machine";
+    machineEngine?: string;
+    machineRefusal?: () => string | null | Promise<string | null>;
     port?: number;
     hostname?: string;
-    /** Also listen on ::1 when the primary listener is bound to 127.0.0.1. */
     ipv6Loopback?: boolean;
-    /** the opt-in LAN HTTPS listener (server/lan-https.ts); only the real entrypoint reads it from the environment. Port 0 picks one. */
     lanHttps?: LanHttpsConfig;
     token?: string;
     /** where VAPID keys and push subscriptions persist; tests pass a temp dir */
     stateDir?: string;
-    /**
-     * The other default state dir of an install that kept its state in two (server/state-merge.ts):
-     * its devices, preferences and push subscriptions are taken over before anything reads them.
-     * Only the real entrypoint passes one; a test passes a temp dir.
-     */
     siblingStateDir?: string | null;
     /** the PC's own Tailscale login, for the identity check; tests set it, otherwise `tailscale status` says */
     tailscaleOwner?: string | null;
@@ -163,118 +175,97 @@ export function createServer(
     tailscaleServeOnly?: boolean;
     /** the tailnet identity behind the access check; unset, the tailscale CLI says. Tests pass one with their own status reader. */
     tailnet?: TailnetIdentitySource;
-    /** Native Codex store; defaults to CODEX_HOME. Tests use an isolated store. */
     codexHome?: string;
     grokHome?: string;
     /** Muse Code's data directory; defaults to XDG_DATA_HOME/muse or ~/.local/share/muse. Tests use an isolated store. */
     museData?: string;
     /** OpenCode's database; defaults to where OpenCode finds it (OPENCODE_DB, XDG_DATA_HOME). Tests use an isolated store. */
     opencodeDb?: string;
-    /** OpenCode state dir where service.json lives; tests use an isolated directory. */
     openCodeStateDir?: string;
-    /** Native Devin store; tests pass an isolated SQLite database. */
     devinDbPath?: string;
-    /** Native Hermes store; pane process HERMES_HOME wins when this is unset. Tests use an isolated store. */
     hermesHome?: string;
     updates?: UpdateService;
-    /** updates herdr itself (server/herdr-update.ts); unset, the app offers no herdr update. Tests pass one that runs a stand-in herdr. */
     herdrUpdate?: HerdrUpdater;
-    /** what this PC has of herdr-core, for Settings (server/herdr-core/discovery.ts); unset, health tells none. Tests pass a stand-in. */
     herdrCoreFacts?: () => HerdrCoreFacts | undefined;
-    /** which runtime this server serves and the Settings switch (server/herdr-core/runtime-choice.ts); unset, health tells none and a switch is refused. Tests pass a stand-in. */
     runtimeService?: RuntimeService;
-    /** installs herdr-core for the move to it where the PC has none (server/herdr-core/install.ts); unset, none is offered. Tests pass a stand-in. */
     herdrCoreInstaller?: HcInstaller;
-    /** whether the launcher took this bridge as its own after its startup check (server/supervisor.ts); unset, nothing is told */
     launchAccepted?: () => boolean;
-    /** a public address through Portal (server/portal.ts); unset, the app offers none. Tests pass one that runs a stand-in portal. */
     portal?: PortalService;
-    /** Relay opt-in and identity persist in stateDir; tests can supply a local physical transport. */
     relay?: RelayService;
-    /** Where this PC collects account records left for it (server/account/mailbox.ts); tests pass the in-memory service. */
     accountService?: { url: string; fetch?: (request: Request) => Promise<Response> };
-    /** anonymous install and update counts (server/telemetry.ts); unset, the server sends none and answers 404. Only the real entrypoint passes one. */
     telemetry?: Telemetry;
-    /** plan limits of the AI subscriptions signed in here; tests pass one without real sign-ins */
     usage?: UsageService;
-    /** this PC's load; tests pass one that reads nothing from the machine, or null for a server that tells none */
     system?: SystemSampler | null;
     /** Tests supply an isolated proxy service, never a user's configured instance. */
     cliProxy?: CLIProxyService;
     /** Tests use a disposable credential home and stand-in CLI binaries. */
     usageLogin?: UsageLoginService;
-    /** voice input's key, provider and models; tests pass one with their own env and fetch */
     voice?: VoiceService;
     machines?: boolean;
-    /** how PCs added through the relay reach it (server/relay-pc.ts); tests point it at a local relay */
     relayPcSocket?: (url: string) => RelaySocket;
-    /** how they dial those PCs' direct carriers; tests point it at a local listener */
     relayPcDirectSocket?: (url: string) => RelaySocket;
-    /** how often another PC's own update is looked at while it runs; tests shorten it */
     pcUpdateTimings?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number };
-    /** how other PCs on this PC's Tailscale are found (server/tailnet-pcs.ts); tests give their own */
     tailnetPcs?: TailnetPcsOptions;
-    /** where Add a connection → SSH reads its list from; tests point it at a fixture */
     sshCandidates?: SshCandidatesOptions;
     /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
     bridgeOnly?: boolean;
     /** false: the panes' files are on another machine (server/herdr-core/machine-entry.ts), so no route reads or makes files on this disk for them */
     localFiles?: boolean;
-    /** Read-only saved profiles from the local herdr client; tests supply their own catalog. */
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
-    /** herdr's config.toml, for its sidebar rows (server/herdr-sidebar.ts) and its copy_on_select (server/herdr-ui.ts); unset, where herdr itself reads it. Tests pass a temp file. */
     herdrConfigPath?: string;
     registerBridge?: boolean;
     /** the token a connection server presents as this PC's bridge; random unless a test names it */
     bridgeToken?: string;
-    /** PLUGIN_ACTION_WAIT_MS in server/plugin-routes.ts; a test shortens it to see a run that outlasts the wait */
     pluginActionWaitMs?: number;
-    /** SUBMIT_DEADLINE_MS; tests shorten it */
     submitDeadlineMs?: number;
-    /** SUBMIT_DELAY_MS; a test lengthens it to hold a second message behind the first */
     submitDelayMs?: number;
-    /** How long a queued send waits for a confirmed new turn to start; tests shorten it. */
     pendingStartTimeoutMs?: number;
-    /** Active Pi transcript receipts allowed per connection. Tests lower it to exercise the pre-send boundary. */
     piReceiptLimit?: number;
-    /** how long a push alert waits for the pane to change first (server/push.ts); tests send at once */
     alertTiming?: Partial<AlertTiming>;
     /** accept plain-http loopback push endpoints (server/push.ts); only tests delivering to push.fake.ts set it */
     pushLoopbackHttp?: boolean;
-    /** keep desktop-activity.json in the state dir for the desktop app (server/desktop-activity.ts) */
     desktopActivity?: boolean;
-    /** how long a turn's end is held for its background work (server/background-wait.ts); tests shorten it */
+    /** Step 2 defaults to on unless OVIS_ACCOUNT_OPENS_ALL=0; screen proof (server/account/local-confirm.ts) exists only with it. */
+    accountOpensAll?: boolean;
+    /** the platform the key confirm is decided by; tests name another than this machine's */
+    platform?: NodeJS.Platform;
+    /** the desktop app's end of the desktop-owner channel (`takeDesktopOwnerFd`); used only with `accountOpensAll` */
+    desktopOwner?: { input: ReadableStream<Uint8Array>; write(line: string): void };
     backgroundWait?: { grace: number; limit: number };
-    /** Clock for background holds and alert turn durations; tests advance it explicitly. */
     statusNow?: () => number;
-    /** herdr's identity behind `herdr_lifetime`; unset, its socket's (server/finishes.ts). Tests swap one in. */
     herdrIdentity?: () => string | null;
-    /** ATTACH_RETRY_FOR_MS; tests shorten it */
     attachRetryForMs?: number;
-    /** ATTACH_HELD_RETRY_MS; tests shorten it */
     attachHeldRetryMs?: number;
-    /** ATTACH_RELOOKUP_FOR_MS; tests shorten it */
     attachRelookupForMs?: number;
-    /** ATTACH_HOLD_MS; a test lengthens it so an attach's exit always comes before its hold ends */
     attachHoldMs?: number;
-    /** PI_READ_DEADLINE_MS, a Pi session listing's deadline; a test that checks what is listed, not how fast, lengthens it */
     piSessionDeadlineMs?: number;
-    /** whether herdr can `terminal attach`; unset, its ping says, and this runtime's PTY sidecar has to be runnable. Tests give a Windows herdr's answer, at once or as late as a ping's. */
     terminalAttach?: boolean | (() => Promise<boolean>);
-    /** GET /api/pane/background-agent's read (server/background-agent.ts); a test holds it to change the pane's session while it is out */
     backgroundAgentRead?: BackgroundAgentDeps["read"];
-    /** whether this runtime can run the PTY sidecar; unset, server/pty/sidecar.ts says. Tests give a runtime without Node or node-pty, while herdr keeps its own answer, or a probe to run in place of that one. */
     sidecar?: boolean | (() => boolean);
-    /** where omo and gjc are found for the offer and the start (server/shell-agent.ts); unset, this server's PATH alone. The real entrypoints (this file's and remote-entry.ts) add their user's login shell; tests pass a fixture one. */
     shellAgents?: ShellAgentLocator;
-    /** what GET /api/agent-catalog finds installed; unset, the agents' binaries on this server's PATH alone. The real entrypoints (this file's and remote-entry.ts) add their user's login shell's PATH, where installers put agents. */
     agentDetector?: AgentDetector;
   } = {},
 ): ServerInstance {
-  /**
-   * This server's lifetime: the supervisor's boot id when it manages the server, else one made now. It is
-   * /api/health's `web_ui.boot_id` and the epoch of the workspace order's counter (server/order-sequence.ts).
-   */
+  // resolved once: a merge can give the old dir files of its own, after which resolving again could name the other dir
+  const stateDir = provided.stateDir ?? defaultStateDir();
+  // a second look for the profile's marker (serve() looked before anything else), before anything here reads the
+  // folder, the device list first: a profile that started at the same moment may have marked it since
+  if (provided.profile !== "machine") {
+    const refusal = profileFolderRefusal(stateDir);
+    if (refusal !== null) throw new ProfileFolderError(refusal);
+  }
+  const options = provided.profile === "machine" ? { ...provided,
+    machineEngine: machineEngine(stateDir, provided.port ?? Number(process.env["PORT"] ?? 0)),
+    // OVIS_TOKEN lets nobody in: the local owner is the caller on the owner's socket
+    token: "", hostname: "127.0.0.1", ipv6Loopback: false, lanHttps: undefined, portal: undefined,
+    // nothing updates this server from inside it: its updates answer `updates_unmanaged`, whatever updater it is given
+    updates: undefined, herdrUpdate: undefined, herdrCoreInstaller: undefined, herdrCoreFacts: undefined, runtimeService: undefined,
+    machines: false, bridgeOnly: false, localFiles: true, registerBridge: false, tailscaleServeOnly: false,
+  } : provided;
+  if (options.profile === "machine") {
+    setRuntime("herdr");
+    if (options.machineEngine !== "herdr" && options.machineRefusal === undefined) process.env["HERDR_SOCKET"] = join(stateDir, "unavailable", "herdr.sock");
+  }
   const bootId = process.env["OVIS_BOOT_ID"] || randomUUID();
   const orderSequence = new OrderSequence(bootId);
   const hostname = options.hostname ?? process.env["HOST"] ?? "127.0.0.1";
@@ -282,23 +273,122 @@ export function createServer(
   /** Empty token = gate disabled; every route then behaves exactly as it did before auth existed. */
   const token = options.token ?? process.env["OVIS_TOKEN"] ?? "";
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
-  // resolved once: a merge can give the old dir files of its own, after which resolving again could name the other dir
-  const stateDir = options.stateDir ?? defaultStateDir();
   const ovisRelay = options.relay ?? new RelayService({ stateDir, accountService: passAccountService(options.accountService?.url), ...(options.accountService?.fetch ? { accountFetch: options.accountService.fetch } : {}) });
-  const merge = options.siblingStateDir ? mergeSiblingState(stateDir, options.siblingStateDir) : null;
-  let accountBlocked: string | null = null;
-  if (options.siblingStateDir) {
-    try { accountBlocked = mergeAccountTombstones(stateDir, options.siblingStateDir); }
-    catch (error) { accountBlocked = `cannot merge the account tombstones of ${options.siblingStateDir}: ${error instanceof Error ? error.message : String(error)}`; }
+  const opensAll = provided.accountOpensAll ?? accountOpensAll();
+  // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48).
+  const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
+  const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
+  const sibling = foreignSibling ? null : options.siblingStateDir;
+  // the order is checked against this folder's own rows before the sibling merge, which may remove some (P21, S29)
+  const checkedOrder = (dir: string) => {
+    const state = PcAccountState.open(dir);
+    const own = readDeviceRegistry(join(dir, "devices.json"), opensAll);
+    if (own.kind === "ok") state.checkRows(own.devices);
+    return state;
+  };
+  const pcAccount = opensAll ? checkedOrder(stateDir) : null;
+  // one rule, whatever the flag and with or without a sibling: when this folder's or its sibling's order is missing or
+  // behind the rows it numbered, the start is blocked as a merge that could not be made blocks it, and writes nothing
+  // to either folder (no merge, fold, repair or legacy pass) until the damage is repaired (S19, S29)
+  const damage = (dir: string) => checkedOrder(dir).strict;
+  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
+  if (blocked !== null) console.error(blocked);
+  const untouched = blocked !== null;
+  // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
+  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
+  // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
+  const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
+  // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
+  // a sibling folder's log is merged into both before this one is read: nothing in force is lost, nothing ended comes back (T48)
+  const logMerge = opensAll && sibling && !untouched ? mergeSafetyLogs(stateDir, sibling) : null;
+  // a sibling dir's account state is merged too; one that cannot be fails this PC closed like a damaged log (S19)
+  const accountMerge = opensAll && sibling && !untouched ? mergeAccountState(stateDir, sibling) : null;
+  const safetyLog = opensAll ? SafetyLog.open(stateDir, logMerge ?? accountMerge) : null;
+  // then its rows: none is imported while the merged log holds a lock, a block or a freeze in force, and a row whose
+  // key differs between the two copies is dropped (T48, T27)
+  const conflicts: StoredDevice[] = [];
+  const closure = safetyLog !== null && (safetyLog.strict !== null || safetyLog.state().locked || safetyLog.state().freezes.length > 0);
+  // A browser-only folder never saved a relay identity: the twin rows and the merge record are the evidence, scoped to
+  // the one identity this PC has; two different identities are two PCs and witness nothing.
+  const ownIdentity = opensAll && sibling ? savedServerId(stateDir) : undefined;
+  const otherIdentity = opensAll && sibling ? savedServerId(sibling) : undefined;
+  const ownBinding = pcAccount?.binding()?.bind_id;
+  const otherBinding = opensAll && sibling ? PcAccountState.open(sibling).binding()?.bind_id : undefined;
+  const pcIdentity = ownIdentity === undefined || otherIdentity === undefined || ownIdentity === otherIdentity ? ownIdentity ?? otherIdentity : undefined;
+  const sharedLegacyIdentity = pcIdentity !== undefined && (ownBinding === undefined || otherBinding === undefined || ownBinding === otherBinding)
+    ? pcIdentity : undefined;
+  // Before the first migration, the legacy rows themselves establish the PC's account. A recorded clear is never fresh.
+  const bindingRule = pcAccount && pcAccount.strict === null && (!pcAccount.migrating || pcAccount.clears().length > 0)
+    ? { boundAccount: pcAccount.account() } : {};
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { ...bindingRule, holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
+  // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
+  const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
+  let accountBlocked: string | null = accountMerge;
+  if (sibling && !untouched && accountBlocked === null) {
+    try { accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll); }
+    catch (error) { accountBlocked = `cannot merge the account tombstones of ${sibling}: ${error instanceof Error ? error.message : String(error)}`; }
     if (accountBlocked !== null) console.error(accountBlocked);
   }
-  const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null, accountBlocked);
+  const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
+  // the journal's first entry makes the safety log too, so a journal never stands without its log (P24)
+  const journal = opensAll ? DeviceJournal.open(stateDir, () => safetyLog?.ensureFile()) : null;
+  // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
+  const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
+  // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
+  const opened: { rows: ReturnType<typeof accountRowsFor> | null } = { rows: null };
+  // Recovery can use row ports inside the DeviceStore constructor, before its caller has a reference.
+  const rowsForDevices = (devices: DeviceStore) => opened.rows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
+    evidence: removals,
+    ...listNotices(journal, removals, (entry) => devices.publish(entry)),
+    settleNotices: rows => devices.settleListNotices(rows),
+    closeSessions: (id) => { devices.closeAccountSessions(id); },
+    heldByDevicesJson: (key) => devices.hasKey(key),
+    checkFreshness: () => accountCatchUp.checkFreshness(),
+    releaseOf: id => recoveryReleases?.releaseOf(id) ?? null,
+    serviceStep2Off: () => pcAccount.serviceStep2Off(),
+    admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
+    now: () => Date.now(),
+    setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
+    admitOrigin: (at) => pcAccount.admit("remote", "list", null, Date.parse(devices.nextStamp(at))),
+    firstDevice: {
+      othersEver: () => pcAccount.othersEver(),
+      setOthersEver: () => { pcAccount.setOthersEver(); },
+      listKey: () => pcAccount.first()?.list_key ?? null,
+      otherRows: () => {
+        const bound = pcAccount.first()?.key;
+        return devices.list(null).length > (bound !== undefined && devices.hasKey(bound) ? 1 : 0);
+      },
+    },
+    admitListedRows: write => devices.admitListedRows(write),
+  }) : null;
+  const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
+    safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
+    ...(siblingLegacyCredential ? { siblingLegacyCredential } : {}),
+  });
+  const accountRows = opened.rows;
+  const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
+  const accountMailbox = new AccountMailbox({
+    pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
+    ...(opensAll ? { snapshot: { account: () => devices.account(), ports: (readmission?: Readmission) => readPorts?.(readmission) ?? null, used: () => accountRows?.store()?.usedReport() ?? [] } } : {}),
+    devices, identity: () => ovisRelay.currentIdentity(),
+    service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
+  });
+  // a row dropped because its copies held different keys is gone from both folders; the journal says so (T27, T48)
+  if (merge?.devicesBlocked === null) for (const device of conflicts) devices.journalEvent({ kind: "drop", how: "merge_conflict", key: device.relay_public_key ?? null, no: null, row: device.id, label: device.label, by: null, account: device.account ?? null });
+  // Device migration creates the journal's companions. Recover interrupted notices before their whole records fold.
+  if (devices.error === null && devices.accountError === null && safetyLog && journal) {
+    journal.recordSnapshotLifts(safetyLog);
+    try { safetyLog.fold(); } catch (error) { console.error(`[account] the safety log could not be folded: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  for (const strict of [safetyLog?.strict, pcAccount?.strict, removals?.strict, journal?.strict]) if (strict) console.error(strict);
+  // the machine profile has no open install: from its first answer only the caller on its owner's socket and a device through the relay with its proof get in
+  if (options.profile === "machine") devices.closeGate();
   const preferences = new PreferenceStore(stateDir);
-  // Settings -> Experimental -> OMP on macOS herdr-core: chat from the session it holds open
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
+  readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
-  const stopPinBridge = servingCore() ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
-  // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
+  const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   try {
     rmSync(join(stateDir, "claude-rewinds.json"), { force: true });
   } catch (error) {
@@ -308,23 +398,18 @@ export function createServer(
   const cliProxy = options.cliProxy ?? new CLIProxyService(stateDir);
   const cliProxyRoutes = new CLIProxyRoutes(cliProxy);
   const usageLogin = options.usageLogin ?? new UsageLoginService();
-  // a sign-in runs in a herdr tab, which outlives this server: the next one must know its home is taken (#2313)
   usageLogin.persistTo(stateDir);
   const usage = options.usage ?? new UsageService(undefined, undefined, (refresh, skipped) => cliProxy.report(refresh, skipped));
-  // a removed or restored account changes which Hub accounts stay unread, saved at once (#3427)
   const usageAccounts = new UsageAccountList(stateDir, usage, () => cliProxy.hiddenChanged());
   const hiddenAccounts = (hidden: unknown): Set<string> => new Set(Array.isArray(hidden) ? hidden.filter((key): key is string => typeof key === "string") : []);
   // an account hidden in Settings (the shared usageHidden) or removed from Ovis has its sign-in looked up no more (#3333)
-  // whether the last read of the removed list succeeded: while it does not, the Hub forgets no hidden account (#3428)
   let removedReadable = true;
   const skippedAccounts = () => {
     let removed: string[] = [];
-    // an unreadable list skips nothing; the report says why
-    try { removed = usageAccounts.removed(); removedReadable = true; } catch { removedReadable = false; /* UsageAccountList.report warns */ }
+    try { removed = usageAccounts.removed(); removedReadable = true; } catch { removedReadable = false; }
     return new Set([...hiddenAccounts(preferences.get().settings.usageHidden), ...removed]);
   };
   usage.skipAccounts(skippedAccounts);
-  // a Hub sign-in keeps the rows of the accounts hidden now, not only of those the last report skipped
   cliProxy.skipAccounts(skippedAccounts, () => removedReadable);
   // an account shown again is looked up now, not at the browser's next poll; hiding one needs no read,
   // and with Plan limits off nothing is read at all (gh auth token included)
@@ -332,15 +417,11 @@ export function createServer(
   preferences.subscribe((next) => {
     const before = usageHidden;
     usageHidden = hiddenAccounts(next.settings.usageHidden);
-    // which Hub account each hidden key is, saved now and with Plan limits off too: a restart before any report keeps it (#3427)
-    // and again at every change while its last save failed: a retried hide is refused until it is saved (#3428)
     if (before.size !== usageHidden.size || [...before].some((key) => !usageHidden.has(key)) || cliProxy.hiddenUnsaved()) cliProxy.hiddenChanged();
     if (!next.settings.showUsage || ![...before].some((key) => !usageHidden.has(key))) return;
     usage.report().catch((error: unknown) => console.warn("usage: could not be read after the hidden accounts changed", error instanceof Error ? error.message : String(error)));
   });
-  // a herdr-core machine's server runs on this PC, so it has no load of that machine to tell (system-stats.ts)
   const systemSampler = options.system === undefined ? (hcMachine() === null ? createSystemSampler() : null) : options.system;
-  // a sign-in the browser followed ends in the server's own PTY, not a herdr pane: it says so itself
   usageLogin.onLoginEnded((account, provider) => {
     usage.invalidate(provider);
     if (account !== null) {
@@ -353,7 +434,10 @@ export function createServer(
   const namedOwner = options.tailscaleOwner !== undefined ? options.tailscaleOwner : process.env["OVIS_TAILSCALE_OWNER"]?.trim() || undefined;
   const tailnet = options.tailnet ?? new TailnetIdentitySource();
   const identityOf = async (grantPath: boolean, host: string | null, loginPath = false) => {
-    if (namedOwner !== undefined) return { ...(grantPath ? await tailnet.freshIdentity(host) : { soleLogin: null, dnsName: null, tailnetIp: null }), owner: namedOwner, tagged: false };
+    // the machine profile believes no Tailscale identity: a header there lets nobody in
+    if (options.profile === "machine") return { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
+    // a login is let in only at this PC's tailnet name or address (access.ts), so a named owner still reads them
+    if (namedOwner !== undefined) return { ...(grantPath ? await tailnet.freshIdentity(host) : loginPath ? await tailnet.loginIdentity() : { soleLogin: null, dnsName: null, tailnetIp: null }), owner: namedOwner, tagged: false };
     return grantPath ? tailnet.freshIdentity(host) : loginPath ? tailnet.loginIdentity() : tailnet.identity();
   };
   const serveOnly = options.tailscaleServeOnly ?? process.env["OVIS_TAILSCALE_SERVE_ONLY"] === "1";
@@ -362,8 +446,6 @@ export function createServer(
 
   const shellAgents = options.shellAgents ?? new ShellAgentLocator({ probe: null });
   const agentDetector = options.agentDetector ?? new AgentDetector({ locate: catalogLocator({ probe: null }) });
-  // GET /api/agents: on a PATH a pane's shell starts it from, read again once after an install put it
-  // in its installer's folder (installed-lookup.ts); shell-started kinds through the locator that starts them
   const catalogPlatformHere = catalogPlatform(process.platform);
   const installFolder = (binary: string): { path: string; mark: string } | null => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(binary));
@@ -372,11 +454,10 @@ export function createServer(
     if (path === null) return null;
     try { return { path, mark: String(statSync(path).mtimeMs) }; } catch { return null; }
   };
-  const herdrKinds = new InstalledLookup({ onPath: (binary) => agentDetector.onPath(binary), inInstallFolder: installFolder, refresh: () => agentDetector.refreshPath() });
-  const shellKinds = new InstalledLookup({ onPath: (kind) => shellAgents.executable(kind), inInstallFolder: installFolder, refresh: () => shellAgents.refresh() });
+  const herdrKinds = new InstalledLookup({ onPath: (binary) => agentDetector.onPath(binary), inInstallFolder: installFolder, refresh: (interactive) => agentDetector.refreshPath(interactive) });
+  const shellKinds = new InstalledLookup({ onPath: (kind) => shellAgents.executable(kind), inInstallFolder: installFolder, refresh: (interactive) => shellAgents.refresh(interactive) });
   const agentOffered = async (kind: string): Promise<boolean> => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
-    // a program it needs to run (DeepSeek Harness's dsh behind dsh-tui) missing: not offered, as the catalog says
     for (const needed of entry?.detect.needs ?? []) if (!(await herdrKinds.has(needed))) return false;
     if (kind in SHELL_AGENTS) return shellKinds.has(kind);
     return herdrKinds.has(entry?.detect.binaries[0] ?? kind);
@@ -388,22 +469,19 @@ export function createServer(
   // a snapshot as a browser is told it, wherever it goes: without the token values herdr's sidebar rows hide (#2160).
   // A bridge this app starts on a PC (`bridgeOnly`, server/remote-entry.ts) serves only its connection server, with
   // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
-  const browserSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
-  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber) }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
+  const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
+  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber) }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
-  // read finishes are kept until this server knows their herdr run ended
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
-  // a pane another PC's herdr moved under a new ID: what was read under the old ID is read under the new one (#1503;
-  // this PC's own moves are told with their numbering above)
   machines?.subscribe((event) => {
     if (event.type !== "machine-message" || event.machine_id === LOCAL_MACHINE || event.message.type !== "pane-moved") return;
     try { seen.moved(event.machine_id, event.message.from, event.message.to); }
     catch (error) { console.warn(`seen: could not carry the reads of ${event.message.from} to ${event.message.to}:`, error); }
   });
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
-  // pane's finish now, so a read told late never marks a turn that ended since as seen. A pane brought
-  // into view writes it again (shared/seen.ts SeenPresentation); one left on screen does not
-  const seenMarker = servingCore() ? coreSeenMarker() : null;
+  // pane's finish now, so a read told late never marks a turn that ended since as seen.
+  const seenMarker = capabilities().seen === "label" ? coreSeenMarker() : null;
   const markSeen = (finish: SeenFinish, again: boolean) => {
     if (!seenMarker || finish.pc !== LOCAL_MACHINE || machines?.finishEnded(finish.pc, finish.epoch) !== false) return;
     const pane = machines.list().find((machine) => machine.id === LOCAL_MACHINE)?.snapshot?.panes.find((candidate) => candidate.pane_id === finish.pane);
@@ -431,6 +509,7 @@ export function createServer(
     };
   });
 
+
   const envPort = process.env["PORT"];
   const clientConnectionLog = new ClientConnectionLog();
   const socketContext = (bunServer: Bun.Server<SocketData>): ServerContext => ({
@@ -450,7 +529,6 @@ export function createServer(
 
     websocket: core.websocket,
   });
-  // bound before anything else opens, so a failed ::1 bind leaves only what a failed primary bind would
   let ipv6: Bun.Server<SocketData> | null = null;
   if (ipv6Loopback) {
     try {
@@ -461,21 +539,125 @@ export function createServer(
       });
     } catch (error) {
       server.stop(true);
-      // createCore already started the status hub's watchers and timers
       core.stop(() => clearInterval(draftTimer));
       piReader.close();
       throw error;
     }
   }
+  // the machine profile's local owner: the caller on <state folder>/serve.sock, which only this account (and
+  // root) can connect to. Bun gives a socket the umask's mode: it is made under 077, the owner's umask comes
+  // back for everything made afterwards, and the file is 0600 before anything is served
+  let ownerListener: Bun.Server<SocketData> | null = null;
+  if (options.profile === "machine") {
+    const path = ownerSocketPath(stateDir);
+    const umask = process.umask(0o077);
+    try {
+      ownerListener = Bun.serve<SocketData>({
+        unix: path, maxRequestBodySize: BUN_BODY_CEILING,
+        // a request with no Host (HTTP/1.0) names no host at all: refused like any other that is not exactly localhost
+        fetch: (request, bunServer) => request.headers.has("host")
+          ? handleRequest(request, { ...socketContext(bunServer), get port() { return server.port; }, ownerSocket: true })
+          : machineUnauthorized(new URL(request.url, "http://localhost").pathname),
+        websocket: core.websocket,
+      });
+      chmodSync(path, 0o600);
+    } catch (error) {
+      ownerListener?.stop(true);
+      server.stop(true);
+      core.stop(() => clearInterval(draftTimer));
+      piReader.close();
+      throw new Error(`The machine profile cannot serve its owner on ${path} (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error))})`, { cause: error });
+    } finally {
+      process.umask(umask);
+    }
+  }
 
   const requestLog = new RequestLog(stateDir);
-  const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
-  const accountMailbox = new AccountMailbox({
-    pendingPath: join(stateDir, "account-pending.json"), holds: accountHolds,
-    devices, identity: () => ovisRelay.currentIdentity(),
-    service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
+  // a port file an earlier run left names a port anyone may have taken since
+  try { rmSync(join(stateDir, LOCAL_CONFIRM_FILE), { force: true }); }
+  catch (error) { console.error(`${LOCAL_CONFIRM_FILE} could not be removed: ${error instanceof Error ? error.message : String(error)}`); }
+  const localConfirms = opensAll ? new LocalConfirms() : undefined;
+  // a page that cannot open leaves acts waiting for the desktop app's channel; it never fails the start
+  const openConfirms = () => {
+    if (!localConfirms) return null;
+    try { return openConfirmListener(localConfirms, { stateDir }); }
+    catch (error) { console.error(`The local confirm page did not open: ${error instanceof Error ? error.message : String(error)}`); return null; }
+  };
+  // Leaving an account does not end its denials. While one stands, the PC's screen still approves exact keys.
+  let confirmListener = devices.screenApprovalActive() ? openConfirms() : null;
+  const syncConfirmListener = () => {
+    if (devices.screenApprovalActive()) confirmListener ??= openConfirms();
+    else { confirmListener?.stop(); confirmListener = null; }
+  };
+  const desktopOwner = localConfirms && options.desktopOwner ? desktopOwnerChannel(localConfirms, options.desktopOwner) : null;
+  // devices that redeemed a code and proved their key, waiting for this PC's screen (server/account/pending.ts)
+  const pendingRedemptions = localConfirms ? new PendingRedemptions({
+    serverId: () => ovisRelay.currentIdentity()?.server_id ?? null,
+    // every drop is journalled (P24), with the key and the name it gave, so the device history names it
+    journalDrop: (entry) => { journal?.append({ kind: "drop", how: entry.reason, key: entry.key, no: null, row: null, label: entry.label, by: "pc", account: null }); },
+    release: (codeId, key) => devices.releaseRedemption(codeId, key),
+  }) : undefined;
+  // a code that ends takes what waits on it, however it ends
+  if (pendingRedemptions) devices.onPairingEnded((codeId) => pendingRedemptions.dropCode(codeId));
+  // a key confirm needs a screen this PC can prove: Linux in this release; elsewhere pairing is as before
+  const keyProofPairings = localConfirms && pendingRedemptions && (options.platform ?? process.platform) === "linux"
+    ? new KeyProofPairings({ pending: pendingRedemptions, seams: devices }) : undefined;
+  devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
+  const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
+  const stopBindingWatch = pcAccount?.onBindingChange(() => {
+    for (const entry of localConfirms?.pending() ?? []) {
+      if (entry.action.kind !== "unlock") localConfirms?.withdraw(entry.id);
+    }
+    for (const entry of pendingRedemptions?.list() ?? []) pendingRedemptions?.decline(entry.id);
+    syncConfirmListener();
   });
+  // `ovis recover` (server/account/recovery.ts): this PC's user, at its terminal or over SSH, on a socket no route reaches.
+  // Each release and undo is journalled per row before it takes effect; whether the log can be read is asked live
+  const recoveryReleases = opensAll && journal ? new RecoveryReleases({
+    journal: (entry) => {
+      if (entry.kind === "release") {
+        for (const row of entry.rows) journal.append({ kind: "release", how: "recover", key: row.key, no: null, row: row.id, label: row.id, by: entry.by, account: null });
+      } else {
+        for (const row of entry.rows) journal.append({ kind: "release", how: "recover", key: null, no: null, row, label: row, by: entry.by, account: null, undo: entry.releases.join(",") });
+      }
+    },
+  }) : undefined;
+  const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
+    stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
+  }) : null;
+  // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
+  const lockSignal = safetyLog ? new LockSignal() : undefined;
+  const lockHandler = localConfirms && safetyLog && pcAccount ? lockRoutes({ confirms: localConfirms, store: {
+    bound: () => pcAccount.binding() !== null,
+    state: () => ({ lock: safetyLog.state().locks.at(-1)?.record.id ?? null, strict: devices.failsClosed }),
+    preview: () => ({ rows: devices.list(null).filter((row) => devices.originOf(row.id)?.from !== "pc").map((row) => ({ id: row.id, label: row.label, origin: devices.originOf(row.id), file: "devices" as const })), grants: ["token", "portal", "tailscale", "open_lan", "loopback"] }),
+    lock: () => {
+      if (safetyLog.appendLock(pcAccount.binding()).outcome !== "applied") return;
+      // a code started before the lock pairs nobody after it: it ends in the same turn (T46)
+      devices.endPairing();
+      devices.endUnlockedRows();
+      lockSignal?.fire();
+    },
+    // the unlock names the lock's own account: a lock stays until an unlock names it, whatever the binding did since (P11)
+    unlock: (lockId) => {
+      const lock = safetyLog.state().locks.find((entry) => entry.record.id === lockId);
+      safetyLog.appendUnlock(lockId, lock === undefined ? null : { account: lock.record.account });
+      syncConfirmListener();
+    },
+    removalsPending: () => devices.pendingLockRemovals().length > 0,
+  } }) : undefined;
+  const accountCatchUp = new AccountCatchUp(devices, accountRows, { pc: pcAccount, releases: recoveryReleases });
+  const catchUp = accountCatchUp.gate;
+  const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
+  devices.attachAccountOrder(accountOrder, serverIdNow);
+  const readPorts = safetyLog !== null && pcAccount !== null && journal !== null && accountOrder !== null
+    ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
+      // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends
+      commitList: (snapshot) => accountCatchUp.commitList(snapshot, readmission),
+      step2Off: () => accountCatchUp.step2Off() })
+    : null;
   const services: RequestServices = {
+    checkAccountFreshness: () => accountCatchUp.checkFreshness(),
     runtimeMove: options.runtimeService ? moveService({
       stateDir, port: server.port ?? DEFAULT_PORT, serving: runtime, facts: () => options.runtimeService?.facts(),
       lock: { path: moveLockPath(herdrSocketPath()) },
@@ -489,7 +671,12 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
+    get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
+    get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
+    get askScreenForKey() { return devices.screenApprovalActive() ? askScreen : undefined; },
+    get lockRoutes() { return devices.screenApprovalActive() ? lockHandler : undefined; },
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);
@@ -546,9 +733,7 @@ export function createServer(
   const relay = target ? loopbackRelay(target, server.port ?? 0) : null;
   const registration = options.registerBridge ? registerBridge(relay?.port ?? server.port ?? 0, bridgeToken) : null;
 
-  // OpenCode's stream and watches are shared by every server in this process: the last one to stop resets them
   const releaseOpenCodeNative = holdOpenCodeNative();
-  // the file threads are shared by every server in this process too: the last one to stop ends them
   const releaseFilePool = holdFilePool();
   const releaseCommandHistory = holdCommandHistory();
   core.start();
@@ -558,10 +743,8 @@ export function createServer(
     port: server.port ?? 0,
     hostname,
     lanHttps,
-    // both subscriptions live: a test may create a workspace and wait for its session-changed
     statusReady: Promise.all([collector.ready, collector.structureReady]).then(() => undefined),
     focusReady: collector.focusReady,
-    /** a create request's first message for a pane's agent, as the create routes queue it (server/core/pending.ts); for tests that run no agent */
     queueFirstMessage,
     alertsSettled: () => push.settled(),
     warmAgentCatalog: () => {
@@ -572,6 +755,8 @@ export function createServer(
     stop: () => {
       services.runtimeMove?.stop();
       accountMailbox.stop();
+      accountRows?.stop();
+      accountCatchUp.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
       core.stop(() => {
@@ -585,12 +770,17 @@ export function createServer(
       });
       piReader.close();
       stopPinBridge?.stop();
-      // the followed sign-ins run in this server's own terminals: no dialog could reach them once it stops
+      safetyLog?.close();
       void usageLogin.stopAll();
       void shellAgents.stop();
       agentDetector.close();
       server.stop(true);
       ipv6?.stop(true);
+      ownerListener?.stop(true);
+      stopBindingWatch?.();
+      confirmListener?.stop();
+      recoverySocket?.stop();
+      desktopOwner?.stop();
       for (const listener of lanListeners) listener.stop(true);
       releaseFilePool();
       releaseCommandHistory();
@@ -599,67 +789,130 @@ export function createServer(
   };
 }
 
-if (import.meta.main) {
+export async function serve(): Promise<void> {
+  // before anything is spawned, so no child holds the desktop app's channel
+  const desktopOwnerFd = takeDesktopOwnerFd(process.argv);
+  const profile = process.env["OVIS_PROFILE"] === "machine";
+  if (profile && !fleetPreview()) {
+    console.error("The machine profile is a preview and was not started; set OVIS_PREVIEW=fleet beside OVIS_PROFILE=machine to start it.");
+    process.exit(1);
+  }
+  // its owner's door is a unix socket in a folder only that account may enter
+  if (profile && process.platform === "win32") {
+    console.error("The machine profile does not run on Windows, so no server was started.");
+    process.exit(1);
+  }
+  let ownership: ReturnType<typeof claimServerState> | null = null;
+  if (profile) {
+    try { ownership = claimServerState(process.env["OVIS_STATE_DIR"]); }
+    catch (err) {
+      console.error(`${err instanceof Error ? err.message : String(err)}.`);
+      process.exit(1);
+    }
+    process.once("exit", ownership.release);
+    console.log(machineHerdrBinary());
+    if (process.env["OVIS_TOKEN"]) console.log(`OVIS_TOKEN is not used by the machine profile: this account's programs reach it on ${ownership.socket}, and its port tells anyone only that it is alive.`);
+  } else {
+    // a folder a machine profile marked is its own, with or without the preview, before anything reads, moves or writes it
+    const refusal = profileFolderRefusal(defaultStateDir());
+    if (refusal !== null) {
+      console.error(refusal);
+      process.exit(1);
+    }
+  }
   moveLegacyStateDir();
   // SSH connection folders an earlier server left in /tmp; here, not in createServer, so tests never touch them
-  void sweepSshDirs();
+  if (!profile) void sweepSshDirs();
   // resolved once, for the same reason as in createServer
-  const stateDir = defaultStateDir();
-  // herdr-core's adapter is HERDR_SOCKET: it listens before anything below asks herdr
-  // the launcher says when it took this bridge as its own, past its startup check: a page following a
-  // runtime switch waits for that, never for a bridge the launcher may still roll back
+  const stateDir = ownership?.stateDir ?? defaultStateDir();
+  if (!profile && fleetPreview() && process.platform !== "win32") {
+    try {
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      holdForLife(join(stateDir, "serve.own"), "shared");
+    } catch (err) {
+      if (err instanceof OwnerGuardBusy) {
+        console.error(`A machine profile serves the Ovis state folder ${stateDir}, so no server was started; give this one another OVIS_STATE_DIR.`);
+        process.exit(1);
+      }
+      console.error(`The state folder's hold could not be taken, so a machine profile could start on it beside this server: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   let launchAccepted = process.env["OVIS_MANAGED"] !== "1";
   process.on("message", (message: unknown) => {
     if (message !== null && typeof message === "object" && (message as { type?: unknown }).type === "bridge-accepted") launchAccepted = true;
   });
-  // OVIS_RUNTIME, else the choice saved from Settings, else what this PC has (runtime-choice.ts)
   const startEnv = { ...process.env };
   let herdrCore: Awaited<ReturnType<typeof startRuntime>>;
   let choice: RuntimeChoice;
-  let fallback: "no_herdr_core" | undefined;
+  let fallback: "no_herdr_core" | "no_alt_runtime" | undefined;
+  let machineRefusal: () => string | null | Promise<string | null> = () => null;
   try {
-    choice = await chooseRuntime({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), env: startEnv });
-    setRuntime(choice.runtime);
-    console.log(`Runtime: ${choice.runtime} (${choice.reason})`);
-    try {
-      herdrCore = await startRuntime(stateDir);
-    } catch (err) {
-      // a choice saved from Settings whose core is gone falls back to herdr, where Settings can switch again;
-      // OVIS_RUNTIME says what to serve, and its failure stays an error
-      // only a missing hc: any other failure (a state folder, another Ovis) is the launcher's to roll back
-      if (choice.source !== "saved" || choice.runtime !== "herdr-core" || !(err instanceof NoHerdrCoreError)) throw err;
-      console.error(`The herdr-core chosen in Settings cannot start (${err instanceof Error ? err.message : String(err)}); serving herdr.`);
-      choice = { ...choice, runtime: "herdr" };
-      fallback = "no_herdr_core";
+    if (profile) {
+      const engine = machineEngine(stateDir, Number(startEnv["PORT"] ?? 0));
+      const refusal = await machineSocket(stateDir, engine);
+      machineRefusal = machineSocketRefusal;
       setRuntime("herdr");
+      choice = { runtime: "herdr", source: "env", reason: "machine profile" };
       herdrCore = null;
+      console.log(`Machine engine: ${engine}${refusal ? ` (${refusal})` : ""}`);
+    } else {
+      choice = await chooseRuntime({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), env: startEnv });
+      setRuntime(choice.runtime);
+      console.log(`Runtime: ${choice.runtime} (${choice.reason})`);
+      try {
+        herdrCore = await startRuntime(stateDir);
+      } catch (err) {
+        const missing = choice.runtime === "herdr-core" && err instanceof NoHerdrCoreError ? "no_herdr_core"
+          : choice.runtime === "alt-runtime" && err instanceof NoAltRuntimeError ? "no_alt_runtime" : null;
+        if (choice.source !== "saved" || missing === null) throw err;
+        console.error(`The ${choice.runtime} chosen in Settings cannot start (${err instanceof Error ? err.message : String(err)}); serving herdr.`);
+        choice = { ...choice, runtime: "herdr" };
+        fallback = missing;
+        setRuntime("herdr");
+        herdrCore = null;
+      }
     }
   } catch (err) {
     console.error(`Ovis cannot start: ${err instanceof Error ? err.message : String(err)}.`);
     process.exit(1);
   }
   const updates = connectUpdater();
-  const version = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
   const telemetry = new Telemetry({ stateDir, version, env: process.env, fetch, previousVersion: () => updates.installed().previous_version, runtime: herdrCore === null ? "herdr" : "herdr-core" });
-  const portal = new PortalService({ stateDir });
+  const portal = profile ? undefined : new PortalService({ stateDir });
   // the direct carrier on this PC's private and Tailscale addresses, which the phone apps' OvisDirect plugin opens (docs/relay.md)
   const tailnet = new TailnetIdentitySource();
-  const relay = new RelayService({ stateDir, direct: { tailnetIp: () => tailnet.identity().tailnetIp }, accountService: passAccountService() });
-  const lanConfig = lanHttpsConfig(process.env);
+  const relay = new RelayService({ stateDir, ...(profile && !MACHINE_DIRECT_CARRIER_ENABLED ? {} : { direct: { tailnetIp: () => tailnet.identity().tailnetIp } }), accountService: passAccountService() });
+  const lanConfig = profile ? null : lanHttpsConfig(process.env);
   if (lanConfig !== null && "error" in lanConfig) console.error(`LAN HTTPS is off: ${lanConfig.error}.`);
   let instance: ReturnType<typeof createServer>;
   try {
-    instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), herdrCoreFacts, herdrCoreInstaller: herdrCoreInstaller(),
+    instance = createServer({ updates, ...(profile ? { profile: "machine", machineRefusal, port: Number(startEnv["PORT"] ?? 0) } : { herdrUpdate: new HerdrUpdater(), herdrCoreFacts, herdrCoreInstaller: herdrCoreInstaller(),
       launchAccepted: () => launchAccepted,
-      runtimeService: runtimeService({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), serving: choice.runtime, source: choice.source, ...(fallback ? { fallback } : {}), env: startEnv, core: herdrCoreFacts, accepted: () => launchAccepted, restart: (id) => process.send?.({ type: "runtime-restart", id }) }),
+      runtimeService: runtimeService({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), serving: choice.runtime, source: choice.source, ...(fallback ? { fallback } : {}), env: startEnv, core: herdrCoreFacts, accepted: () => launchAccepted, restart: (id) => process.send?.({ type: "runtime-restart", id }) }) }),
       portal, relay, tailnet, telemetry, registerBridge: true, herdrProfiles: readHerdrProfiles, shellAgents: new ShellAgentLocator(), agentDetector: new AgentDetector({ locate: catalogLocator({ probe: defaultLoginProbe() }) }), stateDir, siblingStateDir: siblingStateDir(stateDir),
       desktopActivity: process.env["OVIS_DESKTOP_APP"] === "1",
+      ...(desktopOwnerFd !== null ? { desktopOwner: desktopOwnerFdChannel(desktopOwnerFd) } : {}),
       ...(lanConfig !== null && !("error" in lanConfig) ? { lanHttps: lanConfig } : {}) });
+    ownership?.listening(instance.port, instance.hostname);
+    if (profile) {
+      // a device paired at the machine's own address holds a cookie, which opens nothing here: said, not silent
+      const unreachable = instance.context.services.devices.list(null).filter((device) => !device.via_relay).map((device) => device.id);
+      if (unreachable.length > 0) console.log(`Devices paired at this machine's own address cannot reach it, only devices through the relay can: ${unreachable.join(", ")}`);
+    }
     instance.warmAgentCatalog();
   } catch (err) {
+    if (err instanceof ProfileFolderError) {
+      console.error(err.message);
+      process.exit(1);
+    }
     const { code, syscall } = err as { code?: string; syscall?: string };
-    // only the bind itself: a permission error reading a state file keeps its own message and path
-    if (syscall !== "listen" || (code !== "EADDRINUSE" && code !== "EADDRNOTAVAIL" && code !== "EACCES")) throw err;
+    if (syscall !== "listen" || (code !== "EADDRINUSE" && code !== "EADDRNOTAVAIL" && code !== "EACCES")) {
+      if (profile && err instanceof Error && err.message.startsWith("The machine profile cannot serve its owner")) {
+        console.error(`${err.message}.`);
+        process.exit(1);
+      }
+      throw err;
+    }
     const host = process.env["HOST"] ?? "127.0.0.1";
     const port = process.env["PORT"] || DEFAULT_PORT;
     const reason = code === "EADDRINUSE"
@@ -681,7 +934,7 @@ if (import.meta.main) {
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
     // its relay, and the pipes it logs to must outlive it
     // herdr-core's adapter answers what the stopping server still asks meanwhile
-    void Promise.all([Bun.sleep(2000), portal.shutdown(), relay.shutdown()]).then(() => {
+    void Promise.all([Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(() => {
       herdrCore?.stop();
       process.exit(0);
     });
@@ -696,12 +949,11 @@ if (import.meta.main) {
     console.log(`LAN HTTPS on ${shown.map((address) => `https://${address}:${port}`).join(", ")} (token or paired device only; certificate SHA-256 ${sha256})`);
   }
   const socket = herdrSocketPath();
-  void ping(socket).catch(() => {
+  if (!profile) void ping(socket).catch(() => {
     console.error(herdrCore
       ? `herdr-core is not reachable through ${socket}: start it with \`${hcBin()} server start\`, or set OVIS_HC_BIN to hc's full path.`
       : `herdr is not reachable at ${socket}: start herdr, or set HERDR_SOCKET to its socket (named sessions: ~/.config/herdr/sessions/<name>/herdr.sock).`);
   });
-  // the state folder is created on first write, so test the nearest folder that exists
   let probe = stateDir;
   while (true) {
     try {
@@ -733,3 +985,5 @@ if (import.meta.main) {
     }
   }
 }
+
+if (import.meta.main) await serve();

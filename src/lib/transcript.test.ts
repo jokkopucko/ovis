@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 
 import { toTranscriptMessages } from "./transcript.ts";
 
-/** A real Claude Code pane read, trimmed to the shapes that matter. */
 const CLAUDE_READ = [
   "  미리보기를 보시고 어색한 부분을 알려주시면 이어서 작업하겠습니다.",
   "",

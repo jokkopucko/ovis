@@ -13,52 +13,34 @@ import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 export interface TerminalInputProps {
   owner: string;
   active?: boolean;
-  /** an IME composition in the line: only the switch to direct typing waits for it */
   onComposing?: (active: boolean) => void;
   connected: boolean;
-  /** true: sent, clear the line; a string: keep the text and say why; false: not sent (offline) */
   onSend: (text: string) => false | Promise<true | string>;
-  /** an empty line's send: Enter alone, for a menu's default or a prompt that asks to continue;
-   * true: sent, false: not sent (offline), a string: not sent, and why */
   onEnter: () => boolean | string;
-  /** the line typed into the pane without Enter; true: typed, clear the line; a string: keep the text and say why; false: not sent (offline) */
   onInsert: (text: string) => false | Promise<true | string>;
   /** what a paste is for, read at the tap and again once the clipboard answers: the PC, pane and
    * connection; null while the pane cannot take one. A different answer cancels the paste. */
   pasteTarget?: () => string | null;
-  /** a paste waits on the clipboard: the key bar's Paste is off meanwhile */
   onPasting?: (active: boolean) => void;
-  /** stores a pasted file beside this line's pane (POST /api/pane/image) and resolves to its path */
   uploadFile?: (file: Blob) => Promise<string>;
-  /** an Attach files button before Insert picks files to upload as a paste does (Settings > Terminal, off by default) */
   attach?: boolean;
-  /** the line took the focus */
   onFocus?: () => void;
-  /** Settings > Terminal > Keyboard only from the key bar, with the keyboard down: focus raises none (#1635) */
   keyboardHeld?: boolean;
-  /** Settings > Terminal > Fold the key bar: the Terminal keys button, first among the actions (KeyBar.tsx LineKeysButton) */
   keyControls?: ReactNode;
   ref?: Ref<TerminalInputHandle>;
 }
 
-/** What the key bar's Paste and the mode switch ask of the line (PaneTerminal.tsx). */
 export interface TerminalInputHandle {
   /** reads the clipboard for the line, from the user's own tap and for this line alone */
   paste(): void;
-  /** takes the focus without dismissing or re-raising the keyboard, caret kept: true when the field was there */
   focus(): boolean;
 }
 
-/** Lines the box grows to before it scrolls. */
 const MAX_ROWS = 4;
-/** How long a Send tapped mid-composition waits for the keyboard to commit the word. */
 const COMMIT_WAIT_MS = 300;
 
-/** A Send tapped mid-composition, waiting for the word to commit. */
 interface SendAttempt {
-  /** withdraws the tap at the deadline while a composition is open */
   timer: ReturnType<typeof setTimeout> | null;
-  /** fixed at the tap: a chain of compositions cannot stretch the wait */
   deadline: number;
   /** the line held text at the tap: an empty commit then sends nothing, not a bare Enter */
   textSend: boolean;
@@ -82,7 +64,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
 
   }, [owner]);
   const composing = useRef(false);
-  /** compositions begun or ended, and selection changes, in the line: a paste waiting on the clipboard compares them (paste below) */
   const compositions = useRef(0);
   const selections = useRef(0);
   const composingCallback = useRef(onComposing);
@@ -90,7 +71,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   useEffect(() => () => { composingCallback.current?.(false); }, []);
 
   const [note, setNote] = useState<string | null>(null);
-  /** a paste waiting on the clipboard, said under the line while it does */
   const [pending, setPending] = useState<string | null>(null);
   const sending = useSyncExternalStore(subscribeTerminalDraft, () => terminalDraftSending(owner));
   const box = useRef<HTMLTextAreaElement>(null);
@@ -141,7 +121,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   }, [clearPendingSend, connected, t]);
   const sendRef = useRef<(deferred: boolean) => void>(() => {});
 
-  /** Waits for the commit until the tap's deadline, with "Finishing the word…" up meanwhile. */
   const awaitCommit = useCallback((current: SendAttempt) => {
     if (current.timer !== null) clearTimeout(current.timer);
     current.timer = null;
@@ -160,17 +139,14 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   }, [t]);
 
   const send = useCallback((deferred = false) => {
-    // a deferred send runs only for a tap still waiting: a drop, a timeout or an emptied line withdrew it
     const current = attempt.current;
     if (deferred && current === null) return;
     if (!connected || terminalDraftSending(owner)) {
-      // a send waiting for the commit must not leave "Finishing the word…" standing
       if (deferred) { clearPendingSend(); setNote(connected ? null : t("Not sent: the terminal is disconnected.")); }
       return;
     }
     if (composing.current) {
       if (deferred) {
-        // a new composition after the commit: wait out what is left of the tap's window, no more
         awaitCommit(current!);
         return;
       }
@@ -206,7 +182,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     setTerminalDraftSending(owner, true);
     void sent.then((result) => {
       if (result === true) {
-        // text typed while it was on its way stays
         acknowledgeTerminalDraft(owner);
       } else setNote(result);
     }).catch(() => setNote(t("Not confirmed. Check the terminal before sending again."))).finally(() => { setTerminalDraftSending(owner, false); });
@@ -258,7 +233,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     const end = element.selectionEnd;
     const composed = compositions.current;
     const selected = selections.current;
-    /** where the paste found the selection, or where the keyboard's own Paste leaves it */
     const atPaste = (from: number, to: number): boolean => (from === start && to === end) || (native && from === end && to === end);
     // a caret moved in the focused line, by touch or by script, while the paste waits; each move
     // reported counts, so a move and back reported on the way still drops the paste. Chrome on
@@ -281,26 +255,20 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     onPasting?.(true);
     setNote(null);
     setPending(waiting);
-    /** the line is still there to answer in */
     const shown = (): boolean => mounted.current && box.current === element;
-    /** the line, its caret, a composition or the pane changed since the paste began, even and back again */
     const stale = (): boolean => composing.current || compositions.current !== composed || selections.current !== selected
       || !atPaste(element.selectionStart, element.selectionEnd)
       || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== version;
     const changed = t("Not pasted: the line or the terminal changed meanwhile. Paste again.");
     return {
       shown,
-      /** true, with the note said, when the paste no longer has its line as it found it */
       dropped(): boolean {
         if (!shown()) return true;
         if (!stale()) return false;
         setNote(changed);
         return true;
       },
-      /** says why the paste did not land, while the line is there to say it */
       fail(note: string): void { if (shown()) setNote(note); },
-      /** the text at the selection the paste found, or a note why it was dropped; `whole` (file
-       * paths) goes in entire or not at all: a path cut at the line's limit names no file */
       place(clip: string, whole = false): void {
         if (!shown()) return;
         if (stale()) { setNote(changed); return; }
@@ -315,7 +283,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
         const caret = Math.min(start + text.length, written.length);
         const pasted = terminalDraftVersion(owner);
         requestAnimationFrame(() => {
-          // another pane picked, or the line written again, before the frame: its focus is not taken back
           if (box.current !== element || (pasteTarget?.() ?? null) !== target || terminalDraftVersion(owner) !== pasted) return;
           element.focus({ preventScroll: true });
           element.setSelectionRange(caret, caret);
@@ -324,7 +291,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       finish(): void {
         document.removeEventListener("selectionchange", moved);
         pasting.current = false;
-        // an unmounted line already gave the bar's Paste back (below): a later line may be pasting now
         if (!mounted.current) return;
         onPasting?.(false);
         setPending(null);
@@ -332,12 +298,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     };
   }, [onPasting, owner, pasteTarget, t]);
 
-  /**
-   * Files pasted into the line (a screenshot from the keyboard's own Paste, an image the key bar
-   * read): uploaded beside the pane one after another, as a paste into the grid is
-   * (useTerminalMount.ts), and their quoted paths put in the line at the caret, to send or edit.
-   * One file over the limit and none is uploaded.
-   */
   const uploadPaths = useCallback(async (files: Blob[]): Promise<string> => {
     const paths: string[] = [];
     for (const file of files) paths.push(await uploadFile!(file));
@@ -347,7 +307,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   }, [t, uploadFile]);
   const uploadFailed = useCallback((error: unknown): string => error instanceof AttachmentTooLargeError ? error.message : plainError(error), []);
 
-  /** Files for the line at its selection, from a paste (`native`: the keyboard's own) or the picker. */
   const pasteFiles = (element: HTMLTextAreaElement, files: File[], native: boolean): void => {
     if (pasting.current) { setNote(t("Wait for the paste on its way, then paste again.")); return; }
     if (composing.current) { setNote(t("Finish the word, then paste.")); return; }
@@ -363,7 +322,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   };
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
-    // text, a copied path included, is the browser's own paste
     if (event.clipboardData.getData("text/plain")) return;
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0 || uploadFile === undefined) return;
@@ -371,7 +329,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     pasteFiles(event.currentTarget, files, true);
   };
   const picker = useRef<HTMLInputElement>(null);
-  /** what the picker was opened for: the pane, connection and input lease, and the draft as written */
   const pickedFor = useRef<{ target: string; version: number } | null>(null);
   const openPicker = (): void => {
     const target = pasteTarget?.() ?? null;
@@ -412,8 +369,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     if (waiting === null) return;
     const read: Promise<{ text: string } | { image: Blob }> = readsFiles
       ? clipboard!.read().then(async (items) => {
-        // text first, as a paste into the grid: an image copied from a page often carries its address
-        // too. An empty text beside an image is no text
+        // text first, as a paste into the grid: an image copied from a page often carries its address too.
         const texts = items.filter((item) => item.types.includes("text/plain"));
         const text = (await Promise.all(texts.map(async (item) => (await item.getType("text/plain")).text()))).join("");
         if (text.length > 0) return { text };
@@ -448,7 +404,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       waiting.fail(t("The clipboard could not be read. Use the keyboard's own paste in the input line."));
     }).finally(waiting.finish);
   }, [beginPaste, uploadFailed, uploadFile, uploadPaths, t]);
-  // the mode switch's handoff (useTerminalSends): a focus alone, no selection reset, keyboard and caret where they were
   const focus = useCallback((): boolean => {
     const element = box.current;
     if (element === null) return false;
@@ -456,7 +411,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     return true;
   }, []);
   useImperativeHandle(ref, () => ({ paste, focus }), [paste, focus]);
-  // a paste that outlives the line (a pane switch, the masked input taking its place) is dropped above; the bar's Paste comes back
   const pastingCallback = useRef(onPasting);
   pastingCallback.current = onPasting;
   useEffect(() => () => { if (pasting.current) pastingCallback.current?.(false); }, []);
@@ -469,7 +423,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     send();
   };
 
-  // wrapped lines count too: a dictated sentence is one long line, and its end must stay readable
   const [wrappedRows, setWrappedRows] = useState(1);
   useLayoutEffect(() => {
     const element = box.current;
@@ -487,7 +440,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   const fieldId = useId();
   return (
     <div className={`terminal-input${dictation.shown ? " has-voice" : ""}${keyControls ? " has-key-controls" : ""}`}>
-      {/* the field's name in view, not only its placeholder: the same words as the key bar's mode key */}
       <label className="terminal-input-label" htmlFor={fieldId}>{t("Input line")}</label>
       <textarea
         ref={box}
@@ -521,7 +473,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
         onChange={(event) => {
           setText(event.target.value);
           setNote(null);
-          // an emptied line has nothing left for a waiting Send to send
           if (event.target.value.length === 0) clearPendingSend();
         }}
         onKeyDown={onKeyDown}
@@ -532,7 +483,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       <span className="terminal-input-actions">
         {keyControls}
         {attach && uploadFile !== undefined && <>
-          {/* the system picker; the paths go in where the caret was when it opened, as a paste's do */}
           <input
             ref={picker}
             type="file"
@@ -557,8 +507,6 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
             <span className="terminal-input-face"><Paperclip aria-hidden="true" /></span>
           </button>
         </>}
-        {/* Insert, apart from Send by its words, its outline and its name: the text goes to the
-            prompt and stays there to edit. Each says what it does above its round target */}
         <button
           type="button"
           className="terminal-input-action terminal-input-insert"

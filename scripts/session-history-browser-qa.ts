@@ -1,12 +1,4 @@
 /**
- * The session list and Resume (#1314) over a fictional bridge, in the real React components: the
- * workspace menu's item, newest-first rows, one tab/create per Resume however often the button is
- * clicked (the body carries the row's argv), no second Resume in the window before herdr reports the
- * resumed pane's session (App's RecentResume record), a session a pane already shows selected instead of
- * started, a row without a verified resume listed with no button, the keyboard along the rows,
- * the agent picker (each agent with its mark, no Shell, its open list taking Escape alone, also with the
- * focus off its button and when the sessions arrive while it is open, disabled while a resume is in
- * flight), a PC whose bridge answers 404 for the route, whose menu has no item, and
  * Claude's store-bound Resume: the list asked for from a pane of the workspace, one POST sessions/resume
  * per double click (never tab/create), the same UUID reported by a pane on another store left to Resume, a
  * store that changed read again, and a bridge from before store-bound Resume (rows without a source, no
@@ -32,21 +24,16 @@ const evidence = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "se
 mkdirSync(evidence, { recursive: true });
 let server: ReturnType<typeof Bun.serve> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-/** every POST tab/create body the page sent, in order */
 const tabCreates: Array<Record<string, unknown>> = [];
 let holdTabCreate = false;
 const releases: Array<() => void> = [];
 const probes: string[] = [];
-/** every Claude list's query and every POST sessions/resume body, in order */
 const claudeLists: string[] = [];
 const resumes: Array<Record<string, unknown>> = [];
 const resumeRequests = new EventEmitter();
 let holdResume = false;
-/** true: the next Claude lists wait for a release, as a list read again after a changed store does */
 let holdList = false;
-/** "held" each time a Claude list starts waiting for its release */
 const heldLists = new EventEmitter();
-/** how the bridge answers the next resumes: start it, name a pane already showing it, refuse a changed store or one a new tab would not keep, or have no route */
 let resumeAnswer: "created" | "opened" | "stale" | "unsupported" | "changed" | "missing" = "created";
 const closedSources = new Set<string>();
 const piReader = new PiSessionReader();
@@ -77,7 +64,6 @@ try {
     const path = url.pathname;
     if (path === "/ws") return new Response(null, { status: 404 });
     if (path === "/api/connection-diagnostics") return new Response(null, { status: 204 });
-    // another PC's bridge, from before the route: the local server passes its not_found through
     if (path.startsWith("/api/machines/old-pc/")) {
       if (path.endsWith("/sessions/history")) probes.push(url.search);
       return refusal("not_found", `unknown endpoint ${path}`, 404);
@@ -91,7 +77,6 @@ try {
         if (holdList) await new Promise<void>((resolve) => { releases.push(resolve); heldLists.emit("held"); });
         const paneId = url.searchParams.get("pane_id");
         if (paneId && closedSources.has(paneId)) return refusal("stale_source", "source pane no longer exists", 409);
-        // w4's bridge is from before store-bound Resume: it ignores pane_id and gives no source
         const sessions = CLAUDE_ROWS.map((row) => workspaceId === "w3" && paneId !== null && row.resume ? { ...row, resume: { ...row.resume, source: { pane_id: paneId, store_key: CLAUDE_STORE_KEY } } } : row);
         return json({ workspace_id: workspaceId, agent: "claude", cwd: `/fixture/${workspaceId}`, sessions } satisfies SessionHistoryResponse);
       }
@@ -153,9 +138,8 @@ try {
     await dialog.locator(".session-row").first().waitFor();
     await settled(page);
   };
-  // the workspace menu lists the item beside Rename workspace, and it opens the folder's sessions newest first
   const menu = await openMenu("w1");
-  assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close workspace"]);
+  assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close workspace"]);
   await page.keyboard.press("Escape");
   await menu.waitFor({ state: "detached" });
   await openHistory("w1");
@@ -169,8 +153,6 @@ try {
   console.log("PASS workspace menu item, newest-first rows, no button without a verified resume");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
-  // Real Pi metadata from synthetic transcripts, not hand-picked titles: late names, a prompt
-  // after a huge system record, freshly read renames/clears and automatic busy recovery.
   const capturePi = async (state: string) => {
     const previous = await page.evaluate(() => document.documentElement.dataset.theme);
     for (const width of [390, 1440]) {
@@ -241,13 +223,10 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   console.log("PASS Pi busy-once automatic recovery, bounded persistent busy with Retry, late labels and fresh rename/clear");
-  // the keyboard alone: the row's context-menu key, the item, the first row's button focused, arrows
-  // along the rows, Tab inside, Escape closing with the focus back on the row
   await row("w1").focus();
   await contextMenuKey(page);
   const keyMenu = page.getByRole("menu");
   await keyMenu.waitFor();
-  // RowMenu places its initial focus in an animation frame; let it finish before choosing another item.
   await settled(page);
   await keyMenu.getByRole("menuitem", { name: "Earlier sessions…", exact: true }).focus();
   await page.keyboard.press("Enter");
@@ -266,9 +245,7 @@ try {
   await dialog.waitFor({ state: "detached" });
   await page.waitForFunction(() => document.activeElement?.closest('.workspace-group[data-workspace="w1"]') !== null);
   console.log("PASS arrows move along the rows, Tab stays inside, Escape closes and the focus returns to the row");
-  // Resume the older one: exactly one tab/create however often the button is clicked while it is in flight
   await openHistory("w1");
-  // the roster lags the answer, as it does until load() brings the new pane: the next scenario needs that window
   await page.evaluate(() => { window.qa.holdRoster = true; });
   holdTabCreate = true;
   const resume = dialog.getByRole("button", { name: "Resume Flaky export test", exact: true });
@@ -289,9 +266,6 @@ try {
   assert.deepEqual(await page.evaluate(() => window.qa.resumed), [{ workspace_id: "w1", pane_id: "p-new-1", agent_started: true }]);
   assert.equal(tabCreates.length, 1, "nothing more was sent once the first answer came");
   console.log("PASS Resume sends one tab/create with the row's argv; a double click sends no second one");
-  // the reopen window (T31-AV-1): the list opened again before herdr has reported the new pane's session, even
-  // before the roster lists the pane, offers no second Resume; once the pane is listed, Open selects it, and once
-  // herdr reports the session the pane's own report says it; the pane closed, the session can be resumed again
   await openHistory("w1");
   const older = dialog.locator(".session-row").nth(1);
   await older.locator(".pill", { hasText: "Already open" }).waitFor();
@@ -320,7 +294,6 @@ try {
   await dialog.waitFor({ state: "detached" });
   assert.equal(tabCreates.length, 1);
   console.log("PASS the list reopened before herdr reports the new pane's session offers Open, not Resume; Resume returns once the pane closes");
-  // a session a pane of the workspace already shows: Open selects that pane, nothing is started
   await openHistory("w2");
   const shown = dialog.locator(".session-row").first();
   await shown.locator(".pill", { hasText: "Already open" }).waitFor();
@@ -331,8 +304,6 @@ try {
   await page.waitForFunction(() => window.qa.selected === "p2");
   assert.equal(tabCreates.length, 1, "selecting the pane that shows the session creates no tab");
   console.log("PASS a session already shown by a pane is opened by selecting that pane");
-  // another agent: the picker lists the PC's agents with their marks and no Shell, its open list takes
-  // Escape alone (the dialog stays), the keys choose one, and its (empty) list is said in words
   await openHistory("w1");
   await picker.click();
   const agentList = page.getByRole("listbox", { name: "Agent" });
@@ -357,8 +328,6 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   console.log("PASS the agent picker lists the agents with their marks, closes its list alone on Escape and takes the keys; an empty store is said in words");
-  // the sessions arrive while the agent list is open: the list keeps the focus, so its keys and Escape stay
-  // the list's, not the first Resume's and the dialog's
   holdList = true;
   const listHeld = once(heldLists, "held", { signal: AbortSignal.timeout(10_000) });
   await (await openMenu("w3")).getByRole("menuitem", { name: "Earlier sessions…", exact: true }).click();
@@ -388,8 +357,6 @@ try {
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   console.log("PASS an open agent list takes Escape alone with the focus off its button; the next Escape closes the dialog");
-  // an overlay opened over the dialog keeps its own Escape while the agent list stays open under it:
-  // a native modal (Add PC from the palette), and an overlay holding the focus outside the dialog
   await openHistory("w1");
   await picker.click();
   await agentList.waitFor();
@@ -423,7 +390,6 @@ try {
   assert.equal(outside, false, "an Escape from an overlay outside the dialog is left to that overlay");
   assert.equal(await agentList.isVisible(), true, "the agent list under that overlay stays open");
   console.log("PASS an overlay over the dialog keeps its own Escape while the agent list stays open under it");
-  // with the overlay gone the focus is nowhere: the list takes the next Escape, the dialog the one after
   await page.keyboard.press("Escape");
   await agentList.waitFor({ state: "detached" });
   await page.keyboard.press("Escape");
@@ -438,7 +404,6 @@ try {
   await shared.getByRole("button", { name: /^Resume / }).waitFor();
   await settled(page);
   await page.screenshot({ path: join(evidence, "claude-store-rows.png") });
-  // one store-bound request per double click, never the argv-only tab/create
   const tabsBefore = tabCreates.length;
   holdResume = true;
   const receivedResume = once(resumeRequests, "received", { signal: AbortSignal.timeout(10_000) });
@@ -454,7 +419,6 @@ try {
   await page.waitForFunction(() => window.qa.resumed.some((opened) => opened.pane_id === "p-claude-1"));
   assert.equal(tabCreates.length, tabsBefore, "Claude's Resume sends no tab/create");
   console.log("PASS a Claude list names its source pane; one store-bound resume per double click, no tab/create, and a pane on another store is not Open");
-  // switching a shell/Codex request to Claude re-picks the pane running Claude
   await page.evaluate(() => window.qa.openHistory("w3", "codex", "p-shell"));
   await dialog.locator(".session-row").first().waitFor();
   await settled(page);
@@ -467,7 +431,6 @@ try {
   assert.equal(new URLSearchParams(claudeLists.at(-1)).get("pane_id"), "p3");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
-  // a store that changed since the list: read again and said so, nothing started elsewhere
   resumeAnswer = "stale";
   await openHistory("w3");
   const listsBefore = claudeLists.length;
@@ -477,7 +440,6 @@ try {
   const before = await geometry();
   holdList = true;
   await asked.click();
-  // read again: the rows stay where they were, without their buttons, until the new ones come
   await page.getByRole("status").filter({ hasText: "Reading sessions…" }).waitFor();
   assert.equal(await dialog.locator(".session-row").count(), CLAUDE_ROWS.length, "the rows stay while the list is read again");
   assert.equal(await dialog.getByRole("button", { name: /^Resume / }).evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled)), true, "no Resume while the list is read again");
@@ -492,7 +454,6 @@ try {
   assert.equal(resumes.at(-1)?.["session_id"], CLAUDE_OTHER);
   await settled(page);
   await page.screenshot({ path: join(evidence, "claude-store-relisted.png") });
-  // the bridge names the pane already showing it on that store: selected, as Open does, nothing made
   resumeAnswer = "opened";
   await dialog.getByRole("button", { name: /^Resume / }).last().click();
   await dialog.waitFor({ state: "detached" });
@@ -503,7 +464,6 @@ try {
   await dialog.getByRole("button", { name: /^Resume / }).last().click();
   await dialog.locator(".session-error").filter({ hasText: "This PC's bridge does not offer this yet" }).waitFor();
   assert.equal(tabCreates.length, tabsBefore, "a 404 resume route falls back to no tab/create");
-  // a store a new tab would not keep: said in the user's words, nothing started
   resumeAnswer = "unsupported";
   await dialog.getByRole("button", { name: /^Resume / }).last().click();
   await dialog.locator(".session-error").filter({ hasText: "This PC can't start this session in the store it was listed from" }).waitFor();
@@ -517,7 +477,6 @@ try {
   }, unsupportedMessage);
   assert.ok(!(await dialog.locator(".session-error").textContent())?.includes("qa-launch-store-changed"));
   assert.equal(tabCreates.length, tabsBefore, "a changed launch store starts no fallback tab");
-  // a closed source: stale Resume re-lists from the current roster, never the departed pane
   resumeAnswer = "stale";
   holdResume = true;
   const closingResume = once(resumeRequests, "received", { signal: AbortSignal.timeout(10_000) });
@@ -532,7 +491,6 @@ try {
   await page.getByRole("status").filter({ hasText: "Claude's store changed; the list was read again." }).waitFor();
   assert.equal(new URLSearchParams(claudeLists.at(-1)).get("pane_id"), "p-claude-1");
   assert.equal(await dialog.locator(".session-error").count(), 0);
-  // a stale GET arriving before the roster catches up is translated, then recovers on the roster
   closedSources.add("p-claude-1");
   await dialog.getByRole("button", { name: /^Resume / }).last().click();
   await dialog.locator(".session-error").waitFor();
@@ -544,7 +502,6 @@ try {
   await dialog.waitFor({ state: "detached" });
   resumeAnswer = "created";
   console.log("PASS a changed store is read again in place with the focus kept, an already shown session is selected, and a missing route or unsupported launch never falls back to tab/create");
-  // an older bridge: rows without a store source offer no Resume at all
   const resumesBefore = resumes.length;
   await openHistory("w4");
   assert.equal(await dialog.getByRole("button", { name: /^Resume / }).count(), 0, "no Resume for a row its bridge bound to no store");
@@ -556,7 +513,6 @@ try {
   assert.equal(resumes.length, resumesBefore, "nothing is sent for an older bridge's rows");
   assert.equal(tabCreates.length, tabsBefore);
   console.log("PASS an older bridge's Claude rows show Resume unavailable and send nothing");
-  // a PC whose bridge is from before the route: asked once without listing anything, and the item stays away
   const probed = page.waitForResponse((response) => response.url().includes("/api/machines/old-pc/sessions/history"));
   await page.evaluate(() => window.qa.machine("old-pc"));
   await probed;
@@ -564,7 +520,7 @@ try {
   // StrictMode mounts the sidebar's effect twice in this development bundle: each probe is query-less
   assert.ok(probes.length >= 1 && probes.every((query) => query === ""), `the probe carries no workspace and lists no session: ${JSON.stringify(probes)}`);
   const remoteMenu = await openMenu("w1");
-  assert.deepEqual(await remoteMenu.getByRole("menuitem").allTextContents(), ["Pin workspace", "Rename workspace", "Close workspace"], "no Earlier sessions on a PC whose bridge cannot list them");
+  assert.deepEqual(await remoteMenu.getByRole("menuitem").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Close workspace"], "no Earlier sessions on a PC whose bridge cannot list them");
   await settled(page);
   await page.screenshot({ path: join(evidence, "remote-404.png") });
   await page.keyboard.press("Escape");

@@ -8,9 +8,6 @@ import { herdrRpc, paneProcessInfo, paneSendKeys, paneSendText, workspaceClose, 
 import type { RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { createServer } from "./index.ts";
 
-// The waiting move's own stop: a command a shell of the test session runs is ended from the move's
-// dialog, pane by pane - Ctrl+C first, SIGTERM to that pane's foreground group only after it. A pane
-// an agent works in keeps every move here waiting, so none goes.
 const SECRET = "test-runtime-move-stop-secret";
 const WAIT_MS = 20_000;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-runtime-move-stop-")));
@@ -42,7 +39,6 @@ async function newPane(label: string): Promise<string> {
   return created.root_pane.pane_id;
 }
 
-/** a shell pane running `command`, once the plan names it running */
 async function running(label: string, command: string): Promise<string> {
   const pane = await newPane(label);
   await until("the new shell", () => paneProcessInfo(pane).catch(() => undefined), (info) => info?.shell_pid != null && info.foreground_process_group_id === info.shell_pid);
@@ -57,7 +53,6 @@ const shellInFront = async (pane: string): Promise<boolean> => {
   return info?.shell_pid != null && info.foreground_process_group_id === info.shell_pid;
 };
 
-/** asks for the move with the plan as it is now: an agent at work keeps it waiting */
 async function waitingMove(): Promise<void> {
   const { plan, status } = await read();
   if (status.state === "waiting") return;
@@ -93,7 +88,6 @@ describe("ending a busy pane from the move's wait", () => {
     const other = await running("move-stop-other", "sleep 600");
     await waitingMove();
     expect(await stop({ pane_id: agentPane })).toEqual({ status: 409, code: "not_running" });
-    // the row showed another command than the one running now: nothing is sent
     expect(await stop({ pane_id: pane, command: "top" })).toEqual({ status: 409, code: "changed" });
     expect(await shellInFront(pane)).toBe(false);
     expect(await stop({ pane_id: pane, command: "sleep" })).toEqual({ status: 200, code: null });
@@ -138,13 +132,11 @@ describe("ending a busy pane from the move's wait", () => {
     const offered = await all({});
     expect(offered.status).toBe(200);
     expect(offered.answer.panes?.map((pane) => pane.pane_id)).toEqual(expect.arrayContaining([first, second]));
-    // the person ends one pane themselves after the confirm was shown: the confirm no longer holds
     await paneSendKeys(first, ["ctrl+c"]);
     await until("the pane ended by hand", () => shellInFront(first), (front) => front);
     const refused = await all({ token: offered.answer.token });
     expect([refused.status, refused.answer.error?.code]).toEqual([409, "changed"]);
     expect(await shellInFront(second)).toBe(false);
-    // asked again, the new list is ended
     const again = await all({});
     expect((await all({ token: again.answer.token })).status).toBe(200);
     await until("the second pane", () => shellInFront(second), (front) => front);
@@ -156,7 +148,6 @@ describe("ending a busy pane from the move's wait", () => {
     await waitingMove();
     expect(await stop({ pane_id: stubborn, force: true })).toEqual({ status: 409, code: "not_tried" });
     expect(await stop({ pane_id: stubborn })).toEqual({ status: 200, code: null });
-    // Ctrl+C is ignored there: the wait offers the force once its few seconds have passed
     const offered = await until("the stop's offer", async () => (await read()).status, (status: MoveStatus) => status.state === "waiting" && (status.stopping ?? []).some((entry) => entry.pane_id === stubborn && entry.force));
     expect(offered.state).toBe("waiting");
     expect(await shellInFront(stubborn)).toBe(false);

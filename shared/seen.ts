@@ -23,16 +23,13 @@ export const seenPresentationOf = (raw: unknown): SeenPresentation | undefined =
   return presented === "new" || presented === "held" ? presented : undefined;
 };
 
-/** records the server keeps, oldest first out: one per pane per herdr run, so far more than are ever open */
 export const MAX_SEEN = 500;
 const MAX_NAME_LENGTH = 300;
-/** the completed-answer fingerprint (src/lib/panePresentation.ts answerIdentity): source, history id, time, revision */
 const MAX_ANSWER_LENGTH = 2048;
 export const MAX_SEEN_BYTES = 8 * 1024;
 
 const name = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= MAX_NAME_LENGTH;
 
-/** One record of a body or a stored file, cut to its fields; null when the shape is wrong. */
 export function seenFinishBody(raw: unknown): SeenFinish | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const { pc, epoch, pane, id, answer } = raw as Record<string, unknown>;
@@ -41,7 +38,6 @@ export function seenFinishBody(raw: unknown): SeenFinish | null {
   return { pc, epoch, pane, id, ...(answer === undefined ? {} : { answer }) };
 }
 
-/** What `incoming` makes of the record held for its key, or null when it changes nothing. */
 export function mergeSeen(held: SeenFinish | undefined, incoming: SeenFinish): SeenFinish | null {
   if (!held || incoming.id > held.id) return incoming;
   if (incoming.id === held.id && held.answer === undefined && incoming.answer !== undefined) return { ...held, answer: incoming.answer };

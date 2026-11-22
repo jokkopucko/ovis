@@ -1,11 +1,8 @@
-// ```svg fences in chat: agents that draw figures (omp's assistant ```svg blocks) color them with
-// a small token vocabulary, `var(--fg)`, `var(--muted)`, ... `var(--c6)` plus `currentColor`, on
-// a transparent background. The figure is shown as an <img> from a data: URL, so its markup never
+// The figure is shown as an <img> from a data: URL, so its markup never
 // joins the page: a script, an event handler or an external reference in it does nothing. An image
 // document does not see the page's CSS variables, so the tokens are resolved here to the theme's
 // current colors before the URL is made.
 
-/** Each figure token, as the theme role (src/styles.css) that colors it. */
 export const SVG_FIGURE_ROLES = {
   fg: "text",
   muted: "text-dim",
@@ -25,7 +22,6 @@ export const SVG_FIGURE_ROLES = {
 
 export type SvgFigurePalette = Partial<Record<keyof typeof SVG_FIGURE_ROLES, string>>;
 
-/** The figure tokens in the page's current theme; `read` is `getComputedStyle(root).getPropertyValue`. */
 export function svgFigurePalette(read: (property: string) => string): SvgFigurePalette {
   const palette: SvgFigurePalette = {};
   for (const [token, role] of Object.entries(SVG_FIGURE_ROLES) as [keyof typeof SVG_FIGURE_ROLES, string][]) {
@@ -35,7 +31,6 @@ export function svgFigurePalette(read: (property: string) => string): SvgFigureP
   return palette;
 }
 
-/** The longest fence drawn as a figure (UTF-16 units); a longer one stays a code block. */
 export const SVG_FIGURE_MAX_LENGTH = 256 * 1024;
 
 /**
@@ -145,7 +140,6 @@ const DECLARATION = /^<\?xml\s[^?]{0,200}\?>\s*/;
 const ROOT_START = /^<(?:[\w.-]+:)?svg(?=[\s/>])/;
 const CLOSE_TAG = /<\/(?:[\w.-]+:)?svg\s*>$/;
 
-/** Where the start tag opening at 0 ends (its `>`, quotes respected), or -1 when it does not end. */
 function tagEnd(text: string): number {
   let quote = "";
   for (let index = 1; index < text.length; index += 1) {
@@ -157,14 +151,12 @@ function tagEnd(text: string): number {
   return -1;
 }
 
-/** Most characters, spaces aside, a `var(--name, fallback)` fallback is read for; a longer one is left as written. */
 const MAX_FALLBACK = 200;
 const SPACE = /\s/;
 
 /**
- * `var(--name)` / `var(--name, fallback)` (the fallback may hold one level of parentheses,
- * `rgb(…)`) as `value(name, fallback)`. One pass: spaces are stepped over, and each reference is
- * read for at most MAX_FALLBACK other characters, so no input makes it slow.
+ * One pass: spaces are stepped over, and each reference is read for at most MAX_FALLBACK other
+ * characters, so no input makes it slow.
  */
 function resolveTokens(text: string, value: (name: string, fallback: string) => string): string {
   const skip = (index: number): number => { while (index < text.length && SPACE.test(text[index]!)) index += 1; return index; };

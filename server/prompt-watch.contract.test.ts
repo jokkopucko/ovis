@@ -7,8 +7,8 @@ import { createServer } from "./index.ts";
 import { herdrRpc } from "./herdr/client.ts";
 
 /**
- * Prompt watches against the real herdr server. Each pane runs Claude's folder-trust menu under the name `claude`,
- * reported idle: `c` closes the menu and `o` draws it again, as an idle agent opens and closes one without a status.
+ * Each pane runs Claude's folder-trust menu under the name `claude`, reported idle: `c` closes the menu and `o` draws it
+ * again, as an idle agent opens and closes one without a status.
  */
 const MENU = `
 const { writeFileSync } = require("node:fs");
@@ -109,7 +109,6 @@ describe("prompt watches", () => {
     const opened = await socket.changed(pane);
     const id = await cardId(pane);
     expect(id).toBeString();
-    // a second watcher of a pane already read is told what the first was, as its own first read
     const later = await connect();
     later.send({ type: "prompt-watch", pane_id: pane, enabled: true });
     expect(await later.changed(pane)).toBe(opened);
@@ -120,7 +119,6 @@ describe("prompt watches", () => {
     after = socket.frames.length;
     await herdrRpc("pane.send_text", { pane_id: pane, text: "o" });
     expect(await socket.changed(pane, after)).toBe(opened);
-    // the watch's reads saw the menu close and open again, and still began no new asking of it
     expect(await cardId(pane)).toBe(id);
     expect(socket.frames.some((frame) => frame.type === "pty-data" || frame.type === "input-ready" || frame.type === "error")).toBe(false);
   }, 30_000);

@@ -1,4 +1,3 @@
-/** The demo has no files; these checks need one real text response rather than its folder fallback. */
 export const DEMO_FILE_PREVIEW_SCRIPT = `<script>(${(() => {
   const demoFetch = window.fetch;
   const text = "# File preview\n\nA readable demo fixture.\n";

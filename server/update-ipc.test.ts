@@ -2,13 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { noInstalledNotes, noUpdateNotes, readUpdateIpcRequest, unmanagedUpdateStatus, type UpdateCommand, type UpdateRequest, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
 import { connectUpdater, handleUpdateRequest } from "./update-api.ts";
 
-// The bridge and the supervisor that runs it, over a stand-in for their IPC channel. Messages go
-// as they would over Node's: copied, one at a time, to whoever listens.
+// Messages go as they would over Node's: copied, one at a time, to whoever listens.
 const A = "a".repeat(40), B = "b".repeat(40);
 const offer = (latest: string): UpdateStatus => ({ ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true,
   latest_revision: latest, latest_version: "9.9.9", current_revision: "c".repeat(40) });
 
-/** A supervisor on the other end of the bridge's channel; `handle` is its own reading of a message. */
 function supervisor(handle: (message: unknown) => void) {
   let toBridge: (message: unknown) => void = () => {};
   const received: unknown[] = [];
@@ -20,7 +18,6 @@ function supervisor(handle: (message: unknown) => void) {
   return { bridge, received, tell: (status: UpdateStatus) => toBridge(structuredClone({ type: "update-status", status, notes: noUpdateNotes(), installed: noInstalledNotes() })) };
 }
 
-/** What the supervisor before this change did with a message: `update-command` check or install, nothing else. */
 function olderSupervisor() {
   const commands: UpdateCommand[] = [];
   const ends = supervisor((message) => {
@@ -30,7 +27,6 @@ function olderSupervisor() {
   return { ...ends, commands };
 }
 
-/** This supervisor: it reads the message as server/supervisor.ts does, and tells its capability. */
 function currentSupervisor() {
   const requests: UpdateRequest[] = [];
   const ends = supervisor((message) => { const request = readUpdateIpcRequest(message); if (request) requests.push(request); });
@@ -54,7 +50,6 @@ describe("the update IPC between the bridge and its supervisor", () => {
     older.bridge.request({ command: "install", expected_revision: A });
     expect(older.received.at(-1)).toEqual({ type: "update-install-revision", expected_revision: A });
     expect(older.commands).toEqual([]);
-    // its check still works as it did
     older.bridge.request({ command: "check" });
     expect(older.commands).toEqual(["check"]);
   });
@@ -90,14 +85,11 @@ describe("the update IPC between the bridge and its supervisor", () => {
   it("two tabs offered A and then B: A never installs B", async () => {
     const current = currentSupervisor();
     current.tell(offer(A));
-    // the first tab rendered A; the supervisor's next check finds B before that tab presses Update
     current.tell(offer(B));
     expect(await post(current.bridge, A)).toEqual({ status: 409, code: "update_offer_changed" });
     expect(current.requests).toEqual([]);
-    // the second tab rendered B and installs B, by name
     expect(await post(current.bridge, B)).toEqual({ status: 202, code: null });
     expect(current.requests).toEqual([{ command: "install", expected_revision: B, install_id: expect.stringMatching(INSTALL_ID) }]);
-    // under an older supervisor neither tab installs anything
     const older = olderSupervisor();
     older.tell(offer(A));
     older.tell(offer(B));

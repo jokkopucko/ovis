@@ -7,14 +7,11 @@ import { beginSignIn, finishOwnSignIn } from "./signin.ts";
 import { ACCOUNT_PROVIDERS } from "./store.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
-/** What the desktop app's preload offers its server's pages, when it names an account service. */
 export interface DesktopAccountBridge {
   readonly service: string;
-  /** the sign-ins the service offers; GitHub alone when none is named */
   readonly providers?: readonly string[];
   /** a loopback redirect for one sign-in */
   start(): Promise<string>;
-  /** opens the sign-in in the system browser; resolves with the callback's query */
   open(url: string): Promise<string>;
 }
 
@@ -24,7 +21,6 @@ export function desktopAccount(): DesktopAccountBridge | null {
     ? bridge as DesktopAccountBridge : null;
 }
 
-/** The sign-ins the desktop app was built to offer: GitHub alone unless it names Google or Apple too. */
 export function desktopProviders(bridge: DesktopAccountBridge): AccountProvider[] {
   const offered = ACCOUNT_PROVIDERS.filter((provider) => bridge.providers?.includes(provider));
   return offered.length > 0 ? offered : ["github"];

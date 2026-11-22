@@ -2,10 +2,8 @@ import { afterAll, expect, spyOn, test } from "bun:test";
 import { GhosttyVt } from "./vt.ts";
 import { attachGhosttyOverlay } from "./overlay.ts";
 
-// anything the overlay touches before it replays the backlog: every property is callable and returns the same stub
 const stub: any = new Proxy(function () {}, { get: (_t, key) => (key === Symbol.toPrimitive ? () => 0 : key === "then" ? undefined : stub), apply: () => stub, set: () => true, construct: () => stub });
 let vtCalls = 0;
-// the module call that fails: the backlog's replay, or one made while the layer is set up before it
 let failing = new Set(["write"]);
 const create = spyOn(GhosttyVt, "create").mockImplementation(async () => new Proxy({}, { get: (_t, key) => key === "then" ? undefined : (...args: unknown[]) => {
     vtCalls++;
@@ -35,7 +33,6 @@ test("a backlog libghostty cannot replay leaves xterm drawing, with its own writ
 });
 
 test("a module that fails while the layer is set up leaves xterm drawing, with its own write", async () => {
-  // a module that broke as the layer was set up fails its writes too
   failing = new Set(["setColors", "write"]);
   const written: unknown[] = [];
   const write = (data: unknown) => { written.push(data); };

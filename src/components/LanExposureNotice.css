@@ -1,11 +1,8 @@
-/* the exposure line shares .update-notice's layout with the update, telemetry and machine-action
-   notices (src/components/UpdateControls.css); only the alarm colour is its own */
 .update-notice.is-exposed {
   background: var(--danger-tint);
   color: var(--danger-text);
 }
 
-/* its button and the direct line's dismiss stay together at the end of the line, or as one row under the words on a phone */
 .lan-exposure-actions {
   display: flex;
   flex: 0 0 auto;

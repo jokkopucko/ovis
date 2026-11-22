@@ -28,6 +28,5 @@ it("does not blame the PC for an uncoded gateway failure: the request may have f
     const failure = await relayResourceBlob(new Response(null, { status })).then(() => null, (reason: unknown) => reason);
     expect(fileFailure(failure)).toBe("unreadable");
   }
-  // a code the bridge set is the PC's own answer
   expect(fileFailure(new ApiError("/api/fs/file", 502, "bad answer", "remote_response_invalid"))).toBe("server");
 });

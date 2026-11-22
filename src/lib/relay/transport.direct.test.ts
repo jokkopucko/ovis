@@ -20,7 +20,6 @@ import type { RelayTransport } from "./transport.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
 
-/** The address the PC names in AUTH_OK; the phone's socket reaches it on loopback, where the test listens. */
 const LAN = "10.0.0.7";
 
 class MemoryStore implements RelayDeviceStore {
@@ -31,7 +30,6 @@ class MemoryStore implements RelayDeviceStore {
   async remove() { this.saved = undefined; }
 }
 
-/** A PC on a local relay with direct connections on, and a phone's way to both. */
 async function pcFixture(extraCarriers: readonly string[] = []) {
   const relay = startBunRelay({ port: 0 });
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-direct-transport-"));
@@ -49,7 +47,14 @@ async function pcFixture(extraCarriers: readonly string[] = []) {
     },
     direct: { addresses: () => ["127.0.0.1"], peerAllowed: () => true, preferredPort: 0, advertise: (port) => [...extraCarriers, `ws://${LAN}:${port}`] },
   });
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
+  const previous = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
+  let app: ReturnType<typeof createServer>;
+  try { app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service }); }
+  finally {
+    if (previous === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    else process.env["OVIS_ACCOUNT_OPENS_ALL"] = previous;
+  }
   cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }), () => relay.stop(), async () => { await service.shutdown(); await app.stop(); });
   const base = `http://127.0.0.1:${app.port}`;
   await fetch(`${base}/api/relay/start`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
@@ -60,7 +65,6 @@ async function pcFixture(extraCarriers: readonly string[] = []) {
     direct.push(url);
     return new WebSocket(url.replace(`ws://${LAN}:`, "ws://127.0.0.1:"));
   };
-  /** every channel the phone's transport opened, in order */
   const channels: RelayChannel[] = [];
   const next: ((channel: RelayChannel) => void)[] = [];
   const openChannel = async (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> => {
@@ -73,7 +77,6 @@ async function pcFixture(extraCarriers: readonly string[] = []) {
   return { app, service, offer, direct, directSocket, channels, openChannel, opened };
 }
 
-/** Settles once the transport's channel goes the given way: a channel reaches it only after the race that opened it settles. */
 function routeBecomes(transport: RelayTransport, route: RelayTransport["route"]): Promise<void> {
   return bounded(new Promise<void>((resolve) => {
     const stop = transport.onRouteChange(() => { if (transport.route === route) { stop(); resolve(); } });
@@ -89,16 +92,12 @@ async function transportFor(pc: Awaited<ReturnType<typeof pcFixture>>, store: Me
 
 describe("direct carriers in the relay transport", () => {
   it("pairs through the relay, then moves to the PC's direct carrier on its own", async () => {
-    // Given a phone pairing with the code from the PC's QR code
     const pc = await pcFixture();
     const store = new MemoryStore();
     const moved = pc.opened().then(() => pc.opened());
-    // When it opens the PC
     const transport = await transportFor(pc, store, pc.offer);
-    // Then the pairing went through the relay, and the PC named its direct carrier
     expect(pc.channels[0]!.direct).toBeUndefined();
     expect(store.saved?.direct).toEqual([`ws://${LAN}:${pc.service.status().direct!.carriers[0]!.split(":").at(-1)}`]);
-    // and once idle it came back on that carrier, as itself
     const direct = await moved;
     expect(direct.direct).toBe(store.saved!.direct![0]);
     expect(direct.device.device_id).toBe(pc.channels[0]!.device.device_id);
@@ -106,22 +105,18 @@ describe("direct carriers in the relay transport", () => {
   });
 
   it("opens directly first next time, without the relay", async () => {
-    // Given a phone that paired and was told the PC's direct carrier
     const pc = await pcFixture();
     const store = new MemoryStore();
     const first = await transportFor(pc, store, pc.offer);
     first.close();
     const { code: _code, ...saved } = pc.offer;
-    // When it opens the PC again
     const before = pc.channels.length;
     const transport = await transportFor(pc, store, saved);
-    // Then its first channel is the direct one
     expect(pc.channels[before]!.direct).toBe(store.saved!.direct![0]);
     expect(transport.route).toBe("direct");
   });
 
   it("is told the PC's Tailscale carrier only once the app's socket says it opens one", async () => {
-    // Given a PC that also listens on a Tailscale address, and an app whose plugin has not said yet
     const pc = await pcFixture(["ws://100.64.0.7:7319"]);
     const store = new MemoryStore();
     let tailnet = false;
@@ -129,34 +124,27 @@ describe("direct carriers in the relay transport", () => {
     const first = await transportFor(pc, store, pc.offer, { directTailnet: () => tailnet });
     expect(store.saved?.direct).toEqual([lan()]);
     first.close();
-    // When the plugin has said it opens Tailscale addresses and the app connects again
     tailnet = true;
     const { code: _code, ...saved } = pc.offer;
     await transportFor(pc, store, saved, { directTailnet: () => tailnet });
-    // Then the PC named its Tailscale carrier too
     expect(store.saved?.direct).toEqual(["ws://100.64.0.7:7319", lan()]);
   });
 
   it("goes through the relay when the direct carrier does not answer", async () => {
-    // Given a phone whose saved direct carrier leads nowhere (it left the PC's network)
     const pc = await pcFixture();
     const store = new MemoryStore();
     (await transportFor(pc, store, pc.offer)).close();
     const { code: _code, ...saved } = pc.offer;
-    // When it opens the PC and the direct socket fails
     const transport = await transportFor(pc, store, saved, { directSocket: () => new WebSocket("ws://127.0.0.1:1/v1/ws?v=1") });
-    // Then it is up through the relay
     expect(transport.route).toBe("relay");
   });
 
   it("stays refused when the PC removed the device, rather than falling back", async () => {
-    // Given a phone the PC removed after it was told the direct carrier
     const pc = await pcFixture();
     const store = new MemoryStore();
     (await transportFor(pc, store, pc.offer)).close();
     pc.app.context.services.devices.revoke(store.saved!.device_id!);
     const { code: _code, ...saved } = pc.offer;
-    // When it opens the PC again, the PC's refusal on the direct carrier is final
     const error = await openRelayTransport(saved, { store, openChannel: pc.openChannel, directSocket: pc.directSocket }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(MuxProtocolError);
     expect((error as MuxProtocolError).code).toBe("auth_failed");
@@ -164,13 +152,10 @@ describe("direct carriers in the relay transport", () => {
   });
 
   it("never opens a direct carrier without the app's socket for it", async () => {
-    // Given a page with no way to open one (a browser)
     const pc = await pcFixture();
     const store = new MemoryStore();
-    // When it opens the PC
     const transport = await openRelayTransport(pc.offer, { store, openChannel: pc.openChannel });
     cleanup.push(() => transport.close());
-    // Then it asked for no carriers and keeps the relay
     expect(store.saved?.direct).toBeUndefined();
     expect(transport.route).toBe("relay");
     expect(pc.direct).toEqual([]);
@@ -178,7 +163,6 @@ describe("direct carriers in the relay transport", () => {
 });
 
 describe("racing the relay at the start", () => {
-  /** A phone that paired and was told the PC's direct carrier, opening the PC again without its code. */
   async function paired() {
     const pc = await pcFixture();
     const store = new MemoryStore();
@@ -188,7 +172,6 @@ describe("racing the relay at the start", () => {
   }
 
   it("opens the relay too while the saved direct carrier stays silent, before giving up on it", async () => {
-    // Given a phone away from home: its saved direct carrier assigns the connection and never answers
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -199,16 +182,12 @@ describe("racing the relay at the start", () => {
       else options.signal?.addEventListener("abort", () => order.push("direct given up"), { once: true });
       return pc.openChannel(channelOffer, options);
     };
-    // When it opens the PC
     const transport = await transportFor(pc, store, saved, { openChannel, directSocket: () => new WebSocket(`ws://127.0.0.1:${silent.port}/v1/ws?v=1`) });
-    // Then the relay was opened while the direct attempt was still under way, and carries the channel
     expect(order[0]).toBe("relay");
     expect(transport.route).toBe("relay");
   });
 
   it("keeps a direct carrier that is up first after the relay started, and never reports the relay channel it drops", async () => {
-    // Given a phone at home whose direct carrier answers only after the relay attempt began,
-    // and a relay that admits it just after that
     const { pc, store, saved } = await paired();
     const relayStarted = deferred<void>();
     const directUp = deferred<void>();
@@ -222,18 +201,14 @@ describe("racing the relay at the start", () => {
       }
       relayStarted.resolve();
       await directUp.promise;
-      // admitted although the transport no longer wants it: the race was lost by a hair
       const { signal: _signal, ...rest } = options ?? {};
       const channel = await pc.openChannel(channelOffer, rest);
       late.resolve(channel);
       return channel;
     };
     const losses: Error[] = [];
-    // When it opens the PC
     const transport = await transportFor(pc, store, saved, { openChannel, onClose: (error) => losses.push(error) });
-    // Then the direct carrier carries the channel
     expect(transport.route).toBe("direct");
-    // and the relay channel admitted after it is closed, with nobody told of a lost carrier
     const dropped = await bounded(late.promise);
     await bounded(new Promise<void>((resolve) => { const check = (): void => { if (!dropped.mux.active) resolve(); else queueMicrotask(check); }; check(); }));
     expect(losses).toEqual([]);
@@ -241,7 +216,6 @@ describe("racing the relay at the start", () => {
   });
 
   it("races the PC's Tailscale carrier too when a saved LAN address stays silent", async () => {
-    // Given a phone away from home on Tailscale: its saved LAN address assigns and never answers, its Tailscale one is the PC
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -250,9 +224,7 @@ describe("racing the relay at the start", () => {
     const tailscale = `ws://100.64.0.7:${port}`;
     store.saved = { ...store.saved!, direct: [`ws://${LAN}:9`, tailscale] };
     const socketFor = (url: string): WebSocket => new WebSocket(url.startsWith(tailscale) ? url.replace("ws://100.64.0.7:", "ws://127.0.0.1:") : `ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
-    // When it opens the PC
     const transport = await transportFor(pc, store, saved, { directTailnet: () => true, directSocket: socketFor });
-    // Then the Tailscale carrier carries the channel, not the relay
     expect(transport.route).toBe("direct");
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
   });
@@ -270,23 +242,19 @@ describe("racing the relay at the start", () => {
     let open = 0;
     const refused: string[] = [];
     const socketFor = (url: string): WebSocket => {
-      // a third socket at once is refused, as the plugin answers too_many
       if (open >= 2) { refused.push(url); return new WebSocket("ws://127.0.0.1:1/v1/ws?v=1"); }
       open++;
       const socket = new WebSocket(url.startsWith(tailscale) ? url.replace("ws://100.64.0.7:", "ws://127.0.0.1:") : `ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
       socket.addEventListener("close", () => { open--; }, { once: true });
       return socket;
     };
-    // When it opens the PC
     const transport = await transportFor(pc, store, saved, { directTailnet: () => true, directSocket: socketFor });
-    // Then the Tailscale carrier got a socket and carries the channel
     expect(refused).toEqual([]);
     expect(transport.route).toBe("direct");
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
   });
 
   it("gives the PC's Tailscale carrier its whole budget while LAN carriers queue in the other socket", async () => {
-    // Given a phone away from home: two silent LAN addresses, then a Tailscale one that answers late, and no relay
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -298,20 +266,16 @@ describe("racing the relay at the start", () => {
     const openChannel = async (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> => {
       if (options?.direct === undefined) throw new RelayUnreachableError(null, true);
       if (options.direct === "ws://10.0.0.9:9") secondLan.resolve();
-      // the Tailscale carrier answers only once the first LAN one has used up its share and the second began
       if (options.direct === tailscale) await secondLan.promise;
       return pc.openChannel(channelOffer, options);
     };
     const socketFor = (url: string): WebSocket => new WebSocket(url.startsWith(tailscale) ? url.replace("ws://100.64.0.7:", "ws://127.0.0.1:") : `ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
-    // When it opens the PC
     const transport = await transportFor(pc, store, saved, { openChannel, directTailnet: () => true, directSocket: socketFor });
-    // Then the Tailscale carrier was still in time
     expect(transport.route).toBe("direct");
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
   });
 
   it("gives the carrier a probe proved its whole budget on the switch, past two silent LAN addresses", async () => {
-    // Given a phone pairing through the relay with a PC that names two LAN addresses silent from here before its own
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -322,20 +286,16 @@ describe("racing the relay at the start", () => {
     const third = deferred<void>();
     const openChannel = async (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> => {
       if (paired && options?.direct === "ws://10.0.0.9:9") third.resolve();
-      // the proven carrier answers only once the others used up their share: a PC slow to admit
       if (paired && options?.direct === lan) await third.promise;
       return pc.openChannel(channelOffer, options);
     };
     const transport = await transportFor(pc, new MemoryStore(), pc.offer, { openChannel, directSocket: socketFor });
     paired = true;
-    // When the probe proves the PC's own carrier and the relay channel closes for the switch
-    // Then the switch lands on that carrier
     await routeBecomes(transport, "direct");
     expect(pc.channels.at(-1)!.direct).toBe(lan);
   }, 20_000);
 
   it("still tries a third LAN carrier behind two silent ones within the budget", async () => {
-    // Given a phone whose PC names two LAN addresses that assign and stay silent, then its reachable one, and no relay
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -354,16 +314,13 @@ describe("racing the relay at the start", () => {
       socket.addEventListener("close", () => { open--; }, { once: true });
       return socket;
     };
-    // When it opens the PC
     const transport = await transportFor(pc, store, saved, { openChannel, directSocket: socketFor });
-    // Then the third carrier got its turn, never refused, and carries the channel
     expect(refused).toEqual([]);
     expect(transport.route).toBe("direct");
     expect(pc.channels.at(-1)!.direct).toBe(reachable);
   });
 
   it("gives a switch a probe just earned the direct carriers' whole budget, without racing the relay again", async () => {
-    // Given a phone pairing through the relay, whose PC's direct carrier then admits it only slowly
     const pc = await pcFixture();
     const clock = new TestClock();
     let paired = false;
@@ -377,11 +334,9 @@ describe("racing the relay at the start", () => {
     };
     const transport = await transportFor(pc, new MemoryStore(), pc.offer, { openChannel, clock });
     paired = true;
-    // When the probe proves the carrier, the relay channel closes for the switch, and the head start passes
     await bounded(directAsked.promise, 15_000);
     clock.advance(300);
     gate.resolve();
-    // Then the relay was not opened again, and the switch lands on the direct carrier
     await routeBecomes(transport, "direct");
     expect(relayAfterPairing).toBe(0);
   });
@@ -389,7 +344,6 @@ describe("racing the relay at the start", () => {
 
 describe("direct carriers that do not all answer", () => {
   it("comes back on the carrier that proved to be the PC, past one that stays silent", async () => {
-    // Given a PC that names a silent address first (a host that assigns and never answers), then its own
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -397,9 +351,7 @@ describe("direct carriers that do not all answer", () => {
     const store = new MemoryStore();
     const socketFor = (url: string): WebSocket => new WebSocket(url.replace(`ws://${LAN}:`, "ws://127.0.0.1:").replace("ws://10.0.0.8:", "ws://127.0.0.1:"));
     const moved = pc.opened().then(() => pc.opened());
-    // When the phone pairs through the relay and then moves
     const transport = await transportFor(pc, store, pc.offer, { directSocket: socketFor });
-    // Then it lands on the PC's own carrier
     const direct = await bounded(moved, 15_000);
     expect(direct.direct).toBe(`ws://${LAN}:${pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1)}`);
     expect(transport.route).toBe("direct");
@@ -408,7 +360,6 @@ describe("direct carriers that do not all answer", () => {
 
 describe("probing again", () => {
   it("still probes five minutes on after a relay reconnect came in between", async () => {
-    // Given a phone on the relay whose PC's direct carrier does not answer yet
     const pc = await pcFixture();
     const store = new MemoryStore();
     const clock = new TestClock();
@@ -416,17 +367,13 @@ describe("probing again", () => {
     const socketFor = (url: string): WebSocket => new WebSocket(reachable ? url.replace(`ws://${LAN}:`, "ws://127.0.0.1:") : "ws://127.0.0.1:1/v1/ws?v=1");
     const reconnected = pc.opened().then(() => pc.opened());
     const transport = await transportFor(pc, store, pc.offer, { directSocket: socketFor, clock });
-    // When the relay channel drops and comes back within those five minutes
     pc.channels[0]!.close();
     clock.advance(1_000);
     expect((await reconnected).direct).toBeUndefined();
-    // and the carrier answers once the five minutes are up
     reachable = true;
     const moved = pc.opened();
     clock.advance(5 * 60_000);
-    // Then the phone probes again and comes back on it
     expect((await moved).direct).toBeDefined();
-    // the channel reaches the transport once the race that opened it settles
     await routeBecomes(transport, "direct");
   });
 });
@@ -447,7 +394,6 @@ describe("a planned switch", () => {
   });
 
   it("waits until no WebSocket sent anything for three seconds", async () => {
-    // Given a phone on the relay, its PC's direct carrier not answering yet, and a terminal socket open
     const pc = await pcFixture();
     const clock = new TestClock();
     let reachable = false;
@@ -462,7 +408,6 @@ describe("a planned switch", () => {
     const terminal = transport.openSocket("/ws");
     cleanup.push(() => terminal.close());
     await bounded(new Promise<void>((resolve, reject) => { terminal.onopen = () => resolve(); terminal.onclose = () => reject(new Error("closed")); }));
-    // When the carrier answers and the next probe comes right after someone typed
     reachable = true;
     probed = deferred<void>();
     terminal.send(JSON.stringify({ type: "ping" }));
@@ -471,7 +416,6 @@ describe("a planned switch", () => {
     globalThis.dispatchEvent(new Event("online"));
     await bounded(probed.promise);
     for (let turn = 0; turn < 10; turn++) await Promise.resolve();
-    // Then it does not switch yet, and does once the socket has been quiet past the next check
     expect(pc.channels.length).toBe(before);
     clock.advance(5_000);
     expect((await moved).direct).toBeDefined();
@@ -495,18 +439,14 @@ describe("what holds a switch back", () => {
 
 describe("probing a direct carrier", () => {
   it("proves the PC and makes no session; another key is not the PC", async () => {
-    // Given a PC that names its direct carrier
     const pc = await pcFixture();
     const carrier = `ws://${LAN}:${pc.service.status().direct!.carriers[0]!.split(":").at(-1)}`;
-    // When the phone probes it with the PC's key, and with another key
     expect(await probeDirect(pc.offer, carrier, pc.directSocket, 2_000)).toBe(true);
     expect(await probeDirect({ ...pc.offer, server_public_key: exportPublicKey(generateKeyPair().publicKey) }, carrier, pc.directSocket, 2_000)).toBe(false);
-    // Then the PC holds no session for either
     expect(pc.service.status().sessions).toBe(0);
   });
 
   it("leaves nothing running after a host that is not the PC never answers the handshake", async () => {
-    // Given a host at the address that assigns the connection and then stays silent
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));
@@ -515,10 +455,8 @@ describe("probing a direct carrier", () => {
     globalThis.setInterval = ((callback: () => void, ms?: number) => { const id = realSet(callback, ms); live.add(id); return id; }) as typeof setInterval;
     globalThis.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => { live.delete(id); realClear(id); }) as typeof clearInterval;
     cleanup.push(() => { globalThis.setInterval = realSet; globalThis.clearInterval = realClear; for (const id of live) realClear(id as never); });
-    // When the phone probes it
     const offer: RelayOffer = { v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.test" };
     const proven = await probeDirect(offer, `ws://${LAN}:${silent.port}`, (url) => new WebSocket(url.replace(`ws://${LAN}:`, "ws://127.0.0.1:")), 300);
-    // Then it is not the PC, and the handshake's retries stopped with it
     expect(proven).toBe(false);
     expect(live.size).toBe(0);
   });

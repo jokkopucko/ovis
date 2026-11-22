@@ -1,6 +1,5 @@
 import type { ConversationPart, SkillActivity } from "../../shared/protocol.ts";
 
-/** Keep the latest recorded attempt per document/name within this assistant turn. */
 export function turnSkills(parts: readonly ConversationPart[]): SkillActivity[] {
   const skills = new Map<string, SkillActivity>();
   for (const part of parts) {

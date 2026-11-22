@@ -1,10 +1,8 @@
 import type { SystemDisk, SystemReport } from "../../shared/system.ts";
 import type { Translate } from "./i18n.ts";
 
-/** CPU, memory or disk at or above this reads as high */
 export const SYSTEM_HIGH_PERCENT = 85;
 
-/** The fullest disk is the one that can stop work; the sidebar shows that one. */
 export function fullestDisk(disks: readonly SystemDisk[]): SystemDisk | null {
   return disks.reduce<SystemDisk | null>((fullest, disk) => fullest === null || disk.percent > fullest.percent ? disk : fullest, null);
 }
@@ -19,7 +17,6 @@ export function formatBytes(bytes: number): string {
   return `${text} ${UNITS[unit]}`;
 }
 
-/** Uptime in its two largest units; the unit letters are the UI language's. */
 export function formatUptime(seconds: number, t: Translate): string {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);

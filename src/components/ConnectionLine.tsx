@@ -5,10 +5,8 @@ import { SEOUL_RELAY } from "../../shared/relay-regions.ts";
 import { useT } from "../lib/i18n.ts";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
-/** A round trip past this is shown as slow. */
 export const SLOW_MS = 100;
 
-/** What a row says of a connection: up (by which way, how fast), being checked, or down, in the caller's words. */
 export type LineState =
   | { readonly kind: "connected"; readonly route: DeviceRoute; readonly relay?: string; readonly rttMs: number | null }
   /** a check reached the PC but did not sign in (the phone's list): the PC answers, which is not this device being let in */
@@ -16,7 +14,6 @@ export type LineState =
   | { readonly kind: "checking" }
   | { readonly kind: "offline"; readonly text: string };
 
-/** Connected and answers share the ready glyph: the words beside it keep the two apart. */
 const GLYPH: Record<LineState["kind"], StatusDotState> = { connected: "ready", answered: "ready", checking: "checking", offline: "offline" };
 
 /**

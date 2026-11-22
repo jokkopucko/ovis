@@ -2,17 +2,14 @@ import { useSyncExternalStore } from "react";
 import type { WorkspaceBranch } from "./worktreeBranches.ts";
 
 /**
- * The branch of each workspace's checkout, as the sidebar's roster read it (useWorktreeBranches),
- * for the strip under a pane's composer. The roster stays the one reader of the git inventory:
- * a second reader per pane would ask every repository twice. A PC whose roster is folded away
- * publishes nothing, and its panes name their folder alone.
+ * The roster stays the one reader of the git inventory:
+ * a second reader per pane would ask every repository twice.
  */
 export const DETACHED = "\0detached";
 
 const published = new Map<string, ReadonlyMap<string, string>>();
 const listeners = new Set<() => void>();
 
-/** What the strip says of each workspace: its branch, or DETACHED where the checkout has none. */
 export function branchWords(branches: ReadonlyMap<string, WorkspaceBranch>): Map<string, string> {
   const words = new Map<string, string>();
   for (const [workspaceId, branch] of branches) {
@@ -22,7 +19,6 @@ export function branchWords(branches: ReadonlyMap<string, WorkspaceBranch>): Map
   return words;
 }
 
-/** `branches` null: the PC's roster left the screen. Tells its readers only when a word changed. */
 export function publishBranches(machineId: string, branches: ReadonlyMap<string, WorkspaceBranch> | null): void {
   const next = branches === null ? new Map<string, string>() : branchWords(branches);
   const before = published.get(machineId) ?? new Map<string, string>();

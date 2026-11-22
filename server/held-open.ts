@@ -15,11 +15,8 @@ import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync } fro
 import { join } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
-/** A directory or file held open. Every method but path throws when the system refuses. */
 export interface Held {
-  /** What the held object is: its identity (`dev:ino`, exact), whether it is a regular file, and its size. */
   stat(): { identity: string; file: boolean; size: number };
-  /** Where the held object is now, as the system names the open object; null when it cannot say. */
   path(): string | null;
   /**
    * Whether the held object is the one `path` names now: no link or other directory stands between.
@@ -28,12 +25,10 @@ export interface Held {
   isAt(path: string): boolean;
   /** The entry `name` of this held directory, opened through it, a link there not followed but refused. */
   open(name: string, as: "directory" | "file"): Held;
-  /** Reads `length` bytes at `position` into `buffer` at `offset`: how many were read. */
   read(buffer: Buffer, offset: number, length: number, position: number): number;
   close(): void;
 }
 
-/** Whether `platform` has a descriptor-relative open here: elsewhere nothing is held and opened through. */
 export function heldOpenPlatform(platform: NodeJS.Platform): boolean {
   return platform === "linux" || platform === "darwin" || platform === "win32";
 }
@@ -56,7 +51,6 @@ function entryName(name: string): string {
 const FILE_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const DIRECTORY_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
 
-/** A descriptor held: what it is and its bytes, asked of the descriptor (fstat, pread). */
 abstract class DescriptorHeld implements Held {
   constructor(protected readonly fd: number) {}
   abstract path(): string | null;

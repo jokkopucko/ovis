@@ -4,8 +4,6 @@ import { sshCandidates } from "./ssh-candidates.ts";
 import { sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 import { includeTestOnly } from "./ssh-include.ts";
 
-// what the SSH list makes of a folder's listing when getdents64 answers something it cannot trust
-/** what the list makes of `config` beside a `box` host at 100.64.0.1, with getdents64 standing as `getdents` */
 async function withGetdents(getdents: typeof includeTestOnly.getdents, files: Record<string, string>): Promise<(string | undefined)[][]> {
   const dir = sshDir({ ...files, config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
   includeTestOnly.getdents = getdents;
@@ -15,7 +13,6 @@ async function withGetdents(getdents: typeof includeTestOnly.getdents, files: Re
 }
 const unread = [["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]];
 
-/** a getdents64 answering `chunks` one call at a time, then the end of the folder */
 const answering = (chunks: (Buffer | number)[]) => (_fd: number, buffer: Buffer): number => {
   const chunk = chunks.shift() ?? 0;
   if (typeof chunk === "number") return chunk;

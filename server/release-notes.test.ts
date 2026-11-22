@@ -125,18 +125,15 @@ describe("the bounds of an answer", () => {
     const summaries = new Map([["0.2.0", summary]]);
     const summarySize = JSON.stringify(summary).length;
     expect(releaseNotes(log, "0.1.0", "0.2.0", 200, summaries).releases[0]).toMatchObject({ notes: "- two", summary });
-    // a summary that alone is over the budget is left out, and the notes get the budget
     const told = releaseNotes(log, "0.1.0", "0.2.0", 60, summaries);
     expect(told.releases).toHaveLength(1);
     expect(told.releases[0]!.summary).toBeUndefined();
     expect(told.releases[0]!.notes).toBe("- two");
-    // long notes are cut at a line to the room the summary leaves, so the two stay within the budget
     const long = `## [0.2.0]\n${"- line\n".repeat(40)}\n## [0.1.0]\n- one\n`;
     const cut = releaseNotes(long, "0.1.0", "0.2.0", 300, summaries).releases[0]!;
     expect(cut.summary).toEqual(summary);
     expect(cut.notes.endsWith("…")).toBe(true);
     expect(cut.notes.length + summarySize).toBeLessThanOrEqual(300 + 3);
-    // and without room for the summary, the notes alone are cut to the budget
     const alone = releaseNotes(long, "0.1.0", "0.2.0", 100, summaries).releases[0]!;
     expect(alone.summary).toBeUndefined();
     expect(alone.notes.length).toBeLessThanOrEqual(103);
@@ -208,9 +205,7 @@ describe("this repository's own summaries", () => {
   const text = readFileSync(join(root, SUMMARIES_FILE), "utf8");
   const summaries = releaseSummaries(text);
   const released = [...readFileSync(join(root, "CHANGELOG.md"), "utf8").matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((match) => match[1]!);
-  /** the last release cut before summaries were written */
   const BEFORE = "0.3.52";
-  /** patch notes are read at a glance: a line longer than this is a sentence from the changelog */
   const LINE = 90;
 
   it("tells every release since in every language the app has", () => {
@@ -224,7 +219,6 @@ describe("this repository's own summaries", () => {
     for (const [version, entry] of Object.entries(raw)) {
       expect(released).toContain(version);
       expect(Object.keys(entry).sort()).toEqual([...SUMMARY_LANGUAGES].sort());
-      // what was read is what was written: nothing dropped, cut or trimmed
       expect(summaries.get(version) as unknown).toEqual(entry);
       const shape = (language: string) => SUMMARY_GROUPS.map((group) => entry[language]![group]?.length ?? 0);
       for (const language of SUMMARY_LANGUAGES) {

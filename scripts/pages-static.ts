@@ -4,8 +4,10 @@
  * the path and any other status redirects; `_headers` rules are applied in order, each matching
  * rule's `! Name` lines removing a header and its `Name: value` lines setting it (a header two
  * rules set is joined with a comma, as Pages joins it). Paths match as Pages matches them: one
- * `*` splat for anything, `:name` for one path segment. Nothing here is the deployed host; it is
- * the closest thing to it that runs in a test.
+ * `*` splat for anything, `:name` for one path segment. A missing file is answered as Pages answers it
+ * (workers-sdk pages-shared/asset-server/handler.ts): the nearest 404.html on the way up from the path as a
+ * 404, else index.html as a 200 (Pages' single-page-app mode), else a bare 404; any 404 carries
+ * `Cache-Control: no-store` in place of whatever the rules set.
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
@@ -52,14 +54,12 @@ export function parseHeaders(text: string): HeaderRule[] {
   return rules;
 }
 
-/** The matched placeholders and splat put into a rule's target. */
 function fill(target: string, groups: Record<string, string> | undefined): string {
   let out = target;
   for (const [name, value] of Object.entries(groups ?? {})) out = out.replaceAll(`:${name}`, value);
   return out;
 }
 
-/** The first redirect rule `pathname` matches: where to, and whether to rewrite (200) or redirect. */
 export function redirectFor(rules: RedirectRule[], pathname: string): { to: string; status: number } | null {
   for (const rule of rules) {
     const match = rule.from.exec(pathname);
@@ -95,6 +95,30 @@ export function loadPagesSite(dir: string): PagesSite {
   return { dir, redirects: parseRedirects(read("_redirects")), headers: parseHeaders(read("_headers")) };
 }
 
+function fileAt(site: PagesSite, served: string): string | null {
+  if (served === "/_headers" || served === "/_redirects") return null;
+  const relative = normalize(decodeURIComponent(served)).replace(/^(\.\.[/\\])+/, "");
+  let path = join(site.dir, relative);
+  if (existsSync(path) && statSync(path).isDirectory()) path = join(path, "index.html");
+  return path.startsWith(site.dir) && existsSync(path) && !statSync(path).isDirectory() ? path : null;
+}
+
+function fileResponse(path: string, status = 200): Response {
+  const dot = path.lastIndexOf(".");
+  return new Response(Bun.file(path), { status, headers: { "content-type": MIME[path.slice(dot)] ?? "application/octet-stream" } });
+}
+
+function notFound(site: PagesSite, served: string): Response {
+  const decoded = decodeURIComponent(served);
+  for (let dir = decoded.slice(0, decoded.lastIndexOf("/")); ; dir = dir.slice(0, dir.lastIndexOf("/"))) {
+    const page = fileAt(site, `${dir}/404.html`);
+    if (page !== null) return fileResponse(page, 404);
+    if (dir === "") break;
+  }
+  const index = fileAt(site, "/index.html");
+  return index !== null ? fileResponse(index) : new Response("Not found", { status: 404 });
+}
+
 /** The response Pages would give `request` from `site`: redirects and rewrites, then the file, then the headers. */
 export async function pagesResponse(site: PagesSite, request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -104,23 +128,13 @@ export async function pagesResponse(site: PagesSite, request: Request): Promise<
     return new Response(null, { status: redirect.status, headers: { location: redirect.to + url.search } });
   }
   const served = redirect === null ? requested : redirect.to;
-  let response: Response;
-  if (served === "/_headers" || served === "/_redirects") response = new Response("Not found", { status: 404 });
-  else {
-    const relative = normalize(decodeURIComponent(served)).replace(/^(\.\.[/\\])+/, "");
-    let path = join(site.dir, relative);
-    if (existsSync(path) && statSync(path).isDirectory()) path = join(path, "index.html");
-    if (!path.startsWith(site.dir) || !existsSync(path) || statSync(path).isDirectory()) response = new Response("Not found", { status: 404 });
-    else {
-      const dot = path.lastIndexOf(".");
-      response = new Response(Bun.file(path), { headers: { "content-type": MIME[path.slice(dot)] ?? "application/octet-stream" } });
-    }
-  }
+  const path = fileAt(site, served);
+  const response = path !== null ? fileResponse(path) : notFound(site, served);
   applyHeaders(site.headers, requested, response.headers);
+  if (response.status === 404) response.headers.set("cache-control", "no-store");
   return response;
 }
 
-/** The site on loopback; `port` 0 picks a free one. `seen` is told every request that reaches the host, as the host itself would log it. */
 export function servePagesSite(dir: string, port = 0, hostname = "127.0.0.1", seen?: (request: Request) => void): ReturnType<typeof Bun.serve> {
   const site = loadPagesSite(dir);
   return Bun.serve({ hostname, port, fetch: (request) => { seen?.(request); return pagesResponse(site, request); } });

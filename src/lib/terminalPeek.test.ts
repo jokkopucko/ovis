@@ -67,7 +67,6 @@ describe("autoReturnArmed", () => {
 });
 
 describe("screenReturnArmed", () => {
-  // the commands each agent's recording showed hiding the row and drawing it back at its close (SYNTHESIS, 2026-10-22)
   const RECORDED: Record<string, string[]> = {
     codex: ["permissions", "theme", "statusline", "resume", "review", "rename", "new", "fork", "usage", "diff"],
     omp: ["settings", "hotkeys", "tree", "resume", "extensions", "agents", "usage", "context", "btw"],
@@ -101,7 +100,6 @@ describe("screenReturnArmed", () => {
       ["omp", "plan"], ["omp", "copy"], ["pi", "hotkeys"], ["pi", "session"], ["gjc", "hotkeys"], ["gjc", "btw"], ["omo", "tasks"], ["omo", "btw"],
       ["hermes", "palette"], ["hermes", "prompt"], ["hermes", "compose"], ["hermes", "resume"], ["devin", "mcp"], ["devin", "status"], ["agy", "open"],
       ["grok", "model"], ["grok", "theme"], ["grok", "status"],
-      // Chat answers these with its own model card: they never open a peek
       ["omp", "switch"], ["gjc", "model"]];
     for (const [agent, command] of manual) expect([agent, command, screenReturnArmed(agent, `/${command}`, command)]).toEqual([agent, command, false]);
   });
@@ -116,7 +114,6 @@ describe("watchReturn", () => {
     expect(watchReturn("codex", false, "gone")).toEqual({ step: "wait", armed: true });
     expect(watchReturn("codex", true, "gone")).toEqual({ step: "wait", armed: true });
     expect(watchReturn("codex", true, "ready")).toEqual({ step: "return" });
-    // the row drawn under a panel arms the agents whose panels keep it, and no other
     expect(watchReturn("agy", false, "covered")).toEqual({ step: "wait", armed: true });
     expect(watchReturn("codex", false, "covered")).toEqual({ step: "wait", armed: false });
     // Hermes draws its row again before every screen: only a covered row arms it
@@ -145,8 +142,6 @@ describe("sentOutcome", () => {
   });
 
   test("passes over an identical send just before it that no read had listed yet", () => {
-    // /usage sent, closed (its notice written), and sent again before the next prompt read: both
-    // outcomes are new to this peek, and the earlier one's notice must not end it
     const earlier = outcome("o2", "/usage", "2026-10-22T00:59:58.000Z");
     const own = outcome("o3", "/usage", SENT);
     expect(sentOutcome(peek, [earlier, own])).toBe(own);

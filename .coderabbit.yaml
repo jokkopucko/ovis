@@ -22,7 +22,6 @@ reviews:
     - '!dist/**'
     - '!public/icons/*.png'
     - '!bun.lock'
-    # recorded terminal screens the input-row tests read (src/lib/fixtures-input-rows/README.md)
     - '!src/lib/fixtures-input-rows/**'
   path_instructions:
     - path: 'server/**'

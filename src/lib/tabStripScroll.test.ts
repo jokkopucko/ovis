@@ -37,7 +37,6 @@ describe("whose scroll moved the tab strip", () => {
   });
 
   test("a tab opened where the strip already showed it: the user's next scroll is still seen", () => {
-    // scrolled to the end, a tab in view there opened (nothing to place), then scrolled back
     const opened = stripSelected(stripScrolled(stripPlaced(STRIP_AT_REST, 0), 600, 600));
     expect(opened).toEqual({ at: 600, moved: false });
     expect(stripScrolled(opened, 0, 600).moved).toBe(true);

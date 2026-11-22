@@ -9,11 +9,8 @@ import { inventoryReads, WorkspaceBranchCache, worktreeRepositories, worktreeWor
 const BRANCH_POLL_MS = 30_000;
 const NONE: ReadonlySet<string> = new Set();
 
-/** Use the existing worktree API; pane status updates never trigger a git inventory poll. */
-/** `roster`: this reader is the PC's roster, whose branches the panes' composers name too (lib/paneBranch.ts). */
 /** `unmarked`: git workspaces herdr has not marked as a repository's (no `worktree`), read one by one. */
 /** `watching`: this device may only watch, and the PC refuses it the listing (#2250): nothing is asked. */
-/** `onNotCheckout`: herdr answered that an unmarked workspace is no git checkout, so whoever chose it can stop asking (#2726). */
 export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: boolean, roster = false, unmarked: ReadonlySet<string> = NONE, watching = false, onNotCheckout?: (workspaceId: string) => void): {
   branches: ReadonlyMap<string, WorkspaceBranch>;
   rememberOpened(opened: WorktreeOpened): void;
@@ -24,8 +21,6 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
   // `refused`: the PC answered that this device may only watch (#2250): it is not asked again until the
   // device's role changes, which starts over (a device signed in to drive reads branches again).
   // `oneByOne`: the PC's bridge is from before GET /api/worktree/inventory, so each workspace is asked alone (#2661).
-  // `turn`: each poll starts the inventory one workspace further on, so a herdr too slow to answer them all
-  // within the PC's budget (server/workspace-routes.ts) still reaches every workspace in turn
   const owner = useMemo(() => ({ cache: new WorkspaceBranchCache(), pending: null as Promise<void> | null, refused: watching, oneByOne: false, turn: 0 }), [machineId, watching]);
   const [, publish] = useState(0);
   const [refresh, setRefresh] = useState(0);
@@ -39,7 +34,6 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
     const unmarkedIds = unmarkedKey === "" ? [] : unmarkedKey.split("\n");
     if (!online || !visible || owner.refused || (repositories.length === 0 && unmarkedIds.length === 0)) {
       owner.cache.invalidate();
-      // a PC comes back from an update offline first: its new bridge may answer the inventory
       if (!online) owner.oneByOne = false;
       return;
     }
@@ -47,16 +41,12 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function poll(): Promise<void> {
-      // A create or structural change may restart this effect while its previous RPC awaits.
-      // Wait for that same-PC cycle to finish before opening another inventory connection.
       if (owner.pending) await owner.pending;
       if (stopped || owner.refused) return;
       const generation = owner.cache.generation;
       const cycle = (async () => {
         let changed = false;
-        // every workspace of the PC in one request (a few for very many), answered as each list would have been
         const answered = new Map<string, WorktreeListing | ApiError>();
-        // a read that failed: the workspaces it left unanswered keep their last known branch until the next poll
         let unanswered = false;
         const asked = [...repositories.map((repository) => repository.workspaceId), ...unmarkedIds];
         const start = owner.turn++ % asked.length;
@@ -69,7 +59,6 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
                 : new ApiError("worktree/list", entry.error.status, entry.error.message, entry.error.code));
             }
           } catch (error) {
-            // an answer the PC gave before it went offline says nothing of the bridge it comes back with
             if (routeMissing(error)) { if (!stopped) owner.oneByOne = true; break; }
             if (error instanceof ApiError && error.code === "read_only") { owner.refused = true; return; }
             unanswered = true;
@@ -87,7 +76,6 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
             const listing = await listingOf(repository.workspaceId);
             if (listing && !stopped) changed = owner.cache.applyListing(repository.repoKey, listing, generation) || changed;
           } catch (error) {
-            // Retain a last known branch only while its exact checkout still exists.
             if (error instanceof ApiError && error.code === "read_only") owner.refused = true;
           }
         }

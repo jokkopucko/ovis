@@ -1,5 +1,5 @@
 /** The authorized machine event document, shared by SSE and the terminal WebSocket. */
-import type { DevicePairedEvent, DeviceRemovedEvent, Machine, MachineEvent, RelayPairingsEvent, RemotePairingsEvent } from "../shared/machines.ts";
+import type { DevicePairedEvent, DeviceRemovedEvent, PendingRedemptionsEvent, Machine, MachineEvent, RelayPairingsEvent, RemotePairingsEvent } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { SeenFinish } from "../shared/seen.ts";
@@ -12,14 +12,15 @@ export interface MachineEventDocument {
   herdrSidebar?: { get(): AgentRowTokens | null; subscribe(listener: (agents: AgentRowTokens | null) => void): () => void };
   seen?: { list(): SeenFinish[]; subscribe(listener: (finish: SeenFinish) => void): () => void };
   /** Filtered for the authenticated device and browser at the transport's admission boundary. */
-  pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent) => void): () => void };
+  pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent | PendingRedemptionsEvent) => void): () => void };
 }
 
 /** Initial documents and subsequent invalidations use exactly the same redaction on either transport. */
 export function subscribeMachineEvents({ manager, preferences, herdrSidebar, seen, pairings }: MachineEventDocument, send: (event: MachineEvent) => void): () => void {
   const stops: Array<() => void> = [];
   let active = true;
-  const tell = (event: MachineEvent) => { if (active) send(event); };
+  let lastRoster: string | null = null;
+  const tell = (event: MachineEvent) => { if (active) { lastRoster = null; send(event); } };
   const stop = () => { active = false; for (const off of stops.splice(0)) off(); };
   try {
     let rows = herdrSidebar?.get() ?? null;
@@ -40,7 +41,10 @@ export function subscribeMachineEvents({ manager, preferences, herdrSidebar, see
       const incoming = reportedTokenValues(shown);
       sendSidebar(reported, incoming);
       reported = incoming;
+      const encoded = JSON.stringify(shown);
+      if (encoded === lastRoster) return;
       tell({ type: "machines", machines: shown });
+      lastRoster = encoded;
     };
     stops.push(manager.subscribe((event) => {
       if (event.type === "machines") { sendRoster(event.machines); return; }

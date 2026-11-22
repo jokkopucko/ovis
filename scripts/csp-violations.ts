@@ -26,7 +26,6 @@ export interface CspViolation {
 }
 
 export interface CspWatch {
-  /** everything the page reported, oldest first, one entry per distinct violation */
   violations(): CspViolation[];
   /** whether a response carried a policy header; false means the page proves nothing */
   servedPolicy(): boolean;
@@ -108,10 +107,6 @@ function describe(violation: CspViolation): string {
   return `${directive} blocked ${violation.blockedURI || NO_URI}${at}`;
 }
 
-/**
- * The run's CSP gate. `label` says which step of the script is held to it, so a failure names
- * the surface rather than just "the policy".
- */
 export function assertCspClean(watches: CspWatch[], label: string): void {
   const silent = watches.filter((watch) => !watch.servedPolicy());
   assert.deepEqual(silent.length, 0,

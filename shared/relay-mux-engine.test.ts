@@ -112,7 +112,6 @@ function pair(options: PairOptions = {}) {
   const make = (role: "client" | "server") => new MuxEngine({
     role, clock, outboundWireByteLength: wireCost, routingOverhead: 12, maxWireMessageBytes: 32 * KiB,
     send: async (bytes) => {
-      // Simulated transport serialization advances the injected monotonic clock, not wall time.
       clock.advance(1);
       calls[role]++;
       const decoded = decodeFrame(bytes);
@@ -141,7 +140,6 @@ function pair(options: PairOptions = {}) {
     client, server, clock, traces, http, ws, hold, held, calls, peaks, closes, errors, sample,
     intercept(callback: typeof intercept) { intercept = callback; },
     async flush() {
-      // Subscribe to sender-idle transitions. No time-based settling or fixed microtask count.
       let budget = 10_000;
       do {
         if (--budget === 0) throw new Error("Sender/receipt loop did not quiesce");
@@ -258,7 +256,6 @@ describe("stream IDs and retirement", () => {
   }
   it("exhausts the last ID with GOAWAY and never wraps", async () => {
     const e = endpoint();
-    // Reach the u31 boundary without allocating a billion streams.
     Reflect.set(e.engine, "lastOpenId", 0x7ffffffd);
     const last = e.engine.openHttp({ method: "GET", target: "/last", headers: [], body: "none" });
     await e.engine.flush();
@@ -613,7 +610,7 @@ describe("WebSockets", () => {
     const { local, remote } = await socket(p);
     let delivered = 0;
     remote.onMessage = () => { delivered++; };
-    local.sendWindow = 64 * KiB; // Deliberately incorrect model of the window, not a production option.
+    local.sendWindow = 64 * KiB;
     local.send(new Uint8Array(MiB));
     await p.flush();
     expect(delivered).toBe(0);
@@ -645,8 +642,6 @@ describe("WebSockets", () => {
       const closed: WsClose[] = [];
       remote.onMessage = () => { delivered++; };
       remote.onClose = (event) => { closed.push(event); };
-      // These adversarial frames are not sent by the client engine. Its receipt ledger
-      // therefore must not be fed receipts for this independent peer's injected traffic.
       p.hold.server = true;
       const id = required(local.id);
       const start = frame({ type: FrameType.WS_DATA, flags: 1, stream_id: id, payload: { total_message_bytes: 3, data: new Uint8Array([1]) } });
@@ -681,11 +676,9 @@ describe("WebSockets", () => {
     expect(p.client.stats.reservedBytes).toBe(reserved);
     expect(p.client.stats.inboundBytes).toBe(0);
     expect(remote.getBufferedAmount()).toBe(0);
-    // the largest such message leaves the outgoing queue room for a PC's whole output budget behind it
     expect(remote.send(new Uint8Array(MAX_LARGE_WS_MESSAGE_BYTES))).toBeGreaterThan(0);
     expect(remote.send(new Uint8Array(MiB))).toBeGreaterThan(0);
     expect(remote.live).toBe(true);
-    // a message past the larger cap is still refused
     const closed = deferred<WsClose>();
     local.onClose = closed.resolve;
     expect(remote.send(new Uint8Array(MAX_LARGE_WS_MESSAGE_BYTES + 1))).toBe(0);
@@ -883,7 +876,7 @@ describe("credit and receipts", () => {
     expect((await reader.read()).value?.length).toBe(100);
     await p.flush();
     expect(remote.peerConsumed).toBe(100n);
-    p.hold.server = true; // Injected peer frames have no entries in the client's send ledger.
+    p.hold.server = true;
     p.server.receive(credit(1, 100n));
     p.server.receive(credit(1, 50n));
     await p.flush();
@@ -899,7 +892,6 @@ describe("credit and receipts", () => {
     e.engine.receive(data(1, 10));
     const reader = local.body.getReader();
     const reading = reader.read();
-    // ReadableStream pull returns storage before the scheduled CREDIT can leave.
     await reading;
     const granted = local.granted;
     expect(granted <= local.consumed).toBe(true);
@@ -1117,7 +1109,6 @@ describe("scheduling and isolation", () => {
     expect([OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES, OUTPUT_HARD_BYTES, OUTPUT_STALL_MS]).toEqual([256 * KiB, 64 * KiB, MiB, 2000]);
     output.write(OUTPUT_HIGH_BYTES);
     expect(output.check(terminal.remote.getBufferedAmount(), p.clock.now())).toBe("pause");
-    // Neither mux CREDIT nor RECEIVED is a pty-ack.
     expect(output.acknowledged).toBe(0);
     p.clock.advance(2000);
     expect(output.check(terminal.remote.getBufferedAmount(), p.clock.now())).toBe("stop");
@@ -1272,7 +1263,6 @@ describe("limits and liveness", () => {
     e.engine.receive(open(1, "http", "/slow"));
     e.engine.receive(open(3, "http", "/api/machines/events"));
     await e.engine.flush();
-    // Liveness is independent of route timeouts: supply matching probes at their deadlines.
     for (let i = 0; i < 9; i++) {
       e.clock.advance(20_000);
       await e.engine.flush();
@@ -1488,5 +1478,54 @@ describe("carrier loss never resends", () => {
     await e.engine.flush();
     expect(sends).toBe(1);
     expect(e.closes).toEqual([4000]);
+  });
+});
+
+describe("key proof setup (device-row-states T71, T72; S2-13 wire)", () => {
+  function unauthenticated() {
+    const clock = new Clock();
+    const seen = { client: [] as MuxFrame[], server: [] as MuxFrame[] };
+    const errors: MuxProtocolError[] = [];
+    let client!: MuxEngine;
+    let server!: MuxEngine;
+    const make = (role: "client" | "server") => new MuxEngine({
+      role, clock, send: async (bytes) => { (role === "client" ? server : client).receive(bytes); },
+      close: () => {}, onClose: (error) => { errors.push(error); },
+      outboundWireByteLength: (bytes) => bytes.length + 24, routingOverhead: 0, maxWireMessageBytes: 32 * KiB,
+      onSession: (frame) => { seen[role].push(frame); }, requestTimeoutMs: () => 0,
+    });
+    client = make("client");
+    server = make("server");
+    engines.push(client, server);
+    return { client, server, seen, errors };
+  }
+
+  it("T71: the PC sends the challenge and the wait, and the device sends the proof", async () => {
+    const { client, server, seen, errors } = unauthenticated();
+    server.sendSession({ type: FrameType.KEY_CHALLENGE, flags: 0, stream_id: 0, payload: { challenge: "A".repeat(43) } });
+    await server.flush();
+    client.sendSession({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature: "A".repeat(86) } });
+    await client.flush();
+    server.sendSession({ type: FrameType.KEY_PENDING, flags: 0, stream_id: 0, payload: {} });
+    await server.flush();
+    expect(seen.client.map((frame) => frame.type)).toEqual([FrameType.KEY_CHALLENGE, FrameType.KEY_PENDING]);
+    expect(seen.server.map((frame) => frame.type)).toEqual([FrameType.KEY_PROVE]);
+    expect(errors).toEqual([]);
+  });
+
+  it("T71: neither end may send the other's key proof frame", () => {
+    const { client, server } = unauthenticated();
+    expect(() => client.sendSession({ type: FrameType.KEY_CHALLENGE, flags: 0, stream_id: 0, payload: { challenge: "A".repeat(43) } })).toThrow();
+    expect(() => server.sendSession({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature: "A".repeat(86) } })).toThrow();
+  });
+});
+
+describe("S2-25 a held refusal reaches the app with its hold state (S25)", () => {
+  it("S25: the server's held failure arrives as the client's error, hold and all", async () => {
+    const mux = pair();
+    mux.server.fail("held", "This device waits for its join hold", undefined, { reason: "join_hold", until: "2026-11-20T05:00:10.000Z" });
+    await mux.flush();
+    const received = mux.errors.find((error) => error.code === "held");
+    expect(received?.hold).toEqual({ reason: "join_hold", until: "2026-11-20T05:00:10.000Z" });
   });
 });

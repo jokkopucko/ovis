@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, StrictMode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { COMPOSER_ARTIFACTS_STORAGE_KEY, DEFAULT_SETTINGS, ENTER_SENDS_STORAGE_KEY, enterSendsOn, SettingsProvider, useSettings, VOICE_ENGINE_STORAGE_KEY, type Settings } from "./settings.ts";
+import { COMPOSER_ARTIFACTS_STORAGE_KEY, DEFAULT_SETTINGS, ENTER_SENDS_STORAGE_KEY, enterSendsOn, PHONE_TABS_STORAGE_KEY, SettingsProvider, useSettings, VOICE_ENGINE_STORAGE_KEY, type Settings } from "./settings.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
 describe("settings across tabs", () => {
@@ -71,43 +71,34 @@ describe("settings across tabs", () => {
   }
 
   it("updates a mounted consumer when another tab saves an override", async () => {
-    // Given an already-open tab with the defaults.
     await open();
     expect(settings.shortcutOverrides).toEqual({});
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" }, terminalFontSize: 22 }));
 
-    // When the browser announces another tab's settings write.
     await storage(SETTINGS_STORAGE_KEY);
 
-    // Then the override is live without echoing the write or changing other settings.
     expect(settings.shortcutOverrides).toEqual({ palette: "ctrl+k" });
     expect(settings.terminalFontSize).toBe(DEFAULT_SETTINGS.terminalFontSize);
     expect(writes).toBe(0);
   });
 
   it.each([SETTINGS_STORAGE_KEY, null])("restores defaults when storage is removed with key %j", async (key) => {
-    // Given an open tab with a saved override.
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" } }));
     await open();
     records.clear();
 
-    // When another tab removes the settings record or clears storage.
     await storage(key);
 
-    // Then the mounted consumer returns to the default shortcuts.
     expect(settings.shortcutOverrides).toEqual({});
   });
 
   it("keeps another tab's change when this tab saves an unrelated setting", async () => {
-    // Given a tab opened before another tab chose a wide chat and the Artifacts chip.
     await open();
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ language: "en", chatWidth: "wide" }));
     records.set(COMPOSER_ARTIFACTS_STORAGE_KEY, "true");
 
-    // When this tab changes its terminal font size.
     await act(async () => { update({ terminalFontSize: 20 }); });
 
-    // Then the stored settings hold both tabs' changes.
     const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.chatWidth, stored.language, stored.terminalFontSize]).toEqual(["wide", "en", 20]);
     expect(records.get(COMPOSER_ARTIFACTS_STORAGE_KEY)).toBe("true");
@@ -115,151 +106,119 @@ describe("settings across tabs", () => {
   });
 
   it("leaves another tab's change when this tab is handed a value it already holds", async () => {
-    // Given an open tab, and another tab that chose Korean since.
     await open();
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ language: "ko" }));
 
-    // When this tab is handed the language it already shows, and another setting.
     await act(async () => { update({ language: DEFAULT_SETTINGS.language, terminalFontSize: 20 }); });
 
-    // Then the other tab's language stays stored.
     const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.language, stored.terminalFontSize]).toEqual(["ko", 20]);
   });
 
   it("stores a change whose save failed with this tab's next save", async () => {
-    // Given a tab whose font size change found storage full.
     await open();
     full = true;
     await act(async () => { update({ terminalFontSize: 20 }); });
     full = false;
 
-    // When it saves another setting once storage has room.
     await act(async () => { update({ chatWidth: "wide" }); });
 
-    // Then both changes are stored.
     const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.terminalFontSize, stored.chatWidth]).toEqual([20, "wide"]);
   });
 
   it("reads what this tab holds for a change made from it, while storage refuses every write (#2977)", async () => {
-    // Given a tab whose storage refuses writes, and a lock it holds only in memory.
     await open();
     full = true;
     await act(async () => { update({ lockedAgents: ["pc:w1:p1"] }); });
 
-    // When two changes are made from what it holds, in one turn.
     await act(async () => {
       update((current) => ({ lockedAgents: current.lockedAgents.map((key) => key === "pc:w1:p1" ? "pc:w2:p1" : key) }));
       update((current) => ({ lockedAgents: [...current.lockedAgents, "pc:w1:p3"] }));
     });
 
-    // Then each reads the one before it: the lock moved, and the second one is kept with it.
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p3"]);
   });
 
   const move = (current: Settings): Partial<Settings> => ({ lockedAgents: current.lockedAgents.map((key) => key === "pc:w1:p1" ? "pc:w2:p1" : key) });
 
   it.each([false, true])("makes a change from what another tab saved since this one heard, keeping the rest of it (#2977), StrictMode %p", async (strict) => {
-    // Given a tab opened before another tab of this browser locked two panes.
     await open(strict);
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
 
-    // When this tab moves one pane's lock.
     await act(async () => { update(move); });
 
-    // Then both locks are kept, the moved one under its new ID, in this tab and in storage.
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
     expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
   });
 
   it("keeps what this tab holds when storage stops reading after it loaded (#2977)", async () => {
-    // Given a tab that loaded two locks, and storage that then refuses reads and writes.
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
     await open();
     unreadable = true;
     full = true;
 
-    // When the pane moves.
     await act(async () => { update(move); });
 
-    // Then both locks are kept, the moved one under its new ID.
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
   });
 
   it("keeps what this tab holds when the stored record is broken", async () => {
-    // Given a tab that loaded two locks, and a record that then no longer parses.
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
     await open();
     records.set(SETTINGS_STORAGE_KEY, "{broken");
 
-    // When the pane moves.
     await act(async () => { update(move); });
 
-    // Then both locks are kept, the moved one under its new ID.
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
   });
 
   it("keeps this tab's change that storage refused over storage's older copy", async () => {
-    // Given a lock this tab stored, then removed while storage refused the write.
     await open();
     await act(async () => { update({ lockedAgents: ["pc:w1:p1"] }); });
     full = true;
     await act(async () => { update({ lockedAgents: [] }); });
 
-    // When the pane moves.
     await act(async () => { update(move); });
 
-    // Then the removed lock does not come back from storage.
     expect(settings.lockedAgents).toEqual([]);
   });
 
   it("breaks the line on Return on a touch screen until this device chooses, and Enter still sends on a desk", async () => {
-    // Given a record an older version saved whole after an unrelated change: its enterSends: true was never chosen.
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true, terminalFontSize: 20 }));
 
-    // When the tab opens.
     await open();
 
-    // Then nothing is chosen: a touch screen's Return breaks the line, a desk's Enter sends.
     expect(settings.enterSends).toBeNull();
     expect([enterSendsOn(settings, true), enterSendsOn(settings, false)]).toEqual([false, true]);
 
-    // And an unrelated save stores no choice for it, and leaves the record the boolean an older tab reads.
     await act(async () => { update({ chatWidth: "wide" }); });
     expect(records.get(ENTER_SENDS_STORAGE_KEY)).toBe("null");
     expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).enterSends).toBe(true);
   });
 
   it("keeps this device's choice when an older tab rewrites the record it loaded before", async () => {
-    // Given an older tab that loaded the unchosen record (enterSends: true).
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true }));
     const stale = records.get(SETTINGS_STORAGE_KEY)!;
 
-    // When this version chooses Return breaks the line, and the older tab then saves an unrelated setting whole.
     await open();
     await act(async () => { update({ enterSends: false }); });
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ ...JSON.parse(stale), terminalFontSize: 18 }));
     await act(async () => { renderer?.unmount(); });
     await open();
 
-    // Then the choice holds after the reload.
     expect(settings.enterSends).toBe(false);
     expect(settings.terminalFontSize).toBe(18);
   });
 
   it("keeps a choice made before: the old record's false, and this key's own true or false", async () => {
-    // Given Return set to break the line under the old version, which could only be chosen.
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: false }));
     await open();
 
-    // Then it holds on a touch screen and a desk alike.
     expect([enterSendsOn(settings, true), enterSendsOn(settings, false)]).toEqual([false, false]);
 
-    // When this device turns Enter sends back on.
     await act(async () => { update({ enterSends: true }); });
 
-    // Then the choice is stored in its own key and survives the next load, a touch screen's included.
     expect(records.get(ENTER_SENDS_STORAGE_KEY)).toBe("true");
     await act(async () => { renderer?.unmount(); });
     await open();
@@ -268,42 +227,44 @@ describe("settings across tabs", () => {
   });
 
   it("follows Return's choice made in another tab", async () => {
-    // Given an open tab with nothing chosen.
     await open();
     expect(settings.enterSends).toBeNull();
 
-    // When another tab chooses Return breaks the line.
     records.set(ENTER_SENDS_STORAGE_KEY, "false");
     await storage(ENTER_SENDS_STORAGE_KEY);
 
-    // Then this tab's composer follows it without writing anything.
     expect(settings.enterSends).toBe(false);
     expect(writes).toBe(0);
   });
 
   it("follows the speech recognition chosen in another tab", async () => {
-    // Given an open tab on Auto.
     await open();
     expect(settings.voiceEngine).toBe("auto");
 
-    // When another tab chooses the browser's recognition.
     records.set(VOICE_ENGINE_STORAGE_KEY, JSON.stringify("browser"));
     await storage(VOICE_ENGINE_STORAGE_KEY);
 
-    // Then this tab's next dictation uses it too, without writing anything.
     expect(settings.voiceEngine).toBe("browser");
     expect(writes).toBe(0);
   });
 
+  it("moves a phone's tabs where another tab placed them", async () => {
+    await open();
+    expect(settings.phoneTabs).toBe("row");
+
+    records.set(PHONE_TABS_STORAGE_KEY, JSON.stringify("header"));
+    await storage(PHONE_TABS_STORAGE_KEY);
+
+    expect(settings.phoneTabs).toBe("header");
+    expect(writes).toBe(0);
+  });
+
   it("ignores storage events for unrelated keys", async () => {
-    // Given an open tab and a settings record not announced by this event.
     await open();
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" } }));
 
-    // When an unrelated record changes.
     await storage("ovis:unrelated");
 
-    // Then the shortcut state stays as it was.
     expect(settings.shortcutOverrides).toEqual({});
   });
 });

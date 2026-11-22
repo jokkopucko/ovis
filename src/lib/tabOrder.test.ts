@@ -33,7 +33,6 @@ describe("native tab insertion boundaries", () => {
 
 describe("a drop among the drawn tabs of a row that leaves some out", () => {
   it("goes right after the drawn tab before the line, past the tabs left out", () => {
-    // A B F drawn of A B C D E F: F dropped after B moves to after B
     expect(drawnTabBoundary([0, 1, 5], 2)).toBe(2);
     expect(movedTabOrder(["A", "B", "C", "D", "E", "F"], "F", drawnTabBoundary([0, 1, 5], 2))).toEqual(["A", "B", "F", "C", "D", "E"]);
     expect(drawnTabBoundary([0, 1, 5], 3)).toBe(6);

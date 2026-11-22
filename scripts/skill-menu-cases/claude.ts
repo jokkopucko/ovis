@@ -16,7 +16,6 @@ export const expect = async ({ page, width, box, menu, scenario, clear, rowNames
   await scenario(`origin groups at ${width}px`, `origins-${width}.png`, async (capture) => {
     await box.fill("/");
     await menu.locator(".menu-item").first().waitFor();
-    // the menu mirrors Claude's own: what Claude's menu hides is not listed
     assert.deepEqual((await rowNames()).sort(), commands.filter((command) => command.visibility !== "agent-hidden").map(({ name }) => name).sort());
     const headings = await menu.locator(".menu-heading").allTextContents();
     for (const heading of ["Your skills", "Project skills", "Plugin skills"]) assert.ok(headings.includes(heading), headings.join(", "));

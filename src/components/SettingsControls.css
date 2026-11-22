@@ -1,7 +1,4 @@
-/* Settings is built from these: a group (caption + card), a row, and the four controls. */
 
-/* one grid for every page: a row's content starts this far in from its card's edge, and a caption, a
-   note and a fold line start there too; a row's picture takes the first column, its name the next */
 .settings-section,
 .settings-fold,
 .settings-row {
@@ -31,8 +28,6 @@
   display: none;
 }
 
-/* a page's folded groups (SettingsFold): one quiet line at the page's end, a caption's size and colour, that
-   turns its chevron and shows the groups under it with the page's own spacing */
 .settings-fold > summary {
   display: flex;
   align-items: center;
@@ -97,7 +92,6 @@
   padding: 0 var(--settings-inset);
 }
 
-/* one surface per group: its rows are parted by hairlines, never by boxes of their own */
 .settings-card {
   display: flex;
   flex-direction: column;
@@ -112,7 +106,6 @@
   padding: var(--space-3) var(--space-4);
 }
 
-/* every row of a card is at least one control tall, a row of words alone too, so the hairlines keep one rhythm */
 .settings-card > .settings-row {
   min-height: calc(var(--control-h) + var(--space-3) * 2);
 }
@@ -121,7 +114,6 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* a block that is not label + control: a list, a form, a panel of its own */
 .settings-item {
   display: flex;
   flex-direction: column;
@@ -165,12 +157,10 @@
   min-width: 0;
 }
 
-/* the sentence and condition under a name start where the name does, not under its picture */
-.settings-row-text:has(> .settings-label-line > .settings-row-icon) > :not(.settings-label-line) {
+.settings-row-text.has-icon > :not(.settings-label-line) {
   padding-inline-start: var(--settings-icon-column);
 }
 
-/* the ↺ beside a label whose value moved off its default */
 .settings-reset {
   display: inline-flex;
   flex: 0 0 auto;
@@ -200,7 +190,35 @@
   height: var(--icon-size-sm);
 }
 
-/* one row of theme cards that scrolls sideways (ThemePicker): never more than a card tall */
+.settings-help,
+.settings-help-copy {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-popover);
+  box-sizing: border-box;
+  max-width: min(22rem, calc(100vw - var(--space-4)));
+  max-height: calc(100dvh - var(--space-4));
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-menu);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-base);
+  overflow-wrap: break-word;
+}
+
+.settings-help-copy {
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  user-select: none;
+}
+
 .theme-cards {
   display: flex;
   align-items: flex-start;
@@ -217,7 +235,6 @@
   display: none;
 }
 
-/* the other kind of themes after the side's own */
 .theme-cards-rule {
   flex: 0 0 auto;
   align-self: stretch;
@@ -252,7 +269,6 @@
   font-weight: var(--fw-selected);
 }
 
-/* a sidebar beside a pane, in the theme's own colours */
 .theme-card-art {
   position: relative;
   display: flex;
@@ -320,7 +336,6 @@
   white-space: nowrap;
 }
 
-/* the cards sit right under their row, inside the same block */
 .settings-card > .settings-item.theme-strip {
   border-top: 0;
   padding-top: 0;
@@ -332,8 +347,6 @@
 }
 
 @media (hover: hover) {
-  /* the arrows' footprints are cut out of the row rather than reserved by its margins, so nothing
-     moves when an arrow comes or goes; the snap padding keeps every stop clear of them */
   .theme-cards {
     scroll-padding-inline: calc(var(--space-5) + var(--space-half));
     clip-path: inset(0 var(--theme-strip-clip-end, 0) 0 var(--theme-strip-clip-start, 0));
@@ -368,14 +381,12 @@
   right: -8px;
 }
 
-/* a touch screen swipes instead */
 @media (hover: none) {
   .theme-strip-arrow {
     display: none;
   }
 }
 
-/* the picture before a row's name, in a column of its own: every name of a page starts on one line */
 .settings-row-icon {
   flex: 0 0 auto;
   width: var(--settings-icon);
@@ -384,13 +395,11 @@
   color: var(--text-dim);
 }
 
-/* a tiny drawing of what the choice does, beside its control */
 .settings-row-preview {
   display: inline-flex;
   flex: 0 0 auto;
 }
 
-/* Wrap long lines, drawn: a line of code in a box two lines high, wrapped or running past the edge */
 .settings-wrap-preview {
   display: block;
   width: 88px;
@@ -406,7 +415,6 @@
   position: relative;
 }
 
-/* off, the line runs past the edge: it fades there */
 .settings-wrap-preview::after {
   content: "";
   position: absolute;
@@ -424,7 +432,6 @@
   display: none;
 }
 
-/* Sidebar rows, drawn: two workspace rows, each one line or two */
 .sidebar-rows-preview {
   display: inline-flex;
   flex-direction: column;
@@ -454,7 +461,6 @@
   opacity: 0.55;
 }
 
-/* a font list and its size on one line, wrapping the size under the list when the row has no room */
 .settings-row > .settings-font-size {
   flex: 0 1 auto;
 }
@@ -475,27 +481,35 @@
   font-size: var(--fs-xs);
 }
 
-/* a sentence under a label stays a column of text, not a line as wide as the card */
 .settings-row-text > .settings-description,
 .settings-row-text > .settings-hint {
   max-width: 54ch;
 }
 
-/* a condition that applies right now, on its own line under the sentence */
+.settings-row.is-explained {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+.settings-row > .settings-row-sentence {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+
+.settings-row:has(> .settings-row-text .settings-row-icon) > .settings-row-sentence {
+  padding-inline-start: var(--settings-icon-column);
+}
+
 .settings-condition {
   display: block;
   color: var(--text);
 }
 
-/* under a row's name it takes the sentence's size; elsewhere (a dialog's warning) it keeps its own.
-   A chips row keeps its name on one line (below); the condition is a sentence and wraps. */
 .settings-row-text > .settings-condition {
   font-size: var(--fs-xs);
   white-space: normal;
 }
 
-/* one sentence at rest; its conditions and exceptions open under it (DESIGN.md: messages say
-   only what the person needs now). The toggle word stands in for the marker. */
 .settings-details {
   margin: 0;
 }
@@ -519,7 +533,6 @@
   color: var(--accent);
 }
 
-/* no-break spaces: the dot and the word stay with the sentence's last word */
 .settings-details-toggle::before {
   content: "\00a0\00b7\00a0";
   color: var(--text-dim);
@@ -541,14 +554,9 @@
   gap: var(--space-2);
 }
 
-/* the controls sit in wells of the input color, so a card reads as one surface with holes */
 .settings-segmented {
+  --segmented-chosen-shadow: var(--shadow-thumb);
   background: var(--bg-input);
-}
-
-.settings-segmented > button[aria-pressed="true"] {
-  font-weight: var(--fw-selected);
-  box-shadow: var(--shadow-thumb);
 }
 
 .settings-stepper {
@@ -559,7 +567,6 @@
   border-radius: var(--radius-md);
 }
 
-/* a mouse's stepper is one control tall, border included, as a select and the segments are */
 @media (pointer: fine) {
   .settings-stepper {
     height: var(--control-h);
@@ -567,6 +574,23 @@
 
   .settings-stepper > .icon-button {
     height: calc(var(--control-h) - var(--hairline) * 2);
+  }
+}
+
+.settings-stepper > .icon-button[aria-disabled="true"] {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.settings-stepper > .icon-button[aria-disabled="true"]:active {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+}
+
+@media (hover: hover) {
+  .settings-stepper > .icon-button[aria-disabled="true"]:hover {
+    background: transparent;
   }
 }
 
@@ -578,7 +602,6 @@
   text-align: center;
 }
 
-/* a size typed in the number's place (G-179): the number and its unit read as the output did */
 .settings-stepper-field {
   display: inline-flex;
   align-self: stretch;
@@ -590,7 +613,6 @@
   font-size: var(--fs-sm);
 }
 
-/* the number is a target of its own: a pointer's height and width, a finger's on a touch screen */
 .settings-stepper-value {
   box-sizing: border-box;
   align-self: stretch;
@@ -610,7 +632,6 @@
   color: var(--status-blocked);
 }
 
-/* the range under a typed size it refused, until the next edit: its own line at the end of the row */
 .settings-stepper-range {
   flex: 1 1 100%;
   margin: 0;
@@ -631,7 +652,6 @@
   }
 }
 
-/* Settings → File text size: a chosen size offers its way back to the chat's beside the stepper */
 .settings-file-size {
   display: inline-flex;
   align-items: center;
@@ -673,7 +693,6 @@
   }
 }
 
-/* fingers: a select, a fold summary, a reset button and a segmented option are finger-sized targets */
 @media (pointer: coarse) {
   .settings-select {
     height: max(44px, var(--touch-target));
@@ -695,6 +714,12 @@
     min-width: var(--touch-target);
     min-height: var(--touch-target);
   }
+
+  /* options that take more than one row (a stacked row, below) stand a whole hit box apart: the pill is shorter than
+     the hit box by this much, so with less between the rows a tap under one row's pill would be the next row's */
+  .settings-segmented {
+    --segmented-row-gap: calc(var(--touch-target) - (var(--control-h) - var(--segmented-inset)));
+  }
 }
 
 .settings-dialog :is(.input, .select) {
@@ -715,7 +740,10 @@
     border-color: var(--border-contrast);
   }
 
-  .settings-segmented > button[aria-pressed="true"],
+  .settings-segmented {
+    --segmented-chosen-shadow: inset 0 0 0 var(--hairline) var(--text);
+  }
+
   .settings-chip[aria-pressed="true"],
   .settings-tab[aria-selected="true"] {
     box-shadow: inset 0 0 0 var(--hairline) var(--text);
@@ -727,8 +755,6 @@
   min-width: 0;
 }
 
-/* the switch keeps a finger-sized box; the negative margins keep that box from growing its row past
-   one control's height, and put the track's end on the edge every other control ends on */
 .settings-toggle {
   position: relative;
   width: calc(var(--touch-target) + var(--space-2));
@@ -751,7 +777,6 @@
   transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
 
-/* the thumb sits 2px inside the track's edge, off and on */
 .settings-toggle-thumb {
   position: absolute;
   top: calc(var(--space-3) + var(--space-half));
@@ -774,7 +799,6 @@
 }
 
 @media (max-width: 640px) {
-  /* a control that needs the line gets it: under its label, as wide as the card */
   .settings-row.is-wide {
     align-items: stretch;
     flex-direction: column;
@@ -782,26 +806,54 @@
   }
 
   .settings-row.is-wide > .settings-segmented {
+    --segmented-need: calc(var(--segmented-widest, 0px) + 2 * var(--space-1));
+    --segmented-share: calc((100% - (var(--segmented-count, 1) - 1) * var(--space-half)) / var(--segmented-count, 1));
+    --segmented-half: calc((100% - var(--space-half)) / 2);
     display: flex;
+    flex-wrap: wrap;
+    row-gap: var(--segmented-row-gap, var(--space-2));
   }
 
+  /* the basis is a step, not a slope: 9999 times the room the label lacks is past the far end of its clamp as soon as
+     any is lacking, and under the near end while none is. A pixel under the share keeps the rounding of a full line
+     from wrapping its last option; the options grow back to the share. */
   .settings-row.is-wide > .settings-segmented > button {
-    flex: 1 1 0;
+    flex: 1 1 max(clamp(var(--segmented-share) - 1px, (var(--segmented-need) - var(--segmented-share)) * 9999, var(--segmented-half) - 1px), clamp(0px, (var(--segmented-need) - var(--segmented-half)) * 9999, 100%));
     justify-content: center;
-    min-width: 0;
+    min-width: min-content;
+    padding-inline: var(--space-1);
   }
 
-  .settings-row.is-wide > .settings-font-input {
+  /* a label takes the room its chosen weight needs, chosen or not (the chosen one is heavier, and in Latin text
+     wider): what Segmented measures is then the same whichever option is chosen, and a tap never changes how many
+     rows the options take. */
+  .settings-row.is-wide > .settings-segmented > button > span {
+    text-align: center;
+  }
+
+  .settings-row.is-wide > .settings-segmented > button > span::after {
+    display: block;
+    height: 0;
+    overflow: hidden;
+    content: attr(data-label);
+    font-weight: var(--fw-selected);
+    visibility: hidden;
+  }
+
+  .settings-row.is-wide > .settings-font-input,
+  .settings-row.is-wide > .settings-row-sentence {
     flex: 0 0 auto;
   }
 
-  /* a stepper under its name ends on the card's edge, as the font rows' steppers do */
+  .settings-row.is-wide.is-explained {
+    flex-wrap: nowrap;
+  }
+
   .settings-row.is-wide > .settings-stepper,
   .settings-row.is-wide > .settings-file-size {
     align-self: flex-end;
   }
 
-  /* a row's drawing stays on its name's line, at the end; the control takes the line under both */
   .settings-row.is-wide:has(> .settings-row-preview) {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -813,11 +865,10 @@
     grid-column: 2;
   }
 
-  .settings-row.is-wide:has(> .settings-row-preview) > :not(.settings-row-text, .settings-row-preview) {
+  .settings-row.is-wide > :not(.settings-row-text, .settings-row-preview) {
     grid-column: 1 / -1;
   }
 
-  /* a little narrower than three to a line, so the next card shows at the edge */
   .theme-card {
     flex-basis: 84px;
   }
@@ -828,11 +879,12 @@
 
   .settings-description,
   .settings-hint,
+  .settings-help,
+  .settings-help-copy,
   .settings-row-text > .settings-condition {
     font-size: var(--fs-sm);
   }
 
-  /* on a phone the list takes the line and its size sits under it, at the end */
   .settings-row.is-wide > .settings-font-size {
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -851,8 +903,6 @@
   }
 }
 
-/* several on/off choices of one decision on one line: a chip each, pressed when on, a little under a
-   control's height so a wrapped set stays light */
 .settings-chips {
   display: flex;
   flex-wrap: wrap;
@@ -876,7 +926,6 @@
   cursor: pointer;
 }
 
-/* a finger's chips: as tall as a touch target, and further apart so a tap lands on the one meant (G-089) */
 @media (pointer: coarse) {
   .settings-chips {
     gap: var(--space-3);
@@ -894,7 +943,6 @@
   font-weight: var(--fw-selected);
 }
 
-/* sections read as one card: herdr-app's About list */
 .settings-joined {
   display: flex;
   flex-direction: column;
@@ -917,14 +965,11 @@
   height: var(--icon-size-sm);
 }
 
-/* a row of chips keeps its name on one line and wraps its chips beside it */
 .settings-row:has(> .settings-chips) > .settings-row-text {
   flex: none;
   white-space: nowrap;
 }
 
-/* ...unless a condition sentence sits under the name: then the name's column takes at most the left
-   half and the sentence wraps in it, so the chips keep their half instead of a sliver (G-096) */
 .settings-row:has(> .settings-chips) > .settings-row-text:has(> .settings-condition) {
   flex: 0 1 auto;
   min-width: 0;

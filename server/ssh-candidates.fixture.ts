@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// shared by server/ssh-candidates.test.ts and server/ssh-lookup.test.ts
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
 
@@ -17,7 +16,6 @@ export function sshDir(files: Record<string, string>): string {
   return dir;
 }
 
-/** a tailnet of `box` at 100.64.0.1 and `other` at 100.64.0.2 and an IPv6 address */
 export const twoPeers = JSON.stringify({
   BackendState: "Running",
   Self: { DNSName: "self.tail.ts.net.", UserID: 1 },

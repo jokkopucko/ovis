@@ -1,0 +1,39 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                         ▄
+                                        █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+                                        █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+                                        ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+
+                                               /update to install v2.3.0
+
+                      ┃
+                      ┃  Ask anything… "Fix broken tests"
+                      ┃
+                      ┃  Build · Big Pickle OpenCode
+                      ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+                      /tmp/opencode-project                     shift+tab agents  ctrl+p commands
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                2.2.2

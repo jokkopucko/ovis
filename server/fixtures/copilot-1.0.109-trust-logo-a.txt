@@ -1,0 +1,40 @@
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                   │
+│  ╭─╮╭─╮                             │  Getting started                                                            │
+│  ╰─╯╰─╯  Copilot v1.0.109 uses AI.  │  Use the tabs above to explore your sessions and pull requests              │
+│  █ ▘▝ █  Check for mistakes.        │  /model — Switch models across providers, or use Copilot Fusion             │
+│   ▔▔▔▔                              │                                                                             │
+│                                                                                                                   │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                                                                │
+│ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ /home/user/scratch/copilot                                                        │ │
+│ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                     │
+│ Copilot can read files in this folder and, with your permission, edit them or run code and shell commands. It will  │
+│ remember your permissions for the rest of this session.                                                             │
+│                                                                                                                     │
+│ Git commands run in this folder may use configuration from the enclosing repository and execute programs configured │
+│ by that repository.                                                                                                 │
+│                                                                                                                     │
+│ Do you trust the files in this folder?                                                                              │
+│                                                                                                                     │
+│ ❯ 1. Yes                                                                                                            │
+│   2. Yes, and remember this folder for future sessions                                                              │
+│   3. No (Esc)                                                                                                       │
+│                                                                                                                     │
+│ ↑/↓ to navigate · enter to select · esc to cancel                                                                   │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

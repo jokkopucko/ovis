@@ -38,3 +38,7 @@ app/www/
 *.jks
 *.keystore
 upload.properties
+
+# a telemetry report written at the root by mistake (scripts/telemetry-report.ts): not for the tree
+/telemetry-report*.md
+/telemetry-report*.html

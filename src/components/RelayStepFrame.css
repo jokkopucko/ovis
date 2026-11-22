@@ -1,0 +1,236 @@
+.relay-step-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
+  padding: calc(var(--space-4) + env(safe-area-inset-top, 0px)) calc(var(--space-5) + env(safe-area-inset-right, 0px))
+    calc(var(--space-5) + env(safe-area-inset-bottom, 0px)) calc(var(--space-5) + env(safe-area-inset-left, 0px));
+  background: var(--bg);
+}
+
+.relay-step {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  width: min(100%, var(--relay-step-w));
+  min-width: 0;
+  color: var(--text);
+}
+
+@media (min-width: 600px) {
+  .relay-step {
+    align-self: center;
+    min-height: min(100%, var(--relay-step-h));
+  }
+}
+
+.relay-step-top {
+  display: flex;
+  min-height: var(--space-8);
+}
+
+.relay-step-back {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--space-8);
+  height: var(--space-8);
+  padding: 0;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+/* the round button stays small to the eye and takes a whole touch target */
+.relay-step-back::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  transform: translate(-50%, -50%);
+}
+
+.relay-step-back > svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+@media (hover: hover) {
+  .relay-step-back:hover {
+    color: var(--text-strong);
+    border-color: var(--border-strong);
+  }
+}
+
+.relay-step-back:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.relay-step-progress {
+  height: var(--relay-step-bar);
+  margin: var(--space-4) 0 var(--space-6);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--border);
+}
+
+.relay-step-progress > span {
+  display: block;
+  width: 33.333%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text-strong);
+}
+
+.relay-step-progress[data-step="2"] > span { width: 66.667%; }
+.relay-step-progress[data-step="3"] > span { width: 100%; }
+
+.relay-step-note {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 60%;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-card);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.relay-step-note > .boot-spinner {
+  flex: none;
+  width: var(--space-4);
+  height: var(--space-4);
+}
+
+/* the step's own content: the shell's title and copy, read larger, and its actions at the foot */
+.relay-step .relay-shell-title {
+  margin: 0;
+  font-size: var(--fs-display);
+  font-weight: var(--fw-bold);
+}
+
+.relay-step .relay-shell-copy {
+  margin-top: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.relay-step .sheep-badge {
+  margin-bottom: var(--space-4);
+}
+
+.relay-step-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.relay-step-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+}
+
+.relay-step-card-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--relay-step-icon);
+  height: var(--relay-step-icon);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+}
+
+.relay-step-card-icon > svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.relay-step-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.relay-step-card-detail {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.relay-step-card-name {
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.relay-step-number {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+}
+
+.relay-step-number .relay-shell-digits {
+  margin: 0;
+  text-align: start;
+}
+
+.relay-step-number .relay-shell-detail {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.relay-step-details {
+  margin-top: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.relay-step-details > summary {
+  min-height: var(--touch-target);
+  line-height: var(--touch-target);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.relay-step .relay-shell-actions {
+  margin-top: auto;
+  padding-top: var(--space-6);
+}
+
+.relay-step .relay-shell-actions .btn-primary {
+  min-height: calc(var(--touch-target) + var(--space-1));
+  border-radius: var(--radius-lg);
+  font-weight: var(--fw-semibold);
+}
+
+.relay-step .relay-shell-actions .relay-step-quiet {
+  align-self: center;
+  width: auto;
+  min-height: var(--touch-target);
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}

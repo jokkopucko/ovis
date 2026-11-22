@@ -57,6 +57,16 @@ Var pid
       DetailPrint "Stopping the herdr-core server: $0"
     ${endIf}
     RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}-updater"
+    ; the ovis:// links the app registered for itself as it started (src/main.ts setAsDefaultProtocolClient),
+    ; only when they still start this install: its command is "$INSTDIR\Ovis.exe" -- "%1". Another
+    ; program's registration, or another install's, stays (NSIS compares strings without case)
+    ReadRegStr $0 HKCU "Software\Classes\ovis\shell\open\command" ""
+    StrCpy $1 '"$INSTDIR\'
+    StrLen $2 $1
+    StrCpy $0 $0 $2
+    ${if} $0 == $1
+      DeleteRegKey HKCU "Software\Classes\ovis"
+    ${endIf}
   ${endIf}
 !macroend
 

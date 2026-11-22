@@ -21,7 +21,6 @@ describe("xterm reflow with no scrollback", () => {
       expect(buffer.baseY + term.rows).toBeLessThanOrEqual(buffer.length);
       expect(buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true)).toBe("2".repeat(10));
 
-      // the row past the buffer's end was written to: "Cannot set properties of undefined (setting 'isWrapped')"
       term.resize(5, 8);
       await write(term, "\r\n" + "a".repeat(12));
       expect(term.buffer.active.getLine(term.buffer.active.baseY + term.buffer.active.cursorY)?.translateToString(true)).toBe("aa");
@@ -36,7 +35,6 @@ describe("xterm erase above (ESC[1J) from a row's last column", () => {
   it("unwraps the screen row below the cursor, not a history row", async () => {
     const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });
     try {
-      // history p q r, screen s / abcde / fgh, where fgh continues abcde
       await write(term, "p\r\nq\r\nr\r\ns\r\nabcdefgh\x1b[2;5H\x1b[1J");
       const buffer = term.buffer.active;
       expect(buffer.getLine(buffer.baseY + 2)?.translateToString(true)).toBe("fgh");
@@ -62,7 +60,6 @@ describe("xterm erase above (ESC[1J) from a row's last column", () => {
   it("unwraps the row below when a selective erase (DECSED) clears the cursor's row whole", async () => {
     const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });
     try {
-      // nothing is protected, so ESC[?1J empties abcde, and fgh no longer continues it
       await write(term, "p\r\nq\r\nr\r\ns\r\nabcdefgh\x1b[2;5H\x1b[?1J");
       const buffer = term.buffer.active;
       expect(buffer.getLine(buffer.baseY + 1)?.translateToString(true)).toBe("");
@@ -75,7 +72,6 @@ describe("xterm erase above (ESC[1J) from a row's last column", () => {
   it("leaves nothing to unwrap from the screen's last row", async () => {
     const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });
     try {
-      // "Cannot set properties of undefined (setting 'isWrapped')": the row past the buffer's end
       await write(term, "1\r\n2\r\n33333\x1b[1J");
       await write(term, "z");
       expect(term.buffer.active.getLine(2)?.translateToString(true)).toBe("");

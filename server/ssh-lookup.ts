@@ -1,10 +1,5 @@
-/**
- * Name lookups for the SSH tab's list (server/ssh-candidates.ts): the addresses a config host's name resolves to,
- * bounded in time and in lookups running at once.
- */
 import { isIP } from "node:net";
 
-/** how long the list waits on every name lookup together; a name still unanswered then claims no PC */
 export const RESOLVE_TIMEOUT_MS = 1500;
 /** name lookups running at most across every listing; a lookup holds its slot until the resolver answers, since a
  * system lookup cannot be cancelled, and the rest wait for a free slot. A held slot relies on getaddrinfo's own timeout
@@ -14,7 +9,6 @@ const MAX_LOOKUPS = 16;
 export type Resolve = (host: string) => Promise<string[]>;
 export interface Lookup {
   resolve: Resolve;
-  /** how long the listing waits for every name together */
   timeoutMs: number;
 }
 
@@ -35,16 +29,10 @@ export const canonicalIp = (ip: string): string => {
 
 export const systemResolve: Resolve = async (host) => (await Bun.dns.lookup(host, { backend: "system" })).map(({ address }) => address);
 
-/** one name's lookup, waiting for a slot or running, with the listings still waiting on it */
 interface NameLookup { addresses: Promise<string[]>; listings: number; start: () => void }
-/** each resolver's lookups by name, how many hold a slot, and the ones waiting for one of its MAX_LOOKUPS slots */
 interface Lookups { pending: Map<string, NameLookup>; running: number; waiting: NameLookup[] }
 const lookupsOf = new WeakMap<Resolve, Lookups>();
 
-/**
- * The lookup of `name` this listing waits on: the one already pending, or a new one that starts once a slot is free.
- * Nothing is kept once it answers, so the next listing sees a changed hosts file or DNS answer at once.
- */
 function lookupOnce(resolve: Resolve, name: string): NameLookup {
   const state: Lookups = lookupsOf.get(resolve) ?? { pending: new Map(), running: 0, waiting: [] };
   lookupsOf.set(resolve, state);
@@ -56,7 +44,6 @@ function lookupOnce(resolve: Resolve, name: string): NameLookup {
     addresses: slot.promise.then(async () => {
       try { return await resolve(name); } catch { return []; } finally {
         if (state.pending.get(name) === lookup) state.pending.delete(name);
-        // the slot goes straight to the next waiting lookup
         const next = state.waiting.shift();
         if (next === undefined) state.running--; else next.start();
       }
@@ -67,11 +54,6 @@ function lookupOnce(resolve: Resolve, name: string): NameLookup {
   return lookup;
 }
 
-/**
- * A listing stops waiting on a lookup. One no listing waits on any more is offered to no later listing, which looks the
- * name up afresh rather than take an answer from before it asked; still waiting for a slot, it is dropped, and running,
- * it keeps its slot until its resolver answers.
- */
 function leave(resolve: Resolve, name: string, lookup: NameLookup): void {
   lookup.listings -= 1;
   const state = lookupsOf.get(resolve);
@@ -81,7 +63,6 @@ function leave(resolve: Resolve, name: string, lookup: NameLookup): void {
   if (queued >= 0) state.waiting.splice(queued, 1);
 }
 
-/** the addresses each name resolves to, waiting `timeoutMs` at most for all of them; a name that fails or is late is left out */
 export async function resolveWithin(names: string[], { resolve, timeoutMs }: Lookup): Promise<Map<string, string[]>> {
   const found = new Map<string, string[]>();
   let timer: ReturnType<typeof setTimeout> | undefined;

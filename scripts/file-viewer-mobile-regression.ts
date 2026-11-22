@@ -1,4 +1,3 @@
-/** Self-contained mobile/desktop file viewer layout matrix; no live herdr session. */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,14 +6,12 @@ import { chromium } from "playwright-core";
 import { sheetsSettled } from "./sheets-settled.ts";
 import { chromePath } from "./chrome-path.ts";
 
-/** The viewer alone with its source CSS, at phone sizes: the dialog fits, a long name is cut in its stem, no control is covered. */
 async function checkLayout(): Promise<void> {
   const fixture = mkdtempSync(join(tmpdir(), "ovis-viewer-layout-"));
   const repo = join(import.meta.dir, "..");
   const sharedCss = readFileSync(join(repo, "src/styles.css"), "utf8");
   const viewerCss = readFileSync(process.env.FILE_VIEWER_CSS ?? join(repo, "src/components/FileViewer.css"), "utf8");
   const entry = join(fixture, "entry.ts");
-  // Render the actual component, with only its HTTP file data supplied by the fixture.
   writeFileSync(entry, `
     import React from ${JSON.stringify(join(repo, "node_modules/react/index.js"))};
     import { createRoot } from ${JSON.stringify(join(repo, "node_modules/react-dom/client.js"))};
@@ -41,7 +38,6 @@ async function checkLayout(): Promise<void> {
     const bundle = await Bun.build({
       entrypoints: [entry], target: "browser", define: { "process.env.NODE_ENV": JSON.stringify("development") },
       plugins: [{ name: "fixture-styles", setup(build) {
-        // Serve the two real stylesheets explicitly, including optional pre-fix CSS.
         build.onLoad({ filter: /\.css$/ }, () => ({ contents: "", loader: "css" }));
       } }],
     });
@@ -119,12 +115,9 @@ async function checkLayout(): Promise<void> {
             const dialog = document.querySelector<HTMLElement>(".file-viewer")!;
             const header = document.querySelector<HTMLElement>(".file-viewer-header")!;
             const body = document.querySelector<HTMLElement>(".file-viewer-body")!;
-            // a long name is cut inside its stem; the extension stays whole
             const title = document.querySelector<HTMLElement>(".file-viewer-title .file-viewer-stem")!;
-            // the controls drawn: on a phone new tab and download wait in More, so they are not
             const controls = [...header.querySelectorAll<HTMLElement>(".icon-button")].filter((element) => element.getClientRects().length > 0).map((element) => {
               const bounds = rect(element);
-              // Rounded button corners do not belong to the hit target.
               const points = [[bounds.x + 8, bounds.y + 8], [bounds.right - 8, bounds.y + 8], [bounds.x + bounds.width / 2, bounds.y + bounds.height / 2], [bounds.x + 8, bounds.bottom - 8], [bounds.right - 8, bounds.bottom - 8]];
               const hits = points.map(([x, y]) => document.elementFromPoint(x!, y!));
               return { ...bounds, unobstructed: hits.every((hit) => element.contains(hit)) };
@@ -149,7 +142,6 @@ async function checkLayout(): Promise<void> {
           assert.ok(geometry.title.scrollWidth > geometry.title.clientWidth, `${label}: long title is constrained`);
           assert.ok((await page.locator(".file-viewer-title .modal-title").innerText()).endsWith(".svg"), `${label}: the extension stays in the title`);
           assert.ok(geometry.documentWidth <= scenario.width && geometry.documentHeight <= scenario.height, `${label}: no document scrolling`);
-          // Stress overflowing content beyond the ordinary fitted preview: only the body scrolls.
           await page.locator(".file-viewer-media").evaluate((element) => {
             (element as HTMLElement).style.height = "4000px";
             (element as HTMLElement).style.maxHeight = "none";
@@ -181,7 +173,6 @@ async function checkLayout(): Promise<void> {
       await page.waitForFunction(() => document.querySelector<HTMLImageElement>("img.file-viewer-media")?.naturalWidth === 64);
       const original = new URL(await image.getAttribute("src") ?? "", page.url());
       imageRevision = 2;
-      // Reopening already fetches metadata; no file watcher or periodic request is needed.
       await page.getByRole("button", { name: "Close file", exact: true }).click();
       await page.getByRole("button", { name: "Reopen image", exact: true }).click();
       await image.waitFor();
@@ -197,8 +188,6 @@ async function checkLayout(): Promise<void> {
       assert.equal(new URL(await image.getAttribute("src") ?? "", page.url()).href, updated.href, "unchanged metadata keeps the same image identity");
       console.log("PASS same-path image overwrite: reopening uses the latest revision, unchanged metadata keeps its URL");
     } finally { await mutableContext.close(); }
-    // A text file adds Copy to Open in a new tab and Download: on a phone the header is one row, the
-    // name, Copy and More (new tab, download) and Close in its corner, all inside the dialog.
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
     try {
       const page = await phone.newPage();

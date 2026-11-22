@@ -88,10 +88,7 @@ function readBody(request: IncomingMessage): Promise<string | null> {
   });
 }
 
-/**
- * Tracks the forms pi-ask reports open and relays the server's answers to it as pi-ask's own
- * submit events. Nothing here reads or types into the terminal; a pi without a UI serves nothing.
- */
+/** Nothing here reads or types into the terminal; a pi without a UI serves nothing. */
 export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
   const { events, socketPath } = options;
   const pid = options.pid ?? process.pid;
@@ -192,7 +189,7 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
       if (request.url === "/v1/submit" && request.method === "POST") {
         const text = await readBody(request);
         let body: unknown = null;
-        try { body = text === null ? null : JSON.parse(text); } catch { /* answered as invalid below */ }
+        try { body = text === null ? null : JSON.parse(text); } catch {}
         const { status, reply } = await submit(body);
         send(response, status, reply);
         return;
@@ -205,7 +202,7 @@ export function createPiAskBridge(options: PiAskBridgeOptions): PiAskBridge {
 
   const removeSocket = (): void => {
     if (isSocket(socketPath)) {
-      try { unlinkSync(socketPath); } catch { /* already gone */ }
+      try { unlinkSync(socketPath); } catch {}
     }
   };
 

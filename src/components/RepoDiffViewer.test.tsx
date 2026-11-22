@@ -21,14 +21,12 @@ beforeEach(() => {
   const sessionStorage = { getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => { session.set(key, value); }, removeItem: (key: string) => { session.delete(key); } };
   Object.assign(globalThis, {
     IS_REACT_ACT_ENVIRONMENT: true,
-    // the test renderer draws no DOM: nothing is an element, so the focus trap finds nothing to hold
     HTMLElement: class HTMLElement {},
     window: { ...listen, setTimeout, clearTimeout, sessionStorage, localStorage: { getItem: () => null, setItem() {} }, matchMedia: () => ({ ...listen, matches: false }) },
     document: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null, activeElement: null },
     getComputedStyle: () => style,
     navigator: { languages: ["en"] },
   });
-  // the patch never answers: the note being written does not wait on it
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(() => new Promise<Response>(() => {}), globalThis.fetch));
 });
 
@@ -56,7 +54,6 @@ test("a same-path diff on another PC does not take the previous PC's note draft"
   await act(async () => { renderer = create(viewer(pcA)); });
   expect(noteTexts()).toEqual(["PC A's half-written note"]);
 
-  // everything but the PC is the same, so the component stays mounted
   await act(async () => { renderer!.update(viewer(pcB)); });
   expect(noteTexts()).toEqual([]);
   expect(session.has(draftKey(pcB))).toBe(false);

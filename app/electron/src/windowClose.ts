@@ -1,4 +1,3 @@
-/** What hiding needs from a window (a BrowserWindow has it all). */
 export interface HideableWindow {
   isFullScreen(): boolean;
   setFullScreen(flag: boolean): void;

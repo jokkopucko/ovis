@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
@@ -6,98 +6,130 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayPcTable } from "../../components/RelayPcTable.tsx";
-import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
+import { ReadyCheckpoint, RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
 import { myPcs } from "../account/myPcs.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
-import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
 
+let waiting: (() => void)[] = [];
+/** Told by every fake of a pairing when what it holds changes: a render, a request, a store write, a timer armed. */
+const changed = (): void => { for (const wake of waiting.splice(0)) wake(); };
+/**
+ * Settles once `holds`, looked at again at each change a fake tells of. The enrollment signs, which settles on no turn
+ * of this thread, so no count of turns bounds it: the test's own timeout does, which no faked clock holds.
+ */
 async function until(holds: () => boolean | Promise<boolean>): Promise<void> {
-  for (let turn = 0; turn < 10_000; turn++) { if (await holds()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
-  throw new Error("Enrollment did not reach the expected state");
+  for (;;) {
+    // asked for before the look, so a change while an async look runs wakes the next one
+    const next = new Promise<void>((resolve) => { waiting.push(resolve); });
+    if (await holds()) return;
+    await next;
+  }
 }
 
 describe("account pairing completion", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   const transports: RelayTransport[] = [];
+  const setTimer = globalThis.setTimeout;
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
-  afterEach(() => { for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); });
+  afterEach(() => { globalThis.setTimeout = setTimer; jest.useRealTimers(); for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); waiting = []; });
 
-  async function pairing(introduction?: () => Response) {
+  async function pairing(introduction?: () => Response, options: { readonly code?: string; readonly outdatedFirst?: boolean } = {}) {
     const identity = generateKeyPair();
-    const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk" };
+    const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk", ...(options.code === undefined ? {} : { code: options.code }) };
     const accountStore = memoryAccountStore();
     await accountStore.set("session", { service: "https://account.ovis.sh", account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
     const key = await accountStore.key();
     const devices = new Map<string, RelayDevice>([[offer.server_id, { ...offer, device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone" }]]);
-    const store: RelayDeviceStore = {
-      get: async (id) => devices.get(id), list: async () => [...devices.values()], remove: async (id) => { devices.delete(id); },
-      update: async (id, change) => { const device = change(devices.get(id)); devices.set(id, device); return device; },
+    const store: ShellDeviceStore = {
+      get: async (id) => devices.get(id), list: async () => [...devices.values()], remove: async (id) => { devices.delete(id); }, removeRow: async (id, row) => { if (devices.get(id)?.device_id !== row) return false; devices.delete(id); return true; },
+      update: async (id, change) => { const device = change(devices.get(id)); devices.set(id, device); changed(); return device; },
     };
     const enrollment = Promise.withResolvers<Response>();
-    let enrolls = 0, linked = false, apps = 0;
+    let enrolls = 0, linked = false, apps = 0, opens = 0, introductionReads = 0;
+    // every wait armed, with how many times the introduction had been read by then
+    const timers: { readonly ms: number; readonly reads: number }[] = [];
+    globalThis.setTimeout = ((...timer: Parameters<typeof setTimeout>) => {
+      timers.push({ ms: timer[1] ?? 0, reads: introductionReads }); changed();
+      return setTimer(...timer);
+    }) as typeof setTimeout;
     let response = enrollment.promise;
     class Admitted extends RelayTransport {
       closed = false;
       override close() { this.closed = true; super.close(); }
-      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
+      readonly version = options.outdatedFirst && opens++ === 0 ? "0.1.0" : "1.0.0";
+      override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
       override async renew() {}
       override async fetch(path: string) {
+        try { return this.answer(path); } finally { changed(); }
+      }
+      answer(path: string) {
         if (this.closed) throw new TypeError("Enrollment connection was closed");
         switch (path) {
           case "/api/account/status": return Response.json({ account: linked ? "acct-test" : null, unlinked: [], removals: [], enrolling: true });
           case "/api/account/link": linked = true; return Response.json({});
           case "/api/account/enroll": enrolls++; return response;
-          case "/api/account/introduction": return introduction?.() ?? Response.json({ pcs: [{ ...offer, server_id: deriveServerId(other.publicKey), server_public_key: exportPublicKey(other.publicKey) }] });
+          case "/api/account/introduction": introductionReads++; return introduction?.() ?? Response.json({ pcs: [{ ...offer, server_id: deriveServerId(other.publicKey), server_public_key: exportPublicKey(other.publicKey) }] });
           default: throw new TypeError(`Unexpected PC request: ${path}`);
         }
       }
     }
     const other = generateKeyPair();
     let props: RelayShellProps | undefined;
+    const kinds: string[] = [];
     const render = (node: ReactNode): void => {
       if (!isValidElement<{ readonly children?: ReactNode }>(node)) throw new TypeError("Missing shell element");
-      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; return; }
+      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; kinds.push(node.props.state.kind); changed(); return; }
       render(node.props.children);
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
-    browser.sessionStore.set("ovis-add-pc-sheet", JSON.stringify({ mode: "new", server_id: offer.server_id }));
+    if (options.code === undefined) browser.sessionStore.set("ovis-add-pc-sheet", JSON.stringify({ mode: "new", server_id: offer.server_id }));
     const mountAt = (entryUrl: string) => mountRelayShell({
       container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore,
       accountService: "https://account.ovis.sh", accountFetch: async () => Response.json({ pcs: [] }),
-      createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+      createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; changed(); return { render() {}, unmount() {} }; },
       pendingPush: { get: async () => undefined, clear: async () => {} }, navigate() {}, checkPc: async () => ({ kind: "offline", reason: "relay" }),
       open: async () => { const opened = new Admitted(offer); transports.push(opened); return opened; },
     });
     await mountAt(encodeOffer(offer, "https://app.ovis.sh"));
+    await until(() => { const state = current().state; return state.kind === "confirm" && state.account !== "checking"; });
     current().onPair();
+    if (options.outdatedFirst) {
+      await until(() => { const state = current().state; return state.kind === "outdated" && state.update.phase === "manual"; });
+      current().onRetry();
+    }
     await until(() => enrolls > 0);
     const rows = async () => myPcs([], await store.list(), { now: Date.now(), accountKey: key.public_spki, account: "acct-test" });
     const dashboard = async () => dashboardPcs(await rows(), await store.list());
-    return { current, enrollment, rows, dashboard, mountAt, enrolls: () => enrolls, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
+    const pcPage = `https://app.ovis.sh/s/${offer.server_id}/`;
+    /** the wait for the next look armed after the `reads`th read of the introduction */
+    const polled = (reads: number): boolean => timers.some((timer) => timer.ms === 3_000 && timer.reads === reads);
+    return { current, enrollment, rows, dashboard, mountAt, pcPage, kinds, polled, enrolls: () => enrolls, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
   }
 
-  it("shows Ready and opens the PC while account enrollment is pending", async () => {
+  it("enters the PC as soon as a sheet join is admitted, with no Ready screen, and finishes the account's part behind it", async () => {
     const run = await pairing();
-    const pending = run.current().state;
-    run.current().onOpenPc?.();
-    run.enrollment.resolve(Response.json({ results: [] }));
-    expect(pending).toMatchObject({ kind: "ready", enrollment: "pending" });
     expect(run.apps()).toBe(1);
+    expect(run.kinds).not.toContain("ready");
+    expect((await run.rows())[0]?.enrollment).toBe("pending");
+    run.enrollment.resolve(Response.json({ results: [] }));
     await until(async () => (await run.rows())[0]?.enrollment === "complete");
+    expect(run.apps()).toBe(1);
+    expect(run.kinds).not.toContain("ready");
   });
 
-  it("reports account completion only after enrollment resolves", async () => {
+  it("opens a saved PC that is still joining the account without stopping at Ready", async () => {
     const run = await pairing();
-    run.enrollment.resolve(Response.json({ results: [] }));
-    await until(() => { const state = run.current().state; return state.kind === "ready" && typeof state.enrollment === "object" && state.enrollment.state === "complete"; });
-    expect(run.current().state).toMatchObject({ kind: "ready", enrollment: { state: "complete", admitted: 0 } });
-    expect(run.apps()).toBe(0);
+    expect((await run.rows())[0]?.enrollment).toBe("pending");
+    await run.mountAt(run.pcPage);
+    await until(() => run.apps() === 2);
+    expect(run.kinds).not.toContain("ready");
   });
 
   it("completes a successful enrollment when there are no peer PCs to introduce", async () => {
@@ -109,37 +141,57 @@ describe("account pairing completion", () => {
       });
       run.enrollment.resolve(Response.json({ results: [] }));
       await until(async () => (await run.rows())[0]?.enrollment !== "pending");
-      expect(run.current().state).toMatchObject({ kind: "ready", enrollment: { state: "complete", admitted: 0 } });
+      expect((await run.rows())[0]?.enrollment).toBe("complete");
+      expect(run.kinds).not.toContain("ready");
     } finally { clock.mockRestore(); }
   });
 
-  it.each(["rejection", "timeout"] as const)("keeps the local pairing Ready on %s and retries enrollment", async (failure) => {
+  it.each(["rejection", "timeout"] as const)("records a %s on the row behind the open PC, then stops the next open at Ready with Try again", async (failure) => {
     const run = await pairing();
     if (failure === "timeout") run.enrollment.reject(new DOMException("private enrollment diagnostic", "TimeoutError"));
     else run.enrollment.resolve(Response.json({ error: { code: "account_unavailable", message: "private enrollment diagnostic" } }, { status: 503 }));
-    await until(() => { const state = run.current().state; return state.kind === "failed" || state.kind === "ready" && state.enrollment === "failed"; });
+    await until(async () => (await run.rows())[0]?.enrollment === "failed");
+    expect((await run.rows())[0]).toMatchObject({ paired: true, linked: false, enrollment: "failed" });
+    expect(run.apps()).toBe(1);
+    expect(run.kinds).not.toContain("ready");
+    await run.mountAt(run.pcPage);
+    await until(() => { const state = run.current().state; return state.kind === "ready" && state.enrollment === "failed"; });
     const state = run.current().state;
-    expect(state).toMatchObject({ kind: "ready", enrollment: "failed" });
     expect(JSON.stringify(state)).not.toContain("private enrollment diagnostic");
+    expect(renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(ReadyCheckpoint, { open() {}, cancel() {}, retry() {}, ...(state.kind === "ready" ? { state } : {}) }) }))).toContain("Try again");
+    expect(run.apps()).toBe(1);
     run.retrySuccess();
     run.current().onRetry();
     await until(() => { const current = run.current().state; return current.kind === "ready" && typeof current.enrollment === "object" && current.enrollment.state === "complete"; });
-    expect(run.apps()).toBe(0);
+    expect(run.apps()).toBe(1);
+    run.current().onOpenPc?.();
+    expect(run.apps()).toBe(2);
   });
 
-  it.each(["open", "close"] as const)("reports a late failure on the dashboard row after %s", async (leave) => {
-    const run = await pairing();
-    if (leave === "open") run.current().onOpenPc?.(); else run.current().onCancel();
-    run.enrollment.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
-    await until(async () => (await run.rows())[0]?.enrollment === "failed");
-    expect((await run.rows())[0]).toMatchObject({ paired: true, linked: false, enrollment: "failed" });
-    expect(run.apps()).toBe(leave === "open" ? 1 : 0);
-    if (leave === "close") await until(() => run.current().state.kind === "list");
+  // how the shell tells the account side whether an introduction can come: only a member's approval of a pairing made
+  // without a code hands one over, so only that pairing is kept looking for it
+  it.each([
+    ["a sheet join without a code keeps looking for a minute", {}, 21],
+    ["a link with a code looks once", { code: "123456" }, 1],
+    ["a join without a code still keeps looking after the outdated PC's Try again", { outdatedFirst: true }, 21],
+  ] as const)("looks for the introduction as the pairing was made: %s", async (_what, options, reads) => {
+    let introductions = 0;
+    const run = await pairing(() => { introductions++; return Response.json({ pcs: [] }); }, options);
+    jest.useFakeTimers();
+    run.enrollment.resolve(Response.json({ results: [] }));
+    const pending = async (): Promise<boolean> => (await run.rows())[0]?.enrollment === "pending";
+    for (let read = 1; ; read++) {
+      await until(async () => !await pending() || run.polled(read));
+      if (!await pending()) break;
+      jest.advanceTimersByTime(3_000);
+    }
+    expect((await run.rows())[0]?.enrollment).toBe("complete");
+    expect(introductions).toBe(reads);
+    expect(run.apps()).toBe(1);
   });
 
   it("tells a failed dashboard row to Open it to try again, and that Open retries the enrollment", async () => {
     const run = await pairing();
-    run.current().onCancel();
     run.enrollment.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
     await until(async () => (await run.rows())[0]?.enrollment === "failed");
     const model = dashboardModel(await run.dashboard(), { label: "Phone", now: Date.now() }, "wss://relay.ovis.sh");
@@ -148,20 +200,10 @@ describe("account pairing completion", () => {
     const line = /data-pc-enrollment="">([^<]+)</.exec(html)?.[1];
     expect(action?.[2]).toBe("Open");
     expect(line).toBe("Account setup is incomplete. Open it to try again.");
-    // Open is a link to the PC's own page, which retries the saved failed enrollment as it opens
     const before = run.enrolls();
     run.retrySuccess();
     await run.mountAt(new URL(action?.[1] ?? "/", "https://app.ovis.sh").href);
     await until(() => run.enrolls() > before);
     await until(async () => (await run.rows())[0]?.enrollment === "complete");
-  });
-
-  it("finishes enrollment after closing without reopening the checkpoint", async () => {
-    const run = await pairing();
-    run.current().onCancel();
-    run.enrollment.resolve(Response.json({ results: [] }));
-    await until(async () => (await run.rows())[0]?.enrollment === "complete");
-    await until(() => run.current().state.kind === "list");
-    expect(run.apps()).toBe(0);
   });
 });

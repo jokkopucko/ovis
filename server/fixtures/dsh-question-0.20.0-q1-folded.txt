@@ -1,0 +1,39 @@
+
+        ▄▄▄▄▄▄▄▄▄       ▀▀▀▀▀▀▀▀▀▀▀▀
+      ▄▀▀▀▀▀▀▀▀▀▀▀▀▄▄     ▀▀▀▀▀▀▀▀▀         ██  ██   ████   ██████  ██  ██  ██████  ██████  ██████
+    ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄  ▄▀▀▀▀▀            █▓  █▓  █▓  ██  █▓  █▓  ███ █▓  █▓      ▓▓      ▓▓
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀            █████▓  █████▓  █████▓  █▓ ██▓  █████    ▓████   ▓████
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀             █▓  █▓  █▓  █▓  █▓ ▓▓   █▓  █▓  █▓          █▓      █▓
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀              ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓  ▓▓▓▓▓▓  ▓▓▓▓▓▓  ▓▓▓▓▓▓
+     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀               deepseek-flash · Max effort
+       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄              ~/work
+          ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀              Tip: /export saves the full session as Markdown (thinking included) · /tip…
+
+          Explore the uncharted!
+
+  ❯ Ask me now.
+
+  🌖 Asking you · 5s · ↑ 10 · ↓ 0 tokens
+
+    ─────────────────────────────────────────────▾  📋 Question 1/1   ─────────────────────────────────────────────
+
+    ◈ Choose Approach
+    Which headless approach should I build? Consideration 1: the device path needs the MacBook awake and the phone
+    unlocked, while the staging API path needs a Firebase token that expires every hour. Consideration 2: the
+    device path needs the MacBook awake and the phone unlocked, while the staging API path needs a Firebase token
+    that expires every hour. Consideration 3: the device path needs the MacBook awake and the phone unlocked, while
+    the staging API path needs a Firebase token that expires every hour. Consideration 4: the device path needs
+    … 16 lines outside view · Alt+Up/Alt+Down to scroll
+
+
+    ❯● Device + WebDriverAgent (Recommended)
+       Uses the MacBook.
+     ○ Dev API + Firebase token
+       No hardware.
+     ✎ Custom answer： Type directly…
+
+    ↑/↓ select · Ctrl+V paste · Type text to attach an answer · Enter submit · Esc cancel · Ctrl+K to fold / click
+    the header
+                                                                                                       650/1.0M 0.1%
+   deepseek-flash · max · cache 0.0% · ≈¥0.00 idle · work                                        ctx 0.1% (650/1.0m)
+   esc to interrupt

@@ -18,6 +18,15 @@ describe("desktopLocale", () => {
 });
 
 describe("desktopText", () => {
+  it("names the downloaded update's version in every language", () => {
+    for (const locale of ["en", "ko", "ja", "zh"] as const) {
+      const title = desktopText(locale)("Ovis {version} is ready", { version: "0.5.3" });
+      expect(title).toContain("Ovis 0.5.3");
+      expect(title).not.toContain("{version}");
+    }
+    expect(desktopText("en")("Ovis {version} is ready", { version: "0.5.3" })).toBe("Ovis 0.5.3 is ready");
+  });
+
   it("fills in the count", () => {
     expect(desktopText("en")("Keeping this computer awake: {count} agents working", { count: 3 })).toBe("Keeping this computer awake: 3 agents working");
     expect(desktopText("ko")("Keeping this computer awake: {count} agents working", { count: 3 })).toContain("3");

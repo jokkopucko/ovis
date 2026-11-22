@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { commandInvocations, commandOutcome } from "./outcome.ts";
 
 const at = Date.parse("2026-10-20T00:00:00Z");
-// pi.test.ts records the same envelope for automatic folds and /compact: no command cause.
 const piCompaction = {
   type: "compaction", id: "c1", parentId: "u1", timestamp: new Date(at + 10).toISOString(),
   summary: "## Session Goal\n- fold the older turns", firstKeptEntryId: "u1", tokensBefore: 178366,

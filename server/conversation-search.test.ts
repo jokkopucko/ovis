@@ -13,7 +13,6 @@ const dir = mkdtempSync(join(tmpdir(), "conversation-search-"));
 afterAll(() => { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); });
 afterEach(() => { spyOn(conversation, "paneConversation").mockRestore(); });
 
-/** A Claude session of `prompts` prompts, each with thinking, a tool call and an answer. */
 function claudeSession(name: string, prompts: number, text: (n: number) => { prompt: string; thinking: string; output: string; answer: string }): string {
   const path = join(dir, `${name}.jsonl`);
   writeFileSync(path, "");
@@ -42,7 +41,6 @@ it("finds the user's words and the agent's answers on every page, never a tool's
     answer: n === 100 ? "The deploy script needs its token. It was rotated last week, so the old one in the environment is refused." : `answer ${n}`,
   }));
   const pattern = searchPattern("deploy script")!;
-  // the newest pages first, then on from the cursor until the conversation's beginning
   const found: ConversationSearchResponse["matches"] = [];
   let answer = await searchConversationPages(reader(path), pattern, {});
   found.push(...answer.matches);
@@ -55,7 +53,6 @@ it("finds the user's words and the agent's answers on every page, never a tool's
     { role: "assistant", before: "The ", match: "deploy script", after: " needs its token. It was rotated last week, so the old one in the environment is refused." },
     { role: "user", before: "Why does the ", match: "Deploy script", after: " fail?" },
   ]);
-  // the chat finds the row by the turn's identity, which its own smaller pages give the turn too
   const chatPages = [transcriptPage("claude-transcript", path, { prompts: 10 })];
   while (chatPages.at(-1)!.cursor !== null) chatPages.push(transcriptPage("claude-transcript", path, { before: chatPages.at(-1)!.cursor!, prompts: 10 }));
   const anchors = chatPages.flatMap((page) => page.turns.map(conversationTurnAnchor));
@@ -75,7 +72,6 @@ it("stops an answer at its page budget and goes on from where it stopped", async
   expect(answer.matches.length).toBe(SEARCH_PAGES);
   expect(answer.cursor).toBe(String(1000 - SEARCH_PAGES));
   expect(answer.history_id).toBe("h");
-  // and stops at a page's end once it has enough matches to show, or after its time
   let clock = 0;
   const many = (page: ConversationPage): Promise<RecognizedConversation> => read(page).then((answer) => ({ ...answer, turns: Array.from({ length: SEARCH_MATCHES }, (_, n) => ({ ...answer.turns[0]!, ts: `${answer.turns[0]!.ts}.${n}` })) }));
   expect((await searchConversationPages(many, searchPattern("note")!, {})).matches.length).toBe(SEARCH_MATCHES);
@@ -113,7 +109,6 @@ it("answers the route from the pane's pages, and refuses a query it cannot searc
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
   const body = await response.json() as ConversationSearchResponse;
-  // the progress note is work, as the chat folds it: only the answer and the message match
   expect(body).toEqual({ history_id: "h1", cursor: null, matches: [
     { turn: "assistant|2026-10-01T00:00:01Z|text|Renaming the flag now.", role: "assistant", ts: "2026-10-01T00:00:01Z", text_digest: expect.any(String), before: "The ", match: "flag", after: " is renamed." },
     { turn: "user|2026-10-01T00:00:00Z|text|rename the flag", role: "user", ts: "2026-10-01T00:00:00Z", text_digest: expect.any(String), before: "rename the ", match: "flag", after: "" },
@@ -136,7 +131,6 @@ it("answers a changed history 409, a pane with no store no matches, and a pendin
 });
 
 it("answers 409 when a search's next page finds no conversation to read any more", async () => {
-  // the pages already searched held matches: an empty last answer would say the whole conversation was searched
   spyOn(conversation, "paneConversation").mockRejectedValueOnce(new conversation.ConversationUnavailable("no_session_path"));
   const gone = (await ask("q=flag&before=c1&history_id=h1"))!;
   expect(gone.status).toBe(409);

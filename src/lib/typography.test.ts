@@ -41,7 +41,6 @@ describe("interface font", () => {
 
   it("puts the UI language's Noto CJK family first", () => {
     expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "ja")).toBe('"Noto Sans", "Noto Sans JP", "Noto Sans CJK JP", "Noto Sans KR", "Noto Sans CJK KR", "Noto Sans SC", "Noto Sans CJK SC", "Noto Sans TC", "Noto Sans CJK TC", sans-serif');
-    // a Korean device with the CJK collection's KR but only the per-language JP still gets Korean shapes
     expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "ko")).toStartWith('"Noto Sans", "Noto Sans KR", "Noto Sans CJK KR", "Noto Sans JP", ');
     expect(uiFontStack(UI_FONT_PRESET_FAMILY.noto, "zh")).toStartWith('"Noto Sans", "Noto Sans SC", "Noto Sans CJK SC", "Noto Sans TC", ');
   });

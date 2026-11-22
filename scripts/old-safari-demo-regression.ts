@@ -5,8 +5,6 @@
  * pane and a terminal pane must both draw with no "can't be shown" and no uncaught error. No herdr
  * session and no user state: the demo build on a loopback server on port 0 under the app's
  * Content-Security-Policy, and a temporary directory removed at the end.
- *
- * UI_EVIDENCE_DIR=<dir>: also writes a screenshot of each pane.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -93,7 +91,6 @@ try {
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.port}${PREFIX}?pane=${encodeURIComponent(item.pane)}`);
-      // drawn, or a part of the page that says it can't be shown: whichever comes first
       const outcome = await page.waitForFunction((drawn) => {
         if (/can.t be shown/.test(document.body.innerText)) return "a part of the page can't be shown";
         return document.querySelector(drawn) ? "drawn" : null;

@@ -92,7 +92,6 @@ test("Bun concurrent legitimate reconnects replace only after proof and leave on
 test("Bun refuses a control socket answered with a proof made for the account service", async () => {
   const f = fixture();
   const peer = await Peer.open(f.urls.control);
-  // what the PC answers the account service (server/account/mailbox.ts), for this same challenge
   const proof = answerServerChallenge(await peer.next("challenge"), f.keys.secretKey, {
     server_id: deriveServerId(f.keys.publicKey), role: "account", connection_id: null,
   });

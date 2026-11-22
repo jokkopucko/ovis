@@ -12,8 +12,6 @@ const answerWordsAndWorkTools = (turn: ConversationTurn) => turnSegments(turn.pa
 
 describe("a turn keeps the agent's order of words and tools", () => {
   test("OmO/pi: words before the tool calls of the same message stay above them", () => {
-    // the shape of the recorded turn behind the report: thinking, words and a call in one
-    // message, two more calls, then the closing words
     const message = (role: string, extra: Record<string, unknown>) => ({ type: "message", message: { role, ...extra } });
     const turns = parseOmpTranscript(jsonl(
       message("user", { content: [{ type: "text", text: "Update the test server." }] }),

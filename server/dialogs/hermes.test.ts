@@ -16,7 +16,6 @@ const lines = (screen: string): string[] => screen.replace(/\r\n/g, "\n").split(
 const reader = (id: string) => registry.readersFor("hermes").find((candidate) => candidate.id === id)!;
 const parse = (id: string, below: string, sent: string) => reader(id).parse(below, { agent: "hermes", omoAsk: null, omoTrusted: false, omoOpen: [], sent, working: false });
 const echoOf = (screen: string, command: string): number => findLastIndex(lines(screen), (line) => HERMES_ECHO_RE.exec(line.trimEnd())?.[1] === command);
-/** what server/outcome.ts gives a result reader: the screen below the send's echo */
 const below = (screen: string, command: string): string => lines(screen).slice(echoOf(screen, command) + 1).join("\n");
 
 const CASES = [
@@ -43,17 +42,14 @@ describe("Hermes result readers", () => {
         const parsed = parse(id, suffix, command)!;
         expect(parsed).not.toBeNull();
         const text = parsed.resultText!;
-        // the exact contiguous block, from its own first line to its last
         expect(suffix.includes(text)).toBeTrue();
         const shown = text.split("\n").map((line) => line.trim());
         expect(first.test(shown[0]!) || shown.some((line) => first.test(line))).toBeTrue();
         expect(last.test(shown.at(-1)!)).toBeTrue();
         expect(parsed.options.map((option) => option.label)).toEqual(["Dismiss"]);
         expect(answerKeys(publicPrompt(parsed), { option_index: 0 })).toEqual([]);
-        // only for the command it reads, and only from the line under its echo
         expect(parse(id, suffix, "/something-else")).toBeNull();
         expect(parse(id, screen, command)).toBeNull();
-        // never a waiting prompt card
         expect(parseInteractivePrompt("hermes", screen, null, true, [], command)).toBeNull();
       });
     }
@@ -66,7 +62,6 @@ describe("Hermes result readers", () => {
         const screen = lines(fixture(`${command.slice(1)}-${width}`)).map((line) => line.trimEnd());
         const echoes = screen.filter((line) => hermesEchoOf(line, command));
         expect(echoes.length).toBeGreaterThanOrEqual(1);
-        // the status bar, the prompt, a /help row and a path never echo a command
         for (const line of screen.filter((candidate) => !candidate.startsWith("⚙"))) {
           const word = /[/$@]\S.*$/u.exec(line)?.[0];
           if (word !== undefined) expect(hermesEchoOf(line, word)).toBeFalse();
@@ -90,7 +85,6 @@ describe("Hermes result readers", () => {
   it("accepts an idle /version whose update check printed nothing (T24-AV-2)", () => {
     const screen = lines(fixture("version-120")).filter((line) => !line.startsWith("Update available")).join("\n");
     expect(parse("hermes-version", below(screen, "/version"), "/version")?.resultText?.split("\n").at(-1)).toStartWith("OpenAI SDK: ");
-    // still printing: the prompt is not idle yet
     const busy = screen.replace(/^❯ /m, "⠋ ");
     expect(parse("hermes-version", below(busy, "/version"), "/version")).toBeNull();
   });
@@ -101,11 +95,8 @@ describe("Hermes result readers", () => {
     const count = all.findIndex((line, index) => index > echo && line.includes("skill(s) available"));
     const cases = [
       [...all.slice(0, echo + 1), all[count]!, ...all.slice(count + 1)],
-      // the busy line and the count, without what the reload found
       [...all.slice(0, echo + 2), all[count]!, ...all.slice(count + 1)],
-      // what it found and the count, without the busy line
       [...all.slice(0, echo + 1), ...all.slice(echo + 2)],
-      // an added list with no skill under it
       [...all.slice(0, echo + 2), "  ➕ Added Skills:", all[count]!, ...all.slice(count + 1)],
     ];
     for (const screen of cases.map((case_) => case_.join("\n"))) {
@@ -119,19 +110,14 @@ describe("Hermes result readers", () => {
     const echo = echoOf(screen, "/reload-skills");
     const item = all.findIndex((line, index) => index > echo && line.trim().startsWith("- "));
     const variants = [
-      // an empty second section inserted after the added skills
       [...all.slice(0, item + 1), "  ➖ Removed Skills:", ...all.slice(item + 1)],
-      // the removed section before the added one
       [...all.slice(0, item - 1), "  ➖ Removed Skills:", "      - gone: Removed.", ...all.slice(item - 1)],
-      // the added section twice
       [...all.slice(0, item + 1), "  ➕ Added Skills:", "      - again: Twice.", ...all.slice(item + 1)],
-      // a stray line between the findings and the count
       [...all.slice(0, item + 1), "  something else", ...all.slice(item + 1)],
     ];
     for (const variant of variants.map((lines_) => lines_.join("\n"))) {
       expect(parse("hermes-reload-skills", below(variant, "/reload-skills"), "/reload-skills")).toBeNull();
     }
-    // both sections, in Hermes's order, each with its skills
     const both = [...all.slice(0, item + 1), "  ➖ Removed Skills:", "      - gone: Removed.", ...all.slice(item + 1)].join("\n");
     expect(parse("hermes-reload-skills", below(both, "/reload-skills"), "/reload-skills")?.catalogChanged).toBeTrue();
   });
@@ -141,7 +127,6 @@ describe("Hermes result readers", () => {
     const sdk = shown.findIndex((line) => line.startsWith("OpenAI SDK: "));
     const truncated = shown.slice(echoOf(fixture("version-120"), "/version") + 1, sdk + 1).join("\n");
     expect(parse("hermes-version", truncated, "/version")).toBeNull();
-    // a later echo under it closes the block
     expect(parse("hermes-version", `${truncated}\n\n⚙️  /profile`, "/version")?.resultText?.split("\n").at(-1)).toStartWith("OpenAI SDK: ");
   });
 

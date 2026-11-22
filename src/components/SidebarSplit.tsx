@@ -6,28 +6,21 @@ import { useT } from "../lib/i18n.ts";
 import { clampSplit, keyedSplit, sectionAt, splitBounds, splitDrag, splitPercent, type SplitFold, type SplitOrder, type SplitRoom, type SplitSide } from "../lib/sidebarSplit.ts";
 
 export interface SidebarSplitProps {
-  /** the sidebar's shell (MachineSidebar.tsx): the line sets its split on it, in `--split-top` */
   shell: RefObject<HTMLDivElement | null>;
-  /** the section on top: the PCs, or Agents while Settings → Group agents by state is on */
   order: SplitOrder;
-  /** the upper section's kept height (lib/sidebarSplit.ts); null uses the default half-shell allocation */
   split: number | null;
-  /** the upper list, the one the line sizes, for `aria-controls` */
   controls: string;
   onSplit(height: number | null): void;
-  /** Fold these sections and open the rest, using the same folds as the sections' carets. */
   onFold(sections: readonly SplitFold[]): void;
 }
 
 interface Parts { top: HTMLElement; bottom: HTMLElement; footer: HTMLElement }
 
-/** what a section's head is, by the section's name: the PCs have none, so they never fold (lib/sidebarSplit.ts) */
 const HEAD: Record<SplitFold, { section: string; head: string | null }> = {
   pcs: { section: ".pcs-sidebar", head: null },
   agents: { section: ".agents-sidebar", head: ".agent-section-toggle" },
 };
 
-/** the sections above and under the line and the footer, or null while one is not drawn */
 function parts(shell: HTMLElement | null, order: SplitOrder): Parts | null {
   const top = shell?.querySelector<HTMLElement>(`:scope > ${HEAD[sectionAt("top", order)].section}`);
   const bottom = shell?.querySelector<HTMLElement>(`:scope > ${HEAD[sectionAt("bottom", order)].section}`);
@@ -35,12 +28,10 @@ function parts(shell: HTMLElement | null, order: SplitOrder): Parts | null {
   return top && bottom && footer ? { top, bottom, footer } : null;
 }
 
-/** The allocation ends at the line, including a default gap above it when both lists are short. */
 function allocation({ top }: Parts, line: HTMLElement): number {
   return Math.round(line.getBoundingClientRect().top - top.getBoundingClientRect().top);
 }
 
-/** Each section's head and minimum row, their shared room, and the PCs-row keyboard/snap distance. */
 function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: SplitOrder): SplitRoom {
   const head = (section: HTMLElement, side: SplitSide) => {
     const selector = HEAD[sectionAt(side, order)].head;
@@ -52,15 +43,16 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
   const under = head(bottom, "bottom");
   const foot = footer.getBoundingClientRect();
   const end = footer.parentElement?.getBoundingClientRect().bottom ?? foot.bottom;
-  // the keyboard step and snap distance: a head's row, Agents' since the PCs have no head
   const row = Math.round(above.row || under.row) || 1;
   const rowHeight = (section: HTMLElement, side: SplitSide) => {
     if (sectionAt(side, order) === "pcs") {
-      // no heading: the minimum is the section's top padding and its first row whole, a two-line row too
       const list = section.querySelector(".machine-list");
       const first = list?.querySelector(":is(.machine-header, .workspace-header, .machine-new-row)");
       if (!list || !first) return row;
-      return Math.ceil(list.getBoundingClientRect().top - section.getBoundingClientRect().top + first.getBoundingClientRect().height);
+      // the built-in browser's tab group sits under the list in this section (MachineSidebar.tsx): its height comes on top,
+      // so the first PC row still shows at the minimum
+      const browser = section.querySelector(".browser-tabs")?.getBoundingClientRect().height ?? 0;
+      return Math.ceil(list.getBoundingClientRect().top - section.getBoundingClientRect().top + first.getBoundingClientRect().height + browser);
     }
     const agent = section.querySelector(".agent-row");
     return agent ? parseFloat(getComputedStyle(agent).minHeight) || row : row;
@@ -77,12 +69,8 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
 }
 
 /**
- * The line between the PCs and Agents (#2006): drag it to give one list more of the height, double-click
- * it (or Enter) to restore the default allocation. Dragged to within about a row of a section's head,
- * that section snaps to its head and dims, and folds when let go, as VS Code's views and a macOS split
- * view's panes do, with no words of their own to say so; ↑/↓ move it a
- * row, Home and End fold Agents on its side and take the PCs (no heading to fold to) to their minimum on theirs. A finger gets a grip and a target of its own size, and only the line
- * keeps the browser from scrolling under it, so a swipe on either list still scrolls it.
+ * Dragged to within about a row of a section's head, that section snaps to its head and dims, and folds
+ * when let go, as VS Code's views and a macOS split view's panes do, with no words of their own to say so.
  */
 export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }: SidebarSplitProps) {
   const t = useT();
@@ -92,8 +80,6 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
   const [snap, setSnap] = useState<SplitSide | null>(null);
   const [percent, setPercent] = useState(50);
 
-  // the kept split, clamped to the height this window has: a split chosen in a tall window is kept, and
-  // drawn as tall as this one allows
   const apply = (): void => {
     const box = shell.current;
     const line = ref.current;
@@ -118,9 +104,6 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     setPercent(splitPercent(allocation(found, line), room.room));
   };
   useLayoutEffect(apply);
-  // a window that grows or shrinks moves the clamp with no render of its own to say so, and a section that
-  // folds by its own caret (Agents keeps its fold itself) moves the line's value the same way: by its size,
-  // or by its class alone when a drag left it at its head's height before it folded
   const latest = useRef(apply);
   latest.current = apply;
   useEffect(() => {
@@ -143,7 +126,6 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     if (!box || !found) return;
     box.classList.add("has-split", "is-splitting");
     box.style.setProperty("--split-top", `${height}px`);
-    // apply() waits out the drag, so the line reports the height it draws as it moves
     setPercent(splitPercent(height, room));
     found.top.classList.toggle("will-fold", next === "top");
     found.bottom.classList.toggle("will-fold", next === "bottom");
@@ -160,7 +142,6 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     if (event.button !== 0 || drag.current) return;
     const found = parts(shell.current, order);
     if (!found) return;
-    // no text selection in the lists while the line moves
     event.preventDefault();
     event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -174,11 +155,9 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     const state = drag.current;
     if (!state || state.pointerId !== event.pointerId) return;
     const dy = event.clientY - state.startY;
-    // a press that has not moved yet is a click (or the first of a double-click), not a drag
     if (!state.moved && Math.abs(dy) < 3) return;
     if (!state.moved) {
       state.moved = true;
-      // a drag sizes both: a folded section opens under it, as a sash drag opens a collapsed view
       onFold([]);
     }
     const { snap, height, shown } = splitDrag(state.startHeight + dy, state.room);
@@ -202,7 +181,6 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
       apply();
       return;
     }
-    // a fold keeps the split it had: opening the section again gives it back
     if (state.snap !== null) { fold(state.snap); apply(); return; }
     onSplit(state.height);
   };

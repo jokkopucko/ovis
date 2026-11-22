@@ -1,4 +1,3 @@
-/** The real viewer against HTTP peers that ignore Range, fail, or stop responding. */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,11 +24,11 @@ try {
     if (url.pathname === "/api/fs/stat") return Response.json({ path, name: path, kind: "text", size: 3, mime: "text/plain", modified: "2026-01-01T00:00:00Z" });
     if (url.pathname === "/api/fs/file") {
       if (path === "error") return new Response("PRIVATE ERROR BODY", { status: 401 });
-      if (path === "large") return new Response("x".repeat(300_000)); // deliberately ignores Range and outdated stat
+      if (path === "large") return new Response("x".repeat(300_000));
       if (path === "headers") return new Promise<Response>((resolve) => delayed(() => resolve(new Response("LATE HEADER")), 7_000));
       if (path === "body" || path === "close") return new Response(new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode("partial"));
-        delayed(() => { try { controller.enqueue(new TextEncoder().encode("LATE BODY")); controller.close(); } catch { /* client cancelled */ } }, 7_000);
+        delayed(() => { try { controller.enqueue(new TextEncoder().encode("LATE BODY")); controller.close(); } catch {} }, 7_000);
       } }));
       return new Response("한글 complete");
     }
@@ -59,14 +58,12 @@ try {
     await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "text-preview-mobile.png") });
   }
   {
-    // no headers by the deadline: nothing to show
     const start = performance.now(); await open("headers");
     await page.getByRole("alert").filter({ hasText: "The file request timed out. Reopen it to try again." }).waitFor();
     assert.ok(performance.now() - start < 6_500, "headers has a bounded deadline");
     assert.equal(await page.locator(".file-viewer-text").count(), 0);
   }
   {
-    // a body that stalls: what arrived by the deadline is shown as a cut prefix, not an error
     const start = performance.now(); await open("body");
     await page.getByText("Only part of this file is shown. Download it to read the rest.", { exact: true }).waitFor();
     assert.ok(performance.now() - start < 6_500, "body has a bounded deadline");

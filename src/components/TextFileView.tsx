@@ -9,35 +9,25 @@ import { useSettings } from "../lib/settings.ts";
 import { CodeLines } from "./HighlightedCode.tsx";
 import { ProgressiveMarkdown } from "./Markdown.tsx";
 
-// the virtualizer and its highlighter are their own chunk, loaded with the first source that needs them
 const VirtualSource = lazy(() => import("./VirtualSource.tsx"));
 
 export interface TextFileViewProps {
   path: string;
-  /** the Preview's blocks, parsed in a worker; `null` shows the code */
   blocks: MarkdownBlock[] | null;
-  /** the code's lines, from `useHighlightedLines`; drawn unless `virtual` is given */
   lines: Lines;
-  /** a source too long for an element per line: the virtualizer's rows, colored in its worker or plain */
   virtual: { text: string; colored: boolean } | null;
-  /** a virtualized source as one readonly text box instead, for Copy to select when the clipboard is out of reach */
   selectable: boolean;
   onOpen: (path: string) => void;
-  /** set to the source element while the code shows (the `<pre>`, or the text box), for Copy to select */
   sourceRef: RefObject<HTMLElement | null>;
   markedLine: number | null;
 }
 
-/** The text of a file: Markdown rendered, or its code with line numbers. */
 export function TextFileView({ path, blocks, lines, virtual, selectable, onOpen, sourceRef, markedLine }: TextFileViewProps) {
   const t = useT();
   const { settings, resolvedEntry } = useSettings();
-  // the app hands a new onOpen on every render (each poll): read it from a ref, so the context
-  // value changes only with the file, and the memoized Markdown and its links are left alone
   const onOpenRef = useRef(onOpen);
   useLayoutEffect(() => { onOpenRef.current = onOpen; });
   const openLink = useCallback((href: string) => onOpenRef.current(resolveFromDocument(path, href)), [path]);
-  // Colors arriving from the worker do not change geometry: scroll only on a target or view change.
   useLayoutEffect(() => {
     if (blocks === null && virtual === null && markedLine !== null) sourceRef.current?.querySelector(".hl-line.is-marked")?.scrollIntoView({ block: "center", inline: "nearest" });
   }, [path, blocks, virtual, markedLine, sourceRef]);

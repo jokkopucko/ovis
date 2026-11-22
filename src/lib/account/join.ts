@@ -1,11 +1,8 @@
 /**
- * Joining the account from this client (docs/account.md, "Account members", "Introductions"):
- * linking a pairing it already has, taking the introduction to the account's other PCs after a
- * remote approval, and, on the approving client, signing the new device in everywhere else. Every
- * call goes through the PC's own session (`fetch` is that PC's transport), so the PC sees which of
+ * Every call goes through the PC's own session (`fetch` is that PC's transport), so the PC sees which of
  * its devices is asking.
  */
-import { ACCOUNT_ENROLL_MAX, AccountRecordError, accountDeviceId, isAccountKey, newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
+import { ACCOUNT_ENROLL_MAX, AccountRecordError, accountDeviceId, isAccountKeyEncoding, newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord, LinkRecord, RemoveRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import type { RemotePairingRequest } from "../../../shared/protocol.ts";
@@ -16,9 +13,10 @@ import type { AccountKey, AccountStore } from "./store.ts";
 
 export type PcFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** The PC refused an account request; `code` is its error code, never its words. */
+/** The PC refused an account request; `code` is its error code, never its words; `retryAfterMs`: the wait its `retry-after` named. */
 export class AccountPcError extends Error {
-  constructor(readonly status: number, readonly code: string) {
+  /** `firstLink`: the PC turned a marked pairing's first link away, and ended its row (firstLinkRefusal) */
+  constructor(readonly status: number, readonly code: string, readonly retryAfterMs: number | null = null, readonly firstLink = false) {
     super(`The PC answered ${status} (${code})`);
     this.name = "AccountPcError";
   }
@@ -32,7 +30,8 @@ async function refusal(response: Response): Promise<AccountPcError> {
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
-  return new AccountPcError(response.status, code);
+  const seconds = Number(response.headers.get("retry-after") ?? Number.NaN);
+  return new AccountPcError(response.status, code, Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null);
 }
 
 export async function post(fetch: PcFetch, path: string, body: unknown): Promise<Response> {
@@ -42,9 +41,8 @@ export async function post(fetch: PcFetch, path: string, body: unknown): Promise
 }
 
 export interface PcAccountStatus {
-  /** the account this PC belongs to; null before its first member */
+  readonly pcAddFromAccount?: true | "unavailable";
   readonly account: string | null;
-  /** its relay rows that are not members */
   readonly unlinked: readonly string[];
   /** the signed `remove`s behind its tombstones, as it says: unchecked until keepRemovals verifies them */
   readonly removals: readonly unknown[];
@@ -68,8 +66,10 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
   const unlinked = Array.isArray(body.unlinked) ? body.unlinked.filter((id): id is string => typeof id === "string") : [];
   return {
     account: typeof body.account === "string" ? body.account : null, unlinked,
+    ...("pc_add_from_account" in body && (body.pc_add_from_account === true || body.pc_add_from_account === "unavailable")
+      ? { pcAddFromAccount: body.pc_add_from_account } : {}),
     removals: Array.isArray(body.removals) ? body.removals : [], adds: Array.isArray(body.adds) ? body.adds : [],
-    blocked: Array.isArray(body.blocked) ? body.blocked.filter(isAccountKey) : [],
+    blocked: Array.isArray(body.blocked) ? body.blocked.filter(isAccountKeyEncoding) : [],
     // an Ovis from before enrollments sends no `fresh` at all
     ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
@@ -77,7 +77,6 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
   };
 }
 
-/** Whether this device's row on the PC should be linked to `account` now. */
 export function needsLink(status: PcAccountStatus, device: RelayDevice, account: string): boolean {
   if (device.device_id === null) return false;
   // a PC of another account keeps this pairing as it is: the account cannot reach it
@@ -112,7 +111,6 @@ export async function linkThisDevice(options: { fetch: PcFetch; device: RelayDev
 
 export interface IntroducedPc { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }
 
-/** At most this many PCs come in one introduction (docs/account.md, "Introductions"). */
 export const INTRODUCTION_MAX = 32;
 
 /** Only an introduction whose id is its key's (server/relay/identity.ts) and whose relay is a wss origin. */
@@ -169,7 +167,6 @@ export class AdmissionChangedError extends Error {
 const sameAdmission = (a: Admission, b: Admission): boolean => a.key === b.key && a.server_id === b.server_id
   && a.at === b.at && a.label === b.label && a.os === b.os && a.country === b.country && a.city === b.city;
 
-/** What breaks a same-millisecond tie: the details themselves, so the pick never depends on listing order. */
 const tieKey = (admission: Admission): string => [admission.label, admission.os, admission.country, admission.city].join("\u0000");
 
 /** An admission counts for this long after the device rang (docs/account.md, "Joining through the account"). */
@@ -179,7 +176,9 @@ export const ADMISSION_MS = 10 * 60_000;
  * A member's answer to a device asking through PC X. A request to join the account is approved,
  * and the device added everywhere, only when the account service itself (not X) saw a device of
  * this account ring at X with that key in the last 10 minutes: a PC that shows another key than
- * the one that rang is refused, and declined on X. A request for X alone is just answered on X.
+ * the one that rang is refused, and declined on X. Another PC of the account vouched for (`vouched`)
+ * is checked the same way and then only answered on X: nothing is signed for it. Any other request
+ * for X alone is just answered on X.
  */
 export async function approveJoin(options: {
   request: RemotePairingRequest; digits: string; through: string; service: AccountService;
@@ -190,7 +189,7 @@ export async function approveJoin(options: {
   shown?: Admission | null;
 }): Promise<void> {
   const { request } = options;
-  if (request.intent !== "account") { await options.decide("approve", options.digits); return; }
+  if (request.intent !== "account" && request.vouched !== true) { await options.decide("approve", options.digits); return; }
   const vouched = vouchedAdmission(await options.service.recentAdmissions(), options.through, request.key, (options.now ?? Date.now)());
   if (vouched === undefined) {
     await options.decide("decline");
@@ -200,7 +199,8 @@ export async function approveJoin(options: {
   // answered, and the card shows the new details before anyone approves them
   if (options.shown !== undefined && (options.shown === null || !sameAdmission(options.shown, vouched))) throw new AdmissionChangedError();
   await options.decide("approve", options.digits);
-  await options.admit(vouched);
+  // a PC vouched for joins X alone: no add, no introduction
+  if (request.intent === "account") await options.admit(vouched);
 }
 
 /**
@@ -218,7 +218,6 @@ export function vouchedAdmission(admissions: readonly Admission[], through: stri
   return newest;
 }
 
-/** How long the approver waits for PC X to let the new device in once both sides said yes. */
 export const ADMITTED_MS = 120_000;
 const ADMITTED_POLL_MS = 2_000;
 
@@ -232,7 +231,6 @@ export async function admitToAccount(options: {
   fetch: PcFetch; service: AccountService; key: AccountKey; account: string;
   joining: { key: string; label: string }; through: string; paired: readonly RelayDevice[]; directory: readonly string[]; now?: () => number;
   wait?: (ms: number) => Promise<void>;
-  /** where the add waits for the PCs the account service did not take it for; none, and a refusal throws */
   store?: AccountStore;
 }): Promise<AddRecord> {
   const now = options.now ?? Date.now;
@@ -291,7 +289,6 @@ export async function rememberDevice(store: AccountStore, record: AddRecord | Re
   await store.update("devices", (current) => withDevice(current, record));
 }
 
-/** At most this many removals of other members are kept to relay (keepRemovals). */
 export const KEPT_REMOVALS_MAX = 256;
 
 /**
@@ -327,7 +324,6 @@ export async function keepRemovals(options: { store: AccountStore; account: stri
   });
 }
 
-/** Marks a PC this client is about to link while it had no account: enrollPc hands it the account's devices. */
 export async function planEnroll(store: AccountStore, serverId: string, account: string): Promise<void> {
   await store.update("enrolls", (current) => ({ ...current, [serverId]: { account, done: [] } }));
 }
@@ -340,10 +336,9 @@ export interface AccountPeer { readonly serverId: string; readonly fetch: PcFetc
 
 /** How long an enrollment waits for another PC of the account to say what it keeps out, before it counts that PC as not checked. */
 export const PEER_STATUS_MS = 8_000;
-/** Keys one enrollment holds at most (server/account/holds.ts ACCOUNT_HELD_MAX). */
 const HELD_MAX = 4096;
 
-function within<T>(ms: number, promise: Promise<T>): Promise<T> {
+export function within<T>(ms: number, promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   // fixed wait: a deadline for a PC that does not answer, not a pause
   const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("The PC did not answer in time")), ms); });
@@ -363,7 +358,6 @@ async function verified(values: readonly unknown[], account: string): Promise<(A
   return records;
 }
 
-/** What an enrollment did: the PCs of the account it read first, and the devices it let in. */
 export interface Enrollment { readonly finished: boolean; readonly checked: number; readonly of: number; readonly admitted: readonly string[] }
 
 /**
@@ -390,7 +384,6 @@ export async function enrollPc(options: {
   const others = options.others ?? [];
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
-  // enrolled already: only introductions some PCs did not take are left
   if (planned.introduce !== undefined) return { finished: await introduceLeft(options, others), checked: 0, of: others.length, admitted: planned.introduce.keys };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
@@ -413,7 +406,6 @@ export async function enrollPc(options: {
   if (others.length > 0 && answered.length === 0 && legacy === 0 && unvouched === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
   await keepRemovals({ store: options.store, account: options.account, removals: seen.flatMap((status) => status.removals) });
   const collected = await verified(seen.flatMap((status) => [...status.removals, ...status.adds]), options.account);
-  /** the removals to send: this client's own and the ones it kept, not answered yet */
   const pending = (devices: KnownDevices | undefined, kept: Readonly<Record<string, RemoveRecord>> | undefined) => [
     ...Object.values(devices ?? {}).filter((record): record is RemoveRecord => record.kind === "remove"),
     ...Object.values(kept ?? {}),
@@ -444,7 +436,6 @@ export async function enrollPc(options: {
   const admitted: string[] = [...planned.admitted ?? []];
   // an unvouched PC keeps the new PC waiting: this enrollment is sent, but not as the last part
   let sent = unvouched === 0;
-  // through the enrollment, which also ends the PC's wait for this client: sent even with nothing in it
   // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
     const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
@@ -475,9 +466,7 @@ export async function enrollPc(options: {
     if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
     finished = sent && pending(current.devices, current.removals).every((record) => done.includes(record.id));
     const rest = { ...current.enrolls };
-    // enrolled: the plan stays only for the introductions, until every PC that answered took them
     const pc = options.pc;
-    // with the devices an earlier, unfinished attempt let in
     const keys = [...new Set([...entry.admitted ?? [], ...admitted])];
     if (finished && pc !== undefined && keys.length > 0 && answered.length > 0) rest[options.serverId] = { account: entry.account, done: [], introduce: { keys, pc, to: answered.map((peer) => peer.serverId) } };
     else if (finished) delete rest[options.serverId];
@@ -490,7 +479,7 @@ export async function enrollPc(options: {
 
 /**
  * Sends the introductions a plan still holds through each of `peers` it names, and drops each PC that
- * took them all (a device a PC does not know is skipped there). True once none is left.
+ * took them all (a device a PC does not know is skipped there).
  */
 async function introduceLeft(options: { store: AccountStore; serverId: string; assertOwned?: () => Promise<void> }, peers: readonly AccountPeer[]): Promise<boolean> {
   const { store, serverId, assertOwned } = options;
@@ -530,7 +519,6 @@ async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; acco
     }
   }
   let finished = false;
-  // checked in the same write that ends the plan: a removal signed meanwhile keeps it for the next call
   await options.store.updateMany(["enrolls", "devices", "removals"], (current) => {
     const entry = current.enrolls?.[options.serverId];
     if (current.enrolls === undefined || entry === undefined) return current;
@@ -547,7 +535,7 @@ async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; acco
 
 /**
  * PC `peer` tells the devices just let in about the new PC (docs/account.md, "Introductions"); a
- * device it does not know is skipped. True when it answered for every one, so nothing is left to send.
+ * device it does not know is skipped.
  */
 async function introduce(peer: AccountPeer, keys: readonly string[], pc: IntroducedPc): Promise<boolean> {
   let all = true;
@@ -574,7 +562,6 @@ export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore;
   return enrollPc({ ...options, legacyTarget: status.enrolling === undefined });
 }
 
-/** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */
 export const QUEUED_ADD_MS = 30 * 24 * 60 * 60_000;
 
 /**

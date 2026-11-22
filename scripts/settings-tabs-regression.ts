@@ -7,10 +7,6 @@ import type { Browser, Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
-/**
- * Two tabs of one browser share its device settings (#2485): a save in one tab writes only what it
- * changed, so it keeps a change the other tab made after it loaded.
- */
 export async function checkSettingsAcrossTabs(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
@@ -33,7 +29,6 @@ export async function checkSettingsAcrossTabs(browser: Browser, origin: string):
     const tabA = await open();
     const tabB = await open();
 
-    // tab A: Chat width Wide and the Collapse work on
     await tabA.bringToFront();
     await tabA.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(tabA, "Chat");
@@ -43,7 +38,6 @@ export async function checkSettingsAcrossTabs(browser: Browser, origin: string):
     const fontBefore = (await settingsOf(tabB)).terminalFontSize;
     assert.equal(typeof fontBefore, "number", "tab A's save stored a font size");
 
-    // tab B, open since before that change: an unrelated setting
     await tabB.bringToFront();
     await tabB.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(tabB, "Appearance");
@@ -54,7 +48,6 @@ export async function checkSettingsAcrossTabs(browser: Browser, origin: string):
     }, fontBefore);
     const font = (await settingsOf(tabB)).terminalFontSize;
 
-    // a reload of tab B, and a tab opened now, start with both changes
     await tabB.reload();
     await tabB.locator(".conn-live").waitFor();
     const fresh = await open();

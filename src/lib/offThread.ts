@@ -1,4 +1,3 @@
-/** The part of a `Worker` the queue uses, so a test can stand in for one. */
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
   terminate(): void;
@@ -6,17 +5,11 @@ export interface WorkerLike {
   onerror: ((event: Event) => void) | null;
 }
 
-/** A request sent to a worker, and what it answers. */
 export interface OffThreadRequest<Q> { id: number; request: Q }
 export interface OffThreadAnswer<R> { id: number; result: R | null }
 
-/** A job queued for a worker. Its promise never rejects: a job that fails, runs over or is cancelled gives `null`. */
 export interface OffThreadJob<R> {
   promise: Promise<R | null>;
-  /**
-   * Drops the job if it has not started, and says whether it did: its promise then gives `null`,
-   * which says nothing about the request. One already running finishes, and its answer is still delivered.
-   */
   cancel(): boolean;
 }
 
@@ -28,10 +21,9 @@ interface Entry<Q, R> {
 }
 
 /**
- * Work that may take long, done one job at a time in a worker so the page never waits for it. A
- * job gets `budgetMs` from its start: past it the worker is ended (a tokenizer stuck in a quadratic
+ * A job gets `budgetMs` from its start: past it the worker is ended (a tokenizer stuck in a quadratic
  * input cannot be interrupted any other way), the job gives `null`, and the next job starts a new
- * worker. The worker is started on the first job, not before.
+ * worker.
  */
 export function createOffThreadQueue<Q, R>(spawn: () => WorkerLike, budgetMs: number): (request: Q, transfer?: Transferable[]) => OffThreadJob<R> {
   let worker: WorkerLike | null = null;
@@ -39,7 +31,6 @@ export function createOffThreadQueue<Q, R>(spawn: () => WorkerLike, budgetMs: nu
   const waiting: Entry<Q, R>[] = [];
   let nextId = 1;
 
-  /** Ends the running job with `result`; `stop` also ends its worker, which is then replaced. */
   const finish = (result: R | null, stop: boolean): void => {
     if (running === null) return;
     clearTimeout(running.timer);
@@ -53,7 +44,6 @@ export function createOffThreadQueue<Q, R>(spawn: () => WorkerLike, budgetMs: nu
     pump();
   };
 
-  /** Starts the next waiting job, if none runs. */
   const pump = (): void => {
     if (running !== null) return;
     const next = waiting.shift();
@@ -96,10 +86,6 @@ export function createOffThreadQueue<Q, R>(spawn: () => WorkerLike, budgetMs: nu
   };
 }
 
-/**
- * The worker's side: answers each request with `handle`'s result, and with `null` when it throws
- * (a stack overflow in a parser included). `handle` may name buffers to hand over without a copy.
- */
 export function serveOffThread<Q, R>(handle: (request: Q) => { result: R; transfer?: Transferable[] }): void {
   const scope = globalThis as unknown as { onmessage: ((event: MessageEvent) => void) | null; postMessage: (message: unknown, transfer?: Transferable[]) => void };
   scope.onmessage = (event: MessageEvent) => {

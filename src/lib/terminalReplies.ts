@@ -17,7 +17,6 @@ export function userInputTracker(term: Terminal): { wasUserInput: () => boolean;
   let user = false;
   const subscription = service.onUserInput(() => { user = true; });
   return {
-    // asked once per onData: the answer is for that data only
     wasUserInput: () => {
       const was = user;
       user = false;

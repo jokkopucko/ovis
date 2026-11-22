@@ -1,9 +1,3 @@
-/**
- * Real ChatView and PromptCard over a loopback fixture server (#2590):
- * 1. a pane that comes back on another session, or moves to one while shown, shows no card from the session before, also while reads fail;
- * 2. an answer typed into the card while offline, or before the Terminal lens, survives as the composer's draft once the question is gone;
- * 3. after herdr's blocked edge, a question drawn just after the first read shows well before the 2 s poll.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,11 +17,9 @@ const question = (id: string, text: string): InteractivePrompt => ({
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-prompt-lifetime-")));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
-// what the prompt endpoint answers now, and a wake-up for each read it answers
 let answer: { prompt: InteractivePrompt | null } | "fail" = { prompt: null };
 let readWaiters: Array<() => void> = [];
 const nextRead = (): Promise<void> => new Promise((resolve) => { readWaiters.push(resolve); });
-// an answer the server holds open, as it does while it re-reads the screen to confirm it
 let heldAnswer: { arrived: () => void; release: Promise<void>; refuse?: boolean } | null = null;
 try {
   const repo = join(import.meta.dir, ".."), output = join(root, "dist");
@@ -68,9 +60,7 @@ try {
   };
   const setChat = (page: Page, props: Record<string, unknown>) => page.evaluate((next) => (window as unknown as { setChat: (p: unknown) => void }).setChat(next), props);
   const card = (page: Page) => page.locator(".prompt-card");
-  // the Terminal lens: the chat is gone before anything else changes (two prop changes in a row could render as one)
   const unmount = async (page: Page): Promise<void> => { await setChat(page, { mounted: false }); await card(page).waitFor({ state: "detached" }); };
-  // every scenario runs, and the run fails with each that did
   const failed: string[] = [];
   const scenario = async (name: string, run: () => Promise<void>): Promise<void> => {
     try { await run(); } catch (error) { failed.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); console.log(`FAIL ${name}`); }
@@ -88,14 +78,12 @@ try {
       assert.equal(await card(page).count(), 0, "no card from the session before at mount");
       await twoReads;
       assert.equal(await card(page).count(), 0, "still no card from the session before after 2 failed reads");
-      // the same session back: its question is still drawn before the first read answers
       answer = { prompt: question("b", "SESSION-B: run the tests?") };
       await card(page).getByText("SESSION-B: run the tests?").waitFor();
       await unmount(page);
       answer = "fail";
       await setChat(page, { mounted: true });
       assert.equal(await card(page).getByText("SESSION-B: run the tests?").count(), 1, "the same session's card draws again at mount");
-      // the pane moves to another session while the chat is shown: the card goes, reads failing or not
       const reread = nextRead();
       await setChat(page, { agentSession: "session-c" });
       await reread;
@@ -128,7 +116,6 @@ try {
     try {
       await card(page).getByText("Which remote?").waitFor();
       await card(page).locator(".prompt-card-custom input").fill("upstream please");
-      // back from the Terminal lens with the question still asked: the card shows what was typed
       await unmount(page);
       await setChat(page, { mounted: true });
       assert.equal(await card(page).locator(".prompt-card-custom input").inputValue(), "upstream please", "the card drawn again keeps the typed text");
@@ -195,7 +182,6 @@ try {
       await input.fill("old answer");
       await input.press("Enter");
       await arrived;
-      // to the Terminal lens and back while the answer is on its way, and a new answer typed
       await unmount(page);
       await setChat(page, { mounted: true });
       await input.fill("new answer");

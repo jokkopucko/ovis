@@ -47,18 +47,15 @@ export interface InstallHcOptions {
   fetch?: typeof fetch;
 }
 
-/** The release archive for this PC, or null where herdr-core has no build Ovis offers. */
 export function hcInstallTarget(release: HcRelease = HC_RELEASE, platform: NodeJS.Platform = process.platform, arch: string = process.arch) {
   return release.targets[`${platform}-${arch}`] ?? null;
 }
 
 export interface InstalledHc {
   path: string;
-  /** takes out what this install put in ~/.local/bin, and only that: a file there that is no longer the one installed stays */
   undo: () => void;
 }
 
-/** Installs herdr-core into `<home>/.local/bin/herdr-core`; throws, leaving the folder as it was, on any failure. */
 export async function installHc(options: InstallHcOptions): Promise<InstalledHc> {
   const release = options.release ?? HC_RELEASE;
   const env = options.env ?? process.env;
@@ -104,7 +101,7 @@ export async function installHc(options: InstallHcOptions): Promise<InstalledHc>
       linkSync(staged, dest);
       mark = identity(dest);
     } finally {
-      try { unlinkSync(staged); } catch { /* not written */ }
+      try { unlinkSync(staged); } catch {}
     }
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -113,13 +110,13 @@ export async function installHc(options: InstallHcOptions): Promise<InstalledHc>
   let linked = false;
   const hc = join(bin, "hc");
   if (!present(hc) && Bun.which("hc", { PATH: env["PATH"] ?? "" }) === null) {
-    try { symlinkSync("herdr-core", hc); linked = true; } catch { /* herdr-core is found by its own name */ }
+    try { symlinkSync("herdr-core", hc); linked = true; } catch {}
   }
   return {
     path: dest,
     undo: () => {
-      try { if (identity(dest) === mark) unlinkSync(dest); } catch { /* gone already */ }
-      try { if (linked && readlinkSync(hc) === "herdr-core") unlinkSync(hc); } catch { /* gone already */ }
+      try { if (identity(dest) === mark) unlinkSync(dest); } catch {}
+      try { if (linked && readlinkSync(hc) === "herdr-core") unlinkSync(hc); } catch {}
     },
   };
 }

@@ -17,14 +17,12 @@ export const STARTUP_PROBES: ReadonlyArray<readonly [query: string, reply: strin
   ["\x1b[c", "\x1b[?1;2c"], // device attributes (DA1): xterm.js's own answer
 ];
 
-/** Takes the startup probes out of an attach's first output, across any read boundary. */
 export class AttachStartupProbes {
   private partial = "";
 
   /**
-   * The output without the probes, and the replies the attach is owed for them. `startup` says
-   * whether output so far is still the attach's setup: from its first real byte on, the rest of
-   * the read is the pane's and passes unchanged, whatever it holds.
+   * `startup` says whether output so far is still the attach's setup: from its first real byte on,
+   * the rest of the read is the pane's and passes unchanged, whatever it holds.
    */
   take(data: string, startup: (output: string) => boolean): { output: string; replies: string } {
     let rest = this.partial + data;
@@ -50,7 +48,6 @@ export class AttachStartupProbes {
     return { output, replies };
   }
 
-  /** Held bytes that turned out not to start a probe, once startup is over. */
   flush(): string {
     const data = this.partial;
     this.partial = "";
@@ -65,14 +62,11 @@ export class AttachStartupProbes {
  * of the diagnostic it began is remembered, so words in a later read still match however late.
  */
 export class AttachOutputTail {
-  /** the start of the diagnostic already passed on: its teardown, or part of it */
   private passed = "";
-  /** the diagnostic's words after it, held */
   private tail = "";
 
   get pending(): boolean { return this.tail.length > 0; }
 
-  /** what is held is the whole diagnostic: only the exit that confirms it is still to come */
   get complete(): boolean { return (this.passed + this.tail).startsWith(TAKEN); }
 
   push(data: string): string {
@@ -88,7 +82,6 @@ export class AttachOutputTail {
       if (text.endsWith(TAKEN.slice(0, length))) { start = text.length - length; break; }
     }
     if (start === -1) return text.slice(already);
-    // the teardown goes out now; only the words after it wait
     const words = start + Math.min(text.length - start, TEARDOWN.length);
     this.passed = text.slice(start, words);
     this.tail = text.slice(words);

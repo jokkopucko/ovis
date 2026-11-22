@@ -9,21 +9,14 @@
  * `[channel u32 LE][kind u8][len u32 LE][payload]`. Channel 0 carries JSON-RPC both ways and its
  * calls run side by side; `terminal.attach` and `events.subscribe` answer with a channel of their
  * own, which carries the stream (raw terminal bytes, or one JSON-RPC notification per line).
- *
- * Calls are typed by hc's own schema (hc-api.generated.ts, `bun run generate:types`).
  */
 
-import { homedir } from "node:os";
-import { liveSessionsRefused, sameSocket } from "../herdr/client.ts";
-import { coreSocket } from "./discovery.ts";
 import type { HcMethod, HcMethods } from "./hc-api.generated.ts";
 
-/** The calls that answer with a stream of their own. */
 export type HcStreamMethod = "terminal.attach" | "events.subscribe";
 
 export const HC_GENERATION = 1;
 const DEFAULT_TIMEOUT_MS = 10_000;
-/** a `hc connect` that has not answered hello by then is not going to: the next call starts another */
 const HELLO_TIMEOUT_MS = 10_000;
 const HEADER_BYTES = 9;
 /** hc's own ceiling for one frame's payload, and for the plain hello line before framing */
@@ -70,7 +63,7 @@ export function encodeFrame(channel: number, kind: number, payload: Uint8Array |
 export interface Frame { channel: number; kind: number; payload: Uint8Array }
 
 /**
- * Splits a byte stream into frames; a frame split across reads waits for the rest. A length past
+ * A length past
  * hc's ceiling cannot be a frame of this protocol: `onInvalid` hears it once and the reader stops.
  */
 export function makeFrameReader(onFrame: (frame: Frame) => void, onInvalid: (reason: string) => void): (chunk: Uint8Array) => void {
@@ -108,7 +101,6 @@ export interface ChannelHandlers {
   onData: (payload: Uint8Array) => void;
   /** the stream is over: hc's JSON reason when it sent one, or this side's when the line went */
   onClose: (reason: Record<string, unknown> | null) => void;
-  /** "manual": the owner credits what it consumed (`Channel.credit`), so it can hold a stream back */
   credit?: "auto" | "manual";
 }
 
@@ -124,13 +116,15 @@ export interface Channel {
   writeAutomatic: (payload: Uint8Array | string) => void;
   /** the viewer's grid; hc takes it as the terminal's size, this being the last active viewer */
   resize: (cols: number, rows: number) => void;
-  /** bytes of the stream consumed, for a channel opened with manual credit */
   credit: (bytes: number) => void;
   /** the viewer gained or lost focus: gaining it makes this viewer the active one */
   focus: (focused: boolean) => void;
   /** what the viewer's own terminal looks like (hc's `Display`: `fg`, `bg`, `cursor` as `#rrggbb`, `cell` in pixels) */
   facts: (display: Record<string, unknown>) => void;
-  /** Detaches; settles once hc answered with its own CLOSE (what was written before has gone in) or the line ended. */
+  /**
+   * Detaches; settles once hc answered with its own CLOSE (what was written before has gone in), the
+   * line ended, or `DEFAULT_TIMEOUT_MS` passed with no answer, which says nothing of hc's side.
+   */
   close: () => Promise<void>;
 }
 
@@ -138,7 +132,6 @@ interface PendingCall {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
-  /** a call that answers with a stream registers it before anything reads the stream's first frame */
   channel?: ChannelHandlers;
 }
 
@@ -148,7 +141,6 @@ interface OpenChannel {
   closing?: () => void;
 }
 
-/** What spawns `hc connect`: tests hand in a fake core. */
 export interface HcTransport {
   readable: ReadableStream<Uint8Array>;
   write: (bytes: Uint8Array) => void;
@@ -156,64 +148,14 @@ export interface HcTransport {
   kill: () => void;
 }
 
-/** Whether hc in `env` would reach the user's default core: the one this process's environment, or its owner's home, names when no HC_SOCKET or HC_SESSION does. */
-function userCore(env: Record<string, string | undefined>): boolean {
-  const unnamed = { ...process.env, HC_SOCKET: undefined, HC_SESSION: undefined };
-  const defaults = [coreSocket({ env: unnamed }).path, coreSocket({ env: unnamed, home: homedir() }).path].map(sameSocket);
-  return defaults.includes(sameSocket(coreSocket({ env }).path));
-}
-
-/**
- * This server's own variables (its port and address, OVIS_* settings and tokens, the plugin launch's):
- * a core that `hc connect` starts keeps its environment for every pane, where a dev server would take
- * Ovis's PORT. So is the herdr pane Ovis was started from (HERDR_ENV, its pane, tab, workspace and
- * socket): an agent in a core's pane would take that pane's reports (#3260). The rest is the user's
- * (LANG, SHELL, SSH_AUTH_SOCK, Windows' own) and stays.
- */
-const SERVER_ENV = /^(?:PORT|HOST|OVIS_.*|HERDR_WEB_.*|HERDR_PLUGIN_.*|HERDR_(?:ENV|PANE_ID|TAB_ID|WORKSPACE_ID|SOCKET_PATH|AGENT|BIN_PATH))$/i;
-
-/** `hc connect` as a child process (in `env`, else this process's, either without SERVER_ENV); a program that cannot be started is an HcError (`closed`). */
-export function spawnHcConnect(bin: string, env?: Record<string, string | undefined>): HcTransport {
-  // runtime.ts hands out this path that cannot exist while a moved hc is found again
-  if (bin === "/dev/null/herdr-core-moved") throw new HcError("closed", "herdr-core moved (an update?), and Ovis is looking for it again: try again in a moment");
-  // a process that asked for an isolated herdr never reaches the user's default core, however it is named
-  if (liveSessionsRefused(process.env) && userCore(env ?? process.env)) {
-    throw new HcError("live_core_refused", "HERDR_TEST_SESSION is set, but hc would reach the user's own herdr-core: give it HC_SOCKET or an HC_SESSION of its own, or set OVIS_ALLOW_LIVE_HERDR=1");
-  }
-  let child: Bun.Subprocess<"pipe", "pipe", "ignore">;
-  try {
-    const hcEnv = Object.fromEntries(Object.entries(env ?? process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !SERVER_ENV.test(entry[0])));
-    child = Bun.spawn([bin, "connect"], { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: hcEnv });
-  } catch (error) {
-    throw new HcError("closed", `hc could not be started (${bin}): ${error instanceof Error ? error.message : String(error)}`);
-  }
-  return {
-    readable: child.stdout,
-    write: (bytes) => {
-      // a child that just exited takes no more: its end is reported through `exited`
-      try {
-        child.stdin.write(bytes);
-        Promise.resolve(child.stdin.flush()).catch(() => {});
-      } catch {
-        /* the line ends on `exited` */
-      }
-    },
-    exited: child.exited,
-    kill: () => child.kill(),
-  };
-}
-
 interface Line {
   transport: HcTransport;
-  /** the hello answer: version, methods and features of the core behind it */
   hello: Promise<HelloInfo>;
   pending: Map<number, PendingCall>;
   channels: Map<number, OpenChannel>;
   /** frames on a channel whose call has not been answered yet: hc may send a stream's first frames before its reply */
   early: Map<number, Frame[]>;
-  /** channels this side gave up on (a late answer, an unanswered detach): their frames are dropped, not kept */
   abandoned: Set<number>;
-  /** when hc last sent anything: a call that times out on a line silent since it was sent ends the line */
   heardAt: number;
   dead: boolean;
 }
@@ -221,11 +163,6 @@ interface Line {
 /** What the core answered hello with: what it can do is read from `methods` and `features`, never from `version`. */
 export interface HelloInfo { version: string; core: { id: string; name: string }; methods: string[]; features: string[] }
 
-/**
- * A lazily opened, self-replacing line to hc: the first call starts `hc connect`, and a line that
- * ended (hc restarted, `hc connect` died) fails what was waiting on it and is opened again by the
- * next call. Streams on it end with it; their owners open them again.
- */
 export class HcConnection {
   private line: Line | null = null;
   private nextId = 1;
@@ -235,7 +172,6 @@ export class HcConnection {
     this.spawn = spawn;
   }
 
-  /** The core's identity, from the hello of the current (or a fresh) line; a line that cannot be opened rejects it, as it does a call. */
   async hello(): Promise<HelloInfo> {
     return this.current().hello;
   }
@@ -244,17 +180,12 @@ export class HcConnection {
     return this.request<HcMethods[M]["result"]>(method, { ...params }, timeoutMs);
   }
 
-  /**
-   * A call that answers with a channel (`terminal.attach`, `events.subscribe`): `handlers` hear
-   * the stream from its first frame on, and the returned channel writes to it.
-   */
   async open<M extends HcStreamMethod>(method: M, params: HcMethods[M]["params"], handlers: ChannelHandlers, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{ result: HcMethods[M]["result"]; channel: Channel }> {
     const line = this.current();
     const result = await this.request<HcMethods[M]["result"]>(method, { ...params }, timeoutMs, handlers, line);
     // framed mode always answers with a channel (only plain mode's subscribe has none)
     const id = result.channel as number;
     const live = () => !line.dead && line.channels.get(id)?.closing === undefined;
-    // the request went out only after hello answered, so this awaits nothing
     const features = (await line.hello).features;
     const automaticInput = features.includes(AUTOMATIC_INPUT_FEATURE) && (result as { automatic_input?: unknown }).automatic_input === true;
     return {
@@ -319,7 +250,6 @@ export class HcConnection {
   private async request<T>(method: string, params: Record<string, unknown>, timeoutMs: number, channel?: ChannelHandlers, given?: Line): Promise<T> {
     const line = given ?? this.current();
     const id = this.nextId++;
-    // when the request went out: a line silent since then is wedged
     let sentAt = Number.POSITIVE_INFINITY;
     const { promise, resolve, reject } = Promise.withResolvers<T>();
     let waitingHello = true;
@@ -385,7 +315,6 @@ export class HcConnection {
           if (end + 1 < value.length) readFrame(value.subarray(end + 1));
         }
       } catch {
-        /* the pipe broke: the line ends below */
       }
       fail("closed", "hc connect ended");
     })();
@@ -480,7 +409,7 @@ export class HcConnection {
       open.closing?.();
       open.handlers.onClose({ reason: "connection_lost" });
     }
-    try { line.transport.kill(); } catch { /* already gone */ }
+    try { line.transport.kill(); } catch { }
   }
 }
 
@@ -500,7 +429,6 @@ function parseReason(payload: Uint8Array): Record<string, unknown> | null {
   }
 }
 
-/** The hello's answer, or why it is not one this side can speak to. */
 export function parseHello(text: string): HelloInfo | string {
   let message: { result?: { generation?: unknown; framed?: unknown; version?: unknown; core?: { id?: unknown; name?: unknown }; methods?: unknown; features?: unknown }; error?: { message?: unknown } };
   try {

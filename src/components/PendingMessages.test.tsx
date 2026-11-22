@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import { GROK_QUEUED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { PendingMessages } from "./PendingMessages.tsx";
@@ -52,12 +53,36 @@ describe("a pending row's refusal note", () => {
     expect(html).not.toContain(translate(language, "Not confirmed. Check the terminal before sending again."));
   });
 
+  it.each((["en", "ko", "ja", "zh"] as const).flatMap((language) => [[language, "behind"], [language, "queued"]] as const))("says a Send now Grok kept in its queue is there, not unsent, and offers no second Send now, in %s (%s)", (language, kind) => {
+    const message = kind === "behind" ? grokQueuedBehindMessage(2) : GROK_QUEUED_MESSAGE;
+    const note = kind === "behind"
+      ? translate(language, "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.", { count: 2 })
+      : translate(language, "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.");
+    const expected = renderToStaticMarkup(createElement("span", null, note)).slice("<span>".length, -"</span>".length);
+    const html = render("submit_changed", message, [language], true, "uncertain");
+    expect(html).toContain(expected);
+    expect(html).not.toContain(translate(language, "Not confirmed. Check the terminal before sending again."));
+    expect(html).not.toContain("pending-message-send");
+  });
+
   it("says a held-input refusal in the reader's language, not the raw English reason", () => {
     const held = translate("ko", "Not sent: send or discard the held input first.");
     expect(held).not.toBe("Not sent: send or discard the held input first.");
     const html = render("held_input", "send or discard the held input first", ["ko"]);
     expect(html).toContain(held);
     expect(html).not.toContain("send or discard the held input first");
+  });
+
+  it("says why a message is held for a screen waiting in the terminal in the reader's language, not the bridge's English", () => {
+    const reason = "Codex has one of its own screens open in the terminal; close it there, then send";
+    for (const language of ["ko", "ja", "zh"] as const) {
+      const note = translate(language, "Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
+      expect(note).not.toBe("Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
+      const html = render("agent_blocked", reason, [language]);
+      expect(html).toContain(note);
+      expect(html).toContain("pending-message-send");
+      expect(html).not.toContain("Codex has one of its own screens");
+    }
   });
 
   it("keeps Send now on a saved copy whose send never left the browser, and says it was not sent (regression #541)", () => {
@@ -93,7 +118,6 @@ describe("a pending row's refusal note", () => {
     }
   });
 
-  // #511: a held message whose paste was left in the terminal's input line tells where it is, in every language
   it("says plainly that a held message sits in the terminal's input line", () => {
     for (const language of ["en", "ko", "ja", "zh"] as const) {
       const html = render("pasted_not_sent", "The message is in the terminal's input line, not sent; clear it or press Enter there", [language], true, "uncertain");
@@ -111,7 +135,7 @@ describe("a pending row's refusal note", () => {
   });
 
   it("keeps the server's reason for other refusals", () => {
-    expect(render("agent_blocked", "the agent is busy", ["en"])).toContain("Not sent: the agent is busy");
+    expect(render("pending_lease_lost", "the pane connection changed", ["en"])).toContain("Not sent: the pane connection changed");
   });
 
   it("encodes a live Pi receipt as the existing non-resendable uncertain state", () => {

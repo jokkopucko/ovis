@@ -1,4 +1,3 @@
-/* ovis.sh: one stylesheet for every page. The colors are the app icon's: navy, cream and pink. */
 :root {
   color-scheme: light dark;
   --navy: #2e3a59;
@@ -88,14 +87,12 @@ details p { color: var(--muted); margin: 10px 0 0; }
 .doc ul { padding-left: 1.2em; }
 .doc .box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 22px; }
 
-/* The beta page: few words, one big button per platform. */
 .beta { padding-block: 48px 96px; text-align: center; }
 .beta h1 { font-size: clamp(36px, 6vw, 56px); line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 14px; }
 .beta .lead { font-size: clamp(18px, 2.4vw, 21px); color: var(--muted); margin: 0 auto; max-width: 30em; }
 .beta h2 { display: flex; flex-direction: column; align-items: center; gap: 12px; font-size: clamp(22px, 3vw, 28px); line-height: 1.3; letter-spacing: -0.01em; margin: 80px 0 24px; }
 .beta h2 .num { display: inline-grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--pink); color: #1f2740; font-size: 17px; }
 .beta .note { color: var(--muted); margin: 24px auto 0; max-width: 34em; }
-/* short centred lines break evenly, so no line ends on one word or one Chinese character */
 .beta :is(.lead, .note, h2, small) { text-wrap: balance; }
 /* Japanese breaks between phrases where the browser can; Chinese, like Korean, at spaces and punctuation */
 .beta:lang(ja) { word-break: auto-phrase; }
@@ -113,8 +110,14 @@ details p { color: var(--muted); margin: 10px 0 0; }
 .tiles .cmd { display: block; width: 100%; padding: 8px 12px; border: 0; border-radius: 6px; background: var(--code); color: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; overflow-wrap: break-word; cursor: copy; }
 .tiles .cmd:hover { background: var(--line); }
 .cta { width: 100%; margin: 0; }
-/* the phone tiles line their buttons up at the bottom; the computer tiles keep theirs under the name */
 .tiles > section .cta { margin-top: auto; }
+/* Google's Play badge as Google draws it, at least 28px tall, with a quarter of its height clear around it */
+.tiles .badge { margin: 0; padding: 14px; }
+.tiles .badge ~ .alt { margin-top: auto; }
+.tiles .badge a, .tiles .badge img { display: block; width: 180px; height: auto; }
+/* Apple's App Store badge as Apple draws it, as tall as Google's (at least 40px), with the same clear space */
+.tiles .badge.app-store a, .tiles .badge.app-store img { width: auto; height: 53px; }
+.beta .legal { font-size: 12px; }
 .cta a, .cta button { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 50px; padding: 12px 20px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 17px; font-weight: 600; text-decoration: none; cursor: pointer; }
 .cta a:hover, .cta button:hover { opacity: 0.88; }
 .lang-pick { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }

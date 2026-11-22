@@ -7,7 +7,6 @@ import { sshCandidates } from "./ssh-candidates.ts";
 import { includeTestOnly, wildcardIncludesRead } from "./ssh-include.ts";
 import { sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 
-// the files an Include of the ssh config names: which ones are read, how far a wildcard goes, and the read budget
 
 it.skipIf(process.platform === "win32")("reads an Include only inside the home or ssh folder, never through an absolute path, `..` or a link out of them", async () => {
   const home = sshDir({ ".ssh/config": "", "notes/hosts": "Host in-home\n" });
@@ -92,14 +91,12 @@ function swapAfterFirstLook(path: string, swap: () => void): () => void {
     return value;
   };
   const spies = [
-    // the code under test resolves paths without options
     spyOn(fsPromises, "realpath").mockImplementation((async (looked: PathLike) => after(await realpath(looked), looked)) as typeof realpath),
     spyOn(fsPromises, "open").mockImplementation(async (...args: Parameters<typeof open>) => after(await open(...args), args[0])),
   ];
   return () => { for (const spy of spies) spy.mockRestore(); };
 }
 
-/** a home whose ssh folder holds `files`, and a folder outside it whose `evil` links back to the home's `notes/leak` */
 function homeAndOutside(files: Record<string, string>): { home: string; ssh: string; outside: string } {
   const home = sshDir({ "notes/leak": "Host leaked\n", ...Object.fromEntries(Object.entries(files).map(([name, text]) => [`.ssh/${name}`, text])) });
   const outside = sshDir({});
@@ -182,7 +179,6 @@ it.skipIf(process.platform === "win32")("claims no PC for a host a folder listed
   } finally { delete includeTestOnly.getdents; delete includeTestOnly.platform; spy.mockRestore(); }
 });
 
-/** the rows of a config whose Include may set `box`, beside a `box` host at 100.64.0.1 after it */
 async function rowsOf(files: Record<string, string>): Promise<(string | undefined)[][]> {
   const dir = sshDir(files);
   return (await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers })).map((candidate) => [candidate.name, candidate.tailnet]);

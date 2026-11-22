@@ -1,4 +1,3 @@
-/* phones waiting for approval: above every dialog (the palette's layer), at the top, a panel each */
 .relay-pairing-layer {
   position: fixed;
   inset-block-start: calc(var(--space-3) + env(safe-area-inset-top, 0px));
@@ -8,7 +7,6 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-2);
-  /* three waiting prompts in a short or zoomed window: the stack scrolls instead of leaving buttons off screen */
   max-height: calc(100dvh - 2 * var(--space-3) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
   pointer-events: none;
@@ -30,6 +28,13 @@
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   letter-spacing: var(--tracking-code);
+}
+
+.relay-pairing-prompt .relay-pairing-left {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .relay-pairing-prompt .relay-error {

@@ -1,7 +1,4 @@
 /**
- * The file routes: what a file is and its bytes (GET/HEAD /api/fs/stat, /api/fs/file), a text file
- * to edit and its save (GET/PUT /api/fs/text, file-edit.ts), a folder's
- * project icon (/api/fs/favicon) and a rendered page's own media (/api/fs/page-media/:media_id).
  * The dispatcher in index.ts runs the access gate first and hands over who asks: a page's media
  * plays only for the client and device that rendered it (file-view.ts).
  */
@@ -24,20 +21,17 @@ import { findProjectFavicon } from "./project-favicon.ts";
 /** Who asks, as the dispatcher's access gate worked it out. */
 export interface FileRequester { bridgeAuthorized: boolean; requestHost: string | null; forwarded: boolean; client: string | null; access: Access }
 
-/** Whether `path` may lie in a Claude Code session's temp folder, told before herdr is asked which one the pane's is. */
 const mayBeClaudeTemp = (path: string): boolean => claudeTempBases().some((base) => path.startsWith(base + sep));
 
-/** The temp folder of the Claude Code session in a pane, or null when the pane runs none or it has none. */
 async function claudeTempFolder(paneId: string): Promise<string | null> {
   try {
     const pane = await paneGet(paneId);
     if (resolveAgent(pane).agent !== "claude") return null;
     const session = await claudePaneSession(pane);
     return session === null ? null : await claudeSessionTempDir(session.path);
-  } catch { return null; /* herdr busy or the pane gone: the path stays not found */ }
+  } catch { return null; }
 }
 
-/** The answer for a file route, or null when the path is not one. */
 export async function handleFileRequest(request: Request, url: URL, pathname: string, { bridgeAuthorized, requestHost, forwarded, client, access }: FileRequester): Promise<Response | null> {
   if (pathname === "/api/fs/stat" || pathname === "/api/fs/file" || pathname === "/api/fs/favicon") {
     setRequestRoute(pathname);
@@ -46,7 +40,6 @@ export async function handleFileRequest(request: Request, url: URL, pathname: st
     // a device revoked, or a client signed out, while this request finds and draws a page gets none
     // of its media addresses (file-view.ts)
     const watch = watchPageMedia();
-    // every file thread busy, or the disk too slow to answer in time: 503 (file-pool.ts)
     try { return await fileRoute(request, url, pathname, { bridgeAuthorized, requestHost, forwarded, client, access }, watch); } catch (error) { return errorResponse(error); } finally { watch.done(); }
   }
 
@@ -91,11 +84,9 @@ async function textRoute(request: Request, url: URL): Promise<Response> {
   if (typeof paneId !== "string" || paneId === "") return badRequest("missing_pane", "pane_id is required");
   if (typeof path !== "string" || typeof revision !== "string" || typeof text !== "string") return badRequest("invalid_body", "path, revision and text are strings");
   const cwd = (await paneContext(paneId)).cwd;
-  // on this thread, synchronously: two saves never interleave, and no save goes on after its answer
   return jsonResponse(saveEditableText(path, cwd, revision, text));
 }
 
-/** A text task's answer, or the refusal it came back with. */
 function textAnswer(result: TextTaskResult): Response {
   if ("done" in result) return jsonResponse(result.done);
   const { status, code, message, revision } = result.refused;
@@ -104,7 +95,6 @@ function textAnswer(result: TextTaskResult): Response {
 
 /** GET/HEAD /api/fs/stat, /api/fs/file and /api/fs/favicon, past the method and site checks. */
 async function fileRoute(request: Request, url: URL, pathname: string, { bridgeAuthorized, requestHost, forwarded, client, access }: FileRequester, watch: ReturnType<typeof watchPageMedia>): Promise<Response> {
-  // a folder's project icon: every place it may be kept, in one answer that a miss is part of
   if (pathname === "/api/fs/favicon") {
     const root = url.searchParams.get("root") ?? "";
     if (root.trim() === "") return badRequest("missing_root", "root is required");
@@ -114,16 +104,13 @@ async function fileRoute(request: Request, url: URL, pathname: string, { bridgeA
   let cwd: string | null = null;
   let paneUnread = false;
   if (paneId) {
-    try { cwd = (await paneContext(paneId)).cwd; } catch { paneUnread = true; /* an absolute path still opens */ }
+    try { cwd = (await paneContext(paneId)).cwd; } catch { paneUnread = true; }
   }
   const path = url.searchParams.get("path") ?? "";
   const found = await findFile(path, cwd, () => paneId ? claudeTempFolder(paneId) : Promise.resolve(null), paneId ? mayBeClaudeTemp : undefined);
-  // a relative path whose pane could not be read was not looked for: the chat keeps its link (src/lib/fileNameLookup.ts)
   if (found === null && paneUnread && !isAbsolute(path)) return jsonResponse({ error: { code: "pane_unknown", message: "the pane a relative path belongs to could not be read" } }, 404);
   if (found === null) return jsonResponse({ error: { code: "not_found", message: "no readable file at that path" } }, 404);
-  // several files end in that name: the viewer lists them to choose from
   if ("candidates" in found) return jsonResponse({ error: { code: "ambiguous_path", message: "several files have that name", candidates: found.candidates } }, 409);
-  // a page another PC's server asks for through its bridge is played from that server's address, which this one cannot name: it is drawn as before
   const mediaSource = bridgeAuthorized || (access.level === "full" && access.via === "relay") ? null : pageMediaSource(requestHost, isSecureRequest(request), forwarded ? request.headers.get("x-forwarded-host") : null);
   // its media plays only for the client address that rendered it, and ends with that device (file-view.ts)
   const media = mediaSource === null ? null : { source: mediaSource, client, device: access.level === "full" ? access.device?.id ?? null : null };

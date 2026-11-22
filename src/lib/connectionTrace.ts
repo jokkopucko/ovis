@@ -48,7 +48,7 @@ export class ConnectionTrace {
   private readonly target: "local" | "remote";
 
   constructor(url: string, private context: () => Context, private post: Post | null = browserPost(), private now: () => number = Date.now) {
-    // Retain neither the URL nor machine/host names. One connection object already owns one PC.
+    // Retain neither the URL nor machine/host names.
     live.add(this);
     try { const machine = new URL(url).searchParams.get("machine_id"); this.target = machine && machine !== "local" ? "remote" : "local"; }
     catch { this.target = "local"; }
@@ -77,7 +77,7 @@ export class ConnectionTrace {
         this.following = [];
       } else if (this.incident > this.reported) {
         // Keep the trigger even if healthy ping/pong traffic overwrites the recent ring while
-        // a report is throttled or offline. Retain at most four following context records.
+        // a report is throttled or offline.
         this.following.push(event);
         if (this.following.length > 4) this.following.shift();
         while (this.incidentContext.length + this.following.length > 16) this.incidentContext.shift();
@@ -95,7 +95,6 @@ export class ConnectionTrace {
     const signIn = this.signIn;
     try {
       void this.post(trace).then((status) => {
-        // A 4xx other than 401/403/404/429 is a refusal of this batch: drop it, never re-post it.
         const refused = status >= 400 && status < 500 && ![401, 403, 404, 429].includes(status);
         if ((status >= 200 && status < 300) || refused) {
           this.reported = Math.max(this.reported, incident);

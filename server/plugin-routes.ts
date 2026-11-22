@@ -10,11 +10,9 @@ import { PLUGIN_LOG_LIMIT, pluginActionResult, pluginLogEntry, pluginPaneContext
 
 /** How herdr's plugin manifests name the platform this server (and so its herdr) runs on. */
 const PLUGIN_PLATFORM = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
-/** How long POST /api/plugin/action waits for the command herdr started to end before it answers `running`. */
 const PLUGIN_ACTION_WAIT_MS = 5_000;
 const livePaneIds = async (timeoutMs?: number): Promise<string[]> => (await sessionSnapshot(undefined, timeoutMs)).panes.map((pane) => pane.pane_id);
 
-/** The answer for a plugin route, or null when the path is not one. */
 export async function handlePluginRequest(request: Request, url: URL, pathname: string, options: { pluginActionWaitMs?: number }): Promise<Response | null> {
   if (pathname === "/api/plugins/actions") {
     setRequestRoute(pathname);

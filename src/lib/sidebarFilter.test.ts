@@ -29,11 +29,6 @@ function agent(paneId: string, workspaceId: string, kind: string, fields: Partia
   return { pane_id: paneId, workspace_id: workspaceId, tab_id: `${workspaceId}:t1`, agent: kind, agent_status: "idle", ...fields } as AgentInfo;
 }
 
-/**
- * Two PCs. The laptop has a repository (checkout-api, branch main) with two worktrees, export-guard
- * (codex) and flaky-retry-test (claude), then a plain folder, docs-site (omo). The build PC has one
- * workspace, payments (claude, named "Maru"), and a shell in a folder whose only name is its path.
- */
 function laptop(): SessionSnapshot {
   return {
     workspaces: [
@@ -80,7 +75,6 @@ const sorted = (set: ReadonlySet<string>) => [...set].sort();
 
 describe("sidebarFilter", () => {
   it("matches labels with palette fuzzy semantics", () => {
-    // the same predicate the palette ranks by: a substring, else the letters in order
     expect(matchesQuery("frt", "flaky-retry-test")).toBe(true);
     expect(matchesQuery("zzq", "flaky-retry-test")).toBe(false);
     const substring = sidebarFilter("retry", machines(), nobody, t);
@@ -90,25 +84,21 @@ describe("sidebarFilter", () => {
     const scattered = sidebarFilter("fkrt", machines(), nobody, t);
     expect(sorted(machineFilter(scattered, "local")!.matchedWorkspaces)).toEqual(["flaky"]);
     expect(sidebarFilter("zzq", machines(), nobody, t).matches).toBe(0);
-    // a workspace row can be found by the branch its row says, which the roster reports; a repository's metadata name is not drawn and not searched
     const byBranch = sidebarFilter("main", machines(), nobody, t, new Map([["local", new Map([["api", "main"]])]]));
     expect(sorted(machineFilter(byBranch, "local")!.matchedWorkspaces)).toEqual(["api", "flaky", "guard"]);
     expect(machineFilter(sidebarFilter("main", machines(), nobody, t), "local")!.matchedWorkspaces.size).toBe(0);
     const renamedHead = machines();
     renamedHead[0]!.snapshot!.workspaces[0]!.label = "payments-service";
     expect(machineFilter(sidebarFilter("checkout", renamedHead, nobody, t), "local")!.matchedWorkspaces.size).toBe(0);
-    // an agent row by its agent's kind, its name and the tab name its context line says
     expect(sorted(machineFilter(sidebarFilter("codex", machines(), nobody, t), "local")!.matchedPanes)).toEqual(["guard:p1"]);
     expect(sorted(machineFilter(sidebarFilter("maru", machines(), nobody, t), "build")!.matchedPanes)).toEqual(["pay:p1"]);
     expect(sorted(machineFilter(sidebarFilter("Tab 1", machines(), nobody, t), "local")!.matchedPanes)).toEqual(["api:p1"]);
-    // a PC by its name keeps everything under it as a match
     const byPc = sidebarFilter("build", machines(), nobody, t);
     expect(machineFilter(byPc, "build")!.matched).toBe(true);
     expect(sorted(machineFilter(byPc, "build")!.matchedWorkspaces)).toEqual(["pay", "tmp"]);
     expect(sorted(machineFilter(byPc, "build")!.matchedPanes)).toEqual(["pay:p1", "tmp:p1"]);
     expect(machineFilter(byPc, "local")!.shown).toBe(true);
     expect(machineFilter(byPc, "local")!.matchedWorkspaces.size).toBe(0);
-    // a blank query filters nothing
     expect(sidebarFilter("   ", machines(), nobody, t).active).toBe(false);
     expect(machineFilter(sidebarFilter("", machines(), nobody, t), "local")).toBeNull();
   });
@@ -123,7 +113,6 @@ describe("sidebarFilter", () => {
     expect(sorted(head.workspaces)).toEqual(["api", "flaky", "guard"]);
     expect(sorted(head.matchedWorkspaces)).toEqual(["api", "flaky", "guard"]);
     expect(sorted(head.panes)).toEqual(["api:p1", "api:p2", "flaky:p1", "guard:p1"]);
-    // worktrees kept by their head's match are matches too: a folded group opens to show them
     expect(sorted(head.revealedWorkspaces)).toEqual(["api", "flaky", "guard"]);
     const byPane = machineFilter(sidebarFilter("proofread", machines(), nobody, t), "local")!;
     expect(sorted(byPane.workspaces)).toEqual(["docs"]);
@@ -136,7 +125,6 @@ describe("sidebarFilter", () => {
     const filter = sidebarFilter("a", roster, nobody, t);
     expect(sorted(machineFilter(filter, "local")!.workspaces)).toEqual(["api", "docs", "flaky", "guard"]);
     expect(sorted(machineFilter(filter, "build")!.workspaces)).toEqual(["pay", "tmp"]);
-    // the roster is projected, never reordered: a filtered list is a subsequence of the unfiltered one
     const groups = worktreeGroups(laptop().workspaces);
     const pinned = splitPinnedGroups(groups, ["flaky", "docs"], (workspace) => workspace.workspace_id);
     const kept = machineFilter(sidebarFilter("t", roster, nobody, t), "local")!.workspaces;
@@ -147,7 +135,6 @@ describe("sidebarFilter", () => {
     const narrower = machineFilter(sidebarFilter("guard", roster, nobody, t), "local")!.workspaces;
     expect(filterWorkspaceGroups(pinned.pinned, narrower)).toEqual([]);
     expect(filterWorkspaceGroups(pinned.rest, narrower).map((group) => [group.workspace.workspace_id, group.children.map((child) => child.workspace_id)])).toEqual([["api", ["guard"]]]);
-    // agent rows keep every PC's order and the pin order among them
     const rows = roster.flatMap((machine) => sidebarAgents(machine.snapshot).map((entry) => ({ machine, entry })));
     const keptRows = rows.filter(({ machine, entry }) => machineFilter(filter, machine.id)!.panes.has(entry.pane.pane_id));
     expect(keptRows.map(({ machine, entry }) => `${machine.id}:${entry.pane.pane_id}`)).toEqual(["local:api:p1", "local:guard:p1", "local:flaky:p1", "local:docs:p1", "build:pay:p1"]);
@@ -168,15 +155,12 @@ describe("sidebarFilter", () => {
     expect(sorted(local.panes)).toEqual(["guard:p1"]);
     expect(local.matchedPanes.size).toBe(0);
     expect(machineFilter(none, "build")!.shown).toBe(false);
-    // beside matches elsewhere the selection stays, as context, and is not counted
     const elsewhere = sidebarFilter("settlement", machines(), selected, t);
     expect(elsewhere.matches).toBe(1);
     expect(sorted(machineFilter(elsewhere, "local")!.workspaces)).toEqual(["api", "guard"]);
     expect(machineFilter(elsewhere, "local")!.matchedWorkspaces.size).toBe(0);
     expect(sorted(machineFilter(elsewhere, "build")!.matchedPanes)).toEqual(["pay:p1"]);
-    // a selected PC without a pane keeps its group
     expect(machineFilter(sidebarFilter("zzq", machines(), { machineId: "build", paneId: null }, t), "build")!.shown).toBe(true);
-    // a PC whose roster has not come cannot be searched: it stays, as context, never as a match
     const pending = [...machines(), { id: "old", name: "Old PC", kind: "ssh", enabled: true, state: "connecting", error: null, snapshot: null } as Machine];
     const waiting = sidebarFilter("zzq", pending, selected, t);
     expect(machineFilter(waiting, "old")!.shown).toBe(true);
@@ -192,15 +176,12 @@ describe("sidebarFilter", () => {
       if (hidden === "guard") expect(found).toEqual(["guard:p1"]);
       else expect({ hidden, found }).toEqual({ hidden, found: [] });
     }
-    // a shell has no row of its own: its title (here a terminal's, or its folder's) finds nothing
     for (const shellTitle of ["zsh", "transcripts"]) expect(sidebarFilter(shellTitle, roster, nobody, t).matches).toBe(0);
-    // the labels a row offers are the ones it shows: no path, no id, no environment
     const snapshot = laptop();
     const entry = sidebarAgents(snapshot).find((candidate) => candidate.pane.pane_id === "api:p1")!;
     expect(paneLabels(entry.pane, entry, snapshot.tabs.filter((candidate) => candidate.workspace_id === "api"), t)).toEqual(["Idempotent payments", "claude", "Tab 1"]);
     const shell = snapshot.panes.find((candidate) => candidate.pane_id === "api:p2")!;
     expect(paneLabels(shell, undefined, [], t)).toEqual(["zsh"]);
-    // a nameless shell's row shows its folder, as the roster shortens a path title, never the path
     const nameless = buildPc().panes.find((candidate) => candidate.pane_id === "tmp:p1")!;
     expect(paneLabels(nameless, undefined, [], t)).toEqual(["transcripts"]);
     const labelled = { ...nameless, label: "Scratch shell" };
@@ -223,7 +204,6 @@ describe("sidebarFilter", () => {
   });
 
   it("keeps a kept worktree under the head it is drawn under, whatever head the roster's order gave it", () => {
-    // the reorder coordinator draws its own order while a move lands; the filter read herdr's
     const repo = { repo_key: "r", repo_name: "r" };
     const alpha = workspace("alpha", "alpha", { ...repo, linked: false });
     const beta = workspace("beta", "beta", { ...repo, linked: false });
@@ -247,7 +227,6 @@ describe("sidebarFilter", () => {
     const byName = sidebarFilter("laptop", lone, nobody, t, new Map(), unnamed);
     expect(machineFilter(byName, "local")!.matched).toBe(false);
     expect(byName.matches).toBe(0);
-    // its rows are still found by their own names
     expect(sorted(machineFilter(sidebarFilter("docs", lone, nobody, t, new Map(), unnamed), "local")!.matchedWorkspaces)).toEqual(["docs"]);
     expect(filterSuggestions(lone, new Map(), unnamed)).not.toContain("Laptop");
     expect(filterSuggestions(lone)).toContain("Laptop");

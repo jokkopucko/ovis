@@ -1,7 +1,4 @@
 /**
- * An OpenCode pane's subagents and background commands, counted and listed as a Claude Code
- * pane's are (server/claude-subagents.ts), from the store the chat reads (server/opencode.ts).
- *
  * OpenCode 2 runs a subagent in a child session of the session that started it: a `session_v2`
  * row whose `parent_id` names that session, with `session_message` rows of its own (the
  * `subagent` tool, packages/core/src/tool/plugin/subagent.ts in 2.0.32; a plugin that starts
@@ -26,12 +23,7 @@
  * by its result, and does not wait on it.
  *
  * The runs belong to OpenCode's background service, not to the TUI in the pane: a service that
- * stopped without an idle row (a crash, a kill) took its runs with it, so a run last written
- * before the service now running started is lost, as a Claude Code subagent from before its
- * process is.
- *
- * The parent's background notice is also what the chat draws as the ended subagent's card
- * (server/opencode.ts).
+ * stopped without an idle row (a crash, a kill) took its runs with it.
  */
 import type { Database } from "bun:sqlite";
 
@@ -40,18 +32,10 @@ import type { OmoTask } from "../shared/tasks.ts";
 import { DETAIL_LIMITS, fitDetail, type DetailRefusal } from "./claude-subagents.ts";
 import { opencodeSessionId, sessionView, supportedRowSize, withStore } from "./opencode.ts";
 
-/** As for Claude Code and OmO: the newest ten that ended in the last day are listed. */
 const RECENT_MS = 24 * 60 * 60_000;
 const RECENT_LIMIT = 10;
-/**
- * How many children one step of a read visits. Telling whether a child's run ended takes a lookup of its newest row, so
- * a session with more children than this is read a page at a time, the event loop let go between pages (pagedState,
- * OpencodeSubagentStatus.poll): no step holds it longer than a page takes, however many children a session started.
- */
 export const SUBAGENT_PAGE = 1000;
-/** A run written this long before the service's start may still be the service's own (its start is read in whole ticks). */
 const START_SLACK_MS = 5_000;
-/** The rows a run is made of: what an end or a new run is read from (instructions, agent switches are not). */
 const RUN_ROWS = "('user', 'synthetic', 'assistant', 'idle', 'shell', 'compaction')";
 
 type Row = Record<string, unknown>;
@@ -63,29 +47,22 @@ const count = (value: unknown): number => typeof value === "number" && Number.is
 const iso = (at: number | null): string | null => at === null ? null : new Date(at).toISOString();
 
 export interface OpencodeSubagentState {
-  /** running ones first (oldest first), then up to ten that ended in the last day (newest first) */
   tasks: OmoTask[];
   running: number;
-  /** of those running, how many the turn going on (or last ended) started: server/background-wait.ts */
   turnRunning: number;
-  /** when the person last gave the parent session a prompt: that turn began there */
   promptAt: number | null;
-  /** of those running, how many are not listed (the newest RUNNING_LIMIT are) */
   unlisted: number;
 }
 
 const NOTHING: OpencodeSubagentState = { tasks: [], running: 0, turnRunning: 0, promptAt: null, unlisted: 0 };
 
-/** A child's newest run row, as much of it as tells how the run went. */
 interface ChildRun {
   id: string; created: number; type: string; at: number;
   outcome: unknown; created_at: unknown; completed: unknown; finish: unknown; error: string | null; error_type: unknown;
 }
 
-/** How a run ended. */
 type End = { status: Exclude<OmoTask["status"], "running" | "lost">; at: number };
 
-/** How a run ended by the child's own rows, or null while it runs. */
 function runEnd(run: ChildRun): End | null {
   if (run.type === "idle") {
     const status = run.outcome === "failed" ? "failed" : run.outcome === "interrupted" ? "cancelled" : "completed";
@@ -100,14 +77,8 @@ function runEnd(run: ChildRun): End | null {
   return null;
 }
 
-/**
- * What the parent's own record says of a child: the newest `subagent` call naming it, or notice that it ended, and
- * the row it is in. `end` null: it runs, a foreground call not answered yet (`waiting`) or a background one not yet
- * said to have ended.
- */
 interface Told {
   id: string; seq: number; end: End | null; waiting: boolean; updated: number; named: number | null; notice: boolean;
-  /** a waited call that a notice named before it was set aside for (newer): read anew once the call is answered */
   setAside?: boolean;
 }
 
@@ -127,8 +98,7 @@ const NAMED_SPAN = 2 ** 48;
 const namedAfter = (a: number, b: number): boolean => a !== b && (a - b + NAMED_SPAN) % NAMED_SPAN < NAMED_SPAN / 2;
 
 /**
- * Whether `said` is the parent's newer word on a child than `was`: the later row, but for a background notice and a
- * call the parent still waits on. A waited call started a job of its own (a call to a child whose job is in the
+ * A waited call started a job of its own (a call to a child whose job is in the
  * background joins that job and is answered at once, subagent.ts), which ends with the call's answer: a notice named
  * before the call's step began answers an older job, however late it was written. Other calls keep the order the rows
  * were written in: one answered as gone to the background may have joined the job an older-named notice ends.
@@ -142,22 +112,12 @@ function newer(said: Told, was: Told | undefined): boolean {
   return said.seq >= was.seq;
 }
 
-/**
- * What a parent's rows were read to tell, kept by whoever reads the session again (the tracker, for each pane) so that
- * a read takes only what changed since: the rows up to `after` were read, `rows` of them, and the newest of them was
- * written at `since`. A row written in place since (a step that came to call a subagent, a call answered) has a newer
- * `time_updated` and is read again, as is a row the log took a word from whose `time_updated` is no longer the one
- * read (written at an older time: a clock set back, a store restored); one taken out or put in among those read, or
- * a session whose newest row is older than `since`, makes the read start over. Rows a staged `/undo` hides are not
- * read: the log stops before them, and starts over when the boundary moves below what it read.
- */
 export interface ParentLog { after: number; rows: number; since: number; told: ReadonlyMap<string, Told> }
 const NO_LOG: ParentLog = { after: -1, rows: 0, since: 0, told: new Map() };
 
 /**
- * A parent row, as much of it as names children and tells how each call went. A call names its child once it reached
- * it (`state.metadata.sessionID`, set just before the child is prompted), not by the sessionID its input asks for: one
- * refused before that (a permission denied, an unknown agent) ran nothing.
+ * A call names its child once it reached it (`state.metadata.sessionID`, set just before the child is prompted),
+ * not by the sessionID its input asks for: one refused before that (a permission denied, an unknown agent) ran nothing.
  */
 const PARENT_ROW = `SELECT m.id, m.seq, m.type, m.time_created AS created, m.time_updated AS updated,
   CASE WHEN m.type = 'assistant' AND json_valid(m.data) THEN (SELECT json_group_array(json_object(
@@ -173,11 +133,9 @@ const PARENT_ROW = `SELECT m.id, m.seq, m.type, m.time_created AS created, m.tim
   CASE WHEN m.type = 'synthetic' AND json_valid(m.data) THEN json_extract(m.data, '$.metadata.state') END AS state,
   CASE WHEN m.type = 'synthetic' AND json_valid(m.data) THEN json_extract(m.data, '$.time.created') END AS at
 FROM session_message AS m`;
-/** The parent rows that may name a subagent, told apart before any is parsed */
 const NAMES_SUBAGENT = `((m.type = 'assistant' AND instr(m.data, '"name":"subagent"') > 0) OR (m.type = 'synthetic' AND instr(m.data, '"source":"subagent"') > 0))`;
 type ParentRow = { id: string; seq: number; type: string; created: number; updated: number; calls: string | null; notified: unknown; state: unknown; at: unknown };
 
-/** What one parent row tells of the children it names. */
 function parentRow(row: ParentRow): (Told & { child: string })[] {
   const told: (Told & { child: string })[] = [];
   const said = (child: string, end: End | null, waiting = false, notice = false) => told.push({ child, id: row.id, seq: row.seq, end, waiting, updated: row.updated, named: named(row.id), notice });
@@ -186,7 +144,7 @@ function parentRow(row: ParentRow): (Told & { child: string })[] {
     said(child, { status: row.state === "error" ? "failed" : row.state === "cancelled" ? "cancelled" : "completed", at: stamp(row.at) ?? row.created }, false, true);
   }
   let calls: unknown = [];
-  try { calls = JSON.parse(row.calls ?? "[]"); } catch { /* no calls read */ }
+  try { calls = JSON.parse(row.calls ?? "[]"); } catch {}
   for (const call of (Array.isArray(calls) ? calls : []).map(record)) {
     const child = label(call.child);
     if (child === null) continue;
@@ -200,27 +158,16 @@ function parentRow(row: ParentRow): (Told & { child: string })[] {
   return told;
 }
 
-/**
- * One step of reading what the parent's rows tell of its children, from the log a read before left (`scan.log`, the
- * scan's own copy): first whether the rows that log read are still the session's, and those of them written since;
- * then the rows after it, a page a step; once all are in, each child's newest call or notice (`scan.told`). Only rows
- * that may name a subagent are looked into. A foreground call the parent's run is no longer in (an `idle` row of the
- * parent's after it: a crash, a turn stopped) waits on nothing, as does any call not ended yet that was last written
- * before the service now running started, and a call a staged `/undo` hides tells nothing: the
- * child's own rows tell.
- */
 function parentStep(db: Database, scan: Scan): void {
   const sid = scan.sessionId;
   if (scan.since === null) {
     let log = scan.log;
-    // a staged /undo hides the rows from its message on, as the chat does (server/opencode.ts sessionView): they are not
-    // read, so an older call the chat still shows tells
+    // a staged /undo hides the rows from its message on
     if (scan.columns?.has("revert")) {
       const boundary = record(parse(db.query<{ revert: string | null }, [string]>("SELECT revert FROM session_v2 WHERE id = ?").get(sid)?.revert ?? "null")).messageID;
       if (typeof boundary === "string") scan.end = db.query<{ seq: number }, [string, string]>("SELECT seq FROM session_message WHERE session_id = ? AND id = ?").get(sid, boundary)?.seq ?? scan.end;
     }
     if (log.after >= scan.end) log = NO_LOG;
-    // one pass over the session's rows (no row's data is read): its newest, its last idle, and those written since
     const head = db.query<{ newest: number | null; since: number | null; idle: number | null; changed: string | null }, [string, number, number, number]>(`
       SELECT max(CASE WHEN seq < ?4 THEN seq END) AS newest, max(time_updated) AS since, max(CASE WHEN type = 'idle' AND seq < ?4 THEN seq END) AS idle,
         json_group_array(CASE WHEN seq <= ?2 AND time_updated >= ?3 THEN id END) AS changed
@@ -228,7 +175,6 @@ function parentStep(db: Database, scan: Scan): void {
     scan.since = head?.since ?? 0;
     scan.idle = head?.idle ?? -1;
     const changed = JSON.stringify((JSON.parse(head?.changed ?? "[]") as unknown[]).filter((id) => typeof id === "string"));
-    // the newest row older than the newest the log read: written under a clock set back, or a store restored
     if (log.after >= 0 && scan.since < log.since) log = NO_LOG;
     if (log.after >= 0) {
       const rows = db.query<{ rows: number }, [string, number]>("SELECT count(*) AS rows FROM session_message WHERE session_id = ? AND seq <= ?").get(sid, log.after)?.rows ?? 0;
@@ -237,23 +183,18 @@ function parentStep(db: Database, scan: Scan): void {
       const told = new Map(log.told);
       let whole = rows === log.rows && kept === new Set([...log.told.values()].map((said) => said.id)).size;
       if (whole) {
-        // the rows the log took a word from that were written again since, at any time (looked up by id, each one)
         const stamps = JSON.stringify([...new Map([...log.told.values()].map((said) => [said.id, said.updated]))]);
         // CROSS JOIN keeps json_each outside, so each is a lookup by primary key, not a pass over the session's rows
         const rewritten = db.query<{ id: string }, [string, string]>(`SELECT m.id FROM json_each(?2) AS k
           CROSS JOIN session_message AS m ON m.id = json_extract(k.value, '$[0]') WHERE +m.session_id = ?1 AND m.time_updated IS NOT json_extract(k.value, '$[1]')`,
         ).all(sid, stamps).map((row) => row.id);
         const reread = JSON.stringify([...new Set([...(JSON.parse(changed) as string[]), ...rewritten])]);
-        // rows written in place since: what each says now stands in for what it said
         for (const row of db.query<ParentRow, [string, string, string]>(`${PARENT_ROW}
           WHERE +m.session_id = ? AND m.id IN (SELECT value FROM json_each(?)) AND (${NAMES_SUBAGENT} OR m.id IN (SELECT value FROM json_each(?)))`,
         ).all(sid, reread, ids)) {
           const now = parentRow(row);
-          // a child this row was the newest word on and no longer names: what an older row said is not kept, so read anew
           if ([...told].some(([child, said]) => said.id === row.id && !now.some((entry) => entry.child === child))) { whole = false; break; }
-          // a waited call a notice was set aside for, answered since: that notice may be its job's after all, so read anew
           if (now.some((said) => !said.waiting && told.get(said.child)?.id === said.id && told.get(said.child)?.setAside)) { whole = false; break; }
-          // the row's own word stands in for what it said; another row's only when newer
           for (const { child, ...said } of now) if (told.get(child)?.id === said.id || newer(said, told.get(child))) told.set(child, { ...said, setAside: told.get(child)?.id === said.id && told.get(child)?.setAside });
         }
       }
@@ -280,24 +221,16 @@ function parentStep(db: Database, scan: Scan): void {
   }
   const rows = db.query<{ rows: number }, [string, number]>("SELECT count(*) AS rows FROM session_message WHERE session_id = ? AND seq <= ?").get(sid, scan.log.after)?.rows ?? 0;
   scan.log = { ...scan.log, rows, since: scan.since };
-  // a call not yet ended (one waited on, or a background one with no notice yet) last written before the service now
-  // running started: that service took its run along, and the child's own rows tell, as with a child no call names
   const orphan = (said: Told) => said.end === null && scan.serviceStart !== null && said.updated < scan.serviceStart - START_SLACK_MS;
   scan.told = new Map([...told].filter(([, said]) => !(said.waiting && said.seq < scan.idle) && !orphan(said)));
 }
 
-/**
- * How a child's run ended, the parent's record first: null while the parent waits on it. The child's own rows tell
- * when no call names it, or when it was woken (`dispatched`) after its parent was told it ended.
- */
 function childEnd(own: End | null, told: Told | undefined, dispatched: number | null): End | null {
   if (told === undefined) return own;
-  // a run cannot end in the millisecond it was dispatched: one dispatched then came after the end
   if (told.end !== null && dispatched !== null && dispatched >= told.end.at) return own;
   return told.end;
 }
 
-/** What a child did, for the list: its steps, tool calls, the model it last ran at and the context its last step held. */
 function childWork(db: Database, id: string): { turns: number; toolCalls: number; tokens: number | null; model: string | null } {
   const steps = db.query<{ steps: number }, [string]>("SELECT count(*) AS steps FROM session_message WHERE session_id = ? AND type = 'assistant'").get(id)?.steps ?? 0;
   const tools = db.query<{ tools: number }, [string]>(
@@ -312,44 +245,22 @@ function childWork(db: Database, id: string): { turns: number; toolCalls: number
   return { turns: steps, toolCalls: tools, tokens: used > 0 ? used : null, model: label(record(data.model).id) };
 }
 
-/** A child's newest run row: a lookup of it in the session's own rows */
 const NEWEST = `SELECT id FROM session_message WHERE session_id = s.id AND type IN ${RUN_ROWS} ORDER BY seq DESC LIMIT 1`;
-/** Whether the newest row `m` ended its run: an idle row, or a step OpenCode 1.x answered, failed or stopped (as runEnd). */
 const ENDED = `CASE WHEN m.type = 'idle' THEN 1 WHEN m.type != 'assistant' OR NOT json_valid(m.data) THEN 0
   ELSE json_type(m.data, '$.time.completed') IN ('integer', 'real') AND json_extract(m.data, '$.time.completed') > 0
     AND (coalesce(json_type(m.data, '$.error'), 'null') != 'null'
       OR (json_type(m.data, '$.finish') = 'text' AND json_extract(m.data, '$.finish') != 'tool-calls')) END`;
 
-/** A child a read keeps: its newest run row in full, the time its last run was dispatched, and what the list shows of it. */
 interface KeptRun extends ChildRun { dispatched: number | null; title: string | null; agent: string | null; model: string | null }
 
-/**
- * A read of a session's subagents in steps, none of them longer than a page takes (a page of children, a page of the
- * rows kept, or a few children's work), so that the event loop can be let go between them (pagedState,
- * OpencodeSubagentStatus.poll) however many children a session started:
- * 1. the children, a page at a time in the order they were stored: those whose run has not ended (each counts) and,
- *    of those that ended, the ten that ended last within the last day (no more are listed);
- * 2. the newest run rows of those kept, read in full and told what they are a page of them a step: each counts, and of
- *    those that run only the newest thousand are listed (RUNNING_LIMIT), of the others the ten that ended last;
- * 3. with `detail`, what each listed one did, a few of them a step.
- */
 interface Scan {
   sessionId: string; now: number; live: boolean; serviceStart: number | null; detail: boolean;
-  /** session_v2's columns, once read; a store with no child sessions has nothing to read */
   columns: Set<string> | null; after: number; paged: boolean;
-  /** the session's background commands, once read: `shell` rows with `background` metadata, as tasks */
   shells: OmoTask[] | null; shellRunning: number;
-  /**
-   * what the parent's rows tell of each child it names, once read (parentStep); the log they are read into, from the
-   * one a read before left; the newest `time_updated` and `seq` of the session's rows as this read began
-   */
   told: Map<string, Told> | null; log: ParentLog; since: number | null; newest: number; idle: number;
-  /** the seq a staged `/undo` hides the parent's rows from (none: past every row) */
   end: number;
-  /** whether the parent's record is read at all (Settings -> Read OpenCode subagent ends from their session); off, only the children's rows tell */
   parentEnds: boolean;
   open: string[]; ended: { id: string; at: number }[];
-  /** phase 2: the ids to read again, and how far (a page is taken only once all of it is read: one that failed is read again whole) */
   ids: string[] | null; reread: number; promptAt: number | null;
   running: number; turnRunning: number; going: KeptRun[]; stopped: { run: KeptRun; at: number; end: End | null }[];
   state: OpencodeSubagentState | null; shown: { run: KeptRun; at: number | null; end: End | null }[];
@@ -357,27 +268,18 @@ interface Scan {
   finished: boolean;
 }
 
-/** How many children's work one step reads (each is three reads of its rows) */
 const WORK_STEP = 50;
-/** How many running children are listed, the newest: each counts, however many run */
 export const RUNNING_LIMIT = 1000;
 
 function newScan(sessionId: string, now: number, live: boolean, serviceStart: number | null, detail: boolean, log: ParentLog = NO_LOG, parentEnds = false): Scan {
   return { sessionId, now, live, serviceStart, detail, columns: null, after: 0, paged: false, shells: null, shellRunning: 0, told: parentEnds ? null : new Map(), log, since: null, newest: 0, idle: -1, end: Number.MAX_SAFE_INTEGER, parentEnds, open: [], ended: [], ids: null, reread: 0, promptAt: null, running: 0, turnRunning: 0, going: [], stopped: [], state: null, shown: [], work: new Map(), worked: 0, finished: false };
 }
 
-/** What one of a session's `shell` rows says of a command it ran in the background. */
 type ShellRow = {
   id: string; shell: string | null; command: string | null; status: string | null; exit: number | null;
   started: number | null; created: number; updated: number;
 };
 
-/**
- * A session's background commands, listed as its subagents are: those that run, and the newest that ended within
- * the last day. The chat reads the same rows (server/opencode.ts), so the list and the chat agree on them. A
- * command the session's OpenCode no longer runs is left lost, ended when it was last heard of; one written before
- * its service started is lost the same way, that service having taken its process along.
- */
 function shellStep(db: Database, scan: Scan): void {
   const from = `
     FROM session_message AS m
@@ -397,7 +299,6 @@ function shellStep(db: Database, scan: Scan): void {
       CASE WHEN json_valid(m.data) AND json_type(m.data, '$.time.created') IN ('integer', 'real') AND json_extract(m.data, '$.time.created') > 0
         THEN json_extract(m.data, '$.time.created') END AS started,
       m.time_created AS created, m.time_updated AS updated ${from}`;
-  // Count and list from the same snapshot, retaining only the newest commands that can be displayed.
   const { runningCount, rows } = db.transaction(() => {
     const runningCount = db.query<{ running: number }, typeof bindings>(`
       SELECT count(*) AS running ${from} AND (${running})`).get(...bindings)?.running ?? 0;
@@ -434,7 +335,6 @@ function shellStep(db: Database, scan: Scan): void {
   }
 }
 
-/** One step of a scan. */
 function scanStep(db: Database, scan: Scan): void {
   if (scan.columns === null) {
     const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('session_v2')").all().map((column) => column.name));
@@ -444,7 +344,6 @@ function scanStep(db: Database, scan: Scan): void {
   }
   if (scan.shells === null) shellStep(db, scan);
   if (scan.told === null) {
-    // read on in this step once the parent's rows are in (a session read before needs no more than its newest)
     parentStep(db, scan);
     if (scan.told === null) return;
   }
@@ -453,9 +352,7 @@ function scanStep(db: Database, scan: Scan): void {
   else workStep(db, scan);
 }
 
-/** Phase 1: the next page of children (one more is asked for, to tell whether this page is the last). */
 function scanPage(db: Database, scan: Scan, columns: Set<string>): void {
-  // every child, one with no run row yet or archived too, so that a page holds as many children as it says
   const rows = db.query<{ rid: number; id: string; type: string | null; ended: number | null; ended_at: number | null; archived: number }, [string, number]>(`
     SELECT s.rowid AS rid, s.id, m.type, ${ENDED} AS ended,
       CASE WHEN m.type = 'idle' THEN coalesce(CASE WHEN json_valid(m.data) AND json_type(m.data, '$.time.created') IN ('integer', 'real')
@@ -472,7 +369,6 @@ function scanPage(db: Database, scan: Scan, columns: Set<string>): void {
     const own = row.ended ? { status: "completed" as const, at: row.ended_at ?? 0 } : null;
     const end = childEnd(own, told, told?.end ? dispatched.get(row.id)?.at ?? null : null);
     if (end === null) { scan.open.push(row.id); continue; }
-    // ended as childEnd says it did, and listed by that same time
     const at = end.at;
     if (scan.now - at > RECENT_MS || (scan.ended.length === RECENT_LIMIT && at <= scan.ended.at(-1)!.at)) continue;
     scan.ended.push({ id: row.id, at });
@@ -483,7 +379,6 @@ function scanPage(db: Database, scan: Scan, columns: Set<string>): void {
   scan.paged = rows.length <= SUBAGENT_PAGE;
 }
 
-/** Phase 2: the next page of the kept children's rows in full, each told what it is; once all are in, what was found. */
 function rereadPage(db: Database, scan: Scan, columns: Set<string>): void {
   if (scan.ids === null) {
     const prompt = db.query<{ data: string; time_created: number }, [string]>(
@@ -500,7 +395,6 @@ function rereadPage(db: Database, scan: Scan, columns: Set<string>): void {
       (SELECT time_created FROM session_message WHERE session_id = s.id AND type IN ('user', 'synthetic') ORDER BY seq DESC LIMIT 1) AS dispatched,
       ${["title", "agent", "model"].map((name) => columns.has(name) ? `s.${name}` : `NULL AS ${name}`).join(", ")}
     FROM session_v2 AS s JOIN session_message AS m ON m.id = (${NEWEST}) WHERE s.id = ?`);
-  // the whole page is read before any of it is taken: a page that fails part way is read again whole
   const page = scan.ids.slice(scan.reread, scan.reread + SUBAGENT_PAGE).flatMap((id) => full.get(id) ?? []);
   const lastAt = (run: ChildRun): number => stamp(run.completed) ?? stamp(run.created_at) ?? run.at;
   const orphan = (run: ChildRun): boolean => scan.serviceStart !== null && lastAt(run) < scan.serviceStart - START_SLACK_MS;
@@ -508,7 +402,6 @@ function rereadPage(db: Database, scan: Scan, columns: Set<string>): void {
     const end = childEnd(runEnd(run), scan.told?.get(run.id), run.dispatched);
     if (end === null && scan.live && !orphan(run)) {
       scan.running++;
-      // one continued by its sessionID belongs to the turn that sent it its prompt
       if (scan.promptAt === null || (run.dispatched ?? run.created) >= scan.promptAt) scan.turnRunning++;
       scan.going.push(run);
       continue;
@@ -516,7 +409,6 @@ function rereadPage(db: Database, scan: Scan, columns: Set<string>): void {
     const at = end?.at ?? lastAt(run);
     if (scan.now - at <= RECENT_MS) scan.stopped.push({ run, at, end });
   }
-  // only what is listed is kept: the newest that run, the ten that ended (or were lost) last
   scan.going = scan.going.sort((a, b) => b.created - a.created).slice(0, RUNNING_LIMIT);
   scan.stopped = scan.stopped.sort((a, b) => b.at - a.at).slice(0, RECENT_LIMIT);
   scan.reread += SUBAGENT_PAGE;
@@ -526,14 +418,12 @@ function rereadPage(db: Database, scan: Scan, columns: Set<string>): void {
   scan.finished = !scan.detail;
 }
 
-/** Phase 3: a few listed children's work. */
 function workStep(db: Database, scan: Scan): void {
   for (const { run } of scan.shown.slice(scan.worked, scan.worked + WORK_STEP)) scan.work.set(run.id, childWork(db, run.id));
   scan.worked += WORK_STEP;
   scan.finished = scan.worked >= scan.shown.length;
 }
 
-/** What a finished scan found. */
 function scanResult(scan: Scan): OpencodeSubagentState {
   const state = scan.state ?? NOTHING;
   const tasks = scan.shown.map(({ run, at, end }): OmoTask => {
@@ -553,7 +443,6 @@ function scanResult(scan: Scan): OpencodeSubagentState {
     };
   });
   if (scan.shells === null || (scan.shells.length === 0 && scan.shellRunning === 0)) return { ...state, tasks };
-  // commands join the subagents' list: running first, oldest first; ended newest first, the ten that ended last
   const started = (task: OmoTask): number => task.started_at === null ? 0 : Date.parse(task.started_at) || 0;
   const ended = (task: OmoTask): number => task.ended_at === null ? 0 : Date.parse(task.ended_at) || 0;
   const running = [...tasks.filter((task) => task.status === "running"), ...scan.shells.filter((task) => task.status === "running")]
@@ -563,28 +452,17 @@ function scanResult(scan: Scan): OpencodeSubagentState {
   return { ...state, running: state.running + scan.shellRunning, unlisted: state.running + scan.shellRunning - running.length, tasks: [...running, ...settled] };
 }
 
-/**
- * What the detail takes of one row (a step's text and tool calls, or a prompt's text) is left out over this, and said
- * (`incomplete`), as a Claude record over its size is.
- */
 const DETAIL_RECORD_BYTES = 64 * 1024;
-/**
- * A row over this is not looked into at all (said `incomplete`). A step's row also holds its tools' output, which the
- * sheet never shows, so a step is taken apart in the store and only what is shown is measured against the limits.
- */
 const DETAIL_ROW_BYTES = 4 * 1024 * 1024;
 
 /**
  * GET /api/pane/background-agent for an OpenCode pane: what the child session `childId` of the session `sessionId` did,
  * read-only and bounded as a Claude Code subagent's detail is (claude-subagents.ts backgroundAgentDetail), from one
- * snapshot of the store. The prompt is the child's newest `user` row: what its current (or last) run was dispatched
- * with, a child continued by its sessionID having run an earlier task before it. Its work is the text and tool parts of
+ * snapshot of the store. Its work is the text and tool parts of
  * the `assistant` rows since that prompt, the newest as many as max_events and max_read_bytes allow (no reasoning, no
  * tool output), taken out in the store so that only they come out of it; a staged `/undo` hides the rows from its
- * message on, as the chat does (server/opencode.ts sessionView). A row over DETAIL_ROW_BYTES, one that is not JSON, and
- * what is shown of one over DETAIL_RECORD_BYTES are left out and said (`incomplete`); rows left unread for the limits
- * are said (`truncated`). Only a child of `sessionId` is answered: another session's is not found. `command`:
- * the id is one of the session's background commands, which has no work of its own to read.
+ * message on, as the chat does (server/opencode.ts sessionView). Only a child of `sessionId` is answered: another
+ * session's is not found.
  */
 export function opencodeAgentDetail(path: string, sessionId: string, childId: string): { detail: Omit<PaneBackgroundAgentDetail, "server_time"> } | { refusal: DetailRefusal | "command" } {
   try {
@@ -600,7 +478,6 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
     `SELECT ${["title", "agent"].map((name) => columns.has(name) ? `substr(${name}, 1, 300) AS ${name}` : `NULL AS ${name}`).join(", ")} FROM session_v2 WHERE id = ? AND parent_id = ?`,
   ).get(childId, sessionId);
   if (child === null) {
-    // a background command is listed by its shellID, else its row's id (shellStep)
     const command = db.query<{ found: number }, [string, string, string]>(`
       SELECT 1 AS found FROM session_message WHERE session_id = ? AND type = 'shell' AND json_valid(data)
         AND json_type(data, '$.metadata.background') = 'true' AND (json_extract(data, '$.shellID') = ? OR id = ?) LIMIT 1`).get(sessionId, childId, childId);
@@ -609,7 +486,6 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
   let incomplete = false;
   const end = sessionView(db, childId)?.end ?? Number.MAX_SAFE_INTEGER;
   const size = supportedRowSize(db);
-  // `shown`: what the sheet takes of a row, made in the store, and its size; null when the row is no JSON or over DETAIL_ROW_BYTES
   type Taken = { seq: number; time_created: number; created: unknown; shown: string | null; bytes: number | null };
   const take = (shown: string) => `
     SELECT seq, time_created, created, CASE WHEN length(CAST(shown AS BLOB)) <= ${DETAIL_RECORD_BYTES} THEN shown END AS shown,
@@ -617,7 +493,6 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
     FROM (SELECT seq, time_created, CASE WHEN ${size} <= ${DETAIL_ROW_BYTES} AND json_valid(data) THEN json_extract(data, '$.time.created') END AS created,
       CASE WHEN ${size} <= ${DETAIL_ROW_BYTES} AND json_valid(data) THEN ${shown} END AS shown
       FROM session_message AS m WHERE session_id = ? AND seq = ?)`;
-  /** what was taken of a row, or null and said `incomplete` when nothing of it could be */
   const kept = (row: Taken | null): Taken & { shown: string; bytes: number } | null => {
     if (row === null) return null;
     if (row.shown === null || row.bytes === null) { incomplete = true; return null; }
@@ -671,33 +546,20 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
   };
 }
 
-/** The event loop let go between two steps of a read. */
 const nextTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
-/** A step that failed (the store busy for a moment) is tried again on the next turn, up to this many times in a row. */
 const STEP_TRIES = 50;
 
-/**
- * A session's subagents, read from an open store, every step at once (pagedState lets the event loop go between
- * them). `live`: the pane still runs OpenCode on this session; one that does not leaves what was running as lost,
- * ended when it was last heard of. `serviceStart`: when OpenCode's service started, when known (see above). `detail`:
- * read what each listed one did (its steps, tool calls, tokens), which a count does not need.
- */
 export function readSubagents(db: Database, sessionId: string, live: boolean, now: number, serviceStart: number | null, detail: boolean, parentEnds = false): OpencodeSubagentState {
   const scan = newScan(sessionId, now, live, serviceStart, detail, NO_LOG, parentEnds);
   while (!scan.finished) scanStep(db, scan);
   return scanResult(scan);
 }
 
-/** readSubagents on the store at `path`; null when it cannot be read now. */
 export function opencodeSubagentState(path: string, sessionId: string, live: boolean, now = Date.now(), serviceStart: number | null = null, detail = true, parentEnds = false): OpencodeSubagentState | null {
   try { return withStore(path, (db) => readSubagents(db, sessionId, live, now, serviceStart, detail, parentEnds)); }
   catch { return null; }
 }
 
-/**
- * opencodeSubagentState a step at a time, the event loop let go between steps; null when it cannot be read now. Only
- * the first step waits on a store its writer holds; a later one that finds it so is tried again on the next turn.
- */
 export async function pagedState(path: string, sessionId: string, live: boolean, now = Date.now(), serviceStart: number | null = null, detail = true, open: typeof withStore = withStore, log: ParentLog | null = null): Promise<OpencodeSubagentState | null> {
   const scan = newScan(sessionId, now, live, serviceStart, detail, log ?? NO_LOG, log !== null);
   try {
@@ -714,49 +576,24 @@ export async function pagedState(path: string, sessionId: string, live: boolean,
 }
 
 export interface OpencodeSubagentDeps {
-  /** OpenCode's store: the one this server is configured with, else where OpenCode keeps it */
   store: () => string | null;
-  /**
-   * Whether a subagent's end is taken from its parent session's record (Settings -> Read OpenCode subagent ends from
-   * their session, experimental): read on every poll. Off, or not given, only the children's own rows tell.
-   */
   parentEnds?: () => boolean;
-  /** when OpenCode's background service started, when it can be told now: read on every poll, so never waited for */
   serviceStart?: () => number | null;
-  /**
-   * The pane runs a session from now: another one, or one it came back to (`first` false: no earlier turn's wait is its
-   * own), or its first after another agent (`first`: what the other agent's turns left is not its own; what OpenCode was
-   * seen do there since, before its session was found, is).
-   */
   onReset?: (paneId: string, first: boolean) => void;
-  /**
-   * A pane's running subagents changed, or how many of them its turn started: no turn started or ended. `toggled`: the
-   * counts were read under the other side of Settings -> Read OpenCode subagent ends from their session than the ones
-   * told before, so a count that fell says nothing ended.
-   */
   onChange: (paneId: string, running: number, turnRunning: number, promptAt: number | null, toggled: boolean) => void;
   pollMs?: number;
   now?: () => number;
 }
 
-/**
- * `log`: what the session's own rows were last read to tell of its children (parentStep), for the next read to go on
- * from. `parentEnds`: the side of Settings -> Read OpenCode subagent ends from their session the counts told were read
- * under, null before any.
- */
 interface Tracked { session: string; live: boolean; running: number; turnRunning: number; promptAt: number | null; reset: boolean; log: ParentLog; parentEnds: boolean | null }
 
 /**
- * The running subagents of every OpenCode pane, for the pane's count. The session is the one
- * herdr's OpenCode integration reports (opencodeSessionId), never a guess. A pane that no longer
- * runs that session (at OpenCode's home screen, which reports none, or running another program)
- * keeps it, so that its list can say what was left running there is lost; its count is 0.
+ * The session is the one
+ * herdr's OpenCode integration reports (opencodeSessionId), never a guess.
  */
 export class OpencodeSubagentStatus {
   private readonly panes = new Map<string, Tracked>();
-  /** each pane's agent as last seen: whether the first session it runs follows another agent's */
   private readonly agents = new Map<string, string | null>();
-  /** reads of herdr's panes, numbered as they begin, and the newest taken for each pane: an older one never undoes it */
   private reads = 0;
   private readonly lastRead = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -781,19 +618,12 @@ export class OpencodeSubagentStatus {
     return this.panes.get(paneId)?.running ?? 0;
   }
 
-  /** The store and session the pane holds, or last held, and whether it still runs OpenCode on it. */
   sessionOf(paneId: string): { path: string; session: string; live: boolean } | null {
     const tracked = this.panes.get(paneId);
     const path = this.deps.store();
     return tracked && path !== null ? { path, session: tracked.session, live: tracked.live } : null;
   }
 
-  /**
-   * A pane's list, as the background tasks route answers it; null when the store cannot be read now. The read lets the
-   * event loop go: a pane that comes to run another session (or stops running it) meanwhile is read again for that, so
-   * that the answer is the pane's own as it stands when it is given. `read`: the session the list is of. Null when the
-   * pane has none, the store cannot be read now, or the pane kept moving.
-   */
   async tasksOf(paneId: string): Promise<(Pick<OpencodeSubagentState, "tasks" | "unlisted"> & { read: { path: string; session: string; live: boolean } }) | null> {
     for (let tries = 0; tries < 3; tries++) {
       const known = this.sessionOf(paneId);
@@ -807,12 +637,10 @@ export class OpencodeSubagentStatus {
     return null;
   }
 
-  /** Numbers a read of herdr's panes as it begins, before it is awaited: what refresh and ensure are given. */
   beginRead(): number {
     return ++this.reads;
   }
 
-  /** The OpenCode panes of a snapshot (`read`: when its read began) and their sessions; a pane whose binding moved is read now. */
   refresh(panes: HerdrPane[], read = this.beginRead()): Promise<void> {
     const ids = new Set(panes.map((pane) => pane.pane_id));
     for (const paneId of [...this.lastRead.keys()]) {
@@ -825,12 +653,10 @@ export class OpencodeSubagentStatus {
     return moved.length > 0 ? this.poll(new Set(moved.map((pane) => pane.pane_id))) : Promise.resolve();
   }
 
-  /** Whether a read of the pane begun after `read` was taken already. */
   private newer(paneId: string, read: number): boolean {
     return (this.lastRead.get(paneId) ?? 0) > read;
   }
 
-  /** One pane's session, as herdr reports it (`read`: when that read began); true when its binding changed. */
   ensure(pane: HerdrPane, read = this.beginRead()): boolean {
     if (this.newer(pane.pane_id, read)) return false;
     this.lastRead.set(pane.pane_id, read);
@@ -843,35 +669,18 @@ export class OpencodeSubagentStatus {
       tracked.live = false;
       return true;
     }
-    // the pane runs this session from here: a wait the agent before it held is not this one's
     if (tracked?.session === session) {
       if (tracked.live) return false;
       tracked.live = true;
       this.deps.onReset?.(pane.pane_id, false);
       return true;
     }
-    // another session than the one it ran, or the first after another agent's: a new lifetime. The first
-    // session of a pane seen new, at a shell or at OpenCode's home screen is found after its turn began,
-    // maybe after it ended: what that turn was seen do is this session's
     if (tracked !== undefined) this.deps.onReset?.(pane.pane_id, false);
     else if (before != null && before !== "opencode") this.deps.onReset?.(pane.pane_id, true);
     this.panes.set(pane.pane_id, { session, live: true, running: tracked?.running ?? 0, turnRunning: tracked?.turnRunning ?? 0, promptAt: tracked?.promptAt ?? null, reset: tracked !== undefined, log: NO_LOG, parentEnds: tracked?.parentEnds ?? null });
     return true;
   }
 
-  /**
-   * Reads the store for every pane, or for some (a turn just ended there); a pane whose counts changed is told. Each
-   * pane's read takes its first two steps now (a page of children, then the rows of those kept): a session of up to a
-   * page is read whole at once, so the frame that ends a turn has its subagents. A larger one is read on a step a turn
-   * of the event loop, and its pane told once the read is whole (the promise settles then). A pane that no longer runs
-   * a session is told it runs none at once; one whose session is being read so is left to that read.
-   *
-   * With the parent's record read (Settings -> Read OpenCode subagent ends from their session), a parent history of
-   * more than a page that is read from the start (a pane just bound, a log started over) is not in after two steps. The
-   * children's own rows are then read alone as well, as with the setting off, and their counts told at once when
-   * neither is lower than the counts that stand: a plainly running child counts in the frame that ends its turn, and no
-   * count falls before the whole read says so.
-   */
   poll(only?: string | ReadonlySet<string>): Promise<void> {
     const path = this.deps.store();
     const wanted = (paneId: string): boolean => only === undefined || (typeof only === "string" ? only === paneId : only.has(paneId));
@@ -881,7 +690,6 @@ export class OpencodeSubagentStatus {
     const serviceStart = path !== null && live.length > 0 ? this.deps.serviceStart?.() ?? null : null;
     const parentEnds = this.deps.parentEnds?.() === true;
     if (path !== null && live.length > 0) {
-      // one read for all: a store held by its writer is waited on once, not once per pane, and on the event loop not at all
       try {
         withStore(path, (db) => {
           for (const [paneId, tracked] of live) {
@@ -896,7 +704,7 @@ export class OpencodeSubagentStatus {
             if (state !== null && state.running >= tracked.running && state.turnRunning >= tracked.turnRunning) states.set(paneId, state);
           }
         }, 0);
-      } catch { /* a store busy for a moment says nothing: the counts stand */ }
+      } catch {}
     }
     for (const [paneId, tracked] of this.panes) {
       if (!wanted(paneId)) continue;
@@ -906,10 +714,8 @@ export class OpencodeSubagentStatus {
     return path === null || scans.size === 0 ? Promise.resolve() : this.readOn(path, scans);
   }
 
-  /** each pane whose session is being read a step a turn (poll), with the read's own token */
   private readonly reading = new Map<string, { session: string }>();
 
-  /** The rest of the reads a poll began, a step a turn; each pane is told once its read is whole, if it still runs that session. */
   private async readOn(path: string, scans: Map<string, Scan>): Promise<void> {
     const tokens = new Map([...scans].map(([paneId, scan]) => [paneId, { session: scan.sessionId }]));
     for (const [paneId, token] of tokens) this.reading.set(paneId, token);
@@ -926,9 +732,7 @@ export class OpencodeSubagentStatus {
         } catch { if (++failed >= STEP_TRIES) return; }
       }
       for (const [paneId, scan] of scans) {
-        // a pane that moved on since its read began: what was read is not its own now
         const tracked = this.panes.get(paneId);
-        // nor one read under the other side of Settings -> Read OpenCode subagent ends from their session: the next poll reads it again
         if (tracked?.live && tracked.session === scan.sessionId && scan.parentEnds === (this.deps.parentEnds?.() === true)) { tracked.log = scan.log; this.tell(paneId, tracked, scanResult(scan), scan.parentEnds); }
       }
     } finally {
@@ -936,10 +740,6 @@ export class OpencodeSubagentStatus {
     }
   }
 
-  /**
-   * A pane's counts as read (`parentEnds`: under which side of Settings -> Read OpenCode subagent ends from their
-   * session): told when they changed, or when its binding was reset since.
-   */
   private tell(paneId: string, tracked: Tracked, state: OpencodeSubagentState, parentEnds: boolean): void {
     const { running, turnRunning, promptAt } = state;
     const toggled = tracked.parentEnds !== null && tracked.parentEnds !== parentEnds;

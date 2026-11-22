@@ -1,9 +1,6 @@
 // Cloudflare Pages advanced-mode Worker (https://developers.cloudflare.com/pages/functions/advanced-mode/).
 // _routes.json sends only /demo and /demo/* here; every other path is served as before, _redirects
-// and _headers included. The browser demo is built with the app into GitHub Pages (site/,
-// https://herdrweb.dev/demo/); fetching it from here keeps the address a visitor sees at ovis.sh,
-// where a 302 used to show them herdrweb.dev. The demo is built with relative asset paths, so it
-// runs unchanged under this origin.
+// and _headers included.
 const DEMO_ORIGIN = "https://herdrweb.dev";
 
 export default {

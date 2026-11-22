@@ -37,7 +37,6 @@ describe("relaySkew", () => {
   });
 
   it("lets an unreleased checkout below the minimum reach its own server, and no older one", () => {
-    // package.json still names the last release while the minimum names the next one
     expect(relaySkew({ server: { version: "0.4.20", relayProtocol: RELAY_PROTOCOL }, shellVersion: "0.4.20" })).toBe("ok");
     expect(relaySkew({ server: { version: "0.4.19", relayProtocol: RELAY_PROTOCOL }, shellVersion: "0.4.20" })).toBe("pc-outdated");
     expect(relaySkew({ server: { version: MIN_SERVER_VERSION, relayProtocol: RELAY_PROTOCOL }, shellVersion: MIN_SERVER_VERSION })).toBe("ok");

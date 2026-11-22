@@ -127,7 +127,6 @@ export class DaemonConnection {
     socket.onerror = () => this.finish();
   }
 
-  /** Starts connecting; the returned connection can be closed at any point of its handshake. */
   static start(path: string, onChanged: () => void, onClose: () => void): DaemonConnection {
     return new DaemonConnection(new WebSocket(`ws+unix://${path}:/`), onChanged, onClose);
   }
@@ -201,45 +200,37 @@ export class DaemonConnection {
 
   close(): void {
     const socket = this.socket as WebSocket & { terminate?: () => void };
-    try { if (socket.terminate) socket.terminate(); else socket.close(); } catch { /* already gone */ }
+    try { if (socket.terminate) socket.terminate(); else socket.close(); } catch {}
     this.finish();
   }
 }
 
 export interface CodexDaemonOptions {
-  /** the Codex home whose control socket is used; defaults to $CODEX_HOME or ~/.codex */
   codexHome?: () => string;
   platform?: string;
-  /** the directory the pinned Codex puts rendezvous targets in; defaults to <real /tmp>/codex-daemon-<euid>. Tests pass a temp one. */
+  /** the directory the pinned Codex puts rendezvous targets in; defaults to <real /tmp>/codex-daemon-<euid>. */
   daemonRoot?: () => string;
-  /** the clock for the cache and the failure backoff; tests pass their own */
   now?: () => number;
   warn?: (message: string) => void;
 }
 
 export interface CodexDaemonSource extends CatalogSource {
-  /** drops the connection and the cache */
   close(): void;
 }
 
-/** The provider: `rows` is null whenever the daemon cannot be asked, so the scan rows stay. */
 export function createCodexDaemonSource(options: CodexDaemonOptions = {}): CodexDaemonSource {
   const home = options.codexHome ?? defaultCodexHome;
   const platform = options.platform ?? process.platform;
   const now = options.now ?? Date.now;
   const warn = options.warn ?? ((message: string) => console.warn(message));
   const cache = new Map<string, { at: number; rows: SlashCommand[] }>();
-  /** the read of one cwd, and how many calls that have not aborted still wait on it */
   const inflight = new Map<string, { pending: Promise<SlashCommand[] | null>; waiters: number }>();
   let connection: DaemonConnection | null = null;
   let connecting: Promise<DaemonConnection> | null = null;
-  /** the connection attempt under way; aborting it stops it at its next step and terminates a socket it has made */
   let attempt: AbortController | null = null;
-  /** set by close(): no connection is made again and every read answers null */
   let closed = false;
   let failedAt = 0;
   let idle: ReturnType<typeof setTimeout> | undefined;
-  /** the daemon build this provider gave up on, so a newer one is tried again */
   let disabledFor: string | null = null;
   const logged = new Set<string>();
   const once = (key: string, message: string): void => {
@@ -257,17 +248,10 @@ export function createCodexDaemonSource(options: CodexDaemonOptions = {}): Codex
     current?.close();
   };
   const liveWaiters = (): boolean => [...inflight.values()].some((read) => read.waiters > 0);
-  /** Lifecycle rule 1: a connection-level fallback makes the connection unusable for everyone. */
   const failConnection = (): void => {
     failedAt = now();
     connection?.close();
   };
-  /**
-   * Lifecycle rule 2, run after every read settles and every waiter aborts: with no live waiter
-   * anywhere the connection is kept, under the idle timer, only while it holds an answer that was
-   * used; otherwise (nothing usable came of it, or its readers all aborted) it is closed, and a
-   * connection that never gave a usable answer also waits out the failure backoff.
-   */
   const ownership = (aborted: boolean): void => {
     if (liveWaiters()) return;
     if (!aborted && cache.size > 0) {
@@ -275,7 +259,6 @@ export function createCodexDaemonSource(options: CodexDaemonOptions = {}): Codex
       return;
     }
     attempt?.abort();
-    // only a connection that was made and gave nothing usable starts a backoff: a read the backoff itself turned away never does
     if (!aborted && connection) failedAt = now();
     connection?.close();
   };
@@ -352,7 +335,6 @@ export function createCodexDaemonSource(options: CodexDaemonOptions = {}): Codex
         failConnection();
         once("refused", `codex daemon refused skills/list without experimentalApi (${error.message}); keeping scanned skills`);
       } else if (connection && !connection.closed && !closed) {
-        // a protocol error (a request that timed out) on a connection nobody closed
         failConnection();
       }
       return null;
@@ -385,12 +367,10 @@ export function createCodexDaemonSource(options: CodexDaemonOptions = {}): Codex
       shared.waiters++;
       return await new Promise<SlashCommand[] | null>((resolve, reject) => {
         let aborted = false;
-        // an aborted call answers null whatever the daemon says later; the last one waiting on a read ends it
         const abort = (): void => {
           aborted = true;
           shared.waiters--;
           ownership(true);
-          // while a connection is still being made the answer waits for that attempt to stop
           if (connecting) connecting.then(() => resolve(null), () => resolve(null));
           else resolve(null);
         };
@@ -422,7 +402,6 @@ function sourceFor(home: string): CodexDaemonSource {
   return source;
 }
 
-/** Closes every home's connection and cache (a server stopping); the next request opens what it needs again. */
 export function closeCodexDaemonSources(): void {
   for (const source of homeSources.values()) source.close();
   homeSources.clear();

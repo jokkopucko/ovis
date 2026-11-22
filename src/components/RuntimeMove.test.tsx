@@ -7,7 +7,6 @@ import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import type { MovePane, MovePlanResponse, MoveStatus } from "../../shared/runtime-move.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
-// the test renderer has no DOM to portal into: the dialog renders in place
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { RuntimeMove } = await import("./RuntimeMove.tsx");
 
@@ -64,7 +63,6 @@ const button = (label: string) => { const found = buttons(label); expect(found).
 const press = async (node: ReactTestInstance) => { await act(async () => { node.props.onClick(); }); };
 const posts = () => requests.filter((request) => request.method === "POST");
 
-// Settings → About on a herdr PC without herdr-core: the move is offered with an install of it.
 describe("the move to herdr-core where herdr-core is missing", () => {
   beforeEach(() => {
     const plan: MovePlanResponse = { available: false, reason: "no_herdr_core", install: { version: "0.1.17" }, status: { state: "idle" } };
@@ -126,7 +124,6 @@ describe("ending busy panes from the move's wait", () => {
     expect(posts()).toHaveLength(1);
   });
 
-  /** the server's offers for End all: a new token each time, and how it answers a confirm */
   const offerStopAll = (confirm: () => Response) => {
     let offers = 0;
     answers["/api/runtime/move/stop-all"] = (body) => (body as { token?: string }).token === undefined

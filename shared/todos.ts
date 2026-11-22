@@ -2,10 +2,8 @@ export type TodoStatus = "pending" | "in_progress" | "completed" | "blocked" | "
 
 export interface TodoItem {
   label: string;
-  /** the phase (omp, omo, gjc) the item belongs to */
   phase: string | null;
   status: TodoStatus;
-  /** why it is blocked, or a note the agent attached */
   note?: string;
 }
 

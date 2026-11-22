@@ -62,7 +62,6 @@ test("Bun starts with default rate limiting and ignores spoofed forwarding addre
   const relay = startBunRelay({ port: 0, limiters: memoryLimiters(relayLimits(), () => 0) });
   cleanup.push(() => relay.stop());
   const base = `http://127.0.0.1:${relay.port}`;
-  // Invalid WebSocket keys make upgrade fail after admission without retaining sockets.
   const headers = { ...upgrade.headers, "sec-websocket-key": "invalid" };
   for (let i = 0; i < 120; i++) {
     expect((await fetch(relayUrls(base, newServer()).client, { headers })).status).toBe(426);
@@ -107,23 +106,19 @@ test("failed upgrades release room and socket reservations", async () => {
 });
 
 test("one address cannot hold more than its share of open sockets, waiting or connected, and gets its place back on close", async () => {
-  // the default budgets but for the rate: one address opening sockets as fast as it may
   const relay = startBunRelay({ port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } });
   cleanup.push(() => relay.stop());
   const base = `ws://127.0.0.1:${relay.port}`;
   const held: Peer[] = [];
-  // each in its own room, all waiting for a PC that never comes
   for (let i = 0; i < DEFAULT_RELAY_LIMITS.maxSocketsPerAddress; i++) {
     const peer = await Peer.open(relayUrls(base, newServer()).client);
     expect((await peer.json())["type"]).toBe("assigned");
     held.push(peer);
   }
-  // far below the room and socket caps, yet the address's next socket is refused
   const refused = await fetch(relayUrls(base.replace("ws:", "http:"), newServer()).client, upgrade);
   expect(refused.status).toBe(429);
   expect(refused.headers.get("retry-after")).toBe("60");
   expect(await refused.text()).toBe("too many open connections from this address");
-  // the refusal evicts nobody
   expect(held.every((peer) => peer.socket.readyState === WebSocket.OPEN)).toBe(true);
   held[0]!.socket.close();
   await held[0]!.closeCode();
@@ -144,7 +139,6 @@ test("a failed upgrade gives the address its place back", async () => {
 });
 
 test.each([["rooms", 256], ["sockets", 1024]] as const)("Bun enforces the default %s capacity", async (cap, capacity) => {
-  // every socket here comes from one address: its own cap is lifted to reach the global ones
   const relay = startBunRelay({ port: 0, limits: {
     perAddressPerMinute: 10_000, globalPerMinute: 10_000, maxSocketsPerAddress: 2048,
     ...(cap === "sockets" ? { maxRooms: 2048 } : {}),

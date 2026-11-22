@@ -11,8 +11,8 @@ import { herdrRpc, herdrSocketPath, type WorkspaceCreateResult, paneRead, paneSe
 import { chromePath } from "./chrome-path.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { clickTab } from "./tab-pick.ts";
+import { openLens } from "./header-lens.ts";
 
-/** how long a resize that should not happen gets to show up */
 const NO_RESIZE_WAIT_MS = 400;
 
 type Frame = { dir: "in" | "out"; type: string; keep_size?: boolean; pane_id?: string; cols?: number; rows?: number; text?: string };
@@ -75,13 +75,11 @@ function shellSize(paneId: string, dir?: string): () => Promise<string> {
   };
 }
 
-/** A page on `paneId` that records every frame its socket sends and receives (`frames_`), its socket in `socket_`. */
 async function openRecording(browser: Browser, contexts: BrowserContext[], origin: string, paneId: string, options: Parameters<Browser["newContext"]>[0], settings: object, away = false, setup?: (page: Page) => Promise<void>): Promise<Page> {
   const context = await browser.newContext({ locale: "en-US", ...options });
   contexts.push(context);
   await context.addInitScript((stored) => {
     localStorage.setItem("ovis:settings", JSON.stringify(stored));
-    // every frame this page's socket sends and receives, to wait on the server's answers
     const frames: { dir: "in" | "out"; type: string; keep_size?: boolean; pane_id?: string; cols?: number; rows?: number; text?: string }[] = [];
     (window as unknown as { frames_: typeof frames }).frames_ = frames;
     const Native = window.WebSocket;
@@ -90,9 +88,7 @@ async function openRecording(browser: Browser, contexts: BrowserContext[], origi
         super(url, protocols);
         (window as unknown as { socket_: WebSocket }).socket_ = this;
         frames.push({ dir: "in", type: "socket-opened" });
-        this.addEventListener("message", (event) => { try { frames.push({ dir: "in", type: JSON.parse(String(event.data)).type }); } catch {} });
-        // Navigation releases a pane with detach while the PC connection retains receipts.
-        // Physical closes remain separate evidence for the explicit reconnect scenarios.
+        this.addEventListener("message", (event) => { try { const frame = JSON.parse(String(event.data)); frames.push({ dir: "in", type: frame.type, ...(frame.type === "pane-geometry" ? { cols: frame.cols, rows: frame.rows } : {}) }); } catch {} });
         this.addEventListener("close", () => frames.push({ dir: "in", type: "socket-closed" }));
       }
       override send(data: string): void { try { const frame = JSON.parse(data); frames.push({ dir: "out", type: frame.type, keep_size: frame.keep_size, ...(frame.type === "detach" ? { pane_id: frame.pane_id } : {}), ...(frame.type === "resize" ? { cols: frame.cols, rows: frame.rows } : {}), ...(frame.type === "input" ? { text: frame.text } : {}) }); } catch {} super.send(data); }
@@ -129,9 +125,6 @@ async function agentListed(origin: string, paneId: string): Promise<void> {
 const attached = (page: Page, nth = 1) => page.waitForFunction((count) => (window as unknown as { frames_: { dir: string; type: string }[] }).frames_.filter((f) => f.dir === "in" && f.type === "input-ready").length >= count, nth, { timeout: 15_000 });
 
 /**
- * The chat lens leaves the shared terminal's size alone (#361): a desktop tab drives a pane's grid
- * from its terminal lens, a phone opens the same pane in the chat lens, and the program in the pane
- * still sees the desktop's size. Switching the phone to its terminal lens fits the grid to the phone.
  * The size is the one the pane's own shell reports (`stty size`), not what either browser thinks.
  */
 export async function checkChatKeepsTerminalSize(browser: Browser, origin: string): Promise<void> {
@@ -142,7 +135,6 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
   const paneId = created.root_pane.pane_id;
   const contexts: BrowserContext[] = [];
   try {
-    // an agent pane opens in the chat lens on a phone; the shell under it answers `stty size`
     await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
     await agentListed(origin, paneId);
     // This scenario resizes the pty while probing it. Read each shell answer from a file:
@@ -158,15 +150,12 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     const phone = await open({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }, { language: "en", defaultView: "chat" });
     await phone.locator(".terminal-stack.is-chat").waitFor({ state: "attached" });
     await attached(phone);
-    // the chat lens attaches without driving the grid, and sends no resize of its own
     assert.deepEqual(await sent(phone), [{ dir: "out", type: "attach", keep_size: true }]);
     assert.equal(await size(), desktopSize, "the phone's chat lens leaves the desktop's grid");
     if (process.env.UI_EVIDENCE_DIR) await desktop.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "chat-size-desktop.png") });
     console.log(`PASS a phone's chat lens leaves the shared grid at the desktop's ${desktopSize}`);
 
-    // the phone's terminal lens fits the grid to the phone: the shell sees it change
-    // On a phone the label is hidden, but the lens keeps its accessible name.
-    await phone.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).tap();
+    await openLens(phone, "terminal", "tap");
     await phone.waitForFunction(() => (window as unknown as { frames_: { dir: string; type: string }[] }).frames_.some((f) => f.dir === "out" && f.type === "resize"), undefined, { timeout: 10_000 });
     const deadline = Date.now() + 10_000;
     let phoneSize = desktopSize;
@@ -175,8 +164,6 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     assert.ok(Number(phoneSize.split(" ")[1]) < Number(desktopSize.split(" ")[1]), `phone ${phoneSize} narrower than desktop ${desktopSize}`);
     console.log(`PASS the phone's terminal lens fits the grid to ${phoneSize}`);
 
-    // Regression (#1085): a window blur is not a hidden terminal. Its grid must remain
-    // eligible when the phone leaves the terminal, without changing blur's reconnect policy.
     const blurMark = (await framesOf(desktop)).length;
     await phone.bringToFront();
     await desktop.evaluate(() => {
@@ -208,7 +195,7 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
       socket.addEventListener("message", receive);
     }, desktopSize.split(" ").map(Number));
     const chatAt = Date.now();
-    await phone.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).tap();
+    await openLens(phone, "chat", "tap");
     const restoredAt = await desktop.evaluate(() => (window as unknown as { gridRestored_: Promise<number> }).gridRestored_);
     assert.ok(restoredAt - chatAt <= 1_000, "phone Chat restores the visible desktop grid within 1 s");
     // pane-geometry announces the resize before the sidecar applies it to herdr's pty.
@@ -218,7 +205,7 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     assert.equal(restoredSize, desktopSize, "the unfocused desktop's grid is restored in the real pty");
     assert.ok(Date.now() - chatAt <= 1_000, "the real pty restores the desktop grid within 1 s");
     console.log(`PASS phone Chat restores the visible unfocused desktop's ${desktopSize}`);
-    await phone.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).tap();
+    await openLens(phone, "terminal", "tap");
     let reclaimedSize = "";
     const reclaimDeadline = Date.now() + 10_000;
     while (Date.now() < reclaimDeadline && reclaimedSize !== phoneSize) reclaimedSize = await size();
@@ -244,12 +231,6 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
   }
 }
 
-/**
- * Picking a pane whose lens is chat, from a pane whose lens is the terminal, leaves the shared
- * terminal's size alone too: the lens is the picked pane's by the time its terminal attaches.
- * A desktop drives an agent pane's grid; a smaller window sits on a shell pane (terminal lens)
- * and picks the agent pane (chat lens there) from the sidebar.
- */
 export async function checkPaneSwitchKeepsTerminalSize(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-chat-switch-"));
   const contexts: BrowserContext[] = [];
@@ -272,7 +253,6 @@ export async function checkPaneSwitchKeepsTerminalSize(browser: Browser, origin:
     await attached(desktop);
     const desktopSize = await size();
 
-    // with chat as the lens for every pane, a shell still opens in the terminal: it has no conversation
     const other = await openRecording(browser, contexts, origin, shellPane, { viewport: { width: 900, height: 600 } }, { language: "en", defaultView: "chat" });
     await other.locator(".terminal-stack:not(.is-chat)").waitFor({ state: "attached" });
     await attached(other);
@@ -299,14 +279,15 @@ function attachRunning(terminalId: string): boolean {
 }
 
 /**
- * A tab the user is not in leaves the shared terminal's size alone, and lets go of the pane. A
- * desktop window left open behind another app (herdr's own TUI in a terminal) turned visible when
- * the screen woke, or reconnected, reloaded or moved on to the next pane in the background, and
- * fitted the pane to itself. And for as long as the bridge's attach stayed, herdr held the pane at
- * that window's size: its TUI drew the pane cut off at its split's edge, the bottom rows out of
- * reach. Out of use, the window detaches, the attach ends with the pane's last client, and herdr
- * gives the pane back to its TUI. The window attaches again, at its own size, when it takes the
- * focus.
+ * With "Use alongside herdr's own window" (`releasePaneAway`), a tab the user is not in leaves the
+ * shared terminal's size alone, and lets go of the pane; by default a desktop window out of use
+ * keeps its pane and its output, and a phone put away lets go at once either way. A desktop window
+ * left open behind another app (herdr's own TUI in a terminal) turned visible when the screen woke,
+ * or reconnected, reloaded or moved on to the next pane in the background, and fitted the pane to
+ * itself. And for as long as the bridge's attach stayed, herdr held the pane at that window's size:
+ * its TUI drew the pane cut off at its split's edge, the bottom rows out of reach. Out of use, such a
+ * window detaches, the attach ends with the pane's last client, and herdr gives the pane back to its
+ * TUI. The window attaches again, at its own size, when it takes the focus.
  */
 export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, origin: string): Promise<void> {
   await checkInactiveAttachLifecycle(browser, origin);
@@ -320,7 +301,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     workspaces.push(created.workspace.workspace_id);
     const paneId = created.root_pane.pane_id;
     const terminalId = created.root_pane.terminal_id;
-    // the pane the app moves on to once the first one closes: herdr's focused one
     const nextCwd = join(root, "next");
     mkdirSync(nextCwd);
     const next = await herdrRpc<WorkspaceCreateResult>("workspace.create", { cwd: nextCwd, label: "ovis-test-background-size-next", focus: true });
@@ -328,24 +308,18 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     const nextPane = next.root_pane.pane_id;
     const size = shellSize(paneId);
     const nextSize = shellSize(nextPane);
-    // the pause in another window is a setting this check turns on; the first window below keeps the default
     const open = (options: Parameters<Browser["newContext"]>[0], settings: object = {}) => openRecording(browser, contexts, origin, paneId, options, { language: "en", defaultView: "terminal", releasePaneAway: true, ...settings });
-    // what the page sent that sizes the grid: attaches and resizes
     const sizing = async (page: Page) => (await framesOf(page)).filter((f) => f.dir === "out" && (f.type === "attach" || f.type === "resize"));
-    // a window that let go of its pane still shows it, read-only, through the server's watch
     const viewOnly = (page: Page) => page.locator(".terminal-banner", { hasText: "View only while you use another window" });
     const watchFrames = async (page: Page) => (await framesOf(page)).filter((f) => f.dir === "in" && f.type === "watch-data").length;
 
-    // by default a window out of use keeps its pane: no detach, no paused banner, and the pane's output still arrives
     const keeping = await openRecording(browser, contexts, origin, paneId, { viewport: { width: 1280, height: 800 } }, { language: "en", defaultView: "terminal" });
     await attached(keeping);
-    // freeze timers after the real attach; only the release delay is advanced below
     await pauseClock(keeping);
     await keeping.evaluate(() => {
       Object.defineProperty(document, "hasFocus", { configurable: true, value: () => false });
       window.dispatchEvent(new Event("blur"));
     });
-    // past the moment a window that pauses lets go of its pane
     await keeping.clock.runFor(2_000);
     assert.ok(!(await framesOf(keeping)).some((f) => f.dir === "out" && f.type === "detach"), "a window out of use keeps its pane by default");
     assert.equal(await viewOnly(keeping).count(), 0, "a window out of use is not view only by default");
@@ -382,8 +356,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     await pocket.context().close();
     console.log("PASS a phone put away lets go of the pane at once and attaches again when it is back");
 
-    // a desktop window hidden lets go of its pane without watching it; shown again behind another
-    // app (no focus), it watches the pane again, so its screen stays current as before it was hidden
     const away = await open({ viewport: { width: 1280, height: 800 } });
     await attached(away);
     await pauseClock(away);
@@ -419,7 +391,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     while (phoneSize === desktopSize && Date.now() < deadline) phoneSize = await size();
     assert.notEqual(phoneSize, desktopSize, "the phone's terminal lens fits the grid to the phone");
 
-    // the desktop's window turns visible behind another app: shown, without the focus
     const shown = (await sizing(desktop)).length;
     await desktop.evaluate(() => {
       Object.defineProperty(document, "hasFocus", { configurable: true, value: () => false });
@@ -430,14 +401,12 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     assert.equal(await size(), phoneSize, "a window shown without the focus leaves the phone's grid");
     console.log(`PASS a desktop window shown without the focus leaves the shared grid at the phone's ${phoneSize}`);
 
-    // a moment later it lets go of the pane and watches it instead, and says so; the phone keeps it
     await desktop.waitForFunction(() => (window as unknown as { frames_: { dir: string; type: string }[] }).frames_.some((f) => f.dir === "out" && f.type === "detach"), undefined, { timeout: 10_000 });
     await viewOnly(desktop).waitFor({ timeout: 10_000 });
     assert.ok((await framesOf(desktop)).some((f) => f.dir === "out" && f.type === "watch"), "the window watches the pane it let go of");
     assert.equal(await size(), phoneSize, "the window letting go leaves the phone's grid");
     console.log("PASS a desktop window out of use lets go of the pane, watches it, and says it is view only");
 
-    // it reconnects in the background: a pane it let go of is not attached again
     const reconnecting = (await sizing(desktop)).length;
     const snapshots = (await framesOf(desktop)).filter((f) => f.dir === "in" && f.type === "snapshot").length;
     await desktop.evaluate(() => (window as unknown as { socket_: WebSocket }).socket_.close());
@@ -465,7 +434,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     assert.ok(!attachRunning(terminalId), "no tab in use holds herdr's attach on the pane");
     console.log("PASS with no tab in use, the bridge holds no attach on the pane");
 
-    // the window it let go of still shows the pane: its output arrives through the watch, with no attach
     const watched = await watchFrames(desktop);
     await size();
     const shows = Date.now() + 10_000;
@@ -474,8 +442,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
     assert.ok(!attachRunning(terminalId), "watching holds no attach on the pane");
     console.log("PASS a window out of use keeps showing the pane's output with no attach on it");
 
-    // the pane closes in herdr and the window moves on to the focused one in the background: having
-    // let go, it attaches nothing until the user is back, and that pane keeps the size it has
     await paneSendText(nextPane, "stty cols 132 rows 38");
     await paneSendKeys(nextPane, ["Enter"]);
     const nextBefore = await nextSize();
@@ -493,7 +459,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
       "the replacement keyed terminal starts a watch without acquiring an attach");
     console.log(`PASS a desktop window moving on to the next pane in the background leaves its grid at ${nextBefore}`);
 
-    // the user comes back to it: the window takes the focus, attaches, and takes the grid
     const returning = (await sizing(desktop)).length;
     await desktop.evaluate(() => {
       delete (document as unknown as { hasFocus?: unknown }).hasFocus;
@@ -514,7 +479,6 @@ export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, orig
   }
 }
 
-/** Drive the real component and assert the attach/resize frames, not the paused notice alone. */
 export async function checkInactiveAttachLifecycle(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-inactive-"));
   const contexts: BrowserContext[] = [];
@@ -568,7 +532,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
         const watchFirst = fresh && !legacy && scenario !== "mirrored-mount";
         const firstTerminal = terminals.get(first)!;
         if (watchFirst) {
-          // A deliberately non-layout size exposes #902: a keep_size sidecar spawn would replace it.
           await paneSendText(first, "stty cols 140 rows 40");
           await paneSendKeys(first, ["Enter"]);
           assert.equal(await shellSize(first)(), "40 140");
@@ -580,8 +543,8 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
         let releaseSubmit: (() => void) | undefined;
         let acceptedQueue = false;
         let holdOutput = false;
-        // idle-held / idle-offline: the input-ready of the attach that takes an idle pane back waits here
         let holdReady = false;
+        let dropInputResults = false;
         const heldReady: Array<() => void> = [];
         let injectFrame: ((frame: object) => void) | undefined;
         let injectOutput: (() => void) | undefined;
@@ -601,7 +564,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           };
           listeners.add(check); check();
         });
-        const routed = queueScenario || scenario === "writes" || scenario === "background-cache" || scenario === "mirrored-cache" || legacy
+        const routed = queueScenario || scenario === "writes" || scenario === "background-cache" || scenario === "mirrored-cache" || legacy || scenario === "held"
           || (scenario.startsWith("idle") && scenario !== "idle-off");
         const recorded = async (): Promise<Frame[]> => {
           if (routed) return [...wire];
@@ -609,17 +572,24 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           return framesOf(page);
         };
         const setup = async (recording: Page): Promise<void> => {
-          if (scenario === "hidden-mount") await recording.route("**/api/machines", async (route) => {
-            const response = await route.fetch();
-            // App deliberately does not load while hidden. Hide after loading starts, but before
-            // the roster response can mount a pane; hasFocus alone must not permit an attach.
-            await recording.evaluate(() => {
-              Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-              Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
-            });
-            await route.fulfill({ response });
+          // by path: the app asks with `?compact_agents=1`, which a glob ending in the path does not match
+          const isRoster = (url: URL) => url.pathname === "/api/machines";
+          if (scenario === "hidden-mount") await recording.addInitScript(() => {
+            const browserWindow: Window = window;
+            const fetchPage = browserWindow.fetch.bind(browserWindow);
+            let started = false;
+            // Let the first roster read start, then hide in that same task. A
+            // machine-events socket can mount the pane before the HTTP answer.
+            Object.defineProperty(document, "visibilityState", { configurable: true, get: () => started ? "hidden" : "visible" });
+            Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
+            browserWindow.fetch = (input, init) => {
+              const answer = fetchPage(input, init);
+              const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+              if (url.pathname === "/api/machines") started = true;
+              return answer;
+            };
           });
-          if (scenario === "mirrored-mount") await recording.route("**/api/machines", async (route) => {
+          if (scenario === "mirrored-mount") await recording.route(isRoster, async (route) => {
             const response = await route.fetch();
             const roster: { machines: Machine[] } = await response.json();
             for (const machine of roster.machines) if (machine.herdr) {
@@ -648,11 +618,11 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             const upstream = socket.connectToServer();
             upstream.onMessage((raw) => {
               const frame = JSON.parse(String(raw));
+              if (dropInputResults && frame.type === "input-result") return;
               if (holdReady && frame.type === "input-ready" && frame.pane_id === first) {
                 heldReady.push(() => { record(raw, "in"); socket.send(raw); });
                 return;
               }
-              // an older bridge, without the read-only view: it sends no features frame, and its snapshot lists no watch
               if (legacy && frame.type === "features") return;
               if (legacy && frame.type === "snapshot") {
                 frame.features = frame.features.filter((feature: string) => feature !== "watch");
@@ -673,7 +643,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               record(raw, "out");
               if (queueScenario && frame.type === "submit" && frame.delivery === "queue") {
                 if (scenario === "queue-switch") {
-                  // The component receives the real pending protocol; backend queue behavior has contract tests.
                   const receipt = JSON.stringify({ type: "submit-result", id: frame.id, pane_id: first, ok: true,
                     pending: { id: "lifecycle-queue", request_id: frame.id, text: frame.text, state: "queued", created_at: new Date().toISOString() } });
                   record(receipt, "in"); socket.send(receipt);
@@ -695,11 +664,9 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
         }
         page = await openRecording(browser, contexts, origin, scenario === "held" ? heldPane : first,
           { viewport: { width: 1000, height: 700 } }, { language: "en", defaultView: queueScenario ? "chat" : "terminal",
-            // These scenarios exercise the automatic queue, which is off until chosen.
             autoSendQueued: queueScenario,
             releasePaneAway: scenario === "mount-optin" || (!fresh && !reconnect && scenario !== "switch" && scenario !== "idle-off") },
           fresh, async (recording) => {
-            // a tab in use from its first attach, on the page clock from the start: its quiet spell is counted there
             if (scenario.startsWith("idle")) {
               await recording.addInitScript(() => Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true }));
               await recording.clock.install();
@@ -727,11 +694,27 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             "the fresh attach succeeds without a held retry");
           assert.equal(await page.getByText("Another app has this pane open.", { exact: false }).count(), 0,
             "a fresh resume must clear the previous attach's held state");
-          await page.clock.resume();
+          // typed with the page clock still paused, so before the new attach's first output is drawn: the terminal
+          // takes keys from the resume on, not only once that output has cleared what the hold closed
+          const typedFrom = (await framesOf(page)).length;
+          dropInputResults = true;
           await page.locator(".xterm-helper-textarea").focus();
           await page.keyboard.type("z");
-          await page.waitForFunction(() => (window as unknown as { frames_: Frame[] }).frames_
-            .some((f) => f.dir === "out" && f.type === "input"), undefined, { timeout: 10_000 });
+          await page.waitForFunction((from) => (window as unknown as { frames_: Frame[] }).frames_.slice(from)
+            .some((f) => f.dir === "out" && f.type === "input" && f.text === "z"), typedFrom, { timeout: 10_000 });
+          await page.clock.resume();
+          // a masked prompt may have come while the pane was held: until the new screen is read, a key goes as a password
+          // would. The connection ends before its receipt: the terminal says a key may not have arrived, and holds
+          // nothing of it, where a key typed as usual would come back in a draft
+          await page.evaluate(() => (window as unknown as { socket_: WebSocket }).socket_.close());
+          await page.getByText("A key may not have reached the terminal", { exact: false }).first().waitFor();
+          // nor is it held: no draft keeps it on disk, and none is drawn once the connection is back and the pane takes
+          // input again (a draft is drawn only while connected)
+          await attached(page, 2);
+          assert.equal(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("ovis:terminal-draft:"))
+            .some((key) => { try { return (JSON.parse(localStorage.getItem(key) ?? "{}") as { text?: string }).text?.includes("z") === true; } catch { return false; } })), false,
+          "a key typed before the taken-back pane's screen is read is kept in no draft");
+          assert.equal(await page.locator(".draft-text").count(), 0, "a key typed before the taken-back pane's screen is read is never held in a draft");
           console.log("PASS inactive attach lifecycle: held");
           continue;
         }
@@ -776,27 +759,23 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             await waitWire("in", "input-ready", readies + 1);
           };
           if (scenario === "idle-secret") {
-            // a masked prompt comes up while the tab only watches the pane
             // the command line does not spell the prompt: only the prompt itself puts "Password:" on screen
             await paneSendText(first, "read -s -p \"$(printf 'Pass%s: ' word)\" x");
             await paneSendKeys(first, ["Enter"]);
             const drawn = (): Promise<boolean> => idlePage.evaluate((shown) => document.querySelector(shown)?.textContent?.includes("Password:") ?? false, shownRows());
             const promptDeadline = Date.now() + 10_000;
-            // the paused clock lets the watched view parse and draw only as it is advanced (no resume has started yet)
             while (!(await drawn()) && Date.now() < promptDeadline) await page.clock.runFor(100);
             assert.ok(await drawn(), "the masked prompt is on the watched screen");
           }
           holdReady = true;
           const proof = join(root, `idle-${Date.now()}.txt`);
           const line = scenario === "idle" ? `echo typed-once > ${proof}` : scenario === "idle-secret" ? "hunter2" : "echo held-once";
-          // typed from the view-only screen: its first key takes the pane back
           await page.locator(".xterm-helper-textarea").focus();
           await page.keyboard.type(line);
           if (scenario === "idle") await page.keyboard.press("Enter");
           await page.waitForFunction((from) => (window as unknown as { frames_: Frame[] }).frames_.slice(from)
             .some((f) => f.dir === "out" && f.type === "attach"), start, { timeout: 10_000 });
           if (scenario === "idle") {
-            // every key typed before the attach took input waited for it, and went to the pane once, in order
             assert.deepEqual(await typedOut(), [], "nothing is typed before the attach takes input");
             await readyComes();
             const ran = Date.now() + 10_000;
@@ -819,7 +798,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             await page.getByText("Another app has this pane open.", { exact: false }).first().waitFor();
           } else if (scenario === "idle-offline") {
             await page.evaluate(() => (window as unknown as { socket_: WebSocket }).socket_.close());
-            // the ready held for the dropped connection never reaches the page; the reconnect's is held next
             heldReady.length = 0;
             // the reconnect's backoff, advanced in steps and never as far as the keys' wait (5 s)
             const reopened = async (): Promise<boolean> => (await framesOf(idlePage)).filter((f) => f.type === "socket-opened").length >= 2;
@@ -852,7 +830,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           await page.waitForFunction((from) => (window as unknown as { frames_: Frame[] }).frames_.slice(from)
             .some((f) => f.dir === "out" && f.type === "input"), start, { timeout: 10_000 });
           assert.deepEqual(await typedOut(), ["echo held-once"], "the held keys go once, when the user sends them");
-          // the held text was typed without Enter: run it, so the next case starts at an empty prompt
           await paneSendKeys(first, ["Enter"]);
           console.log(`PASS inactive attach lifecycle: ${scenario}`);
           continue;
@@ -877,7 +854,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             await page.locator(".xterm-helper-textarea").dispatchEvent("keydown", { key: "Shift", code: "ShiftLeft", bubbles: true });
             await attached(page);
           } else {
-            // Reload while still away, including when hidden but hasFocus() returns true.
             await page.reload();
             await page.locator(".terminal-banner", { hasText: "View only while you use another window" }).waitFor();
             await viewing(scenario === "hidden-mount");
@@ -902,7 +878,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           continue;
         }
         if (reconnect) {
-          // Keep the ordinary attach with the setting off, then lose the connection while away.
           await page.evaluate((hidden) => {
             Object.defineProperty(document, "hasFocus", { configurable: true, value: () => false });
             Object.defineProperty(document, "visibilityState", { configurable: true, get: () => hidden ? "hidden" : "visible" });
@@ -919,7 +894,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             await viewing(scenario === "hidden-reconnect", before);
             assert.deepEqual(await sent(page, before), [], "a background reconnect watches before any attach replay");
             if (scenario === "hidden-reconnect") {
-              // shown again behind another window, it starts the view it held for the return
               await page.evaluate(() => {
                 Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
                 document.dispatchEvent(new Event("visibilitychange"));
@@ -933,17 +907,14 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           continue;
         }
         if (scenario === "mirrored-cache") {
-          // Given a mounted fixed-grid pane (the mirror's geometry contract), keep its subscription.
           await waitWire("in", "pane-geometry");
           await pauseClock(page);
           const extra = await tabCreate({ workspaceId: workspaces[0]!, label: "Mirror cache" });
           const before = wire.length;
-          // When it becomes cached, presentation effects must not release the mirror.
           await clickTab(page, extra.tab.tab_id, true);
           await page.locator(`.pane-frame.is-hidden[data-layout-pane="${first}"]`).waitFor({ state: "attached" });
           await page.clock.runFor(0);
           await waitWire("in", "input-ready", 2);
-          // Then the other pane is attached but no detach was sent for the cached mirror.
           assert.deepEqual(detachedPanes(wire.slice(before)), [], "caching a mirrored pane never releases it");
           console.log("PASS inactive attach lifecycle: mirrored-cache");
           continue;
@@ -957,7 +928,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           if (scenario === "queue-switch") await page.locator('.pending-message[data-state="queued"]').waitFor();
         }
         {
-          // Freeze timers after the real first attach; only the release delay is advanced below.
           await pauseClock(page);
           if (scenario === "writes") {
             await page.clock.runFor(50);
@@ -1002,14 +972,12 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               if (acceptedQueue) {
                 const queued = page.locator('.pending-message[data-state="queued"]');
                 await queued.waitFor();
-                // An accepted follow-up still owns its lease until the user discards it.
                 await queued.getByRole("button", { name: "Discard", exact: true }).evaluate((button: HTMLElement) => button.click());
                 await waitWire("out", "pending-action");
               }
               await waitWire("out", "detach");
             }
           } else if (scenario === "background-cache") {
-            // Given an away-released pane, navigation must not change its release reason.
             await page.clock.runFor(1000);
             await waitWire("out", "watch");
             const viewOnly = page.locator(".pane-frame.is-current .terminal-banner", { hasText: "View only while you use another window" });
@@ -1025,7 +993,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               await page.clock.runFor(0);
             };
             const before = (await recorded()).length;
-            // When A -> B -> A happens without window focus, both panes remain observers.
             await pick(extra.root_pane.pane_id);
             await waitWire("out", "unwatch");
             await waitWire("out", "watch", 2);
@@ -1036,7 +1003,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               "an away-released pane returned from cache in the background stays watch-only");
             await waitWire("out", "watch", 3);
             await viewOnly.waitFor();
-            // Then real focus resumes the presented pane, not its cached sibling.
             const returning = (await recorded()).length;
             await page.evaluate(() => {
               Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
@@ -1096,8 +1062,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             await waitDetach(page);
             await page.locator(".terminal-banner", { hasText: "View only while you use another window" }).waitFor();
             const before = (await framesOf(page)).length;
-            // Resume only the pane that was explicitly touched; a window-level event no
-            // longer has a target once several independent terminals can be mounted.
             await page.locator(`.terminal-stack[data-pane-owner="${first}"]`).evaluate((stack) => {
               stack.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));
             });
@@ -1107,7 +1071,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             await page.clock.runFor(1000);
             await waitDetach(page, 2);
           } else {
-            // Returning before the delay cancels release, including repeated interruptions.
             await page.evaluate(() => {
               for (let i = 0; i < 5; i++) {
                 Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true });
@@ -1237,7 +1200,6 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
     const created = await workspaceCreate({ cwd, label: "ovis-test-reclaim-size" });
     workspace = created.workspace.workspace_id;
     const paneId = created.root_pane.pane_id;
-    // the pty is resized under the shell throughout: its answers go to files, not the screen
     const size = shellSize(paneId, cwd);
     const sizeBecomes = async (expected: string, what: string) => {
       const deadline = Date.now() + 10_000;
@@ -1245,7 +1207,6 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
       while (Date.now() < deadline) { seen = await size(); if (seen === expected) return; await Bun.sleep(100); }
       throw new Error(`${what}: the pane is ${seen}, not ${expected}`);
     };
-    // both windows are in use the whole time: neither gets a focus event
     const inFront = async (page: Page) => { await page.addInitScript(() => Object.defineProperty(document, "hasFocus", { configurable: true, value: () => true })); };
     const settings = { language: "en", defaultView: "terminal" };
     // A window asks for its grid with its attach, or with a resize after it. A first attach waits
@@ -1272,11 +1233,9 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
       const deadline = Date.now() + 10_000;
       let asked: string | undefined;
       let seen = "";
-      // the latest grid asked, once no font face can still arrive and refit the terminal
       const latest = () => page.evaluate(() => document.fonts.status === "loaded" ? (window as unknown as { asked_: string[] }).asked_.at(-1) : undefined);
       while (Date.now() < deadline) {
         asked = await latest();
-        // a grid asked while the shell answered is waited for in turn
         if (asked) { seen = await size(); if (seen === asked && await latest() === asked) return asked; }
         await Bun.sleep(100);
       }
@@ -1288,23 +1247,31 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
     const phone = await openRecording(browser, contexts, origin, paneId, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }, { ...settings, terminalInputMode: "line" }, false, asking);
     await attached(phone);
     const phoneSize = await tookAskedGrid(phone, "the phone took the pane at its own size");
+    // A window takes the pane back on a click or a key only once it has heard that another took it: the server's
+    // pane-geometry sets the grid it compares with its own, and can reach a window after the shell already answers at
+    // the new size. Each size the pty took is heard by both windows before either acts on it.
+    const heard = (page: Page, grid: string) => page.waitForFunction((want) => {
+      const last = (window as unknown as { frames_: Frame[] }).frames_.filter((f) => f.dir === "in" && f.type === "pane-geometry").at(-1);
+      return last !== undefined && `${last.rows} ${last.cols}` === want;
+    }, grid, { timeout: 10_000 });
+    const took = async (grid: string, what: string) => {
+      await sizeBecomes(grid, what);
+      await Promise.all([heard(desktop, grid), heard(phone, grid)]);
+    };
+    await Promise.all([heard(desktop, phoneSize), heard(phone, phoneSize)]);
 
     await desktop.locator(".xterm").click();
-    await sizeBecomes(desktopSize, "a click in the desktop terminal");
+    await took(desktopSize, "a click in the desktop terminal");
     await phone.locator(".xterm").tap();
-    await sizeBecomes(phoneSize, "a tap in the phone terminal");
-    // a right-click is for the pane menu, not the user taking the pane: the grid stays the phone's
+    await took(phoneSize, "a tap in the phone terminal");
     await desktop.locator(".xterm").click({ button: "right" });
     await Bun.sleep(500);
     assert.equal(await size(), phoneSize, "a right-click in the desktop terminal leaves the pane at the phone's size");
-    // Escape closes the menu where one opened; in the terminal it is a key like any other
     await desktop.keyboard.press("Escape");
     await desktop.keyboard.press("Shift");
-    await sizeBecomes(desktopSize, "a key in the desktop terminal");
+    await took(desktopSize, "a key in the desktop terminal");
     console.log("PASS a window that kept its focus takes the pane back on a click or a key in its terminal");
 
-    // The phone's own input sits outside its grid: the input line, its Send and Enter and the key
-    // bar. Each takes the pane back to the phone's grid, and the resize goes out before what it sends.
     const [phoneRows, phoneCols] = phoneSize.split(" ").map(Number);
     const outFrom = async (page: Page, from: number) => (await framesOf(page)).slice(from).filter((f) => f.dir === "out");
     const resizedBefore = async (what: string, from: number, sends: readonly string[]) => {
@@ -1319,9 +1286,8 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
       assert.ok(sent >= 0, `${what}: the phone sent none of ${sends.join("/")}: ${JSON.stringify(out)}`);
       const resized = out.findIndex((f) => f.type === "resize" && f.cols === phoneCols && f.rows === phoneRows);
       assert.ok(resized >= 0 && resized < sent, `${what}: the phone's own grid goes out before its input: ${JSON.stringify(out)}`);
-      await sizeBecomes(phoneSize, what);
+      await took(phoneSize, what);
     };
-    // focus into the line: a tap there is the user on the phone, before a key is typed
     let mark = (await framesOf(phone)).length;
     await phone.locator(".terminal-input-text").tap();
     const focusDeadline = Date.now() + 10_000;
@@ -1330,10 +1296,9 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
       await Bun.sleep(50);
     }
     assert.ok((await outFrom(phone, mark)).some((f) => f.type === "resize" && f.cols === phoneCols && f.rows === phoneRows), "a tap into the input line takes the pane back to the phone's grid");
-    await sizeBecomes(phoneSize, "a tap into the input line");
-    // the line keeps its focus from here on: no focus event helps the steps below
+    await took(phoneSize, "a tap into the input line");
     await desktop.keyboard.press("Shift");
-    await sizeBecomes(desktopSize, "a key in the desktop terminal, the phone's line focused");
+    await took(desktopSize, "a key in the desktop terminal, the phone's line focused");
     await phone.keyboard.type("true");
     mark = (await framesOf(phone)).length;
     await phone.keyboard.press("Enter");
@@ -1341,13 +1306,13 @@ export async function checkFocusedWindowReclaimsTerminalSize(browser: Browser, o
     await phone.waitForFunction(() => (document.querySelector(".terminal-input-text") as HTMLTextAreaElement | null)?.value === "", undefined, { timeout: 10_000 });
     await resizedBefore("a line sent from the phone's input line", mark, ["submit", "input"]);
     await desktop.keyboard.press("Shift");
-    await sizeBecomes(desktopSize, "a key in the desktop terminal, before the key bar");
+    await took(desktopSize, "a key in the desktop terminal, before the key bar");
     mark = (await framesOf(phone)).length;
     // Ctrl+C, not Esc: the shell would read Esc and the size command's first letter as one Meta key
     await phone.locator(".key-bar").getByRole("button", { name: "Control C" }).tap();
     await resizedBefore("a key-bar tap on the phone", mark, ["input", "keys"]);
     await desktop.keyboard.press("Shift");
-    await sizeBecomes(desktopSize, "a key in the desktop terminal, before the empty line's Enter");
+    await took(desktopSize, "a key in the desktop terminal, before the empty line's Enter");
     mark = (await framesOf(phone)).length;
     await phone.locator(".terminal-input-send").tap();
     await resizedBefore("Enter from the phone's empty input line", mark, ["input", "keys"]);

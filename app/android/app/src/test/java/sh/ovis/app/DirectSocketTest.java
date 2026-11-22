@@ -25,7 +25,6 @@ import org.junit.After;
 import org.junit.Test;
 
 public class DirectSocketTest {
-    /** What the client told its listener, in order. */
     private final BlockingQueue<String> events = new LinkedBlockingQueue<>();
     private ServerSocket server;
 
@@ -40,20 +39,18 @@ public class DirectSocketTest {
         if (server != null) server.close();
     }
 
-    /** A peer on loopback that runs `peer` on the first connection. */
     private interface Peer { void run(Socket socket) throws Exception; }
 
     private DirectSocket client(Peer peer, int handshakeMs) throws IOException {
         server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
         Thread thread = new Thread(() -> {
-            try (Socket socket = server.accept()) { peer.run(socket); } catch (Exception ignored) { /* the test reads the client's side */ }
+            try (Socket socket = server.accept()) { peer.run(socket); } catch (Exception ignored) { }
         });
         thread.setDaemon(true);
         thread.start();
         return new DirectSocket("127.0.0.1", server.getLocalPort(), listener, handshakeMs);
     }
 
-    /** Reads the request and answers it with `status` and `headers`, the accept key added when `accept`. */
     private static void upgrade(Socket socket, String status, String headers, boolean accept) throws Exception {
         InputStream in = socket.getInputStream();
         String key = null;
@@ -206,7 +203,6 @@ public class DirectSocketTest {
         assertEquals(Integer.valueOf(1001), answered.poll(10, TimeUnit.SECONDS));
     }
 
-    /** The close frame the client sent after the upgrade, unmasked: [code, reason bytes...]. */
     private DirectSocket closingClient(BlockingQueue<byte[]> closes) throws IOException {
         return client((peer) -> {
             upgrade(peer, "HTTP/1.1 101 Switching Protocols", GOOD, true);
@@ -252,7 +248,6 @@ public class DirectSocketTest {
     @Test
     public void endsWithA1009WhenTooMuchWaitsToGoOut() throws Exception {
         CountDownLatch held = new CountDownLatch(1);
-        // nothing goes out before the upgrade, which this peer holds back
         DirectSocket socket = client((peer) -> held.await(), 60_000);
         socket.start();
         byte[] mebibyte = new byte[1024 * 1024];

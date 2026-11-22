@@ -1,12 +1,3 @@
-/*
- * The PC list (RelayPcTable.tsx): a semantic 5-column table on desktop (colgroup 36/18/22/12/12,
- * 36px sticky header, --table-row-h rows; 4 columns of 36/22/28/14 without Last seen beside an open
- * Details pane) and a semantic <ul> of two-line rows on phones (<=768px) or narrowed containers
- * (<720px). The Relay column carries the route this device reaches each PC by once a check ran
- * ("Same network · 4 ms", the relay's chip · 62 ms, "No answer") and is the first column to go when
- * the list is narrower than 560px. Tokens only; no colour literals and no resting shadows.
- */
-
 .relay-pc-list-region { min-width: 0; container-type: inline-size; }
 .relay-pc-toolbar {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
@@ -18,20 +9,18 @@
   min-width: calc(2 * var(--touch-target)); min-height: var(--control-h); margin-top: 0; padding: 0 var(--space-3);
 }
 
-/* ---- desktop table ---- */
 .relay-pc-table {
   width: 100%; table-layout: fixed; border-collapse: collapse; font-size: max(var(--relay-fs-body-min), var(--fs-md));
 }
-.relay-pc-col-name { width: 36%; }
-.relay-pc-col-state { width: 18%; }
+.relay-pc-col-name { width: 34%; }
+.relay-pc-col-state { width: 20%; }
 .relay-pc-col-relay { width: 22%; }
 .relay-pc-col-seen { width: 12%; }
-.relay-pc-col-act { width: 12%; }
+.relay-pc-col-act { width: 14%; }
 .relay-pc-table.is-without-seen .relay-pc-col-name { width: 36%; }
 .relay-pc-table.is-without-seen .relay-pc-col-state { width: 22%; }
 .relay-pc-table.is-without-seen .relay-pc-col-relay { width: 28%; }
 .relay-pc-table.is-without-seen .relay-pc-col-act { width: 14%; }
-/* the route is the first column to go when the list is narrow: name, state and the action keep one line */
 @container (max-width: 559px) {
   /* the cells stay in the row (display: none would move the action into this empty track); the column is 0 wide and its content invisible */
   .relay-pc-list-region .relay-pc-table .relay-pc-col-relay { width: 0; }
@@ -132,8 +121,7 @@
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums;
 }
-/* one line in the table cell; the full text is the span's title */
-.relay-pc-table .relay-pc-state-word { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relay-pc-table .relay-pc-state-word { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; max-width: 100%; overflow: hidden; }
 .relay-pc-probe-line {
   display: block;
   margin: 0;
@@ -159,10 +147,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* one line: the route word or the relay's chip, then the round trip; the state colour stays on the dot */
 .relay-pc-route { display: inline-flex; align-items: center; max-width: 100%; min-width: 0; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .relay-pc-route > span:only-child, .relay-pc-route > .relay-pc-relay-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* beside a relay chip the round trip stays whole; the chip gives way first */
 .relay-pc-route > span:not(:only-child) { flex: none; }
 .relay-pc-phone-meta .relay-pc-route { color: var(--text-dim); }
 .relay-pc-cell-seen,
@@ -191,7 +177,6 @@
 }
 .relay-pc-filter-empty .relay-dash-none { margin: 0; }
 
-/* ---- phone and narrow two-line list (IS-TABLE-10, IS-PHONE-04..05) ---- */
 .relay-pc-phone-list {
   display: flex;
   flex-direction: column;

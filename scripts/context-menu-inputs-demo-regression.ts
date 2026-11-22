@@ -1,11 +1,3 @@
-/**
- * Issue #1180: a right-click in a pane's own text fields (the chat composer, the terminal's input
- * line, the find bar's field) is the browser's: its menu with Copy, Paste and spelling, on the
- * field it focused. A right-click on the pane itself is still the app's pane menu, and a text
- * field outside a pane frame (the Rename pane dialog) was never the app's. On the real client
- * over the demo's fixture transport, through Chromium's own input pipeline: no herdr session is
- * opened.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +6,7 @@ import { chromium, type Locator, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 /** What the page did with one contextmenu event, read after every handler and React's commit ran. */
 interface Seen { target: string; defaultPrevented: boolean; reachedWindow: boolean; paneMenu: boolean; active: string }
@@ -22,7 +15,6 @@ declare global { interface Window { __contextmenus: Seen[] } }
 const app = mkdtempSync(join(tmpdir(), "herdr-context-menu-inputs-demo-"));
 const PANE_MENU = '[role="menu"][aria-label^="Pane actions for "], [role="dialog"][aria-label^="Pane actions for "]';
 
-/** A real right-click on the locator: pointer, mouse and contextmenu events from Chromium itself. */
 async function rightClick(page: Page, target: Locator): Promise<Seen> {
   const before = await page.evaluate(() => window.__contextmenus.length);
   await target.click({ button: "right" });
@@ -42,17 +34,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -85,7 +67,6 @@ try {
       const frame = page.locator(".pane-frame.is-current");
       const seen: Record<string, Seen> = {};
 
-      // the chat composer, holding the user's own draft, not focused when the right button presses
       await page.goto(`${origin}?pane=${encodeURIComponent(panes.api)}&view=chat`);
       await page.locator(".conn-live").waitFor({ state: "attached" });
       const composer = frame.locator(".composer-text");
@@ -96,7 +77,6 @@ try {
       seen.composer = await rightClick(page, composer);
       await dismissPaneMenu(page);
 
-      // the terminal's input line (Settings: Terminal input "line")
       await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
       await page.locator(".conn-live").waitFor({ state: "attached" });
       const line = frame.locator(".terminal-input-text");
@@ -107,7 +87,6 @@ try {
       seen.terminalLine = await rightClick(page, line);
       await dismissPaneMenu(page);
 
-      // the find bar's query field (Mod+Shift+F)
       await frame.locator(".xterm-screen").click();
       await page.keyboard.press("Control+Shift+F");
       const query = frame.locator(".find-bar input");
@@ -119,14 +98,11 @@ try {
       await frame.getByRole("button", { name: "Close search", exact: true }).click();
       await query.waitFor({ state: "detached" });
 
-      // control: the pane's own surface (the terminal screen) is the app's pane menu
       seen.screen = await rightClick(page, frame.locator(".xterm-screen"));
       const menu = page.locator(PANE_MENU);
       await menu.waitFor();
 
-      // control: a text field outside a pane frame, the Rename pane dialog, was never the app's
       await menu.getByRole("menuitem", { name: "Rename pane", exact: true }).click();
-      // the dialog names the pane it renames: "Rename pane · <title>"
       const rename = page.getByRole("dialog", { name: /^Rename pane( · |$)/ });
       await rename.waitFor();
       seen.renameInput = await rightClick(page, rename.locator("input"));

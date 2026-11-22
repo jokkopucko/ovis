@@ -11,7 +11,7 @@ import { forgetSavedPc, mountRelayShell, type RelayShellMount } from "./shell.ts
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
-import { observedVersionOf, type RelayDevice, type RelayDeviceStore, type SavedDevice } from "./device.ts";
+import { observedVersionOf, type RelayDevice, type RelayDeviceStore, type ShellDeviceStore, type SavedDevice } from "./device.ts";
 
 const storageKeys = ["localStorage", "sessionStorage"] as const;
 const descriptors = [...storageKeys, "window"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
@@ -23,7 +23,6 @@ afterEach(() => {
   setTransport(nativeTransport);
 });
 
-/** Both web storages, as the page sees them; the returned maps are what each holds. */
 function webStorage(): { readonly local: Map<string, string>; readonly session: Map<string, string> } {
   const local = new Map<string, string>(), session = new Map<string, string>();
   for (const [key, values] of [["localStorage", local], ["sessionStorage", session]] as const) {
@@ -36,10 +35,11 @@ function webStorage(): { readonly local: Map<string, string>; readonly session: 
   return { local, session };
 }
 
-function memoryStore(devices: Map<string, RelayDevice>): RelayDeviceStore {
+function memoryStore(devices: Map<string, RelayDevice>): ShellDeviceStore {
   return {
     get: async (id) => devices.get(id), list: async () => [...devices.values()],
     remove: async (id) => { devices.delete(id); },
+    removeRow: async (id, row) => { if (devices.get(id)?.device_id !== row) return false; devices.delete(id); return true; },
     update: async (id, change) => { const next = change(devices.get(id)); devices.set(id, next); return next; },
   };
 }
@@ -70,7 +70,6 @@ it("keeps a PC's admitted version in its saved record across a reload, never in 
     await flow.admit(opened, attempt);
     expect(observedVersions().get(offer.server_id)).toEqual({ version: "0.0.1", outdated: true });
     expect(states.at(-1)).toMatchObject({ kind: "outdated", update: { phase: "manual" } });
-    // a reload starts with nothing in memory and reads the saved records
     await loadObservedVersions(memoryStore(new Map()));
     expect(observedVersions().size).toBe(0);
     await loadObservedVersions(store);
@@ -141,7 +140,6 @@ it("never installs after cancellation while an update-status read was pending", 
 
 it.each([["pc-outdated", "0.0.1"], ["server-newer", "2.0.0"]] as const)("drops a %s admission cancelled while its version was being saved", async (_skew, version) => {
   webStorage();
-  // the tab's reload memory lives in window.sessionStorage
   Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: "unused", relay: "wss://relay.ovis.sh" };
   const devices = new Map([[offer.server_id, await savedDevice(offer.server_id)]]);
@@ -169,7 +167,6 @@ it.each([["pc-outdated", "0.0.1"], ["server-newer", "2.0.0"]] as const)("drops a
   } finally { flow.cancel(); opened.close(); }
 });
 
-/** Captures the actual controller/view boundary; transports below supply only PC responses. */
 function shellFixture() {
   const browser = createShellTestPage();
   const devices = new Map<string, RelayDevice>();
@@ -183,6 +180,7 @@ function shellFixture() {
     store: {
       get: async (id) => devices.get(id), list: async () => [...devices.values()],
       remove: async (id) => { devices.delete(id); },
+      removeRow: async (id, row) => { if (devices.get(id)?.device_id !== row) return false; devices.delete(id); return true; },
       update: async (id, change) => { const next = change(devices.get(id)); devices.set(id, next); return next; },
     },
     renderApp: () => { apps++; return { render() {}, unmount() {} }; },
@@ -199,7 +197,7 @@ function shellFixture() {
   } };
 }
 
-it.each(["retry", "disconnect"] as const)("keeps Ready pending through %s after a fresh outdated admission until Open PC", async (recovery) => {
+it.each(["retry", "disconnect"] as const)("enters the PC once %s gets past a fresh outdated admission, with no Ready checkpoint", async (recovery) => {
   const fixture = shellFixture();
   class Admitted extends RelayTransport {
     version = "0.0.1";
@@ -218,10 +216,8 @@ it.each(["retry", "disconnect"] as const)("keeps Ready pending through %s after 
     if (recovery === "disconnect") fatal?.(new MuxProtocolError("timeout", "fixture disconnected"));
     fixture.view().onRetry();
     for (let i = 0; i < 500; i++) await Promise.resolve();
-    expect(fixture.apps()).toBe(0);
-    expect(fixture.view().state.kind).toBe("ready");
-    fixture.view().onOpenPc?.();
     expect(fixture.apps()).toBe(1);
+    expect(fixture.view().state.kind).not.toBe("ready");
     fatal?.(new MuxProtocolError("timeout", "fixture disconnected"));
     fixture.view().onRetry();
     for (let i = 0; i < 500; i++) await Promise.resolve();

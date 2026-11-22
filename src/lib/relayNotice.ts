@@ -2,11 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import type { HealthInfo } from "./api.ts";
 
-/**
- * Whether the Ovis relay notice banner (components/RelayNotice.tsx) was dismissed in this browser.
- * Follows the same scoped-key pattern as useDirectNotice (lib/directNotice.ts): one dismissal
- * covers one PC and one notice state, and clears when the relay is off or the state is resolved.
- */
 const KEY = "ovis:relay-notice-dismissed";
 
 export type RelayNoticeKind = "sign-in-grace" | "sign-in-required" | "not-listed" | "pc-limit" | "data-limit";
@@ -29,36 +24,34 @@ function writeDismissed(dismissed: readonly string[]): void {
   try {
     if (dismissed.length) window.localStorage.setItem(KEY, JSON.stringify(dismissed));
     else window.localStorage.removeItem(KEY);
-  } catch { /* storage blocked: the dismissal lasts until the page reloads */ }
+  } catch {}
 }
 
 /**
- * Derives the relay notice state from a health or relay status answer:
- * - undefined before a known answer arrives (so stored dismissals are kept)
- * - null when the relay is off, not Ovis-hosted, or needs no notice
- * - RelayNoticeInfo when this PC uses the Ovis-hosted relay and needs sign-in or hit a limit
- *
- * Nothing shows until the relay itself announces passes: a date from when they are needed
- * (`enforce_at`, grace) or a refusal. A relay that says neither changes nothing on screen.
- * Before a date still to come nothing is refused yet, a refusal included: only the sign-in reminder that
- * names the date shows.
+ * The limit on new devices is an exception too: the PC says itself whether the relay enforces passes now
+ * (`enforced`), which a relay in `enforce` does with no date or with one far ahead. While it does and the
+ * pass says `new_sessions: false`, the PC refuses every new device, so the notice shows whatever the date;
+ * while it says it does not, nothing is refused and no such notice shows.
  */
 export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false, now = Date.now()): RelayNoticeInfo | null | undefined {
   if (relay === undefined) return undefined;
   if (relay === null || relay.phase === "off" || relay.blocked !== null) return null;
   const pass = relay.pass;
   if (pass === undefined) return null;
+  if (pass.new_sessions === false && pass.enforced === true && !pass.refused) return { kind: "data-limit", enforceAt: null };
   if (pass.enforce_at === null && !pass.refused) return null;
   const remind = pass.state === "no_account" && ((pass.relay !== null && pass.relay !== "ok") || !signedIn);
   const at = pass.enforce_at === null ? null : Date.parse(pass.enforce_at);
-  // a date that does not parse names no time at all: nothing counts as enforced on it
-  if (at !== null && (Number.isNaN(at) || now < at)) {
-    return remind ? { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at } : null;
+  const early = at !== null && (Number.isNaN(at) || now < at);
+  const refused = pass.refused && relay.phase === "error";
+  const closed = refused && (relay.error_code === undefined || relay.error_code?.startsWith("pass_") === true);
+  if (early && !closed) {
+    if (remind) return { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at };
+    return pass.refused && relay.phase !== "online" ? undefined : null;
   }
-  if (pass.new_sessions === false) {
+  if (!early && pass.new_sessions === false && pass.enforced === undefined) {
     return { kind: "data-limit", enforceAt: null };
   }
-  // past the date by this browser's clock, which may be off: a PC limit shows only once the relay refused this PC
   if (pass.state === "limit" && pass.refused) {
     return { kind: "pc-limit", enforceAt: null };
   }
@@ -66,7 +59,7 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
     return { kind: "not-listed", enforceAt: null };
   }
   if (pass.state === "no_account") {
-    if (pass.refused && relay.phase === "error") {
+    if (refused) {
       return { kind: "sign-in-required", enforceAt: null };
     }
     if (remind) {
@@ -79,10 +72,14 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
 export function relayNoticeOf(health: Pick<HealthInfo, "auth" | "relay" | "security"> | null, signedIn = false): RelayNoticeInfo | null | undefined {
   if (health === null || health.auth?.required === true) return undefined;
   // the relay's pass is the PC owner's business: a relay driver, a Portal visitor (whatever signed it in:
-  // Portal itself, the token or a paired device) or a watch-only session can act on none of it
+  // Portal itself, the token or a paired device), a watch-only session or whoever an open server (no
+  // token, nothing paired) let in from its network can act on none of it; the PC itself is "local"
+  // there. This turns away the ways in it names and no other: the demo's answer names none. An open
+  // server's visitor is turned away a second time here: a relay that is on has closed that way in
+  // already (server/relay/service.ts start), so such a visitor reads the relay as off
   const via = health.auth?.via;
   const ingress = health.security?.observed_ingress;
-  if (health.auth?.role === "watch" || via === "portal" || via === "relay" || ingress === "portal" || ingress === "relay") return null;
+  if (health.auth?.role === "watch" || via === "open" || via === "portal" || via === "relay" || ingress === "portal" || ingress === "relay") return null;
   return relayNoticeFromStatus(health.relay ?? null, signedIn);
 }
 

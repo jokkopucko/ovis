@@ -8,15 +8,10 @@
  * Every answer whose form depends on Accept-Encoding says so in `Vary`, the plain one and a 304
  * too, so a cache never hands one form to a client that asked for the other.
  */
-
 import { errorResponse } from "./http.ts";
 
 const COMPRESSIBLE = /^(?:application\/(?:json|javascript|manifest\+json)|text\/(?:html|css|javascript|plain)|image\/svg\+xml)\b/i;
 const MIN_BYTES = 1024;
-/**
- * Static bundles are the same bytes on every load, so their gzip is kept, by the SHA-256 of the
- * body and within a byte budget. An /api answer changes with every turn and is never kept.
- */
 const KEPT_BYTES = 8 * 1024 * 1024;
 const KEPT_ENTRY_BYTES = 2 * 1024 * 1024;
 const kept = new Map<string, Uint8Array<ArrayBuffer>>();
@@ -37,12 +32,10 @@ function acceptsGzip(request: Request): boolean {
   return Number.isFinite(quality) && quality > 0;
 }
 
-/** Whether this answer could have gone out gzipped: then its form depends on Accept-Encoding. */
 function negotiable(pathname: string, response: Response): boolean {
   // Immutable static variants have already selected br/gzip/identity by quality.
   // Recompressing their identity choice would override the browser's preference.
   if (pathname.startsWith("/assets/") && /\bimmutable\b/i.test(response.headers.get("cache-control") ?? "") && /\baccept-encoding\b/i.test(response.headers.get("vary") ?? "")) return false;
-  // a file the viewer opens can be any size: it streams as it is
   if (/\/fs\/file$/.test(pathname)) return false;
   if (response.status === 304) return true;
   if (response.status !== 200 || response.headers.has("content-encoding") || response.headers.has("content-range")) return false;
@@ -81,7 +74,6 @@ export async function compressResponse(request: Request, response: Response | un
   const init = { status: response.status, statusText: response.statusText, headers };
   if (response.status !== 200 || request.method === "HEAD" || !acceptsGzip(request)) return new Response(response.body, init);
   let body: Uint8Array<ArrayBuffer>;
-  // a static file read lazily can fail here, after the route answered: it still answers in the envelope
   try { body = new Uint8Array(await response.arrayBuffer()); } catch (error) { return errorResponse(error); }
   if (body.byteLength < MIN_BYTES) return new Response(body, init);
   const gzipped = gzipOf(body, !pathname.startsWith("/api/"));

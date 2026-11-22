@@ -1,0 +1,39 @@
+
+  ~/scratch/grok                                                                      21K / 256K │ [Dashboard]
+
+
+     ❯ Use your ask-user question tool to ask me ONE question: 'Option A or option B?' with options         3:25 PM
+       'Option A' and 'Option B'. Wait for my answer, then reply with just the option I chose.
+
+
+     ◆ Thought for 4.7s
+
+     I'll ask that now.                                                                                     3:26 PM
+
+     ◆ Ask Option A or option B?
+
+
+
+
+
+
+
+   ◆ Waiting on answers for Option A or option B?                                                  7.4s ⇣21.5k [stop]
+
+  Help improve Grok                                                                                [Opt out] [Opt in]
+  Off by default. Opt-in to allow SpaceXAI to retain coding data, e.g., prompts, traces, &
+  metrics, for training and debugging purposes. Change anytime via settings.
+  Read Terms and Privacy Policy.
+
+  ┃
+  ┃  Option A or option B?
+  ┃
+  ┃
+  ┃  1 (○) Option A  Choose Option A                                                                                █
+  ┃  2 (○) Option B  Choose Option B                                                                                █
+  ┃  z (○) Type your answer here
+  ┃
+  ┃  ↑/↓ navigate · y copy                                                                           Enter:submit
+  ┃
+
+  Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss

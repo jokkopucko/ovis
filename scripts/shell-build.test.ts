@@ -5,13 +5,12 @@ import { pagePolicy } from "../server/file-view.ts";
 import { CONTENT_SECURITY_POLICY, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy } from "../server/static.ts";
 import { REGIONAL_APPS } from "../shared/relay-regions.ts";
 import { injectBootstrap } from "./theme-bootstrap-build.ts";
-import { ANDROID_APP_FINGERPRINTS, APP_ID, IOS_APP_ID, RENDER_PATH, SHELL_META, shellCaddyfile, shellFiles, shellHeaders, shellIndexHtml, shellManifest, shellRedirects } from "./shell-build.ts";
+import { ANDROID_APP_FINGERPRINTS, APP_ID, IOS_APP_ID, MISSING_ASSET_PAGE, RENDER_PATH, SHELL_FILE_NAMES, SHELL_META, shellBuild, shellCaddyfile, shellFiles, shellHeaders, shellIndexHtml, shellManifest, shellRedirects } from "./shell-build.ts";
 
 const root = join(import.meta.dir, "..");
 const indexHtml = readFileSync(join(root, "index.html"), "utf8");
 const manifest = readFileSync(join(root, "public", "manifest.webmanifest"), "utf8");
 
-/** The `_headers` blocks: each path with its header lines, as Pages reads them. */
 function headerBlocks(text: string): Map<string, string[]> {
   const blocks = new Map<string, string[]>();
   let path: string | null = null;
@@ -25,25 +24,49 @@ function headerBlocks(text: string): Map<string, string[]> {
 }
 
 describe("the shell's page", () => {
-  it("renders exactly one parent message through document.open/write/close", () => {
+  const renderHost = () => {
     const html = shellFiles(manifest)["render.html"] ?? "";
     const script = /<script>([\s\S]*)<\/script>/.exec(html)?.[1];
     expect(script).toBeDefined();
     const listeners = new Set<(event: unknown) => void>();
     const parent = { postMessage() {} };
-    const calls: string[] = [];
-    const document = { open: () => calls.push("open"), write: (html: string) => calls.push(html), close: () => calls.push("close") };
+    const calls: string[] = [], frames: Array<{ sandbox: string | null; srcdoc: string }> = [];
+    const document = {
+      open: () => calls.push("open"), write: (html: string) => calls.push(html), close: () => calls.push("close"),
+      createElement: (tag: string) => { const attrs = new Map<string, string>(); return { tag, srcdoc: "", style: { cssText: "" }, setAttribute: (name: string, value: string) => { attrs.set(name, value); }, attrs }; },
+      body: { replaceChildren: (node: { tag: string; srcdoc: string; attrs: Map<string, string> }) => { calls.push(`frame:${node.tag}`); frames.push({ sandbox: node.attrs.get("sandbox") ?? null, srcdoc: node.srcdoc }); } },
+    };
     new Function("parent", "document", "addEventListener", "removeEventListener", script ?? "")(parent, document,
       (_type: string, listener: (event: unknown) => void) => listeners.add(listener),
       (_type: string, listener: (event: unknown) => void) => listeners.delete(listener));
     const fire = (source: unknown, data: unknown) => { for (const listener of listeners) listener({ source, data }); };
-    fire({}, { type: "ovis-render", html: "foreign" });
-    fire(parent, { type: "ovis-render", html: 1 });
+    return { parent, calls, frames, listeners, fire };
+  };
+
+  it("renders exactly one parent message through document.open/write/close, when the person asked for the page's scripts", () => {
+    const { parent, calls, frames, listeners, fire } = renderHost();
+    fire({}, { type: "ovis-render", html: "foreign", scripts: true });
+    fire(parent, { type: "ovis-render", html: 1, scripts: true });
     expect(calls).toEqual([]);
-    fire(parent, { type: "ovis-render", html: "<body>owned</body>" });
-    fire(parent, { type: "ovis-render", html: "second" });
+    fire(parent, { type: "ovis-render", html: "<body>owned</body>", scripts: true });
+    fire(parent, { type: "ovis-render", html: "second", scripts: true });
     expect(calls).toEqual(["open", "<body>owned</body>", "close"]);
+    expect(frames).toEqual([]);
     expect(listeners.size).toBe(0);
+  });
+
+  it("draws a page whose scripts were not asked for in a frame of its own that runs none, and never writes it into its own document", () => {
+    // anything but `scripts: true` is a page without its scripts: a message that says nothing about them too
+    for (const scripts of [false, undefined, "true", 1]) {
+      const { parent, calls, frames, listeners, fire } = renderHost();
+      fire({}, { type: "ovis-render", html: "foreign", scripts });
+      expect(calls).toEqual([]);
+      fire(parent, { type: "ovis-render", html: "<body><script>run()</script>owned</body>", ...(scripts === undefined ? {} : { scripts }) });
+      fire(parent, { type: "ovis-render", html: "second", scripts: true });
+      expect(calls).toEqual(["frame:iframe"]);
+      expect(frames).toEqual([{ sandbox: "", srcdoc: "<body><script>run()</script>owned</body>" }]);
+      expect(listeners.size).toBe(0);
+    }
   });
 
   it("carries the shell meta, which the app's page does not", () => {
@@ -159,12 +182,30 @@ describe("the shell's headers", () => {
   });
 });
 
+describe("the shell's hashed files", () => {
+  it("have a 404 page under /assets/, so Pages never answers a missing one with the page", () => {
+    expect(MISSING_ASSET_PAGE.startsWith("assets/")).toBe(true);
+    expect(shellFiles(manifest)[MISSING_ASSET_PAGE]).toBeString();
+  });
+
+  it("take names no 0.5.8 shell served (eight hash characters), for the app's code and its workers alike", () => {
+    const config = (shellBuild().config as () => { build: { rollupOptions: { output: unknown } }; worker: { rollupOptions: { output: unknown } } })();
+    expect(config.build.rollupOptions.output).toBe(SHELL_FILE_NAMES);
+    expect(config.worker.rollupOptions.output).toBe(SHELL_FILE_NAMES);
+    for (const name of Object.values(SHELL_FILE_NAMES)) expect(name).toMatch(/^assets\/\[name\]-\[hash:10\]/);
+  });
+});
+
 describe("the shell's Caddy site", () => {
   it("sends the policies and caching the Pages headers send", () => {
     const site = shellCaddyfile("app-ap.ovis.sh");
     expect(site).toContain(`header @notrender Content-Security-Policy "${shellContentSecurityPolicy(Object.values(REGIONAL_APPS))}"`);
     expect(site).toContain(`header @render Content-Security-Policy "${pagePolicy(null)}"`);
-    expect(site).toContain(`header /assets/* Cache-Control "${IMMUTABLE_CACHE}"`);
+    expect(site).toContain(`@asset {\n\t\tpath /assets/*\n\t\tfile\n\t}`);
+    expect(site).toContain(`header @asset Cache-Control "${IMMUTABLE_CACHE}"`);
+    expect(site).toContain(`@missingasset {\n\t\tpath /assets/*\n\t\tnot file\n\t}`);
+    expect(site).toContain(`header @missingasset Cache-Control "no-store"`);
+    expect(site).not.toContain("header /assets/*");
     expect(site).toContain(`Cache-Control "${REVALIDATE}"`);
     for (const value of [shellContentSecurityPolicy(Object.values(REGIONAL_APPS)), pagePolicy(null)]) expect(value).not.toContain('"');
   });

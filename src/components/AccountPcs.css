@@ -1,12 +1,3 @@
-/*
- * The relay shell's account part (AccountPcs.tsx), inside the sign-in column (RelayShell.css) and
- * Settings → Account. Sign-in is one centred 368px column on --bg: 44px mark, --fs-display h1,
- * equal neutral 44px provider buttons with 18px brand marks at a fixed --space-4 inset, saved-PC
- * continuation above the hairline when present, full-width ghost Pair with a QR or code below the
- * hairline, and --fs-xs fine print at the foot.
- */
-
-/* signed out: the column's mark, title and fine print centred */
 .account-centered {
   text-align: center;
 }
@@ -21,10 +12,6 @@
   gap: var(--space-2);
 }
 
-/*
- * Equal neutral outlined buttons at 44px (--touch-target), with the 18px brand mark anchored at a
- * fixed --space-4 (16px) left inset and the label centered across the full button width.
- */
 .account-provider {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
   width: 100%; min-width: 0; height: auto; min-height: var(--touch-target);
@@ -78,20 +65,6 @@
   align-self: flex-start;
 }
 
-.account-continue-saved {
-  width: 100%; min-width: 0; height: auto; min-height: var(--touch-target); margin-top: var(--space-2);
-  padding-block: var(--space-2); line-height: var(--lh-tight); text-align: center; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums;
-}
-
-.account-divider {
-  width: 100%;
-  height: 0;
-  margin: var(--space-4) 0;
-  border: 0;
-  border-top: var(--hairline) solid var(--border);
-}
-
-/* the other way in: a ghost button or quiet link at touch-target height */
 .account-link {
   display: inline-flex; align-items: center; justify-content: center; width: 100%; min-width: 0;
   height: auto; min-height: var(--touch-target); margin-top: var(--space-2); padding: var(--space-2) var(--space-3);
@@ -143,7 +116,6 @@
   min-width: 0;
 }
 
-/* the state in words, after the shared inline StatusDot glyph */
 .account-pc-state {
   display: inline-flex;
   align-items: center;
@@ -154,7 +126,6 @@
   overflow-wrap: anywhere;
 }
 
-/* a PC to compare digits with: the row is the button, as a saved PC's row is the link */
 .account-pc-join {
   width: 100%;
   background: none;
@@ -165,7 +136,6 @@
   cursor: pointer;
 }
 
-/* sign out and leave: quiet links under the list; leaving asks once more, in the card */
 .account-actions {
   display: flex;
   flex-direction: column;
@@ -175,7 +145,6 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* Settings on the PC's own page: GitHub's device code, set like the pairing code (.devices-code) */
 .account-device {
   display: flex;
   flex-direction: column;
@@ -197,63 +166,192 @@
   gap: var(--space-2);
 }
 
-.settings-row.account-limits-row {
-  flex-wrap: wrap;
-  row-gap: var(--space-1);
+.settings-card > .settings-row.account-head {
+  gap: var(--space-3);
+  min-height: 0;
 }
 
-.settings-row.account-limits-row > .account-limits-summary {
-  flex: 0 1 auto;
+.account-who {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
-  margin-inline-start: auto;
+}
+
+.account-plan {
   color: var(--text-dim);
   font-size: var(--fs-xs);
-  text-align: end;
   font-variant-numeric: tabular-nums;
 }
 
-/* Settings → Account: the account's ways to sign in, each with its provider's mark */
-.account-method-list {
+.account-head-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+.account-manage-body {
   display: flex;
   flex-direction: column;
+  gap: var(--space-3);
+}
+
+.account-plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  margin: var(--space-2) 0;
+}
+
+.account-add-pc-button.btn {
+  width: 100%;
+  min-height: calc(var(--pointer-target) + var(--space-3));
+  font-size: var(--fs-md);
+}
+
+.account-add-pc-done {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--status-done-tint);
+  color: var(--status-done);
+  font-weight: 600;
+}
+
+.account-add-pc-done svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn.account-head-btn {
+  height: auto;
+  min-height: var(--pointer-target);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+.account-method-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.account-method-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.account-method {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--touch-target);
+/* a finger's 44px around a chip's remove x and the next chip's + stay apart, across a wrap too */
+@media (pointer: coarse) {
+  .account-method-list {
+    gap: calc(var(--touch-target) - var(--pointer-target)) var(--space-3);
+  }
 }
 
-.account-method-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.account-method-text .settings-description {
-  margin: 0;
-}
-
-.account-method-add {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.account-method-add .btn {
+.account-chip {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
+  min-height: var(--pointer-target);
+  padding: var(--space-half) var(--space-2);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-strong);
+  font: inherit;
+}
+
+.account-chip .account-provider-mark {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.account-chip-icon {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+  color: var(--text-dim);
+}
+
+.account-chip-add {
+  border-style: dashed;
+  cursor: pointer;
+}
+
+.account-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.account-chip-remove > svg {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+}
+
+@media (hover: hover) {
+  .account-chip-add:hover, .account-chip-remove:hover, .account-delete-link:hover:not(:disabled) {
+    color: var(--text-strong);
+  }
+}
+
+/* the compact controls keep their look and reach the hit area a pointer needs through an invisible ::before expander */
+.btn.account-head-btn, .account-chip-add, .account-chip-remove, .account-delete-link {
+  position: relative;
+  --account-hit: var(--pointer-target);
+}
+
+@media (pointer: coarse) {
+  .btn.account-head-btn, .account-chip-add, .account-chip-remove, .account-delete-link {
+    --account-hit: var(--touch-target);
+  }
+}
+
+.btn.account-head-btn::before, .account-chip-add::before, .account-chip-remove::before, .account-delete-link::before {
+  content: "";
+  position: absolute;
+  inset: min(0px, calc((100% - var(--account-hit)) / 2));
+}
+
+.account-delete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
 }
 
-/* Check now: a compact ghost button above the list's right edge, over the rows it refreshes */
+.account-delete-link {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  list-style: none;
+  cursor: pointer;
+}
+
+.account-delete-link::-webkit-details-marker {
+  display: none;
+}
+
 .relay-shell-check {
   display: flex;
   justify-content: flex-end;
@@ -263,3 +361,8 @@
   min-width: calc(var(--space-8) * 3);
   font-variant-numeric: tabular-nums;
 }
+
+.account-no-pc {
+  padding-top: var(--space-2);
+}
+

@@ -7,7 +7,6 @@ import {
   scriptProblems, secretProblems, type Step, stepList, unpackOutcomes, type Workflow,
 } from "./shell-workflow-rules.ts";
 
-/** The workflow at SHELL_DEPLOY_WORKFLOW (a mutated copy) or the committed release.yml. */
 const loadWorkflow = (): Workflow => parseWorkflow(process.env.SHELL_DEPLOY_WORKFLOW ?? join(root, ".github/workflows/release.yml"));
 const build = (): Job => loadWorkflow().jobs["shell-build"]!;
 const deploy = (): Job => loadWorkflow().jobs["shell-deploy"]!;
@@ -34,9 +33,9 @@ test("no script interpolates an expression or writes $GITHUB_ENV or $GITHUB_PATH
   expect(scriptProblems(loadWorkflow())).toEqual([]);
 });
 
-test("every job that installs packages restores the dependency cache read-only", () => {
+test("every job that installs packages restores no dependency cache or only reads it, and the build restores none", () => {
   expect(cacheProblems(loadWorkflow())).toEqual([]);
-  expect(find(build(), (step) => step.uses === "./.github/actions/setup-ci").with).toEqual({ cache: "restore" });
+  expect(find(build(), (step) => step.uses === "./.github/actions/setup-ci").with).toEqual({ cache: "none" });
 });
 
 test("the build holds no secret and no environment, and builds the release tag's checkout after the tag gate", () => {
@@ -142,7 +141,6 @@ test("only the attach job may write; it checks nothing out, holds no secret and 
   }
 });
 
-/** A git repository with two commits, `first` and `second` (HEAD). */
 async function withRepo(body: (dir: string, first: string, second: string) => Promise<void>): Promise<void> {
   await withDir(async (dir) => {
     const git = (...args: string[]): string => {
@@ -186,7 +184,6 @@ test("the tag gate refuses a malformed version, a missing tag, a tag on another 
   });
 });
 
-/** Packs `files` into shell/dist-shell.tar.gz under `dir` and returns its SHA-256. */
 function pack(dir: string, files: Record<string, string>): string {
   mkdirSync(join(dir, "src"));
   for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, "src", name), body);
@@ -222,7 +219,6 @@ test("the deploy refuses links, special files, paths outside the tarball and Pag
   expect(refused.length).toBe(12);
 }, 30_000);
 
-/** Runs the verify step's script against a local server that answers each request with the next status and `body`. */
 async function runVerifyStep(statuses: number[], body: string): Promise<{ code: number; output: string; requests: number }> {
   const step = find(deploy(), (candidate) => candidate.env?.SHELL_BUILD_URL !== undefined);
   let requests = 0;

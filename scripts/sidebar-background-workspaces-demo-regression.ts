@@ -6,12 +6,9 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings > Appearance > Background workspaces apart (#770) on the demo roster: cli-tools (with its
-// worktrees retry-flag and changelog) and checkout-api's worktree flaky-retry-test are tagged
-// role=background, as `herdr workspace report-metadata --token role=background` reports them; with
-// "test:blocked" set, changelog's agent asks a question. Only this disposable demo fixture is
-// rewritten; no live session is read.
+// Only this disposable demo fixture is rewritten; no live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-background-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const TAGGED = ["w1J", "w1H"];
@@ -47,15 +44,7 @@ try {
   writeFileSync(join(app, "sidebar-background.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-background.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -85,12 +74,10 @@ try {
             await page.locator(".machine-workspaces").first().screenshot({ path: join(evidence, `background-workspaces-${name}-${width}-${theme}.png`) });
           };
 
-          // never chosen: herdr's order, no heading, tags or not
           await open(false);
           assert.deepEqual(await rows(page), ["w1C", "w1D", "w1H", "w1J", "w1K", "w1L"], "off by default, the list keeps herdr's order");
           assert.equal(await heading(page).count(), 0, "off, no heading");
 
-          // turned on: the tagged group after the others, folded; a tagged worktree stays under its repository
           await open(true);
           assert.deepEqual(await rows(page), ["w1C", "w1D", "w1H"], "a folded part hides cli-tools and its worktrees; flaky-retry-test stays with checkout-api");
           assert.equal(await heading(page).getAttribute("aria-expanded"), "false");
@@ -104,7 +91,6 @@ try {
           assert.ok(fits, "the heading sits inside the list, unclipped");
           await shot("folded");
 
-          // the heading opens the part, by keyboard too, and the fold is kept on this device
           await heading(page).focus();
           await page.keyboard.press("Enter");
           assert.deepEqual(await rows(page), ["w1C", "w1D", "w1H", "w1J", "w1K", "w1L"]);
@@ -114,7 +100,6 @@ try {
           await page.keyboard.press("Enter");
           assert.deepEqual(await rows(page), ["w1C", "w1D", "w1H"]);
 
-          // a folded part keeps the open workspace's group in sight, and one whose agent asks a question
           await open(true, panes.cli);
           assert.deepEqual(await rows(page), ["w1C", "w1D", "w1H", "w1J", "w1K", "w1L"], "the open tagged workspace stays in sight");
           await open(true, panes.shell, true);

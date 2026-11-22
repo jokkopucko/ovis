@@ -1,8 +1,3 @@
-/* Notices over the input card (ComposerNotices.tsx): what the terminal lens floats top-right
-   (PaneTerminal.css) stands here under the chat lens, as rows of the composer's in the held
-   messages' anatomy (Composer.css): one hairline above the group, a row per notice, every line of
-   text --space-3 in, no box. The plain notice is the top row and the activity stands on the card
-   (lib/composerNotices.ts). The column's width is the composer's rule (Composer.css) */
 .composer-notices {
   display: flex;
   flex-direction: column;
@@ -13,7 +8,6 @@
 
 .composer-notice {
   position: relative;
-  /* the floor is the content's, so the X (below) fits it under the hairline a second row carries */
   box-sizing: content-box;
   display: flex;
   flex-wrap: wrap;
@@ -26,8 +20,6 @@
   line-height: var(--lh-base);
 }
 
-/* The dismiss keeps the row's top trailing corner (below), so a row that has one keeps that
-   corner clear on every line: no text and no way on runs under it */
 .composer-notice:has(.composer-notice-dismiss) {
   padding-right: calc(var(--control-h) + var(--space-1));
 }
@@ -36,7 +28,6 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* a warning (another app holds the pane, the output stream failed): the terminal pill's colour */
 .composer-notice.is-warning {
   color: var(--status-working);
 }
@@ -57,7 +48,6 @@
   overflow-wrap: anywhere;
 }
 
-/* held input: its start in mono, cut as the terminal pill cuts it */
 .composer-notice-text code {
   display: inline-block;
   max-width: 32ch;
@@ -69,9 +59,6 @@
   white-space: nowrap;
 }
 
-/* The ways on, at the row's trailing end. A row too narrow for the text and all of them (a phone,
-   a narrow split) puts them on a line of their own under the text, and one too narrow even for
-   that wraps them, trailing-aligned, instead of running them off the column; nothing is cut */
 .composer-notice-actions {
   display: inline-flex;
   flex: 0 1 auto;
@@ -83,12 +70,10 @@
   margin-left: auto;
 }
 
-/* the held-input row's controls (send, discard): glyph buttons in the dismiss's register */
 .composer-notice-actions .icon-button {
   color: var(--text-dim);
 }
 
-/* a notice's own way on (Open here, Reconnect, Send) in the held rows' button; Discard is the quiet one */
 .composer-notice-action {
   display: inline-flex;
   align-items: center;
@@ -116,9 +101,6 @@
   cursor: default;
 }
 
-/* The X stands in the row's top trailing corner whatever wraps under it, as a banner's close
-   does: on one line, where it always stood; on a phone, beside the first line of the text, over
-   the ways on, never the last button of their row. It is last in the Tab order, after the ways on */
 .composer-notice-dismiss {
   position: absolute;
   top: 0;
@@ -163,7 +145,6 @@
     min-height: var(--touch-target);
   }
 
-  /* the row is at least as tall as its X, which no longer sits in its flow */
   .composer-notice:has(.composer-notice-dismiss) {
     min-height: var(--touch-target);
     padding-right: calc(var(--touch-target) + var(--space-1));

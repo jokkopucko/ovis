@@ -28,7 +28,6 @@ function visibility(source: AgentCommandSource, name: string): NonNullable<Slash
   return "offered";
 }
 
-/** Static metadata only: safe on the delivery path, with no filesystem or process discovery. */
 export function builtinCommands(agent: string | null | undefined, version?: string | null): SlashCommand[] {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return [];
   const source = AGENT_SOURCES[agent];
@@ -45,7 +44,6 @@ export function builtinCommands(agent: string | null | undefined, version?: stri
 const paneCatalogs = new Map<string, { identity: string; agent: string | null; commands: SlashCommand[] }>();
 const catalogIdentity = (pane: HerdrPane): string => JSON.stringify([pane.terminal_id, pane.agent_session, pane.agent, pane.foreground_cwd ?? pane.cwd]);
 
-/** Remember only catalogs already requested by the browser; never discover during a send. */
 export function rememberPaneCommands(pane: HerdrPane, agent: string | null, commands: SlashCommand[]): void {
   paneCatalogs.delete(pane.pane_id);
   paneCatalogs.set(pane.pane_id, { identity: catalogIdentity(pane), agent, commands });
@@ -63,37 +61,20 @@ export function cachedPaneCommands(pane: HerdrPane): { agent: string | null; com
  * byte before Bun closes it (`index.ts`), with room for what the route does after the scan.
  */
 export const COMMANDS_WAIT_MS = 45_000;
-/**
- * A scan that finished after every request waiting for it gave up is kept this long for the next
- * request for it: longer than the menu's longest pause before it asks again (`usePaneCommands`).
- */
 export const UNCLAIMED_SCAN_MS = 35_000;
 let waitMs = COMMANDS_WAIT_MS;
 
-/** For tests: how long a request waits for a scan; no argument restores the default. */
 export function setCommandsWait(ms = COMMANDS_WAIT_MS): void {
   waitMs = ms;
 }
 
-/**
- * A scan under way: the requests waiting for it, whether a thread runs it yet, and how to drop it
- * while it still waits for one.
- */
 interface Scan { result: Promise<SlashCommand[]>; waiters: number; running: boolean; abort: AbortController }
-/** Scans under way, by what they were asked: a request for the same scan waits for that one. */
 const scans = new Map<string, Scan>();
-/** Scans that finished with nobody waiting for them, by what they were asked, each taken once. */
 const unclaimed = new Map<string, { commands: SlashCommand[]; size: number; timer: ReturnType<typeof setTimeout> }>();
-/**
- * At most this many unclaimed answers, of about this many characters in all, are kept; the oldest go
- * first. A request that leaves (a client gone) can be repeated for many folders, and each answer
- * holds every skill's description.
- */
 const UNCLAIMED_LIMITS = { entries: 16, chars: 8 * 1024 * 1024 };
 let unclaimedLimits = UNCLAIMED_LIMITS;
 let unclaimedChars = 0;
 
-/** For tests: how many unclaimed answers, and how many characters, are kept; no argument restores the defaults. */
 export function setUnclaimedLimits(limits: Partial<typeof UNCLAIMED_LIMITS> = {}): void {
   unclaimedLimits = { ...UNCLAIMED_LIMITS, ...limits };
   for (const key of [...unclaimed.keys()]) dropUnclaimed(key);
@@ -119,7 +100,6 @@ function keepUnclaimed(key: string, commands: SlashCommand[]): void {
   unclaimedChars += size;
 }
 
-/** Once every scan under way has finished (tests). */
 export async function commandScansSettled(): Promise<void> {
   await Promise.allSettled([...scans.values()].map((scan) => scan.result));
 }
@@ -141,7 +121,6 @@ export async function commandScansSettled(): Promise<void> {
 export function scanPaneCommands(agent: string | null | undefined, cwd: string | null | undefined, process: ProcessRoots = {}, version?: string | null, signal?: AbortSignal, began = performance.now()): Promise<SlashCommand[]> {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return Promise.resolve([]);
   if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));
-  // plain data only: a thread is handed a copy
   const roots: ProcessRoots = { agentDir: process.agentDir ?? null, pluginDir: process.pluginDir ?? null, environ: process.environ ?? null };
   const task: FileTask = { op: "commands", agent, cwd: cwd ?? null, home: userHome(), roots, version: version ?? null, serverEnv: { ...globalThis.process.env } };
   const key = JSON.stringify(task);
@@ -152,7 +131,6 @@ export function scanPaneCommands(agent: string | null | undefined, cwd: string |
     const abort = new AbortController();
     const started: Scan = { result: Promise.resolve([]), waiters: 0, running: false, abort };
     started.result = fileTask<SlashCommand[]>(task, abort.signal, () => { started.running = true; });
-    // settled before any waiter hears it: a scan nobody waits for any more is kept for the next request
     started.result.then((commands) => {
       if (scans.get(key) === started) scans.delete(key);
       if (started.waiters === 0) keepUnclaimed(key, commands);
@@ -170,7 +148,6 @@ export function scanPaneCommands(agent: string | null | undefined, cwd: string |
       clearTimeout(timer);
       signal?.removeEventListener("abort", cancel);
       joined.waiters -= 1;
-      // nobody waits for a scan no thread took yet: it gives up its waiting place
       if (joined.waiters === 0 && !joined.running) {
         if (scans.get(key) === joined) scans.delete(key);
         joined.abort.abort();
@@ -192,7 +169,6 @@ export function paneCommands(agent: string | null | undefined, cwd: string | nul
   const ancestors = cwd ? ancestorsToRepoRoot(cwd, home) : [];
   const discovered = source.discover({ home, cwd, repoRoot: ancestors.at(-1) ?? null, env: process.environ ?? null, roots: process, version, ...(serverEnv ? { serverEnv } : {}) });
   const commands: SlashCommand[] = [];
-  // one row per file: the same (trigger, name, id) reached twice, e.g. through a link; a row without an id is its own
   const seen = new Set<string>();
   for (const found of discovered) {
     const trigger = found.trigger ?? "/";
@@ -202,7 +178,6 @@ export function paneCommands(agent: string | null | undefined, cwd: string | nul
       seen.add(key);
     }
     const command: SlashCommand = { ...found, forms: found.forms ?? [...UNKNOWN_FORMS], visibility: found.visibility ?? "offered", provenance: found.provenance ?? { transport: "scan", verified: false } };
-    // typed the same way as a builtin, a skill replaces it only where the agent says its skills win
     if (trigger === "/" && source.skillsOverrideBuiltins && builtins.delete(found.name)) command.shadows = "builtin";
     commands.push(command);
   }

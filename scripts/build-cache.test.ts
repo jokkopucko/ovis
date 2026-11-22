@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { awaitBuild, cacheKey, deliver, evict, mayWrite, refreshLock, releaseLock, restore, store, takeLock } from "./build-cache.ts";
+import { awaitBuild, cacheKey, deliver, entriesOf, evict, mayWrite, refreshLock, releaseLock, restore, store, takeLock } from "./build-cache.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -15,7 +15,6 @@ const git = (root: string, ...args: string[]): void => {
   if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
 };
 
-/** A committed checkout of its own, with dist/ and node_modules/ ignored as in the repository. */
 function checkout(): string {
   const root = temp("ovis-build-cache-repo-");
   git(root, "init", "-q");
@@ -53,7 +52,6 @@ describe("cacheKey", () => {
     changed(keyOf(root));
     rmSync(join(root, ".env"));
     expect(keyOf(root)).toBe(base);
-    // a commit that changes a source file, and one that changes the lockfile
     writeFileSync(join(root, "main.ts"), "export const a = 2;\n");
     git(root, "commit", "-q", "-am", "two");
     changed(keyOf(root));
@@ -61,7 +59,6 @@ describe("cacheKey", () => {
     git(root, "add", "bun.lock");
     git(root, "commit", "-q", "-m", "lock");
     changed(keyOf(root));
-    // same tree, new commit: the client embeds the commit's hash, so it is another build
     git(root, "commit", "-q", "--allow-empty", "-m", "empty");
     changed(keyOf(root));
   });
@@ -241,10 +238,31 @@ describe("store and restore", () => {
     for (const key of ["old", "mid", "new"]) store(cache, key, dist(root, { "a.js": "x".repeat(1000) }), 1 << 30);
     const at = (key: string, seconds: number): void => { const t = new Date(seconds * 1000); utimesSync(join(cache, key), t, t); };
     at("old", 1_000); at("mid", 2_000); at("new", 3_000);
-    // a restore counts as a use: "old" becomes the newest
     restore(cache, "old", join(root, "dist"));
     evict(cache, 2_500);
     expect(readdirSync(cache).sort()).toEqual(["new", "old"]);
+  });
+
+  it("reads the runner's cache under the job's own run, and a cache of one's own by the key alone", () => {
+    expect(entriesOf("/cache", undefined, undefined)).toBe("/cache");
+    expect(entriesOf("/cache", undefined, "7")).toBe("/cache");
+    expect(entriesOf("/cache", "/outbox", "7")).toBe(join("/cache", "7"));
+    expect(entriesOf("/cache", "/outbox", "19234567890")).toBe(join("/cache", "19234567890"));
+    for (const run of [undefined, "", "7a", "-7", "../7", "7/8", " 7", "1".repeat(21)]) expect(entriesOf("/cache", "/outbox", run)).toBeNull();
+  });
+
+  it("restores an entry only from where the job's entries are: its own run's directory, not another's", () => {
+    const root = temp("ovis-build-cache-run-");
+    const cache = join(root, "cache");
+    store(join(cache, "7"), "k", dist(root, { "index.html": "built by run 7" }), 1 << 30);
+    store(join(cache, "8"), "k", dist(root, { "index.html": "built by run 8" }), 1 << 30);
+    const [seven, eight, nine] = ["7", "8", "9"].map((run) => entriesOf(cache, join(root, "outbox"), run)!) as [string, string, string];
+    expect(restore(seven, "k", join(root, "dist"))).toBe(true);
+    expect(files(join(root, "dist"))).toEqual({ "index.html": "built by run 7" });
+    expect(restore(eight, "k", join(root, "dist"))).toBe(true);
+    expect(files(join(root, "dist"))).toEqual({ "index.html": "built by run 8" });
+    expect(restore(nine, "k", join(root, "dist"))).toBe(false);
+    expect(restore(cache, "k", join(root, "dist"))).toBe(false);
   });
 });
 
@@ -346,6 +364,23 @@ describe("one build per key", () => {
     expect(await waited).toBe(true);
   });
 
+  it("waits for one job's build, not for the next job's once the first let go with nothing taken in", async () => {
+    const dir = temp("ovis-build-cache-next-");
+    const first = takeLock(dir, "k")!;
+    const waited = awaitBuild(dir, "k", 30_000, { lock: join(dir, ".lock-k") });
+    releaseLock(dir, "k", first);
+    expect(takeLock(dir, "k")).toBeTruthy();
+    const started = Date.now();
+    await waited;
+    expect(Date.now() - started).toBeLessThan(3_000);
+    mkdirSync(join(dir, ".lock-j"));
+    const from = Date.now();
+    const early = awaitBuild(dir, "j", 1_000, { lock: join(dir, ".lock-j") });
+    writeFileSync(join(dir, ".lock-j", "owner"), "its token");
+    await early;
+    expect(Date.now() - from).toBeGreaterThanOrEqual(900);
+  });
+
   it("stops waiting once the building job gives up, or at its deadline", async () => {
     const cache = temp("ovis-build-cache-giveup-");
     const token = takeLock(cache, "k")!;
@@ -362,7 +397,6 @@ describe("one build per key", () => {
 describe("bun scripts/build-cache.ts", () => {
   const script = join(import.meta.dir, "build-cache.ts");
 
-  /** A checkout whose `vite` writes dist/ from main.ts and counts its runs. */
   function project(): { root: string; runs: () => number } {
     const root = checkout();
     const bin = join(root, "node_modules/.bin");
@@ -381,19 +415,89 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
   const buildEnv = (cache: string | null, extra: Record<string, string> = {}): Record<string, string | undefined> => {
     const env: Record<string, string | undefined> = { ...process.env };
     // the run's own GitHub Actions variables would turn the cache off outside a pull request run
-    // and a runner's own cache (its outbox, locks and writer) would take the fixture's builds
-    for (const name of Object.keys(env)) if (name.startsWith("OVIS_BUILD_CACHE_") || name === "GITHUB_ACTIONS" || name === "GITHUB_EVENT_NAME") delete env[name];
+    // and a runner's own cache (its outbox, locks and writer) would take the fixture's builds, under its own run
+    for (const name of Object.keys(env)) if (name.startsWith("OVIS_BUILD_CACHE_") || ["GITHUB_ACTIONS", "GITHUB_EVENT_NAME", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"].includes(name)) delete env[name];
     Object.assign(env, extra);
     if (cache) env["OVIS_BUILD_CACHE_DIR"] = cache;
     return env;
   };
-  /** The key the build in `root` computes with `buildEnv(null)`'s variables (none of the extra ones above touch it). */
   const keyFor = (root: string): string => (cacheKey(root, buildEnv(null), []) as { key: string }).key;
   const build = (root: string, cache: string | null, extra: Record<string, string> = {}): string => {
     const result = spawnSync(process.execPath, [script], { cwd: root, env: buildEnv(cache, extra), encoding: "utf8" });
     expect(result.status).toBe(0);
     return readFileSync(join(root, "dist/index.html"), "utf8");
   };
+  const clone = (root: string): { copy: string; runs: () => number } => {
+    const copy = temp("ovis-build-cache-job-");
+    git(copy, "clone", "-q", root, ".");
+    spawnSync("cp", ["-a", join(root, "node_modules"), copy]);
+    return { copy, runs: () => existsSync(join(copy, "node_modules/runs")) ? readFileSync(join(copy, "node_modules/runs"), "utf8").length : 0 };
+  };
+  const built = (files: Record<string, string>): string => {
+    const dir = temp("ovis-build-cache-built-");
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+    return dir;
+  };
+
+  const promoter = join(import.meta.dir, "self-hosted-runner/build-cache-promote.sh");
+  function launcher(slots: string[], runs: Record<string, { slots: string[]; pull?: boolean }>, late = 0) {
+    const base = temp("ovis-build-cache-launcher-");
+    const [entries, outboxes, locks, bin, github] = ["entries", "outboxes", "locks", "bin", "github"].map((name) => join(base, name)) as [string, string, string, string, string];
+    for (const dir of [entries, locks, bin, github, ...slots.map((slot) => join(outboxes, slot))]) mkdirSync(dir, { recursive: true });
+    const sha = "5".repeat(40);
+    const runner = (slot: string): number => 100 + slots.indexOf(slot);
+    writeFileSync(join(github, "runners.json"), JSON.stringify({ runners: slots.map((slot) => ({ name: slot, id: runner(slot) })) }));
+    for (const [id, run] of Object.entries(runs)) {
+      writeFileSync(join(github, `jobs-${id}.json`), JSON.stringify({ jobs: run.slots.map((slot) => ({ runner_name: slot, status: "in_progress", runner_id: runner(slot), started_at: "2026-11-10T12:00:10Z" })) }));
+      writeFileSync(join(github, `run-${id}.json`), JSON.stringify(run.pull
+        ? { event: "pull_request", head_branch: "feature", head_sha: sha, head_repository: { full_name: "owner/repo" }, triggering_actor: { login: "w" }, pull_requests: [{ number: 5 }] }
+        : { event: "push", head_branch: "main", head_repository: { full_name: "owner/repo" } }));
+    }
+    writeFileSync(join(github, "pull-5.json"), JSON.stringify({ user: { login: "w" }, head: { sha } }));
+    writeFileSync(join(bin, "gh"), `#!/bin/sh
+github="\${0%/bin/gh}/github"
+${late > 0 ? `sleep ${late}` : ":"}
+echo "$2" >> "$github/asked"
+case "$2" in
+  repos/owner/repo) echo main; exit 0 ;;
+  repos/owner/repo/actions/runners) cat "$github/runners.json"; exit 0 ;;
+  repos/owner/repo/actions/runs/*/attempts/*/jobs*) kind=jobs; id="\${2#repos/owner/repo/actions/runs/}"; id="\${id%/attempts/*}" ;;
+  repos/owner/repo/actions/runs/*) kind=run; id="\${2#repos/owner/repo/actions/runs/}" ;;
+  repos/owner/repo/pulls/*) kind=pull; id="\${2#repos/owner/repo/pulls/}" ;;
+  *) kind=none; id=none ;;
+esac
+file="$github/$kind-$id.json"
+[ -f "$file" ] || file="$github/$kind-any.json"
+# as GitHub answers for a run that does not exist
+[ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+cat "$file"
+`);
+    chmodSync(join(bin, "gh"), 0o755);
+    writeFileSync(join(bin, "docker"), `#!/bin/sh
+[ "$1 $2" = "container inspect" ] || exit 1
+for slot; do :; done
+echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
+`);
+    chmodSync(join(bin, "docker"), 0o755);
+    return {
+      base, entries, outboxes, locks, bin,
+      pass: (maxMb = "2048") => spawnSync("bash", [promoter, "owner/repo", base, outboxes, "w", maxMb, ...slots], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(":") } }),
+      job: (slot: string, run: string, extra: Record<string, string> = {}): Record<string, string> => ({ OVIS_BUILD_CACHE_OUTBOX: join(outboxes, slot), OVIS_BUILD_CACHE_LOCKS: locks, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: "1", ...extra }),
+      filed: (): string[] => readdirSync(entries).sort().flatMap((name) => /^\d+$/.test(name) && lstatSync(join(entries, name)).isDirectory()
+        ? [`${name}/`, ...readdirSync(join(entries, name)).sort().map((key) => `${name}/${key}`)] : [name]),
+      asked: (): string[] => existsSync(join(github, "asked")) ? readFileSync(join(github, "asked"), "utf8").split("\n").filter(Boolean) : [],
+    };
+  }
+  async function alongside(procs: { exited: Promise<number>; kill: () => void }[], pass: () => unknown): Promise<void> {
+    let ended = false;
+    void Promise.all(procs.map((proc) => proc.exited)).then(() => { ended = true; });
+    const deadline = Date.now() + 50_000;
+    while (!ended && Date.now() < deadline) {
+      pass();
+      await Bun.sleep(50);
+    }
+    if (!ended) for (const proc of procs) proc.kill();
+  }
 
   it("builds once per set of inputs and restores the same dist/ for the rest", () => {
     const { root, runs } = project();
@@ -466,16 +570,12 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     const base = temp("ovis-build-cache-planted-");
     const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
     for (const dir of [outbox, locks]) mkdirSync(dir);
-    // an entry for this checkout, as the launcher would have taken it in
     const key = keyFor(root);
-    const built = join(base, "built");
-    mkdirSync(built);
-    writeFileSync(join(built, "index.html"), "export const a = 1;\n");
-    store(cache, key, built, 1 << 30);
+    store(join(cache, "7"), key, built({ "index.html": "export const a = 1;\n" }), 1 << 30);
     const victim = join(base, "victim.ts");
     writeFileSync(victim, "process.exit(1);\n");
     symlinkSync(victim, join(locks, `used-${key}`));
-    expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks })).toBe("export const a = 1;\n");
+    expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, GITHUB_RUN_ID: "7" })).toBe("export const a = 1;\n");
     expect(readFileSync(victim, "utf8")).toBe("process.exit(1);\n");
     expect(readdirSync(outbox)).toEqual([`used-${key}`]);
   }, 60_000);
@@ -486,10 +586,9 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
     for (const dir of [cache, outbox, locks]) mkdirSync(dir);
     const key = keyFor(root);
-    // another job of the run holds the lock
-    mkdirSync(join(locks, `.lock-${key}`));
+    mkdirSync(join(locks, `.lock-${key}-7`));
     const started = Date.now();
-    expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_WRITER: "w", GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_TRIGGERING_ACTOR: "other" })).toBe("export const a = 1;\n");
+    expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_WRITER: "w", GITHUB_RUN_ID: "7", GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_TRIGGERING_ACTOR: "other" })).toBe("export const a = 1;\n");
     expect(Date.now() - started).toBeLessThan(20_000);
     expect(runs()).toBe(1);
     expect(readdirSync(outbox)).toEqual([]);
@@ -505,7 +604,6 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     const claimed = (): string | undefined => readdirSync(outbox).find((name) => name.endsWith(".claim"));
     const deadline = Date.now() + 30_000;
     while (!claimed() && Date.now() < deadline) await Bun.sleep(25);
-    // the launcher refuses it: it deletes the claim and the build, then gives its verdict
     const key = claimed()!.slice(0, -".claim".length);
     for (const name of readdirSync(outbox)) rmSync(join(outbox, name));
     mkdirSync(join(outbox, `judged-${key}`));
@@ -518,46 +616,293 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
 
   it("builds a commit once on the runner when its jobs start together, however slowly GitHub answers the launcher", async () => {
     const { root, runs } = project();
-    const base = temp("ovis-build-cache-promoted-");
-    const [entries, outboxes, locks, bin] = ["entries", "outboxes", "locks", "bin"].map((name) => join(base, name));
     const slots = ["s1", "s2", "s3", "s4"];
-    for (const dir of [entries, locks, bin, ...slots.map((slot) => join(outboxes, slot))]) mkdirSync(dir, { recursive: true });
-    // a trusted push to main, each answer half a second late
-    writeFileSync(join(base, "jobs.json"), JSON.stringify({ jobs: slots.map((slot) => ({ runner_name: slot, status: "in_progress" })) }));
-    writeFileSync(join(base, "run.json"), JSON.stringify({ event: "push", head_branch: "main", head_repository: { full_name: "owner/repo" } }));
-    writeFileSync(join(bin, "gh"), `#!/bin/sh
-sleep 0.5
-case "$2" in
-  */jobs*) cat "${base}/jobs.json" ;;
-  repos/owner/repo/actions/runs/7) cat "${base}/run.json" ;;
-  repos/owner/repo) echo main ;;
-  *) exit 1 ;;
-esac
-`);
-    chmodSync(join(bin, "gh"), 0o755);
-    const promoter = join(import.meta.dir, "self-hosted-runner/build-cache-promote.sh");
+    const runner = launcher(slots, { "7": { slots } }, 0.5);
     const jobs = slots.map((slot) => {
-      const copy = temp("ovis-build-cache-job-");
-      git(copy, "clone", "-q", root, ".");
-      spawnSync("cp", ["-a", join(root, "node_modules"), copy]);
-      const env = buildEnv(entries, { OVIS_BUILD_CACHE_OUTBOX: join(outboxes, slot), OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "30", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" });
-      return { copy, proc: Bun.spawn([process.execPath, script], { cwd: copy, env, stdout: "pipe", stderr: "pipe" }) };
+      const job = clone(root);
+      return { ...job, proc: Bun.spawn([process.execPath, script], { cwd: job.copy, env: buildEnv(runner.entries, runner.job(slot, "7", { OVIS_BUILD_CACHE_PROMOTE_SECONDS: "30" })), stdout: "pipe", stderr: "pipe" }) };
     });
-    let ended = false;
-    void Promise.all(jobs.map(({ proc }) => proc.exited)).then(() => { ended = true; });
-    // the launcher's loop: one pass after another until the jobs end
-    const deadline = Date.now() + 50_000;
-    while (!ended && Date.now() < deadline) {
-      spawnSync("bash", [promoter, "owner/repo", base, outboxes, "", "2048", ...slots], { env: { ...process.env, PATH: [bin, process.env.PATH].join(":") } });
-      await Bun.sleep(50);
-    }
+    await alongside(jobs.map(({ proc }) => proc), () => runner.pass());
     for (const { proc } of jobs) expect(await proc.exited).toBe(0);
-    const built = jobs.map(({ copy }) => existsSync(join(copy, "node_modules/runs")) ? readFileSync(join(copy, "node_modules/runs"), "utf8").length : 0);
-    expect(built.reduce((a, b) => a + b, 0)).toBe(1);
+    expect(jobs.map((job) => job.runs()).reduce((a, b) => a + b, 0)).toBe(1);
     for (const { copy } of jobs) expect(readFileSync(join(copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
-    expect(readdirSync(entries).filter((name) => !name.startsWith("."))).toHaveLength(1);
+    expect(runner.filed()).toEqual(["7/", `7/${keyFor(root)}`]);
     expect(runs()).toBe(0);
   }, 60_000);
+
+  it("on the runner, restores what a job of its own run built and never the same key under another run", () => {
+    const { root, runs } = project();
+    const runner = launcher(["s1"], {});
+    const key = keyFor(root);
+    store(join(runner.entries, "7"), key, built({ "index.html": "built by run 7" }), 1 << 30);
+    store(join(runner.entries, "8"), key, built({ "index.html": "built by run 8" }), 1 << 30);
+    const job = (run: string) => runner.job("s1", run, { OVIS_BUILD_CACHE_PROMOTE_SECONDS: "0" });
+    expect(build(root, runner.entries, job("7"))).toBe("built by run 7");
+    expect(build(root, runner.entries, job("8"))).toBe("built by run 8");
+    expect(runs()).toBe(0);
+    expect(build(root, runner.entries, job("9"))).toBe("export const a = 1;\n");
+    expect(runs()).toBe(1);
+    expect(readdirSync(join(runner.outboxes, "s1")).sort()).toEqual([`${key}.claim`, `${key}.tar`, `used-${key}`]);
+  }, 60_000);
+
+  it("does not use the runner's cache with no run to read it under", () => {
+    const { root, runs } = project();
+    const runner = launcher(["s1"], {});
+    const key = keyFor(root);
+    store(join(runner.entries, "7"), key, built({ "index.html": "built by run 7" }), 1 << 30);
+    store(runner.entries, key, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    for (const run of [undefined, "", "7/../7", "seven"]) {
+      const env = runner.job("s1", "7");
+      if (run === undefined) delete env["GITHUB_RUN_ID"]; else env["GITHUB_RUN_ID"] = run;
+      const result = spawnSync(process.execPath, [script], { cwd: root, env: buildEnv(runner.entries, env), encoding: "utf8" });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("build cache: not used (on the runner an entry is read under its run");
+      expect(readFileSync(join(root, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+    }
+    expect(runs()).toBe(4);
+    expect(readdirSync(join(runner.outboxes, "s1"))).toEqual([]);
+    expect(readdirSync(runner.locks)).toEqual([]);
+  }, 60_000);
+
+  it("waits on the runner for no build but its own run's: not another run's of the same commit, nor one a job from before locks named the run holds", () => {
+    const { root, runs } = project();
+    const runner = launcher(["s1"], {});
+    const key = keyFor(root);
+    mkdirSync(join(runner.locks, `.lock-${key}-8`));
+    mkdirSync(join(runner.locks, `.lock-${key}`));
+    const result = spawnSync(process.execPath, [script], { cwd: root, env: buildEnv(runner.entries, runner.job("s1", "7", { OVIS_BUILD_CACHE_PROMOTE_SECONDS: "0", OVIS_BUILD_CACHE_WAIT_SECONDS: "300" })), encoding: "utf8", timeout: 20_000 });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain("waiting for it");
+    expect(runs()).toBe(1);
+    expect(readdirSync(runner.locks).sort()).toEqual([`.lock-${key}`, `.lock-${key}-8`]);
+  }, 60_000);
+
+  it("files a trusted run's build under that run, and nothing for a run GitHub does not confirm for the slot", () => {
+    const runner = launcher(["s1", "s2", "s3"], { "100": { slots: ["s1"] } });
+    const [mine, theirs, none] = ["a", "b", "c"].map((letter) => letter.repeat(64)) as [string, string, string];
+    deliver(join(runner.outboxes, "s1"), mine, built({ "index.html": "<p>" }), "100", "1");
+    deliver(join(runner.outboxes, "s2"), theirs, built({ "index.html": "<p>" }), "100", "1");
+    deliver(join(runner.outboxes, "s3"), none, built({ "index.html": "<p>" }), "300", "1");
+    expect(runner.pass().status).toBe(0);
+    expect(runner.filed()).toEqual(["100/", `100/${mine}`]);
+    const sum = new Bun.CryptoHasher("sha256").update("<p>").digest("hex");
+    expect(readFileSync(join(runner.entries, "100", mine, ".manifest"), "utf8")).toBe(`${sum}  ./index.html\n`);
+    // readable by the runners' user, as the entries themselves are
+    expect(statSync(join(runner.entries, "100")).mode & 0o777).toBe(0o755);
+    expect(statSync(join(runner.entries, "100", mine)).mode & 0o777).toBe(0o755);
+    expect(["s1", "s2", "s3"].map((slot) => readdirSync(join(runner.outboxes, slot)))).toEqual([[`judged-${mine}`], [`judged-${theirs}`], [`judged-${none}`]]);
+    const asked = runner.asked().length;
+    deliver(join(runner.outboxes, "s1"), mine, built({ "index.html": "another" }), "100", "2");
+    expect(runner.pass().status).toBe(0);
+    expect(runner.asked()).toHaveLength(asked);
+    expect(readFileSync(join(runner.entries, "100", mine, "index.html"), "utf8")).toBe("<p>");
+  });
+
+  it("never restores, in main's run, a build that a pull request's run handed in under the key of main's commit", async () => {
+    const { root } = project();
+    const key = keyFor(root);
+    const runner = launcher(["s1", "s2", "s3"], { "100": { slots: ["s1"] }, "200": { slots: ["s2", "s3"], pull: true } });
+    // one of its jobs names the key of main's commit for a build of its own, before main's run has built that commit
+    deliver(join(runner.outboxes, "s2"), key, built({ "index.html": "not main's client" }), "200", "1");
+    // and another names main's run for it as well
+    deliver(join(runner.outboxes, "s3"), key, built({ "index.html": "not main's client" }), "100", "1");
+    expect(runner.pass().status).toBe(0);
+    // the run is trusted, so its build is taken in: where its own jobs read, and nowhere else
+    expect(runner.filed()).toEqual(["200/", `200/${key}`]);
+    expect(readFileSync(join(runner.entries, "200", key, "index.html"), "utf8")).toBe("not main's client");
+    const first = clone(root);
+    const push = { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" };
+    const proc = Bun.spawn([process.execPath, script], { cwd: first.copy, env: buildEnv(runner.entries, runner.job("s1", "100", push)), stdout: "pipe", stderr: "pipe" });
+    await alongside([proc], () => runner.pass());
+    expect(await proc.exited).toBe(0);
+    expect(first.runs()).toBe(1);
+    expect(readFileSync(join(first.copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+    expect(runner.filed()).toEqual(["100/", `100/${key}`, "200/", `200/${key}`]);
+    expect(readFileSync(join(runner.entries, "100", key, "index.html"), "utf8")).toBe("export const a = 1;\n");
+    const second = clone(root);
+    expect(build(second.copy, runner.entries, runner.job("s1", "100", push))).toBe("export const a = 1;\n");
+    expect(second.runs()).toBe(0);
+  }, 60_000);
+
+  it("builds in every job, with no wait running out, while the installed launcher still files builds by their key alone", async () => {
+    const { root } = project();
+    const key = keyFor(root);
+    const runner = launcher(["s1", "s2"], {});
+    store(runner.entries, key, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    const waits = { OVIS_BUILD_CACHE_PROMOTE_SECONDS: "300", OVIS_BUILD_CACHE_WAIT_SECONDS: "300" };
+    const jobs = ["s1", "s2"].map((slot) => {
+      const job = clone(root);
+      return { ...job, proc: Bun.spawn([process.execPath, script], { cwd: job.copy, env: buildEnv(runner.entries, runner.job(slot, "7", waits)), stdout: "pipe", stderr: "pipe" }) };
+    });
+    const started = Date.now();
+    await alongside(jobs.map(({ proc }) => proc), () => {
+      for (const slot of ["s1", "s2"]) {
+        const outbox = join(runner.outboxes, slot);
+        if (!existsSync(join(outbox, `${key}.claim`))) continue;
+        for (const name of [`${key}.claim`, `${key}.tar`]) rmSync(join(outbox, name), { force: true });
+        mkdirSync(join(outbox, `judged-${key}`), { recursive: true });
+      }
+    });
+    for (const job of jobs) {
+      expect(await job.proc.exited).toBe(0);
+      expect(job.runs()).toBe(1);
+      expect(readFileSync(join(job.copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+      expect(await new Response(job.proc.stdout).text()).toContain("was not filed under this run but by its key alone");
+    }
+    expect(Date.now() - started).toBeLessThan(45_000);
+    expect(readdirSync(runner.locks)).toEqual([]);
+  }, 60_000);
+
+  it("builds a commit once in a run even where the cache still holds it by its key alone, from before the launcher's update", async () => {
+    const { root, runs } = project();
+    const key = keyFor(root);
+    const slots = ["s1", "s2", "s3"];
+    const runner = launcher(slots, { "7": { slots } }, 0.5);
+    store(runner.entries, key, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    const jobs = slots.map((slot) => {
+      const job = clone(root);
+      return { ...job, proc: Bun.spawn([process.execPath, script], { cwd: job.copy, env: buildEnv(runner.entries, runner.job(slot, "7", { OVIS_BUILD_CACHE_PROMOTE_SECONDS: "30" })), stdout: "pipe", stderr: "pipe" }) };
+    });
+    await alongside(jobs.map(({ proc }) => proc), () => runner.pass());
+    for (const { proc } of jobs) expect(await proc.exited).toBe(0);
+    expect(jobs.map((job) => job.runs()).reduce((a, b) => a + b, 0)).toBe(1);
+    for (const { copy } of jobs) expect(readFileSync(join(copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+    expect(runner.filed().sort()).toEqual(["7/", `7/${key}`].sort());
+    expect(runs()).toBe(0);
+  }, 60_000);
+
+  it("leaves a job from before entries were kept per run with a miss and its verdict, once the launcher files them per run", async () => {
+    const runner = launcher(["s1"], { "7": { slots: ["s1"] } });
+    const key = "a".repeat(64);
+    const outbox = join(runner.outboxes, "s1");
+    store(runner.entries, key, built({ "index.html": "filed by the key alone, by another run" }), 1 << 30);
+    deliver(outbox, key, built({ "index.html": "built by run 7" }), "7", "1");
+    expect(runner.pass().status).toBe(0);
+    expect(runner.filed()).toEqual(["7/", `7/${key}`]);
+    const dist = join(temp("ovis-build-cache-flat-"), "dist");
+    expect(restore(runner.entries, key, dist)).toBe(false);
+    expect(existsSync(dist)).toBe(false);
+    const started = Date.now();
+    await awaitBuild(runner.entries, key, 300_000, { verdict: join(outbox, `judged-${key}`) });
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("evicts the least recently used entries across runs, with what an older launcher left, and removes a run's directory once it is empty", () => {
+    const runner = launcher(["s1"], { "300": { slots: ["s1"] } });
+    const [a, b, c, d, left, fresh] = ["a", "b", "c", "d", "e", "f"].map((letter) => letter.repeat(64)) as [string, string, string, string, string, string];
+    const big = { "a.js": "x".repeat(600_000) };
+    const filed: [string, string, number][] = [["100", a, 1_000], ["250", a, 1_100], ["150", d, 1_200], ["", left, 1_500], ["200", b, 2_000], ["200", c, 2_500]];
+    for (const [run, key, seconds] of filed) {
+      store(join(runner.entries, run), key, built(big), 1 << 30);
+      utimesSync(join(runner.entries, run, key), new Date(seconds * 1000), new Date(seconds * 1000));
+    }
+    mkdirSync(join(runner.base, "used"));
+    writeFileSync(join(runner.base, "used", b), "");
+    utimesSync(join(runner.base, "used", b), new Date(2_100_000), new Date(2_100_000));
+    for (const key of [a, left]) writeFileSync(join(runner.outboxes, "s1", `used-${key}`), "");
+    // a new build taken in, which is when the launcher evicts: 2 MiB hold three of the big ones
+    deliver(join(runner.outboxes, "s1"), fresh, built({ "index.html": "<p>" }), "300", "1");
+    expect(runner.pass("2").status).toBe(0);
+    expect(runner.filed()).toEqual(["100/", `100/${a}`, "200/", `200/${c}`, "250/", `250/${a}`, "300/", `300/${fresh}`]);
+    expect(readdirSync(join(runner.base, "used"))).toEqual([a]);
+    expect(readdirSync(join(runner.outboxes, "s1"))).toEqual([`judged-${fresh}`]);
+  });
+
+  it("removes an entry whose directories its job left without the owner's write bit, and goes on to the next slot's build either way", () => {
+    const runner = launcher(["s1"], { "9": { slots: ["s1"] } });
+    const [left, key] = ["e".repeat(64), "a".repeat(64)];
+    store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    mkdirSync(join(runner.entries, left, "assets"));
+    writeFileSync(join(runner.entries, left, "assets", "app.js"), "export {};\n");
+    chmodSync(join(runner.entries, left, "assets"), 0o555);
+    deliver(join(runner.outboxes, "s1"), key, built({ "index.html": "built by run 9" }), "9", "1");
+    try {
+      expect(runner.pass().status).toBe(0);
+      expect(runner.filed()).toEqual(["9/", `9/${key}`]);
+      expect(readdirSync(join(runner.outboxes, "s1"))).toEqual([`judged-${key}`]);
+    } finally {
+      if (existsSync(join(runner.entries, left, "assets"))) chmodSync(join(runner.entries, left, "assets"), 0o755);
+    }
+  });
+
+  it("moves an old entry it cannot remove out of the names a job reads, and says so once", () => {
+    const runner = launcher(["s1"], {});
+    const left = "e".repeat(64);
+    store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    writeFileSync(join(runner.bin, "rm"), `#!/bin/sh\ncase "$*" in *.new-gone-*) exit 1 ;; esac\nexec /bin/rm "$@"\n`);
+    chmodSync(join(runner.bin, "rm"), 0o755);
+    const passes = [runner.pass(), runner.pass(), runner.pass()];
+    expect(passes.map((pass) => pass.status)).toEqual([0, 0, 0]);
+    expect(runner.filed().map((name) => name.replace(/^\.new-gone-.*$/, ".new-gone-*"))).toEqual([".new-gone-*"]);
+    expect(passes.map((pass) => pass.stderr.split("\n").filter((line) => line.includes("could not")).length)).toEqual([1, 0, 0]);
+  });
+
+  it("says once that an old entry cannot be moved away, and ends no pass on it", () => {
+    const runner = launcher(["s1"], {});
+    const left = "e".repeat(64);
+    store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    // entries/ itself gives this user no write: nothing in it can be renamed or removed
+    chmodSync(runner.entries, 0o555);
+    try {
+      const passes = [runner.pass(), runner.pass(), runner.pass()];
+      expect(passes.map((pass) => pass.status)).toEqual([0, 0, 0]);
+      expect(passes.map((pass) => pass.stderr.split("\n").filter((line) => line.includes("could not")).length)).toEqual([1, 0, 0]);
+      expect(runner.filed()).toEqual([left]);
+      expect(readdirSync(join(runner.entries, left))).toEqual([]);
+    } finally {
+      chmodSync(runner.entries, 0o755);
+    }
+  });
+
+  it("clears what an admission cut short left behind, read-only directories included, when it next evicts", () => {
+    const runner = launcher(["s1"], { "9": { slots: ["s1"] } });
+    const key = "a".repeat(64);
+    const left = join(runner.entries, ".new-abc123");
+    mkdirSync(join(left, "assets"), { recursive: true });
+    writeFileSync(join(left, "assets", "app.js"), "export {};\n");
+    chmodSync(join(left, "assets"), 0o555);
+    const old = new Date(Date.now() - 2 * 3_600_000);
+    utimesSync(left, old, old);
+    deliver(join(runner.outboxes, "s1"), key, built({ "index.html": "built by run 9" }), "9", "1");
+    try {
+      expect(runner.pass().status).toBe(0);
+      expect(runner.filed()).toEqual(["9/", `9/${key}`]);
+    } finally {
+      if (existsSync(join(left, "assets"))) chmodSync(join(left, "assets"), 0o755);
+    }
+  });
+
+  it("files nothing for a claim whose run is no plain number, whatever GitHub would say of it", () => {
+    const odd = ["../escape", "7/../8", "7/", "/7", "-7", "+7", "0x7", "7.0", "7e1", "1".repeat(21), "7 1"];
+    const slots = odd.map((_, index) => `s${index}`);
+    const runner = launcher(slots, { any: { slots } });
+    const before = readdirSync(runner.base).sort();
+    odd.forEach((run, index) => deliver(join(runner.outboxes, slots[index]!), String(index).padStart(64, "a"), built({ "index.html": "<p>" }), run, "1"));
+    expect(runner.pass().status).toBe(0);
+    expect(runner.filed()).toEqual([]);
+    expect(readdirSync(runner.base).sort()).toEqual(before);
+    expect(runner.asked()).toEqual([]);
+    expect(slots.map((slot) => readdirSync(join(runner.outboxes, slot)))).toEqual(odd.map((_, index) => [`judged-${String(index).padStart(64, "a")}`]));
+  });
+
+  it("never files or evicts through a run's directory that is a link", () => {
+    const runner = launcher(["s1", "s2"], { "7": { slots: ["s1"] }, "8": { slots: ["s2"] } });
+    const [key, other] = ["a".repeat(64), "b".repeat(64)];
+    // No job can make one (entries/ is mounted read-only in the runners). What it points at, were it followed:
+    const outside = join(runner.base, "outside");
+    mkdirSync(join(outside, "kept"), { recursive: true });
+    writeFileSync(join(outside, "kept", "a.js"), "x".repeat(2_000_000));
+    utimesSync(join(outside, "kept"), new Date(1_000_000), new Date(1_000_000));
+    symlinkSync(outside, join(runner.entries, "7"));
+    deliver(join(runner.outboxes, "s1"), key, built({ "index.html": "for run 7" }), "7", "1");
+    deliver(join(runner.outboxes, "s2"), other, built({ "index.html": "for run 8" }), "8", "1");
+    expect(runner.pass("1").status).toBe(0);
+    expect(readdirSync(outside)).toEqual(["kept"]);
+    expect(readdirSync(join(outside, "kept"))).toEqual(["a.js"]);
+    expect(lstatSync(join(runner.entries, "7")).isSymbolicLink()).toBe(true);
+    expect(runner.filed()).toEqual(["7", "8/", `8/${other}`]);
+    expect(readdirSync(join(runner.outboxes, "s1"))).toEqual([`judged-${key}`]);
+  });
 
   it("always builds without OVIS_BUILD_CACHE_DIR", () => {
     const { root, runs } = project();

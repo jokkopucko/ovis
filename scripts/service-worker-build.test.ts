@@ -27,7 +27,6 @@ describe("service worker build stamp", () => {
     expect(() => stampServiceWorker(source, 'x"; evil()')).toThrow("not a build id");
     expect(() => stampServiceWorker(source, "0123456789ab", ['/assets/a.js"]; evil(); //'])).toThrow("not a build file");
     expect(() => stampServiceWorker(source, "0123456789ab", ["/assets/../sw.js"])).toThrow("not a build file");
-    // a build that nests its files under assets/ (compressed-assets.test.ts builds one) is listed as it is
     expect(stampServiceWorker(source, "0123456789ab", ["/assets/nested/index-a1.js"])).toContain('["/assets/nested/index-a1.js"]');
   });
 

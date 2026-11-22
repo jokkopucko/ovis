@@ -129,7 +129,6 @@ describe("Codex skill discovery", () => {
   it("skips a stale plugin link without hiding the plugins beside it", () => {
     const { home } = fixture();
     const market = join(home, ".codex", "plugins", "cache", "market");
-    // Plugins and stale links alternate, so whichever way the directory is read a stale link comes first.
     for (const index of [1, 2, 3]) {
       skill(join(market, `plugin-${index}`, "1.0", "skills"), `kept-${index}`);
       if (index < 3) symlinkSync(join(market, "gone"), join(market, `stale-${index}`), "dir");
@@ -163,7 +162,6 @@ describe("Codex skill discovery", () => {
   it("offers the nine former exclusions and the other TUI-only screens as terminal-bound builtins", () => {
     const former = ["resume", "permissions", "agents", "hooks", "mcp", "plugins", "skills", "voice", "theme"];
     const screens = ["config", "setup-default-sandbox"];
-    // a picker, view, confirmation or prompt whatever follows the name, or a composer Chat no longer drives
     const held = ["keymap", "experimental", "approve", "memories", "import", "new", "archive", "delete", "fork", "worktree", "side", "btw",
       "copy", "tui", "mention", "daemon", "warnings", "cd", "usage", "title", "statusline", "pets", "feedback", "subagents", "vim", "logout"];
     expect([...(source.terminalBound ?? [])].sort()).toEqual([...former, ...screens, ...held].sort());
@@ -341,7 +339,6 @@ it("resolves at most a walk's folder budget in a folder whose skill links fan ou
   const root = mkdtempSync(join(tmpdir(), "codex-skill-fanout-"));
   const folder = join(root, "proj");
   mkdirSync(join(folder, ".git"), { recursive: true });
-  // twelve folders, each with five links to the next: no link closes a cycle, yet the paths through them multiply
   const base = join(folder, ".agents", "skills");
   const levels = Array.from({ length: 12 }, (_, depth) => join(base, `level${depth}`));
   for (const level of levels) mkdirSync(level, { recursive: true });

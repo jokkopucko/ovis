@@ -1,4 +1,3 @@
-/* the turn rail: a short dash per turn the user sent, in the margin left of the chat column */
 .chat-minimap {
   position: absolute;
   top: 50%;
@@ -12,7 +11,6 @@
   position: absolute;
   left: 0;
   width: 100%;
-  /* one step of the rail: a dense rail's ticks touch and never overlap */
   height: min(var(--space-2), calc(100% / var(--minimap-steps)));
   padding: 0;
   border: 0;
@@ -21,9 +19,6 @@
   transform: translateY(-50%);
 }
 
-/* a tick is a way to its turn, so it keeps 3:1 against the page (--minimap-tick, not a rule's
-   --border-strong); under the pointer and at the current turn it grows by half, a transform
-   (the width itself never moves) */
 .chat-minimap-tick::before {
   content: "";
   position: absolute;
@@ -58,7 +53,6 @@
   .chat-minimap-tick::before { transition: none; }
 }
 
-/* a phone and a narrow window have no margin beside the column */
 @media (max-width: 768px) {
   .chat-minimap { display: none; }
 }

@@ -2,7 +2,6 @@ import { afterAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { attachGhosttyOverlay } from "./overlay.ts";
 
-/** just enough of an element for the overlay: children, attributes, style and a box */
 class FakeElement {
   children: FakeElement[] = [];
   parent: FakeElement | null = null;
@@ -21,7 +20,6 @@ class FakeElement {
   append(...nodes: FakeElement[]): void { for (const node of nodes) { node.parent = this; this.children.push(node); } }
   remove(): void { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); }
   getBoundingClientRect(): { width: number; height: number } { return this.box; }
-  /** a canvas with no 2D context: glyph widths read as 0, so every glyph is drawn as libghostty gives it */
   getContext(): null { return null; }
   listeners = new Map<string, () => void>();
   addEventListener(type: string, listener: () => void): void { this.listeners.set(type, listener); }
@@ -85,27 +83,23 @@ test("only lines a program writes are announced: not a scroll back through histo
     term.write("HELLO\r\n");
     expect(frame("render")).toBe("HELLO");
 
-    // the wheel moves xterm's view up three rows and back: no byte was written
     buffer.baseY = 25;
     buffer.viewportY = 22;
     expect(frame("scroll")).toBe("HELLO");
     buffer.viewportY = 25;
     expect(frame("scroll")).toBe("HELLO");
 
-    // a larger font on the same grid: the cells grow, the rows are rebuilt with the text they had
     term.options.fontSize = 15;
     screen.box = { width: COLS * 9, height: ROWS * 18 };
     expect(frame("render")).toBe("HELLO");
     term.write("WORLD\r\n");
     expect(frame("render")).toBe("WORLD");
 
-    // a line printed as the font changes, before the frame that draws both, is still announced
     term.write("DURING\r\n");
     term.options.fontSize = 13;
     screen.box = { width: COLS * 8, height: ROWS * 16 };
     expect(frame("render")).toBe("DURING");
 
-    // a pane that gets shorter and back again announces only the next line, not the rows it had hidden
     term.rows = 4;
     screen.box = { width: COLS * 8, height: 4 * 16 };
     frame("resize");
@@ -115,7 +109,6 @@ test("only lines a program writes are announced: not a scroll back through histo
     term.write("AGAIN\r\n");
     expect(frame("render")).toBe("AGAIN");
 
-    // a line written while the view is scrolled back is told once the view is back at the bottom
     buffer.baseY = 25;
     buffer.viewportY = 22;
     expect(frame("scroll")).toBe("AGAIN");
@@ -125,7 +118,6 @@ test("only lines a program writes are announced: not a scroll back through histo
     buffer.viewportY = 26;
     expect(frame("scroll")).toBe("BACKGROUND");
 
-    // a write and a scroll back in one frame tell no history; the write waits for the bottom
     term.write("BUSY\r\n");
     buffer.baseY = 27;
     buffer.viewportY = 24;
@@ -133,7 +125,6 @@ test("only lines a program writes are announced: not a scroll back through histo
     buffer.viewportY = 27;
     expect(frame("scroll")).toBe("BUSY");
 
-    // a write as the pane gets shorter tells the new line alone
     term.write("SHORTER\r\n");
     term.rows = 4;
     screen.box = { width: COLS * 8, height: 4 * 16 };
@@ -172,7 +163,6 @@ test("on herdr's own server, the screen herdr repaints for a wheel is not announ
     now += 200;
     term.write(`${screenOf(101)}\r\nNEWLINE`);
     expect(frame()).toBe("NEWLINE");
-    // output once the gesture is over is told again
     now += 2000;
     term.write("\r\nAFTER");
     expect(frame()).toBe("AFTER");
@@ -223,7 +213,6 @@ test("colours as xterm draws them: readable at its minimum contrast except a Pow
   try {
     flush();
     const rows = screen.children[0]!.children.find((child) => child.className === "ghostty-text")!.children.map((row) => row.innerHTML);
-    // the separator keeps its blue on the green; the letter beside it is made readable
     expect(rows[0]).toContain(`<span style="color:#3465a4">\ue0b0</span>`);
     expect(rows[0]).not.toMatch(/^<span style="[^"]*color:#3465a4/);
     expect(rows[1]).toContain("color-mix(in srgb, currentColor 50%, transparent)");

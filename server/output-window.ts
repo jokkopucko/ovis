@@ -1,13 +1,11 @@
-// Count UTF-8 payload bytes, not JSON framing or UTF-16 string length. A fresh
-// subscription id keeps delayed callbacks from acknowledging a later attach.
+// A fresh subscription id keeps delayed callbacks from acknowledging a later attach.
 export const OUTPUT_HIGH_BYTES = 256 * 1024;
 export const OUTPUT_LOW_BYTES = 64 * 1024;
 export const OUTPUT_HARD_BYTES = 1024 * 1024;
-/** how long a blocked client may go without its ACKs moving before it is closed with 4008 */
 export const OUTPUT_STALL_MS = 2000;
+const ALT_SCREEN_MODE = "1049";
 /** the slowest link a joiner's replay is given time for: 32 KiB/s, about 256 kbit/s */
 export const OUTPUT_JOIN_BYTES_PER_SECOND = 32 * 1024;
-/** the longest a joiner may take to acknowledge its replay */
 export const OUTPUT_JOIN_MAX_MS = 15_000;
 /**
  * The longest one client may hold the shared pty paused, however it acknowledges: a client
@@ -24,7 +22,6 @@ export function wireBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text));
 }
 
-/** What the server does about one client: keep sending, pause the shared pty for it, or close it (4008). */
 export type OutputVerdict = "flow" | "pause" | "stop";
 
 export class OutputWindow {
@@ -32,22 +29,14 @@ export class OutputWindow {
   sent = 0;
   acknowledged = 0;
   blocked = false;
-  /** when the client last became blocked without its ACKs moving since */
   private stalledSince: number | undefined;
-  /** when the client last started holding the shared pty paused, ACKs or not */
   private pausingSince: number | undefined;
-  /** a joiner's replay is in flight and nothing is acknowledged yet: its budget ends here */
   joinUntil: number | undefined;
-  /** frames sent and not yet acknowledged, oldest first from `head`: where each ends and its size on the wire */
   private readonly inFlight: { end: number; wire: number }[] = [];
   private head = 0;
 
   get pending(): number { return this.sent - this.acknowledged; }
 
-  /**
-   * `wire` is the frame's serialized size (`wireBytes`): the oldest unacknowledged frame must
-   * cross the link before its ACK can come, so the stall deadline grows by its crossing time.
-   */
   write(bytes: number, wire = 0): number {
     this.sent += bytes;
     if (wire > 0) this.inFlight.push({ end: this.sent, wire });
@@ -71,7 +60,6 @@ export class OutputWindow {
 
   acknowledge(id: string, offset: number): boolean {
     if (id !== this.id || !Number.isSafeInteger(offset) || offset < 0 || offset > this.sent) return false;
-    // Duplicate and out-of-order ACKs cannot release credit twice, nor restart the stall clock.
     if (offset > this.acknowledged) {
       this.acknowledged = offset;
       this.stalledSince = undefined;
@@ -105,17 +93,10 @@ export class OutputWindow {
     }
     this.stalledSince ??= now;
     if (this.joinUntil !== undefined) {
-      // within its budget a joiner holds only its own window up (bounded by OUTPUT_HARD_BYTES)
       if (now < this.joinUntil) return "flow";
-      // past it the joiner is an ordinary client: one blocked through its budget with nothing
-      // acknowledged is out of time, one that only now became blocked gets the usual deadline
       this.joinUntil = undefined;
     }
     this.pausingSince ??= now;
-    // `large`: frames past the budget still queued on the socket, a session's snapshot (#2573). Output behind
-    // one cannot be acknowledged before it has crossed, whenever it was queued, so the stall clock starts once
-    // it is gone; the frame's own deadline (connections.ts `expire`) answers for a client that stops reading.
-    // The pane is still paused, and for no longer than any client may hold the shared pty paused.
     if (large > 0) {
       this.stalledSince = undefined;
       return now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
@@ -126,7 +107,6 @@ export class OutputWindow {
   }
 }
 
-/** how long `wire` bytes take on the slowest link a budget allows for */
 export function crossingMs(wire: number): number {
   return Math.ceil(wire * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
 }
@@ -135,13 +115,9 @@ export function crossingMs(wire: number): number {
 const PRIVATE_MODES = /\x1b\[\?([\d;]+)([hl])/g;
 /** xterm's modifyOtherKeys: CSI > 4 ; level m, off with CSI > 4 m, CSI > 4 n, or a bare CSI > m / CSI > n (every resource reset) */
 const MODIFY_OTHER_KEYS = /\x1b\[>(4(?:;(\d*))?)?([mn])/g;
-/** An ESC, or a CSI still missing its final byte. */
 const INCOMPLETE_CSI = /^\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/;
 
 /**
- * What a client joining a live attachment is sent: the bounded tail of the stream,
- * led by the private modes set by output that has already fallen out of it.
- *
  * `herdr terminal attach` switches the alternate screen and mouse reporting on once,
  * at the start of the stream. A busy pane pushes that start out of the tail, and a
  * late joiner (a phone opening a pane a desktop tab holds) then got a terminal with
@@ -151,12 +127,8 @@ const INCOMPLETE_CSI = /^\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/;
  */
 export class ReplayBuffer {
   private tail = "";
-  /**
-   * Each mode's last switch in the output before the tail, in the order of those last
-   * switches: order matters (1016l after 1006h leaves xterm's mouse encoding at the default).
-   */
+  /** order matters: 1016l after 1006h leaves xterm's mouse encoding at the default */
   private readonly modes = new Map<string, "h" | "l">();
-  /** the modifyOtherKeys level the output before the tail left, 0 when off */
   private modifyOtherKeys = 0;
   /**
    * Output has fallen out of the tail. Until then the tail is the whole stream, herdr's first
@@ -166,7 +138,6 @@ export class ReplayBuffer {
 
   constructor(private readonly limit: number) {}
 
-  /** Keeps a bounded UTF-8 tail, never starting in the middle of a code point. */
   append(data: string): void {
     const bytes = Buffer.from(this.tail + data);
     let start = Math.max(0, bytes.length - this.limit);
@@ -190,19 +161,16 @@ export class ReplayBuffer {
     this.tail = bytes.subarray(start).toString("utf8");
   }
 
-  /** The stream as seen by a client joining now. Empty until the pane has written anything. */
   text(): string {
     if (!this.tail) return "";
     const keys = this.modifyOtherKeys > 0 ? `\x1b[>4;${this.modifyOtherKeys}m` : "";
     return [...this.modes].map(([mode, state]) => `\x1b[?${mode}${state}`).join("") + keys + this.tail;
   }
 
-  /** whether the output before the tail left the alternate screen on: the tail starts on it */
   get alternateScreen(): boolean {
-    return this.modes.get("1049") === "h";
+    return this.modes.get(ALT_SCREEN_MODE) === "h";
   }
 
-  /** The raw tail, for matching herdr's own error text. */
   get recent(): string {
     return this.tail;
   }

@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "references": [{ "path": "../shared/vendor/paseo-e2ee" }],
+  "compilerOptions": {
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "bun"
+    ]
+  },
+  "include": [
+    "**/*.ts",
+    "../shared/ghostty/engine.ts",
+    "../shared/ghostty/engine.test.ts"
+  ]
+}

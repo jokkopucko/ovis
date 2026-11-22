@@ -1,10 +1,3 @@
-/**
- * A font named in Settings that the device does not have is drawn from the PC's own `fonts/` folder
- * (#412, server/user-fonts.ts, lib/userFonts.ts). The terminal measures its cell from the served face,
- * not from a fallback: the face is on the page before the font effect sets the family, so the pane is
- * attached once, at the face's grid. The chat's font field takes a served face too. A device whose
- * Settings name no font asks the PC nothing, which is every install that never set one.
- */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -18,7 +11,6 @@ import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 
 const ROW = "|abcdefghijklmn|";
-// the bundled Latin face under a family no device has: what it draws is the served file or a fallback
 const FAMILY = "QA Served Mono";
 const WAIT_MS = 10000;
 
@@ -58,7 +50,6 @@ async function open(page: Page, pane: string): Promise<void> {
 }
 
 try {
-  // Given: a pane that prints a row closed by bars, and a PC serving the face under FAMILY.
   const program = join(state, "row.mjs");
   writeFileSync(program, `process.stdout.write(${JSON.stringify(`\x1b[2J\x1b[H${ROW}\r\nROW_READY\r\n`)});
 setInterval(() => {}, 1 << 30);
@@ -78,7 +69,6 @@ setInterval(() => {}, 1 << 30);
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir, tailscaleOwner: null, usage: new UsageService(undefined, []) });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
 
-  // When: the terminal font names FAMILY, on a desktop and on a phone, light and dark.
   for (const [width, height, theme] of [[1280, 800, "dark"], [1280, 800, "light"], [390, 844, "dark"], [390, 844, "light"]] as const) {
     const phone = width < 600;
     const context = await browser.newContext({ viewport: { width, height }, isMobile: phone, hasTouch: phone, serviceWorkers: "block" });
@@ -94,7 +84,6 @@ setInterval(() => {}, 1 << 30);
     await open(page, pane);
     await page.waitForFunction(([family, shown]) => getComputedStyle(document.querySelector(shown)!).fontFamily.includes(family), [FAMILY, shownRows()] as const);
 
-    // Then: the rows are drawn in the served face, and a cell is its advance
     const drawn = await page.evaluate(async ([family, shown]) => {
       const rows = document.querySelector<HTMLElement>(shown)!;
       const size = Number.parseFloat(getComputedStyle(rows).fontSize);
@@ -110,7 +99,6 @@ setInterval(() => {}, 1 << 30);
           bars.push(range.getBoundingClientRect().left);
         }
       }
-      // without the served face this is serif's W
       const glyph = advance(`${size}px "${family}", serif`);
       return {
         face: [...document.fonts].filter((face) => face.family.replaceAll('"', "") === family).map((face) => face.status),
@@ -133,13 +121,13 @@ setInterval(() => {}, 1 << 30);
     assert.deepEqual(drawn.kept, [`/api/fonts/${FAMILY}.woff2`], "the file is kept for the next load");
     assert.ok(attach, "the pane is attached");
     assert.deepEqual([attach.cols, attach.rows], [drawn.cols, drawn.gridRows], "the pane is attached at the served face's grid");
-    assert.deepEqual(resizes, [], "the served face resizes no pty");
+    // a resize to the grid it attached at changes no pty (the server drops it): a late first role-ack refits to that
+    // same grid, so only a resize to another grid is the served face resizing the pty
+    assert.deepEqual(resizes.filter((frame) => frame.cols !== attach.cols || frame.rows !== attach.rows), [], "the served face resizes no pty");
     assert.deepEqual(errors, []);
     await context.close();
   }
 
-  // When: the app runs under its service worker and is opened again: the kept file is not fetched again,
-  // though the worker retires every cache but its own on each open (public/sw.js keepShell).
   {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     await context.addInitScript((family) => {
@@ -152,7 +140,6 @@ setInterval(() => {}, 1 << 30);
     await open(page, pane);
     await loaded();
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
-    // the worker keeps the shell of a navigation it answered, and retires the other caches then
     await page.reload();
     await page.locator(".conn-live").waitFor();
     await loaded();
@@ -165,7 +152,6 @@ setInterval(() => {}, 1 << 30);
     await context.close();
   }
 
-  // When: only the chat font names FAMILY: the face joins the page for it too.
   {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
     await context.addInitScript((family) => {
@@ -204,7 +190,6 @@ setInterval(() => {}, 1 << 30);
     await context.close();
   }
 
-  // When: no font is named, the default: the page asks the PC for no font.
   {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
     await context.addInitScript(() => {

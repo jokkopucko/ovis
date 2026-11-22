@@ -14,25 +14,18 @@ import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
  * right-aligned bars fold with the text: the pane menu's "Original width" draws the grid as it is again.
  */
 
-/** "Wrap to screen" until the user chooses: a touch screen, or a window as narrow as a phone's layout */
 export const MIRROR_WRAP_QUERY = "(pointer: coarse), (max-width: 768px)";
 
-/** A pane of a PC, as the wide grids below name it. */
 export const wideGridKey = (machineId: string, paneId: string): string => `${machineId}\n${paneId}`;
 const wideOwners = new Map<object, string>();
 let wideKeys: ReadonlySet<string> = new Set();
 const wideListeners = new Set<() => void>();
-/**
- * The panes this page draws at a grid it does not size and that is wider than their mount (wideGridKey), one
- * entry per terminal: the pane menu offers Wrap to screen / Original width for them, as for every mirrored pane.
- */
 export const wideGrids = {
   subscribe(listener: () => void): () => void {
     wideListeners.add(listener);
     return () => { wideListeners.delete(listener); };
   },
   snapshot: (): ReadonlySet<string> => wideKeys,
-  /** what `owner`'s terminal draws wide now: a pane's key, or null for nothing */
   set(owner: object, key: string | null): void {
     if ((wideOwners.get(owner) ?? null) === key) return;
     if (key === null) wideOwners.delete(owner);
@@ -60,7 +53,6 @@ export function paletteColor(index: number, theme: ITheme): string {
   return `#${hex(8 + (index - 232) * 10).repeat(3)}`;
 }
 
-/** a cell's colour as xterm holds it: a palette index, a CSS colour (24-bit, or the theme's own), or null for the default */
 type CellColor = { index: number } | { css: string } | null;
 const colorOf = (isDefault: boolean, isRgb: boolean, value: number): CellColor =>
   isDefault ? null : isRgb ? { css: `#${value.toString(16).padStart(6, "0")}` } : { index: value };
@@ -89,16 +81,12 @@ const contrast = (a: Rgb, b: Rgb): number => {
   return (light + 0.05) / (dark + 0.05);
 };
 
-/** The WCAG contrast ratio of two #rgb or #rrggbb colours, or null for any other notation. */
 export function contrastRatio(a: string, b: string): number | null {
   const first = rgbOf(a);
   const second = rgbOf(b);
   return first && second ? contrast(first, second) : null;
 }
 
-/** `fg` moved toward white on a dark `bg` (black on a light one) until it reaches `ratio` against it, as
- *  the grid's own minimumContrastRatio draws it, and the other way when that way cannot reach it; a colour
- *  that is not #rgb or #rrggbb is left as it is. */
 export function readableColor(fg: string, bg: string, ratio: number): string {
   const from = rgbOf(fg);
   const under = rgbOf(bg);
@@ -127,7 +115,6 @@ export function dimmedColor(fg: string, bg: string, ratio = 4.5): string {
   return readableColor(mixed, bg, ratio);
 }
 
-/** The inline CSS a cell draws with; "" for the terminal's plain text. `minimumContrast` is the grid's minimumContrastRatio. */
 export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.5): string {
   const bold = cell.isBold() !== 0;
   let fgColor = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor());
@@ -142,7 +129,6 @@ export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.
   const bg = cssOf(bgColor, theme);
   const text = fg ?? theme.foreground;
   const under = bg ?? theme.background;
-  // the minimum contrast holds for a default foreground on a colour of the program's, and for a colour on the default background
   if (fg !== null || bg !== null) {
     if (text && under) {
       const readable = readableColor(text, under, minimumContrast);
@@ -151,7 +137,6 @@ export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.
   }
   let style = "";
   if (cell.isInvisible() !== 0) style += "color:transparent;";
-  // dim fades the text toward its background, clamped to the minimum contrast floor when the background is known
   else if (cell.isDim() !== 0) {
     const baseFg = fg ?? theme.foreground;
     const dim = baseFg && under && (minimumContrast > 1 || theme.background !== undefined)
@@ -170,22 +155,17 @@ export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.
 
 const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const run = (text: string, style: string): string => !text ? "" : style ? `<span style="${style}">${escapeHtml(text)}</span>` : escapeHtml(text);
-/** a cell that draws nothing: a space (or nothing) on the default background */
 const blank = (cell: IBufferCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
 
-/** The grid's cursor on a row, as xterm draws it: its column, and the shape ("none" draws nothing). */
 export interface FoldCursor { x: number; shape: "block" | "outline" | "bar" | "underline" | "none" }
 
-/** The class of the folded cell the cursor is on (one at most): the input stands under it. */
 export const FOLD_CURSOR_CLASS = "terminal-fold-cursor";
 
-/** The cursor's shape as xterm's DOM renderer drew it on `cell` (its xterm-cursor-* classes). */
 export function cursorShape(cell: Element): FoldCursor["shape"] {
   for (const shape of ["block", "outline", "bar", "underline"] as const) if (cell.classList.contains(`xterm-cursor-${shape}`)) return shape;
   return "none";
 }
 
-/** The inline CSS that draws the cursor over a cell's own: the theme's cursor colours, as the grid draws it. */
 const cursorStyle = (shape: FoldCursor["shape"], theme: ITheme): string => {
   const color = theme.cursor ?? theme.foreground ?? "currentColor";
   if (shape === "block") return `background:${color};color:${theme.cursorAccent ?? theme.background ?? "inherit"};`;
@@ -217,10 +197,8 @@ export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch:
   for (let x = 0; x < end; x++) {
     const cell = line.getCell(x, scratch);
     if (!cell) break;
-    // the second half of a wide glyph: the glyph itself was the cell before
     if (cell.getWidth() === 0) continue;
     const next = cellStyle(cell, theme, minimumContrast);
-    // the cursor's cell (or the wide glyph it is on), alone in a span of its own
     if (cursor !== null && x <= at && at < x + Math.max(1, cell.getWidth())) {
       html += run(text, style);
       const drawnStyle = next + cursorStyle(cursor.shape, theme);
@@ -239,7 +217,6 @@ export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch:
   return html + run(text, style);
 }
 
-/** `url` without the punctuation a sentence put after it; a closing parenthesis it opened stays (`Function_(mathematics)`). */
 const trimUrl = (url: string): string => {
   for (;;) {
     const last = url.at(-1);
@@ -249,7 +226,6 @@ const trimUrl = (url: string): string => {
   }
 };
 
-/** The http(s) address in a folded row's text that `offset` falls in, its trailing punctuation left out, or null. */
 export function webLinkAt(text: string, offset: number): { url: string; start: number; end: number } | null {
   for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
     const url = trimUrl(match[0]);
@@ -272,7 +248,6 @@ export function hyperlinkAt(term: Terminal, y: number, x: number): string | null
   return typeof uri === "string" && uri !== "" ? uri : null;
 }
 
-/** The grid column of the character at `offset` in a row drawn by rowHtml (each drawn cell's characters, a blank one as a space), or -1. */
 export function columnAt(line: IBufferLine, cols: number, offset: number, scratch: IBufferCell): number {
   let at = 0;
   for (let x = 0; x < cols; x++) {
@@ -286,37 +261,26 @@ export function columnAt(line: IBufferLine, cols: number, offset: number, scratc
 }
 
 export interface TerminalFold {
-  /** the folded view is drawn in place of the grid */
   readonly active: boolean;
-  /** decides again whether the grid is folded (the host or the grid resized, the setting or the grid's role changed), and redraws it if so */
   sync(): void;
-  /** the bottom of the folded row the grid's cursor is on, in the host's content, or null when not folded */
   cursorBottom(): number | null;
   dispose(): void;
 }
 
-/** what a tap on the folded rows landed on: a cell of the grid (an OSC 8 hyperlink or a file path may be there), or an http(s) address its text shows */
 export type FoldLinkTarget = { url: string } | { row: number; col: number };
 
 export interface TerminalFoldOptions {
   /** the grid is not this browser's to size: a mirror, a grid it watches, or one held at another device's size */
   foreign: () => boolean;
-  /** the user's choice: Wrap to screen (true) or Original width */
   wrap: () => boolean;
-  /** after each decision: whether the grid is foreign and wider than the host, folded or not (the menu offers the choice) */
   onWide: (wide: boolean) => void;
-  /** after each drawing: the caller keeps the prompt in view */
   onDrawn: () => void;
-  /** a tap on the view, which xterm under it no longer receives: it focuses the terminal, as xterm's own tap does */
   onTap: () => void;
-  /** a tap that may be on a link, as xterm's link providers would have read it: true when it opened one */
   onLink: (target: FoldLinkTarget, event: MouseEvent) => boolean;
-  /** a wheel moved the folded rows within the host: the view is the user's until they follow again */
   onPan: () => void;
 }
 
 type CaretDocument = Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null };
-/** the text node and offset under a point, in the browsers that name it either way */
 const caretAt = (x: number, y: number): { node: Node; offset: number } | null => {
   const doc = document as CaretDocument;
   if (doc.caretPositionFromPoint) {
@@ -327,11 +291,9 @@ const caretAt = (x: number, y: number): { node: Node; offset: number } | null =>
   return range ? { node: range.startContainer, offset: range.startOffset } : null;
 };
 
-/** Folds `term`'s grid inside `host` while the grid is foreign, wider than the host, and the user wraps it. */
 export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign, wrap, onWide, onDrawn, onTap, onLink, onPan }: TerminalFoldOptions): TerminalFold {
   const view = document.createElement("div");
   view.className = "terminal-fold";
-  // the grid under it stays the terminal's accessible text; this is the same text drawn again
   view.setAttribute("aria-hidden", "true");
   const rows: HTMLDivElement[] = [];
   const drawn: string[] = [];
@@ -369,7 +331,6 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const gridRect = grid.getBoundingClientRect();
     const line = grid.offsetHeight / term.rows;
     const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * line;
-    // the bottom of the folded line the cursor is on: the row's last one, or the caret's
     let target = view.offsetTop + row.offsetTop + row.offsetHeight;
     let scroll = 0;
     let left = 0;
@@ -379,14 +340,12 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       const foldLine = parseFloat(view.style.getPropertyValue("--fold-line")) || line;
       const segment = Math.max(0, Math.floor((rect.top + rect.height / 2 - row.getBoundingClientRect().top) / foldLine));
       target = view.offsetTop + row.offsetTop + Math.min(row.offsetHeight, (segment + 1) * foldLine);
-      // how far the grid's cursor cell is right of the caret with the grid unmoved (gridRect counts what this set last time)
       // xterm's input stands on the last column while the cursor waits to wrap past it
       const column = Math.min(term.buffer.active.cursorX, term.cols - 1);
       const needed = gridRect.left - (parseFloat(xterm.style.left) || 0) + xterm.scrollLeft + column * grid.offsetWidth / term.cols - rect.left;
       scroll = Math.max(0, Math.min(needed, xterm.scrollWidth - xterm.clientWidth));
       left = scroll - needed;
     }
-    // where the grid stands unmoved: offsetTop counts the offset this set last time
     const base = xterm.offsetTop - (parseFloat(xterm.style.top) || 0);
     const most = view.offsetTop + view.offsetHeight - (base + xterm.offsetHeight);
     const shift = Math.max(0, Math.min(most, target - (base + gridCursorBottom)));
@@ -399,7 +358,6 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const grid = screen();
     view.style.fontFamily = term.options.fontFamily ?? "";
     view.style.fontSize = `${term.options.fontSize ?? 13}px`;
-    // a row's own height in the grid, so the folded rows stand as far apart as the grid's
     if (grid && term.rows > 0) view.style.setProperty("--fold-line", `${grid.offsetHeight / term.rows}px`);
     view.style.color = theme.foreground ?? "";
     view.style.background = theme.background ?? "";
@@ -415,7 +373,6 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       drawn.pop();
     }
     const buffer = term.buffer.active;
-    // the cursor where the grid draws one (its DOM renderer marks the cell, in the shape it has now)
     const shown = term.element?.querySelector(".xterm-rows .xterm-cursor");
     const cursorY = buffer.baseY + buffer.cursorY - buffer.viewportY;
     for (let y = Math.max(0, start); y <= Math.min(end, term.rows - 1); y++) {
@@ -454,16 +411,13 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
   // xterm draws only the rows a write changed: those are redrawn here too, after it
   const rendered = term.onRender(({ start, end }) => {
     if (!active) return;
-    // the grid became this browser's to size (a pane switch, a role, the keyboard gone) since the last sync
     if (!foreign() || !wrap()) sync();
     else draw(start, end);
   });
   const resized = term.onResize(() => sync());
-  // a font change (Settings, a pinch) keeps the grid's rows and columns: only its size says the grid now fits, or no longer does
   const measured = new ResizeObserver(() => sync());
   const grid = screen();
   if (grid) measured.observe(grid);
-  /** the folded row under a point and the offset in its text, or null */
   const textAt = (x: number, y: number): { row: number; offset: number; text: string; node: Text } | null => {
     const caret = caretAt(x, y);
     if (!caret || !(caret.node instanceof Text)) return null;
@@ -484,7 +438,6 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     for (let walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT), text = walker.nextNode(); text && text !== node; text = walker.nextNode()) offset += (text as Text).data.length;
     return { row: index, offset: offset + at, text: row.textContent ?? "", node };
   };
-  /** whether the point is on the drawn text of `[start, end)` in a row, not in the blank past a line's end */
   const onText = (row: number, start: number, end: number, x: number, y: number): boolean => {
     const range = document.createRange();
     let at = 0;
@@ -497,14 +450,11 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     }
     return started && [...range.getClientRects()].some((rect) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
   };
-  // a tap with no text selected in the view: a long press that selected some is a copy, not a tap
   const tap = (event: MouseEvent): void => {
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && selection.anchorNode && view.contains(selection.anchorNode)) return;
     const hit = textAt(event.clientX, event.clientY);
     if (hit) {
-      // the cell's own target first (an OSC 8 hyperlink, whatever its label shows, then a file path), as the grid
-      // ranks its links; then the address the text shows
       const buffer = term.buffer.active;
       const line = buffer.getLine(buffer.viewportY + hit.row);
       const col = line ? columnAt(line, term.cols, hit.offset, scratch) : -1;

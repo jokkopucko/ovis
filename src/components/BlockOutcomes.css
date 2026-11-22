@@ -1,0 +1,35 @@
+.block-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  list-style: none;
+}
+
+.block-outcomes > [data-state="applied"],
+.block-outcomes > [data-state="already_applied"] {
+  color: var(--text);
+}
+
+.device-notice:has(.block-outcomes) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.device-notice:has(.block-outcomes) > .device-paired-actions {
+  display: contents;
+}
+
+.device-notice .block-outcomes {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  padding-inline: 0;
+  overflow-wrap: anywhere;
+}
+
+.device-notice:has(.block-outcomes) .update-notice-dismiss {
+  grid-column: 3;
+  grid-row: 1;
+}

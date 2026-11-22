@@ -2,7 +2,7 @@ import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
 import { type InteractivePromptAnswer, type InteractivePromptStep } from "../../shared/protocol.ts";
 import { piActiveTab } from "./pi-ask-tabs.ts";
-import { ANSI_RE, onePerPass, type CardWords, KEY, NUMBERED_OPTION_RE, type ParsedPrompt, SELECTED_RE, SOLID_RULE_RE, cleanLine, englishOf, findLastIndex, finishPrompt, own, isDivider, joinWrapped, keySteps, listNames, listRows, menuRows, navigationKeys, nearestQuestion, normalizeText, parseNumberedRows, screenWidth, sequentialRows, sliderKeys, wrapped } from "./shared.ts";
+import { ANSI_RE, onePerPass, type CardWords, KEY, NUMBERED_OPTION_RE, type NumberedRow, type ParsedPrompt, SELECTED_RE, SOLID_RULE_RE, cleanLine, editorRowsMatch, englishOf, findLastIndex, finishPrompt, own, isDivider, joinWrapped, keySteps, listNames, listRows, menuRows, navigationKeys, nearestQuestion, normalizeText, parseNumberedRows, screenWidth, sequentialRows, sliderKeys, wrapped } from "./shared.ts";
 
 // several questions navigate between tabs: "Tab/Arrow keys to navigate"
 export const CLAUDE_ASK_HINT_RE = /enter to select.*(?:↑\/↓|tab\/arrow keys) to navigate.*esc to cancel/i;
@@ -36,12 +36,10 @@ const CLAUDE_MODEL_GUARD_RE = guardRe(["Enter to set as default", "s to use this
 /** lines a hint is read over at most: a phone-width pane wraps the model list's over seven (#542) */
 const CLAUDE_HINT_LINES = 16;
 
-/** Lines as one, every space taken out: a hint a narrow pane wrapped anywhere, inside a word too, reads whole. */
 function compactLines(lines: string[]): string {
   return lines.map(cleanLine).filter((line) => !isDivider(line)).join("").replace(/\s+/g, "");
 }
 
-/** Whether hint `re` (spaces optional between its characters) begins line `index` and is read whole by line `end`. */
 function hintAt(lines: string[], index: number, re: RegExp, end = index + CLAUDE_HINT_LINES): boolean {
   if (!cleanLine(lines[index] ?? "") || isDivider(cleanLine(lines[index]!))) return false;
   return re.exec(compactLines(lines.slice(index, end)))?.index === 0;
@@ -51,7 +49,6 @@ function hintAt(lines: string[], index: number, re: RegExp, end = index + CLAUDE
  * A question whose options carry a preview (AskUserQuestion's `preview`): the selected option's
  * preview is drawn in a box to the right of the options, "Notes: press n to add notes" under it,
  * with no "Type something" row and an unnumbered "Chat about this" (Claude Code 2.1.288).
- * The box and the notes line are cut off each line, leaving the options as in the plain form.
  * The box stands in one column on every line (its top corner names it), so only what sits in
  * that column goes: a `│` inside an option's own text stays.
  */
@@ -96,7 +93,6 @@ export function withoutClaudeSidePanel(screen: string): string {
   };
   const top = edges(lines[0] ?? "").filter((at) => at >= CLAUDE_SIDE_PANEL_MIN_COLUMN);
   if (top.length === 0) return withoutClaudeEdgelessPanel(screen, lines);
-  // each row's edges once, past the top row's check that turns away most screens
   const rowEdges = lines.map((line, index) => index === 0 ? top : edges(line));
   const rowsAt = (column: number): number => {
     let rows = 0;
@@ -123,7 +119,6 @@ export function withoutClaudeSidePanel(screen: string): string {
 function withoutClaudeEdgelessPanel(screen: string, lines: string[]): string {
   const column = Math.max(0, ...lines.map((line) => /^─*/.exec(line)![0].length));
   if (column < CLAUDE_SIDE_PANEL_MIN_COLUMN) return screen;
-  // where each row's text past the column starts: -1 when the row ends before it, null when the column is not blank
   const starts = lines.map((line) => {
     if (Bun.stringWidth(line) <= column) return -1;
     const at = indexAtColumn(line, column);
@@ -135,7 +130,6 @@ function withoutClaudeEdgelessPanel(screen: string, lines: string[]): string {
   return screen.split(/\r?\n/).map((line, index) => starts[index]! >= 0 ? coloredBefore(line, column) : line).join("\n");
 }
 
-/** a colored line's text left of the terminal column `column`, its color codes kept */
 function coloredBefore(line: string, column: number): string {
   let kept = "";
   let width = 0;
@@ -150,10 +144,6 @@ function coloredBefore(line: string, column: number): string {
   return kept.trimEnd();
 }
 
-/**
- * the preview box's top row, the column its left edge stands in, and the columns between its edges
- * (0 when its right corner is not on that row), from its top corner; null without one
- */
 function previewBox(lines: string[], from: number, to: number): { top: number; column: number; inner: number } | null {
   for (let index = from; index <= to; index += 1) {
     const line = lines[index] ?? "";
@@ -169,8 +159,7 @@ function previewBox(lines: string[], from: number, to: number): { top: number; c
 
 /**
  * A box narrower than this (a pane of about 40 columns) shows its preview in pieces too small to read
- * (`+-` and `-+` of a `+--+ +--+`, measured on 2.1.312): the card shows none, as before, and the
- * terminal is where to look.
+ * (`+-` and `-+` of a `+--+ +--+`, measured on 2.1.312).
  */
 const CLAUDE_PREVIEW_MIN_WIDTH = 20;
 
@@ -186,7 +175,6 @@ function previewText(lines: string[], box: { top: number; column: number; inner:
     const line = lines[index]!;
     const at = indexAtColumn(line, box.column);
     const edge = at >= 0 ? line[at] : undefined;
-    // between its two edges only: whatever stands right of the box is not the preview
     const right = edge === "│" ? indexAtColumn(line, box.column + box.inner + 1) : -1;
     if (edge === "│" && line[right] !== "│") return null;
     if (edge === "│") rows.push(line.slice(at + 1, right).replace(/^ /, "").trimEnd());
@@ -233,12 +221,10 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   if (!sequentialRows(rows) || rows.filter((row) => row.selected).length !== (onSubmit ? 0 : 1)) return null;
   const chatIndex = rows.findIndex((row) => row.label === "Chat about this");
   let customIndex = rows.findIndex((row) => /^Type something\.?$/i.test(row.label));
-  // typed into, the row shows the draft instead of "Type something.", with the cursor on it or
-  // not (2.1.295): in Claude's own form, where the question is named by its chip or tabs and a
-  // rule parts that row from "Chat about this", it is still the typed answer's
+  // Typed into, the row shows the draft instead of "Type something." (2.1.295).
+  // The rule before "Chat about this" identifies the custom row even without a chip or tabs.
   const drafted = customIndex < 0 && !preview && chatIndex > 1
-    && lines.slice(rows[chatIndex - 1]!.lineIndex + 1, rows[chatIndex]!.lineIndex).some((line) => isDivider(line))
-    && (claudeTabs(lines, rows[0]!.lineIndex) !== null || claudeChip(lines, rows[0]!.lineIndex) !== null);
+    && lines.slice(rows[chatIndex - 1]!.lineIndex + 1, rows[chatIndex]!.lineIndex).some((line) => isDivider(line));
   if (drafted) customIndex = chatIndex - 1;
   if (preview) {
     // its notes are no answer of their own: no typed-answer row, the options are the menu
@@ -253,7 +239,6 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   if (onSubmit && !multiSelect) return null;
   const submit = multiSelect && submitLine !== undefined;
   const rowAt = rows.findIndex((row) => row.selected);
-  // the cursor's place among the rows it moves through, Submit counted before the last one
   const selectedIndex = onSubmit ? rows.length - 1 : submit && rowAt === rows.length - 1 ? rowAt + 1 : rowAt;
   // the tab the bar's colors show; without them, the first question still open
   const shown = tabs ? claudeTabSteps(colored[tabs.index] ?? "", tabs) : null;
@@ -264,7 +249,6 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
     : chip ?? own(multiSelect ? "Multiple choice" : "Question");
   const nav = shown !== null && shown.index < tabs!.tabs.length ? shown : null;
   const title = titleOf(nav?.index ?? open);
-  // read off the screen, not part of the question: left out of the card's id
   const words = claudeWordsAbove(raw, rows[0]!.lineIndex);
   const parsed = finishPrompt("claude", {
     kind: "question", title, question, body: null,
@@ -287,15 +271,31 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
         { text }, ...keySteps(multiSelect ? [KEY.down, KEY.enter] : [KEY.enter]),
       ],
     } : {}),
-    // the id reads the tab shown (its title names it and its place): two tabs asking the same are two
-    // cards. On the first question still open it is the title a read without colors gives too
   }, { steps: undefined, can_step_back: undefined });
-  // the box follows the cursor: left out of the card's id, like the words over the question
   // Claude opens the box on the first option's row: a box drawn higher up is no option's
   const box = preview ? previewBox(raw, rows[0]!.lineIndex, rows[0]!.lineIndex) : null;
   const drawn = box !== null && box.column >= 2 && box.inner >= CLAUDE_PREVIEW_MIN_WIDTH && rowAt >= 0 && rowAt < optionRows.length ? previewText(raw, box) : null;
+  const editor = rows[customIndex];
   return {
     ...parsed,
+    ...(editor && drafted && (!multiSelect || editor.checked) ? {
+      customEditorMatches: ({ prompt, text }, cursor) => {
+        if ((multiSelect && cursor === "submit" ? !onSubmit : !editor.selected)
+          || parsed.id !== prompt.id || parsed.claudeTabs?.index !== prompt.claudeTabs?.index
+          || parsed.claudeTabs?.identity !== prompt.claudeTabs?.identity
+          || parsed.checkedOptionIndices.join() !== prompt.checkedOptionIndices.join()) return false;
+        const first = raw[editor.lineIndex]?.match(/^(\s*(?:[›>❯]\s*)?\d+\. (?:\[[ xX✓✔]\] )?)(.*)$/u);
+        if (!first) return false;
+        const indent = " ".repeat(Bun.stringWidth(first[1] ?? ""));
+        const rest = raw.slice(editor.lineIndex + 1, rows[chatIndex]?.lineIndex);
+        const divider = findLastIndex(rest, (line) => /^─{3,}\s*$/.test(line));
+        const submit = multiSelect ? findLastIndex(rest, (line) => /^(?:[›>❯]\s*)?Submit$/.test(cleanLine(line))) : divider;
+        if (divider < 0 || submit < 0) return false;
+        const wrappedRows = rest.slice(0, Math.min(divider, submit));
+        return wrappedRows.every((line) => line.startsWith(indent))
+          && editorRowsMatch([first[2] ?? "", ...wrappedRows.map((line) => line.slice(indent.length))], text);
+      },
+    } : {}),
     ...(words === null ? {} : { screen_words: words }),
     ...(drawn === null ? {} : { option_preview: { option_index: rowAt, ...drawn } }),
   };
@@ -310,27 +310,16 @@ const CLAUDE_CALL_RE = /^[●⏺]\s+(?:[\w.:/-]+|\S.* \(MCP\))\(/;
 /** a collapsed group of tool calls, `Read 2 files (ctrl+o to expand)` (2.1.311), its bullet drawn or not */
 const CLAUDE_COLLAPSED_RE = /\(ctrl\+o\s+to\s+expand\)/i;
 
-/** a list item, or a line of a table or a rule, opens a line of its own: never the rest of the line above it */
 const OWN_LINE_RE = /^\s*(?:(?:[-*•]|\d+[.)])\s|[│├└┌┬┼─╭╰])/;
 
-/** words and sentence punctuation only: a line with a path, a URL, code or a command's signs keeps its breaks */
 const PROSE_RE = /^[\p{L}\p{N}\s.,:;!?'"’‘“”()\-–—…%&。、，！？：；「」『』（）]+$/u;
 
-/** a command's option (`--oneline`, `-rf`): its line is a command, never prose to join */
 const OPTION_RE = /(?:^|\s)--?\w/;
 
-/**
- * A line that is a command or a path, read on its own: it opens with a common command (`git push`,
- * `bun test`, a `$ ` prompt), or it is one token with a `/` or a file's extension. Such a line keeps
- * its breaks on both sides, whatever the rest of its paragraph says. A command this list does not
- * name is caught only by its options or its signs (OPTION_RE, PROSE_RE).
- */
 const COMMAND_LINE_RE = /^\s*(?:\$\s+\S|(?:git|gh|npm|npx|bun|bunx|yarn|pnpm|node|deno|python3?|pip3?|uv|cargo|rustc|go|make|cd|ls|rm|cp|mv|mkdir|cat|echo|curl|wget|ssh|scp|rsync|sudo|docker|kubectl|helm|terraform|export|source|chmod|chown|tar|grep|rg|sed|awk|find|touch|kill|systemctl|brew|apt|apt-get|dnf|herdr|claude|codex|tmux)(?:\s|$)|\S*(?:\/|\w\.[a-z][a-z0-9]{0,5}\b)\S*[.,;:]?\s*$)/;
 
-/** how a sentence ends, a closing quote or bracket after it allowed */
 const SENTENCE_END_RE = /[.!?\u2026\u3002\uff01\uff1f]["'\u201d\u2019)\]\u300d\u300f\uff09]*$/u;
 
-/** a script written without spaces between words: a line of it the pane broke goes on without a space */
 const UNSPACED_RE = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u;
 
 /**
@@ -363,12 +352,10 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
   for (let index = firstRow - 1; index >= Math.max(0, firstRow - 60) && rule < 0; index -= 1) {
     const line = cleanLine(lines[index]!);
     if (SOLID_RULE_RE.test(line)) rule = index;
-    // the user's prompt, Claude's text or a tool between: the rule above them is not this panel's
     else if (/^[❯●⏺⎿✻]/.test(line)) return null;
   }
   if (rule < 0) return null;
   const width = Bun.stringWidth(cleanLine(lines[rule]!));
-  // each line as drawn (its width says where the pane wrapped it) and its text, the block's indent off
   const block: { drawn: string; text: string }[] = [];
   let start = -1;
   for (let index = rule - 1; index >= 0 && start < 0; index -= 1) {
@@ -384,7 +371,6 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
   if (start < 0) return null;
   // a hint a narrow pane wrapped: "(ctrl+o" over "to expand)"
   if (CLAUDE_COLLAPSED_RE.test(block.map(({ text }) => text.trim()).join(" "))) return null;
-  // the block's paragraphs, each its lines as drawn
   const groups: { drawn: string; text: string }[][] = [[]];
   for (const line of block) {
     if (line.text !== "") groups.at(-1)!.push(line);
@@ -418,7 +404,6 @@ function claudeWordsAbove(lines: string[], firstRow: number): string | null {
     }
     paragraphs.push(paragraph);
   }
-  // capped as a card's body is, never inside a character
   const words = [...paragraphs.join("\n\n")].slice(0, 12_000).join("");
   return words.trim() === "" ? null : words;
 }
@@ -472,13 +457,11 @@ function claudeTabSteps(coloredLine: string, bar: { whole: boolean; tabs: { labe
   return { steps, index, identity: JSON.stringify(bar.tabs.map((tab) => [tab.label, tab.answered])) };
 }
 
-/** The question over Claude's options, joined back when a narrow pane wraps it over several lines. */
 function claudeQuestionText(lines: string[], tabsIndex: number, firstRow: number): string | null {
   const text: string[] = [];
   for (let index = firstRow - 1; index > Math.max(tabsIndex, firstRow - 30); index -= 1) {
     const line = cleanLine(lines[index]!);
     if (!line) { if (text.length > 0) break; continue; }
-    // the single question's header chip (`☐ Dataset`) or the panel's top rule ends the question
     if (/^[☐☒☑✔]\s+\S/.test(line) || isDivider(line) || CLAUDE_TABS_RE.test(line)) break;
     text.unshift(line);
   }
@@ -513,7 +496,6 @@ function claudeReviewAnswers(panel: string[], width: number): { answers: Interac
     else lead.push(raw);
   }
   if (items.length === 0) return null;
-  // what the top cut off starts with "…": the rest of a question or answer is not all of it
   const cut = (text: string, whole: boolean): string | null => text === "" ? null : whole ? text : `…${text}`;
   return {
     answers: items.map((item) => ({
@@ -545,7 +527,6 @@ function parseClaudeSubmit(screen: string): ParsedPrompt | null {
   const answers = review?.answers;
   const body = review ? review.notes.join("\n") : panel.map(cleanLine)
     .filter((line) => line && !isDivider(line) && !/^Review your answers$/i.test(line)).join("\n");
-  // the review is the bar's Submit tab: Back and the steps go to its questions
   const bar = tabsIndex >= 0 ? claudeTabs(lines, tabsIndex + 1) : null;
   const shown = bar ? claudeTabSteps(screen.split(/\r?\n/)[tabsIndex] ?? "", bar) : null;
   const nav = shown !== null && shown.index === bar!.tabs.length ? shown : null;
@@ -583,13 +564,24 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
 
   const requiredIndex = findLastIndex(lines, (line) => /This command requires approval/i.test(cleanLine(line)));
   const dangerousRmIndex = findLastIndex(lines, (line) => /^Dangerous rm operation\b/i.test(cleanLine(line)));
-  const approvalIndex = Math.max(requiredIndex, dangerousRmIndex);
-  // "Do you want to proceed?", "Do you want to create hello.txt?", "Do you want to make this edit to a.ts?"
+  const markerIndex = Math.max(requiredIndex, dangerousRmIndex);
   const questionIndex = findLastIndex(lines, (line) => /^Do you want to .+\?$/i.test(cleanLine(line)));
   if (questionIndex < 0) return null;
+  // a marker with a later tool call or panel rule under it is an earlier asking's: it names
+  // neither this panel's title nor its action
+  const approvalIndex = markerIndex >= 0 && lines.slice(markerIndex + 1, questionIndex)
+    .some((line) => SOLID_RULE_RE.test(cleanLine(line)) || isCallRow(line)) ? -1 : markerIndex;
   // options end at the key hint: a line under the last one is then only its wrapped label
   const hintIndex = findLastIndex(lines, (_, index) => /esc to cancel/i.test(wrapped(lines, index)));
-  const rows = parseNumberedRows(lines, questionIndex + 1, hintIndex > questionIndex ? hintIndex : lines.length);
+  const rowsEnd = hintIndex > questionIndex ? hintIndex : lines.length;
+  const numbered = parseNumberedRows(lines, questionIndex + 1, rowsEnd);
+  // unnumbered rows are a held approval only under the safety check's own words in this panel,
+  // read across the rows a narrow pane wraps them on, never from above the panel's rule
+  const panelTop = findLastIndex(lines.slice(0, questionIndex), (line) => SOLID_RULE_RE.test(cleanLine(line)) || isDivider(cleanLine(line)));
+  const held = numbered.length === 0 && !isBoxedRow(lines[questionIndex]!)
+    && lines.slice(Math.max(0, panelTop + 1, questionIndex - 12), questionIndex).map((line) => isBoxedRow(line) ? "" : cleanLine(line))
+      .join("\n").split(/\n\s*\n/).some((paragraph) => /automatic safety check flagged this action/i.test(paragraph.replace(/\s+/g, " ")));
+  const rows = held ? heldApprovalRows(lines, questionIndex + 1, rowsEnd) : numbered;
   if (!sequentialRows(rows) || rows.length < 2 || rows.filter((row) => row.selected).length !== 1) return null;
   // a hint of its own under the last row and over the last hint, whole or wrapped by a narrow
   // pane: the panel was answered, and what ends the screen now is another prompt ("Password:"
@@ -644,6 +636,41 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
   });
 }
 
+/** a tool call Claude drew at the top level, not one quoted inside a boxed preview (`│ ● Bash(…)`) */
+function isCallRow(line: string): boolean {
+  return CLAUDE_CALL_RE.test(line.replace(ANSI_RE, "").trimStart());
+}
+
+/** a row of a boxed preview (`│ …`): what it quotes is the command's text, not Claude's dialog */
+function isBoxedRow(line: string): boolean {
+  return line.replace(ANSI_RE, "").trimStart().startsWith("│");
+}
+
+/**
+ * An approval Claude Code's safety check held (`defaultToNo`: "Claude Code's automatic safety
+ * check flagged this action, so the action hasn't run") hides its numbers so that no single
+ * key approves it, and opens on No (2.1.323):
+ *
+ *   Do you want to proceed?
+ *     Yes
+ *   ❯ No
+ *
+ *   Esc to cancel
+ *
+ * Only Yes/No rows count: any other line between the question and the hint is not such a menu.
+ */
+function heldApprovalRows(lines: string[], start: number, end: number): NumberedRow[] {
+  const rows: NumberedRow[] = [];
+  for (let index = start; index < end; index += 1) {
+    const text = cleanLine(lines[index]!);
+    if (!text || isDivider(text)) continue;
+    const label = text.replace(SELECTED_RE, "").trim();
+    if (isBoxedRow(lines[index]!) || !/^(?:Yes|No)\b/i.test(label)) return [];
+    rows.push({ number: rows.length + 1, label, selected: SELECTED_RE.test(text), checked: false, lineIndex: index });
+  }
+  return rows.length >= 2 && rows.length <= 4 ? rows : [];
+}
+
 /**
  * Claude Code 2.1.294 takes zero-width and other invisible characters out of a message, and instead
  * of sending it keeps it in its input until it is reviewed. For a moment it says so over the box:
@@ -654,7 +681,7 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
  *   ────────────────
  *     [Haiku 4.5] │ project
  *
- * The chat had sent the message and cleared its box, so it seemed gone. The card shows the
+ * The card shows the
  * message as Claude now holds it and sends it (Enter) or drops it (Ctrl+C clears the input).
  * The hint does not stay (a turn's status line takes its row), so the box counts on its own too:
  * when it still holds what the chat last sent here less only invisible characters (`sent`).
@@ -674,7 +701,6 @@ function parseClaudeHeld(screen: string, sent: string | null, working: boolean):
   if (top < 0 || bottom - top > 40) return null;
   const box = lines.slice(top + 1, bottom).map((line) => line.replace(/\s+$/, ""));
   if (!/^\s*❯/.test(box[0] ?? "")) return null;
-  // the box's own lines: the first after its ❯, the rest at the box's indent
   const message = box.map((line, index) => index === 0 ? line.replace(/^\s*❯\s?/, "") : line.replace(/^ {0,2}/, "")).join("\n").trim();
   if (!message) return null;
   let above = top - 1;
@@ -718,7 +744,6 @@ const CLAUDE_GOAL_STATUS_RE = /^running \d+[dhms](?: \d+[dhms])* · \d[\d,.]*[kK
 
 function parseClaudeGoal(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
-  // the panel is what follows the session's rule and runs to the end of the screen
   const rule = findLastIndex(lines, (line) => cleanLine(line).startsWith("▔"));
   if (rule < 0) return null;
   const blocks: string[][] = [[]];
@@ -740,7 +765,6 @@ function parseClaudeGoal(screen: string): ParsedPrompt | null {
   return null;
 }
 
-/** The card for the goal dialog: its one key is Esc, shown as Close; the elapsed time ticks, so it stays out of the card's id. */
 function goalCard(title: CardWords, question: CardWords, status: string | null): ParsedPrompt {
   return finishPrompt("claude", {
     kind: "menu", title, question, body: status,
@@ -752,7 +776,6 @@ function goalCard(title: CardWords, question: CardWords, status: string | null):
   }, { body: null });
 }
 
-/** The rewind panel the screen ends in: its blocks of lines from its `Rewind` title down, and all that is drawn under its rule; null when there is none. */
 function claudeRewindPanelAt(screen: string): { blocks: string[][]; below: string } | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
   // the session's rule, or the end of it where a tip takes its start (" tmux detected · scroll… ▔", recorded at 40 columns)
@@ -767,21 +790,14 @@ function claudeRewindPanelAt(screen: string): { blocks: string[][]; below: strin
   return blocks.length >= 3 && blocks[0]!.length === 1 && cleanLine(blocks[0]![0]!) === "Rewind" ? { blocks: blocks.slice(1), below: below.join("\n") } : null;
 }
 
-/** What is drawn under the rule of the rewind panel the screen ends in (the panel, and anything under it); null when it ends in none. */
 export function claudeRewindPanelBelow(screen: string): string | null {
   return claudeRewindPanelAt(screen)?.below ?? null;
 }
 
-/** A send refused while Claude Code's rewind dialog is on screen (any of its states). */
 export const CLAUDE_REWIND_OPEN_MESSAGE = "Claude Code's rewind dialog is open; finish or close it in the terminal (Esc), then send";
 
-/** Characters no one sees: format controls (zero-width spaces and joiners, bidi marks, tags), combining marks, Hangul fillers. */
 export const INVISIBLE_CHAR_RE = /[\p{Cf}\p{Mn}\p{Me}\u115F\u1160\u3164\uFFA0]/u;
 
-/**
- * How many characters of `sent` the box `shown` lacks, when it lacks only invisible ones (0 when
- * anything else differs). Whitespace is left out of both: the box wraps a long message.
- */
 export function removedInvisible(sent: string, shown: string): number {
   // whitespace, but not U+FEFF, which \s takes for a space and Claude Code counts as invisible
   const a = [...sent.replace(/[^\S\uFEFF]+/g, "")];
@@ -846,7 +862,6 @@ function parseClaudeConfirm(screen: string): ParsedPrompt | null {
   if (unsure) return null;
   if (rows.length < 2 || rows.length > 9 || rows.filter((row) => row.selected).length !== 1) return null;
   if (rows.some((row) => !row.label || NUMBERED_OPTION_RE.test(row.label))) return null;
-  // the panel above the rows: its first line names it, a sentence ending in "?" asks
   let top = start - 1;
   while (top >= 0 && !isDivider(lines[top]!) && start - top <= 30) top -= 1;
   const panel = lines.slice(top + 1, start).map(cleanLine).filter(Boolean);
@@ -889,17 +904,15 @@ function parseClaudeConfirm(screen: string): ParsedPrompt | null {
  * shape alone: its number, what it names, `✔` on the model in use, and after two spaces or more
  * what it says of it, which a narrow pane wraps under itself at the same column. The rows drawn
  * are a window on the list: `↑` and `↓` stand in the cursor's column on the first and last of
- * them when more lie beyond, and `… +2 models` counts the ones below. Only the rows drawn become
- * options, the rest are counted for the card to say so.
+ * them when more lie beyond, and `… +2 models` counts the ones below.
  *
  * The line under the rows is the effort the pick would run at. It follows the cursor (a model's
- * own default, or the session's when one was set), so it is no part of what the card asks.
+ * own default, or the session's when one was set).
  */
 const CLAUDE_MODEL_ROW_RE = /^\s*([❯›>↑↓])?\s*(\d+)\.\s+(\S.*)$/;
 
 const CLAUDE_MODEL_MORE_RE = /^…\s*\+(\d+) models?$/;
 
-/** lines between the rows and the hint, at most: the effort line, wrapped by a narrow pane */
 const CLAUDE_MODEL_UNDER_LINES = 3;
 
 /**
@@ -930,7 +943,6 @@ export function claudeModelListWaits(screen: string, hint: RegExp = CLAUDE_MODEL
 
 function parseClaudeModel(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
-  // read as the guard reads it, so the card and the guard agree (#542)
   const hintIndex = findLastIndex(lines, (_, index) => hintAt(lines, index, CLAUDE_MODEL_GUARD_RE));
   if (hintIndex < 0) return null;
   const { rows, below, last, unread } = listRows(lines, hintIndex, CLAUDE_MODEL_ROW_RE, CLAUDE_MODEL_MORE_RE);
@@ -940,7 +952,6 @@ function parseClaudeModel(screen: string): ParsedPrompt | null {
   const names = listNames(rows);
   if (names === null) return null;
   const options = names.map(({ name, said }) => ({ label: name.replace(/\s*[✔✓]$/, ""), description: said }));
-  // counted, not named: the rows above the window (the list counts from 1) and the ones below it
   const hidden = rows[0]!.number - 1 + below;
   const current = names.findIndex(({ name }) => /\s[✔✓]$/.test(name));
   // "Default (recommended)" in use reads as Default: the tag is the list's advice, not the model's name
@@ -998,11 +1009,10 @@ function parseClaudeModel(screen: string): ParsedPrompt | null {
  * workflows on every task" while it is on. The switch's key (Tab, unless the user bound another)
  * flips it in the dialog only: `s` applies it, with the level ▲ is over, for this session, and Esc
  * drops it. Nothing of it is saved for later sessions. So the card's own row for it is Tab, then
- * `s` once the slider shows the switch flipped, and only where the slider names Tab as its key. A
- * user who unbound the key gets the state alone, no key's line with it: the levels stay, with no
- * row for the switch. Without Ultracode (a model that has no xhigh, dynamic workflows turned off)
+ * `s` once the slider shows the switch flipped, and only where the slider names Tab as its key. A user who unbound the key gets the state
+ * alone, no key's line with it. Without Ultracode (a model that has no xhigh, dynamic workflows turned off)
  * Claude draws no switch and no line for it, not even the blank one: at max the level's
- * description is the line right under the names. So the names are found under the track.
+ * description is the line right under the names.
  *
  * 2.1.301 describes the level ▲ is over between the names and the hint, after a blank line:
  * "~1.5x the estimated cost of medium (the default)", or two lines at max. 2.1.311 draws max's
@@ -1010,7 +1020,6 @@ function parseClaudeModel(screen: string): ParsedPrompt | null {
  */
 const CLAUDE_EFFORT_LEVEL_RE = /\b(?:low|medium|high|xhigh|max)\b/g;
 
-/** how far ▲ may stand from the middle of a level's name and still be over it */
 const CLAUDE_EFFORT_ALIGN = 3;
 
 /**
@@ -1028,7 +1037,6 @@ const CLAUDE_ULTRACODE_KEY_RE = /(?:^|\s{2,})(\S+(?: \S+)*) to toggle$/;
 /** Claude's own line under the names while the switch is on, cut short by a narrow pane maybe */
 const CLAUDE_ULTRACODE_LINE_RE = /^Ultracode:(?:\s|…|$)/;
 
-/** a line of level names and nothing else (the switch's key aside): a key's line alone names none */
 function claudeEffortLevelsOnly(line: string): boolean {
   const names = line.replace(CLAUDE_ULTRACODE_KEY_RE, "");
   return names.search(CLAUDE_EFFORT_LEVEL_RE) >= 0 && names.replace(CLAUDE_EFFORT_LEVEL_RE, "").trim() === "";
@@ -1037,8 +1045,7 @@ function claudeEffortLevelsOnly(line: string): boolean {
 /**
  * Ultracode's switch as the slider draws it, beside the slider (70 columns or more) or under it on
  * its own lines: its state and its key (null: the user unbound it, and Claude draws the state
- * alone), or null when it draws none. Undefined: a drawing this reader does not know (a key without
- * its state, or a switch drawn twice or in both places), which gets no card.
+ * alone), or null when it draws none.
  */
 function claudeUltracodeSwitch(lines: string[], labelsIndex: number, hintIndex: number): { on: boolean; key: string | null } | null | undefined {
   const besideState = CLAUDE_ULTRACODE_STATE_RE.exec(lines[labelsIndex - 1]!);
@@ -1092,8 +1099,6 @@ function parseClaudeEffort(screen: string): ParsedPrompt | null {
   // theirs to press, and an unbound one leaves the switch to `/effort ultracode on|off`
   const toggle = ultracode !== null && /^tab$/i.test(ultracode.key ?? "");
   return finishPrompt("claude", {
-    // where the slider stands is no part of what the card asks: one card wherever ▲ is. The
-    // switch's row names the state it turns to, so the card differs with the switch
     kind: "question",
     title: "",
     question: own("Set effort for this session"),
@@ -1113,7 +1118,6 @@ function parseClaudeEffort(screen: string): ParsedPrompt | null {
       ...names.map((_, index) => [...keySteps(sliderKeys(index - selectedIndex)), { text: "s" }]),
       ...(toggle ? [[{ keys: [KEY.tab] }, { text: "s" }]] : []),
     ],
-    // the state the switch shows, which the card does not send: an answer's last look checks it before `s`
     claudeUltracode: ultracode?.on ?? null,
   });
 }
@@ -1138,7 +1142,6 @@ const LABELED_RULE_RE = /^─{3,}\s.*─$/;
 
 const CLAUDE_HINT_TAIL_RE = /\besc to (?:cancel|exit|go back)\b/i;
 
-/** `hintEnds`: whether the panel's hint ends at line `end`; a hint a narrow pane wrapped needs its own reading */
 export function withoutClaudeTasks(shown: string[], hintEnds: (lines: string[], end: number) => boolean = (lines, end) => CLAUDE_HINT_TAIL_RE.test(lines[end - 1] ?? "")): string[] {
   let end = shown.length;
   const head = findLastIndex(shown, (line) => CLAUDE_TASKS_HEAD_RE.test(line));
@@ -1167,7 +1170,6 @@ const approvalRead = onePerPass((screen) => parseClaudeApproval(screen));
 export const readers: readonly DialogReader[] = [
   {
     id: "claude-goal", agents: ["claude"], priority: 5,
-    // looked at again before Esc: the dialog may show another goal by then
     reread: "before-commit", list: "none",
     parse: (screen) => {
       const parsed = parseClaudeGoal(screen);
@@ -1226,8 +1228,6 @@ export const readers: readonly DialogReader[] = [
   {
     id: "claude-effort", agents: ["claude"], priority: 60,
     reread: "before-commit", list: "slider",
-    // the level under ▲, and Ultracode's switch as the Tabs sent so far leave it: a level's `s`
-    // waits for the switch unchanged, the switch's own `s` for it flipped
     interaction: (parsed) => pickerPlan(parsed, parseClaudeEffort, parsed.optionSteps ?? [], (shown, cursor, toggles) => {
       const drawn = shown.claudeUltracode ?? null;
       return `${shown.menuLabels[cursor]} ${drawn === null ? "no switch" : drawn !== (toggles % 2 === 1) ? "on" : "off"}`;

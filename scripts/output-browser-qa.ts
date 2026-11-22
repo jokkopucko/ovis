@@ -1,8 +1,4 @@
-/**
- * Real xterm + real herdr; only delays outgoing ACKs to exercise a suspended consumer, and fakes
- * the page's visibility to put it away and bring it back.
- */
-import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
+import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -95,8 +91,6 @@ try {
   await until(() => (acks.get(paneA) ?? 0) > previousAcks, "reopened pane ACK");
   assert.equal(await page.getByText("Terminal output stopped because this device could not keep up.", { exact: false }).count(), 0);
 
-  // put away with the pane still attached (desktop, release-when-away off): the stop belongs to the
-  // frozen page, so showing it again attaches again in place, with no click
   await page.evaluate(() => {
     (window as unknown as { fakeHidden: boolean; holdAcks: boolean }).fakeHidden = true;
     (window as unknown as { holdAcks: boolean }).holdAcks = true;

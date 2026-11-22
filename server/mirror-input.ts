@@ -1,6 +1,4 @@
 /**
- * What typing into a mirrored pane hands to herdr's `pane.send_text`.
- *
  * A mirror repaint carries no terminal modes, so the browser's xterm never learns that the
  * program turned bracketed paste on and sends a pasted block as bare lines joined by CR. An
  * agent's composer takes the first CR for Enter and sends line one alone. Checked on a
@@ -23,7 +21,6 @@ const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
 export async function mirrorInput(text: string, paneAgent: () => Promise<string | null>): Promise<string> {
-  // typing is one key per frame: only a paste has a line break with more text after it
   if (!/[\r\n][^\r\n]/.test(text)) return text;
   // a terminal that knew the mode has wrapped it already. This only spares a second pair; it checks nothing: a
   // composer submit reaches here after submitFraming (core/composer.ts) allowed it one outer pair at most
@@ -32,7 +29,6 @@ export async function mirrorInput(text: string, paneAgent: () => Promise<string 
   try {
     agent = await paneAgent();
   } catch {
-    // unknown is treated as no agent: bare lines are what the pane got before this module
     return text;
   }
   return agent ? PASTE_START + text + PASTE_END : text;

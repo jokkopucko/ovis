@@ -46,7 +46,6 @@ test("partialOnTimeout keeps what arrived before the deadline as a cut prefix", 
   const stalled = () => new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode("one\ntwo\nthr")); } }), { status: 206, headers: { "content-range": "bytes 0-99/1000" } });
   expect(await readFilePreviewText(stalled(), 100, { timeoutMs: 10, maxLines: 10, partialOnTimeout: true }))
     .toEqual({ text: "one\ntwo\n", truncated: true, truncatedBy: "time", total: 1000, lines: 2 });
-  // nothing arrived: still an error, and without the opt-in the deadline still fails
   await expect(readFilePreviewText(new Response(new ReadableStream()), 100, { timeoutMs: 10, partialOnTimeout: true })).rejects.toThrow("timed out");
   await expect(readFilePreviewText(stalled(), 100, { timeoutMs: 10 })).rejects.toThrow("timed out");
 });
@@ -94,7 +93,6 @@ test("the source budgets are named and the line budget is opt-in", async () => {
   expect(SOURCE_PREVIEW_BYTES).toBe(8 * 1024 * 1024);
   expect(SOURCE_PREVIEW_LINES).toBe(200_000);
   await expect(readFilePreviewText(new Response("a"), 10, { maxLines: 0 })).rejects.toThrow("Invalid preview limit");
-  // no maxLines: the result has no budget fields
   expect(await readFilePreviewText(new Response("a\nb\n"), 10)).toEqual({ text: "a\nb\n", truncated: false });
 });
 
@@ -108,9 +106,7 @@ test("line budget edges: exactly N lines is complete, one more is a line truncat
   expect(await read("a\nb\nc\n", 3)).toEqual({ text: "a\nb\nc\n", truncated: false, lines: 3 });
   expect(await read("a\nb\nc", 3)).toEqual({ text: "a\nb\nc", truncated: false, lines: 3 });
   expect(await read("a\nb\nc\nd", 3)).toEqual({ text: "a\nb\nc\n", truncated: true, truncatedBy: "lines", lines: 3 });
-  // a single blank line past the budget is still more source
   expect(await read("a\nb\nc\n\n", 3)).toEqual({ text: "a\nb\nc\n", truncated: true, truncatedBy: "lines", lines: 3 });
-  // blank and trailing lines are source lines
   expect(await read("a\n\n\n", 10)).toEqual({ text: "a\n\n\n", truncated: false, lines: 3 });
 });
 
@@ -123,7 +119,6 @@ test("byte budget edges report bytes, even with a line budget set", async () => 
 
 test("a multibyte character split across chunks survives the line budget", async () => {
   const encoded = encoder.encode("한\n글\nx\n");
-  // cuts inside both three-byte characters
   const result = await readFilePreviewText(chunked([encoded.slice(0, 2), encoded.slice(2, 6), encoded.slice(6)]), 1000, { maxLines: 2 });
   expect(result).toEqual({ text: "한\n글\n", truncated: true, truncatedBy: "lines", lines: 2 });
 });
@@ -151,7 +146,6 @@ test("a byte cut keeps an exact prefix of the source", async () => {
   const parts: Uint8Array[] = [];
   for (let at = 0; at < bytes.length; at += 7) parts.push(bytes.slice(at, at + 7));
   const result = await readFilePreviewText(chunked(parts), 10, { maxLines: SOURCE_PREVIEW_LINES });
-  // 10 bytes cut the third line's character; the last whole line is kept
   expect(result).toEqual({ text: "가\n가\n", truncated: true, truncatedBy: "bytes", lines: 2 });
   expect(source.startsWith(result.text)).toBe(true);
 });

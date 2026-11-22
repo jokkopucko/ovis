@@ -52,7 +52,6 @@ it("the demo preserves native split paths, explicit swaps, moves beside a pane a
     expect((await post("layout/ratio", { tab_id: tabId, path: [0], ratio: 0.5 })).status).toBe(400);
     expect((await post("layout/ratio", { tab_id: tabId, path: [], ratio: 1 })).status).toBe(400);
     expect((await post("pane/focus", null)).status).toBe(400);
-    // a pane moved beside another of its tab takes that side of it, its ID kept (#1819)
     const moving = ((await (await post("workspace/create", { cwd: "/home/demo/move-check", label: "move-check" })).json()) as WorkspaceCreated).pane_id;
     const moveTab = (await snapshot()).panes.find((pane) => pane.pane_id === moving)!.tab_id;
     const target = await split(moving, "right");

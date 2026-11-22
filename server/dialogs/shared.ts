@@ -7,10 +7,6 @@ import type { InteractionPlan } from "./interaction-plan.ts";
 import type { PiAskUserForm } from "../pi-ask-bridge.ts";
 import type { NativeSteps } from "./step-navigate.ts";
 
-/**
- * A parser that several readers call on the same screen, run once per read: the readers of one
- * parsePrompt pass are given the same screen and the same context object in turn.
- */
 export function onePerPass<T>(parse: (screen: string, ctx: ReaderContext) => T): (screen: string, ctx: ReaderContext) => T {
   let last: { screen: string; ctx: ReaderContext; value: T } | null = null;
   return (screen, ctx) => {
@@ -25,13 +21,9 @@ export interface DialogReader {
   id: string;
   agents: readonly string[];
   priority: number;
-  /** Result readers must return resultText: a complete, fixture-recorded block. */
   kind?: "result";
-  /** Recognize this agent's echoed command line; omitted readers use the standard prompt prefix. */
   echoOf?(line: string, command: string): boolean;
-  /** First persistent bottom-chrome line; -1 (or lines.length) means none. Invalid indexes or hidden command echoes reject correlation; parsing keeps valid chrome. */
   chromeStart?(lines: string[]): number;
-  /** A result reader's text may end with the next echo line as a completion boundary, never its following output. */
   parse(screen: string, ctx: ReaderContext): ParsedPrompt | null;
   /**
    * When the answer looks at the screen again: before its commit, or also before every move after
@@ -107,7 +99,9 @@ type Responder =
   | "omp-model"
   | "hermes-question"
   | "hermes-input"
+  | "agy-question"
   | "hermes-approval"
+  | "dsh-question"
   | "hermes-help"
   | "hermes-status"
   | "hermes-version"
@@ -123,14 +117,10 @@ type Responder =
   | "cmd-question";
 
 export type ParsedPrompt = InteractivePrompt & {
-  /** Exact contiguous result block, including its identifying header and completion footer. */
   resultText?: string;
-  /** Only a recognized successful catalog reload sets this; never a generic screen delta. */
   catalogChanged?: true;
   responder: Responder;
-  /** Stable question identity across the folded widget and the expanded form. */
   omoQuestion?: { call: string; index: number };
-  /** The form's questions as its own keys move between them without answering (dialogs/step-navigate.ts). */
   nativeSteps?: NativeSteps;
   openCodeForm?: {
     formId: string;
@@ -143,46 +133,59 @@ export type ParsedPrompt = InteractivePrompt & {
     revision: number;
     available: boolean;
   };
-  /** Pi's active tab, from colors verified against the live detection screen by the caller. */
   piAskForm?: { identity: string; index: number };
-  /** Claude's AskUserQuestion tab shown, from the tab bar's colors (claude.ts claudeTabSteps); absent without them. */
   claudeTabs?: { identity: string; index: number };
-  /** @eko24ive/pi-ask's ask_user form, as the web UI's pi extension reports it (server/pi-ask-bridge.ts). */
   piAskUser?: PiAskUserForm;
-  /** Pi's custom row owns the inline editor, rather than only a selected menu row. */
   piAskTyping?: true;
-  /** Installed questionnaire editor contents; absent outside its guarded input mode. */
+  /** what pi-ask's open Other editor holds, as its row shows it */
+  piAskDraft?: string;
   piQuestionnaireInput?: string;
   piQuestionnaireInputRows?: string[];
   /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
   ompCall?: string;
-  /** Claude's /effort: the state its Ultracode switch shows, null without one; checked before `s`, never sent */
   claudeUltracode?: boolean | null;
-  /** Letta's /model: what its search line shows (letta.ts), the search each key of a typed one is checked against */
   lettaSearch?: string;
-  /** Letta's /model: the tab it shows (letta.ts), part of a row's identity */
   lettaTab?: string;
-  /** Letta's /model: the tabs its tab bar draws, which a search can empty (letta.ts lettaSearchShown) */
   lettaTabs?: string[];
   menuLabels: string[];
   selectedIndex: number;
   checkedOptionIndices: number[];
   customMenuIndex: number | null;
   rejectWithEscapeIndex: number | null;
-  /** each option's own steps, for a card whose options are not rows of a menu */
   optionSteps?: AnswerStep[][];
-  /** the steps for a typed answer, for a card whose menu does not take one the usual way */
-  customSteps?: (text: string) => AnswerStep[];
-  /** the steps for a multiple choice, for a card whose menu does not toggle the usual way */
+  customSteps?: (text: string, choices?: number[]) => AnswerStep[];
+  customEditorMatches?: (answer: TypedEditorAnswer, cursor: "editor" | "submit") => boolean;
   multiSteps?: (choices: number[]) => AnswerStep[];
-  /** the key the menu itself names for the row under the cursor now, for a card whose rows do not all take the same one */
   rowKey?: AnswerStep | null;
 };
 
-/** `pick`: the menu's own key for the row the moves end on, read off the screen once the cursor is there (`rowKey`) */
 export type AnswerStep = { keys?: string[]; text?: string; pick?: true };
+
+export type TypedEditorAnswer = { readonly prompt: ParsedPrompt; readonly text: string };
+
+/** Compare the whole field. A wrapped row can lose one space at the break, and the last row can lose padding. */
+export function editorRowsMatch(rows: readonly string[], text: string): boolean {
+  let positions = new Set([0]);
+  for (const [index, raw] of rows.entries()) {
+    const row = raw.trimEnd();
+    const following = rows[index + 1];
+    const next = new Set<number>();
+    for (const start of positions) {
+      if (!text.startsWith(row, start)) continue;
+      const end = start + row.length;
+      if (following === undefined || (row && following.trimEnd())) {
+        next.add(end);
+        if (following !== undefined && text[end] === " ") next.add(end + 1);
+      }
+      if (following !== undefined && text[end] === "\n") next.add(end + 1);
+    }
+    if (next.size === 0) return false;
+    positions = next;
+  }
+  return rows.length > 0 && positions.has(text.length);
+}
 
 export type MenuRow = { label: string; selected: boolean; checked: boolean; description?: string; lineIndex: number };
 
@@ -213,11 +216,6 @@ export function findLastIndex(lines: string[], predicate: (line: string, index: 
   return -1;
 }
 
-/**
- * A line and the two after it, as one: a narrow pane wraps a hint line
- * (`Enter to select · ↑/↓ to navigate · Esc to` / `cancel`), so hints are matched
- * across the wrap. The last line a window matches from is where the hint begins.
- */
 export function wrapped(lines: string[], index: number, span = 3): string {
   return lines.slice(index, index + span).map(cleanLine).filter((line) => line && !isDivider(line)).join(" ");
 }
@@ -246,7 +244,6 @@ export function parseNumberedRows(lines: string[], start: number, end: number): 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index]!;
     const nextLineIndex = rows[index + 1]?.lineIndex ?? end;
-    // a description a narrow pane wraps goes on to the next blank line or rule
     const description: string[] = [];
     for (let lineIndex = row.lineIndex + 1; lineIndex < nextLineIndex; lineIndex += 1) {
       const line = cleanLine(lines[lineIndex]!);
@@ -259,15 +256,13 @@ export function parseNumberedRows(lines: string[], start: number, end: number): 
 }
 
 /**
- * A menu's rows among numbered lines read from well above it: the last run that counts up from 1,
- * among the lines numbered in the column of the row the cursor is on. What is above a menu can hold
+ * What is above a menu can hold
  * a numbered line of its own, such as a message sent before ("❯ 1. …", "› 1. …") still on screen;
  * a numbered line in an option's description is indented further.
  */
 export function menuRows(lines: string[], start: number, end: number): NumberedRow[] {
   const rows = parseNumberedRows(lines, start, end);
   const column = (row: NumberedRow): number => lines[row.lineIndex]!.replace(ANSI_RE, "").search(/\d/);
-  // the cursor's row is the menu's (a sent message after the same mark lines up with it); without one, the last row
   const anchor = [...rows].reverse().find((row) => row.selected) ?? rows.at(-1);
   const menu = anchor === undefined ? rows : rows.filter((row) => column(row) === column(anchor));
   return menu.slice(Math.max(0, menu.map((row) => row.number).lastIndexOf(1)));
@@ -277,15 +272,12 @@ export function sequentialRows(rows: NumberedRow[]): boolean {
   return rows.length > 0 && rows.every((row, index) => row.number === index + 1);
 }
 
-/** What a card shows: the agent's own text as read, or the bridge's own words (`own`), which the client shows in the user's language. */
 export type CardWords = string | CardText;
 
-/** The bridge's own words on a card (shared/card-text.ts), with the values of their placeholders: given where a card takes the agent's text. */
 export function own(key: CardTextKey, vars?: CardText["vars"]): CardText {
   return vars === undefined ? { key } : { key, vars };
 }
 
-/** A card's words in English, the bridge's own with their values filled in: as an older client shows them, and as the card's id reads them. */
 export function englishOf(words: CardWords): string {
   if (typeof words === "string") return words;
   return words.key.replace(/\{(\w+)\}/g, (match, name: string) => {
@@ -294,7 +286,6 @@ export function englishOf(words: CardWords): string {
   });
 }
 
-/** A card as a reader writes it: its title, question, body, options and steps may be the bridge's own words. */
 export type PromptDraft = Omit<InteractivePrompt, "id" | "agent" | "title" | "question" | "body" | "options" | "steps" | "own_text"> & {
   title: CardWords;
   question: CardWords;
@@ -303,7 +294,6 @@ export type PromptDraft = Omit<InteractivePrompt, "id" | "agent" | "title" | "qu
   steps?: (Omit<InteractivePromptStep, "label"> & { label: CardWords })[];
 };
 
-/** The entries of `words` that are the bridge's own, by index; none when there are none. */
 function ownByIndex(words: readonly (CardWords | null)[]): Record<number, CardText> | undefined {
   const found = words.flatMap((entry, index) => entry !== null && typeof entry === "object" ? [[index, entry] as const] : []);
   return found.length > 0 ? Object.fromEntries(found) : undefined;
@@ -313,20 +303,16 @@ export function finishPrompt(
   agent: string,
   draft: PromptDraft,
   internal: Omit<ParsedPrompt, keyof InteractivePrompt>,
-  /** fields as the id reads them, where that is not as the card shows them (a fallback card's ticking working line) */
-  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "can_step_next" | "default_custom_text">> & { call?: string } = {},
+  hashed: Partial<Pick<InteractivePrompt, "title" | "question" | "body" | "steps" | "can_step_back" | "can_step_next" | "default_option_index" | "default_option_indices" | "default_custom_text">> & { call?: string } = {},
 ): ParsedPrompt {
-  // the card in English, field for field where the draft had them: the id reads the same words as ever
   const input: Omit<InteractivePrompt, "id" | "agent"> = {
     ...draft,
     title: englishOf(draft.title),
     question: englishOf(draft.question),
     body: draft.body === null ? null : englishOf(draft.body),
     options: draft.options.map((option) => ({ ...option, label: englishOf(option.label), description: option.description === null ? null : englishOf(option.description) })),
-    // a draft without steps gets none: undefined, which neither the id nor the card reads
     steps: draft.steps?.map((step) => ({ ...step, label: englishOf(step.label) })),
   };
-  // and which of its words are the bridge's own, for the client to show in the user's language
   const owned: NonNullable<InteractivePrompt["own_text"]> = {};
   if (typeof draft.title === "object") owned.title = draft.title;
   if (typeof draft.question === "object") owned.question = draft.question;
@@ -378,12 +364,7 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
   return prompt;
 }
 
-/**
- * The questions of the form omo waits on, as its ask_user_question call asked them: the card's
- * text comes from here when the pane's session shows the call, never cut or wrapped by the pane.
- */
 export interface OmoAsk {
-  /** Session-qualified tool-call identity; absent only for screen-only legacy parsing. */
   id?: string;
   questions: { header: string; question: string; multiSelect: boolean; options: { label: string; description: string | null }[] }[];
   /** false: the call does not wait for its answer, and OmO folds it into a widget over its input box */
@@ -396,8 +377,7 @@ export interface OmoAsk {
  * Japanese and Chinese also wrap inside a word: a line that ends in a wide character, filled to
  * the pane's edge (`width`, its widest line) so that the next line's first character (wide, or
  * closing punctuation) would not have fitted after it, goes on without a space. A line filled
- * that far can also have ended at a space; the word wrapped inside is the likelier reading. The
- * session's own text, when there is one, makes this a fallback.
+ * that far can also have ended at a space; the word wrapped inside is the likelier reading.
  */
 export function joinWrapped(raw: string[], width: number, lead?: RegExp): string {
   let text = "";
@@ -424,16 +404,11 @@ interface ListRow {
   number: number; cursor: boolean;
   /** `↑` or `↓` in the cursor's column: the window's first or last row, with more of the list beyond it */
   edge: string | null;
-  /** the row after its number, as drawn */
   text: string;
-  /** the first gap of two spaces or more in it: where it begins and ends in `text`, and the
-   * terminal column the text after it is drawn at; -1 with no gap */
   gap: number; resumes: number; column: number;
-  /** the lines wrapped under the row at that column */
   wrapped: string[];
 }
 
-/** A row of a numbered list: the cursor or a scroll mark, the row's number, then its text. */
 function listRow(line: string, shape: RegExp): ListRow | null {
   const match = shape.exec(line);
   if (!match) return null;
@@ -449,12 +424,12 @@ function listRow(line: string, shape: RegExp): ListRow | null {
 }
 
 /**
- * Each row's name and what the row says of it. What the rows say stands in one column for the
+ * What the rows say stands in one column for the
  * whole list, so a gap at another column, or in one row alone, is part of that row's name
  * (`Custom  Model`). Wrapped lines are joined with a space, as most of them broke at one. A word
  * longer than its column is cut where the column ends (`longest-runni` / `ng tasks`) and stays
  * cut, as the pane shows it: a line that fills its column says nothing of whether a space was
- * there. Null: lines wrapped under a row whose gap was no column, so the rows are not as drawn.
+ * there.
  */
 export function listNames(rows: ListRow[]): { name: string; said: string | null }[] | null {
   const counts = new Map<number, number>();
@@ -468,14 +443,10 @@ export function listNames(rows: ListRow[]): { name: string; said: string | null 
 }
 
 /**
- * The numbered rows right above a list's hint, read downward. A row that does not count on from
+ * A row that does not count on from
  * the one above it, that follows anything but its own wrapped text, or that carries the window's
  * `↑` starts the list again, and so does any row under the one that carries its `↓`: numbered
  * lines further up (an answer's own list) are nothing of this menu's.
- * `below`: the rows a line under them counts (`more`). `first` and `last`: the first row's line
- * and the last line that was the list's.
- * `unread`: a line under a row that is not its wrapped text (a name the pane cut in two), so the
- * rows are not the list as it was drawn.
  */
 export function listRows(lines: string[], hintIndex: number, shape: RegExp, more: RegExp | null): { rows: ListRow[]; below: number; first: number; last: number; unread: boolean } {
   let rows: ListRow[] = [];
@@ -488,7 +459,6 @@ export function listRows(lines: string[], hintIndex: number, shape: RegExp, more
     const line = lines[index]!;
     const text = line.trim();
     const above = ended ? undefined : rows.at(-1);
-    // what a row says, wrapped under itself: told by its column, before anything it happens to begin with
     if (above !== undefined && text !== "" && above.column >= 0 && line.length - line.trimStart().length === above.column) {
       above.wrapped.push(text);
       last = index;
@@ -509,15 +479,13 @@ export function listRows(lines: string[], hintIndex: number, shape: RegExp, more
   return { rows, below, first, last, unread };
 }
 
-/** a menu row: pi's cursor, an optional tick marking the current choice, then the label */
 export const PI_ROW_RE = /^([\u2192\u276f\u279c])?\s*(?:[\u2713\u2714]\s+)?(\S.*)$/;
 
 /**
  * `/model` draws a widget of its own, not the one above: `Enter to select · Ctrl+S to set as
- * default · Escape/Ctrl+C to cancel`. It carries no `↑↓ navigate`, so the menu reader cannot
- * see it, and its list is the provider catalogue — every model pi can answer with, each with
- * the provider that serves it. The cursor starts on the model in use, which is not the first
- * row once another one is current, so the position is read rather than assumed.
+ * default · Escape/Ctrl+C to cancel`. It carries no `↑↓ navigate`, and its list is the provider
+ * catalogue — every model pi can answer with, each with the provider that serves it. The cursor
+ * starts on the model in use, which is not the first row once another one is current.
  */
 export const PI_MODEL_HINT_RE = /enter to select\s*·\s*ctrl\+s to set as default\s*·\s*escape\/ctrl\+c to cancel/i;
 
@@ -531,7 +499,6 @@ export const PROMPT_LINE_RE = /^(?:[❯›>➜]|[$#](?:\s|$))|[❯›>$#]$/u;
 /** pi ticks the model answering now, and marks the one it starts on with `· default` */
 const PI_MODEL_CURRENT_RE = /[\u2713\u2714]/;
 
-/** a catalogue row names the provider serving the model, in brackets */
 const PI_MODEL_PROVIDER_RE = /\[[^\]]+\]/;
 
 /** the tail of a model's name a narrow pane wrapped onto its own line: only the provider's bracket */
@@ -540,8 +507,7 @@ export const PI_MODEL_TAIL_RE = /^\[[^\]]+\](\s*\u00b7\s*default)?(\s*[\u2713\u2
 /**
  * The catalogue `/model` lists under its filter line: every row names its provider in brackets,
  * which is what tells it from pi's own notes, since `Model Name: qwen-3-8` sits indented among
- * the rows and `Could not refresh llama.cpp; showing cached models.` under them. The run ends at
- * the first line that is not a row. In a pane narrower than a model's name the row wraps: the
+ * the rows and `Could not refresh llama.cpp; showing cached models.` under them. In a pane narrower than a model's name the row wraps: the
  * wrap is joined back first, and a row that still ends without its provider voids the reading,
  * because offering half a name would switch pi to a model that does not exist.
  */
@@ -596,7 +562,6 @@ export function navigationKeys(delta: number): string[] {
   return Array.from({ length: Math.abs(delta) }, () => delta > 0 ? KEY.down : KEY.up);
 }
 
-/** a slider's moves: → is the next level, as ↓ is the next row */
 export function sliderKeys(delta: number): string[] {
   return Array.from({ length: Math.abs(delta) }, () => delta > 0 ? KEY.right : KEY.left);
 }

@@ -7,7 +7,6 @@ import { isDismissible, type ComposerNotice } from "../lib/composerNotices.ts";
 import { useT } from "../lib/i18n.ts";
 
 export interface ComposerNoticeRow extends ComposerNotice {
-  /** another app holds the pane, the output stream failed: the terminal pill's warning colour */
   warning: boolean;
   mark: ReactNode;
   text: ReactNode;
@@ -15,14 +14,11 @@ export interface ComposerNoticeRow extends ComposerNotice {
 }
 
 interface ComposerNoticesProps {
-  /** as arranged by lib/composerNotices.ts: the top row first */
   notices: readonly ComposerNoticeRow[];
   onDismiss: (notice: ComposerNoticeRow) => void;
-  /** what the group is, for assistive tech; the pane's notices by default */
   label?: string;
 }
 
-/** The notices over the input card: a row per notice, its own way on at its end, then its dismiss (an activity has none). */
 export function ComposerNotices({ notices, onDismiss, label }: ComposerNoticesProps) {
   const t = useT();
   return (

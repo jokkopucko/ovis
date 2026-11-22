@@ -38,12 +38,10 @@ const ENVIRON_BYTES = 1024 * 1024;
 
 export interface LettaSession {
   reported: string;
-  /** null when the report names a conversation without its agent */
   agent: string | null;
   conversation: string;
 }
 
-/** The conversation herdr's Letta integration reported for the pane, or null for none or another shape. */
 export function lettaSessionOf(pane: Pick<HerdrPane, "agent_session">): LettaSession | null {
   const session = pane.agent_session;
   if (session?.agent !== "letta" || session.source !== "herdr:letta" || session.kind !== "id" || typeof session.value !== "string") return null;
@@ -101,7 +99,6 @@ function readBounded(path: string, bytes: number): string | null {
   } catch { return null; } finally { closeSync(fd); }
 }
 
-/** A process's environment, or null where it cannot be read. */
 function processEnvironment(pid: number): Env | null {
   if (process.platform === "linux") {
     try {
@@ -116,10 +113,6 @@ function processEnvironment(pid: number): Env | null {
   return null;
 }
 
-/**
- * The conversations a Letta settings file says it opened last, one per server; null when the text
- * is not a settings object whose every session reads as Letta writes one.
- */
 export function lettaOpenedSessions(text: string): { agent: string; conversation: string }[] | null {
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return null; }
@@ -176,11 +169,9 @@ function liveArgv(pid: number): string[] | null {
   } catch { return null; }
 }
 
-/** Letta processes, by pid and start identity, seen in a folder other than the one they started in. */
 const moved = new Set<string>();
 
 /**
- * Whether a letta process is in the folder it started in, and was in it every time it was looked at.
  * Letta's SetWorkingDirectory and EnterWorktree tools move a running letta into another project without
  * recording its conversation there, so that project's record is no record of it. The start folder is
  * the `PWD` its shell gave it, which its environment keeps whatever it does later; without one, or
@@ -198,7 +189,6 @@ export function lettaInStartFolder(owner: LettaProcess): boolean {
   return false;
 }
 
-/** The pane's one letta process, or null for none, several, or one whose start or environment cannot be read. */
 export async function paneLettaProcess(paneId: string, known?: ProcessInfo | null): Promise<LettaProcess | null> {
   const info = known === undefined ? await paneProcessInfo(paneId).catch(() => null) : known;
   const found = (info?.foreground_processes ?? []).filter((process) =>
@@ -278,7 +268,7 @@ function writtenSince(path: string, startedAt: number): boolean {
 
 /**
  * How long the peer folders may take to answer a claim check. One that has not answered by then may
- * hide a claim of its own (a mount that stopped answering), so it claims. A test injects its own.
+ * hide a claim of its own (a mount that stopped answering), so it claims.
  */
 export const peerClaimDeadline = { ms: 5_000 };
 
@@ -297,7 +287,6 @@ async function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], ow
   return claims === "late" || claims.includes(true);
 }
 
-/** The folders of the other Letta panes: where their processes run, and where those panes started. */
 const lettaPeerFolders = (pane: HerdrPane, panes: readonly HerdrPane[]): string[] =>
   panes.filter((other) => other.pane_id !== pane.pane_id && (other.agent === "letta" || other.agent_session?.agent === "letta"))
     .flatMap((other) => [other.foreground_cwd, other.cwd]).filter((cwd): cwd is string => typeof cwd === "string" && cwd !== "");
@@ -308,11 +297,6 @@ const lettaPeerFolders = (pane: HerdrPane, panes: readonly HerdrPane[]): string[
  */
 const stuckPeers = new Map<string, number>();
 
-/**
- * What `check` answers for each folder, or "late" once peerClaimDeadline passes first, and at once while a
- * folder's earlier check is still waiting past its own deadline. A check left waiting is not kept, but its
- * folder stays stuck until it settles.
- */
 async function beforePeerDeadline<T>(folders: readonly string[], check: (folder: string) => Promise<T>): Promise<T[] | "late"> {
   const unique = [...new Set(folders)];
   if (unique.some((folder) => stuckPeers.has(folder))) return "late";
@@ -342,7 +326,7 @@ const FD_DIR = "/proc/self/fd";
 /**
  * How a peer's record is reached. `procFd`: Linux reaches into a held folder by its /proc/self/fd entry;
  * elsewhere (macOS, Windows, a Linux without /proc) the record is opened by its path and proven by its
- * identity instead (folderClaims). A test turns /proc off to run the other way here.
+ * identity instead (folderClaims).
  */
 export const peerRecordReach = { procFd: ((): boolean => { try { return process.platform === "linux" && lstatSync(FD_DIR).isDirectory(); } catch { return false; } })() };
 /** A folder opened as itself: O_DIRECTORY, and O_NOFOLLOW so a link put where it was stands refused. */
@@ -351,7 +335,6 @@ const FOLDER_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (consta
 /** A folder's identity as the checks compare it: its device and inode, whole (a 64-bit inode does not fit a number). */
 const deviceInode = (stat: { dev: bigint; ino: bigint }): string => `${stat.dev}:${stat.ino}`;
 
-/** Whether two chains of folders name the same folders at every step. */
 const sameChain = (a: readonly string[] | null, b: readonly string[] | null): boolean => {
   if (a === null || b === null || a.length !== b.length) return false;
   return a.every((at, step) => at === b[step]);
@@ -580,7 +563,6 @@ export function lettaMessagesPath(store: string, agent: string, conversation: st
   return key === null ? null : join(store, "conversations", Buffer.from(key).toString("base64url"), "messages.jsonl");
 }
 
-/** The transcript a Letta pane shows, written and held as lettaTranscriptHeld says, its process's local store and when that process started; or null. */
 export async function resolveLettaTranscript(pane: HerdrPane, panes: readonly HerdrPane[], known?: ProcessInfo | null): Promise<(LettaTranscript & { store: string; startedAt: number }) | null> {
   const owner = await paneLettaProcess(pane.pane_id, known);
   if (owner === null || !lettaInStartFolder(owner) || !(await lettaRecordOwned(pane, panes, owner))) return null;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { CircleCheck, CircleDot, CircleMinus, CircleX, ExternalLink, GitBranch, GitMerge, MessageSquare, RefreshCw } from "lucide-react";
+import { CircleCheck, CircleDot, CircleMinus, CircleX, ExternalLink as ExternalLinkIcon, GitBranch, GitMerge, MessageSquare, RefreshCw } from "lucide-react";
 
 import "./PullRequestPanel.css";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
@@ -12,19 +12,17 @@ import { useLocale, useT } from "../lib/i18n.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { skeletonRows } from "../lib/skeleton.ts";
 import { checkDraft, mergeBlockedWord, mergeLabel, pullRequestErrorMessage, threadDraft } from "../lib/pullRequest.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 
 export interface PullRequestPanelProps {
   paneId: string;
-  /** the pane's folder, read when the pane is gone */
   directory: string;
-  /** the PC's name where it says which PC (another PC, or this one among several), in place of its id */
   machineName?: string;
 }
 
 type Load = { status: "pending" } | { status: "failed"; error: unknown } | { status: "ready"; view: PullRequestView };
 const PENDING: Load = { status: "pending" };
 
-/** How a Send to agent went, per row: on its way, in the draft (with or without the log), or too long for it. */
 type Sent = "sending" | "added" | "added_without_log" | "too_long";
 
 const STATE_ICON: Record<PullRequestCheckState, typeof CircleCheck> = { pass: CircleCheck, fail: CircleX, pending: CircleDot, skipped: CircleMinus, neutral: CircleMinus };
@@ -58,7 +56,6 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
       (error: unknown) => { if (id === request.current) setLoad({ status: "failed", error }); },
     );
   }, [fetchPullRequest, target]);
-  // another pane or PC, or a closed tab: what is on its way for the last one is dropped when it lands
   useEffect(() => { read(); return () => { request.current += 1; }; }, [read]);
 
   const paneKey = paneStorageId(machineId, paneId);
@@ -66,7 +63,6 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
   const sendCheck = async (view: PullRequestView, check: PullRequestCheck, key: string): Promise<void> => {
     mark(key, "sending");
     let log = null;
-    // a log that cannot be read still leaves the check's name and page to send
     if (check.job_id !== null) log = await fetchPullRequestLog(target, check.job_id, new URL(view.url).host).catch(() => null);
     const added = blockIntoComposer(paneKey, checkDraft(view, check, log));
     mark(key, !added ? "too_long" : check.job_id !== null && log === null ? "added_without_log" : "added");
@@ -104,10 +100,10 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
       <div className="pull-request-bar">
         {view === null
           ? <span className="pull-request-heading" title={directory || undefined}><span dir="ltr">{fallbackHeading}</span></span>
-          : <a className="pull-request-heading pull-request-title" href={view.url} target="_blank" rel="noreferrer" title={view.title}>
+          : <ExternalLink kind="link" className="pull-request-heading pull-request-title" href={view.url} title={view.title}>
             <span className="pull-request-number">#{view.number}</span> <span>{view.title}</span>
-            <ExternalLink aria-hidden="true" />
-          </a>}
+            <ExternalLinkIcon aria-hidden="true" />
+          </ExternalLink>}
         <button type="button" className="icon-button" aria-label={t("Refresh pull request")} title={t("Refresh pull request")} disabled={load.status === "pending"} onClick={read}>
           <RefreshCw aria-hidden="true" />
         </button>
@@ -137,7 +133,7 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
                     <Icon className="pull-request-check-icon" aria-hidden="true" />
                     <span className="visually-hidden">{checkStateWord(t, check.state)}</span>
                     <span className="pull-request-check-name">{check.workflow !== null && <span className="pull-request-workflow">{check.workflow} / </span>}{check.name}</span>
-                    {check.url !== null && <a className="icon-button pull-request-link" href={check.url} target="_blank" rel="noreferrer" aria-label={t("Open {name} on GitHub", { name: check.name })} title={t("Open on GitHub")}><ExternalLink aria-hidden="true" /></a>}
+                    {check.url !== null && <ExternalLink kind="link" className="icon-button pull-request-link" href={check.url} aria-label={t("Open {name} on GitHub", { name: check.name })} title={t("Open on GitHub")}><ExternalLinkIcon aria-hidden="true" /></ExternalLink>}
                     {check.state === "fail" && sendButton(key, () => void sendCheck(view, check, key))}
                   </div>
                   {sentNote(key)}
@@ -159,7 +155,7 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
                     <MessageSquare className="pull-request-check-icon" aria-hidden="true" />
                     <span className="pull-request-thread-place" dir="ltr">{breakAfterSlashes(thread.line === null ? thread.path : `${thread.path}:${thread.line}`)}</span>
                     {thread.outdated && <span className="pull-request-tag">{t("Outdated")}</span>}
-                    {thread.url !== null && <a className="icon-button pull-request-link" href={thread.url} target="_blank" rel="noreferrer" aria-label={t("Open this thread on GitHub")} title={t("Open on GitHub")}><ExternalLink aria-hidden="true" /></a>}
+                    {thread.url !== null && <ExternalLink kind="link" className="icon-button pull-request-link" href={thread.url} aria-label={t("Open this thread on GitHub")} title={t("Open on GitHub")}><ExternalLinkIcon aria-hidden="true" /></ExternalLink>}
                     {sendButton(key, () => sendThread(view, thread, key))}
                   </div>
                   <p className="pull-request-comment">
@@ -193,7 +189,6 @@ export function PullRequestPanel({ paneId, directory, machineName }: PullRequest
   );
 }
 
-/** A path that wraps only after a `/` on a narrow screen, so a file name is never split. */
 function breakAfterSlashes(path: string): ReactNode[] {
   return path.split("/").flatMap((part, index, parts) => index === parts.length - 1 ? [part] : [`${part}/`, <wbr key={index} />]);
 }

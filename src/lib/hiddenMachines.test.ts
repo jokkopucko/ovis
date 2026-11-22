@@ -33,7 +33,6 @@ describe("PCs shown on this device", () => {
   });
 
   it("draws the switches as the sidebar does, and changes a list that hid every PC from what is drawn", () => {
-    // Home, the one PC shown, was removed: Host and Work, both hidden, are drawn again
     const left = [{ id: "local" }, { id: "work" }];
     expect(isMachineShown(left, ["local", "work"], "local")).toBe(true);
     expect(isMachineShown(left, ["local", "work"], "work")).toBe(true);
@@ -44,12 +43,9 @@ describe("PCs shown on this device", () => {
 
   it("moves the selection off a PC hidden now, also one shown only because every PC was hidden", () => {
     const left = [{ id: "local" }, { id: "work" }];
-    // Host and Work were both hidden, and drawn again once Home went: hiding Host takes the selection off it
     expect(selectionToMove(left, ["local", "work"], ["local"], "local")).toBe("work");
     expect(selectionToMove(roster, [], ["work"], "work")).toBe("local");
-    // a pane a link opened on a PC already hidden stays selected when another PC is hidden
     expect(selectionToMove(roster, ["work"], ["work", "home"], "work")).toBeNull();
-    // still shown: nothing moves
     expect(selectionToMove(roster, [], ["home"], "work")).toBeNull();
   });
 

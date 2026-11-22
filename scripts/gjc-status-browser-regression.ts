@@ -10,10 +10,14 @@ import { gjcTranscriptForPane, isGjcProcess } from "../server/gjc-runtime.ts";
 import { processStartedAt } from "../server/process-start.ts";
 import { UsageService } from "../server/usage.ts";
 import { GJC_NATIVE_DIRECTORY, GJC_NATIVE_HEARTBEAT_MS, type GjcNativeBinding } from "../shared/gjc-native.ts";
-import type { ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
+import type { WireMachineEvent } from "../shared/compact-agents.ts";
+import type { AgentStatus, ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
 
 type Status = "idle" | "working" | "done" | "blocked";
 type NativeRecord = Readonly<Record<string, unknown>>;
+type PaneStatusFrame = Extract<ServerMessage, { type: "pane-status" }>;
+type ViewedFinish = { readonly answer: string; readonly deadline: number };
+const STATUS_TIMEOUT = 20_000;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-gjc-status-browser-")));
 const store = join(root, ".gjc", "agent", "sessions", "v2-fixture");
 const script = join(root, "gjc");
@@ -22,6 +26,7 @@ const bindingTimers: ReturnType<typeof setInterval>[] = [];
 const oldHome = process.env.HOME, oldSocket = process.env.HERDR_SOCKET;
 const evidenceDirectory = process.env.UI_EVIDENCE_DIR || process.env.CHECK_BROWSER_EVIDENCE_DIR;
 const workspaces: string[] = [], frames: ServerMessage[] = [];
+const browserRoster = new Map<string, AgentStatus | undefined>();
 const outcomes: { scenario: string; outcome: "passed" }[] = [];
 let server: ReturnType<typeof createServer> | undefined, browser: Browser | undefined;
 let statusSocket: WebSocket | undefined, page: Page | undefined;
@@ -29,11 +34,12 @@ let socketError: Error | undefined, origin = "", scenario = "fixture setup";
 let deferredCleanupError: AggregateError | undefined;
 
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
-async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
-  const deadline = Date.now() + 20_000;
-  while (!(await check())) {
-    if (socketError) throw socketError;
+async function until<T>(check: () => T | Promise<T>, label: string, deadline = Date.now() + STATUS_TIMEOUT): Promise<NonNullable<T>> {
+  while (true) {
     assert.ok(Date.now() < deadline, `Timed out: ${label}`);
+    const result = await check();
+    if (result) return result;
+    if (socketError) throw socketError;
     await Bun.sleep(50);
   }
 }
@@ -100,8 +106,8 @@ async function rawWorking(paneId: string): Promise<void> {
   assert.equal(pane.agent, "gjc");
   assert.equal(pane.agent_status, "working", "raw provider signal must remain stale working");
 }
-async function httpSnapshot(): Promise<SessionSnapshot> {
-  const response = await fetch(`${origin}/api/session`, { signal: AbortSignal.timeout(5_000) });
+async function httpSnapshot(timeout = 5_000): Promise<SessionSnapshot> {
+  const response = await fetch(`${origin}/api/session`, { signal: AbortSignal.timeout(timeout) });
   assert.equal(response.status, 200);
   const body: { snapshot: SessionSnapshot } = await response.json();
   return body.snapshot;
@@ -117,15 +123,92 @@ function agentRow(paneId: string) {
   assert.ok(page);
   return page.locator(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${paneId}"]`);
 }
-// the pane on screen was looked at: its row draws herdr's DONE as ready, as herdr's own client does (#1279)
-let onScreen: string | null = null;
-const drawn = (paneId: string, status: Status): Status => status === "done" && paneId === onScreen ? "idle" : status;
-async function settled(paneId: string, status: Status, start?: number): Promise<void> {
-  if (start !== undefined) await until(() => frames.slice(start).some((frame) =>
-    frame.type === "pane-status" && frame.pane_id === paneId && frame.agent_status === status), `${scenario}: pushed ${status}`);
-  await until(async () => (await httpSnapshot()).panes.find((item) => item.pane_id === paneId)?.agent_status === status, `${scenario}: HTTP ${status}`);
-  await until(() => agentRow(paneId).locator(`.badge[data-status="${drawn(paneId, status)}"]`).isVisible(), `${scenario}: browser ${drawn(paneId, status)}`);
+function currentChat(paneId: string) {
+  assert.ok(page);
+  return page.locator(`.pane-frame.is-current[data-layout-pane="${paneId}"] .chat-frame`);
+}
+function remaining(deadline: number, stage: string): number {
+  const timeout = deadline - Date.now();
+  assert.ok(timeout > 0, `${scenario}: timed out before ${stage}`);
+  return timeout;
+}
+async function observeBrowserRoster(page: Page, paneIds: readonly string[]): Promise<void> {
+  const cdp = await page.context().newCDPSession(page);
+  // Observe the app's roster feed regardless of transport, without changing how it connects.
+  const received = (data: string): void => {
+    let frame: ServerMessage | WireMachineEvent;
+    try { frame = JSON.parse(data); } catch (error) {
+      if (error instanceof SyntaxError) return;
+      throw error;
+    }
+    const event = frame.type === "machine-event" ? frame.event : frame;
+    if (event.type === "machines") {
+      const panes = event.machines.find((machine) => machine.id === "local")?.snapshot?.panes;
+      for (const id of paneIds) browserRoster.set(id, panes?.find((pane) => pane.pane_id === id)?.agent_status);
+    } else if (event.type === "machine-message" && event.machine_id === "local" && event.message.type === "pane-status" && paneIds.includes(event.message.pane_id)) {
+      browserRoster.set(event.message.pane_id, event.message.agent_status);
+    }
+  };
+  cdp.on("Network.eventSourceMessageReceived", ({ data }) => received(data));
+  cdp.on("Network.webSocketFrameReceived", ({ response }) => {
+    if (response.opcode === 1) received(response.payloadData);
+  });
+  await cdp.send("Network.enable");
+}
+async function withBrowserDiagnostic(paneId: string, wait: () => Promise<void>): Promise<void> {
+  try {
+    await wait();
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    // Bound the whole read, including evaluation, so a stuck renderer cannot hide the wait error.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const state = await Promise.race([
+      page?.evaluate((id) => {
+        const row = document.querySelector(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${CSS.escape(id)}"]`);
+        const badge = row?.querySelector(".badge");
+        const box = badge?.getBoundingClientRect();
+        const chat = document.querySelector(`.pane-frame[data-layout-pane="${CSS.escape(id)}"] .chat-frame`);
+        const scroller = chat?.querySelector(".chat-view");
+        return {
+          selected: document.querySelector(".agents-sidebar .agent-item.is-selected")?.getAttribute("data-pane") ?? null,
+          content: chat?.getAttribute("data-pane-content") ?? null,
+          scrollGap: scroller ? scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop : null,
+          badge: badge?.getAttribute("data-status") ?? null,
+          badgeVisible: Boolean(badge && box && box.width > 0 && box.height > 0 && getComputedStyle(badge).visibility === "visible"),
+        };
+      }, paneId).catch(() => null) ?? null,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2_000); }),
+    ]).finally(() => clearTimeout(timer));
+    throw new Error(`${error.message}; browser ${JSON.stringify({ paneId, rosterStatus: browserRoster.get(paneId) ?? null, state })}`, { cause: error });
+  }
+}
+async function settled(paneId: string, status: Status, start?: number, expected: Status | ViewedFinish = status): Promise<void> {
+  const finish = typeof expected === "string" ? undefined : expected;
+  const browserStatus = typeof expected === "string" ? expected : "idle";
+  await withBrowserDiagnostic(paneId, async () => {
+    const pushed = start === undefined ? undefined : await until(() => frames.slice(start).find((frame): frame is PaneStatusFrame =>
+      frame.type === "pane-status" && frame.pane_id === paneId && frame.agent_status === status), `${scenario}: pushed ${status}`, finish?.deadline);
+    const pane = await until(async () => (await httpSnapshot(finish && Math.min(5_000, remaining(finish.deadline, `HTTP ${status}`)))).panes
+      .find((item) => item.pane_id === paneId && item.agent_status === status), `${scenario}: HTTP ${status}`, finish?.deadline);
+    const deadline = finish?.deadline ?? Date.now() + STATUS_TIMEOUT;
+    if (finish) {
+      assert.ok(page && pushed?.finish_epoch && pushed.finish_id !== undefined && pushed.finish_id > 0, "DONE push must identify the finish");
+      // Chat presents this key only after validating the finish and showing the last row.
+      const key = JSON.stringify(["local", pushed.pane_id, pane.terminal_id, "chat", pushed.finish_epoch, pushed.finish_id]);
+      await currentChat(paneId).and(page.locator(`[data-pane-content=${JSON.stringify(key)}]`))
+        .getByText(finish.answer, { exact: true }).waitFor({ state: "visible", timeout: remaining(deadline, "presented final answer") });
+    }
+    await agentRow(paneId).locator(`.badge[data-status="${browserStatus}"]`)
+      .waitFor({ state: "visible", timeout: remaining(deadline, `browser ${browserStatus}`) });
+  });
   await rawWorking(paneId);
+}
+async function completeInChat(paneId: string, answer: string, append: (answer: string) => void): Promise<void> {
+  await withBrowserDiagnostic(paneId, () => currentChat(paneId).waitFor({ state: "visible", timeout: STATUS_TIMEOUT }));
+  const start = frames.length, deadline = Date.now() + STATUS_TIMEOUT;
+  append(answer);
+  // A viewed DONE must draw idle once its final answer is presented (#1279).
+  await settled(paneId, "done", start, { answer, deadline });
 }
 async function checkpoint(name: string): Promise<void> {
   if (evidenceDirectory && page) {
@@ -137,7 +220,7 @@ async function staysDone(paneId: string, start: number): Promise<void> {
   const observedUntil = Date.now() + 2_000;
   await until(async () => {
     assert.equal((await httpSnapshot()).panes.find((item) => item.pane_id === paneId)?.agent_status, "done");
-    assert.ok(await agentRow(paneId).locator(`.badge[data-status="${drawn(paneId, "done")}"]`).isVisible());
+    assert.ok(await agentRow(paneId).locator('.badge[data-status="idle"]').isVisible());
     assert.ok(!frames.slice(start).some((frame) => frame.type === "pane-status" && frame.pane_id === paneId && frame.agent_status !== "done"), "stale raw events must not push a native status regression");
     return Date.now() >= observedUntil;
   }, "DONE remains stable while stale raw events are processed");
@@ -176,20 +259,18 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript((ids) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
-    // Waiting first (the default Agents order) folds the resting rows, idle and an unread finish alike, under one
-    // line: this device keeps that line open, so every row's drawn state stays in sight for the checks below
     localStorage.setItem("ovis:agents-resting-open", "1");
     for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
   }, [paneId, delayedPaneId]);
   page = await context.newPage();
+  await observeBrowserRoster(page, [paneId, delayedPaneId]);
   await page.goto(origin);
 
   scenario = "Initial completed history is READY without fabricated completion";
   await settled(paneId, "idle");
   assert.ok((await conversation(paneId)).includes("Synthetic GJC completed answer"));
   await agentRow(paneId).locator(".agent-select").click();
-  onScreen = paneId;
-  await page.getByText("Synthetic GJC completed answer", { exact: true }).waitFor({ state: "visible", timeout: 20_000 });
+  await currentChat(paneId).getByText("Synthetic GJC completed answer", { exact: true }).waitFor({ state: "visible", timeout: STATUS_TIMEOUT });
   assert.ok(!frames.some((frame) => frame.type === "pane-status" && frame.pane_id === paneId && frame.agent_status === "done"));
   await checkpoint("initial-rest"); passed();
 
@@ -200,23 +281,21 @@ try {
   await checkpoint("working"); passed();
 
   scenario = "Native stop is DONE and stale raw idle/working cannot undo it";
-  start = frames.length;
-  native.append(native.message("assistant", "Synthetic foreground answer"));
-  await settled(paneId, "done", start);
+  await completeInChat(paneId, "Synthetic foreground answer", (answer) => native.append(native.message("assistant", answer)));
   start = frames.length;
   await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "gjc", state: "idle" });
   // A provider report may keep herdr at RUN even after this raw idle report; native DONE must stand either way.
   await staysDone(paneId, start);
   start = frames.length;
   await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "gjc", state: "working" });
-  await settled(paneId, "done");
+  await settled(paneId, "done", undefined, "idle");
   await staysDone(paneId, start); passed();
 
   scenario = "Native async-result wakes RUN and a final stop returns DONE";
   start = frames.length; native.append(native.wake());
   await settled(paneId, "working", start);
-  start = frames.length; native.append(native.message("assistant", "Synthetic background completed answer"));
-  await settled(paneId, "done", start); passed();
+  await completeInChat(paneId, "Synthetic background completed answer", (answer) => native.append(native.message("assistant", answer)));
+  passed();
 
   scenario = "Native ask is INPUT through narration, then tool result resumes RUN";
   start = frames.length;
@@ -228,18 +307,15 @@ try {
   await settled(paneId, "blocked");
   start = frames.length; native.append(native.message("toolResult", "Synthetic Continue result"));
   await settled(paneId, "working", start);
-  start = frames.length; native.append(native.message("assistant", "Synthetic choice completed answer"));
-  await settled(paneId, "done", start); passed();
+  await completeInChat(paneId, "Synthetic choice completed answer", (answer) => native.append(native.message("assistant", answer)));
+  passed();
 
   scenario = "Delayed native readiness pushes DONE from raw RUN";
   await settled(delayedPaneId, "working");
   await agentRow(delayedPaneId).locator(".agent-select").click();
-  onScreen = delayedPaneId;
-  start = frames.length;
-  delayed.append(delayed.message("user", "Synthetic delayed request"), delayed.message("assistant", "Synthetic delayed completed answer"));
-  await settled(delayedPaneId, "done", start);
+  await completeInChat(delayedPaneId, "Synthetic delayed completed answer", (answer) =>
+    delayed.append(delayed.message("user", "Synthetic delayed request"), delayed.message("assistant", answer)));
   assert.ok((await conversation(delayedPaneId)).includes("Synthetic delayed completed answer"));
-  await page.getByText("Synthetic delayed completed answer", { exact: true }).waitFor({ state: "visible", timeout: 20_000 });
   await checkpoint("final-done"); passed();
 } catch (error) {
   try { await checkpoint("failure"); } catch (captureError) { console.error("GJC screenshot failed", captureError); }

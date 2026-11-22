@@ -1,8 +1,8 @@
 # Remote PCs over SSH
 
-Use **Settings → Devices and PCs → Add a connection → SSH** (the command palette has **Add PC** too) to connect a Linux or macOS computer (x64 or arm64) or a Windows PC (x64) running OpenSSH Server. Enter an SSH alias or `user@hostname`; the name defaults to that address. Advanced settings accept a port, a key path on the **web server**, and a named herdr session. Each registration selects one herdr socket. The sidebar groups PC → workspace → pane, and the header and new-session dialog show the destination PC. **Settings → Remote PCs → Show in sidebar** keeps a PC out of this device's sidebar, Agents list and command palette; it stays connected, and links and alerts still open its panes. The sidebar's PCs head counts the PCs hidden there; its menu shows each one again.
+Use **Settings → Devices and PCs → Add a connection → Direct** (or its **Tailscale** tab for a PC of your Tailscale login; the command palette has **Add PC** too) to connect a Linux or macOS computer (x64 or arm64) or a Windows PC (x64) running OpenSSH Server. Enter an SSH alias or `user@hostname`; the name defaults to that address. Advanced settings accept a port, a key path on the **web server**, and a named herdr session. Each registration selects one herdr socket. The sidebar groups PC → workspace → pane, and the header and new-session dialog show the destination PC. **Settings → Remote PCs → Show in sidebar** keeps a PC out of this device's sidebar, Agents list and command palette; it stays connected, and links and alerts still open its panes. The sidebar's PCs head counts the PCs hidden there; its menu shows each one again.
 
-The **SSH** tab lists the PCs it can find, each with **Add**, which opens the setup dialog with that address filled in: the PCs saved in herdr that wait for **Connect**, the hosts of the connection server's own ssh config (`~/.ssh/config` and the files its `Include` lines name, a wildcard `Include`'s folders listed through their open handle on Linux with glibc, what they match opened through it too, and by path elsewhere, where a listing gives names only (a folder swapped after its check can redirect it, so a name from outside home can be listed and a file can be missed): any host those files name or set an option for, and any host after that `Include`, is listed but never claims a Tailscale PC; on Linux the folders are read synchronously, so a home on a stalled network mount can freeze the server while the list is built; hosts named only by a pattern and everything under `Match` are left out), and the other online, untagged PCs of its own Tailscale login, by their MagicDNS name. The list stops at 200 rows, and each Tailscale PC it lists keeps its row within them (the first 32 of the login, as for the other Tailscale lists): config hosts fill only the rows left. A Tailscale PC is reached over SSH like any other address, never through the relay, and a PC a config host already names (by alias or HostName) is listed once. A PC already added shows **Added**. Below the list, type any other SSH address. The list is read from `GET /api/machines/ssh-candidates`, which reads both sources and connects to nothing; a watching device, an open LAN window, a Portal visitor and a device on the relay are refused (`read_only`, `owner_only`), and then see only the field.
+The **Tailscale** tab lists the PCs of your own Tailscale login, each with **Connect**, which opens the setup dialog with that address filled in, or **Added** once it is added. The **Direct** tab has one field for an SSH address or another PC's `https://` address ([By its address](#by-its-address)) and, under **ssh config**, one button per PC it can find: a host of the ssh config opens the setup dialog with its address filled in, and a PC saved in herdr opens its setup. Together they list the PCs saved in herdr that are not connected yet, the hosts of the connection server's own ssh config (`~/.ssh/config` and the files its `Include` lines name, a wildcard `Include`'s folders listed through their open handle on Linux with glibc, what they match opened through it too, and by path elsewhere, where a listing gives names only (a folder swapped after its check can redirect it, so a name from outside home can be listed and a file can be missed): any host those files name or set an option for, and any host after that `Include`, is listed but never claims a Tailscale PC; on Linux the folders are read synchronously, so a home on a stalled network mount can freeze the server while the list is built; hosts named only by a pattern and everything under `Match` are left out), and the other online, untagged PCs of its own Tailscale login, by their MagicDNS name. The list stops at 200 rows, and each Tailscale PC it lists keeps its row within them (the first 32 of the login, as for the other Tailscale lists): config hosts fill only the rows left. A Tailscale PC is reached over SSH like any other address, never through the relay, and a PC a config host already names (by alias or HostName) is listed once. A PC already added shows **Added**. The list is read from `GET /api/machines/ssh-candidates`, which reads both sources and connects to nothing; a watching device, an open LAN window, a Portal visitor and a device on the relay are refused (`read_only`, `owner_only`), and then see only the field; a window refused as `owner_only` that shows the tabs (an open LAN window; the relay shell and a Portal visitor show neither) is told in one line above the field where the list can be seen: on the PC itself, or from a device paired with it directly.
 
 **Machines already saved in herdr appear automatically.** The connection server reads its account's
 `herdr machine list --json` at startup and every five seconds after the previous read finishes. Failed reads back off up to five minutes and
@@ -30,7 +30,7 @@ addresses/sessions appear with an error and do not connect.
 
 The connection server uses its own operating-system account’s OpenSSH configuration and ssh-agent (on Windows, when Git for Windows' OpenSSH runs, only an agent named by `SSH_AUTH_SOCK` in the server's environment; see below). The browser never opens SSH itself. Existing keys are tried first; unknown host fingerprints and password/key-passphrase prompts appear in the setup dialog. Secret entry requires HTTPS or localhost. Verify a new fingerprint against the target PC. A changed host key fails closed; correcting trust is a deliberate administrator action, not an automatic reset.
 
-After inspection, **Install and connect** lists the proposed changes. The installer uses a private runtime bundle containing Bun, Node and native node-pty, plus a pinned herdr fallback. It uses an existing herdr where available, starts a daemon only when its socket is absent, and never stops/replaces a running herdr daemon. Agent CLI installation and login remain the remote account’s responsibility. Cancelling a setup closes its SSH processes; already-created remote work is preserved.
+After inspection, **Install and connect** lists the proposed changes. The installer uses a private runtime bundle containing the compiled Ovis server, Node and native node-pty, plus a pinned herdr fallback. It uses an existing herdr where available, starts a daemon only when its socket is absent, and never stops/replaces a running herdr daemon. Agent CLI installation and login remain the remote account’s responsibility. Cancelling a setup closes its SSH processes; already-created remote work is preserved.
 
 Password or encrypted-key authentication also offers registration of an app-specific ed25519 key for unattended reconnection. The private key stays on the connection server under `<stateDir>/ssh/<machine-id>`, mode `0600`; only its public key is appended to the remote account’s `authorized_keys`. The original SSH keys/configuration are preserved. One-time secrets pass in memory through a private askpass socket (a Unix socket, or a named pipe on Windows) that answers only a helper presenting its connection's random token; they are not stored in jobs or configuration files.
 
@@ -69,9 +69,9 @@ headless server into the desktop session, and Ovis never restarts it or its pane
 An initial connection can be cancelled while waiting; already-started work stays running.
 ## Through the relay
 
-Add a connection no longer offers adding a PC through the relay: the relay is used through the Ovis
-account ([relay.md](relay.md)), and a PC on your Tailscale is added over SSH (above). A PC added through
-the relay before keeps working as described here. Such a PC was added with no SSH and no open port: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, open
+In **Add a connection → Tailscale**, **Connect** opens SSH setup with the PC's address filled in, whether or not either PC is in an account. The relay one-tap API uses a code and is separate from this tab. For a PC in an account, use **Ovis relay → Add from account** to connect through the relay.
+
+PCs already added through the relay keep working. Clients that support pairing links or typed codes can still use them between unbound PCs: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, open
 **Settings → Devices and PCs → Connect** (with the relay on) and type the ten-character code it shows
 beside its QR code here (an older Ovis names it **Show a code to type**; its pairing link works too):
 this PC's server finds that PC through the relay as a phone does ([Pairing with a typed code](relay.md)),
@@ -135,6 +135,45 @@ code, `POST /api/machines/relay/code` with `{ "code": "<code>" }` runs one excha
 10 minutes, under that random ticket), or `typed_code_<failure>` (`not-a-code`, `no-pc`, `wrong`, `expired`, `busy`,
 `unreachable`, `forged`); then `POST /api/machines/relay` with `{ "found": "<ticket>" }` adds
 that PC, once.
+
+## By its address
+
+Another PC whose Ovis answers at an https address (`tailscale serve`, a reverse proxy) can be added
+by that address, with no SSH and no relay. On that PC, start a pairing (**Settings → Devices and
+PCs**) and type the six-digit code it shows here with its address. This PC's server sends that PC
+only the code and the label `Ovis on <this PC's name>` (`POST /api/devices/pair`), and keeps the
+device token it answers in `<stateDir>/address-pcs/<pc id>.json` (mode `0600`), never in a PC list, a
+log or an answer. That PC lists it under Devices as one more paired device that **drives** it. The
+PC itself is saved in `<stateDir>/address-pcs.json`, apart from `machines.json`. Like the relay PCs'
+keys and SSH keys beside it, that token file is readable to whoever may drive this PC (through its
+terminals or file view), and so is the control of the other PC it gives: add a PC by its address only
+on a PC whose driving devices you would trust with that one.
+
+The address is an origin only: `https://`, or plain `http://` to this PC itself (`localhost`,
+`127.0.0.1`, `[::1]`, for a second Ovis on the same machine), with no path, query, fragment or user name,
+and no redirect is followed. An address that leads back to this server itself (its own boot id answers
+there) is refused rather than paired with itself. A
+name that leads to a link-local, unspecified, multicast or broadcast address is refused; a public,
+LAN or Tailscale address is the point and is taken. The name is looked up again before every
+connection, under the same rule. A name that resolves differently between that look and the
+connection, or an address written in a NAT64 form, is not checked again; the https certificate check
+is what stands in front of it.
+
+A loopback forward on this PC (127.0.0.1, a bearer made fresh for each connection) carries that PC's
+status, API routes and terminals with `Authorization: Device <token>`, so it joins the sidebar as a
+relay PC does: it runs its own Ovis, which updates itself, and has no bridge controls. Only the
+relay's header allowlists cross the forward, so no cookie, `Authorization` or forwarding header of
+either side reaches the other. A dropped connection comes back with an SSH PC's backoff. A 401 from
+that PC (it revoked this one), on a request or a socket that never opened, ends the forward: the PC
+turns to an error that says so and is not tried again. Revoking ends only what the token gave: a PC
+that lets this one in by its own rule anyway (no token on it and the request from its own loopback, or
+the owner's Tailscale login through `tailscale serve`) keeps answering it, as it would any window
+there. **Remove PC** here deletes the token; revoke it on the other PC as well.
+
+`POST /api/machines/address` with `{ "address": "https://…", "code": "<six digits>", "name"?: "<PC
+name>" }` adds one (201 `{ machine }`, with `kind: "address"` and `address`), under the same guards
+as every PC change, over HTTPS or from localhost only. A device on the relay, a Portal visitor and an
+open LAN window are refused (`owner_only`).
 
 ## Updating PCs from here
 
@@ -410,7 +449,7 @@ or MSYS tools earlier on PATH cannot reinterpret the archive's drive-letter path
 
 ## Building and distributing runtimes
 
-`bun run build:remote` builds for the host OS and CPU after `bun run build`. Linux and macOS bundles use checksum-pinned Node 22.23.2. Linux bundles copy the installed Bun, so they must be built on the target OS/CPU. macOS bundles use checksum-pinned Bun 1.4.2 plus that platform's prebuilt PTY package (`@lydell/node-pty-<platform>`, fetched checksum-pinned from the npm registry when it is not the host's); they can also be assembled on Linux. The Windows bundle (`win32-x64`) is checksum-pinned Bun 1.4.2 alone, with no Node, PTY package or herdr, and is assembled on any OS:
+`bun run build:remote` builds for the host OS and CPU after `bun run build`; any platform can be named and assembled on any OS. Every bundle holds the server compiled for its platform (`ovis-server`, `scripts/server-artifact.ts`) with the built client and the agent integrations beside it, and no server or shared sources. Linux and macOS bundles add checksum-pinned Node 22.23.2 and that platform's prebuilt PTY package (`@lydell/node-pty-<platform>`, fetched checksum-pinned from the npm registry when it is not the host's), and the Rust PTY host with its record when `HERDR_BUNDLE_PTY_SIDECAR` names one (CI always does). The Windows bundle (`win32-x64`) is the compiled server alone, with no Node, PTY package or herdr:
 
 ```sh
 bun run build:remote darwin-arm64  # Apple Silicon
@@ -418,13 +457,13 @@ bun run build:remote win32-x64     # Windows
 bun run build:remote darwin-x64    # Intel Mac
 ```
 
-The builder verifies herdr 0.9.3, all downloaded runtime checksums, macOS executable architectures and PTY helper permissions. Native builds run an actual PTY smoke test. Cross-platform assembly records `native_smoke_tested: false`; the destination runs bundled Bun/herdr and a Node PTY smoke test **before activating** the installed runtime. macOS runtime execution still needs native CI or a real Mac to verify it. No build tools are required on the remote PC.
+The builder verifies herdr 0.9.3, all downloaded runtime checksums, macOS executable architectures and PTY helper permissions. Native builds run an actual PTY smoke test. Cross-platform assembly records `native_smoke_tested: false`; the destination runs the bundled server (`ovis-server remote --help`), herdr and a Node PTY smoke test **before activating** the installed runtime. macOS runtime execution still needs native CI or a real Mac to verify it. No build tools are required on the remote PC.
 
 The connection server first honors an explicit `OVIS_BUNDLE_MANIFEST`, then automatically uses `remote-bundles/manifest-<target OS>-<target CPU>.json` beside the server checkout, and otherwise downloads the versioned release. Local discovery follows the **remote** architecture, independently of the server OS and launch directory. Invalid local/configured manifests fail closed; they do not fall back to a different runtime.
 
 `.github/workflows/remote-bundles.yml` builds and smoke-tests Linux/macOS × x64/arm64 and Windows x64 (assembled on Linux, started on a Windows runner against herdr's own installer), plus a real SSH password-authentication job on Linux. `scripts/windows-host-qa.ts` runs the whole Add PC flow against a real Windows PC (`WINDOWS_QA_HOST`, `WINDOWS_QA_PASSWORD`). Dispatching the workflow produces artifacts; pushing a `remote-vN` tag, where N is `REMOTE_BUNDLE_VERSION` in `shared/machines.ts`, publishes all five archives and the combined `manifest.json` after the checks pass. Raising `REMOTE_BUNDLE_VERSION` makes every connected PC's bridge incompatible until it is updated (**Update bridge…**), so publish the `remote-vN` release before the app release that carries the new number. Locally built bundles and manifests under `remote-bundles/` must be rebuilt too, since an older manifest there fails closed.
 
-The default manifest is `https://github.com/devswha/ovis/releases/download/remote-v<REMOTE_BUNDLE_VERSION>/manifest.json`, with the version from `shared/machines.ts`. Version and SHA-256 checks run on the connection server and SHA-256 is checked again on the remote PC before extraction. Each runtime contains its own version metadata. A malformed/incompatible manifest stops installation before a running bridge is stopped.
+The default manifest is `https://github.com/devswha/ovis/releases/download/remote-v<REMOTE_BUNDLE_VERSION>/manifest.json`, with the version from `shared/machines.ts`. Version and SHA-256 checks run on the connection server and SHA-256 is checked again on the remote PC before extraction. Each runtime contains its own version metadata: `bundle.json` and the bridge descriptor's `bundle_version` carry the bundle number, and the bridge's `/api/health` reports the app version compiled into its server. A malformed/incompatible manifest stops installation before a running bridge is stopped.
 
 ## Verification
 

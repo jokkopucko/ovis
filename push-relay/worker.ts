@@ -26,7 +26,6 @@
  * is logged. Deploy: push-relay/README.md.
  */
 
-/** the part of Cloudflare's D1 binding this Worker uses */
 interface D1Statement { bind(...values: unknown[]): { first<T>(): Promise<T | null>; run(): Promise<unknown> } }
 export interface Env {
   DB: { prepare(query: string): D1Statement };
@@ -40,7 +39,6 @@ export interface Env {
   APNS_KEY_ID: string;
   /** secret: the Apple developer team the key belongs to */
   APNS_TEAM_ID: string;
-  /** var (wrangler.toml): the app's bundle ID */
   APNS_TOPIC: string;
   /**
    * secret, for Android: the JSON key of a Google service account allowed to send FCM messages
@@ -59,7 +57,6 @@ export const DEVICE_RATE_LIMIT = 120;
 export const RATE_WINDOW_SECONDS = 600;
 /** endpoints one device token may hold (one per PC); registering one more drops the oldest */
 export const ENDPOINTS_PER_TOKEN = 32;
-/** an endpoint neither registered nor pushed to for this long is deleted (`expire`, daily) */
 export const ENDPOINT_TTL_SECONDS = 60 * 24 * 60 * 60;
 /** what a phone shows when its extension cannot decrypt a push (or does not run) */
 export const FALLBACK_BODY = "herdr needs you";
@@ -100,7 +97,6 @@ const TOPIC = /^[A-Za-z0-9_-]{1,32}$/;
 
 const status = (code: number, headers?: Record<string, string>) => new Response(null, { status: code, headers });
 
-/** base64 or base64url (padded or not) to bytes; null when it is neither */
 function decodeBase64(value: string): Uint8Array<ArrayBuffer> | null {
   const base64 = value.replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
   if (!/^[A-Za-z0-9+/]*$/.test(base64)) return null;
@@ -211,10 +207,6 @@ export type Registration =
   | { service: "apns"; token: string; environment: Environment; vapid_key: string }
   | { service: "fcm"; token: string; vapid_key: string };
 
-/**
- * The token, its service, its APNs environment (APNs only) and the PC's VAPID public key from a
- * registration body, or null when it is not one. `service` is "apns" when absent.
- */
 export function readRegistration(body: unknown): Registration | null {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
   const value = body as Record<string, unknown>;
@@ -439,7 +431,6 @@ async function sendFcm(env: Env, token: string, ciphertext: string, delivery: { 
   return status(502);
 }
 
-/** Deletes every endpoint neither registered nor pushed to for ENDPOINT_TTL_SECONDS; the daily cron runs it. */
 export async function expire(env: Env, now = new Date()): Promise<void> {
   await env.DB.prepare("DELETE FROM endpoints WHERE used_at < ?").bind(Math.floor(now.getTime() / 1000) - ENDPOINT_TTL_SECONDS).run();
 }

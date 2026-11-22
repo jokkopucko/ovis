@@ -8,10 +8,10 @@ const script = fileURLToPath(new URL("./typecheck.ts", import.meta.url));
 let cwd: string;
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "ovis-typecheck-"));
-  // A compiler stand-in at Bun's command boundary records each child's actual environment.
   writeFileSync(join(cwd, "package.json"), JSON.stringify({ scripts: { tsc: "bun compiler.ts" } }));
   writeFileSync(join(cwd, "compiler.ts"), `
-    const project = process.argv.includes("-p") ? "tools" : "main";
+    const config = process.argv[process.argv.indexOf("-p") + 1];
+    const project = !process.argv.includes("-p") ? "main" : config === "tui/tsconfig.json" ? "tui" : "tools";
     console.log(JSON.stringify({ project, args: process.argv.slice(2),
       GOGC: process.env["GOGC"], GOMAXPROCS: process.env["GOMAXPROCS"],
       GOMEMLIMIT: process.env["GOMEMLIMIT"],
@@ -44,19 +44,22 @@ it.each([
   [{ GOGC: "off", GOMAXPROCS: "4", GOMEMLIMIT: "2GiB" }, "off", "4", "2GiB"],
   [{ GOGC: "", GOMAXPROCS: "", GOMEMLIMIT: "" }, "", "", ""],
 ] satisfies [Record<string, string>, string, string, string][])(
-  "passes Go defaults and caller overrides to both compiler processes: %j",
+  "passes Go defaults and caller overrides to every compiler process: %j",
   (settings, GOGC, GOMAXPROCS, GOMEMLIMIT) => {
     const result = run(settings);
     expect(result.code).toBe(0);
     expect(result.records).toEqual([
       { project: "main", args: ["--noEmit"], GOGC, GOMAXPROCS, GOMEMLIMIT, marker: "inherited" },
       { project: "tools", args: ["--noEmit", "-p", "tsconfig.tools.json"], GOGC, GOMAXPROCS, GOMEMLIMIT, marker: "inherited" },
+      { project: "tui", args: ["--noEmit", "-p", "tui/tsconfig.json"], GOGC, GOMAXPROCS, GOMEMLIMIT, marker: "inherited" },
     ].map((record) => JSON.parse(JSON.stringify(record))));
   },
 );
 
-it.each(["main", "tools"])("preserves a failing %s compiler's exit code and stops", (project) => {
+const PROJECTS = ["main", "tools", "tui"];
+
+it.each(PROJECTS)("preserves a failing %s compiler's exit code and stops", (project) => {
   const result = run({ FAIL_PROJECT: project });
   expect(result.code).toBe(2);
-  expect(result.records.map((record) => record.project)).toEqual(project === "main" ? ["main"] : ["main", "tools"]);
+  expect(result.records.map((record) => record.project)).toEqual(PROJECTS.slice(0, PROJECTS.indexOf(project) + 1));
 });

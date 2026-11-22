@@ -20,18 +20,14 @@
  */
 import { files, lineOf, read, stripComments } from "./source-scan.ts";
 
-/** Bun.sleep, Playwright's waitForTimeout, or a Promise resolved by setTimeout (`r => setTimeout(r, n)`, `function (r) { setTimeout(() => r(), n) }`), not a 0 ms yield. */
 const SLEEP = /\bBun\.sleep(?:Sync)?\s*\(|\b\w+(?:\.\w+)*\.waitForTimeout\s*\(|\bnew Promise(?:<[^>]*>)?\(\s*(?:async\s*)?(?:function\s*)?\(?\s*(\w+)\s*\)?\s*(?:=>)?\s*\{?\s*(?:window\.|globalThis\.)?setTimeout\(\s*(?:\1|\(\s*\)\s*=>\s*\{?\s*\1\s*\(\s*\)\s*;?\s*\}?)\s*,(?!\s*0\s*\))/g;
-/** A loop head bounded by a clock, a deadline or a try count (`i < 40`, `i < MAX_TRIES`, `attempt <= attempts`); a plain `i < list.length` is not. */
 const BOUND = /Date\.now\(\)|performance\.now\(\)|[Dd]eadline|\b\w+\s*<=?\s*(?:\d|[A-Z][A-Z0-9_]*\b|\w*(?:[Tt]ries|[Aa]ttempts|[Rr]etries|[Mm]ax|[Ll]imit)\w*)/;
 /** `// fixed wait:` followed by the reason. */
 const MARKER = /\/\/\s*fixed wait:\s*\S/;
 
-/** The files the rule covers. Media takes are timed by hand. */
-export const sleepFiles = (): string[] => files("{server,src,shared,scripts,site,telemetry}/**/*.{ts,tsx,mjs,js}")
+export const sleepFiles = (): string[] => files("{server,src,shared,scripts,site,telemetry,tui}/**/*.{ts,tsx,mjs,js}")
   .filter((file) => !file.startsWith("scripts/film/") && !file.startsWith("scripts/readme-media/") && file !== "scripts/fixed-sleeps.ts" && file !== "scripts/conventions.test.ts");
 
-/** Whether the innermost loop around `at` (within its function) is bounded. `code` has comments and strings blanked. */
 function inBoundedLoop(code: string, at: number): boolean {
   for (let from = at; ;) {
     let open = -1;
@@ -48,21 +44,15 @@ function inBoundedLoop(code: string, at: number): boolean {
     if (doWhile !== null || /\b(?:while|for)\s*\(/.test(head)) {
       return BOUND.test(doWhile ?? head) || (/Date\.now\(\)|performance\.now\(\)|deadline/i.test(body) && /\b(?:throw|return|break|assert|expect)\b/.test(body));
     }
-    // a function body: the loop, if any, would be inside it
     if (/=>$|\)\s*(?::[^{]*)?$/.test(head) && !/\b(?:if|switch|catch|with)\s*\(/.test(head)) return false;
     from = open;
   }
 }
 
-/**
- * Names bound to a sleep in `code` (strings blanked; `source` keeps them, for the import): their
- * definitions' offsets, and the helpers whose delay defaults to 0, so that a bare `tick()` yields.
- */
 function sleepHelpers(code: string, source: string): { names: Set<string>; definitions: Set<number>; yields: Set<string> } {
   const names = new Set<string>();
   const definitions = new Set<number>();
   const yields = new Set<string>();
-  // `const sleep = (ms) => <sleep>` or `function sleep(ms) { return <sleep> }`: a body that is only the sleep
   const define = /(?:\b(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(\([^)]*\)|\w+)\s*(?::[^=;\n]*)?=>\s*(?:\{\s*return\s+)?|\bfunction\s+(\w+)\s*(\([^)]*\))[^{;]*\{\s*return\s+)(?=\bBun\.sleep|\bnew Promise|\w+(?:\.\w+)*\.waitForTimeout\b)/g;
   for (const match of code.matchAll(define)) {
     const at = match.index + match[0].length;
@@ -72,7 +62,6 @@ function sleepHelpers(code: string, source: string): { names: Set<string>; defin
     definitions.add(at);
     if (/=\s*0\s*\)$/.test(match[2] ?? match[4]!)) yields.add(name);
   }
-  // `const wait = io.wait ?? Bun.sleep`
   for (const match of code.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=[^;\n]*\bBun\.sleep(?:Sync)?\b(?!\s*\()/g)) names.add(match[1]!);
   for (const match of source.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*["'](?:node:)?timers\/promises["']/g)) {
     const named = /\bsetTimeout(?:\s+as\s+(\w+))?\b/.exec(match[1]!);
@@ -81,7 +70,6 @@ function sleepHelpers(code: string, source: string): { names: Set<string>; defin
   return { names, definitions, yields };
 }
 
-/** The fixed sleeps in one file, as `file:line: text`. */
 export function fixedSleeps(file: string, text = read(file)): string[] {
   const code = stripComments(text, { strings: true });
   const lines = text.split("\n");
@@ -89,7 +77,6 @@ export function fixedSleeps(file: string, text = read(file)): string[] {
   const helpers = sleepHelpers(code, stripComments(text));
   const calls = helpers.names.size ? [...code.matchAll(new RegExp(`(?<![\\w.])(?:${[...helpers.names].join("|")})\\s*\\((?!\\s*0\\s*\\))`, "g"))] : [];
   const sleeps = [...code.matchAll(SLEEP)].filter((match) => !helpers.definitions.has(match.index));
-  // a helper's own definition (`function sleep(`) is not a call, and `tick()` of a helper defaulting to 0 ms yields
   const waits = [...sleeps, ...calls.filter((match) => !/\bfunction\s+$/.test(code.slice(Math.max(0, match.index - 20), match.index))
     && !(helpers.yields.has(match[0].replace(/\s*\($/, "")) && /^\(\s*\)/.test(code.slice(match.index + match[0].length - 1))))]
     .sort((a, b) => a.index - b.index);
@@ -106,7 +93,6 @@ export function fixedSleeps(file: string, text = read(file)): string[] {
   return found;
 }
 
-/** Fixed-sleep counts per file, files with none left out. */
 export function fixedSleepCounts(): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const file of sleepFiles()) {

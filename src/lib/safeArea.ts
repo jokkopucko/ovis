@@ -1,6 +1,3 @@
-/** The screen's safe-area insets in CSS pixels: the notch or Dynamic Island, the rounded corners
- * and the home indicator. A popover placed by script keeps clear of them, as the CSS does with
- * env(safe-area-inset-*); script reads them from the root's --safe-area-* properties (styles.css). */
 export interface SafeAreaInsets {
   top: number;
   right: number;

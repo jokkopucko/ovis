@@ -1,8 +1,3 @@
-/* Settings → Appearance → Agent logos → Mono (data-marks on <html>, lib/settings.ts): Claude's
-   asterisk without its tile, in the text color, so a list where most rows run Claude is not a
-   stripe of orange tiles; the other marks with brand fills (is-brand, AgentMark.tsx) lose their
-   color. The marks that already ride currentColor (codex, cursor, cline, the fallback initial)
-   keep the text color, whatever the theme tints it. */
 [data-marks="mono"] .agent-mark .agent-mark-tile {
   display: none;
 }
@@ -15,10 +10,6 @@
   filter: grayscale(1);
 }
 
-/* A kind with no mark of its own: its initial and the disc's ring in a color picked by its kind (data-hue,
-   AgentMark.tsx), one of the theme's syntax colors. Every theme sets them in both modes and keeps them
-   readable on --bg-elevated, the disc's fill (src/lib/settings.test.ts), so the initial stays legible.
-   Mono leaves the mark quiet. */
 .agent-mark svg[data-hue="keyword"] { --mark-hue: var(--syntax-keyword); }
 .agent-mark svg[data-hue="string"] { --mark-hue: var(--syntax-string); }
 .agent-mark svg[data-hue="number"] { --mark-hue: var(--syntax-number); }

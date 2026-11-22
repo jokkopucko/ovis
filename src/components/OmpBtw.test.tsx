@@ -9,7 +9,6 @@ import type { OmpBtwTopic } from "../../shared/protocol.ts";
 const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
-// the device's stored settings: the chip is off until Settings → Chat → Composer turns it on
 let stored: string | null = "true";
 
 beforeEach(() => {
@@ -75,7 +74,6 @@ test("lists the saved topics once opened, and a topic opens on its question, its
 });
 
 test("says the list is as it last read when a later read fails", async () => {
-  // The HTTP boundary answers once, then fails.
   let fail = false;
   jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => fail ? Response.json({ error: { code: "internal_error", message: "x" } }, { status: 500 }) : Response.json({ topics: [TOPIC] }), globalThis.fetch));
   await act(async () => { renderer = create(pane()); });
@@ -104,7 +102,6 @@ test("keeps the chip and its note when the PC left every topic out", async () =>
 });
 
 test("gives up a read that never answers at its deadline and asks again", async () => {
-  // The HTTP boundary holds every request open until the client aborts it.
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(
     (_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
     globalThis.fetch,
@@ -117,7 +114,6 @@ test("gives up a read that never answers at its deadline and asks again", async 
 });
 
 test("finds topics asked after an empty first look, and stops asking once unmounted", async () => {
-  // The HTTP boundary answers none until a /btw is saved; the component and machine API are real.
   let topics: OmpBtwTopic[] = [];
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ topics }), globalThis.fetch));
   await act(async () => { renderer = create(pane()); });

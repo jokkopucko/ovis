@@ -2,14 +2,13 @@
  * OSC 52 in replayed output (the screen a new attach is handed, `pty-data` with `replay: true`)
  * never writes the clipboard; live copies still do, once each. Runs the real client and its
  * patched xterm on the demo's fixture transport: no herdr, no user state, loopback only.
- *
  * Every frame carries an ACK offset, and each step waits for its frame's ACK, which the client
  * sends from that frame's xterm write callback: the fixture records the clipboard calls and the
  * terminal's parse state at that moment (the test-hook build's `outputProbe`). For a write still
  * pending at a reconnect, reset or dispose, the fixture holds xterm's own parse of it (`hold`) and
  * releases it once the new output has begun.
- * UI_EVIDENCE_DIR=<dir> also saves screenshots; REPLAY_CLIPBOARD_REPORT=<file> writes the results.
  */
+/** UI_EVIDENCE_DIR=<dir> also saves screenshots; REPLAY_CLIPBOARD_REPORT=<file> writes the results. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +17,7 @@ import { chromium, devices, type Browser, type BrowserContext, type Page } from 
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 interface Step { data: string; replay?: true }
 interface Probe { open: boolean; id: number; idComplete: boolean; parsingReplay: boolean; replayOscOpen: boolean; retired: boolean; queued: number; inFlight: number; peakInFlight: number; writes: number; written: string; frameSettled: boolean }
@@ -25,17 +25,11 @@ interface Ack { type: string; pane_id: string; stream_id: string; offset: number
 interface Fixture {
   copies: string[];
   deny: boolean;
-  /** new sockets never open: the app stays on its reconnecting screen */
   holdConnect: boolean;
   acks: Ack[];
   sent: Array<{ type: string; pane_id?: string; mode?: string; socket: number }>;
   sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }>;
-  /** a pane the roster (`/api/machines`) says herdr could not restore */
   unrestored: string | null;
-  /**
-   * Pushes these frames while xterm's parse of the first is held: it stays in flight, unparsed,
-   * and the rest wait queued in the client until `release` runs that parse.
-   */
   hold(paneId: string, steps: Step[]): void;
   release(): void;
   frames(paneId: string, steps: Step[], wait?: boolean): Promise<{ pushed: Array<Step & { offset: number }>; acks: Ack[] }>;
@@ -44,14 +38,13 @@ interface Fixture {
 declare global { interface Window { replayFixture: Fixture } }
 
 const ESC = "\x1b", BEL = "\x07", CAN = "\x18", SUB = "\x1a", NUL = "\x00";
-const HISTORY = "aGlzdG9yeQ=="; // "history"
-const LIVE = "bGl2ZQ=="; // "live"
+const HISTORY = btoa("history");
+const LIVE = btoa("live");
 const LIVE_COPY = `${ESC}]52;c;${LIVE}${BEL}`;
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const reportPath = process.env["REPLAY_CLIPBOARD_REPORT"];
 const report: Record<string, unknown[]> = { "live-copy-after-replay": [], "split-origin": [], "reconnect-replay": [] };
 
-/** Installed before the app: a task-owned clipboard recorder and the demo socket's frame seam. */
 function installReplayFixture(): void {
   const state = { copies: [], deny: false, acks: [], sent: [], sockets: [], unrestored: null } as unknown as Fixture;
   const waiters: Array<(ack: Ack) => void> = [];
@@ -66,7 +59,6 @@ function installReplayFixture(): void {
     },
   });
   state.restore = () => { delete (clipboard as unknown as Record<string, unknown>)["writeText"]; };
-  // the demo's roster, with the `unrestored` pane marked as herdr could not restore it
   const demoFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
     const response = await demoFetch(input, init);
@@ -105,7 +97,6 @@ function installReplayFixture(): void {
     const socket = new Demo(url, protocols) as Fixture["sockets"][number];
     state.sockets.push(socket);
     const push = socket.push.bind(socket);
-    // the demo's own recordings would interleave with the frames under test
     socket.push = (frame) => {
       if (frame.type !== "pty-data" && frame.type !== "watch-data") return push(frame);
       if (frame.fixture !== "replay-clipboard") return;
@@ -116,7 +107,6 @@ function installReplayFixture(): void {
     socket.send = (raw) => {
       const frame = JSON.parse(String(raw)) as Ack;
       if (frame.type === "pty-ack") {
-        // sent from the frame's write callback: the clipboard and the parse state as that frame left them
         const ack = { ...frame, socket: state.sockets.indexOf(socket), copies: state.copies.length, probe: probe() };
         state.acks.push(ack);
         for (const waiter of [...waiters]) waiter(ack);
@@ -142,7 +132,6 @@ function installReplayFixture(): void {
       if (ack.offset >= offset) { done(); resolve({ pushed, acks: seen }); }
     };
     const timer = setTimeout(() => { done(); reject(new Error(`no ACK reached ${offset} on ${stream}; saw ${JSON.stringify(seen.map((ack) => ack.offset))}`)); }, 5000);
-    // subscribed before the first push
     waiters.push(waiter);
     for (const step of pushed) socket.push({ type: "pty-data", fixture: "replay-clipboard", pane_id: paneId, data: step.data, flow: { stream_id: stream, offset: step.offset }, ...(step.replay ? { replay: true } : {}) });
     if (!wait) { done(); resolve({ pushed, acks: seen }); }
@@ -262,25 +251,13 @@ let browser: Browser | null = null;
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  // after the demo's transport, whose socket the fixture wraps
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installReplayFixture.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app, { prefix });
   const url = `http://127.0.0.1:${server.port}${prefix}`;
   if (evidence) mkdirSync(evidence, { recursive: true });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
 
-  // the corpus, one case at a time on one terminal
   {
     const context = await newContext(browser, url);
     try {
@@ -310,7 +287,6 @@ try {
       await frames(page, [R(RESTORED), L(LIVE_COPY)]);
       const on = await fixture(page, (state) => [...state.copies]);
       assert.deepEqual(on, ["live"], "permission on again: the next live copy, and not the replayed one");
-      // the browser refuses the write: one attempt, said in the banner, and replay still asks nothing
       await fixture(page, (state) => { state.copies.length = 0; state.deny = true; });
       await frames(page, [L(LIVE_COPY)]);
       await page.locator(".terminal-banner", { hasText: "clipboard write blocked by the browser" }).waitFor();
@@ -324,12 +300,10 @@ try {
     } finally { await context.close(); }
   }
 
-  // reconnect, a second tab, a pane switch with whole writes queued, an observer
   {
     const context = await newContext(browser, url);
     try {
       const page = await openPage(context, url);
-      // a replayed OSC is left open, then the connection drops
       await frames(page, [R(`${ESC}]52;c;${HISTORY}`)]);
       assert.equal((await probeOf(page)).replayOscOpen, true);
       const sockets = await fixture(page, (state) => state.sockets.length);
@@ -345,7 +319,6 @@ try {
       report["reconnect-replay"]!.push({ name: "reconnect", replayOscOpenAfterDisconnect: reopened.replayOscOpen, oscOpenAfterDisconnect: reopened.open, copies: reconnect.copies, acks: reconnect.acks, afterReplay: acks.map((ack) => ack.probe && { open: ack.probe.open, replayOscOpen: ack.probe.replayOscOpen }) });
       console.log("PASS reconnect");
 
-      // a second tab of the same app: its own attach replays history, and copies nothing
       const second = await openPage(context, url);
       await frames(second, [R(RESTORED), R(`${ESC}]52;c;${HISTORY}`), L(BEL)]);
       const tabs = { second: await fixture(second, (state) => [...state.copies]), first: await fixture(page, (state) => [...state.copies]) };
@@ -367,7 +340,6 @@ try {
       }, [panes.shell, panes.web] as const);
       assert.deepEqual({ inFlight: switched.inFlight, queued: switched.queued }, { inFlight: 1, queued: 2 }, "pane switch: one write pending and two queued when it happens");
       await page.waitForFunction((paneId) => window.replayFixture.sent.some((frame) => frame.type === "attach" && frame.pane_id === paneId), panes.web);
-      // the barrier is the old terminal's own: every frame it held is written or dropped, its callbacks run
       await page.waitForFunction((host) => {
         const probe = (host as unknown as { outputProbe(): Probe }).outputProbe();
         return probe.queued === 0 && probe.inFlight === 0;
@@ -398,9 +370,6 @@ try {
       report["reconnect-replay"]!.push({ name: "observer", copies: observed.copies, framesSent: observed.sent.slice(sentBefore) });
       console.log("PASS observer");
 
-      // the terminal is disposed while a replayed OSC is open in it: four other tabs push its pane out
-      // of the cached ones (paneTabCache.ts). Eviction releases the attach; the disposed terminal
-      // keeps no flag, and nothing copies.
       await page.locator(`.workspace-select[data-pane="${panes.shell}"]`).click();
       await page.locator(`.pane-frame.is-current[data-layout-pane="${panes.shell}"] .pane-terminal`).waitFor({ state: "attached" });
       await resetCase(page);
@@ -435,19 +404,13 @@ try {
   // wait in the client. After a reconnect, a reset or a dispose, nothing from before copies, no frame
   // is acknowledged again, and the new output is not marked ready by an old callback.
   {
-    const STALE_COPY = `${ESC}]52;c;c3RhbGU=${BEL}`; // "stale"
+    const STALE_COPY = `${ESC}]52;c;${btoa("stale")}${BEL}`;
     const PENDING = [
       { name: "replayed OSC in flight, its live end and a live copy queued", steps: [R(`${ESC}]52;c;${HISTORY}`), L(BEL), L(STALE_COPY)], replayOscOpen: true },
       { name: "live copy in flight, another queued", steps: [L(STALE_COPY), L(STALE_COPY)], replayOscOpen: false },
-      // the old output's live OSC 52 is still open when it is retired: the new output's first live
-      // frame ends it, and that copy is the old output's
       { name: "live OSC 52 left open in flight, a live copy queued", steps: [L(`${ESC}]52;c;c3RhbGU=`), L(STALE_COPY)], replayOscOpen: true, next: [L(`${BEL}${LIVE_COPY}`)] },
-      // the queued frame that is dropped opened a synchronized update (DEC mode 2026) xterm never
-      // parsed: the frame gate (lib/inputRow.ts FrameGate) forgets it, so the new output's frames settle
       { name: "a frame opening a synchronized update queued", steps: [L("pending"), L(`${ESC}[?2026hhalf a frame`)], replayOscOpen: false },
     ];
-    // These cases exercise retirement on detach. The alongside-herdr setting still detaches
-    // on a pane switch; terminal-switch-regression covers the default live cache.
     const context = await newContext(browser, url, { extra: { releasePaneAway: true } });
     try {
       const page = await openPage(context, url);
@@ -487,7 +450,6 @@ try {
         assert.equal(after.writes, held.writes, `${test.name}: only the pending frame reached xterm`);
         assert.equal(after.replayOscOpen, test.replayOscOpen, `${test.name}: a replayed OSC the old frame left open stays guarded`);
         assert.equal(readyAfterOld, 0, `${test.name}: the old frame's callback does not mark the new output ready`);
-        // the new connection's own replay and live copy, as after any reconnect
         const next = await frames(page, test.next ?? [R(`${ESC}\\${ESC}[2J${ESC}[Hrestored after reconnect${ESC}]52;c;${HISTORY}${BEL}`), L(LIVE_COPY)]);
         const nextCopies = await fixture(page, (state) => [...state.copies]);
         assert.deepEqual(nextCopies, ["live"], `${test.name}: the new output's live copy works`);
@@ -499,7 +461,6 @@ try {
         console.log(`PASS pending write at reconnect: ${test.name}`);
       }
 
-      // the same with nothing pending: the old output's live OSC 52 was parsed whole and left open
       {
         await resetCase(page);
         await frames(page, [L(`${ESC}]52;c;c3RhbGU=`)]);
@@ -518,16 +479,12 @@ try {
         console.log("PASS open live OSC at reconnect, nothing pending");
       }
 
-      // reset: herdr could not restore the pane, so its terminal is reset to no pane, with a write pending
       {
         await resetCase(page);
         const host = await page.locator(".pane-frame.is-current .pane-terminal").evaluateHandle((element) => element);
         const before = await acked();
         const held = await hold(PENDING[0]!.steps);
         const detaches = await page.evaluate((paneId) => window.replayFixture.sent.filter((frame) => frame.type === "detach" && frame.pane_id === paneId).length, panes.shell);
-        // the roster is read again on session-changed, and now says herdr could not restore the pane
-        // (a server tells that on its machine events too; the demo's pane socket alone does not, so
-        // the page is asked to read the roster now instead of at its open stream's 30-second backstop)
         await page.evaluate((paneId) => {
           const state = window.replayFixture;
           state.unrestored = paneId;
@@ -547,7 +504,6 @@ try {
         assert.deepEqual(acks, before, "reset: no old frame is acknowledged after the reset");
         assert.equal(after.writes, held.writes, "reset: only the pending frame reached xterm");
         report["reconnect-replay"]!.push({ name: "pending write at reset (pane restore error)", pending: { inFlight: held.inFlight, queued: held.queued }, afterReset: { queued: reset.probe.queued, inFlight: reset.probe.inFlight, retired: reset.probe.retired }, copies, acksAfterReset: acks.length - before.length, writesAfterRelease: after.writes - held.writes });
-        // the pane is restored again: its terminal attaches afresh
         const attaches = await page.evaluate((paneId) => window.replayFixture.sent.filter((frame) => frame.type === "attach" && frame.pane_id === paneId).length, panes.shell);
         await page.evaluate(() => {
           const state = window.replayFixture;
@@ -559,8 +515,6 @@ try {
         console.log("PASS pending write at reset");
       }
 
-      // pane switch: the old pane's tab is cached, so its terminal stays mounted and lets go of its
-      // attach while its write is pending; the parse is released only after the next pane attached
       {
         await page.locator(`.pane-frame.is-current[data-layout-pane="${panes.shell}"] .pane-terminal`).waitFor({ state: "attached" });
         await resetCase(page);
@@ -590,14 +544,12 @@ try {
         assert.deepEqual(nextCopies, ["live"], "pane switch: the next pane's live copy works");
         assert.deepEqual(next.acks.map((ack) => ack.offset), next.pushed.map((step) => step.offset), "pane switch: one ACK per new frame");
         report["reconnect-replay"]!.push({ name: "pending write at a pane switch to a cached tab", pending: { inFlight: held.inFlight, queued: held.queued }, afterDetach: { mounted: cached.mounted, current: cached.current, queued: cached.probe.queued, inFlight: cached.probe.inFlight, retired: cached.probe.retired }, copies, acksAfterDetach: acks.length - before.length, writesAfterRelease: after.writes - held.writes, replayOscOpen: after.replayOscOpen, nextCopies });
-        // back to the shell: its cached terminal attaches again
         const reattaches = await count("attach", panes.shell);
         await page.locator(`.workspace-select[data-pane="${panes.shell}"]`).click();
         await page.waitForFunction(([id, seen]) => window.replayFixture.sent.filter((frame) => frame.type === "attach" && frame.pane_id === id).length > seen, [panes.shell, reattaches] as const);
         console.log("PASS pending write at a pane switch");
       }
 
-      // dispose: four other tabs push the pane out of the cached ones while its write is pending
       {
         await page.locator(`.pane-frame.is-current[data-layout-pane="${panes.shell}"] .pane-terminal`).waitFor({ state: "attached" });
         await resetCase(page);
@@ -626,7 +578,6 @@ try {
     } finally { await context.close(); }
   }
 
-  // screenshots: restored screen, live copy, refused write, permission off, observe-only, reconnecting
   if (evidence) {
     const combos = [
       { size: 390, phone: true, theme: "light", language: "en" }, { size: 390, phone: true, theme: "dark", language: "en" },
@@ -661,7 +612,6 @@ try {
           await page.locator(".pane-frame.is-current .terminal-banner").filter({ has: page.locator("svg.lucide-eye") }).waitFor();
           await frames(page, [R(RESTORED)]);
           await shot(page, name("observe-only"));
-          // the reconnect overlay, held while the fixture keeps the next socket from opening
           await fixture(page, (state) => { state.holdConnect = true; state.sockets.at(-1)!.close(); });
           await page.getByText("Reconnecting to Ovis…").waitFor();
           await shot(page, name("reconnecting"));

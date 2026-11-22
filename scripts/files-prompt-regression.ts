@@ -112,11 +112,8 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
       throw error;
     }
   }
-  // The shortcut is intentionally global, including while the Files dialog is open.
   assert.equal(await selectedPane(page), paneB);
   if (phone) return;
-  // Escape closes Files even when an earlier listener of the same key re-renders the app (#2631): here the
-  // split guide of a pane drag, which that Escape puts away first
   await page.getByRole("button", { name: "Browse files", exact: true }).click();
   await dialog.waitFor();
   await page.evaluate((type) => {
@@ -128,7 +125,6 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   await page.keyboard.press("Escape");
   await page.locator(".split-drop.is-visible").waitFor({ state: "detached" });
   await dialog.waitFor({ state: "hidden" });
-  // Settings opened by its shortcut with Files open takes the keyboard: one Escape closes Settings alone, the next Files
   await page.getByRole("button", { name: "Browse files", exact: true }).click();
   await dialog.waitFor();
   await page.keyboard.press("Control+Shift+Comma");
@@ -139,7 +135,6 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   assert.equal(await dialog.isVisible(), true, "one Escape closed both Settings and Files");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
-  // Files is drawn over Settings: a click in it takes the keyboard back, and then its Escape leaves Settings open
   await page.getByRole("button", { name: "Browse files", exact: true }).click();
   await dialog.waitFor();
   await page.keyboard.press("Control+Shift+Comma");
@@ -150,8 +145,6 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   assert.equal(await settings.isVisible(), true, "one Escape closed both Files and Settings");
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "detached" });
-  // Files opened from the palette over Settings holds the keyboard: Escape closes Files first, though Settings
-  // listened first (#3037)
   const browseOverSettings = async (): Promise<void> => {
     await page.keyboard.press("Control+Shift+Comma");
     await settings.waitFor();
@@ -166,8 +159,6 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   assert.equal(await settings.isVisible(), true, "Escape in Files over Settings closed Settings");
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "detached" });
-  // a file opened from there is drawn under Settings, which keeps its Escape though the file has the focus:
-  // Escape closes Settings, then the file, then Files
   await browseOverSettings();
   await dialog.locator(".dir-browser-item", { hasText: "other" }).click();
   await dialog.locator(".dir-browser-item", { hasText: "note.txt" }).click();
@@ -180,8 +171,6 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   await viewer.waitFor({ state: "detached" });
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
-  // Settings opened by its shortcut over New workspace: Escape closes Settings, and New workspace stays (#3037)
-  // a desktop's one-line rows (the default) put New workspace's + in the logo row
   await page.locator(".header-side .new-workspace-button").click();
   const create = page.getByRole("dialog", { name: /^New workspace/ });
   await create.waitFor();

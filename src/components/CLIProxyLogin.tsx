@@ -3,11 +3,11 @@ import { Network } from "lucide-react";
 import type { CLIProxyLogin, CLIProxyLoginStatus, CLIProxyProvider } from "../../shared/protocol.ts";
 import { cliProxyRequest } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { ExternalLink, reserveTab } from "../lib/externalLink.ts";
 
 type Pending = CLIProxyLogin & { readonly provider: CLIProxyProvider };
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-/** A provider's hub sign-in, kept beside that provider's local sign-in. */
 export function CLIProxyAccountLogin({ provider, active, onStarted, onAccountsChanged }: {
   readonly provider: CLIProxyProvider;
   readonly active: boolean;
@@ -70,10 +70,8 @@ export function CLIProxyAccountLogin({ provider, active, onStarted, onAccountsCh
   }, [pending, t]);
 
   const start = (provider: CLIProxyProvider) => {
-    // Reserve the tab in this click, before any asynchronous request, for popup blockers.
-    const popup = window.open("about:blank", "_blank");
+    const popup = reserveTab();
     if (!popup) { setError(t("Allow popups to sign in")); return; }
-    popup.opener = null;
     onStarted();
     setBusy(true); setError(null);
     void cliProxyRequest<CLIProxyLogin>("/login", json("POST", { provider })).then((login) => {
@@ -104,7 +102,7 @@ export function CLIProxyAccountLogin({ provider, active, onStarted, onAccountsCh
         {error && <p className="settings-hint account-error" role="alert">{error}</p>}
         {pending ? <>
           <p className="settings-label" role="status">{t("Waiting for sign-in…")}</p>
-          <a href={pending.url} target="_blank" rel="noopener noreferrer">{t("Open sign-in again")}</a>
+          <ExternalLink kind="sign-in" href={pending.url}>{t("Open sign-in again")}</ExternalLink>
           <button className="btn btn-ghost" type="button" onClick={() => void cancel()}>{t("Cancel")}</button>
           <form onSubmit={(event) => {
             event.preventDefault();

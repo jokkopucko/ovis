@@ -10,7 +10,6 @@ export const commands: SlashCommand[] = [
   { name: "claude:review", description: "Review a change imported from Claude Code and report the findings before committing or publishing the change to the repository", source: "skill", origin: "project" },
   { name: "tools:review", description: "Review changes with the installed plugin. Check correctness and the regression tests.", source: "skill", origin: "plugin" },
 ];
-// The recorded Devin ACP block, restored before the expanded prompt reaches the bubble.
 export const turnText = "/probe-skill hello";
 export const chips = ["/probe-skill"];
 

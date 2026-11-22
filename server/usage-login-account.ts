@@ -1,6 +1,5 @@
 import { homeSignIn, type CredentialHome, type UsageContext } from "./usage.ts";
 
-/** The credential home a followed sign-in's CLI writes, as its environment points it there. */
 export interface LoginTarget {
   readonly provider: "claude" | "codex";
   readonly home: CredentialHome;

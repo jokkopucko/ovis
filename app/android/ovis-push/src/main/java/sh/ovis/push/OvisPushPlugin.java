@@ -30,10 +30,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * The open PC's push subscription for this phone, shaped like a browser's PushSubscriptionJSON
- * ({ endpoint, expirationTime, keys: { p256dh, auth } }), so the client can hand it to the PC as it
- * does a browser's. The endpoint is the relay's, for this phone's FCM token; one per PC, as the
- * relay pins each endpoint to the first PC that pushes to it.
+ * The endpoint is the relay's, for this phone's FCM token; one per PC, as the
+ * relay pins each endpoint to the PC key it was registered with.
  */
 @CapacitorPlugin(
     name = "OvisPush",
@@ -42,7 +40,6 @@ import org.json.JSONObject;
 public class OvisPushPlugin extends Plugin {
     private static final int RELAY_TIMEOUT_MS = 15_000;
 
-    /** The subscription this PC has, without making one: { subscription: null } when none. */
     @PluginMethod
     public void getSubscription(PluginCall call) {
         String origin = getBridge().getServerUrl();
@@ -53,7 +50,6 @@ public class OvisPushPlugin extends Plugin {
             else if (call.getBoolean("endpointOnly", false)) {
                 result.put("subscription", new JSObject().put("endpoint", saved.endpoint));
             } else {
-                // an endpoint whose keys are gone (a failed save) is no subscription, as on iOS
                 PushKeys keys = PushStore.stored(getContext());
                 result.put("subscription", keys == null ? JSONObject.NULL : subscription(saved.endpoint, keys));
             }
@@ -68,9 +64,10 @@ public class OvisPushPlugin extends Plugin {
     }
 
     /**
-     * Asks for notifications (Android 13 and later), then gets this PC an endpoint, reusing a live
-     * one. `applicationServerKey`: the PC's VAPID public key (its GET /api/push), base64url, as a
-     * browser's pushManager.subscribe takes it; the relay pins the endpoint to it.
+     * Asks for notifications (Android 13 and later), then gets this PC an endpoint, reusing the saved
+     * one while its FCM token and PC key are unchanged. `applicationServerKey`: the PC's VAPID public
+     * key (its GET /api/push), base64url, as a browser's pushManager.subscribe takes it; the relay pins
+     * the endpoint to it.
      */
     @PluginMethod
     public void subscribe(PluginCall call) {
@@ -126,7 +123,7 @@ public class OvisPushPlugin extends Plugin {
     }
 
     /**
-     * Forgets this PC's endpoint here. The client asks once the PC has dropped the subscription: the
+     * The client asks once the PC has dropped the subscription: the
      * relay keeps the endpoint live, so forgetting it before would leave the PC pushing to this phone.
      */
     @PluginMethod
@@ -145,7 +142,6 @@ public class OvisPushPlugin extends Plugin {
             messaging.setAutoInitEnabled(true);
             String token = Tasks.await(messaging.getToken(), 30, TimeUnit.SECONDS);
             PushStore.Endpoint saved = PushStore.endpoint(getContext(), origin);
-            // a new FCM token, or a PC with a new key, needs a new endpoint
             boolean live = saved != null && token.equals(saved.token) && vapidKey.equals(saved.vapidKey);
             String endpoint = live ? saved.endpoint : registerWithRelay(token, vapidKey);
             PushStore.saveEndpoint(getContext(), origin, endpoint, token, vapidKey);

@@ -6,10 +6,12 @@ import { OMO_FOOTER_LINES, OMO_HINT_LINES, OMO_NOT_FOOTER_RE, OMO_OPTIONS_HINT_R
 import { CLAUDE_ASK_HINT_RE, CLAUDE_CONFIRM_HINT_RE, CLAUDE_EFFORT_HINT_RE, claudeModelListWaits, withoutClaudeSidePanel, withoutClaudeTasks } from "./claude.ts";
 import { OMP_CLIPPED_SINGLE_HINT_RE, OMP_MULTI_CLIPPED_HINT_RE, OMP_MULTI_HINT_RE, OMP_REVIEW_HINT_RE, OMP_SINGLE_CLIPPED_HINT_RE, OMP_SINGLE_HINT_RE, ompApprovalPanelShown } from "./omp.ts";
 import { HERMES_HINT_RE } from "./hermes.ts";
+import { AGY_ASK_HINT_RE } from "./agy.ts";
 import { PI_INPUT_HINT_RE, PI_MENU_HINT_RE, PI_THINKING_HINT_LINES } from "./pi.ts";
 import { openCodeV1QuestionActive } from "./opencode.ts";
 import { isPiQuestionnaireScreen } from "./pi-questionnaire.ts";
 import { cmdFooterStart } from "./cmd.ts";
+import { dshQuestionActive } from "./dsh.ts";
 
 /**
  * A row of OmO's omo-task widget under the input box (omo-ai plugin/extensions/omo-task.js): a live row
@@ -22,7 +24,6 @@ const OMO_SPINNER_ROW_RE = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏‖] /u;
 /** a narrow pane wraps a task row's last fields (ending in the elapsed time) onto one more short line */
 const OMO_TASK_TAIL_RE = /^(?:[^\u00b7]+ \u00b7 )*\d+[hms](?: \d+[hms])*$/u;
 const OMO_TASK_WRAP_MAX = 32;
-/** where each of the form's hints ends, however a narrow pane wraps it */
 const OMO_HINT_END_RE = /\besc (?:cancel|back|discard)$/;
 /** OmO's apparently empty input box; never sufficient evidence for sending text into it. */
 const OMO_EMPTY_BOX_RE = /^[❯›>]$/;
@@ -50,7 +51,6 @@ function withoutOmpStatusRow(visible: string[], cleanLines: string[]): string[] 
 }
 
 /** the last row of Claude's review of several answers, which ends it in place of a hint */
-/** the last row of Claude's review of several answers, which ends it in place of a hint */
 const CLAUDE_SUBMIT_TAIL_RE = /^(?:[›>❯]\s*)?\d+\.\s+Cancel$/i;
 
 /** The rule below an OmO form or composer, then extension task status and the native footer. */
@@ -77,7 +77,6 @@ function omoFooterIsActive(lines: string[]): boolean {
       OMO_TASK_ROW_RE.test(line)
       || (tail && line.length <= OMO_TASK_WRAP_MAX && OMO_TASK_TAIL_RE.test(line))
     )) {
-      // a task row, or the one short line it wrapped onto
       tail = OMO_TASK_ROW_RE.test(line);
     } else if (rules === 0 || ++footer > OMO_FOOTER_LINES || OMO_NOT_FOOTER_RE.test(line)) return false;
   }
@@ -97,7 +96,6 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   // the last one, never for a hint that ended above later output (an answered, stale menu).
   const ends = (re: RegExp): boolean => [1, 2, 3].some((span) =>
     re.test(shown.slice(-span).join(" ")) && (span === 1 || !re.test(shown.slice(-span, -1).join(" "))));
-  // Pi custom readers validate their complete frame and Pi footer themselves.
   if (prompt.responder.startsWith("pi-questionnaire-")) return true;
   if (prompt.responder === "pi-ask-question" || prompt.responder === "pi-ask-submit") return true;
   if (prompt.responder === "omp-question") return ends(OMP_SINGLE_HINT_RE) || ends(OMP_CLIPPED_SINGLE_HINT_RE) || ends(OMP_SINGLE_CLIPPED_HINT_RE) || ends(OMP_MULTI_HINT_RE)
@@ -106,14 +104,13 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   // Hermes keeps its status line (and maybe the hint's wrapped tail) under the hint; an answered
   // question leaves the screen, so a hint among the last few lines is the live one
   if (prompt.responder === "hermes-question" || prompt.responder === "hermes-input") return shown.slice(-4).some((line) => HERMES_HINT_RE.test(line));
-  // its reader already found the panel over Hermes's own hint and the input it holds, nothing else under them
+  if (prompt.responder === "agy-question") return shown.slice(-6).some((_, at, tail) => AGY_ASK_HINT_RE.test(tail.slice(at, at + 3).join(" ")));
   if (prompt.responder === "hermes-approval") return true;
   if (prompt.responder === "codex-menu") return ends(CODEX_CONTINUE_HINT_RE);
   if (prompt.responder === "codex-question") return ends(CODEX_ASK_HINT_RE);
   if (prompt.responder === "codex-async-question") return cleanLines.slice(-4).some((line) => CODEX_ASYNC_ASK_HINT_RE.test(line)) || ends(CODEX_ASYNC_ASK_HINT_RE);
   if (prompt.responder === "claude-question") return ends(CLAUDE_ASK_HINT_RE);
   if (prompt.responder === "claude-submit") return CLAUDE_SUBMIT_TAIL_RE.test(last);
-  // the last row carries the cursor once a move has put it there
   // Codex's folder trust prompt ends "enter continue · esc back" or, from 0.163, "· esc quit".
   // Only those two: its update prompt ends "· esc skip" and must not read as an approval.
   if (prompt.responder === "codex-approval") return ends(/press enter to confirm|esc to cancel|enter continue\s*·\s*esc (?:back|quit)$|^(?:[›>❯]\s*)?\d+\.\s+(?:No|Reject|Cancel|Deny)\b/i);
@@ -123,11 +120,8 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   // chord. Anchor that suffix so arbitrary trailing text cannot keep an old approval live.
   if (prompt.responder === "claude-approval") return ends(/esc to cancel.*(?:tab|ctrl\+e)|ctrl\+e to explain|^esc to cancel(?:\s*·\s*ctrl\+x ctrl\+k twice to stop background agents)?$/i);
   if (prompt.responder === "claude-confirm") return ends(CLAUDE_CONFIRM_HINT_RE);
-  // its parser already found the hint over the input box with only the footer under it
   if (prompt.responder === "claude-held") return true;
-  // so has omp's handoff status: only omp's status bar and editor under it
   if (prompt.responder === "omp-handoff") return true;
-  // the goal dialog ends the screen with its own dismiss hint
   if (prompt.responder === "claude-goal") return ends(/esc to dismiss$/i);
   if (prompt.responder === "claude-model") return claudeModelListWaits(screen);
   if (prompt.responder === "claude-effort") return ends(CLAUDE_EFFORT_HINT_RE);
@@ -163,7 +157,6 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   if (prompt.responder === "pi-model") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, piFooterLines(shown));
   if (prompt.responder === "pi-thinking") return hintAtEnd(shown, PI_MODEL_HINT_AT_END_RE, piFooterLines(shown), PI_THINKING_HINT_LINES);
   if (prompt.responder === "omo-model") return omoModelListWaits(screen);
-  // its reader already found the picker ending the screen, which only an open picker does
   if (prompt.responder === "omp-model") return true;
   if (prompt.responder === "pi-question" || prompt.responder === "pi-confirm" || prompt.responder === "pi-input") {
     return hintAtEnd(shown, PI_MENU_HINT_AT_END_RE, piFooterLines(shown), 4)
@@ -172,6 +165,8 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   // Command Code's permission footer names its keys at the dialog's end and wraps on a narrow
   // pane: `↑/↓ navigate · enter select · ctrl+e explain · Run cmd --yolo to bypass all …`
   if (prompt.responder === "cmd-question") return cmdFooterStart(shown) >= 0;
+  // dsh-tui keeps its context meter and status lines under the panel's hint
+  if (prompt.responder === "dsh-question") return dshQuestionActive(screen);
   // its footer ends the screen, wrapped or not (dialogs/opencode.ts)
   if (prompt.responder === "opencode-v1-question") return openCodeV1QuestionActive(screen);
   // Claude's plan: its footer, wrapped or not, ends the screen
@@ -205,12 +200,10 @@ function claudePlanFooterEnds(shown: string[]): boolean {
  */
 const PI_MENU_HINT_AT_END_RE = new RegExp(`${PI_MENU_HINT_RE.source}$`, "i");
 const PI_INPUT_HINT_AT_END_RE = new RegExp(`${PI_INPUT_HINT_RE.source}$`, "i");
-/** The same hint told from the end, so lines that follow it cannot complete a match of their own. */
 const PI_MODEL_HINT_AT_END_RE = new RegExp(`${PI_MODEL_HINT_RE.source}$`, "i");
 /**
  * pi's own footer, under `/model` and under every dialog alike: the pane's folder, then its
- * stats line. A hint is allowed this many lines of it before the bottom of the screen, one more
- * under an extension's status (piFooterLines).
+ * stats line.
  */
 const PI_FOOTER_LINES = 2;
 
@@ -263,12 +256,10 @@ function hintAtEnd(shown: string[], atEnd: RegExp, footerLines: number, span = 3
 }
 
 export function parsePrompt(agent: string, fullScreen: string, omoAsk: OmoAsk | null = null, omoTrusted = true, omoOpen: OmoAsk[] = [], sent: string | null = null, working = false): ParsedPrompt | null {
-  // Claude's menus are read, and their tail checked, on the session's side of a fullscreen side panel
   const screen = agent === "claude" ? withoutClaudeSidePanel(fullScreen) : fullScreen;
   if (agent === "pi" && isPiQuestionnaireScreen(screen)) return null; // requires native call binding
   const ctx = { agent, omoAsk, omoTrusted, omoOpen, sent, working };
   for (const reader of registry.readersFor(agent)) {
-    // a result reader reads only below a send's own echo (outcome.ts), never a card on the whole screen
     if (reader.kind === "result") continue;
     const candidate = reader.parse(screen, ctx);
     if (candidate !== null && promptTailIsActive(candidate, screen)) return candidate;

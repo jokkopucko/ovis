@@ -1,6 +1,5 @@
-/* Agents takes the height of its rows, under the PCs, with no cap of its own: it shares the sidebar's
-   height with the PC list (Sidebar.css). Parted from it by space, not a rule. */
 .agents-sidebar {
+  --agent-since-w: calc(var(--fs-meta) * 2.5 + 2 * var(--space-1));
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -19,16 +18,12 @@
 
 .agents-sidebar.is-empty .agent-list-contents { flex: 0 0 auto; }
 
-/* a list that is cut fades at the edge that cuts it (SidebarSections.css) */
-
 .agent-section-toggle {
   flex: 0 0 auto;
   width: 100%;
   cursor: pointer;
 }
 
-/* the fold's caret hangs in the leading cell, always in view, so the head reads as a fold at rest, as the
-   PCs head's does (SidebarSections.css) */
 .agent-section-caret {
   flex: none;
   width: var(--space-4);
@@ -36,7 +31,6 @@
   margin-inline: calc((var(--side-box) - var(--space-4)) / 2);
 }
 
-/* the list says how many agents it holds, open or folded, as the PCs head counts its PCs */
 .agent-section-count {
   width: var(--side-box);
   margin-left: auto;
@@ -45,8 +39,6 @@
   text-align: center;
 }
 
-/* the folded list still says how many of its agents wait for the reader (G-016), in the state's colour,
-   inside the head's own text: the caret and the head keep their place */
 .agent-section-waiting {
   min-width: 0;
   margin-inline-start: var(--space-2);
@@ -64,34 +56,60 @@
   list-style: none;
 }
 
-/* Settings → Group agents by state: a quiet heading over each group, the leading cell left empty
-   so the words line up with the rows' titles, and the group's count in the trailing cell */
-.agent-group-label {
+.agent-group-toggle {
   display: flex;
   align-items: center;
+  width: 100%;
+  min-height: var(--pointer-target);
   margin: var(--space-2) 0 0;
-  padding-left: var(--side-box);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-dim);
+  font: inherit;
   font-size: var(--fs-meta);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-caps);
+  font-weight: var(--fw-medium);
   line-height: var(--lh-tight);
-  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
 }
 
-.agent-group-label:first-child { margin-top: 0; }
+.agent-group-toggle:disabled { cursor: default; }
+:is(.agent-group-toggle, .agent-named-group-toggle):disabled .agent-section-caret { visibility: hidden; }
+.agent-group-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
-.agent-group-label[data-group="blocked"] { color: var(--status-blocked); }
+.agent-group-label[data-group="blocked"] { --agent-group-ink: var(--status-blocked); }
+.agent-group-label[data-group="working"] { --agent-group-ink: var(--status-working); }
+.agent-group-label[data-group="done"] { --agent-group-ink: var(--status-done); }
+
+.agent-group-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--agent-group-ink, inherit);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .agent-group-count {
-  width: var(--side-box);
-  margin-left: auto;
+  flex: none;
+  margin-left: var(--space-2);
+  font-weight: var(--fw-regular);
   font-variant-numeric: tabular-nums;
-  text-align: center;
 }
 
-/* Agents a launcher tagged role=background (workers, subagents) stand after the rest, under a
-   heading like a group's that folds them and says how many there are; its caret takes the leading cell */
+@media (hover: hover) {
+  .agent-group-toggle:hover:not(:disabled) { color: var(--text); }
+}
+
+@media (pointer: coarse) {
+  .agent-group-toggle {
+    min-height: var(--side-row);
+    margin-top: 0;
+    padding-top: var(--space-4);
+  }
+}
+
 .agent-background-toggle {
   display: flex;
   align-items: center;
@@ -105,18 +123,14 @@
   color: var(--text-dim);
   font: inherit;
   font-size: var(--fs-meta);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-caps);
+  font-weight: var(--fw-medium);
   line-height: var(--lh-tight);
-  text-transform: uppercase;
   cursor: pointer;
 }
 
 .agent-background-label:first-child .agent-background-toggle { margin-top: 0; }
 .agent-background-toggle .agent-section-count { font-size: inherit; }
 
-/* Settings → Named agent groups: each group the user named under a heading that folds it, as the
-   background agents' does, with a dot for each state that asks for a look and its count */
 .agent-named-group-toggle {
   display: flex;
   align-items: center;
@@ -131,10 +145,8 @@
   color: var(--text-dim);
   font: inherit;
   font-size: var(--fs-meta);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--tracking-caps);
+  font-weight: var(--fw-medium);
   line-height: var(--lh-tight);
-  text-transform: uppercase;
   cursor: pointer;
 }
 
@@ -164,13 +176,9 @@
   .agent-named-group-toggle:hover:not(:disabled) { color: var(--text); }
 }
 
-/* the folded part's rows stay in the list (a row that changes part moves), only out of sight */
 .agent-list .agent-item[hidden],
 .agent-list .agent-helpers[hidden] { display: none; }
 
-/* Settings → Fold helpers under their agent: the line under an agent that folds its helpers hangs from
-   it as a helper does (its elbow below), a helper's height, its caret where a helper's mark stands, its
-   count in the trailing cell, and a dot for each state among the helpers that asks for a look */
 .agent-helpers { position: relative; }
 
 .agent-helpers-toggle {
@@ -209,13 +217,10 @@
   .agent-background-toggle:hover { color: var(--text); }
 }
 
-/* Pinned agents stand first in a card (Sidebar.css); the Agents head stays the list's only head. */
-
-/* The agent row selects its pane; its ⋯ (or a right-click) opens its pin menu. */
-/* The trailing padding keeps the state cell, which the row draws at its right edge after the ⋯, as
-   a workspace row does; the fill is the whole row's. */
 .agent-item {
   --row-fill: var(--bg-panel);
+  --agent-tail: var(--space-6);
+  --agent-time: 0px;
   position: relative;
   display: flex;
   align-items: center;
@@ -240,7 +245,6 @@
   cursor: pointer;
 }
 
-/* the common ring, 2px outside the row (G-034); scroll-margin keeps it in view at the list's edges */
 .agent-row:focus-visible { outline-offset: var(--ring-offset); scroll-margin-block: calc(var(--ring-offset) + var(--space-1)); }
 .agent-row:disabled { cursor: default; }
 
@@ -268,9 +272,6 @@
   }
 }
 
-/* As a workspace row's: the ⋯ takes no room until the row is hovered, focused or its menu is open, and
-   stays in the focus order, since the menu hands the focus back to it. On touch and in the drawer the
-   selected row keeps it too; a desktop shows it under the pointer and the keyboard alone (G-021). */
 .agent-actions {
   display: flex;
   align-items: center;
@@ -278,7 +279,6 @@
   width: 0;
   overflow: hidden;
   opacity: 0;
-  /* out of the accessibility tree and the tab order while unseen: the row's selector is its one stop */
   visibility: hidden;
 }
 
@@ -316,7 +316,6 @@
   min-width: 0;
 }
 
-/* the title and the place; on One line they share a line (below), else each has its own */
 .agent-main { display: contents; }
 
 .agent-title,
@@ -328,9 +327,8 @@
   white-space: nowrap;
 }
 
-/* an agent's name is navigation: a step back from its state (G-042); the selected row's in the strong ink and
-   a heavier weight, so the selection is not colour alone (G-035) */
 .agent-title {
+  max-width: 100%;
   color: var(--text-dim);
   font-size: var(--fs-md);
   font-weight: var(--fw-regular);
@@ -340,9 +338,12 @@
 
 .agent-title-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  height: calc(var(--fs-md) * var(--lh-tight));
+  overflow: hidden;
 }
 
 .agent-context {
@@ -351,59 +352,70 @@
 }
 
 /* What herdr plugins report on the pane (its `$name` tokens: usage left, a task's progress): a
-   line of its own under the place, in either row height, only where the pane has one. Values
-   change while they are read, so their digits keep their width. */
+   line of its own under the place, in either row height, only where the pane has one. */
 .agent-tokens {
   color: var(--text-dim);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
-/* the live name is what a command names the agent by: it reads in the command's face */
 .agent-name {
   color: var(--text);
   font-family: var(--font-mono);
 }
 
 /* Settings -> Sidebar rows -> One line: a workspace row's height, the place dim after the title.
-   The title keeps its width first; the place takes what is left and gives way with an ellipsis.
-   A pane's plugin tokens add their line under it. */
+   The title keeps its width first. The place shows after it only where at least 4.5em of it fits, cut
+   there with an ellipsis, and is left out whole where less would fit (it wraps to a line the row does
+   not show): a row never ends in a couple of stray letters. A pane's plugin tokens add their line under it. */
 .agents-sidebar.is-one-line .agent-row { min-height: var(--side-row); }
 
 .agents-sidebar.is-one-line .agent-main {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
+  height: calc(var(--fs-md) * var(--lh-tight));
+  overflow: hidden;
 }
 
-.agents-sidebar.is-one-line .agent-title-line { flex: 0 1 auto; }
+.agents-sidebar.is-one-line .agent-title-line {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
 
-/* the place gives way down to a couple of letters and its ellipsis, never a stray letter; the title then */
 .agents-sidebar.is-one-line .agent-context {
-  flex: 1 1 0;
-  min-width: 2.5em;
+  flex: 1 1 4.5em;
+  min-width: 4.5em;
 }
 
-/* as a compact workspace row's: the state at the row's end in a cell its glyph's size, and under a pointer the ⋯
-   over that cell, so the title and the place never move when it shows (Sidebar.css) */
+@media (pointer: coarse) {
+  .agents-sidebar.is-one-line .agent-context {
+    position: absolute;
+    width: var(--hairline);
+    min-width: 0;
+    height: var(--hairline);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 .agents-sidebar.is-one-line .agent-item { padding-right: var(--space-6); }
 
 .agents-sidebar.is-one-line .agent-row > .agent-row-state { width: var(--space-6); }
 
-/* the badge fills that cell: a state that draws nothing (ready, unknown) keeps its box, label and tooltip */
 .agents-sidebar.is-one-line .agent-row > .agent-row-state > .sidebar-status {
   flex-basis: 100%;
   width: 100%;
 }
 
-/* the ⋯ shows just before the state's cell, over the end of the row's words, which fade out under it into the row's own
-   fill (--row-fill, set with each fill above): the state stays in sight and nothing moves */
 @media (hover: hover) and (pointer: fine) and (min-width: 769px) {
   .agents-sidebar.is-one-line .agent-item > .agent-actions {
     position: absolute;
     inset-block: 0;
-    right: var(--space-6);
+    right: calc(var(--agent-tail) + var(--agent-time));
     padding-inline-start: var(--space-4);
     background: linear-gradient(to right, transparent, var(--row-fill) var(--space-4));
   }
@@ -413,7 +425,7 @@
 
 /* a helper an agent started (herdr-core's parent) reads under that agent on one line, a workspace
    row's height: its row steps in per level, and an elbow drawn from under its parent's mark leads
-   to its own. Its place and plugin values are in its tooltip. */
+   to its own. */
 .agent-item[data-depth] .agent-row { min-height: var(--side-row); }
 .agent-item[data-depth="1"] .agent-row { padding-inline-start: var(--space-6); }
 .agent-item[data-depth="2"] .agent-row { padding-inline-start: calc(2 * var(--space-6)); }
@@ -434,36 +446,28 @@
 
 .agent-item[data-depth="2"]::after { inset-inline-start: calc(var(--side-box) / 2 + var(--space-6)); }
 
-/* a helper with a sibling further down (AgentSidebar.tsx, data-more): its line runs on through the
-   row to the next one's elbow, so the siblings hang from one line with no break between them */
 .agent-item[data-more]::after,
 .agent-helpers[data-more]::after {
   height: 100%;
   border: 0;
-  /* the elbow's own corner, named as it is set: a rounded corner would clip the line's foot */
   border-end-start-radius: 0;
   background:
     linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat,
     linear-gradient(var(--border-strong), var(--border-strong)) 0 50% / 100% var(--hairline) no-repeat;
 }
 
-/* a helper's own helper between two siblings (data-through): their line passes by it */
 .agent-item[data-through]::before {
   position: absolute;
   inset-block: 0;
   inset-inline-start: calc(var(--side-box) / 2);
   width: var(--space-3);
-  /* drawn as the elbow's line is (a gradient, not a border), so the two land on the same pixel */
   background: linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat;
   content: "";
   pointer-events: none;
 }
 
-/* a blocked agent's own reason (its OSC 7501 kind, else its message), after the title in the
-   state's colour: it gives way before the title, cut with an ellipsis, the whole text in the tooltip */
 .agent-blocked {
-  flex: 0 1000 auto;
-  min-width: 3em;
+  flex: none;
   overflow: hidden;
   color: var(--status-blocked);
   font-size: var(--fs-xs);
@@ -472,7 +476,6 @@
   white-space: nowrap;
 }
 
-/* how far the agent says it is: its percent after the title, digits holding their width */
 .agent-progress {
   flex: none;
   color: var(--text-dim);
@@ -487,13 +490,10 @@
   align-items: center;
 }
 
-/* alerts off for everyone (the row menu's Mute alerts): a crossed bell beside the state, drawn as
-   the background and plan counts are, so the state is told by the glyph and its words, not a colour */
 .agent-muted {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  /* kept off the row's focus ring when it is the last thing in the row */
   margin-inline: var(--space-2) var(--space-1);
   color: var(--text-dim);
 }
@@ -527,7 +527,6 @@
 }
 
 @media (pointer: coarse) {
-  /* Row menus stay visible on touch. */
   .agent-actions {
     width: auto;
     overflow: visible;
@@ -546,15 +545,12 @@
   .agent-item:has(> .agent-row:enabled:active) { background: var(--side-hover); }
 }
 
-/* Settings → Sidebar rows → One line (the default), as herdr-app's list: a row's counts, marks and the agent's own
-   words show under the pointer or the focus (what the user turned on, the context ring and plugin values, stays) (a finger, which cannot point, keeps them); a waiting row says how long it has waited, dim before its state */
 @media (pointer: fine) {
   .agents-sidebar.is-compact { --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2); }
 }
 
 @media (hover: hover) and (pointer: fine) {
   .agents-sidebar.is-compact .agent-item:not(:hover, :focus-within) :is(.agent-row-status > :not(.sidebar-filter-note, .context-count), .agent-blocked, .agent-progress) {
-    /* out of sight, still read by a screen reader */
     position: absolute;
     width: var(--hairline);
     height: var(--hairline);
@@ -566,9 +562,83 @@
 
 .agent-since {
   flex: 0 0 auto;
+  min-width: var(--agent-since-w);
   padding-inline: var(--space-1);
   color: var(--text-dim);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-meta);
   font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+  text-align: end;
   white-space: nowrap;
 }
+
+.agent-item:has(.agent-since) { --agent-time: var(--agent-since-w); }
+
+.agents-sidebar.is-one-line .agent-item.is-filter-context.is-selected { --agent-time: 0px; }
+.agents-sidebar.is-one-line .agent-item.is-filter-context.is-selected .agent-since { display: none; }
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row {
+  display: grid;
+  grid-template-areas: "mark title marks" "mark place since";
+  grid-template-rows: calc(var(--fs-md) * var(--lh-tight)) calc(var(--fs-xs) * var(--lh-tight));
+  grid-template-columns: var(--side-box) minmax(0, 1fr) auto;
+  align-content: center;
+  align-items: center;
+  row-gap: var(--space-1);
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row > .sidebar-mark { grid-area: mark; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-copy { display: contents; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-title-line { grid-area: title; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row:has(> .agent-row-status:empty) .agent-title-line { grid-column: 2 / -1; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-context { grid-area: place; }
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-tokens {
+  grid-row: 3;
+  grid-column: 2 / -1;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row-status {
+  grid-area: marks;
+  justify-self: end;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-since {
+  grid-area: since;
+  justify-self: end;
+}
+
+.agents-sidebar .agent-item[data-state-said] {
+  --agent-tail: var(--space-2);
+  padding-right: var(--space-2);
+}
+
+.agents-sidebar .agent-item[data-state-said] .agent-row > .agent-row-state {
+  width: var(--hairline);
+  height: var(--hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.agents-sidebar .agent-item[data-state-said] .agent-row > .agent-row-state :is(.sidebar-status-dot, .sidebar-status-glyph) { animation: none; }
+
+.agents-sidebar .agent-item[data-state-own] {
+  --agent-tail: calc(var(--space-2) + var(--space-6));
+  padding-right: var(--space-2);
+}
+
+.agents-sidebar .agent-item[data-state-own] .agent-row > .agent-row-state {
+  position: static;
+  flex: none;
+  order: 1;
+  width: var(--space-6);
+}
+
+.agents-sidebar .agent-item[data-state-own] .agent-since { order: 2; }
+
+.agents-sidebar:not(.is-one-line) .agent-item[data-state-own]:not([data-depth]) .agent-row {
+  grid-template-areas: "mark title marks marks" "mark place state since";
+  grid-template-columns: var(--side-box) minmax(0, 1fr) auto auto;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item[data-state-own]:not([data-depth]) .agent-row > .agent-row-state { grid-area: state; }

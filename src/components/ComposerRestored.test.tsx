@@ -52,7 +52,6 @@ afterEach(() => {
   saved.clear();
 });
 
-/** Sends what Claude put back in its box after the user edited it, once Claude has exited: the sends' agentOnly flags. */
 async function resendRestored(restored: string): Promise<unknown[]> {
   const calls: unknown[][] = [];
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
@@ -73,7 +72,6 @@ it("sends any other restored message as before (control)", async () => {
   expect(await resendRestored("Keep this backup")).toEqual([undefined]);
 });
 
-// #2596: Ctrl+Enter sends the message now, as the queued row's Send now would; Enter keeps its queue
 it.each([
   ["Ctrl+Enter", { ctrlKey: true }, [true]],
   ["Enter", {}, [undefined]],
@@ -91,8 +89,6 @@ it.each([
 });
 
 let prevented = false;
-/** The `now` and `hold` flags of each onSend a key in the box made. `layout`: "phone" matches every query (a coarse pointer),
- * "narrow" only the width (a mouse in a window 640px wide or less); `enterSends`: this device's Enter sends setting */
 async function pressIn(keys: Record<string, unknown>, agentStatus: "working" | "idle", layout: "desktop" | "phone" | "narrow" = "desktop", enterSends: boolean | null = null): Promise<unknown[][]> {
   const calls: unknown[][] = [];
   prevented = false;
@@ -108,7 +104,6 @@ async function pressIn(keys: Record<string, unknown>, agentStatus: "working" | "
   return calls.map((call) => [call[4], call[5]]);
 }
 
-// Alt+Enter (Option+Enter) holds the message in the queued list for its Send now, whatever automatic sending says
 for (const agentStatus of ["working", "idle"] as const) {
   it.each([
     ["Alt+Enter", { altKey: true }, [[false, true]]],
@@ -125,8 +120,6 @@ for (const agentStatus of ["working", "idle"] as const) {
   });
 }
 
-// the phone layout (a coarse pointer, or a window 640px wide or less) keeps Alt+Enter as it was: the box's line break.
-// Never a send, even where this device's Enter sends: a hold that is not a hold must not go at once instead
 it.each([
   ["a phone", "phone", null],
   ["a phone where Enter sends", "phone", true],
@@ -139,7 +132,6 @@ it.each([
     expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
     act(() => { renderer?.unmount(); });
   }
-  // control: Enter itself still sends where Enter sends
   if (enterSends === true || layout === "narrow") expect(await pressIn({}, "working", layout, enterSends)).toEqual([[undefined, undefined]]);
 });
 
@@ -162,7 +154,6 @@ it.each([
 async function pressInMenu(keys: Record<string, unknown>, enterSends: boolean, key = "Enter"): Promise<{ sends: number; text: string }> {
   let sends = 0;
   prevented = false;
-  // the open menu scrolls its highlighted row into view
   Object.assign(document, { getElementById: () => null });
   spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, enterSends }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   spyOn(commandsModule, "usePaneCommands").mockReturnValue([{ name: "review", description: "Review the changes", source: "user" }]);
@@ -208,10 +199,8 @@ it("keeps the draft and says why when a hold is refused", async () => {
   await act(async () => {
     box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: true, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
   });
-  // it went as a hold, not a send now
   expect(calls.map((call) => [call[4], call[5]])).toEqual([[false, true]]);
   expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
-  // the composer's note (role="alert") says why
   type Node = ReturnType<ReactTestRenderer["root"]["findAll"]>[number];
   const textOf = (node: Node | string): string => typeof node === "string" ? node : node.children.map(textOf).join("");
   const alerts = renderer!.root.findAll((node) => node.type === "div" && node.props.role === "alert" && node.props.className === "composer-note");

@@ -1,29 +1,42 @@
-import { newPcs, NEW_PC_MS, type MyPc, type MyPcState } from "../account/myPcs.ts";
+import { invitationEndsAt, newPcs, type MyPc, type MyPcState } from "../account/myPcs.ts";
 import type { PcStatus } from "./pcStatus.ts";
 import { REGIONAL_RELAYS } from "../../../shared/relay-regions.ts";
 
 export type DashboardPc = MyPc & { relay: string | null };
-export type DashboardState = MyPcState | "unchecked";
+/** `unreachable`: this device's own check reached no relay, so it knows nothing of the PC itself (Could not reach this machine) */
+export type DashboardState = MyPcState | "unchecked" | "unreachable";
 
-/** One readiness decision for every surface; pairing alone is not a readiness observation. */
-export function dashboardState(pc: Pick<MyPc, "state" | "listed">, check: PcStatus | null): DashboardState {
-  switch (pc.state) {
-    case "needs-approval": case "needs-update": return pc.state;
-    case "offline": return check?.kind === "answered" ? "paired" : "offline";
-    case "paired": return pc.listed || check?.kind === "answered" ? "paired" : "unchecked";
+/** What this device's own last finished check says of a paired PC (a re-check in flight keeps it), or null while none has finished. */
+function checkedState(check: PcStatus | null): "paired" | "offline" | "unreachable" | null {
+  if (check === null) return null;
+  switch (check.kind) {
+    case "checking": return checkedState(check.previous ?? null);
+    case "answered": return "paired";
+    case "offline": return check.reason === "pc" ? "offline" : "unreachable";
   }
 }
 
-/** The PCs table's filters; the strip's Ready, Needs you and Offline cells select the same three. */
+export function dashboardState(pc: Pick<MyPc, "state" | "listed">, check: PcStatus | null): DashboardState {
+  const checked = checkedState(check);
+  switch (pc.state) {
+    case "needs-approval": case "needs-update": return pc.state;
+    // the account confirmed it has not heard from it (accountController ages no row past its last answer): only an answer beats that
+    case "offline": return checked === "paired" ? "paired" : "offline";
+    case "paired": return checked ?? (pc.listed ? "paired" : "unchecked");
+  }
+}
+
+export type AttentionReason = Exclude<DashboardState, "paired" | "unchecked">;
+
 export type DashboardFilter = "all" | "ready" | "needs" | "offline";
 
 /**
- * Needs you: whatever the owner has to act on, an approval, an update or a PC gone offline. It
- * overlaps Offline on purpose, so the counts are never added up as a partition.
+ * Needs you: whatever the owner has to act on, an approval, an update, a PC gone offline or one this device could not
+ * reach. It overlaps Offline on purpose, so the counts are never added up as a partition.
  */
-function needsYou(state: DashboardState): boolean {
+function needsYou(state: DashboardState): state is AttentionReason {
   switch (state) {
-    case "needs-approval": case "needs-update": case "offline": return true;
+    case "needs-approval": case "needs-update": case "offline": case "unreachable": return true;
     case "paired": case "unchecked": return false;
   }
 }
@@ -37,52 +50,38 @@ export function inDashboardFilter(state: DashboardState, filter: DashboardFilter
   }
 }
 
-/** The table's triage groups: what needs an action, then what is offline, then what is ready. */
-const TABLE_GROUP: Record<DashboardState, number> = { "needs-approval": 0, "needs-update": 0, offline: 1, paired: 2, unchecked: 2 };
+const TABLE_GROUP: Record<DashboardState, number> = { "needs-approval": 0, "needs-update": 0, offline: 1, unreachable: 1, paired: 2, unchecked: 2 };
 
 const byId = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const byNameThenId = (a: MyPc, b: MyPc): number => a.name.localeCompare(b.name) || byId(a.server_id, b.server_id);
 const byTableOrder = (a: MyPc & { displayState: DashboardState }, b: MyPc & { displayState: DashboardState }): number =>
   TABLE_GROUP[a.displayState] - TABLE_GROUP[b.displayState] || byNameThenId(a, b);
 
-/**
- * The PCs with the relay each one goes through: the account directory's `relay` for a PC it lists
- * (the one its `join` route carries, docs/account.md "GET /v1/pcs"), else the relay of this device's
- * own pairing (RelayDevice.relay) for a PC paired without the account, else null, which
- * dashboardModel puts under the shell's default relay. Pure: `saved` is whatever the device store listed.
- */
 export function dashboardPcs(pcs: readonly MyPc[], saved: readonly { server_id: string; relay: string }[], directory: readonly { server_id: string; relay: string | null }[] = []): DashboardPc[] {
   const listed = new Map(directory.map((pc) => [pc.server_id, pc.relay]));
   const paired = new Map(saved.map((device) => [device.server_id, device.relay]));
   return pcs.map((pc) => ({ ...pc, relay: listed.get(pc.server_id) ?? pc.join?.relay ?? paired.get(pc.server_id) ?? null }));
 }
 
-/** A relay origin as a row names it: its host alone (`relay-ap.ovis.sh`), or the origin as given when it is not a URL. */
 export function relayHost(origin: string): string {
   try { return new URL(origin).host; } catch { return origin; }
 }
 
-/** This device as the dashboard sees from it: its name, its clock, and how each saved PC answered its own latest check. */
 export interface DashboardViewer {
   readonly label: string;
-  /** defaults to the wall clock; Add windows close against it */
   readonly now?: number;
   readonly status?: ReadonlyMap<string, PcStatus>;
 }
 
-/** Attention order: fresh Add windows first (nearest expiry first), then updates, other approvals, offline. */
-const ATTENTION_RANK: Record<Exclude<MyPcState, "paired">, number> = { "needs-update": 1, "needs-approval": 2, offline: 3 };
+const ATTENTION_RANK: Record<AttentionReason, number> = { "needs-update": 1, "needs-approval": 2, unreachable: 3, offline: 4 };
 
 /**
- * Everything the dashboard shows, from one membership: the counts are the filters' lengths and the
- * attention list is the Needs filter in urgency order, so the strip, the filter and the list cannot
- * disagree. Raw `state`/`source` and this device's `check` retain their provenance.
  * `displayState` reconciles them once: a live answer beats stale Offline, while an unlisted
  * pairing without an answer remains unchecked. Pairing membership still controls access.
  */
 export function dashboardModel(pcs: readonly DashboardPc[], me: DashboardViewer, defaultRelay: string) {
   const now = me.now ?? Date.now();
-  const expiries = new Map(newPcs(pcs, now).flatMap((pc) => pc.added_at === null ? [] : [[pc.server_id, Date.parse(pc.added_at) + NEW_PC_MS] as const]));
+  const expiries = new Map(newPcs(pcs, now).map((pc) => [pc.server_id, invitationEndsAt(pc)]));
   const rows = pcs.map((pc) => {
     const check = (pc.paired ? me.status?.get(pc.server_id) : undefined) ?? null;
     return {
@@ -98,7 +97,7 @@ export function dashboardModel(pcs: readonly DashboardPc[], me: DashboardViewer,
   const filters: Record<DashboardFilter, readonly string[]> = { all: ids("all"), ready: ids("ready"), needs: ids("needs"), offline: ids("offline") };
 
   const attention = rows
-    .flatMap((pc) => pc.displayState === "paired" || pc.displayState === "unchecked" ? [] : [{ pc, reason: pc.displayState, expiresAt: expiries.get(pc.server_id) ?? null }])
+    .flatMap((pc) => { const reason = pc.displayState; return needsYou(reason) ? [{ pc, reason, expiresAt: expiries.get(pc.server_id) ?? null }] : []; })
     .sort((a, b) => (a.expiresAt === null ? ATTENTION_RANK[a.reason] : 0) - (b.expiresAt === null ? ATTENTION_RANK[b.reason] : 0)
       || (a.expiresAt ?? 0) - (b.expiresAt ?? 0)
       || byNameThenId(a.pc, b.pc))

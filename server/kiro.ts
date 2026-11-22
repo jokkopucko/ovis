@@ -12,7 +12,7 @@ type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
 const unavailable = (): never => { throw new ConversationUnavailable("kiro_transcript_unavailable"); };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** More live sessions than this in one store is no answer, rather than an unbounded scan. */
+/** More session lock files than this in one store, stale ones too, is no answer, rather than an unbounded scan. */
 const MAX_LOCKS = 256;
 const LOCK_BYTES = 4096;
 
@@ -170,7 +170,6 @@ async function readKiro(binding: KiroTranscript): Promise<string> {
       offset += bytesRead;
     }
     const text = bytes.toString("utf8");
-    // an unfinished final append waits for its newline
     return text.slice(0, text.lastIndexOf("\n") + 1);
   } catch { return unavailable(); } finally { await file.close(); }
 }
@@ -179,7 +178,6 @@ type Tool = Extract<ConversationPart, { kind: "tool" }>;
 type Block = { kind?: unknown; data?: any };
 
 /**
- * A tool result's content: text as written; a command's `{stdout, stderr}` as its output; other JSON as JSON.
  * Kiro records a command that exited non-zero as a `success`: only its `exit_status` says it failed.
  */
 function toolResult(content: unknown): { output: string; failed: boolean } {
@@ -293,7 +291,6 @@ export async function kiroConversation(binding: KiroTranscript, page: Conversati
   };
   const end = parse(page.before, turns.length);
   const since = parse(page.since, 0);
-  // a reader that asks for a page size gets that many prompts back, up to the 50 turns a page holds otherwise
   const asked = typeof page.prompts === "number" && Number.isFinite(page.prompts) ? Math.min(50, Math.max(1, Math.floor(page.prompts))) : null;
   let back = Math.max(since, end - 50);
   if (asked !== null) {

@@ -9,10 +9,8 @@ export function fallbackInitial(agent: string): string {
   return [...clean][0]?.toUpperCase() ?? "?";
 }
 
-/** the syntax colors a fallback mark is tinted with (src/styles.css `--syntax-*`, set by every theme, dark and light) */
 const MARK_HUES = ["keyword", "string", "number", "type", "variable", "meta"] as const;
 
-/** The color a kind without a mark of its own is drawn in: the same for the same kind, on every device. */
 export function fallbackHue(agent: string): (typeof MARK_HUES)[number] {
   let hash = 0;
   for (const char of agent.normalize("NFKC").trim().toLowerCase()) hash = (hash * 31 + char.codePointAt(0)!) >>> 0;

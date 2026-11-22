@@ -27,26 +27,19 @@ const MAX_FOLLOW_UPS = 200;
 const MAX_SCAN_ENTRIES = 2000;
 const MAX_SCAN_MS = 200;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-/** a topic whose question carries pictures is larger than its words: one file, and the files read in one request */
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_READ_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_ITEMS = 20_000;
 /** read-only, never through a link, and never waiting on a pipe put where a topic file was */
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-/** the words kept and answered for one history, cached records included */
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_TITLE_BYTES = 4096;
-/** the histories read lately: by folder, each topic file's record as of that file's identity, size and times */
 const MAX_CACHED_HISTORIES = 16;
 type Stamp = { size: number; mtimeMs: number; ctimeMs: number; ino: number };
 type Cached = Stamp & { topic: Omit<OmpBtwTopic, "title"> | null; text: number; cut: boolean };
 type Read = { topic: Omit<OmpBtwTopic, "title"> | null; cut: boolean };
 
 type Bounded = { text: string | null; big: boolean; bytes: number };
-/**
- * A regular file's text, through one descriptor and never past `limit` bytes. `text` is null when it is no
- * regular file or past the limit (`big`); `bytes` is every byte read either way, which the request is charged.
- */
 function readBounded(path: string, limit: number): Bounded {
   let fd: number;
   try { fd = openSync(path, OPEN_FLAGS); } catch { return { text: null, big: false, bytes: 0 }; }
@@ -55,7 +48,6 @@ function readBounded(path: string, limit: number): Bounded {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return { text: null, big: false, bytes: 0 };
     if (stat.size > limit) return { text: null, big: true, bytes: 0 };
-    // one byte more than it said: a file that grew since is past its cap
     const buffer = Buffer.alloc(stat.size + 1);
     for (let got = 1; got > 0 && read < buffer.length; read += got) got = readSync(fd, buffer, read, buffer.length - read, null);
     return read > stat.size ? { text: null, big: true, bytes: read } : { text: buffer.toString("utf8", 0, read), big: false, bytes: read };
@@ -66,10 +58,6 @@ function readBounded(path: string, limit: number): Bounded {
   }
 }
 
-/**
- * Whether `text` holds more than MAX_JSON_ITEMS objects, arrays and members, counted outside strings in one pass:
- * a comma counts the member after it, and a container's first member, which has none, is counted where it starts.
- */
 function tooManyItems(text: string): boolean {
   let items = 0;
   let inString = false;
@@ -107,7 +95,6 @@ type Row = Record<string, unknown>;
 const row = (value: unknown): Row | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Row : null;
 const time = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 8_640_000_000_000_000;
 
-/** one question and its answer as OMP saved it, or null where OMP would refuse the record */
 function exchangeOf(record: Row, keys: Set<string>): OmpBtwExchange | null {
   if (Object.keys(record).some((key) => !keys.has(key))) return null;
   const { question, answer, status, createdAt, updatedAt, error, images } = record;
@@ -116,7 +103,6 @@ function exchangeOf(record: Row, keys: Set<string>): OmpBtwExchange | null {
   return { question, answer, status: status as OmpBtwExchange["status"], error: error ?? null, at: new Date(createdAt).toISOString() };
 }
 
-/** `bytes`: what was read, which the request's budget is charged, never the size the listing saw */
 function topicOf(path: string, id: string, limit: number): Read & { bytes: number; big: boolean } {
   const { text, big, bytes } = readBounded(path, limit);
   const none = { topic: null, cut: false, bytes, big };
@@ -127,17 +113,14 @@ function topicOf(path: string, id: string, limit: number): Read & { bytes: numbe
     if (record === null || record["id"] !== id || !(record["leafId"] === null || typeof record["leafId"] === "string")) return none;
     const head = exchangeOf(record, TOPIC_KEYS);
     const all = record["followUps"] === undefined ? [] : Array.isArray(record["followUps"]) ? record["followUps"] : null;
-    // only the first follow-ups are kept, and only those are checked
     const followUps = all?.slice(0, MAX_FOLLOW_UPS).map((entry) => { const found = row(entry); return found && exchangeOf(found, EXCHANGE_KEYS); }) ?? null;
     if (head === null || all === null || followUps === null || followUps.some((entry) => entry === null)) return none;
     return { topic: { id, ...head, follow_ups: followUps as OmpBtwExchange[] }, cut: all.length > MAX_FOLLOW_UPS, bytes, big: false };
   } catch {
-    // not JSON, or not a record OMP would load
     return none;
   }
 }
 
-/** OMP's title for a topic, and `cut` when a cap shortened or dropped it */
 function titleOf(path: string, limit: number): { title: string | null; cut: boolean; bytes: number } {
   const { text, big, bytes } = readBounded(path, limit);
   const title = text?.trim() ?? "";
@@ -147,7 +130,6 @@ function titleOf(path: string, limit: number): { title: string | null; cut: bool
 const folder = (path: string): boolean => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
 
 type Listed = Stamp & { name: string; id: string };
-/** A folder's topic files and their stamps, up to MAX_SCAN_ENTRIES entries or MAX_SCAN_MS, stats included; `stopped` when a cap ended it. */
 function listed(directory: string): { files: Listed[]; stopped: boolean } {
   const dir = opendirSync(directory);
   const began = performance.now();
@@ -171,7 +153,6 @@ function listed(directory: string): { files: Listed[]; stopped: boolean } {
   }
 }
 
-/** The saved `/btw` topics of the OMP session whose transcript is `transcript`, newest first; `more` when a cap left some out. */
 export function ompBtwTopics(transcript: string): OmpBtwHistory {
   const none = { topics: [], more: false };
   if (!transcript.endsWith(".jsonl")) return none;
@@ -201,13 +182,11 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
     else {
       if (file.size > MAX_FILE_BYTES || file.size > budget) { more = true; continue; }
       const read = topicOf(join(directory, file.name), file.id, Math.min(MAX_FILE_BYTES, budget));
-      // every byte read is charged, a file dropped for growing or for its items included
       budget -= read.bytes;
       if (read.big) { more = true; continue; }
       const { topic, cut } = read;
       entry = { size: file.size, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, topic, text: textOf(topic), cut };
     }
-    // the most recently written first: once the words reach the bound, older topics are left out and not kept
     if (text + entry.text > MAX_TEXT_BYTES) { more = true; break; }
     if (entry.cut) more = true;
     text += entry.text;
@@ -225,7 +204,6 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
   });
   // OMP's own order: newest first, then by id
   topics.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  // the answer stays under its cap: a topic that does not fit is left out, and the list says so
   const answered: OmpBtwTopic[] = [];
   let bytes = Buffer.byteLength('{"topics":[],"more":false}');
   for (const topic of topics) {
@@ -237,10 +215,8 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
   return { topics: answered, more };
 }
 
-/** How the route finds a pane's OMP transcript: null for a pane that runs no OMP session with one. */
 export type BtwSources = { transcript: (paneId: string) => Promise<string | null> };
 
-/** The answer for the side conversations route, or null when the path is not it. */
 export async function handleBtwRequest(request: Request, url: URL, pathname: string, { transcript }: BtwSources): Promise<Response | null> {
   if (pathname !== "/api/pane/btw") return null;
   setRequestRoute(pathname);

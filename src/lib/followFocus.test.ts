@@ -33,7 +33,6 @@ describe("following herdr's focus", () => {
     expect(followsHerdrFocus({ ...base, paneId: "w1:p1" })).toBe(false);
     expect(followsHerdrFocus({ ...base, splitOthers: [{ machineId: "local", paneId: "w1:p2" }] })).toBe(false);
     expect(followsHerdrFocus({ ...base, splitOthers: [{ machineId: "remote", paneId: "w1:p2" }] })).toBe(true);
-    // a third slot of the rows and columns is in front too
     expect(followsHerdrFocus({ ...base, splitOthers: [{ machineId: "remote", paneId: "w1:p2" }, { machineId: "local", paneId: "w1:p2" }] })).toBe(false);
   });
 
@@ -86,7 +85,6 @@ describe("a focus move this device asked for", () => {
       expect(movingHerdrFocusOn("local")).toBe(true);
       jest.advanceTimersByTime(1);
       expect(movingHerdrFocusOn("local")).toBe(false);
-      // a late answer to the stalled request does not end the hold of a request made since
       const later = deferred();
       const answered = movingHerdrFocus("local", later.promise);
       stalled.resolve("w1:p5");
@@ -136,7 +134,6 @@ describe("a device in use", () => {
 });
 
 describe("an unsent message on the pane this device has open", () => {
-  // the real stores, on a page's storage: each pane below holds a different draft
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let data: Map<string, string>;
   beforeEach(() => {
@@ -145,7 +142,6 @@ describe("an unsent message on the pane this device has open", () => {
     const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
     Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage } });
-    // the drafts stored are the ones of the herdr this page has the PC under (lib/paneLifetime.ts)
     data.set("ovis:pane-lifetime:local", "test-herdr");
     paneLifetimes.observe([{ id: "local", snapshot: { panes: [], herdr_lifetime: "test-herdr" } } as unknown as Machine], (item) => item.pane_id);
   });

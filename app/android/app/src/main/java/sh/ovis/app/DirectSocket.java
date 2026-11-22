@@ -24,18 +24,18 @@ import java.util.regex.Pattern;
 
 /**
  * A plain `ws://` WebSocket client (RFC 6455) for one direct carrier (OvisDirectPlugin): the app has no
- * WebSocket library, and a carrier is never TLS (Noise inside the relay channel proves the PC). No
- * Android types, so it runs in JVM tests. Messages arrive in order on its reader thread; sends go out in
- * order on its writer thread. Bounded both ways: a message over MAX_MESSAGE, or more than MAX_MESSAGE
+ * WebSocket library, and a carrier is never TLS (Noise inside the relay channel proves the PC).
+ * Bounded both ways: a message over MAX_MESSAGE, or more than MAX_MESSAGE
  * bytes or MAX_QUEUED frames waiting to go out (pongs included), ends the socket with 1009; a peer that
  * does not finish the upgrade within the handshake time ends it too.
  */
 final class DirectSocket {
     static final int MAX_MESSAGE = 4 * 1024 * 1024;
+    static final int MAX_BASE64_MESSAGE = (MAX_MESSAGE + 2) / 3 * 4;
+    static final int MAX_CLOSE_REASON_BYTES = 123;
     static final int MAX_QUEUED = 16_384;
     static final int HANDSHAKE_MS = 5_000;
     private static final int CONNECT_MS = 10_000;
-    /** how long a close waits for the peer's answer before the socket is let go */
     private static final int CLOSE_WAIT_MS = 5_000;
     private static final Pattern CARRIER = Pattern.compile("^ws://((?:0|[1-9]\\d{0,2})(?:\\.(?:0|[1-9]\\d{0,2})){3}):([1-9]\\d{0,4})/v1/ws\\?v=1$");
     private static final Pattern UPGRADED = Pattern.compile("^HTTP/1\\.1 101(?: .*)?$");
@@ -48,7 +48,6 @@ final class DirectSocket {
     interface Listener {
         void onText(String text);
         void onBinary(byte[] bytes);
-        /** Once, last: `failed` when it broke rather than closed. */
         void onClose(int code, String reason, boolean failed);
     }
 
@@ -79,7 +78,6 @@ final class DirectSocket {
     private final Socket socket = new Socket();
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private final SecureRandom random = new SecureRandom();
-    /** counted down once the handshake is done or the socket ended: no frame goes out before */
     private final CountDownLatch upgradedLatch = new CountDownLatch(1);
     private boolean upgraded;
     private boolean ended;
@@ -115,11 +113,7 @@ final class DirectSocket {
         enqueue(0x2, bytes, false);
     }
 
-    /**
-     * Ends the socket with `code`: before the upgrade at once, closing the TCP socket under a pending connect or
-     * handshake; after it with a close frame, then onClose when the peer answers or CLOSE_WAIT_MS passed. A code
-     * an endpoint may not send (1005, 1006, 1015, an unassigned one) goes out as 1000.
-     */
+    /** A code an endpoint may not send (1005, 1006, 1015, an unassigned one) goes out as 1000. */
     void close(int code, String reason) {
         if (!validCloseCode(code)) code = 1000;
         boolean beforeUpgrade;
@@ -137,16 +131,13 @@ final class DirectSocket {
         TIMERS.schedule(() -> end(sent, reason, false), CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
     }
 
-    /** Ends the socket now, without a closing handshake: the page fell too far behind. */
     void abort(int code, String reason) {
         end(code, reason, false);
     }
 
-    /** A close frame, once; data frames asked for after it are dropped. Its reason is cut to 123 bytes between characters. */
     private void sendClose(int code, String reason) {
         byte[] text = reason.getBytes(StandardCharsets.UTF_8);
-        int length = Math.min(text.length, 123);
-        // never inside a character: back off continuation bytes (10xxxxxx) to the start of the one cut
+        int length = Math.min(text.length, MAX_CLOSE_REASON_BYTES);
         if (length < text.length) while (length > 0 && (text[length] & 0xc0) == 0x80) length--;
         byte[] payload = new byte[2 + length];
         payload[0] = (byte) (code >> 8);
@@ -159,10 +150,6 @@ final class DirectSocket {
         enqueue(0x8, payload, true);
     }
 
-    /**
-     * Puts one frame on the writer's queue, or ends the socket with 1009 when the queue is full. Admitted and handed to
-     * the writer under one lock, so a data frame admitted before the close frame is also queued before it.
-     */
     private void enqueue(int opcode, byte[] payload, boolean control) {
         synchronized (this) {
             if (ended || (closeQueued && !control)) return;
@@ -183,7 +170,6 @@ final class DirectSocket {
                         }
                     });
                 } catch (java.util.concurrent.RejectedExecutionException gone) {
-                    // ended meanwhile: nothing goes out any more
                 }
                 return;
             }
@@ -283,7 +269,6 @@ final class DirectSocket {
         if (!accepted || !websocket || !connectionUpgrade) throw new IOException("not a WebSocket upgrade");
     }
 
-    /** One header line, at most 8 KiB. */
     private static String line(InputStream in) throws IOException {
         StringBuilder text = new StringBuilder();
         for (int byteRead; (byteRead = in.read()) != -1; ) {
@@ -370,19 +355,16 @@ final class DirectSocket {
         }
     }
 
-    /** The peer closed: its close is answered (unless ours went first), and the socket ends once that is written. */
     private void peerClosed(int code, String reason) {
         sendClose(code == 1005 ? 1000 : code, "");
         afterWrites(() -> end(code, reason, false));
     }
 
-    /** The peer broke the protocol: a close with `code`, written before the socket ends. */
     private void failProtocol(int code, String reason) {
         sendClose(code, reason);
         afterWrites(() -> end(code, reason, code != 1009));
     }
 
-    /** Runs `then` once the frames queued before it are written, or after CLOSE_WAIT_MS should the writer be stuck. */
     private void afterWrites(Runnable then) {
         TIMERS.schedule(then, CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
         try { writer.execute(then); } catch (java.util.concurrent.RejectedExecutionException gone) { then.run(); }
@@ -394,7 +376,7 @@ final class DirectSocket {
             ended = true;
         }
         upgradedLatch.countDown();
-        try { socket.close(); } catch (IOException ignored) { /* already gone */ }
+        try { socket.close(); } catch (IOException ignored) { }
         writer.shutdownNow();
         listener.onClose(code, reason, failed);
     }

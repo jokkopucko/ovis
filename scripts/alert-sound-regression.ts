@@ -13,9 +13,8 @@ process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 /**
  * The alert sound: real herdr status changes make the open tab chime, once a tap let the page
- * play audio, and never for the pane already open. Alerts that come together in
- * a tab chime once. The page's AudioContext is a recorder that starts suspended
- * like a real one, so what would have sounded is the notes it was asked for.
+ * play audio, and never for the pane already open. The page's AudioContext is a recorder that
+ * starts suspended like a real one, so what would have sounded is the notes it was asked for.
  */
 export async function checkAlertSound(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-alert-sound-"));
@@ -59,7 +58,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
         }
       }
       Object.assign(window, { AudioContext: RecordingAudioContext });
-      // `slowChimed` makes this tab confirm its chimes late, as one whose audio waits behind another
       const post = BroadcastChannel.prototype.postMessage;
       BroadcastChannel.prototype.postMessage = function (message: unknown) {
         if ((window as unknown as { slowChimed?: boolean }).slowChimed && (message as { type?: string } | null)?.type === "chimed") {
@@ -76,7 +74,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
       class ObservedEvents extends NativeEvents {
         constructor(url: string | URL, init?: EventSourceInit) {
           super(url, init);
-          // the app's handler is called from here, so a frame can be put in front of another
           let handler: ((event: MessageEvent) => void) | null = null;
           Object.defineProperty(this, "onmessage", { get: () => handler, set: (next) => { handler = next; } });
           let roster: Roster | null = null;
@@ -105,9 +102,7 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     await page.goto(`${origin}/?pane=${encodeURIComponent(openPane)}`);
     await page.locator(".conn-live").waitFor();
     const chimes = (tab: Page = page) => tab.evaluate(() => [...(window as unknown as { chimes: number[] }).chimes]);
-    // the app must have seen the pane work before it waits: a wait first seen is no news
     const seen = (pane: string, status: string, tab: Page = page) => tab.locator(`.pane-item:has(.pane-select[title^="${pane} —"]) [data-status="${status}"]`).first().waitFor({ state: "attached" });
-    // a tab's last chime ended: an alert after it is not told by it
     const quiet = (tab: Page) => tab.waitForFunction(() => performance.now() / 1000 >= (window as unknown as { chimeEnd: number }).chimeEnd);
     // The card for a waiting pane leaves by itself after a few seconds, so nothing is awaited
     // between the report and the wait for the card. Only the pane in front, which gets no card,
@@ -143,7 +138,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
 
     await page.locator(".droplet-card").click();
     await page.locator(".droplet").waitFor({ state: "detached" });
-    // the tap opened the other pane: it is the one in front now
     await report(otherPane, "idle");
     await report(openPane, "idle");
     await block(otherPane, true);
@@ -171,7 +165,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     await page.keyboard.press("Escape");
     await page.getByRole("dialog", { name: "Settings" }).waitFor({ state: "detached" });
 
-    // two panes start waiting at the same moment: one chime tells both
     await quiet(page);
     const before = (await chimes()).length;
     await report(openPane, "idle");
@@ -188,7 +181,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     assert.deepEqual((await chimes()).slice(before), [660, 880], "one chime for two panes that wait together");
     console.log("PASS two panes that wait together chime once");
 
-    // the roster shows each status before its event does: the wait is still news
     await quiet(page);
     await report(thirdPane, "idle");
     // at rest again, as the app heard it (a finish after work is told as `done`)
@@ -233,7 +225,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     const bothBefore = await counts();
     await report(thirdPane, "blocked");
     await Promise.all(tabs.map((tab) => seen(thirdPane, "blocked", tab)));
-    // Either tab may win: subscribe to the audio recorder in both.
     await Promise.any(tabs.map((tab, index) => tab.waitForFunction((count) =>
       (window as unknown as { chimes: number[] }).chimes.length > count, bothBefore[index], { timeout: 5_000 })));
     await noSecondChime(bothBefore);
@@ -253,8 +244,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     assert.deepEqual(await counts(), [frontBefore[0], frontBefore[1]! + 2], "tab B tells a question in front of tab A");
     console.log("PASS the other tab tells a question in front of the first tab");
 
-    // The winning tab's confirmation comes a second late: the other tab waits for it instead of
-    // chiming the same question again.
     await Promise.all(tabs.map(quiet));
     await report(thirdPane, "working");
     await Promise.all(tabs.map((tab) => seen(thirdPane, "working", tab)));
@@ -277,7 +266,6 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
   }
 }
 
-// Also runnable on its own through `bun run check run bun scripts/alert-sound-regression.ts`.
 if (import.meta.main) {
   const { chromium } = await import("playwright-core");
   const { createServer } = await import("../server/index.ts");

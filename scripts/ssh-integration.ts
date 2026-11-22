@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createServer as tcpServer } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "../server/index.ts";
 import { herdrRpc } from "../server/herdr/client.ts";
@@ -20,7 +20,7 @@ mkdirSync(join(remoteHome, ".ssh"), { recursive: true });
 writeFileSync(join(remoteHome, ".zshrc"), "# isolated SSH test session\n");
 const passwordMode = process.env["SSH_TEST_PASSWORD"] === "1";
 const password = "herdr-fixture-secret-only";
-const username = passwordMode ? `hbr${process.pid}` : userInfo().username;
+const username = passwordMode ? `hbr${process.pid}` : Bun.spawnSync(["id", "-un"]).stdout.toString().trim();
 let sshd: ReturnType<typeof Bun.spawn> | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 const initialSocket = process.env["HERDR_SOCKET"];
@@ -29,6 +29,7 @@ process.env["OVIS_BUNDLE_MANIFEST"] = resolve(`remote-bundles/manifest-${process
 const sockets: WebSocket[] = [];
 let port = 0;
 let originalKey = "";
+let lastConnectedAt: number | undefined;
 
 function command(args: string[], input?: string): void {
   const result = Bun.spawnSync(args, { stdin: input ? new TextEncoder().encode(input) : undefined });
@@ -42,8 +43,23 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, lab
 }
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const r = await fetch(`http://127.0.0.1:${server!.port}${path}`, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  assert.ok(r.ok, `${path}: ${r.status} ${r.ok ? "" : await r.text()}`);
+  // a failure's own status and text are read first: the diagnostic after them is bounded and cannot hold them back
+  const failure = r.ok ? "" : `${path}: ${r.status} ${await r.text()}`;
+  assert.ok(r.ok, r.ok ? "" : failure + await pcWhenFailed(path));
   return r.json() as Promise<T>;
+}
+async function pcWhenFailed(path: string): Promise<string> {
+  const id = /^\/api\/machines\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?]|$)/.exec(path)?.[1];
+  if (!id) return "";
+  const since = lastConnectedAt === undefined ? "no setup job has said connected yet" : `${Math.round(performance.now() - lastConnectedAt)} ms after a setup job last said connected`;
+  try {
+    // one deadline for the answer and its body: a server in a bad way right then must not stall the failure
+    const r = await fetch(`http://127.0.0.1:${server!.port}/api/machines`, { headers: { "x-herdr-machine": "1" }, signal: AbortSignal.timeout(2000) });
+    const machine = (await r.json() as { machines: Machine[] }).machines.find((m) => m.id === id);
+    return `\n  this PC in /api/machines now: ${machine ? JSON.stringify({ state: machine.state, error: machine.error }) : "not listed"}, ${since}`;
+  } catch (error) {
+    return `\n  /api/machines could not be read (${error instanceof Error ? error.message : String(error)}), ${since}`;
+  }
 }
 async function setup(target: SetupRequest, approve = true): Promise<SetupJob> {
   let job = await api<SetupJob>("/api/machines/setup", "POST", target);
@@ -51,6 +67,7 @@ async function setup(target: SetupRequest, approve = true): Promise<SetupJob> {
   let previous = "";
   for (;;) {
     if (job.phase !== previous) { console.log("setup", job.phase, job.step); previous = job.phase; }
+    if (job.phase === "connected") lastConnectedAt = performance.now();
     if (job.phase === "connected" || job.phase === "failed" || job.phase === "cancelled") return job;
     if (Date.now() > deadline) throw new Error("Setup timed out");
     if (job.challenge) job = await api<SetupJob>(`/api/machines/setup/${job.id}`, "POST", { action: "answer", challenge_id: job.challenge.id, answer: job.challenge.kind === "host_key" ? "yes" : password });
@@ -133,7 +150,6 @@ try {
   ws.send(JSON.stringify({ type: "role", mode: "observe" }));
   ws.send(JSON.stringify({ type: "attach", pane_id: paneId, cols: 80, rows: 24, flow_control: "ack" }));
   await until(async () => frames, (list) => list.some((m) => m.type === "pty-data"), "remote terminal paint");
-  // a mirror paints too (pty-data), on a grid it fixes: the remote PC has Node, so this must be herdr's own attach (#265)
   assert.ok(!frames.some((m) => m.type === "pane-geometry" && m.fixed === true), "remote terminal is attached, not mirrored");
   ws.send(JSON.stringify({ type: "input", pane_id: paneId, text: "forbidden\n" }));
   await until(async () => frames, (list) => list.some((m) => m.type === "error" && m.code === "read_only"), "observe enforcement");

@@ -95,7 +95,6 @@ process.exit(plan.exit);
   return { root, start };
 }
 
-/** A Codex sign-in runs to its end without a code: the fake signs in as codex-plan.json says. */
 async function completeCodexLogin(host: ReturnType<ReturnType<typeof fixture>["start"]>, body: object) {
   const started = await fetch(`${host.origin}/api/usage/login`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, provider: "codex", follow: true }),
@@ -114,7 +113,6 @@ const codexAuth = (email: string) => {
   return JSON.stringify({ tokens: { access_token: [part({ alg: "none" }), part({ exp: 9_999_999_999, "https://api.openai.com/profile": { email }, "https://api.openai.com/auth": { chatgpt_account_user_id: email } }), "sig"].join(".") } });
 };
 
-/** Starts a followed Claude sign-in and waits until its CLI asks for the code. */
 async function untilCode(host: ReturnType<ReturnType<typeof fixture>["start"]>, body: object) {
   const started = await fetch(`${host.origin}/api/usage/login`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, follow: true }),
@@ -145,10 +143,6 @@ async function completeLogin(host: ReturnType<ReturnType<typeof fixture>["start"
   return login.prompt();
 }
 
-/**
- * A keychain whose reads wait, once armed, until released: a sign-in's read of its home after its CLI
- * exited stays pending while the test acts. Before arming it holds nothing.
- */
 function heldKeychain() {
   let armed = false;
   const asked = Promise.withResolvers<void>();
@@ -162,7 +156,6 @@ function heldKeychain() {
   return { keychain, arm: () => { armed = true; }, asked: asked.promise, release: () => release.resolve() };
 }
 
-/** Resolves when a sign-in's PTY is next told to stop (a cancel, a lease or a deadline). */
 function nextKill() {
   const killed = Promise.withResolvers<void>();
   const original = PtySession.prototype.kill;
@@ -260,12 +253,10 @@ it("does not count a home whose earlier sign-in could not be read as newly signe
   // the sign-in lives in the keychain alone, as Claude Code keeps it on a Mac
   rmSync(join(root, ".claude-work", ".credentials.json"));
   const host = start();
-  // the keychain is locked until the CLI runs, then gives the same old sign-in
   const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "noop", () => { locked = false; });
   expect(result.succeeded).toBe(false);
 });
 
-/** A Claude keychain that answers `before` until the CLI runs, then the same other old sign-in: nothing changed. */
 function keychainThen(before: Awaited<ReturnType<UsageContext["keychain"]>>) {
   let ran = false;
   const other = JSON.stringify({ claudeAiOauth: { accessToken: "fixture-work-keychain", expiresAt: 9_999_999_999_999, subscriptionType: "max" } });
@@ -285,7 +276,6 @@ it("does not count a token another of the home's keychain queries already held",
   let ran = false;
   const item = (token: string) => JSON.stringify({ claudeAiOauth: { accessToken: token, expiresAt: 9_999_999_999_999, subscriptionType: "max" } });
   let work = "";
-  // the work home's item under $USER holds A and its unnamed one B; the CLI's run leaves only B, unchanged
   const keychain: UsageContext["keychain"] = async (service, account) => service !== work ? { status: "missing" }
     : account === "fixture-user" ? (ran ? { status: "missing" } : { status: "found", value: item("fixture-keychain-a") })
     : { status: "found", value: item("fixture-keychain-b") };

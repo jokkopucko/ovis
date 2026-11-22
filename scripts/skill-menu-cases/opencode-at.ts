@@ -21,11 +21,29 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
   const tag = `${scheme}-${width}`;
 
   await scenario(`@ lists the skills at ${tag}`, `at-${tag}.png`, async (capture) => {
-    await box.fill("@");
-    await menu.locator(".menu-item").first().waitFor();
-    assert.deepEqual(await rowLabels(), ["@docs-release", "@pdf-tools"]);
-    assert.equal(await page.getByRole("listbox", { name: "Skills and files", exact: true }).count(), 1);
-    // the pane's files follow, under their own heading
+    // The demo answers in the page, so hold the file response there until we've checked the skill rows.
+    const files = await page.evaluateHandle(() => {
+      const browserWindow: Window = window;
+      const fetch = browserWindow.fetch;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      browserWindow.fetch = async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : input, location.href);
+        if (url.pathname === "/api/pane/files" && url.searchParams.get("q") === "") {
+          await promise;
+        }
+        return fetch(input, init);
+      };
+      return () => { browserWindow.fetch = fetch; resolve(); };
+    });
+    try {
+      await box.fill("@");
+      await menu.locator(".menu-item").first().waitFor();
+      assert.deepEqual(await rowLabels(), ["@docs-release", "@pdf-tools"]);
+      assert.equal(await page.getByRole("listbox", { name: "Skills and files", exact: true }).count(), 1);
+    } finally {
+      await files.evaluate((release) => release());
+      await files.dispose();
+    }
     await menu.locator(".menu-item").nth(2).waitFor();
     assert.deepEqual(await menu.locator(".menu-heading").allTextContents(), ["Skills", "Files"]);
     assert.deepEqual((await rowLabels()).slice(0, 2), ["@docs-release", "@pdf-tools"]);

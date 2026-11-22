@@ -12,26 +12,20 @@ namespace Ovis
         Working,
         Failed,
         Installed,
-        /// <summary>The Ovis server is older than this app, under the old id, or of a version nobody can read.</summary>
         Outdated,
-        /// <summary>The Ovis server needs an update, and this herdr is older than the server needs.</summary>
         HerdrTooOld,
     }
 
     internal enum UpdateReason
     {
         None,
-        /// <summary>Installed under devswha.herdr-web-ui (0.4.13 and older): install.ps1 moves it to the new id.</summary>
         LegacyId,
         Older,
-        /// <summary>Neither the server's status nor herdr names a version.</summary>
         VersionUnknown,
     }
 
-    /// <summary>What the Installed screen offers for the phone, from what GET /api/access told.</summary>
     internal enum PhoneStep
     {
-        /// <summary>Tailscale serves the app: the QR code of its address.</summary>
         Qr,
         MakeAddress,
         SignInTailscale,
@@ -44,7 +38,6 @@ namespace Ovis
     {
         public string Id;
         public string Root;
-        /// <summary>The version of herdr's checkout, as herdr lists it; null when herdr does not say.</summary>
         public string Version;
         public string MinHerdr;
         /// <summary>
@@ -54,10 +47,8 @@ namespace Ovis
         public bool NotOurs;
     }
 
-    /// <summary>What the window shows for what is on this PC; no process runs here, so tests read it all.</summary>
     internal static class Setup
     {
-        /// <summary>The oldest herdr install.ps1 takes.</summary>
         public static readonly Version InstallerMinHerdr = new Version(0, 9, 0);
 
         /// <summary>
@@ -87,8 +78,7 @@ namespace Ovis
         }
 
         /// <summary>
-        /// The phone step: the QR code while Tailscale serves the app, else what Tailscale needs. A server behind a token the
-        /// app could not read answers nothing of Tailscale, which is then not taken as missing.
+        /// A server behind a token the app could not read answers nothing of Tailscale, which is then not taken as missing.
         /// </summary>
         public static PhoneStep Phone(string phoneUrl, string tailscale, bool accessLocked)
         {
@@ -98,7 +88,6 @@ namespace Ovis
             return tailscale == "stopped" ? PhoneStep.SignInTailscale : PhoneStep.InstallTailscale;
         }
 
-        /// <summary>"0.4.19", "v0.4.19" or "herdr 0.9.3-preview" as X.Y.Z; null for anything else.</summary>
         public static Version ParseVersion(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return null;
@@ -154,12 +143,26 @@ namespace Ovis
             }
             catch (Exception exception) when (exception is ArgumentException || exception is InvalidOperationException || exception is KeyNotFoundException || exception is InvalidCastException)
             {
-                return null; // not the JSON this herdr is expected to print: treated as no plugin
+                return null;
             }
             return null;
         }
 
-        /// <summary>The `version: X.Y.Z` line of `plugin.ts status`: the release that runs, which may be newer than herdr's checkout.</summary>
+        /// <summary>
+        /// How the app runs one of the plugin's commands, as herdr's actions run it. install.ps1's install of the release's
+        /// compiled server (0.5.4 and newer) links a plugin of a run.ps1 alone, which hands the command to bin\ovis-server.exe
+        /// and needs no Bun; a checkout (herdr's GitHub install, a linked one) runs its scripts\plugin.ts with Bun, whatever
+        /// else its root holds. Asked through plugin.ts alone, the compiled server's status could not run, and one that
+        /// answered showed as not running.
+        /// </summary>
+        public static string[] PluginCommandLine(string root, string command, Func<string, bool> exists)
+        {
+            var script = System.IO.Path.Combine(root, "scripts", "plugin.ts");
+            var run = System.IO.Path.Combine(root, "run.ps1");
+            if (!exists(script) && exists(run)) return new[] { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", run, command };
+            return new[] { "bun", script, command };
+        }
+
         public static string StatusVersion(string output)
         {
             var line = (output ?? "").Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("version: "));
@@ -199,7 +202,6 @@ namespace Ovis
             return string.Join("\n", new[] { "OVIS_TOKEN", "HERDR_WEB_TOKEN" }.Select(name => new { name, value = variable(name) }).Where(set => set.value != null).Select(set => set.name + "=" + set.value));
         }
 
-        /// <summary>`managed: false` of GET /api/updates: no update supervisor runs the server, or none has reported yet.</summary>
         public static bool UpdatesUnmanaged(string json)
         {
             try
@@ -214,7 +216,6 @@ namespace Ovis
             }
         }
 
-        /// <summary>`current_version` of GET /api/updates: the package.json of the build the answering server runs.</summary>
         public static string UpdatesVersion(string json)
         {
             try
@@ -264,7 +265,15 @@ namespace Ovis
             return (output ?? "").Split('\n').Select(line => line.Trim()).Any(line => line.StartsWith("stopped ", StringComparison.Ordinal) && line.Contains("(pid "));
         }
 
-        /// <summary>The bridge health's answer is the app's own: `ok: true` with an integer `bridge_protocol` (server/index.ts).</summary>
+        /// <summary>
+        /// A `plugin.ts stop` that failed in a way Start reports: every failure but the one that left alone a recorded pid
+        /// it could not verify as the Ovis server's (another program reused it), which the start then passes over.
+        /// </summary>
+        public static bool StopFailed(int status, string output)
+        {
+            return status != 0 && (output ?? "").IndexOf("could not verify the recorded Ovis process", StringComparison.Ordinal) < 0;
+        }
+
         public static bool BridgeHealth(string json)
         {
             try
@@ -280,11 +289,10 @@ namespace Ovis
         }
 
         /// <summary>
-        /// Why the server needs an update. herdr's list is never taken for the version that runs: a stopped server known
-        /// only by it is started first, as it may have updated itself, and a running one that does not say its version
-        /// (a token holds /api/updates) is one whose version cannot be read. The update then installs the newest
-        /// release, which no release that runs is newer than. An app without a version (a local build) asks only the
-        /// old id to move; a linked checkout or a fork is never touched.
+        /// herdr's list is never taken for the version that runs: a stopped server known only by it is started first, as
+        /// it may have updated itself, and a running one that does not say its version (a token holds /api/updates) is
+        /// one whose version cannot be read. An app without a version (a local build) asks only the old id to move; a
+        /// linked checkout or a fork is never touched.
         /// </summary>
         public static UpdateReason Reason(Plugin plugin, string runningVersion, string statusVersion, bool running, Version app, bool unmanaged = false)
         {
@@ -297,28 +305,23 @@ namespace Ovis
             // plugin's start just started answers so until its supervisor's first word, and a hand-run one is not the
             // plugin's to reinstall
             if (running && !exact && unmanaged) return UpdateReason.None;
-            // a running server that does not say is unknown whatever herdr lists: its checkout may be newer than it
             if (running && !exact) return UpdateReason.VersionUnknown;
             if (server == null) return UpdateReason.VersionUnknown;
             if (server >= app && !(server == app && exact && Prerelease(running ? runningVersion : statusVersion))) return UpdateReason.None;
-            // stopped and known only by herdr's lower bound: started first, as it may have updated itself
             return exact ? UpdateReason.Older : UpdateReason.None;
         }
 
-        /// <summary>"0.4.19-rc.1": a prerelease, older than the 0.4.19 it leads to.</summary>
         private static bool Prerelease(string text)
         {
             return text != null && text.Trim().IndexOf('-') > 0;
         }
 
-        /// <summary>The herdr the server needs: what the plugin asks for, and never less than install.ps1 takes.</summary>
         public static Version RequiredHerdr(Plugin plugin)
         {
             var asked = plugin == null ? null : ParseVersion(plugin.MinHerdr);
             return asked != null && asked > InstallerMinHerdr ? asked : InstallerMinHerdr;
         }
 
-        /// <summary>The screen: herdr is read only when an update is due, and a herdr whose version is unreadable is let through.</summary>
         public static Phase Choose(Plugin plugin, UpdateReason reason, Version herdr)
         {
             if (plugin == null) return Phase.NotInstalled;
@@ -339,7 +342,6 @@ namespace Ovis
                         ? Lang.L("This PC has an old Ovis server, from before its new name. Update it to " + target + " or newer.", "이 PC에 예전 이름으로 설치된 옛 Ovis 서버가 있습니다. " + target + " 이상으로 업데이트하세요.")
                         : Lang.L("This PC has an old Ovis server (" + Short(server) + "), from before its new name. Update it to " + target + " or newer.", "이 PC에 예전 이름으로 설치된 옛 Ovis 서버(" + Short(server) + ")가 있습니다. " + target + " 이상으로 업데이트하세요.")) + keeps;
                 case UpdateReason.Older:
-                    // known only by herdr's list, the server may have updated itself since: say what herdr knows
                     return (exact
                         ? Lang.L("This PC has Ovis server " + Short(server) + ", older than this app (" + target + "). Update it to " + target + " or newer.",
                                  "이 PC의 Ovis 서버(" + Short(server) + ")가 이 앱(" + target + ")보다 오래됐습니다. " + target + " 이상으로 업데이트하세요.")
@@ -354,10 +356,10 @@ namespace Ovis
         }
 
         /// <summary>
-        /// The tag the update installs: the newest release `git ls-remote --tags` lists, never older than this app. A
-        /// server that updated itself past this app keeps its version: reinstalled older, it would run the older
-        /// checkout, since its installed release is tied to the checkout it replaced. Without the list (null) there is
-        /// no tag: the app's own could be older than what runs.
+        /// The tag the update installs: the newest release `git ls-remote --tags` lists, never older than this app, so a
+        /// server that updated itself past this app to a listed release keeps its version (the server's own version is
+        /// not compared): reinstalled older, it would run the older checkout, since its installed release is tied to the
+        /// checkout it replaced. Without the list (null) there is no tag: the app's own could be older than what runs.
         /// </summary>
         public static string UpdateTag(string lsRemote, Version app)
         {
@@ -382,7 +384,6 @@ namespace Ovis
                           "이 PC의 herdr는 " + Short(herdr) + "이고, Ovis 서버에는 herdr " + needed + " 이상이 필요합니다. 터미널에서 herdr update를 실행해 herdr를 업데이트한 뒤 다시 확인해 주세요.");
         }
 
-        /// <summary>This app's version, X.Y.Z; null for a build without one (0.0.0).</summary>
         public static Version AppVersion(Version assembly)
         {
             if (assembly == null || (assembly.Major == 0 && assembly.Minor == 0 && assembly.Build <= 0)) return null;

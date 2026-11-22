@@ -1,11 +1,10 @@
 id = "devswha.ovis"
 name = "Ovis"
-version = "0.5.2"
+version = "0.5.9"
 min_herdr_version = "0.9.0"
 description = "Ovis, the browser and phone client for herdr: chat and live terminal for every agent pane, remote PCs over SSH, web push alerts"
 platforms = ["linux", "macos", "windows"]
 
-# what is missing, in one line, before `bun install` would fail some steps later
 [[build]]
 command = ["sh", "scripts/preflight.sh"]
 platforms = ["linux", "macos"]
@@ -14,30 +13,19 @@ platforms = ["linux", "macos"]
 command = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "scripts/preflight.ps1"]
 platforms = ["windows"]
 
+# the server of this version from its release, checked against the signed manifest (scripts/plugin-launch.ts), with
+# the release's Rust PTY host on Linux and macOS; without that host, terminals are mirrored
 [[build]]
-command = ["sh", "scripts/with-bun.sh", "install"]
+command = ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "install"]
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["bun", "install"]
+command = ["bun", "scripts/plugin-launch.ts", "install"]
 platforms = ["windows"]
-
-[[build]]
-command = ["sh", "scripts/with-bun.sh", "run", "build"]
-platforms = ["linux", "macos"]
-
-[[build]]
-command = ["bun", "run", "build"]
-platforms = ["windows"]
-
-# the release's Rust PTY host, checked against its SHA-256; without one, terminals use the Node sidecar
-[[build]]
-command = ["sh", "scripts/with-bun.sh", "scripts/pty-sidecar.ts", "install"]
-platforms = ["linux", "macos"]
 
 # One-shot per herdr start: brings the bridge up if it is not already answering.
 [[startup]]
-command = ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "start"]
+command = ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "start"]
 platforms = ["linux", "macos"]
 
 [[startup]]
@@ -48,7 +36,7 @@ platforms = ["windows"]
 id = "start"
 title = "Start Ovis"
 contexts = ["workspace"]
-command = ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "start"]
+command = ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "start"]
 platforms = ["linux", "macos"]
 
 [[actions]]
@@ -62,7 +50,7 @@ platforms = ["windows"]
 id = "stop"
 title = "Stop Ovis"
 contexts = ["workspace"]
-command = ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "stop"]
+command = ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "stop"]
 platforms = ["linux", "macos"]
 
 [[actions]]
@@ -76,7 +64,7 @@ platforms = ["windows"]
 id = "status"
 title = "Ovis status"
 contexts = ["workspace"]
-command = ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "status"]
+command = ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "status"]
 platforms = ["linux", "macos"]
 
 [[actions]]
@@ -90,7 +78,7 @@ platforms = ["windows"]
 id = "phone"
 title = "Phone setup"
 placement = "zoomed"
-command = ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "phone-setup"]
+command = ["sh", "scripts/with-bun.sh", "scripts/plugin-launch.ts", "phone-setup"]
 platforms = ["linux", "macos"]
 
 [[panes]]

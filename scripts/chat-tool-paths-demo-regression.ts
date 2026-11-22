@@ -8,16 +8,6 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
-// A tool card's file labels read from the pane's folder (`/work/app/src/a.ts` as `app/src/a.ts`),
-// on the unmodified app over the demo's fixture transport: the title, the viewer's request and
-// every copy keep the path as written; a sibling folder, a path outside, a relative or Windows
-// path, a pane with no folder or a Windows folder all read as written; switching panes takes no
-// other pane's folder along. A chat with nothing to open a file in (a bare ChatView, built here)
-// shows the same short label as text, with the whole path as its title and no button; a UNC folder
-// written with forward slashes reads every path as written. Copying a whole label, either form, or
-// a selection reaching past the chat (Select All) copies the path as written. On a phone every file link is a finger's
-// size. The viewer's loading state is a held file answer, released by the script.
-// Screenshots go to UI_EVIDENCE_DIR as tool-paths-<width>-<theme>[-ko]-<state>.png when it is set.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-chat-tool-paths-demo-"));
@@ -32,7 +22,6 @@ const { chromium } = (await import(playwrightCore)) as typeof import("playwright
 
 const ROOT = "/work/app";
 const LONG = `${ROOT}/${"n".repeat(300)}.ts`;
-/** Each file the transcript names, and how a pane in ROOT labels it. */
 const LABELS: Record<string, string> = {
   "/work/app/src/a.ts": "app/src/a.ts",
   "/work/app/src/b.ts": "app/src/b.ts",
@@ -69,10 +58,8 @@ const TURNS = [
     { kind: "text", text: REPLY },
   ] },
 ];
-/** Every tool-file label of the transcript, in order (a patch adds "(add)" after its label). */
 const ORDER = ["/work/app/src/a.ts", "/work/app/src/b.ts", "/work/app-2/a.ts", "/work/app/src/c.ts", "/work/app/docs/notes.md", "/etc/hosts", "src/relative.ts", "C:\\work\\app\\win.ts", "\\\\server\\share\\app\\unc.ts", "//server/share/app/fwd.ts", "/work/app/../etc/passwd", "/work/app/문서/설계 노트.md", LONG];
 
-/** The panes under test and their folders: one in ROOT, one with no folder known, one on a Windows folder. */
 const CWD: Record<string, string | null> = { [panes.omp]: ROOT, [panes.api]: null, [panes.cli]: "C:\\work\\app" };
 const results: Record<string, unknown[]> = { "relative-tool-target": [], "unknown-or-outside-root": [] };
 const record = (scenario: string, check: string, detail: unknown): void => {
@@ -81,7 +68,6 @@ const record = (scenario: string, check: string, detail: unknown): void => {
 };
 
 interface Shown { text: string; title: string | null; button: boolean }
-/** Every tool-file label the chat shows: its text (without a patch's suffix), its title, whether it opens. */
 const shownFiles = (scope: Locator): Promise<Shown[]> => scope.locator(".chat-tool-file").evaluateAll((nodes) => nodes.map((node) => {
   const button = node.querySelector("button");
   return button !== null
@@ -89,7 +75,6 @@ const shownFiles = (scope: Locator): Promise<Shown[]> => scope.locator(".chat-to
     : { text: (node.textContent ?? "").replace(/ \((add|delete)\)$/, ""), title: node.getAttribute("title"), button: false };
 }));
 
-/** Opens the work block and each of its rows, so every tool card shows its files. */
 async function expandCards(scope: Locator): Promise<void> {
   await scope.getByText(REPLY).waitFor();
   // the block folds by itself when its turn settles, which may land at any moment; a click is the
@@ -109,33 +94,23 @@ async function expandCards(scope: Locator): Promise<void> {
   const lastFile = files.nth(ORDER.length - 1);
   for (let pass = 0; !(await lastFile.isVisible()); pass += 1) {
     assert.ok(pass < 3 * ORDER.length, `every tool row opens: ${JSON.stringify(await rows.evaluateAll((heads) => heads.map((head) => head.getAttribute("aria-expanded"))))}`);
-    // a folded row to open, or the last file: whichever shows first
     await folded.or(lastFile).first().waitFor();
     if (await folded.count() > 0) await folded.first().click();
   }
   assert.equal(await files.count(), ORDER.length);
 }
 
-/** The demo pane shown now (another may stay mounted, hidden, after a switch). */
 const shownPane = (page: Page, paneId: string): Locator => page.locator(`[data-layout-pane=${JSON.stringify(paneId)}].is-current`);
-/** The bare chat's frame. */
 const bareChat = (page: Page): Locator => page.locator(".terminal-stack");
 
-/** The labels expected in a pane whose folder is `root` (null: every path as written). */
 const expected = (root: string | null, button: boolean, title: (path: string) => string): Shown[] =>
   ORDER.map((path) => ({ text: root === ROOT ? LABELS[path]! : path, title: title(path), button }));
 
-/** The demo app, with the panes under test answering CWD's folders and TURNS' transcript. */
 async function prepareDemo(): Promise<string> {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Over the demo's own fetch and sockets: every pane record of the panes under test carries
-  // CWD's folder, their conversation reads answer TURNS, and /api/fs/ requests are kept in
-  // window.fsRequests (the one file under test opens; everything else is the demo's answer).
-  // The file /work/app/src/c.ts answers its content only on window.releaseFile(): the viewer's
-  // loading state for as long as a check needs it.
   const override = `<script>(() => {
     const demo = window.fetch;
     const cwd = ${JSON.stringify(CWD)};
@@ -214,7 +189,6 @@ async function prepareDemo(): Promise<string> {
   return app;
 }
 
-/** A bare ChatView: no file viewer around it (OpenFileContext null), its PC switchable with window.toolPathsQa.machine. */
 async function prepareBare(): Promise<void> {
   const entry = `
 import "./src/styles.css";
@@ -255,11 +229,9 @@ createRoot(document.getElementById("root")).render(<SettingsProvider><Fixture />
 const settingsOf = (theme: string, language: string) => JSON.stringify({ language, theme, alertsOn: false });
 let shots = 0;
 const captures: string[] = [];
-/** Once every running animation has finished: a sheet still sliding in or out is no state. */
 const settled = (page: Page): Promise<unknown> => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
 async function shot(page: Page, name: string, pointer = false): Promise<void> {
   if (evidence === null) return;
-  // a state the pointer is not part of: the pointer rests on empty page, off every row's hover plate
   const viewport = page.viewportSize();
   if (!pointer && viewport !== null && viewport.width > 390) await page.mouse.move(viewport.width - 4, viewport.height / 2);
   const file = `tool-paths-${name}.png`;
@@ -269,14 +241,12 @@ async function shot(page: Page, name: string, pointer = false): Promise<void> {
   shots += 1;
 }
 
-/** No horizontal page scroll at this width: the long path wraps inside its card. */
 async function noPageScroll(page: Page, label: string): Promise<void> {
   const overflow = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, width: document.documentElement.clientWidth }));
   assert.ok(overflow.scroll <= overflow.width, `${label}: the page scrolls sideways (${overflow.scroll} > ${overflow.width})`);
 }
 
 interface Copied { text: string; html: string; selection: string; labels: string[]; claimed: boolean | null }
-/** Selects what `select` picks in the page, presses the copy keys and reads the clipboard back; `claimed`: the page took the copy over from the browser. */
 async function copyOf(page: Page, scope: Locator, select: (labels: Element[]) => void): Promise<Copied> {
   await page.evaluate(() => {
     const qa = window as unknown as { copyClaimed: boolean | null };
@@ -298,7 +268,6 @@ async function copyOf(page: Page, scope: Locator, select: (labels: Element[]) =>
   });
 }
 
-/** Copies of the first label (whole, by its text alone, in part) and of every card at once. */
 async function copyChecks(page: Page, scope: Locator, form: string): Promise<void> {
   const before = (await shownFiles(scope)).map((file) => file.text);
   const whole = await copyOf(page, scope, (labels) => {
@@ -308,7 +277,6 @@ async function copyChecks(page: Page, scope: Locator, form: string): Promise<voi
     getSelection()!.addRange(range);
   });
   assert.equal(whole.text, "/work/app/src/a.ts", `${form}: a copy of the whole label takes the path as written`);
-  // the selection and the label are as they were: only the copy differs
   assert.equal(whole.selection, "app/src/a.ts");
   assert.deepEqual((await shownFiles(scope)).map((file) => file.text), before);
   const dragged = await copyOf(page, scope, (labels) => {
@@ -339,7 +307,6 @@ async function copyChecks(page: Page, scope: Locator, form: string): Promise<voi
   for (const path of ORDER) assert.ok(cards.text.includes(path), `${form}: a copy of every card keeps ${path}: ${JSON.stringify(cards.text)}`);
   assert.ok(!cards.text.split("\n").some((line) => line.trim().startsWith("app/")), `${form}: no shortened label is copied: ${JSON.stringify(cards.text)}`);
   assert.deepEqual((await shownFiles(scope)).map((file) => file.text), before);
-  // a selection reaching past the chat: the copy goes to where it starts, outside the chat
   const reaching: Record<string, (labels: Element[]) => void> = {
     "Select All": () => getSelection()!.selectAllChildren(document.body),
     "a drag from the first card past the chat": (labels) => {
@@ -354,12 +321,10 @@ async function copyChecks(page: Page, scope: Locator, form: string): Promise<voi
     const copy = await copyOf(page, scope, select);
     for (const path of ORDER) assert.ok(copy.text.includes(path), `${form}, ${reach}: the copy keeps ${path}: ${JSON.stringify(copy.text)}`);
     assert.ok(!copy.text.split("\n").some((line) => line.trim().startsWith("app/")), `${form}, ${reach}: no shortened label is copied: ${JSON.stringify(copy.text)}`);
-    // plain text alone: no rich copy rebuilt from the whole page
     assert.equal(copy.claimed, true, `${form}, ${reach}: the page takes the copy`);
     assert.equal(copy.html, "", `${form}, ${reach}: no HTML is rebuilt from the page`);
     assert.deepEqual((await shownFiles(scope)).map((file) => file.text), before);
   }
-  // one past the chat that takes no shortened label whole stays the browser's own copy
   const native = await copyOf(page, scope, (labels) => {
     const range = document.createRange();
     range.setStart(document.body, 0);
@@ -375,13 +340,11 @@ async function copyChecks(page: Page, scope: Locator, form: string): Promise<voi
   });
 }
 
-/** The viewer's loading state on the held file: it fits the page, then the file lands once released. */
 async function viewerLoading(page: Page, pane: Locator, label: string, capture: string | null): Promise<void> {
   await pane.getByRole("button", { name: "app/src/c.ts", exact: true }).click();
   const opening = page.locator('.file-viewer-note[role="status"]').filter({ hasText: "Opening…" });
   await opening.waitFor();
   assert.equal(await page.evaluate(() => (window as unknown as { heldFiles: () => number }).heldFiles()), 1, `${label}: the file's content is held`);
-  // the phone's viewer is a sheet that slides up: measured where it comes to rest
   await settled(page);
   const box = (await opening.boundingBox())!;
   const viewport = page.viewportSize()!;
@@ -413,14 +376,12 @@ async function openPane(page: Page, base: string, paneId: string): Promise<Locat
   await page.locator(".conn-live").waitFor({ state: "attached" });
   const scope = shownPane(page, paneId);
   await scope.locator(".terminal-stack.is-chat").waitFor();
-  // the demo's turn timer was held while the transport loaded (prepareDemo), and stays held
   assert.equal(await page.evaluate(() => (window as unknown as { heldDemoTurns: unknown[] }).heldDemoTurns.length), 1, "the demo's turn timer is held");
   await appFaces(page);
   await expandCards(scope);
   return scope;
 }
 
-/** The demo's checks (desktop, English, dark): labels, titles, the viewer's request, copies, switching panes. */
 async function demoChecks(browser: Browser, base: string): Promise<void> {
   const context = await demoContext(browser, 1440, "dark", "en");
   try {
@@ -446,14 +407,12 @@ async function demoChecks(browser: Browser, base: string): Promise<void> {
     await noPageScroll(page, "desktop");
     record("unknown-or-outside-root", "a Unicode path and a 300-character file name read from the folder, and the page never scrolls sideways", { unicode: "app/문서/설계 노트.md", long: LONG.length });
 
-    // hover: the whole path is the title the pointer shows; the click opens exactly that path
     const link = pane.getByRole("button", { name: "app/src/a.ts", exact: true });
     await link.hover();
     assert.equal(await link.getAttribute("title"), "Open /work/app/src/a.ts");
     await link.click();
     await page.waitForFunction(() => (window as unknown as { fsRequests: { path: string }[] }).fsRequests.some((request) => request.path === "/work/app/src/a.ts"), undefined, { timeout: 10_000 });
     await page.getByText("export const viewed = true;").first().waitFor();
-    // the project icon's reads name no file
     const requests = (await page.evaluate(() => (window as unknown as { fsRequests: { endpoint: string; path: string | null }[] }).fsRequests)).filter((request) => request.path !== null);
     assert.deepEqual(requests.map((request) => request.endpoint), ["/api/fs/stat", "/api/fs/file"]);
     assert.ok(requests.every((request) => request.path === "/work/app/src/a.ts"), `the viewer asked only for the whole path: ${JSON.stringify(requests)}`);
@@ -463,7 +422,6 @@ async function demoChecks(browser: Browser, base: string): Promise<void> {
     await viewerLoading(page, pane, "desktop", null);
     await copyChecks(page, pane, "the link");
 
-    // the copies and the transcript keep what the agent wrote
     const copied: Record<string, string> = {};
     for (const label of ["Copy as markdown", "Copy as plain text"]) {
       await pane.getByRole("button", { name: label, exact: true }).last().click();
@@ -474,8 +432,6 @@ async function demoChecks(browser: Browser, base: string): Promise<void> {
     assert.ok(transcript.includes("/work/app/src/a.ts") && !transcript.includes("\"app/src/a.ts\""), "the transcript is unchanged");
     record("relative-tool-target", "the reply's MD and TXT copies and the transcript read keep the raw paths", { copied, transcriptHasRaw: true });
 
-    // another pane, no folder known: every path as written; one on a Windows folder: the same;
-    // and back: the first pane's folder again, never the one shown before
     for (const [paneId, root] of [[panes.api, null], [panes.cli, null], [panes.omp, ROOT]] as const) {
       const workspace = paneId.split(":")[0]!;
       await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace)}] .pane-select`).first().click();
@@ -489,7 +445,6 @@ async function demoChecks(browser: Browser, base: string): Promise<void> {
   } finally { await context.close(); }
 }
 
-/** The phone (iphone-14: DPR 3, touch): every file link is at least 44x44 and none shares another's hit area; the viewer's loading state fits. */
 async function mobileChecks(browser: Browser, base: string): Promise<void> {
   const context = await demoContext(browser, 390, "light", "en");
   try {
@@ -512,7 +467,6 @@ async function mobileChecks(browser: Browser, base: string): Promise<void> {
   } finally { await context.close(); }
 }
 
-/** The bare ChatView: labels as text with the whole path as title, no button; another PC takes no folder along. */
 async function bareChecks(browser: Browser, base: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] });
   try {
@@ -533,8 +487,6 @@ async function bareChecks(browser: Browser, base: string): Promise<void> {
       assert.deepEqual(await shownFiles(chat), expected(root, false, (path) => path), `machine ${machine}`);
     }
     record("unknown-or-outside-root", "the same pane id on another PC (folder /srv/other), on one with no folder and on a UNC folder written //server/share/app reads every path as written; back, the first PC's folder again", { machines: { local: ROOT, remote: "/srv/other", unknown: null, unc: "//server/share/app" } });
-    // two chats mounted at once (split halves, herdr splits, a chat kept under a peek): a copy wholly
-    // inside either is that chat's own, rich HTML included, whichever chat's listener runs first
     await page.evaluate(() => (window as unknown as { toolPathsQa: { second: (on: boolean) => void } }).toolPathsQa.second(true));
     const second = page.locator(".tool-paths-second");
     await expandCards(second);
@@ -558,7 +510,6 @@ async function bareChecks(browser: Browser, base: string): Promise<void> {
   } finally { await context.close(); }
 }
 
-/** One width and theme's screenshots: every state the tool cards have, the viewer, the bare chat. */
 async function captureSet(browser: Browser, base: string, bareBase: string, width: number, theme: string, language: string): Promise<void> {
   const name = (state: string) => `${width}-${theme}${language === "ko" ? "-ko" : ""}-${state}`;
   const context = await demoContext(browser, width, theme, language);
@@ -576,28 +527,24 @@ async function captureSet(browser: Browser, base: string, bareBase: string, widt
       await shot(page, name("hover"), true);
       await page.mouse.move(0, 0);
     }
-    // keyboard focus: the ring a Tab shows
     await link.focus();
     await page.keyboard.press("Shift+Tab");
     await page.keyboard.press("Tab");
     assert.ok(await link.evaluate((node) => node.matches(":focus-visible")), "the link takes keyboard focus");
     await shot(page, name("focus"));
     await link.evaluate((node) => (node as HTMLElement).blur());
-    // pressed: held down, then let go away from it (no click)
     const box = (await link.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await shot(page, name("pressed"), true);
     await page.mouse.move(0, 0);
     await page.mouse.up();
-    // the outside, sibling, relative and Windows paths, then the long and Unicode ones
     await pane.locator(".chat-tool-file").nth(ORDER.indexOf("src/relative.ts")).scrollIntoViewIfNeeded();
     await shot(page, name("outside"));
     await pane.locator(".chat-tool-file").nth(ORDER.indexOf(LONG)).scrollIntoViewIfNeeded();
     await shot(page, name("long"));
     await pane.getByText(REPLY).scrollIntoViewIfNeeded();
     await shot(page, name("end"));
-    // the viewer the label opens, then the error it shows for a file the PC cannot read
     await pane.getByRole("button", { name: "app/src/a.ts", exact: true }).click();
     await page.getByText("export const viewed = true;").first().waitFor();
     await noPageScroll(page, name("viewer"));
@@ -611,13 +558,10 @@ async function captureSet(browser: Browser, base: string, bareBase: string, widt
     await shot(page, name("viewer-error"));
     await page.getByRole("button", { name: "Close file", exact: true }).click();
     await failure.waitFor({ state: "detached" });
-    // the viewer's loading state, on a file whose content waits for the script
     await viewerLoading(page, pane, name("viewer-loading"), name("viewer-loading"));
-    // a pane with no folder known
     const empty = await openPane(page, base, panes.api);
     await empty.locator(".chat-tool-file").first().scrollIntoViewIfNeeded();
     await shot(page, name("emptycwd"));
-    // the bare chat: labels as text, nothing to press
     await page.goto(bareBase);
     const chat = bareChat(page);
     await expandCards(chat);

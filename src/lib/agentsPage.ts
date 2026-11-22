@@ -1,24 +1,18 @@
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { AgentIntegration, MissingCommand, ProviderUsage, UsageProviderId } from "../../shared/protocol.ts";
 import { agentSections } from "./agentList.ts";
+import { isSignIn } from "./usage.ts";
 
-/** One installed agent on Settings → Agents, with what Ovis knows of it on the PC shown. */
 export interface AgentsPageRow {
   agent: AgentCatalogRow;
-  /** the usage provider its sign-in is read as; null when Ovis reads none for it, or reads it on another PC */
   provider: UsageProviderId | null;
-  /** that provider's accounts, the hub's included, in the order they came */
   accounts: ProviderUsage[];
-  /** the command the server lacks to look for that provider's sign-in (`secret-tool`); null when it lacks none */
   missing: string | null;
-  /** herdr's integration for it, when herdr has one */
   integration: AgentIntegration | null;
 }
 
 export interface AgentsPage {
-  /** the agents the PC has, in the catalog's order */
   rows: AgentsPageRow[];
-  /** providers with accounts that no row lists (Cursor, an agent not on this PC), in the order they came */
   otherProviders: UsageProviderId[];
   /**
    * herdr's integrations no row shows: agents not on the PC, or ones the catalog does not know; found
@@ -26,9 +20,7 @@ export interface AgentsPage {
    * built-in one, so it would only say what the PC does not have (Install another agent offers those).
    */
   otherIntegrations: AgentIntegration[];
-  /** what the PC surely lacks and can install: one it cannot tell about offers no Install */
   installable: AgentCatalogRow[];
-  /** the PC told no agent's install state (another machine of herdr-core's): nothing is said to be there or missing */
   installsUnknown: boolean;
 }
 
@@ -36,16 +28,9 @@ function integrationFor(agent: AgentCatalogRow, integrations: readonly AgentInte
   return integrations.find((integration) => integration.target === agent.id || agent.detect.binaries.includes(integration.command)) ?? null;
 }
 
-/**
- * Settings → Agents from the PC's catalog, the usage accounts and herdr's integrations. An account
- * goes under the one installed agent that signs in to its provider (`sign_in.provider`), never under
- * two. The accounts are read on the PC Ovis's server runs on, so `accountsHere` false (another PC
- * shown) lists them all apart rather than under that PC's agents.
- */
 export function agentsPage({ agents, providers, missing = [], integrations, accountsHere }: {
   agents: readonly AgentCatalogRow[];
   providers: readonly ProviderUsage[];
-  /** the usage report's `missing_commands` */
   missing?: readonly MissingCommand[];
   integrations: readonly AgentIntegration[];
   accountsHere: boolean;
@@ -72,20 +57,18 @@ export function agentsPage({ agents, providers, missing = [], integrations, acco
   };
 }
 
-/** What a row says of its sign-in: only what the usage accounts show, never a guess. */
 export type SignInState =
-  /** no provider Ovis reads, or plan limits are off (nothing is read then) */
   | { kind: "unknown" }
   | { kind: "none" }
-  /** no account, and the server could not look where one may be: `command` is not installed there */
   | { kind: "unreadable"; command: string }
   | { kind: "signed-in"; count: number; account: string | null }
   | { kind: "problem"; count: number; problems: number };
 
 export function signInState(provider: UsageProviderId | null, accounts: readonly ProviderUsage[], read: boolean, missing: string | null = null): SignInState {
   if (provider === null || !read) return { kind: "unknown" };
-  if (accounts.length === 0) return missing === null ? { kind: "none" } : { kind: "unreadable", command: missing };
-  const problems = accounts.filter((usage) => usage.problem !== null).length;
-  if (problems > 0) return { kind: "problem", count: accounts.length, problems };
-  return { kind: "signed-in", count: accounts.length, account: accounts.length === 1 ? accounts[0]!.account : null };
+  const signIns = accounts.filter(isSignIn);
+  if (signIns.length === 0) return missing === null ? { kind: "none" } : { kind: "unreadable", command: missing };
+  const problems = signIns.filter((usage) => usage.problem !== null).length;
+  if (problems > 0) return { kind: "problem", count: signIns.length, problems };
+  return { kind: "signed-in", count: signIns.length, account: signIns.length === 1 ? signIns[0]!.account : null };
 }

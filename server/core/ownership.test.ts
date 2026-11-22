@@ -3,23 +3,15 @@ import { posix } from "node:path";
 import ts from "typescript-api";
 import { fail, files, read } from "../../scripts/source-scan.ts";
 
-// The core's modules hand each other the objects they own by reference (server/core/index.ts): code
-// outside server/core reaches them only through that index, and the index exports only createCore and
-// what the WebSocket upgrade needs. Both checks read the source with TypeScript's parser, so a way of
-// writing an import or an export that a pattern would not expect cannot slip past them.
-
-/** The repository paths that name server/core/index.ts. */
 const INDEX = new Set(["server/core", "server/core/", "server/core/index", "server/core/index.ts", "server/core/index.js"]);
 const EXPORTS = ["SocketData", "connectionData", "createCore"];
 
-/** tsconfig.json's path aliases (`@shared/*`), as the prefix of a module name and the folder it stands for. */
 const ALIASES: [string, string][] = Object.entries(
   (ts.readConfigFile("tsconfig.json", read).config as { compilerOptions: { paths: Record<string, string[]> } }).compilerOptions.paths,
 ).map(([alias, [path]]) => [alias.replace(/\*$/, ""), posix.normalize(path!.replace(/\*$/, ""))]);
 
 const parse = (file: string, text: string): ts.SourceFile => ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
 
-/** `import(…)`, `require(…)`, `require.resolve(…)` and `mock.module(…)`: the calls that name a module to load. */
 function loads(callee: ts.Expression): boolean {
   if (callee.kind === ts.SyntaxKind.ImportKeyword) return true;
   if (ts.isIdentifier(callee)) return callee.text === "require";
@@ -27,11 +19,6 @@ function loads(callee: ts.Expression): boolean {
     && (callee.expression.text === "require" && callee.name.text === "resolve" || callee.expression.text === "mock" && callee.name.text === "module");
 }
 
-/**
- * Each module a source names, with its line: import and export declarations, `import x = require()`,
- * `import("…")` types and the calls `loads` knows. A template literal with substitutions gives only its
- * text before the first one (`partial`).
- */
 function moduleNames(file: string, text: string): { name: string; line: number; partial: boolean }[] {
   const source = parse(file, text);
   const names: { name: string; line: number; partial: boolean }[] = [];
@@ -52,13 +39,11 @@ function moduleNames(file: string, text: string): { name: string; line: number; 
   return names;
 }
 
-/** The repository path a module name points at, or null for a package (`react`, `node:fs`). */
 function pathOf(file: string, name: string): string | null {
   for (const [alias, folder] of ALIASES) if (name.startsWith(alias)) return posix.normalize(`${folder}/${name.slice(alias.length)}`);
   return name.startsWith(".") ? posix.normalize(posix.join(posix.dirname(file), name)) : null;
 }
 
-/** Where a file outside server/core names a module inside it other than its index, as `file:line: name`. */
 function reachesIntoCore(file: string, text: string): string[] {
   return moduleNames(file, text).flatMap(({ name, line, partial }) => {
     const path = pathOf(file, name);
@@ -67,7 +52,6 @@ function reachesIntoCore(file: string, text: string): string[] {
   });
 }
 
-/** Every name a module exports, read from its statements: `export *` is "*", a default export "default". */
 function exportedNames(file: string, text: string): string[] {
   const source = parse(file, text);
   return source.statements.flatMap((statement): string[] => {

@@ -1,11 +1,3 @@
-/*
- * Token gate for AccessGate.tsx: one card centered on the base surface, shown
- * instead of the shell while the server wants a pairing code or a token. Only tokens from the
- * styles.css :root block. The card's content column is exactly one sidebar wide
- * (--sidebar-w) so the input and button sit at a width the rest of the UI already
- * uses, and there is no entrance animation: the system only moves on state changes.
- */
-
 .access-gate-screen {
   display: grid;
   place-items: center;
@@ -60,7 +52,6 @@
   color: var(--text);
 }
 
-/* focus is the global --ring rule; the border only changes to name an invalid value */
 .access-gate-input {
   appearance: none;
   width: 100%;
@@ -84,10 +75,6 @@
   border-color: var(--status-blocked);
 }
 
-/*
- * The system's one filled control. Hover and press are the accent mixed with the
- * bright and base surface tokens: no new colors, the hue stays the accent's.
- */
 .access-gate-submit {
   margin-top: var(--space-3);
   height: var(--control-h);
@@ -133,7 +120,6 @@
   overflow-wrap: anywhere;
 }
 
-/* fingers: the controls grow to the touch target */
 @media (pointer: coarse) {
   .access-gate-input,
   .access-gate-submit {
@@ -160,7 +146,6 @@
   }
 }
 
-/* the six-digit code: wide, spaced, no autocomplete look */
 .access-gate-input[inputmode="numeric"] {
   font-family: var(--font-mono);
   font-size: var(--fs-xl);

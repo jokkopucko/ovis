@@ -1,16 +1,8 @@
 /**
- * The compositor page: a 1920x1080 DOM stage that draws one frame of the film from a plain
- * description (FrameDesc). Everything that moves is a function of the frame's time computed here
- * or in timeline.ts: no CSS transitions or animations, so a frame is the same every time.
- *
- * - The room: graphite #12100e, the lamp from top centre, a floor pool under each object,
- *   an 18% vignette. (Grain is added per frame by ffmpeg in render.ts.)
  * - Objects: the browser window and the phone of DESIGN.md/brief section 2, each carrying a recorded
  *   frame. The frame is resampled once in a canvas at the size it takes on screen (Skia's high
  *   quality downscale), and only then moved by the object's matrix3d (perspective, rotation,
  *   translation, near unit scale), so UI text stays crisp and never shimmers under a slow push.
- * - The drawn cursor, click rings and taps ride the object's matrix (they sit on its screen).
- * - Type: word-by-word mask reveal with the amber rail; keycaps; the end card.
  */
 
 export interface ObjDesc {
@@ -19,14 +11,10 @@ export interface ObjDesc {
   src: string;
   vp: { w: number; h: number };
   dpr: number;
-  /** output px per CSS px of the recorded viewport, before perspective */
   k: number;
-  /** chrome unit (window bar, radius, bezel) in output px */
   u: number;
-  /** CSS matrix3d, column-major, local px -> frame px */
   m: number[];
   opacity: number;
-  /** black over the whole object, 0..1 */
   dim: number;
   cursor: { x: number; y: number; a: number; press: number } | null;
   rings: { x: number; y: number; age: number }[];
@@ -41,26 +29,19 @@ export interface TypeDesc {
   y: number;
   align: "left" | "center" | "right";
   tIn: number;
-  /** fully gone at tOut (the 240 ms fade ends there), or cut there when `cut` */
   tOut: number;
   cut?: boolean;
   rail?: boolean;
-  /** per-word entry delays in s (default 70 ms stagger) */
   delays?: number[];
-  /** the type sits over UI: a feathered darkening (~93%) behind it, from just before it enters to just after it leaves */
   shade?: boolean;
-  /** how far above the words a primary's shade starts, and past their right end it reaches (px, defaults 200, 100) */
   shadeTop?: number;
   shadeRight?: number;
-  /** a secondary's shade as a primary's column instead of a patch (it sits on a UI rule to hide end to end) */
   shadeCol?: boolean;
 }
 
 export interface FrameDesc {
   t: number;
-  /** black over everything, 0..1 */
   fade: number;
-  /** lamp-up reveal of the cold open, 0..1, or null */
   reveal: number | null;
   lamp: number;
   pools: { x: number; y: number; w: number; h: number; a: number }[];
@@ -69,9 +50,7 @@ export interface FrameDesc {
   type: TypeDesc[];
   keys: { t0: number; labels: string[]; press: number[]; tOut: number } | null;
   end: { t0: number } | null;
-  /** hide the vignette (the loop bakes its own light) */
   vignette: number;
-  /** opacity of the 14% falloff at the bottom of every screen (default 1; the hero loop lightens it so its UI reads) */
   falloff?: number;
 }
 

@@ -79,8 +79,6 @@ try {
         const answer = await page.evaluate(() => (window as unknown as { nativeAnswers: { draft?: unknown }[] }).nativeAnswers[0]);
         assert.deepEqual(answer?.draft, { option_indices: [0], custom_text: "A custom tool" }, "navigation must carry the current edits");
         await page.locator(".prompt-card").waitFor({ state: "hidden" });
-        // The backend's navigation round trip is covered by opencode-answer.test.ts. Remount
-        // this real component with its returned defaults to check both input controls.
         await page.evaluate((next) => {
           (window as unknown as { nativePrompt: unknown }).nativePrompt = { ...next, id: "native-returned", default_option_indices: [0], default_custom_text: "A custom tool" };
         }, prompt);
@@ -120,7 +118,6 @@ try {
         if (process.env.OPENCODE_FOLLOWUP !== "optional") {
           await page.evaluate(() => { Object.assign(window, { nativeUnconfirmed: true }); });
           await page.locator(".composer-text").fill("A composer answer");
-          // the send key: a phone's Return breaks the line by default, its hardware Mod+Enter sends
           await page.locator(".composer-text").press(width === 390 ? "ControlOrMeta+Enter" : "Enter");
           await page.locator(".composer-note").waitFor();
           assert.equal(await page.locator(".composer-note").textContent(), KO[unconfirmedKey], "composer must show the shipped unconfirmed translation");

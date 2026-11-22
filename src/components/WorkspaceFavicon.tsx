@@ -4,11 +4,6 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { probeFavicon } from "../lib/projectFavicon.ts";
 import { useResourceUrl } from "../lib/useResourceUrl.ts";
 
-/**
- * The project's own icon in place of `fallback`, when its folder keeps one. The folder is probed
- * once per session through that PC's /api/fs/favicon; with no icon (or one that will not draw)
- * the fallback stays exactly as it was.
- */
 export function WorkspaceFavicon({ root, fallback }: { root: string | null; fallback: ReactNode }) {
   const machineId = useMachineId();
   const { fileUrl } = useMachineApi();

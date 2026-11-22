@@ -6,12 +6,7 @@
  * every file it would serve, byte for byte, against the same file fetched from `app.ovis.sh`, and
  * makes it current only if `app.ovis.sh` still serves that commit. A release asset replaced after
  * the deploy is refused, so what this copy serves is what `app.ovis.sh` served. The box itself
- * still delivers the code, so whoever controls it is a trust root too (docs/relay.md). A run with
- * nothing new does nothing. Precompressed copies are dropped: the web server compresses itself.
- *
- *   bun relay/shell-mirror.ts --dir /opt/ovis-shell
- *
- * `<dir>/current` is the folder the web server serves; the last three releases stay beside it.
+ * still delivers the code, so whoever controls it is a trust root too (docs/relay.md).
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -25,7 +20,6 @@ const PAGES_ONLY = new Set(["_headers", "_redirects"]);
 const COMPARE_AT_ONCE = 8;
 /** How long a commit no release was found for is not searched again (GitHub allows 60 unauthenticated calls an hour). */
 const MISS_MS = 60 * 60 * 1000;
-/** A run's lock older than this is from a run that was killed. */
 const LOCK_MS = 60 * 60 * 1000;
 const TAG_PAGES = 10;
 const REVISION = /^[0-9a-f]{40}$/;
@@ -36,7 +30,6 @@ interface Release { readonly tag_name: string; readonly assets: readonly Release
 export interface MirrorOptions {
   readonly dir: string;
   readonly fetch?: typeof fetch;
-  /** Unpacks a tarball into an empty folder; `tar` by default. */
   readonly unpack?: (tarball: string, into: string) => Promise<void>;
 }
 
@@ -73,12 +66,10 @@ async function tarUnpack(tarball: string, into: string): Promise<void> {
   await Bun.$`tar -xzf ${tarball} -C ${into} --no-same-owner --no-same-permissions`.quiet();
 }
 
-/** One run: brings `<dir>/current` to the build `app.ovis.sh` serves. Runs on one folder never overlap. */
 export async function mirrorOnce(options: MirrorOptions): Promise<MirrorResult> {
   mkdirSync(options.dir, { recursive: true });
   const lock = join(options.dir, ".lock");
   try { mkdirSync(lock); } catch {
-    // a run killed before its finally leaves the lock: past an hour it is taken as gone
     if (Date.now() - statSync(lock).mtimeMs < LOCK_MS) throw new Error(`another run holds ${lock}`);
     rmSync(lock, { recursive: true, force: true });
     mkdirSync(lock);
@@ -86,7 +77,6 @@ export async function mirrorOnce(options: MirrorOptions): Promise<MirrorResult> 
   try { return await mirror(options); } finally { rmSync(lock, { recursive: true, force: true }); }
 }
 
-/** The tags on `commit`, from GitHub's tag list, a page at a time until one names it or the list ends. */
 async function tagsOf(fetcher: typeof fetch, commit: string): Promise<string[]> {
   for (let page = 1; page <= TAG_PAGES; page++) {
     const tags = await json(fetcher, `https://api.github.com/repos/${REPOSITORY}/tags?per_page=100&page=${page}`) as { name?: unknown; commit?: { sha?: unknown } }[];
@@ -108,7 +98,6 @@ async function mirror(options: MirrorOptions): Promise<MirrorResult> {
   } catch (error) { if (error instanceof Error && error.message.startsWith("no release")) throw error; }
   const tags = await tagsOf(fetcher, live);
   if (!tags.length) {
-    // no tag at all: a commit no release is coming for, so GitHub is spared until the hour is up
     writeFileSync(miss, JSON.stringify({ revision: live, at: Date.now() }));
     throw new Error(`no release was built from ${live}, the commit ${APP} serves`);
   }
@@ -128,7 +117,6 @@ async function mirror(options: MirrorOptions): Promise<MirrorResult> {
     }
     return install(options.dir, tag, live, archive, unpack, fetcher);
   }
-  // tagged, but its shell is not attached yet (the Release run deploys Pages first): looked for again next run
   throw new Error(`the release of ${live} (${tags.join(", ")}) has no dist-shell.tar.gz yet`);
 }
 
@@ -137,7 +125,6 @@ function files(root: string, at = root): string[] {
     ? files(root, join(at, entry.name)) : [relative(root, join(at, entry.name))]);
 }
 
-/** Every file of `staging` as `app.ovis.sh` serves it, or the first one that differs. */
 async function compareWithApp(staging: string, fetcher: typeof fetch): Promise<void> {
   const queue = files(staging).filter((path) => !PAGES_ONLY.has(path));
   const worker = async (): Promise<void> => {
@@ -167,7 +154,6 @@ async function install(dir: string, tag: string, revision: string, archive: Uint
     await compareWithApp(staging, fetcher);
     // app.ovis.sh may have moved on while this run fetched: a copy is made current only while it serves the same
     if (revisionOf(await json(fetcher, `${APP}/build.json`)) !== revision) throw new Error(`${APP} changed while ${tag} was being checked`);
-    // a folder of its own, beside the one `current` may serve (the same tag installed again included)
     const name = `${tag}+${Date.now().toString(36)}`;
     renameSync(staging, join(releases, name));
     // swapped by a rename, so the web server never sees a missing `current`
@@ -183,7 +169,6 @@ async function install(dir: string, tag: string, revision: string, archive: Uint
   }
 }
 
-/** Keeps the newest KEEP releases by when they were installed (the time in their folder's name), and always the current one. */
 function prune(dir: string, releases: string, current: string): void {
   const kept = readdirSync(releases, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))

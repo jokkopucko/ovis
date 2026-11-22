@@ -72,9 +72,7 @@ describe("terminal font stack", () => {
 
   it("puts the typed list after the icon font and in front of the text fonts, never in place of them", () => {
     const stack = terminalFontStack('D2Coding, "Cascadia Mono"');
-    // the bundled icon font never sizes a cell, so it stays first and its icons draw over any font
     expect(stack.startsWith('"Symbols Nerd Font Mono", D2Coding, "Cascadia Mono", "JetBrains Mono Web", "JetBrains Mono"')).toBe(true);
-    // a missing font falls through to today's order, and Malgun Gothic stays the last resort
     expect(stack.replace('D2Coding, "Cascadia Mono", ', "")).toBe(TERMINAL_FONT_STACK);
     expect(stack.endsWith('monospace, "Malgun Gothic"')).toBe(true);
   });
@@ -84,7 +82,6 @@ describe("terminal font stack", () => {
     const bundled = new Set([...sheets.matchAll(/font-family:\s*["']([^"']+)["']/g)].map((match) => match[1]!));
     expect([...bundled].sort()).toEqual([MONO_FAMILY, "Pretendard Variable"]);
     const named = TERMINAL_FONT_STACK.split(",").map((name) => name.trim().replace(/["']/g, ""));
-    // the icon font, which never sizes a cell, and then the bundled face
     expect(named.slice(0, 2)).toEqual(["Symbols Nerd Font Mono", MONO_FAMILY]);
     expect(named).not.toContain("Pretendard Variable");
     // both weights, from the bundled files alone: a local() copy is a font Ovis for Mac's canvas cannot measure
@@ -94,7 +91,6 @@ describe("terminal font stack", () => {
       expect(face).not.toContain("local(");
       expect(existsSync(new URL(/url\("([^"]+)"\)/.exec(face)![1]!, new URL("../fonts/", import.meta.url)))).toBe(true);
     }
-    // the chat's and the chrome's code face does take it, after the icon font
     const mono = /--font-mono:\s*([^;]+);/.exec(readFileSync(new URL("../styles.css", import.meta.url), "utf8"))![1]!;
     expect(mono.startsWith('"Symbols Nerd Font Mono", "JetBrains Mono Web", ')).toBe(true);
   });
@@ -112,10 +108,7 @@ describe("terminal font stack", () => {
     for (const face of faces) {
       const file = /url\("([^"]+)"\)/.exec(face)![1]!;
       expect(existsSync(new URL(file, new URL("../components/", import.meta.url)))).toBe(true);
-      // the compatibility jamo and the syllables, nothing else: Latin, punctuation, box drawing and the
-      // private use area stay with the cell's font and the icon font
       expect(/unicode-range:\s*([^;]+);/.exec(face)![1]!.trim()).toBe("U+3131-318E, U+AC00-D7A3");
-      // and the file draws exactly what the range sends it
       expect(cmapRanges(readFileSync(new URL(file, new URL("../components/", import.meta.url))))).toEqual([[0x3131, 0x318e], [0xac00, 0xd7a3]]);
     }
   });
@@ -126,8 +119,6 @@ describe("terminal font stack", () => {
 });
 
 describe("fonts the canvas cannot measure", () => {
-  // a page that has the fonts in `drawn` and a canvas that has those in `measured`: a list is as wide
-  // as its first font either one has, and every monospaced face is as wide as monospace
   const page = (drawn: readonly string[], measured: readonly string[]): FontWidths => {
     const width = (has: readonly string[]) => (family: string): number => {
       const names = family.split(",").map((name) => name.trim().replace(/["']/g, ""));
@@ -142,7 +133,6 @@ describe("fonts the canvas cannot measure", () => {
   it("leaves out the installed fonts Ovis for Mac's web view draws but its canvas cannot measure", () => {
     const widths = page([...system, ...installed], system);
     expect(measurableFontStack(TERMINAL_FONT_STACK, widths)).toBe(TERMINAL_FONT_STACK.replace('"JetBrains Mono", ', "").replace('"D2Coding", ', ""));
-    // a font typed in Settings goes the same way
     expect(measurableFontStack(terminalFontStack("D2Coding"), widths)).toBe(TERMINAL_FONT_STACK.replace('"JetBrains Mono", ', "").replace('"D2Coding", ', ""));
   });
 

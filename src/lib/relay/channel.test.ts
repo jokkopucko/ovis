@@ -1,4 +1,5 @@
 import { afterEach, expect, it, jest } from "bun:test";
+import { PENDING_MS } from "../../../server/account/pending.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,7 +13,15 @@ import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
-import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
+import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
+import { withAccountDevice } from "../account/accountDevice.ts";
+import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE } from "../../../shared/relay-mux.ts";
+import { pairFingerprint, verifyPairProof } from "../../../shared/pair-fingerprint.ts";
+import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
+import { probePc } from "../../../shared/relay-channel.ts";
+import { isFatalRelayError } from "./transport.ts";
+import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED } from "../../../shared/relay-pass.ts";
 import type { RelaySocket } from "./channel.ts";
 import { failureOf, pairsAgainWithoutKey } from "./shellState.ts";
 import { base64url, getDevice } from "./device.ts";
@@ -50,8 +59,8 @@ class FakeSocket implements RelaySocket {
   }
 }
 
-async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[] } = {}) {
+async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol" | "early-welcome" | "account" | "key-proof" | "key-proof-twice", onClose?: (error: Error) => void,
+  pc: { relay?: string; hints?: readonly string[]; features?: readonly string[]; provisional?: boolean; omitKeyPending?: boolean; wrap?: (store: MemoryDeviceStore, device: RelayDevice) => RelayDeviceStore } = {}, channel: Partial<RelayChannelOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -72,6 +81,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
   const authSeen = Promise.withResolvers<void>();
   const allowAuth = Promise.withResolvers<void>();
   const httpSeen = Promise.withResolvers<string>();
+  const receiptSeen = Promise.withResolvers<MuxEngine["stats"]>();
   let secure: SecureChannel;
   let server: MuxEngine;
   let socket: FakeSocket;
@@ -87,7 +97,6 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     httpSeen.reject(error);
     socket.close(4000);
   };
-  // These signals are also present in malformed-input cases that never reach admission.
   void authSeen.promise.catch(() => {});
   void httpSeen.promise.catch(() => {});
   let incoming = Promise.resolve();
@@ -98,7 +107,11 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       const bytes = new Uint8Array(data);
       const frame = decodeFrame(bytes);
       trace.push(`client:${Object.entries(FrameType).find(([, value]) => value === frame.type)?.[0]}`);
-      incoming = incoming.then(async () => { await daemonOpening; server.receive(bytes); }).catch(fail);
+      incoming = incoming.then(async () => {
+        await daemonOpening;
+        server.receive(bytes);
+        if (frame.type === FrameType.RECEIVED) receiptSeen.resolve(server.stats);
+      }).catch(fail);
     } },
   }).then((channel) => {
     secure = channel;
@@ -111,14 +124,15 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       onHttp: (stream) => { httpSeen.resolve(stream.request.target); stream.headers(200); stream.end(); },
       onSession: (frame) => { void handle(frame).catch(fail); },
     });
-    // a PC that sends WELCOME right behind its handshake answer, before the phone's HELLO arrives
-    if (attack === "early-welcome") {
+    if (pc.provisional) {
+      server.sendSession({ type: FrameType.WELCOME, flags: 0, stream_id: 0, payload: { ...welcome(), features: [], provisional: true } });
+    } else if (attack === "early-welcome") {
       trace.push("server:WELCOME");
       server.sendSession({ type: FrameType.WELCOME, flags: 0, stream_id: 0, payload: welcome() });
     }
   });
   void daemonOpening.catch(() => {});
-  const welcome = () => ({ protocol: "ovis-mux" as const, version: 1 as const, features: attack === "features" ? ["unoffered"] : attack === "account" ? ["account"] : [],
+  const welcome = () => ({ protocol: "ovis-mux" as const, version: 1 as const, features: pc.features ?? (attack === "features" ? ["unoffered"] : attack === "account" ? ["account"] : []),
     limits: { ...LIMITS_V1, max_streams: 2 }, nonce: attack === "nonce" ? base64url(nonce.slice(1)) : base64url(nonce),
     server_version: "test", relay_protocol: attack === "protocol" ? 2 : 1, min_supported_client: "0.0.0" });
   const raw = (type: number, payload: unknown): Uint8Array => {
@@ -127,11 +141,23 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     bytes[0] = 1; bytes[1] = type; bytes.set(body, 8);
     return bytes;
   };
+  let keyProofSent: MuxFrame | undefined;
+  const keyProof = { challenge: base64url(new Uint8Array(32).fill(7)), proved: Promise.withResolvers<string>(), proofs: 0 };
   const handle = async (frame: MuxFrame): Promise<void> => {
+    if (frame.type === FrameType.KEY_PROVE) {
+      keyProof.proofs++;
+      keyProof.proved.resolve(frame.payload.signature);
+      if (attack === "key-proof-twice") {
+        await secure.send(raw(FrameType.KEY_CHALLENGE, { challenge: base64url(new Uint8Array(32).fill(8)) }).slice().buffer);
+        return;
+      }
+      // a waiting frame that tries to name a fingerprint: the device must never show it
+      if (!pc.omitKeyPending) await secure.send(raw(FrameType.KEY_PENDING, { fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
+      return;
+    }
     if (frame.type === FrameType.HELLO) {
       offered = frame.payload.features;
       hinting = pc.hints !== undefined && offered.includes("relay-hints");
-      // a PC that finished the handshake and then hung: nothing answers HELLO
       if (attack === "silence" || attack === "early-welcome") return;
       if (attack === "receipt") {
         await secure.send(encodeFrame({ type: FrameType.RECEIVED, flags: 0, stream_id: 0, payload: 99n }).slice().buffer);
@@ -155,6 +181,11 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
       return;
     }
     let deviceId: string;
+    if (frame.type === FrameType.PAIR && (attack === "key-proof" || attack === "key-proof-twice") && offered.includes("key-proof-1") && !keyProofSent) {
+      keyProofSent = frame;
+      await secure.send(raw(FrameType.KEY_CHALLENGE, { challenge: keyProof.challenge, fingerprint: "ZZZZ-ZZZZ" }).slice().buffer);
+      await keyProof.proved.promise;
+    }
     if (frame.type === FrameType.PAIR) {
       const paired = registry.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key);
       if (!paired) throw new Error("Pairing rejected");
@@ -172,24 +203,22 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
     await server.flush();
     server.authenticate(deviceId);
   };
-  const opening = openRelayChannel(offer, { store, ...(onClose ? { onClose } : {}), socket: (url) => {
+  const signingIn = !pairing && pc.wrap ? (await store.get(offer.server_id))! : undefined;
+  const opening = openRelayChannel(offer, { ...channel, store: signingIn ? pc.wrap!(store, signingIn) : store, ...(onClose ? { onClose } : {}), socket: (url) => {
     expect(url).toBe(`${offer.relay}/v1/ws?server_id=${offer.server_id}&role=client&v=1`);
     queueMicrotask(() => socket.deliver(JSON.stringify(attack === "assigned" ? { type: "wrong" } : { type: "assigned", connection_id: "ef".repeat(16) })));
     return socket;
   } });
-  return { opening, trace, authSeen, allowAuth, httpSeen, socket, store, offer, get offered() { return offered; } };
+  return { opening, trace, authSeen, allowAuth, httpSeen, receiptSeen, socket, store, offer, keyProof, get offered() { return offered; } };
 }
 
 for (const pairing of [false, true]) {
   it(`sends only HELLO and ${pairing ? "PAIR" : "AUTH"} until AUTH_OK through real Noise and mux`, async () => {
-    // Given a real daemon, a real server mux and a relay-shaped in-memory socket.
     const f = await fixture(pairing);
-    // When admission is deliberately held at its exact signal.
     await f.authSeen.promise;
     expect(f.trace).toEqual(["client:HELLO", "server:WELCOME", `client:${pairing ? "PAIR" : "AUTH"}`]);
     f.allowAuth.resolve();
     const channel = await f.opening;
-    // Then admission persists the id and enables actual application streams.
     expect(channel.device.device_id).toBe((await f.store.get(f.offer.server_id))?.device_id ?? null);
     expect(channel.connectionId).toBe("ef".repeat(16));
     expect(channel.mux.limits.max_streams).toBe(2);
@@ -204,7 +233,6 @@ for (const pairing of [false, true]) {
   it(`signs in with ${pairing ? "PAIR" : "AUTH"} on a WELCOME the PC sent without waiting for HELLO`, async () => {
     const f = await fixture(pairing, "early-welcome");
     await f.authSeen.promise;
-    // this PC never answers HELLO: its one WELCOME went out as soon as its channel opened
     expect(f.trace.filter((entry) => entry === "server:WELCOME")).toHaveLength(1);
     expect(f.trace.filter((entry) => entry.startsWith("client:"))).toEqual(["client:HELLO", `client:${pairing ? "PAIR" : "AUTH"}`]);
     f.allowAuth.resolve();
@@ -217,25 +245,18 @@ for (const pairing of [false, true]) {
 }
 
 it("ends an admitted channel whose socket is closing, rather than sending into it", async () => {
-  // Given an admitted channel.
   const lost = Promise.withResolvers<Error>();
   const f = await fixture(false, undefined, (error) => lost.resolve(error));
   f.allowAuth.resolve();
   const channel = await f.opening;
   expect(channel.carrierOpen).toBe(true);
-  // When its socket starts closing and no close event comes (the page closed it, the relay has not answered).
   f.socket.closing = true;
-  // Then the channel reads its carrier as gone, and the next frame ends the channel instead of vanishing.
   expect(channel.carrierOpen).toBe(false);
   channel.mux.openHttp({ method: "GET", target: "/api/lost", headers: [], body: "none" });
   expect(await bounded(lost.promise, 2000)).toBeInstanceOf(MuxProtocolError);
   expect(f.socket.closed).toBe(true);
 });
 
-/**
- * A relay-shaped socket that delivers nothing on its own: the test says what arrives and when.
- * `sent` resolves at the client's first frame, the start of its handshake.
- */
 class SilentSocket implements RelaySocket {
   binaryType: BinaryType = "arraybuffer";
   onmessage: RelaySocket["onmessage"] = null;
@@ -249,33 +270,28 @@ class SilentSocket implements RelaySocket {
   close(code = 1000): void { if (this.closed === null) this.closed = code; }
 }
 
-/** The fixture's rejection as a settled value, so a fake clock can be advanced while it is pending. */
 function settled(promise: Promise<unknown>): { get(): { error: unknown } | null } {
   let result: { error: unknown } | null = null;
   promise.then(() => { result = { error: null }; }, (error: unknown) => { result = { error }; });
   return { get: () => result };
 }
 
-/** Enough microtask turns for an async function's adopted rejection to reach its handlers. */
 async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
 it("calls a relay that never assigns the connection unreachable, after ASSIGNMENT_MS", async () => {
-  // Given a socket the relay accepted but never spoke on.
   jest.useFakeTimers();
   const socket = new SilentSocket();
   const created = Promise.withResolvers<void>();
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
   const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
   await created.promise;
-  // When the assignment deadline passes with nothing from the relay.
   jest.advanceTimersByTime(ASSIGNMENT_MS - 1);
   await flush();
   expect(outcome.get()).toBeNull();
   jest.advanceTimersByTime(1);
   await flush();
-  // Then the failure names the relay, not the PC, and the socket is closed.
   const error = outcome.get()?.error;
   expect(error).toBeInstanceOf(RelayUnreachableError);
   expect(error).toMatchObject({ closeCode: null, silent: true });
@@ -283,8 +299,45 @@ it("calls a relay that never assigns the connection unreachable, after ASSIGNMEN
   expect(socket.closed).toBe(4000);
 });
 
+it("calls a relay that turned this device away before assigning it (TRY_AGAIN, POLICY) a refusal, and a socket that failed saying nothing unreachable", async () => {
+  const failure = async (code: number) => {
+    const socket = new SilentSocket();
+    const created = Promise.withResolvers<void>();
+    const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
+    await created.promise;
+    socket.onclose?.(new CloseEvent("close", { code, reason: "too many clients for this server" }));
+    await flush();
+    return failureOf(outcome.get()?.error, { code: false, paired: true });
+  };
+  expect([await failure(1013), await failure(1008), await failure(1006), await failure(1011)]).toEqual(["relay-refused", "relay-refused", "relay-unreachable", "relay-unreachable"]);
+});
+
+it("tells a probe's PC that never came from a relay that turned this device away before assigning it and from a carrier that failed saying nothing", async () => {
+  jest.useFakeTimers();
+  const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const probed = async (act: (socket: SilentSocket) => void) => {
+    const socket = new SilentSocket();
+    const found = probePc(offer, { relay: offer.relay }, () => socket, 8_000);
+    act(socket);
+    await flush();
+    jest.advanceTimersByTime(8_000);
+    return (await found).kind;
+  };
+  const assigned = (socket: SilentSocket): void => socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
+  const closed = (socket: SilentSocket, code: number): void => socket.onclose?.(new CloseEvent("close", { code }));
+  expect({
+    nobody: await probed(assigned),
+    pcGone: await probed((socket) => { assigned(socket); closed(socket, 1012); }),
+    busyBefore: await probed((socket) => closed(socket, 1013)),
+    policy: await probed((socket) => closed(socket, 1008)),
+    dropped: await probed((socket) => { assigned(socket); closed(socket, 1006); }),
+    failed: await probed((socket) => { assigned(socket); socket.onerror?.(new Event("error")); }),
+    unassigned: await probed((socket) => closed(socket, 1011)),
+  }).toEqual({ nobody: "silent", pcGone: "silent", busyBefore: "refused", policy: "refused", dropped: "unreachable", failed: "unreachable", unassigned: "unreachable" });
+});
+
 it("calls the PC offline when the relay assigned the connection but nothing answered within PC_ANSWER_MS", async () => {
-  // Given a relay that assigns the connection and a PC that never attaches.
   jest.useFakeTimers();
   const socket = new SilentSocket();
   const created = Promise.withResolvers<void>();
@@ -292,9 +345,7 @@ it("calls the PC offline when the relay assigned the connection but nothing answ
   const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
   await created.promise;
   socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
-  // the client's handshake went out: the relay has answered, the PC's deadline is running
   await socket.sent.promise;
-  // When the relay's old deadline would have passed, then the PC's.
   jest.advanceTimersByTime(ASSIGNMENT_MS);
   await flush();
   expect(outcome.get()).toBeNull();
@@ -303,7 +354,6 @@ it("calls the PC offline when the relay assigned the connection but nothing answ
   expect(outcome.get()).toBeNull();
   jest.advanceTimersByTime(1);
   await flush();
-  // Then the failure is the PC's silence, the screen is pc-offline, and the socket is closed.
   const error = outcome.get()?.error;
   expect(error).toBeInstanceOf(RelayPcOfflineError);
   expect(error).toBeInstanceOf(MuxProtocolError);
@@ -312,8 +362,48 @@ it("calls the PC offline when the relay assigned the connection but nothing answ
   expect(socket.closed).toBe(4000);
 });
 
+it("names the relay's refusal of a new device (4403), on a code and on compared digits alike, and tries no further", async () => {
+  const run = async (code: number) => {
+    const socket = new SilentSocket();
+    const created = Promise.withResolvers<void>();
+    const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example", code: "ABCD-EFGH" };
+    const outcome = settled(openRelayChannel(offer, { store: new MemoryDeviceStore(), socket: () => { created.resolve(); return socket; } }));
+    await created.promise;
+    socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
+    await socket.sent.promise;
+    socket.onclose?.(new CloseEvent("close", { code, reason: code === RELAY_NEW_SESSIONS_CLOSE ? RELAY_NEW_SESSIONS_REFUSED : "" }));
+    await flush();
+    return outcome.get()?.error;
+  };
+  // Then 4403 is its own failure and screen, whatever the attempt was, and nothing retries it by itself.
+  const refused = await run(RELAY_NEW_SESSIONS_CLOSE);
+  expect(refused).toBeInstanceOf(RelayNewSessionsRefusedError);
+  expect(failureOf(refused, { code: true, paired: false })).toBe("new-devices-refused");
+  expect(failureOf(refused, { code: false, paired: false, codeless: true, compared: true })).toBe("new-devices-refused");
+  expect(isFatalRelayError(refused)).toBe(true);
+  // A device this PC already knows only signs in, and the relay never refuses that: the same code to it is a lost
+  // socket (another host at a saved address, a relay fault), so it reconnects as it always did.
+  const store = new MemoryDeviceStore();
+  const known = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const paired = await getDevice(known, store);
+  await store.update(known.server_id, () => ({ ...paired, device_id: "ab".repeat(8) }));
+  const socket = new SilentSocket();
+  const created = Promise.withResolvers<void>();
+  const signIn = settled(openRelayChannel(known, { store, socket: () => { created.resolve(); return socket; } }));
+  await created.promise;
+  socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
+  await socket.sent.promise;
+  socket.onclose?.(new CloseEvent("close", { code: RELAY_NEW_SESSIONS_CLOSE, reason: RELAY_NEW_SESSIONS_REFUSED }));
+  await flush();
+  expect(signIn.get()?.error).not.toBeInstanceOf(RelayNewSessionsRefusedError);
+  expect(isFatalRelayError(signIn.get()?.error)).toBe(false);
+  const lost = await run(1001);
+  expect(lost).toBeInstanceOf(MuxProtocolError);
+  expect(failureOf(lost, { code: true, paired: false })).toBe("pc-offline");
+  expect(isFatalRelayError(lost)).toBe(false);
+});
+
 it("waits for the PC as long as pcAnswerMs says, for a reconnect behind the app", async () => {
-  // Given a relay that assigns the connection, a PC that never attaches, and a longer wait asked for.
   jest.useFakeTimers();
   const socket = new SilentSocket();
   const created = Promise.withResolvers<void>();
@@ -322,25 +412,20 @@ it("waits for the PC as long as pcAnswerMs says, for a reconnect behind the app"
   await created.promise;
   socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }));
   await socket.sent.promise;
-  // When PC_ANSWER_MS passes, then the asked-for wait.
   jest.advanceTimersByTime(PC_ANSWER_MS);
   await flush();
   expect(outcome.get()).toBeNull();
   jest.advanceTimersByTime(25_000 - PC_ANSWER_MS);
   await flush();
-  // Then the PC is called offline only at the end of that wait.
   expect(outcome.get()?.error).toBeInstanceOf(RelayPcOfflineError);
 });
 
 it("calls a PC that answered the handshake but never finished admission unresponsive, not offline", async () => {
-  // Given a real daemon that completes Noise and then never answers HELLO.
   jest.useFakeTimers();
   const f = await fixture(false, "silence");
   const outcome = settled(f.opening);
-  // the PC's first frame reached the client (the trace sees the client's HELLO go out only after it did)
   for (let i = 0; i < 200 && !f.trace.includes("client:HELLO"); i++) await Promise.resolve();
   expect(f.trace).toEqual(["client:HELLO"]);
-  // When the admission deadline passes.
   jest.advanceTimersByTime(ADMISSION_MS - 1);
   await flush();
   expect(outcome.get()).toBeNull();
@@ -356,12 +441,10 @@ it("calls a PC that answered the handshake but never finished admission unrespon
 });
 
 it("keeps no key from a pairing link whose PC never admitted the phone", async () => {
-  // Given a pairing offer whose PC completes Noise and then never admits anyone.
   jest.useFakeTimers();
   const f = await fixture(true, "silence");
   const outcome = settled(f.opening);
   for (let i = 0; i < 200 && !f.trace.includes("client:HELLO"); i++) await Promise.resolve();
-  // When the admission deadline passes.
   jest.advanceTimersByTime(ADMISSION_MS);
   await flush();
   // Then the attempt failed and this PC's slot is still empty: a later real QR pairs without a warning.
@@ -370,19 +453,16 @@ it("keeps no key from a pairing link whose PC never admitted the phone", async (
 });
 
 it("names a stall after WELCOME in the auth phase, within the same admission budget", async () => {
-  // Given a real daemon that welcomes and then holds AUTH_OK.
   jest.useFakeTimers();
   const f = await fixture(false);
   const outcome = settled(f.opening);
   await f.authSeen.promise;
   expect(f.trace).toEqual(["client:HELLO", "server:WELCOME", "client:AUTH"]);
-  // When the admission budget, counted from the PC's first frame, runs out without AUTH_OK.
   jest.advanceTimersByTime(ADMISSION_MS - 1);
   await flush();
   expect(outcome.get()).toBeNull();
   jest.advanceTimersByTime(1);
   await flush();
-  // Then the stall is the PC's admission in the auth phase, never an offline PC, and the attempt is over.
   const error = outcome.get()?.error;
   expect(error).toBeInstanceOf(RelayAdmissionTimeoutError);
   expect(error).toMatchObject({ phase: "auth" });
@@ -391,15 +471,43 @@ it("names a stall after WELCOME in the auth phase, within the same admission bud
 });
 
 it("stops at a PC of another relay protocol before any credential, as an update", async () => {
-  // Given a real daemon whose WELCOME names relay protocol 2.
   const f = await fixture(false, "protocol");
-  // When the client reads it.
   const error = await f.opening.catch((caught: unknown) => caught);
   // Then the attempt ends on the update screen and no AUTH was sent.
   expect(error).toMatchObject({ code: "unsupported_version" });
   expect(failureOf(error, { code: false, paired: true })).toBe("needs-update");
   expect(f.trace.filter((entry) => entry.startsWith("client:"))).toEqual(["client:HELLO"]);
   expect(f.socket.closed).toBe(true);
+});
+
+it("G5: does not send account AUTH when WELCOME selects no account-open feature", async () => {
+  const old = await fixture(false, undefined, undefined, {}, { accountOpensAll: true });
+  old.allowAuth.resolve();
+  await expect(old.opening).rejects.toThrow();
+  expect(old.trace).toEqual(["client:HELLO", "server:WELCOME"]);
+});
+
+it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, so only a flag-on app hears an account refusal", async () => {
+  const plain = await fixture(false);
+  await plain.authSeen.promise;
+  expect(plain.offered).not.toContain(ACCOUNT_OPENS_ALL_FEATURE);
+  plain.allowAuth.resolve();
+  await plain.opening;
+  const asking = await fixture(false, undefined, undefined, { features: [ACCOUNT_OPENS_ALL_FEATURE] }, { accountOpensAll: true });
+  await asking.authSeen.promise;
+  expect(asking.offered).toContain(ACCOUNT_OPENS_ALL_FEATURE);
+  asking.allowAuth.resolve();
+  await asking.opening;
+});
+
+it("T34: an account open after a provisional WELCOME acknowledges every PC setup frame", async () => {
+  const f = await fixture(false, undefined, undefined, { provisional: true, features: [ACCOUNT_OPENS_ALL_FEATURE] }, { accountOpensAll: true });
+  f.allowAuth.resolve();
+  const channel = await f.opening;
+  await channel.mux.flush();
+  const { acknowledged, submitted } = await bounded(f.receiptSeen.promise);
+  expect(submitted).toBe(3n);
+  expect(acknowledged).toBe(submitted);
 });
 
 it("offers the account feature in HELLO and keeps what the PC selected, so an older PC can be told apart", async () => {
@@ -412,9 +520,7 @@ it("offers the account feature in HELLO and keeps what the PC selected, so an ol
 
 for (const attack of ["welcome", "nonce", "ping", "auth-ok", "features", "assigned", "receipt"] as const) {
   it(`refuses malformed or unexpected ${attack} without sending credentials`, async () => {
-    // Given an encrypted server that sends invalid setup traffic.
     const f = await fixture(false, attack);
-    // When its invalid frame reaches the client.
     // Then setup rejects, closes, and sends neither AUTH nor automatic mux controls.
     await expect(f.opening).rejects.toBeInstanceOf(MuxProtocolError);
     expect(f.socket.closed).toBe(true);
@@ -452,7 +558,6 @@ it("keeps Ovis's relay when the PC names one that is not Ovis's", async () => {
   channel.close();
 });
 
-/** One relay connection from the phone's real channel to the PC's real session, passing frames on. */
 function connectReal(f: ReturnType<typeof relayFixture>, keys: ReturnType<typeof generateKeyPair>, offer: RelayOffer, store: MemoryDeviceStore,
   compare?: (digits: string) => Promise<void>, relays?: readonly string[]) {
   let session: RelaySession | undefined;
@@ -464,7 +569,6 @@ function connectReal(f: ReturnType<typeof relayFixture>, keys: ReturnType<typeof
     close: (code, reason) => { setImmediate(() => socket.close(code, reason)); },
   };
   socket = new FakeSocket(daemon);
-  // frames the phone sends as soon as its side opens wait for the session, as a relay's latency would make them
   const early: (string | ArrayBuffer)[] = [];
   void openDaemonSecureChannel(daemon, { daemonKeyPair: keys, events: { onmessage: (data) => { if (session) session.receive(data); else early.push(data); } } }).then((channel) => {
     session = new RelaySession({
@@ -488,7 +592,6 @@ function connectReal(f: ReturnType<typeof relayFixture>, keys: ReturnType<typeof
 async function comparing(compare: (digits: string) => Promise<void>) {
   const f = relayFixture();
   cleanups.push(() => f.close());
-  // as copying a link without a code does
   f.app.context.services.relay.approvals.openWindow();
   const keys = generateKeyPair();
   const store = new MemoryDeviceStore();
@@ -512,7 +615,6 @@ it("pairs again with a new code a phone that already holds a key for the PC", as
   const devices = f.app.context.services.devices;
   const first = await bounded(connectReal(f, keys, { ...base, code: devices.startPairing().code }, store));
   first.close();
-  // a fresh QR code scanned on the same phone: the PC makes a new device for the same key, and the phone keeps it
   const second = await bounded(connectReal(f, keys, { ...base, code: devices.startPairing().code }, store));
   cleanups.push(() => second.close());
   expect(second.device.device_id).not.toBe(first.device.device_id);
@@ -590,7 +692,6 @@ it("a phone the PC removed is refused at sign-in from a link without a code, and
   devices.revoke(first.device.device_id!);
   const shown = Promise.withResolvers<string>();
   const compare = (digits: string) => { shown.resolve(digits); return Promise.resolve(); };
-  // what the shell gets from the first try: the PC's refusal of the old key (shellState.ts pairsAgainWithoutKey)
   const refused = await bounded(connectReal(f, keys, base, store, compare).then(() => null, (reason: unknown) => reason));
   expect(pairsAgainWithoutKey(refused, { code: false, paired: false, codeless: true })).toBe(true);
   await store.remove(base.server_id);
@@ -615,4 +716,56 @@ it("saves the regional relay a real PC names after its provisional WELCOME", asy
   const channel = await bounded(connectReal(f, keys, offer, store, undefined, [REGIONAL, GLOBAL_RELAY]));
   cleanups.push(() => channel.close());
   expect((await store.get(offer.server_id))?.relay).toBe(REGIONAL);
+});
+
+it("T34, T40: a sign-in through the account row's store completes, and the row keeps its key and id", async () => {
+  const f = await fixture(false, undefined, undefined, { hints: ["wss://relay2.example"], wrap: (_store, device) => withAccountDevice(new MemoryDeviceStore(), device) });
+  await f.authSeen.promise;
+  f.allowAuth.resolve();
+  const channel = await f.opening;
+  expect(channel).toBeDefined();
+});
+
+it.each([true, false])("T71, P11: only KEY_PENDING (%s) shows the fingerprint computed by the device", async (pending) => {
+  const shown: string[] = [];
+  const f = await fixture(true, "key-proof", undefined, { omitKeyPending: !pending }, { keyProof: (fingerprint) => { shown.push(fingerprint); } });
+  const signature = await f.keyProof.proved.promise;
+  await f.authSeen.promise;
+  f.allowAuth.resolve();
+  await f.opening;
+  expect(f.offered).toContain("key-proof-1");
+  const key = (await f.store.get(f.offer.server_id))!.public_spki;
+  expect(await verifyPairProof(f.offer.server_id, f.keyProof.challenge, key, signature)).toBe(true);
+  expect(shown).toEqual(pending ? [await pairFingerprint(f.offer.server_id, f.keyProof.challenge, key)] : []);
+});
+
+it("T71: approval just before the PC's pending-key deadline completes pairing", async () => {
+  jest.useFakeTimers();
+  const waiting = Promise.withResolvers<string>();
+  const f = await fixture(true, "key-proof", undefined, {}, { keyProof: waiting.resolve });
+  const outcome = f.opening.then((channel) => {
+    channel.close();
+    return "paired";
+  }, (error: unknown) => error);
+  await waiting.promise;
+  await f.authSeen.promise;
+  jest.advanceTimersByTime(PENDING_MS - 1);
+  f.allowAuth.resolve();
+  expect(await outcome).toBe("paired");
+});
+
+it("G5: without asking for key proof, HELLO does not offer it", async () => {
+  const f = await fixture(true);
+  await f.authSeen.promise;
+  expect(f.offered).not.toContain("key-proof-1");
+  f.allowAuth.resolve();
+  await f.opening;
+});
+
+it("T72: a second challenge in the same pairing is never signed, and the attempt ends", async () => {
+  const f = await fixture(true, "key-proof-twice", undefined, {}, { keyProof: () => {} });
+  await f.keyProof.proved.promise;
+  const error = await f.opening.catch((caught: unknown) => caught);
+  expect(error).toMatchObject({ code: "protocol_error" });
+  expect(f.keyProof.proofs).toBe(1);
 });

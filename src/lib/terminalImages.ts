@@ -17,11 +17,8 @@ export function terminalImageOptions(coarse: boolean): IImageAddonOptions {
 
 interface Loaded {
   addon: ImageAddon;
-  /** the window reports the terminal answered before the addon turned its pixel size reports on */
   windowOptions: Terminal["options"]["windowOptions"];
-  /** whether the setting is on for it now */
   enabled: boolean;
-  /** drops a multipart iTerm2 picture still coming in (lib/itermPictures.ts) */
   resetPictures(): void;
 }
 
@@ -66,9 +63,7 @@ function iipFeed(addon: ImageAddon): PictureFeed | null {
  */
 const loaded = new WeakMap<Terminal, Loaded>();
 
-/** output held for a terminal until its pictures are decided (holdForPictures), with what resumes it */
 const holding = new WeakMap<Terminal, { resumes: Array<() => void>; timer: ReturnType<typeof setTimeout> }>();
-/** the addon's chunk did not load: no output waits for it again */
 let unavailable = false;
 /**
  * How long output waits for the addon's chunk: a stalled fetch (a phone on a slow link) must not stop the
@@ -76,7 +71,6 @@ let unavailable = false;
  * take the wait for a reader that stopped.
  */
 const PICTURES_WAIT_MS = 1000;
-/** terminals that waited that long once: their output no longer waits, a picture before the addon is lost */
 const waitedOut = new WeakSet<Terminal>();
 const release = (terminal: Terminal): void => {
   const held = holding.get(terminal);
@@ -92,10 +86,6 @@ const release = (terminal: Terminal): void => {
  * features, as the first output comes (#3184). True when `resume` is called once useTerminalImages has
  * turned pictures on or off for this terminal, or once PICTURES_WAIT_MS passed; false when nothing need wait.
  */
-/**
- * A DCS or an OSC 1337, or a frame ending inside an OSC 1337's introducer (split across two frames). A frame
- * ending in a bare ESC does not wait: most are a key sequence's first byte, and a DCS split there is rare.
- */
 const PICTURE_START = /\x1bP|1337;|\x1b\](?:1(?:3(?:37?)?)?)?$/;
 
 export function holdForPictures(terminal: Terminal, data: string, resume: () => void): boolean {
@@ -106,10 +96,8 @@ export function holdForPictures(terminal: Terminal, data: string, resume: () => 
   return true;
 }
 
-/** Build-time constant: on only in the browser lane's demo build (lib/crashProbe.ts). */
 declare const __HERDR_TEST_HOOKS__: boolean;
 
-/** the colour at a picture's top left corner, for the browser scripts' probe */
 function pictureColour(picture: CanvasImageSource | undefined): number[] | null {
   if (picture === undefined) return null;
   const canvas = document.createElement("canvas");
@@ -129,13 +117,11 @@ const SIZE_REPORTS = { getWinSizePixels: true, getCellSizePixels: true, getWinSi
  * them: herdr-core passes a pane's output on as it is, herdr draws the pane from its own grid again
  * and drops them; a pane drawn again (attached anew) comes back without its pictures either way.
  */
-/** whether xterm draws iTerm2 and sixel pictures in this terminal (Pictures in the terminal is on and loaded) */
 export function terminalDrawsPictures(terminal: Terminal): boolean {
   return loaded.get(terminal)?.enabled === true;
 }
 
 export function useTerminalImages(terminal: Terminal | null, enabled: boolean, coarse: boolean): void {
-  // the addon takes the caps of the pointer at the moment it loads, not at the moment its import began
   const coarseRef = useRef(coarse);
   coarseRef.current = coarse;
   useEffect(() => {
@@ -144,7 +130,6 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
     if (!enabled) {
       release(terminal);
       if (present === undefined) return;
-      // off: its pictures go, and the next ones are taken before the addon sees them
       present.addon.reset();
       // an iTerm2 picture still decoding places itself once done: cleared again after what came before
       // (the parser waits for a decode before it reads on)
@@ -193,7 +178,6 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       terminal.parser.registerCsiHandler({ prefix: "?", final: "S" }, () => true);
       loaded.set(terminal, entry);
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && terminal.element) {
-        // browser scripts ask which picture a cell holds (never in a release build)
         Object.assign(terminal.element, { imageAt: (col: number, row: number) => pictureColour(addon.getImageAtBufferCell(col, row)) });
       }
     }, (error: unknown) => {
@@ -204,7 +188,6 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       gone = true;
       release(terminal);
     };
-    // the caps are the ones of the screen the addon was loaded on; a change of pointer moves the stored cap below
   }, [terminal, enabled]);
 
   useEffect(() => {

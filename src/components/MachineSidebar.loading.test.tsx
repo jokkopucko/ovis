@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -9,14 +9,12 @@ import { MachineSidebar } from "./MachineSidebar.tsx";
 
 const actions = new Proxy({}, { get: () => () => {} }) as AppActions;
 const activity = { seqs: () => new Map<string, number>(), status: () => undefined };
-// the test renderer draws no DOM: a node stands in for every element its refs read
 const node = (): HTMLElement => ({
   isConnected: true, offsetWidth: 200, offsetHeight: 100, dataset: {}, style: {},
   getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
   querySelector: () => null, querySelectorAll: () => [], contains: () => false, closest: () => null,
   focus() {}, addEventListener() {}, removeEventListener() {},
 }) as unknown as HTMLElement;
-/** a PC that answered, whose roster has not come yet (server/machines-refresh.contract.test.ts's slow fixture) */
 const connectedNoRoster = (id: string, kind: Machine["kind"], name: string): Machine =>
   ({ id, kind, name, state: "connected", snapshot: null, error: null, action_required: null, remote_ovis: null }) as unknown as Machine;
 
@@ -34,7 +32,6 @@ beforeEach(() => {
   define("HTMLElement", class HTMLElement {});
   define("localStorage", storage);
   define("navigator", { languages: ["en-US"], platform: "Linux", userAgent: "test" });
-  // a frame comes at once: the loading words are filled one frame after their region (lib/useAnnouncedText.ts)
   define("window", { localStorage: storage, sessionStorage: storage, location: { pathname: "/", search: "", hash: "" }, matchMedia: () => media, innerWidth: 1280, innerHeight: 800, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: (run: FrameRequestCallback) => { run(0); return 1; }, cancelAnimationFrame() {}, setTimeout, clearTimeout, setInterval, clearInterval });
   define("document", { visibilityState: "visible", activeElement: null, querySelectorAll: () => [], body: { nodeType: 1, children: [], createNodeMock: node }, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, getElementById: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
   define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
@@ -60,6 +57,29 @@ it("says a connected PC's roster is loading until it comes, for a lone Host and 
       })), { createNodeMock: node });
     });
     expect(loadingWords()).toBe(machines.length);
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+  }
+});
+
+it("counts its Settings gear as a button, and opens Settings even when the count fails", async () => {
+  for (const failing of [false, true]) {
+    const told: string[] = [];
+    const opened: string[] = [];
+    const counting = new Proxy({}, { get: (_, name) => name === "counted" ? (action: string, source: string) => { if (failing) throw new Error("storage full"); told.push(`${action}:${source}`); }
+      : name === "openSettings" ? () => opened.push("settings") : () => {} }) as AppActions;
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await act(async () => {
+        renderer = create(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+          machines: [connectedNoRoster("local", "local", "Laptop")], selectedMachineId: "local", selectedPaneId: null, activity, actions: counting,
+          onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+        })), { createNodeMock: node });
+      });
+      const gear = renderer!.root.findAll((found) => found.type === "button" && String(found.props.className).includes("sidebar-footer-settings"))[0]!;
+      await act(async () => { gear.props.onClick(); });
+    } finally { logged.mockRestore(); }
+    expect([told, opened]).toEqual([failing ? [] : ["settings:button"], ["settings"]]);
     await act(async () => renderer?.unmount());
     renderer = undefined;
   }

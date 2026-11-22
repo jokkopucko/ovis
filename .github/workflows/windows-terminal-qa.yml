@@ -1,12 +1,7 @@
 name: Windows terminal QA
 # A mirrored pane on native Windows (scripts/windows-terminal-browser-qa.ts): there the browser
-# draws a pane from pane.read instead of attaching to it. PowerShell's history under the
-# wheel, a touch drag and a tap, horizontal panning across output, and text insertion and IME
-# composition at a phone's width, in Chromium against herdr's isolated test session.
-#
-# A pull request that touches the mirror, the terminal's viewport or the xterm patch runs it, and
-# once a week it runs on main: the Windows runner image changes without a commit here. Not a
-# required check. GitHub-hosted only: a fork's pull request never reaches the self-hosted runners.
+# draws a pane from pane.read instead of attaching to it.
+# GitHub-hosted only: a fork's pull request never reaches the self-hosted runners.
 on:
   pull_request:
     paths:

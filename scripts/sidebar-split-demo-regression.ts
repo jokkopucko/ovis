@@ -2,7 +2,6 @@
  * The PCs/Agents height divider on the real demo, never a live herdr session: default, drag,
  * persistence, reset, keyboard, snap-fold (Agents only: the PCs have no head to fold to), scrolling, a short
  * window and both section orders.
- * UI_EVIDENCE_DIR saves synthetic screenshots at 390 and 1280 in light and dark.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +11,7 @@ import { chromium, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "ovis-sidebar-split-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
@@ -24,13 +24,11 @@ const metrics = (page: Page) => page.evaluate(() => {
   const grouped = document.querySelector(".sidebar-shell")!.classList.contains("is-agents-first");
   return { pcs, agents, top: grouped ? agents : pcs, bottom: grouped ? pcs : agents,
     shell: box(".sidebar-shell"), footer: box(".sidebar-footer"), line: box(".sidebar-split"),
-    // the PCs have no head: their side of the line stops at a row, and never folds
     topHead: grouped ? box(".agent-section-toggle").height + 8 : 0,
     bottomHead: grouped ? 0 : box(".agent-section-toggle").height + 8,
     agentsFolded: document.querySelector(".agent-section-toggle")!.getAttribute("aria-expanded") === "false",
   };
 });
-// The PCs' list holds its rows, or as many as the room up to the line (or the footer) leaves it (issue 3267)
 const pcListLayout = (page: Page) => page.evaluate(() => {
   const pcs = document.querySelector<HTMLElement>(".pcs-sidebar")!;
   const list = document.querySelector<HTMLElement>(".machine-list")!;
@@ -53,15 +51,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -164,7 +154,6 @@ try {
           await page.keyboard.press("ArrowDown");
           await page.waitForFunction(({ key, stored }) => localStorage.getItem(key) !== stored, { key, stored });
           assert.ok((await metrics(page)).top.height > dragged.top.height, `${label} ArrowDown grows the upper section`);
-          // Home and End fold Agents on its side; on the PCs' side they take the PCs to their minimum instead
           const foldsAgents = async (press: "Home" | "End") => {
             const before = await page.evaluate((key) => localStorage.getItem(key), key);
             await page.keyboard.press(press);
@@ -195,8 +184,6 @@ try {
             assert.equal(grip.action, "none");
             assert.notEqual(await page.locator(".machine-list").evaluate((list) => getComputedStyle(list).touchAction), "none", `${label} only the divider suppresses touch scrolling`);
           }
-          // Drag into each snap zone: Agents' side snaps to its heading and folds; the PCs' side has no heading, so
-          // the line stops at their minimum and nothing folds
           let m = await metrics(page);
           await drag(m.top.top + (grouped ? m.topHead / 2 : 2), async () => {
             const preview = await metrics(page);
@@ -220,7 +207,6 @@ try {
           } else assert.equal(await page.locator(".pcs-sidebar.is-collapsed, .agents-sidebar.is-collapsed").count(), 0, `${label} a drag to the PCs' foot folds nothing`);
           await line.focus(); await page.keyboard.press("Enter");
           await page.waitForFunction(() => !document.querySelector(".pcs-sidebar.is-collapsed, .agents-sidebar.is-collapsed"));
-          // A caret can override the divider's last fold request. Reordering must not replay that old request.
           await line.focus(); await page.keyboard.press(grouped ? "Home" : "End");
           await page.waitForFunction(() => document.querySelector(".agents-sidebar")!.classList.contains("is-collapsed"));
           await page.locator(".agent-section-toggle").click();
@@ -248,7 +234,6 @@ try {
               assert.equal(await page.evaluate((key) => localStorage.getItem(key), savedKey), value.stored, `${label} ${savedKey} keeps its independent value`);
             }
           }
-          // A stored tall allocation is clamped to a short window, not written back at the smaller size.
           await page.evaluate((key) => localStorage.setItem(key, "2000"), key);
           await page.setViewportSize({ width, height: 300 });
           await page.reload(); await open();

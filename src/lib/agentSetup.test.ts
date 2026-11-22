@@ -10,7 +10,6 @@ describe("agent setup", () => {
   it("goes install, detected, sign in, ready, by detection and not by the install tab", () => {
     let step: SetupStep = setupStep({ kind: "idle" }, { type: "install-started", tab });
     expect(step.kind).toBe("installing");
-    // still installing: a read before the binary is there changes nothing
     step = setupStep(step, { type: "detected", row: row("claude", {}) });
     expect(step.kind).toBe("installing");
     step = setupStep(step, { type: "detected", row: row("claude", { installed: true, binary: "claude", on_path: false, version: "2.1.312" }) });
@@ -33,10 +32,8 @@ describe("agent setup", () => {
     const unknownVersion = row("opencode", { installed: true, binary: "opencode", on_path: true, version: null, version_error: "unreadable" });
     expect(setupStep({ kind: "idle" }, { type: "detected", row: broken })).toEqual({ kind: "failed", message: null, after: "install" });
     expect(setupStep({ kind: "idle" }, { type: "detected", row: hung })).toEqual({ kind: "failed", message: null, after: "install" });
-    // an install under way may still repair it: the card keeps waiting
     const installing = setupStep({ kind: "idle" }, { type: "install-started", tab });
     expect(setupStep(installing, { type: "detected", row: broken })).toBe(installing);
-    // a version it cannot read is no sign it is broken
     expect(setupStep(installing, { type: "detected", row: unknownVersion })).toEqual({ kind: "installed", version: null, onPath: true });
   });
 

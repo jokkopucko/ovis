@@ -1,4 +1,3 @@
-// Runs in bundled Node, including on the destination before runtime activation.
 // Loading the addon alone misses macOS spawn-helper permission/architecture errors.
 import pty from "@lydell/node-pty";
 

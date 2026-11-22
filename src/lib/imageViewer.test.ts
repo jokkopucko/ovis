@@ -17,7 +17,6 @@ describe("wrapIndex", () => {
 
 describe("zoomPercent", () => {
   it("says the zoom in the picture's own pixels once its fit is known", () => {
-    // a 2x screenshot fitted at half size reads 50%, and twice fit is its natural 100%
     expect(zoomPercent(1, 0.5)).toBe(50);
     expect(zoomPercent(2, 0.5)).toBe(100);
     expect(zoomPercent(1.25, 1)).toBe(125);

@@ -9,7 +9,6 @@ export interface CommandInvocation {
   readonly form: CommandForm | null;
 }
 
-/** Mutable only for observations retained between polls; sends themselves never change. */
 export interface CommandSend {
   readonly id: string;
   readonly text: string;
@@ -20,30 +19,22 @@ export interface CommandSend {
   /**
    * `screen`'s first row in the pane's history (herdr's max_offset_from_bottom: a detection read is the live screen,
    * however far a device scrolled): the same row read before and after
-   * `screen`. The read after it runs alongside delivery, so the row is set once it answers, or never.
+   * `screen`.
    */
   top?: number;
   readonly form: CommandForm | null;
   readonly invocations: readonly CommandInvocation[];
-  /** One-based echo positions after this snapshot's tail, reserved at submission per result reader. */
   resultEchoes?: Readonly<Record<string, number | null>>;
-  /** Reserved Chat echoes after this send's anchor; null means ordering information was lost. */
   resultEchoLimit?: Readonly<Record<string, number | null>>;
   outcome?: CommandOutcome;
-  /** why the bridge itself knows the send needs the terminal (a skill OpenCode did not attach) */
   readonly note?: string;
-  /** the skills that note is about, by id */
   readonly unattached?: readonly string[];
-  /** Whether this send's echoes were counted against earlier same-command sends on screens cut at Claude's side panel. */
   countedCut?: boolean;
   dialogId?: string;
   dialogObserved?: true;
-  /** Any later delivery ends this send's unowned card and preview window. */
   closedAt?: number;
-  /** Same-command sends retain FIFO ownership; other deliveries close transcript correlation. */
   transcriptClosedAt?: number;
   transcriptStore?: string;
-  /** Reserve the native echo before any of its outputs arrive. */
   transcriptEcho?: number;
   transcriptEvidence?: { readonly offset: number; readonly at: number };
   transcriptAmbiguous?: true;
@@ -51,7 +42,6 @@ export interface CommandSend {
   settled?: { screen: string; since: number };
 }
 
-/** Same syntax and form precedence as the composer, including the catalog's wildcard argument. */
 export function commandInvocations(agent: string, text: string, commands: readonly SlashCommand[]): CommandInvocation[] {
   const syntax = skillSyntax(agent);
   const matches: CommandInvocation[] = [];
@@ -76,13 +66,11 @@ export function commandInvocations(agent: string, text: string, commands: readon
     if (leading && trigger === "$" && !syntax.skillTriggers.includes("$")) continue;
     if (trigger === "@" && (agent !== "opencode" || !row)) continue;
     if (!row && (!leading || trigger === "@")) continue;
-    // Unknown runtime commands use a command name, not an absolute filesystem path.
     if (!row && !/^[\p{L}\p{N}_:-]+$/u.test(name)) continue;
     const argument = trimmed.slice(match.index + match[0].length).trim();
     const forms = row?.forms ?? [];
     const sub = argument.split(/\s+/u)[0]?.toLocaleLowerCase();
     const bare = forms.find((form) => form.match === "bare");
-    // #1380 closed unmerged: this bridge has no omp BTW side-store reader.
     const form = row?.visibility === "terminal" || (agent === "omp" && name === "btw") ? { match: "bare" as const, interaction: "terminal" as const }
       : argument === "" ? bare
       : forms.find((form) => typeof form.match === "object" && form.match.sub.toLocaleLowerCase() === sub)
@@ -96,18 +84,14 @@ export interface OutcomeObservation {
   readonly now: number;
   readonly nextAt?: number;
   readonly screen?: string;
-  /** Older sends can still own result blocks, without receiving the newest send's preview. */
   readonly resultScreen?: string;
-  /** The observed live screen's first row in the pane's history (max_offset_from_bottom), read before that screen. */
   readonly top?: number;
   readonly transcript?: string | readonly CommandTranscriptRecord[];
-  /** Assigned by the pane's FIFO ledger, not by the timestamp window of its newest send. */
   readonly transcriptAt?: number;
   readonly readers?: readonly DialogReader[];
   readonly dialog?: { readonly id: string; readonly reader: string };
   readonly waitingSince?: number;
   readonly settledSince?: number;
-  /** Already correlated to this send by the caller (card commit or native observer). */
   readonly evidence?: { readonly kind: "dialog" | "native" | "side-store"; readonly at: number; readonly catalogChanged?: true };
 }
 
@@ -120,7 +104,6 @@ export interface CommandTranscriptRecord {
   readonly entry: Readonly<Record<string, unknown>>;
 }
 
-/** Native control records only; offsets remain stable across incremental reads and viewers. */
 export function commandTranscriptRecords(text: string, start = 0): CommandTranscriptRecord[] {
   const records: CommandTranscriptRecord[] = [];
   let offset = start;
@@ -131,18 +114,15 @@ export function commandTranscriptRecords(text: string, start = 0): CommandTransc
         || (entry.type === "custom" && entry.customType === "context_clear")) {
         records.push({ offset, entry });
       } else if (entry.type === "custom_message" && entry.customType === "skill-prompt") {
-        // the skill's instructions are not evidence; its name and arguments are
         const { name, args } = object(entry.details);
         records.push({ offset, entry: { type: entry.type, customType: entry.customType, id: entry.id, parentId: entry.parentId,
           timestamp: entry.timestamp, details: { name, args } } });
       } else if (typeof entry.uuid === "string") {
-        // Parent chains may pass through ordinary assistant/progress records; retain only links.
         records.push({ offset, entry: { uuid: entry.uuid, parentUuid: entry.parentUuid } });
       } else if (typeof entry.id === "string") {
-        // pi branch ancestry can cross metadata entries that carry no command evidence.
         records.push({ offset, entry: { id: entry.id, parentId: entry.parentId } });
       }
-    } catch { /* a torn native tail is not evidence */ }
+    } catch {}
     offset += Buffer.byteLength(line) + 1;
   }
   return records;
@@ -171,18 +151,12 @@ function gjcSkillText(text: string): string {
   return args ? `${command} ${args}` : command;
 }
 
-/** The agent's own record of a typed command, which a later record can be told apart from. */
 function commandEcho(agent: string, entry: Readonly<Record<string, unknown>>): string | null {
   return agent === "claude" ? claudeCommand(entry) : agent === "gjc" ? gjcSkillCommand(entry) : null;
 }
 
-/** The sent text as `commandEcho` records it. */
 const echoText = (agent: string, text: string): string => agent === "gjc" ? gjcSkillText(text) : normalize(text);
 
-/**
- * The end of the turn a gjc skill record started: its first assistant message off that record's branch that asks
- * for no tool. Another prompt joining the turn first leaves the end to no one.
- */
 function gjcSkillTurnEnd(sent: CommandSend, records: readonly CommandTranscriptRecord[], until: number, used: ReadonlySet<number>,
   echoOffset: number | null | undefined): { offset: number; at: number } | null {
   const inWindow = (entry: Readonly<Record<string, unknown>>): boolean => {
@@ -206,7 +180,6 @@ function gjcSkillTurnEnd(sent: CommandSend, records: readonly CommandTranscriptR
   return null;
 }
 
-/** Linked output follows its nearest command ancestor. Only unlinked output uses echo FIFO. */
 function claudeOutputEchoes(records: readonly CommandTranscriptRecord[]): ReadonlyMap<number, number> {
   const byId = new Map<string, CommandTranscriptRecord | null>();
   for (const record of records) {
@@ -246,14 +219,8 @@ function claudeOutputEchoes(records: readonly CommandTranscriptRecord[]): Readon
   return outputs;
 }
 
-/**
- * The only record types transcriptEvidence takes a pi, omp, gjc or OmO send's result from, besides the end of a gjc
- * skill's turn (gjcSkillTurnEnd); a pi branch is resumed only when none was written off it meanwhile (resumedBranch in
- * conversation.ts).
- */
 export const PI_EVIDENCE_TYPES: ReadonlySet<string> = new Set(["model_change", "thinking_level_change", "compaction"]);
 
-/** Native envelopes, not conversational prose or the model/effort shown in a footer. */
 function transcriptEvidence(sent: CommandSend, records: readonly CommandTranscriptRecord[], until: number, used: ReadonlySet<number> = new Set(),
   echoOffset?: number | null, outputs?: ReadonlyMap<number, number>): { offset: number; at: number } | null {
   const invocation = sent.invocations[0];
@@ -284,7 +251,6 @@ function transcriptEvidence(sent: CommandSend, records: readonly CommandTranscri
         const content = local ? entry.content : message.content;
         if (typeof content !== "string") continue;
         if (local && ownEcho !== undefined && ownEcho !== null && !used.has(offset) && outputEchoes.get(offset) === ownEcho) return evidence;
-        // A native user turn with the exact command text is also explicit transcript evidence.
         if (!local && claudeCommand(entry) === null && !used.has(offset) && normalize(content) === normalize(sent.text)) return evidence;
       }
       continue;
@@ -301,7 +267,6 @@ function transcriptEvidence(sent: CommandSend, records: readonly CommandTranscri
       }
       if (entry.type === "thinking_level_change" && ["thinking", "effort", "efforts"].includes(name) && argument === entry.thinkingLevel) return evidence;
       // Native /compact folds do not name their cause; an automatic fold has the same shape.
-      // A conversation message spelling /compact cannot make that event command-specific.
       // omp's /handoff writes its document as an in-place compaction (method "handoff" on 18.8.7)
       if (sent.agent === "omp" && entry.type === "compaction" && entry.method === "handoff" && name === "handoff") return evidence;
     }
@@ -322,7 +287,6 @@ function readAlike(agent: string, ...screens: string[]): { lines: string[][]; cu
   }
   return { lines: screens.map(screenLines), cut: false };
 }
-/** Chrome belongs to the agent, not one command; the first applicable result reader supplies it. */
 function withoutChrome(lines: string[], agent: string, readers: readonly DialogReader[]): string[] | null {
   const reader = readers.find((reader) => reader.kind === "result" && reader.chromeStart
     && reader.agents.some((candidate) => candidate === agent || candidate === "*"));
@@ -337,7 +301,6 @@ function withoutChrome(lines: string[], agent: string, readers: readonly DialogR
   return lines.slice(0, start);
 }
 
-/** Ignore persistent status clocks when checking whether an expected dialog's output has settled. */
 export function dialogSettlingScreen(screen: string, agent: string, readers: readonly DialogReader[]): string {
   const lines = screenLines(screen);
   return (withoutChrome(lines, agent, readers) ?? lines).join("\n");
@@ -348,11 +311,6 @@ const defaultEchoOf = (line: string, command: string): boolean => {
   return match !== null && normalize(match[1] ?? "") === normalize(command);
 };
 
-/**
- * Locate the snapshot's nonblank tail, not a count of old result blocks. Require its last three
- * lines (all lines for a shorter snapshot), extending backwards to distinguish repeated tails.
- * Equally good matches are ambiguous: a redraw duplicating the anchor proves nothing.
- */
 function anchorEnd(snapshot: readonly string[], lines: readonly string[]): number | null {
   const before = snapshot.filter((line) => line.trim());
   if (before.length === 0) return null;
@@ -368,13 +326,6 @@ function anchorEnd(snapshot: readonly string[], lines: readonly string[]): numbe
   return end;
 }
 
-/**
- * The snapshot's last line placed by how far the history moved between the two reads, when every line
- * of the snapshot still on screen is where that move puts it. Identical blocks repeated down the screen
- * leave the tail's text more than one equally good place, or a wrong one; the history rows leave one.
- * A send's row is the same read before and after its screen; a later screen's row is read before it,
- * so it can only be behind and place the anchor too low: then no echo is owned yet, never an earlier send's.
- */
 function scrolledAnchor(snapshot: readonly string[], lines: readonly string[], shift: number): number | null {
   let last = snapshot.length - 1;
   while (last >= 0 && !snapshot[last]!.trim()) last -= 1;
@@ -386,15 +337,6 @@ function scrolledAnchor(snapshot: readonly string[], lines: readonly string[], s
 const sendAnchor = (snapshot: readonly string[], lines: readonly string[], snapshotTop: number | undefined, top: number | undefined): number | null =>
   (snapshotTop !== undefined && top !== undefined ? scrolledAnchor(snapshot, lines, top - snapshotTop) : null) ?? anchorEnd(snapshot, lines);
 
-/**
- * Whether the send's own screen already shows, each complete, every Chat echo an earlier same-command send may still
- * be owed: then the first echo after that screen is this send's. The latest earlier send whose count and history row
- * are known is owed exactly its reserved echoes after its screen (the sends after it included); the history rows place
- * that screen's last line here, with no text anchor, so only when both screens kept their row. A later send that kept
- * no row (its two scroll reads disagreed) is passed over, not taken for proof that nothing can be placed (#1550).
- * Fewer complete blocks below it, or this send's row missing, leaves the earlier sends' blocks ambiguous and this send
- * unreserved.
- */
 function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], reader: DialogReader, readers: readonly DialogReader[], read: (send: CommandSend) => string[],
   counted: (send: CommandSend) => boolean): boolean {
   const known = [...same].reverse().find((candidate) => candidate.top !== undefined && counted(candidate)
@@ -415,22 +357,13 @@ function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], rea
   return complete >= owed;
 }
 
-/**
- * Reserve before trimming the pane's send ledger. If the previous same-command send still lacks
- * echoes, those echoes belong to it first, including when the next snapshot has a later tail.
- * A lost previous anchor leaves ownership unknown rather than silently restarting at echo one,
- * unless this send's screen shows every echo the earlier sends may be owed (printedPastEarlier).
- */
 export function reserveResultEchoes(sent: CommandSend, previous: readonly CommandSend[], readers: readonly DialogReader[]): Readonly<Record<string, number | null>> {
   const reservations: Record<string, number | null> = {};
   const same = previous.filter((candidate) => candidate.agent === sent.agent && candidate.identity === sent.identity && normalize(candidate.text) === normalize(sent.text));
   const prior = same.at(-1);
-  // every screen counted here is read alike, and ownership later reads its screens as these were read
   const alike = readAlike(sent.agent, sent.screen, ...same.map((candidate) => candidate.screen));
   const read = (send: CommandSend): string[] => alike.lines[send === sent ? 0 : same.indexOf(send) + 1]!;
   if (prior) sent.countedCut = alike.cut;
-  // an earlier send's echoes counted on screens read the other way (cut at the panel, or drawn) number differently:
-  // its count says nothing about the echoes on these screens (#2207)
   const counted = (send: CommandSend): boolean => send.countedCut === undefined || send.countedCut === alike.cut;
   const lines = withoutChrome(read(sent), sent.agent, readers);
   for (const reader of readers) {
@@ -451,7 +384,6 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
       reservations[reader.id] = prior.outcome?.state === "result-observed" ? 1 : past();
       continue;
     }
-    // its count numbers echoes on screens read the other way: nothing below its anchor can be counted against it (#2207)
     if (!counted(prior)) { reservations[reader.id] = past(); continue; }
     const echoed = lines.slice(anchor + 1).filter((line) => echoOf(line, sent.text)).length;
     reservations[reader.id] = Math.max(0, (priorLimit ?? priorOrdinal ?? 1) - echoed) + 1;
@@ -462,18 +394,14 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
 const RESULT_RESERVATION_CAP = 64;
 const reservationKey = (sent: CommandSend): string => JSON.stringify([sent.agent, sent.identity, normalize(sent.text)]);
 
-/** Ownership outlives the five displayed outcomes, but never its ten-minute deadline. */
 export class CommandReservations {
   private sends: CommandSend[] = [];
   private transcriptClaims: { store: string; offset: number; until: number }[] = [];
   private transcriptEchoes: { store: string; offset: number; until: number }[] = [];
   private dropped = new Map<string, number>();
-  /** If even the bounded loss markers fill, no new ownership is guessed until they expire. */
   private overflowUntil = 0;
 
   prune(now: number): void {
-    // Settled ordinals remain as bounded bookkeeping too: an in-flight send may have captured
-    // its screen before that result was observed and must not reuse the settled echo's position.
     for (const expired of this.sends) {
       if (expired.at + WINDOW_MS > now || expired.transcriptEvidence || expired.outcome?.state === "result-observed") continue;
       for (const pending of this.sends) {
@@ -499,7 +427,6 @@ export class CommandReservations {
     }
   }
 
-  /** Reserve each native record for the oldest matching send, including off-screen sends. */
   observeTranscript(identity: string, store: string, records: readonly CommandTranscriptRecord[], through: string | undefined): void {
     const end = this.sends.findIndex((sent) => sent.id === through);
     if (end < 0) return;
@@ -538,8 +465,6 @@ export class CommandReservations {
           this.transcriptEchoes.push({ store, offset: echo.offset, until: Date.parse(String(echo.entry.timestamp)) + WINDOW_MS });
         }
       }
-      // A later unrelated delivery closes observation, not ownership: discard its late record
-      // rather than giving it to a newer same-command send.
       const evidence = transcriptEvidence(sent, records, sent.at + WINDOW_MS, used,
         echoed ? sent.transcriptEcho ?? null : undefined, outputs);
       if (!evidence) continue;
@@ -558,7 +483,6 @@ export class CommandReservations {
     const key = reservationKey(sent);
     sent.resultEchoes = reserveResultEchoes(sent, this.sends, readers);
     sent.resultEchoLimit = { ...sent.resultEchoes };
-    // Each earlier same-command anchor now has one more reserved Chat echo after it.
     for (const prior of this.sends) {
       if (reservationKey(prior) !== key) continue;
       prior.resultEchoLimit = Object.fromEntries(Object.entries(prior.resultEchoLimit ?? prior.resultEchoes ?? {})
@@ -582,7 +506,6 @@ export class CommandReservations {
   }
 }
 
-/** Approvals authorize the agent's work; they never prove that a Chat command finished. */
 export function ownsCommandDialog(sent: CommandSend, prompt: ParsedPrompt, screen: string, reader: DialogReader, readers: readonly DialogReader[]): boolean {
   if (prompt.kind === "approval" || prompt.kind === "plan" || reader.id === "claude-confirm") return false;
   if (sent.form?.dialog) return sent.form.dialog === reader.id;
@@ -592,10 +515,8 @@ export function ownsCommandDialog(sent: CommandSend, prompt: ParsedPrompt, scree
   })?.id === prompt.id;
 }
 
-/** The block belonging to exactly this reserved echo, never a later command's block. */
 function ownedCommandScreen(sent: CommandSend, screen: string, reader: DialogReader, readers: readonly DialogReader[], top?: number): string | null {
   const alike = readAlike(sent.agent, screen, sent.screen);
-  // echoes counted as drawn and read now as cut (or the reverse) number differently: no echo is this send's for sure
   if (sent.countedCut !== undefined && sent.countedCut !== alike.cut) return null;
   const [fullLines, sentLines] = alike.lines as [string[], string[]];
   const lines = withoutChrome(fullLines, sent.agent, readers);
@@ -614,7 +535,6 @@ function ownedCommandScreen(sent: CommandSend, screen: string, reader: DialogRea
   return blockBelow(fullLines, lines, echo, echoOf);
 }
 
-/** What the screen shows under the echo at `echo`, through the next command's echo. */
 function blockBelow(fullLines: readonly string[], lines: readonly string[], echo: number, echoOf: NonNullable<DialogReader["echoOf"]>): string {
   const next = lines.findIndex((line, index) => {
     if (index <= echo) return false;
@@ -624,7 +544,6 @@ function blockBelow(fullLines: readonly string[], lines: readonly string[], echo
   return fullLines.slice(echo + 1, next === -1 ? undefined : next + 1).join("\n");
 }
 
-/** The result block `reader` recognizes at the very top of `below`, or null. */
 function resultBelow(sent: CommandSend, below: string, reader: DialogReader): { text: string; catalogChanged?: true } | null {
   const parsed = reader.parse(below, { agent: sent.agent, omoAsk: null, omoTrusted: false, omoOpen: [], sent: sent.text, working: false });
   const block = parsed?.resultText?.replace(ANSI_RE, "").replace(/\r\n/gu, "\n");
@@ -636,9 +555,6 @@ function recognizedResult(sent: CommandSend, screen: string, readers: readonly D
   for (const reader of readers) {
     if (reader.kind !== "result" || !reader.agents.some((agent) => agent === sent.agent || agent === "*")
       || (sent.form?.dialog && sent.form.dialog !== reader.id)) continue;
-    // Position alone cannot distinguish a terminal echo from Chat. Extra echoes invalidate ownership.
-    // Accepted limitation: a same-command terminal result before the Chat echo is indistinguishable.
-    // The idle input/status area can prove completion even though it cannot anchor an echo.
     const below = ownedCommandScreen(sent, screen, reader, readers, top);
     const result = below === null ? null : resultBelow(sent, below, reader);
     if (result) return result;
@@ -646,7 +562,6 @@ function recognizedResult(sent: CommandSend, screen: string, readers: readonly D
   return null;
 }
 
-/** Pure state calculation. Neither forms, idle, deadlines nor screen deltas prove completion. */
 export function commandOutcome(paneId: string, sent: CommandSend, observation: OutcomeObservation): CommandOutcome {
   const now = observation.now;
   const until = Math.min(sent.closedAt ?? Infinity, observation.nextAt ?? Infinity, sent.at + WINDOW_MS);
@@ -661,7 +576,6 @@ export function commandOutcome(paneId: string, sent: CommandSend, observation: O
     const recorded = observation.transcriptAt ?? transcriptEvidence(sent, records, until)?.at ?? null;
     const external = observation.evidence;
     const validExternal = external && external.at > sent.at && external.at < until ? external : undefined;
-    // Reserved screen echoes, like native records, can still belong to an earlier Chat send.
     const result = now < sent.at + WINDOW_MS
       ? recognizedResult(sent, observation.resultScreen ?? observation.screen ?? "", observation.readers ?? [], observation.top) : null;
     if (recorded !== null || validExternal || result) {
@@ -669,7 +583,6 @@ export function commandOutcome(paneId: string, sent: CommandSend, observation: O
       evidence = [{ kind: recorded !== null ? "transcript" : validExternal?.kind ?? "recognized-result",
         at: new Date(recorded ?? validExternal?.at ?? now).toISOString() }];
       catalogChanged = validExternal?.catalogChanged ?? result?.catalogChanged;
-      // what the reader recognized, shown verbatim; bounded like the preview
       resultText = recorded === null && !validExternal ? result?.text.slice(0, 2000) : undefined;
     } else if (sent.form?.interaction === "dialog" && previous?.state === "terminal-required") state = previous.state;
     else if (observation.nextAt !== undefined || now >= until) state = "unknown";

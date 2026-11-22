@@ -14,7 +14,6 @@ const status = (patch: Partial<PortalStatus> = {}): PortalStatus => ({
 });
 const OIDC: PortalAuth = { method: "oidc", allow: ["me@example.com", "@example.com"], issuer: "https://accounts.google.com", client_id: "client-1" };
 
-/** English, whatever the machine running the test prefers. */
 function render(element: ReturnType<typeof createElement>): string {
   const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
@@ -28,7 +27,6 @@ function render(element: ReturnType<typeof createElement>): string {
 const choice = (current: PortalStatus, auth: PortalAuth = current.auth, disabled = false) =>
   render(createElement(PortalAuthChoice, { status: current, draft: draftOf(auth), disabled, onChange: () => undefined }));
 
-/** The `<input type="radio">` tags of a rendering, in order. */
 const radios = (html: string): string[] => html.match(/<input type="radio"[^>]*>/g) ?? [];
 
 describe("the Portal panel's choice of who may open the address", () => {
@@ -72,7 +70,6 @@ describe("the Portal panel's choice of who may open the address", () => {
     expect(set).toContain("me@example.com");
     const idle = choice(status({ oidc_secret: false, auth: OIDC }));
     expect(idle).toContain("The secret is not set on this PC.");
-    // the address exists only once Portal runs: the choice before Start says so, and the summary shows it
     expect(idle).toContain("It shows here once Portal has started.");
     expect(idle).not.toContain("_portal/auth/callback");
     // the secret itself is never a field here
@@ -109,7 +106,6 @@ describe("the Portal panel's choice of who may open the address", () => {
     expect(oidc).toContain(`${url}/_portal/auth/callback`);
     expect(oidc).toContain(`${shortUrl}/_portal/auth/callback`);
     expect(oidc.match(/<button/g)).toHaveLength(2);
-    // one host only (an older server, or no short address): one address
     expect(render(createElement(PortalAuthSummary, { auth: OIDC, url, shortUrl: url })).match(/<button/g)).toHaveLength(1);
   });
 });

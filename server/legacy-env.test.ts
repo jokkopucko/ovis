@@ -12,7 +12,6 @@ describe("settings under their names from before the rename", () => {
     adoptLegacyEnv(env);
     expect(env["OVIS_TOKEN"]).toBe("old");
     expect(env["OVIS_REF"]).toBe("v1.2.3");
-    // herdr's own variables are not the app's
     expect(Object.keys(env).filter((name) => name.startsWith("OVIS_")).sort()).toEqual(["OVIS_REF", "OVIS_TOKEN"]);
   });
 
@@ -33,7 +32,6 @@ describe("settings under their names from before the rename", () => {
   });
 
   it("let a settings file's old name win over the parent's, as the file always did", () => {
-    // herdr started the plugin with the token it was given first; the user then changed it in the plugin's env file
     const merged = mergeEnvLayers([{ HERDR_WEB_TOKEN: "first" }, { HERDR_WEB_TOKEN: "changed" }]);
     expect(merged["OVIS_TOKEN"]).toBe("changed");
     expect(mergeEnvLayers([{ OVIS_TOKEN: "parent" }, { HERDR_WEB_TOKEN: "file" }])["OVIS_TOKEN"]).toBe("file");
@@ -51,10 +49,6 @@ describe("a supervisor started by the launcher of an install from before the ren
   };
   const port = 59_997;
 
-  /**
-   * What a v0.4.13 install looks like right after it installed the next release: its source
-   * checkout, and under the old state dir the release the launcher starts the supervisor of.
-   */
   function installedRelease() {
     const directory = mkdtempSync(join(tmpdir(), "ovis-legacy-launcher-"));
     roots.push(directory);
@@ -75,16 +69,9 @@ describe("a supervisor started by the launcher of an install from before the ren
   }
 
   type Launch = { cwd: string; stateDir: string; managed: string; revision: string };
-  /**
-   * Runs this checkout's supervisor under `launcherEnv` until it is ready and returns every bridge
-   * it started, each as that bridge reads its settings: the source checkout's is 0.4.13's, which
-   * reads them under the names from before the rename. A `failing` release exits at once.
-   */
   async function startBridge(directory: string, config: string, launcherEnv: Record<string, string>, failing = false, afterStart = "process.exit(0);"): Promise<Launch[]> {
     const record = join(directory, "bridge.json");
     const script = join(directory, "supervisor-stand-in.ts");
-    // the bridge without a bridge: its start is recorded and its health check answered; every
-    // other process (the updater's git) runs for real
     writeFileSync(script, `
       import { writeFileSync } from "node:fs";
       const realSpawn = Bun.spawn;
@@ -116,7 +103,7 @@ describe("a supervisor started by the launcher of an install from before the ren
       PORT: String(port), HOST: "127.0.0.1", HERDR_SOCKET: join(directory, "herdr.sock"), OVIS_AUTO_UPDATE: "0" },
     stdout: "pipe", stderr: "pipe" });
     const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000); // a wedged stand-in must not hang the run
+    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
     try {
       const code = await child.exited;
       if (code !== 0 || !existsSync(record)) throw new Error(`the supervisor exited ${code}:\n${(await output).join("\n")}`);
@@ -148,7 +135,6 @@ describe("a supervisor started by the launcher of an install from before the ren
     expect(launches[1]).toEqual({ cwd: root, stateDir: join(config, "herdr-web-ui"), managed: "1", revision: git(root, "rev-parse", "HEAD") });
   }, 20_000);
 
-  /** The release's Rust PTY host install, standing in: each run records where it ran and what it was asked, then runs `body`. */
   function standInInstall(directory: string, release: string, body = ""): void {
     mkdirSync(join(release, "scripts"), { recursive: true });
     writeFileSync(join(release, "scripts", "pty-sidecar.ts"), `
@@ -160,7 +146,6 @@ describe("a supervisor started by the launcher of an install from before the ren
     `);
   }
   const installs = (directory: string) => readdirSync(directory).filter((name) => name.startsWith("install-") && name.endsWith(".json"));
-  /** Resolves once `check` holds, looking again at each change in `directory` (watched before the first look). */
   function seen(directory: string, check: () => boolean, what: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { watcher.close(); reject(new Error(`${what} never happened`)); }, 15_000);
@@ -180,7 +165,6 @@ describe("a supervisor started by the launcher of an install from before the ren
     // up without its Rust PTY host: its terminals ran on Node, or were mirrored on a PC without Node
     const { directory, root, config, release } = installedRelease();
     standInInstall(directory, release);
-    // it runs in the background, after the supervisor is ready
     const installed = seen(directory, () => installs(directory).length > 0, "the release's Rust PTY host install");
     await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root });
     await installed;
@@ -190,20 +174,16 @@ describe("a supervisor started by the launcher of an install from before the ren
   }, 30_000);
 
   it.skipIf(process.platform === "win32")("tries the Rust PTY host again only after its retry wait", async () => {
-    // a PC that cannot get the host (offline, a release without one) must not download at every
-    // restart, and a start while an earlier try runs must leave bin/ to that one
     const { directory, root, config, release } = installedRelease();
     standInInstall(directory, release);
     const first = seen(directory, () => installs(directory).length === 1, "the first install");
     await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root });
     await first;
     const attempt = join(release, "bin", "ovis-pty-sidecar.attempt");
-    // the attempt is marked before the install starts: a start that would try again rewrites it
     writeFileSync(attempt, "kept\n");
     await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root });
     expect(readFileSync(attempt, "utf8")).toBe("kept\n");
     expect(installs(directory)).toHaveLength(1);
-    // past the wait (6 hours), the next start tries again
     const past = Date.now() / 1000 - 7 * 60 * 60;
     utimesSync(attempt, past, past);
     const second = seen(directory, () => installs(directory).length === 2, "the install after the retry wait");
@@ -223,7 +203,6 @@ describe("a supervisor started by the launcher of an install from before the ren
       setInterval(() => {}, 60_000);
     `);
     const stop = seen(directory, () => existsSync(stopped), "the install's stop");
-    // the supervisor is told to stop once its install runs, as herdr's stop action tells it
     await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root }, false, `
       const { existsSync, watch } = await import("node:fs");
       await new Promise((resolve) => {
@@ -265,7 +244,6 @@ describe("a supervisor started by the launcher of an install from before the ren
       setInterval(() => {}, 60_000);
     `);
     try {
-      // the supervisor is told to stop once its install runs, as herdr's stop action tells it
       await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root }, false, `
         const { existsSync, watch } = await import("node:fs");
         await new Promise((resolve) => {
@@ -278,11 +256,10 @@ describe("a supervisor started by the launcher of an install from before the ren
       `);
       await gone;
     } finally {
-      // a failing run must not leave them behind
-      if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+      if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch {} }
       clearTimeout(timer);
       // a reader still waiting for its first writer is let go by a writer that opens and leaves at once
-      try { closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)); } catch { /* no reader waits */ }
+      try { closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
       reader.destroy();
     }
   }, 40_000);
@@ -302,7 +279,6 @@ describe("a supervisor started by the launcher of an install from before the ren
       setInterval(() => {}, 60_000);
     `);
     try {
-      // the supervisor is told to stop once its install runs; startBridge fails a supervisor still there after 15 s
       await startBridge(directory, config, { HERDR_WEB_SOURCE_ROOT: root }, false, `
         const { existsSync, watch } = await import("node:fs");
         await new Promise((resolve) => {
@@ -314,7 +290,7 @@ describe("a supervisor started by the launcher of an install from before the ren
         setInterval(() => {}, 60_000);
       `);
     } finally {
-      if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+      if (existsSync(pids)) for (const pid of JSON.parse(readFileSync(pids, "utf8")) as number[]) { try { process.kill(pid, "SIGKILL"); } catch {} }
     }
   }, 40_000);
 

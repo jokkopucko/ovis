@@ -118,7 +118,6 @@ describe("Hermes commands", () => {
     try {
       expect(skills(null, { LOCALAPPDATA: redirected })).toEqual(["redirected"]);
       expect(skills(null, { LocalAppData: redirected })).toEqual(["redirected"]);
-      // only LOCALAPPDATA comes from the server: its HERMES_HOME is the server's profile, not the pane's
       expect(skills(null, { LOCALAPPDATA: redirected, HERMES_HOME: f.profile })).toEqual(["redirected"]);
       expect(skills([`LOCALAPPDATA=${join(f.root, "pane")}`], { LOCALAPPDATA: redirected, HERMES_HOME: f.profile })).toEqual(["pane-local"]);
     } finally {

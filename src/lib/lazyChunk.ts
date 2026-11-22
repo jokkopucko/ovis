@@ -4,29 +4,25 @@
  * longer has, and a phone offline at that moment cannot reach it either. A failed load is not
  * tried again: Chrome keeps a failed import's answer for the page's life without fetching again,
  * and Vite's loader skips a stylesheet it tried before, so a second try could only fail again or
- * draw without its styles. The failure is told instead (onLazyChunkFailure), and the app offers
- * a reload, the one thing that fetches it again.
+ * draw without its styles.
  */
 type Listener = () => void;
 const listeners = new Set<Listener>();
 let failed = false;
 
-/** Hears every failed load; returns its own removal. */
 export function onLazyChunkFailure(listener: Listener): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
 
-/** Whether a part of the app failed to load in this page. */
 export function lazyChunkFailed(): boolean {
   return failed;
 }
 
-/** Marks this page as missing a part and tells every listener. */
 export function reportLazyChunkFailure(): void {
   failed = true;
   for (const listener of [...listeners]) {
-    try { listener(); } catch { /* one listener does not cost the others */ }
+    try { listener(); } catch {}
   }
 }
 
@@ -35,7 +31,7 @@ export function reportLazyChunkFailure(): void {
  * and it tells `vite:preloadError` of each one that fails, its stylesheets too. That reaches the
  * chunks a lazy part loads on its own, Mermaid's one per diagram type among them, which no
  * `lazyChunk` wraps: Mermaid turns their failure into a failed render, as a diagram that does not
- * parse is. The event is not cancelled, so the import still rejects as it would. Returns its removal.
+ * parse is. The event is not cancelled, so the import still rejects as it would.
  */
 export function watchPreloadErrors(target: EventTarget): () => void {
   const heard = (): void => reportLazyChunkFailure();
@@ -44,12 +40,10 @@ export function watchPreloadErrors(target: EventTarget): () => void {
 }
 if (typeof window !== "undefined") watchPreloadErrors(window);
 
-/** `load` run once: what it gave, or the failure it ended in, for the page's life. */
 export function lazyChunk<T>(load: () => Promise<T>): () => Promise<T> {
   let pending: Promise<T> | null = null;
   return () => {
     pending ??= load().catch((error: unknown) => {
-      // Vite's loader may have told this one already: a listener hears a failure once or twice
       reportLazyChunkFailure();
       throw error;
     });

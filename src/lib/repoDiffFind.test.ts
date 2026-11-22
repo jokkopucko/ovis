@@ -24,7 +24,6 @@ const where = (patch: string, query: string) => findInDiff(diffFindLines(patch),
 describe("find in a diff", () => {
   it("context is searched once", () => {
     const matches = findInDiff(diffFindLines(MONEY), "Cents");
-    // `type Cents`, then `toCents` and `): Cents {` on one unchanged line: each once, on the new side, both numbers kept
     expect(matches.map((match) => [match.kind, match.side, match.line, match.oldLine, match.newLine, match.start])).toEqual([
       ["context", "new", 1, 1, 1, 12],
       ["context", "new", 3, 3, 3, 18],
@@ -54,7 +53,6 @@ describe("find in a diff", () => {
 
   it("multiple matches are ordered", () => {
     const patch = ["@@ -1,2 +1,2 @@", "-aa aa", "+aaa", " aaaa", ""].join("\n");
-    // patch order, then left to right, never overlapping
     expect(where(patch, "aa")).toEqual(["deletion old:1 0-2", "deletion old:1 3-5", "addition new:1 0-2", "context new:2 0-2", "context new:2 2-4"]);
   });
 
@@ -62,9 +60,7 @@ describe("find in a diff", () => {
     expect(findInDiff(diffFindLines(MONEY), "")).toEqual([]);
     expect(diffFindLines(null)).toEqual([]);
     expect(findInDiff(diffFindLines(null), "amount")).toEqual([]);
-    // a pure rename has no hunk: nothing to search
     expect(diffFindLines(["diff --git a/a.ts b/b.ts", "similarity index 100%", "rename from a.ts", "rename to b.ts", ""].join("\n"))).toEqual([]);
-    // the query is cut at the find bar's cap
     const long = "x".repeat(DIFF_FIND_MAX_QUERY + 10);
     const line = `+${long}`;
     expect(findInDiff(diffFindLines(["@@ -0,0 +1 @@", line, ""].join("\n")), long)).toHaveLength(1);
@@ -82,7 +78,6 @@ describe("find in a diff", () => {
     ]);
     expect(where(patch, "No newline")).toEqual([]);
     expect(where(patch, "\r")).toEqual([]);
-    // a hunk header's text and the lines between hunks are never content
     const two = ["@@ -1 +1 @@ function first()", "-a", "+b", "@@ -10,1 +10,1 @@", "-c", "+d", ""].join("\n");
     expect(where(two, "first")).toEqual([]);
     expect(diffFindLines(two).map((line) => `${line.side}:${line.line}`)).toEqual(["old:1", "new:1", "old:10", "new:10"]);
@@ -90,13 +85,10 @@ describe("find in a diff", () => {
 
   it("rename and repeated text preserve identity", () => {
     const renamed = ["diff --git a/old.ts b/new.ts", "similarity index 80%", "rename from old.ts", "rename to new.ts", "--- a/old.ts", "+++ b/new.ts", "@@ -3,3 +3,3 @@", " same", "-same", "+same", " same", ""].join("\n");
-    // the header's paths are not content
     expect(where(renamed, "old.ts")).toEqual([]);
     const matches = findInDiff(diffFindLines(renamed), "same");
     expect(matches.map((match) => `${match.kind} ${match.side}:${match.line}`)).toEqual(["context new:3", "deletion old:4", "addition new:4", "context new:5"]);
-    // identical text on four lines: four identities
     expect(new Set(matches.map(matchKey)).size).toBe(4);
-    // and a deletion and an addition with the same line number stay apart
     expect(matchKey(matches[1]!)).not.toBe(matchKey(matches[2]!));
     // a line starting with `--` inside a hunk is a deletion, not a header
     expect(where(["@@ -1 +0,0 @@", "--- not a header", ""].join("\n"), "not")).toEqual(["deletion old:1 3-6"]);
@@ -105,7 +97,6 @@ describe("find in a diff", () => {
   it("folding cannot remove model matches", () => {
     const old = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
     const lines = ["@@ -1,40 +1,40 @@", ...old.map((text, index) => (index === 19 ? `-${text}\n+${text} changed` : ` ${text}`)), ""].join("\n");
-    // line 2 is context far from the change: the folded rows leave it out, the model keeps it
     const folded = trimPatchContext(lines, 1);
     expect(diffFindLines(folded).some((line) => line.text === "line 2")).toBe(false);
     expect(diffFindLines(lines).some((line) => line.text === "line 2")).toBe(true);

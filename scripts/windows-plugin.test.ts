@@ -34,7 +34,7 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
   const launcher = join(prefix, "plugin.ps1");
   copyFileSync(join(import.meta.dir, "plugin.ps1"), launcher);
   const result = join(scratch, "arguments.json");
-  writeFileSync(join(prefix, "plugin.ts"), `
+  writeFileSync(join(prefix, "plugin-launch.ts"), `
     await Bun.write(${JSON.stringify(result)}, JSON.stringify(process.argv.slice(2)));
     process.exit(process.argv[2] === "status" ? 7 : 0);
   `);
@@ -55,9 +55,11 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
       ]);
       expect(resolutionCode, resolutionError).toBe(0);
       expect(resolved.trim().split(/\r?\n/)).toEqual(["Application", join(bin, `bun.${installation}`)]);
-      for (const command of ["start", "status"]) {
+      // a command's flags go on with it (link --code); anything that is not a plain flag is refused before Bun runs
+      for (const [command, ...rest] of [["start"], ["status"], ["link", "--code", "--google"], ["link", "a&b"], ["link", "--code=%OS%"]] as [string, ...string[]][]) {
+        const refused = rest.some((flag) => !/^--[a-z][a-z-]*$/.test(flag));
         rmSync(result, { force: true });
-        const child = Bun.spawn(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", launcher, command], {
+        const child = Bun.spawn(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", launcher, command, ...rest], {
           windowsHide: true,
           env: { ...process.env, USERPROFILE: prefix, HERDR_PLUGIN_STATE_DIR: scratch },
           stdout: "pipe", stderr: "pipe",
@@ -67,8 +69,13 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
           const [out, err, code] = await Promise.all([
             new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
           ]);
+          if (refused) {
+            expect(code, `${installation} ${command} ${rest.join(" ")}: ${out}${err}`).not.toBe(0);
+            expect(existsSync(result)).toBe(false);
+            continue;
+          }
           expect(code, `${installation} ${command}: ${out}${err}`).toBe(command === "status" ? 7 : 0);
-          expect(JSON.parse(readFileSync(result, "utf8"))).toEqual([command]);
+          expect(JSON.parse(readFileSync(result, "utf8"))).toEqual([command, ...rest]);
         } finally {
           clearTimeout(timeout);
         }
@@ -185,11 +192,11 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
   mkdirSync(config);
   writeFileSync(join(config, ".env"), `HOST=127.0.0.1\nPORT=${port}\n`);
   const env: Record<string, string | undefined> = { ...process.env, HOME: undefined, USERPROFILE: scratch, APPDATA: join(scratch, "appdata"),
-    // A running Herdr without Bun on PATH: the manifest's real Windows launcher must find it.
     Path: ["taskkill", "powershell", "git"].map(tool => dirname(Bun.which(tool)!)).join(";"),
     HERDR_SOCKET: socket, HERDR_SOCKET_PATH: socket, HERDR_PLUGIN_ROOT: undefined,
     HERDR_PLUGIN_STATE_DIR: state, HERDR_PLUGIN_CONFIG_DIR: config, OVIS_STATE_DIR: join(scratch, "app-state"),
-    OVIS_AUTO_UPDATE: "0", OVIS_TOKEN: "", HOST: "127.0.0.1", PORT: String(port) };
+    OVIS_AUTO_UPDATE: "0", OVIS_TOKEN: "", HOST: "127.0.0.1", PORT: String(port),
+    OVIS_FROM_SOURCE: "1" };
   delete env["PATH"];
   const run = async (command: string, expectedCode = 0) => {
     const entry = command === "start" ? manifest.startup.find(entry => entry.platforms.includes("windows"))
@@ -201,10 +208,8 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
   };
   try {
     await run("start");
-    // start's process has exited, but the managed server and its children must still answer.
     const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json() as { herdr: { terminal_mirror: boolean } };
     expect(health.herdr.terminal_mirror).toBe(true);
-    // The "not built yet" notice is a 200 too: the page itself must come back.
     expect(await (await fetch(`http://127.0.0.1:${port}/`)).text()).toContain('<div id="root"');
     const history = await (await fetch(`http://127.0.0.1:${port}/api/pane/conversation?pane_id=history`)).json() as { source: string; turns: unknown[] };
     expect(history.source).toBe("omp-transcript");
@@ -219,14 +224,18 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
     const owned = new Set([pid, ...descendantProcesses(rows, pid).map(member => member.pid)]);
     const birth = new Map(rows.map(row => [row.pid, row.started]));
     expect(owned.size).toBeGreaterThanOrEqual(3);
-    for (let attempt = 0; attempt < 3; attempt++) await run("start"); // fast successful exits keep their exit code
+    for (let attempt = 0; attempt < 3; attempt++) await run("start");
     expect(Number(readFileSync(join(state, "server.pid"), "utf8"))).toBe(pid);
     const record = statSync(join(state, "server.pid"));
+    const owner = readFileSync(join(state, "server.owner"), "utf8");
     try {
+      // with no creation time recorded, a matching app started after an old PID record is not its owner
+      // (a recorded creation time that matches decides alone: plugin-stop-identity.test.ts)
+      writeFileSync(join(state, "server.owner"), `${JSON.stringify({ pid, birth_unknown: true })}\n`);
       utimesSync(join(state, "server.pid"), record.atime, new Date(0));
-      await run("stop", 1); // a matching app started after an old PID record is not its owner
+      await run("stop", 1);
       expect((await fetch(`http://127.0.0.1:${port}/api/health`)).ok).toBe(true);
-    } finally { utimesSync(join(state, "server.pid"), record.atime, record.mtime); }
+    } finally { writeFileSync(join(state, "server.owner"), owner); utimesSync(join(state, "server.pid"), record.atime, record.mtime); }
     await run("stop");
     const deadline = Date.now() + 10_000;
     const stillOwned = () => [...owned].filter(member => {

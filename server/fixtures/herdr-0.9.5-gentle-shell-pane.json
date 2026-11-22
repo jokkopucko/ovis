@@ -1,0 +1,4 @@
+{
+  "agent.get": {"type":"agent_info","agent":{"terminal_id":"term_6609dfe37f95e2","agent":"gentle-shell","agent_status":"idle","workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1","focused":false,"state_change_seq":1,"cwd":"/home/user/project","foreground_cwd":"/home/user/project","revision":0}},
+  "pane.process_info": {"type":"pane_process_info","process_info":{"pane_id":"w2:p1","shell_pid":4100272,"foreground_process_group_id":4100272,"foreground_processes":[{"pid":4100272,"name":"MainThread","argv":["node","/home/user/.gentle-shell/install/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"],"cmdline":"node /home/user/.gentle-shell/install/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js","cwd":"/home/user/project"}]}}
+}

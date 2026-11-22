@@ -15,7 +15,6 @@ const PATH_SEEN = "/stand-in/secret-path";
 const scratches: string[] = [];
 afterAll(() => { for (const dir of scratches) rmSync(dir, { recursive: true, force: true }); });
 
-/** Later-page failures include a full first page, so incomplete counts must not be published. */
 function standIn(mode: string): string {
   const scratch = mkdtempSync(join(tmpdir(), "growth-snapshot-"));
   scratches.push(scratch);

@@ -4,7 +4,7 @@ import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { createAccountController } from "./accountController.ts";
-import type { RelayDeviceStore, SavedDevice } from "./device.ts";
+import type { ShellDeviceStore, SavedDevice } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
 
@@ -20,10 +20,11 @@ describe("account carrier renewal", () => {
     await accountStore.set("session", { service: "https://account.ovis.sh", account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
     const key = await accountStore.key();
     let device: SavedDevice = { ...offer, device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone" };
-    const store: RelayDeviceStore = {
+    const store: ShellDeviceStore = {
       get: async () => device,
       list: async () => [device],
       remove: async () => { throw new Error("Unexpected pairing removal"); },
+      removeRow: async () => { throw new Error("Unexpected pairing removal"); },
       update: async (_id, change) => { device = change(device); return device; },
     };
     class LinkingTransport extends RelayTransport {

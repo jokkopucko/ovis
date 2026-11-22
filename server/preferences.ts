@@ -4,11 +4,9 @@ import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, sharedPrefe
 import { badRequest, isJsonObject, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
 
-/** The state folder's id (SharedPreferences.state_id), in a file of its own beside preferences.json. */
 export const STATE_ID_FILE = "preferences-id.json";
 const STATE_ID = /^[0-9a-f]{32}$/;
 
-/** The id `dir` holds: undefined when it has none yet, null when its file is damaged. Throws when it cannot be read. */
 export function readStateId(dir: string): string | null | undefined {
   const read = readStateDocument(join(dir, STATE_ID_FILE));
   if (read.kind === "missing") return undefined;
@@ -21,16 +19,11 @@ export function writeStateId(dir: string, id: string): void {
 }
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
 
-/** The document a change would make is over MAX_PREFERENCES_BYTES; nothing was kept. */
 export class PreferencesTooLarge extends Error {
   constructor() { super(`Shared preferences are at most ${MAX_PREFERENCES_BYTES / 1024} KB`); }
 }
 
 /**
- * The preferences every browser of this server shares (shared/preferences.ts), kept in the state
- * directory beside devices.json. One document: a browser sends the settings it changed (and the
- * pins when they changed), laid over what is held, last write wins per setting; the others take
- * the whole document from the event. A change is held, and told, only once it is on disk.
  * The muted panes are always in the document, empty while nothing is muted: a server with none
  * stored reads as none muted, without a write or a new revision, so a browser tells a server that
  * keeps the list from an older one by the list being there. They are stored in a document of their
@@ -49,14 +42,10 @@ export class PreferenceStore {
   private readonly mutesPath: string;
   private readonly labelsPath: string;
   private readonly stateDir: string;
-  /** this state folder's id, once it is on disk (preferences-id.json); null while that file is damaged or unreadable */
   private stateId: string | null | undefined;
   private readonly listeners = new Set<(preferences: SharedPreferences) => void>();
-  /** Until this store has replaced the file, a write reads it again first: it may have been damaged or repaired since. */
   private unsettled = true;
-  /** As `unsettled`, for muted-panes.json. */
   private mutesUnsettled = true;
-  /** As `unsettled`, for tab-labels.json. */
   private labelsUnsettled = true;
 
   constructor(stateDir: string) {
@@ -75,7 +64,6 @@ export class PreferenceStore {
       const held = this.readDisk();
       if (held) this.current = held;
     } catch (error) {
-      // a missing file is a server that has shared nothing yet; an unreadable one is not, and is never written over
       console.error(`Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? "error"}); shared preferences start empty and are not saved until it can be read`);
     }
     if (typeof this.stateId === "string") this.current = { ...this.current, state_id: this.stateId };
@@ -85,7 +73,6 @@ export class PreferenceStore {
       console.error(`Cannot read ${this.mutesPath} (${(error as NodeJS.ErrnoException).code ?? "error"}); no pane starts muted and the list is not saved until it can be read`);
     }
     try {
-      // while the setting is off none is shown, and the first save deletes what a failed delete left
       const labels = this.current.settings.autoTabNames === false ? null : this.readLabels();
       if (labels !== null && Object.keys(labels).length > 0) this.current = { ...this.current, tab_labels: labels };
     } catch (error) {
@@ -93,7 +80,6 @@ export class PreferenceStore {
     }
   }
 
-  /** The tab labels on disk: {} when there are none yet, null when the file is damaged. Throws when it cannot be read. */
   private readLabels(): Record<string, string> | null {
     const read = readStateDocument(this.labelsPath);
     if (read.kind === "missing") return {};
@@ -105,7 +91,6 @@ export class PreferenceStore {
     return labels;
   }
 
-  /** The muted panes on disk: [] when there is no list yet, null when the file is damaged. Throws when it cannot be read. */
   private readMutes(): string[] | null {
     const read = readStateDocument(this.mutesPath);
     if (read.kind === "missing") return [];
@@ -117,7 +102,6 @@ export class PreferenceStore {
     return list;
   }
 
-  /** The document on disk: undefined when there is none, null when it is damaged. Throws when it cannot be read. */
   private readDisk(): SharedPreferences | null | undefined {
     const read = readStateDocument(this.path);
     if (read.kind === "missing") return undefined;
@@ -128,7 +112,6 @@ export class PreferenceStore {
       return null;
     }
     const revision = isJsonObject(parsed) && Number.isSafeInteger(parsed["revision"]) ? parsed["revision"] as number : 0;
-    // the mutes are muted-panes.json's (readMutes), the labels tab-labels.json's: what this document holds of them is left out
     const labels = this.current.tab_labels;
     return { revision: Math.max(0, revision), ...(typeof this.stateId === "string" ? { state_id: this.stateId } : {}), settings: body.settings, ...(body.pins === undefined ? {} : { pins: body.pins }), muted_panes: this.current.muted_panes, ...(labels === undefined ? {} : { tab_labels: labels }) };
   }
@@ -139,18 +122,11 @@ export class PreferenceStore {
     let base = this.current;
     let keepDamaged = false;
     if (this.unsettled) {
-      // the file as it is now, not as it was at start: a repair is kept and the change laid over it
       const held = this.readDisk();
       if (held) base = held;
       keepDamaged = held === null;
     }
-    // labels on disk that this store has not read (a file repaired since a damaged start) are what the change
-    // adds to and drops from (the setting turned off is a change of them: it deletes them). The labels never
-    // stop a save of the settings, pins or mutes: a file that cannot be read or written (its rights, a
-    // directory in its place) is logged, and the labels are left out of this save and of memory until a
-    // later change of them can read it
     let labelsUnreadable = false;
-    // labels a delete left on disk while the setting was off are no one's: they are deleted again, never read back
     const wasOff = base.settings.autoTabNames === false;
     if (this.labelsUnsettled && (wasOff || change.tab_labels !== undefined || change.tab_labels_removed !== undefined || change.settings.autoTabNames === false)) {
       try {
@@ -181,18 +157,12 @@ export class PreferenceStore {
     const stateId = this.stateId ?? undefined;
     change = normalizeThemeChange(base.settings, change);
     const pins = change.pins ?? base.pins;
-    // a change that names no list leaves the mutes; an empty list is the last one unmuted
     const muted = change.muted_panes ?? base.muted_panes ?? [];
     const settings = { ...base.settings, ...change.settings };
-    // the setting turned off takes every label with it, on disk too
     const labels = labelsUnreadable ? undefined : nextTabLabels(base.tab_labels, change, settings);
-    // a change that leaves the labels as they are writes no tab-labels.json
     let kept = labels !== undefined && Object.keys(labels).length > 0 ? labels : undefined;
     const document = (): SharedPreferences => ({ revision: base.revision + 1, ...(stateId === undefined ? {} : { state_id: stateId }), settings, ...(pins === undefined ? {} : { pins }), muted_panes: muted, ...(kept === undefined ? {} : { tab_labels: kept }) });
-    // the labels never make a save too large: the settings, pins and mutes are measured without them, and
-    // labels that would not fit beside them are left out of this save (the ones held stay on disk)
     const labelsHeld = base.tab_labels;
-    // labels that do not fit are only left out of the document and memory: the file keeps them, unwritten
     let labelsFit = true;
     if (kept !== undefined) {
       const bare = { ...document() };
@@ -200,20 +170,12 @@ export class PreferenceStore {
       if (byteLength(JSON.stringify(bare)) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
       if (byteLength(JSON.stringify(document())) > MAX_PREFERENCES_BYTES) { kept = undefined; labelsFit = false; }
     } else if (byteLength(JSON.stringify(document())) > MAX_PREFERENCES_BYTES) throw new PreferencesTooLarge();
-    // a purge left undone while the setting was off goes again with every save until it is done
     const labelsChanged = !labelsUnreadable && labelsFit && (JSON.stringify(kept ?? {}) !== JSON.stringify(labelsHeld ?? {}) || (wasOff && this.labelsUnsettled));
-    // the revision first: a save that fails there leaves the mutes as they were. One that fails at the
-    // list puts the previous preferences.json back, so a refused save leaves nothing on disk that no
-    // browser was told of. Two files cannot be swapped as one, so a window stays open, accepted for
-    // a settings store: when putting preferences.json back fails too, or the process ends between the
-    // two renames, preferences.json keeps the refused change and a restart reads it, although memory
-    // and the client were told it failed. Nothing is lost; at worst a refused change comes back.
     const keepDamagedMutes = change.muted_panes !== undefined && this.mutesUnsettled && this.readMutes() === null;
     const { muted_panes: _stored, tab_labels: _labels, state_id: _id, ...shared } = document();
     writeStateDocument(this.path, `${JSON.stringify(shared, null, 2)}\n`, keepDamaged);
     // the labels before the mutes, and never in their way: mutes saved before a failed save of the labels
-    // would otherwise silence panes though the browser was told they were not. A label save that fails
-    // leaves the labels out of memory, so the next change of them reads the file again
+    // would otherwise silence panes though the browser was told they were not.
     let labelsWritten = false;
     if (labelsChanged) {
       try {
@@ -227,8 +189,6 @@ export class PreferenceStore {
         this.labelsUnsettled = true;
       }
     }
-    // labels this save could not read or write are not this store's any more, even when the mutes then fail
-    // labels left out for their size are still on disk: the next change of them reads the file first
     if (!labelsFit) this.labelsUnsettled = true;
     if (labelsUnreadable || !labelsFit || (labelsChanged && !labelsWritten)) {
       const { tab_labels: _dropped, ...rest } = this.current;
@@ -239,7 +199,6 @@ export class PreferenceStore {
       try {
         writeStateDocument(this.mutesPath, `${JSON.stringify({ muted_panes: muted }, null, 2)}\n`, keepDamagedMutes);
       } catch (error) {
-        // labels already on disk are what this store holds now, so a later save starts from them
         if (labelsWritten) {
           const { tab_labels: _was, ...rest } = this.current;
           this.current = { ...rest, ...(kept === undefined ? {} : { tab_labels: kept }) };
@@ -251,7 +210,6 @@ export class PreferenceStore {
       }
       this.mutesUnsettled = false;
     }
-    // settled only once the whole save is on disk: after a put-back the file is read again first
     this.unsettled = false;
     this.current = next;
     // every listener hears of the saved change; the first one that fails then fails the save's caller, so a

@@ -1,6 +1,3 @@
-/** Copilot's pictures end to end in Chrome, from a recorded 1.0.105 session: parsed page -> prompt
- * thumbnail and the view tool's work line -> <img> bytes read back by copilotImage, as the image
- * endpoint reads them. */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +11,6 @@ import { chromePath } from "./chrome-path.ts";
 const root = mkdtempSync(join(tmpdir(), "herdr-copilot-image-browser-"));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
-// the recorded session: a red 48x48 picture attached to the prompt, a blue one the view tool read
 const RED = "copilot:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
 const BLUE = "copilot:c75fe07b33afb7b182fa53cd500727a7cfa1699443a17d87d053d6536ad65438";
 const served: string[] = [];
@@ -59,9 +55,7 @@ try {
     await page.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
     await page.goto(`http://127.0.0.1:${server.port}/`);
     await page.getByText("Red. Blue.").waitFor();
-    // the attached picture sits under the prompt's words, decoded from the bytes Copilot interned
     assert.deepEqual(await decoded(page, ".chat-turn-user .chat-user-images img"), [[48, 48]]);
-    // the view tool's picture shows on the folded work line
     assert.deepEqual(await decoded(page, ".work-block-line .work-image img"), [[48, 48]]);
     assert.deepEqual(errors, []);
     if (evidence) {

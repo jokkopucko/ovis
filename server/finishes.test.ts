@@ -143,7 +143,6 @@ it("keeps a moved pane's finish count under its new ID, so a finish read before 
   finishes.status("w1:p1", "working");
   expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
   finishes.moved("w1:p1", "w2:p1");
-  // the same finish, told again under the new ID, is not a new one
   expect(finishes.status("w2:p1", "done").finish_id).toBe(1);
   finishes.status("w2:p1", "working");
   expect(finishes.status("w2:p1", "done").finish_id).toBe(2);
@@ -153,13 +152,11 @@ it("keeps a moved pane's finish count under its new ID, so a finish read before 
 
 it("counts a moved pane's finishes above what a reused new ID had, and renumbers the reads of its latest (#1503)", () => {
   const finishes = new Finishes(() => "daemon-a");
-  // an earlier pane under w2:p1 finished four times and ended
   for (let turn = 0; turn < 4; turn++) { finishes.status("w2:p1", "working"); finishes.status("w2:p1", "done"); }
   finishes.status("w2:p1", "unknown");
   finishes.status("w1:p1", "working");
   expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
   const renumber = finishes.moved("w1:p1", "w2:p1");
-  // the moved finish is the same one under the new ID: above the earlier pane's, and a read of it stays a read
   expect(finishes.status("w2:p1", "done").finish_id).toBe(5);
   expect(renumber(1)).toBe(5);
   expect(renumber(0)).toBe(0);
@@ -172,7 +169,6 @@ it("counts a new finish under a moved pane's new ID when its work was still told
   finishes.status("w1:p1", "working");
   expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
   finishes.moved("w1:p1", "w2:p1");
-  // a late event of the old ID: the moved pane went back to work
   finishes.status("w1:p1", "working");
   expect(finishes.status("w2:p1", "done").finish_id).toBe(2);
 });

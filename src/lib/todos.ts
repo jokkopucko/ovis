@@ -5,7 +5,8 @@ export { parseTodoAnswer, type TodoItem, type TodoStatus } from "../../shared/to
 /**
  * The agent's todo tool calls, as the chat's work block shows them. Each agent keeps its
  * list its own way:
- * - Claude Code `TodoWrite` and Codex `update_plan` send the whole list every time;
+ * - Claude Code `TodoWrite`, opencode `todowrite` and Codex `update_plan` send the whole
+ *   list every time (`todowrite` is one word, no underscore, and carries `todos: [{ content, status }]`);
  * - omp / omo `todo`, gjc `todo_write` (and omo's `mcp__…__todo` through Claude) send
  *   operations (init, append, start, done, drop, block, note) on one list, and answer
  *   each call with the whole list as it now stands.
@@ -16,7 +17,7 @@ type Tool = Extract<ConversationPart, { kind: "tool" }>;
 type Kind = "whole" | "codex-plan" | "ops";
 
 function toolKind(name: string): Kind | null {
-  if (name === "TodoWrite") return "whole";
+  if (name === "TodoWrite" || name === "todowrite") return "whole";
   if (name === "update_plan") return "codex-plan";
   if (name === "todo" || name === "todo_write" || /^mcp__.+__todo$/.test(name)) return "ops";
   return null;
@@ -38,7 +39,6 @@ function args(part: Tool): Record<string, unknown> {
   try { return record(JSON.parse(part.input)); } catch { return {}; }
 }
 
-/** The operations of one `todo` / `todo_write` call: `ops: [...]`, or the call itself as one. */
 function operations(input: Record<string, unknown>): Record<string, unknown>[] {
   return Array.isArray(input["ops"]) ? input["ops"].map(record) : [input];
 }
@@ -54,9 +54,8 @@ function phases(list: unknown): TodoItem[] {
 }
 
 /**
- * The whole list one todo call leaves, or null when it cannot be read. A whole-list tool's list is
- * its input (`todos` / `plan`); an operations tool's is only its answer: an `init` input is one
- * operation, not the list as it stands, so it is never read as one.
+ * A whole-list tool's list is its input (`todos` / `plan`); an operations tool's is only its answer:
+ * an `init` input is one operation, not the list as it stands, so it is never read as one.
  */
 export function todoSnapshot(part: Tool): TodoItem[] | null {
   const kind = toolKind(part.name);
@@ -71,15 +70,14 @@ export function todoSnapshot(part: Tool): TodoItem[] | null {
   for (const entry of list) {
     const fields = record(entry);
     const label = text(fields[kind === "whole" ? "content" : "step"]);
-    // one entry without words makes the list unreadable, not shorter
     if (label === null) return null;
     const status = fields["status"];
-    items.push({ label, phase: null, status: status === "completed" ? "completed" : status === "in_progress" ? "in_progress" : "pending" });
+    // opencode's `todowrite` also sends `cancelled`: an item given up, drawn as dropped
+    items.push({ label, phase: null, status: status === "completed" ? "completed" : status === "in_progress" ? "in_progress" : status === "cancelled" ? "dropped" : "pending" });
   }
   return items;
 }
 
-/** One line for a todo call in the work block, instead of its raw input. */
 export function todoCallSummary(part: Tool): string | null {
   const kind = toolKind(part.name);
   if (kind === null) return null;

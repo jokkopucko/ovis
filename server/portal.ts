@@ -58,9 +58,7 @@ const VERSION_TIMEOUT_MS = 2_500;
 /** the panel polls the status; `portal version` and `portal expose --help` are a process each time */
 const PROBE_CACHE_MS = 5_000;
 const RELAY_TIMEOUT_MS = 5_000;
-/** what is still in Portal's pipes when it exits: its last words */
 const PIPE_GRACE_MS = 250;
-/** Portal's last words kept for the panel */
 const OUTPUT_LINES = 30;
 /** `portal auth issue` reads the identity file and signs: a local call */
 const ISSUE_TIMEOUT_MS = 10_000;
@@ -79,18 +77,15 @@ interface Guards {
 }
 interface StartRequest extends Guards {
   relay: string;
-  /** this server's port, Portal's upstream */
   port: number;
   /** who may open the address; unset, only the app's own token or a paired device */
   auth?: PortalAuth;
 }
-/** a start as it runs: the sign-in settled */
 type Launch = Required<StartRequest>;
 /** what a relaunch must find unchanged: the exited child's saved pid and the identity it served with */
 interface Recovery {
   pid: number;
   identity: string;
-  /** how the exited child ended, for the error a failed relaunch leaves */
   stopped: string;
 }
 interface SavedState {
@@ -98,7 +93,6 @@ interface SavedState {
   relay: string | null;
   /** the server that started it: another one on this state directory leaves its Portal alone */
   port: number | null;
-  /** the Portal last started, so the next server can stop it if it is still running */
   pid: number | null;
   /** who may open the address, for a start that comes from this file (the boot's resume, a relaunch) */
   auth: PortalAuth;
@@ -107,19 +101,14 @@ interface SavedState {
 }
 
 export interface PortalServiceOptions {
-  /** Portal's identity and on/off choice live in its portal/ */
   stateDir: string;
-  /** the portal to run; unset, `portal` from PATH, read at each start */
   bin?: string;
   fetch?: typeof fetch;
-  /** READY_TIMEOUT_MS and STOP_GRACE_MS; tests shorten them */
   readyTimeoutMs?: number;
   stopGraceMs?: number;
-  /** PORTAL_RECHECK_MS; tests shorten it */
   recheckMs?: number;
 }
 
-/** "v2.6.1" → [2, 6, 1]; null for anything else. */
 function parseVersion(text: string): [number, number, number] | null {
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(text.trim());
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
@@ -352,13 +341,11 @@ function isPortalExpose(argv: readonly string[], identityPath: string): boolean 
   return false;
 }
 
-/** Portal's last warning or error, else its last line, for a failure that has no words of its own. */
 function lastWords(lines: readonly string[]): string {
   const line = [...lines].reverse().find((candidate) => /\b(WRN|ERR|FTL)\b/.test(candidate)) ?? lines.at(-1);
   return line === undefined ? "" : ` Portal said: ${line}`;
 }
 
-/** What `portal version` said: its tag, or that there is no such program, or that it gave none. */
 type VersionRead = { tag: string } | { problem: "missing" | "unreadable" };
 const NO_PORTAL_BIN: VersionRead = { problem: "missing" };
 
@@ -396,10 +383,8 @@ async function readSignIns(bin: string): Promise<PortalSignIn[]> {
   } catch { return []; }
 }
 
-/** What a `portal` subcommand said, and when and of which `portal`. */
 interface Probe<T> { at: number; bin: string | null; value: Promise<T> }
 
-/** `last` while it is recent and of the same `bin`, else a new question: the panel polls, and each one is a process. */
 function ask<T>(last: Probe<T> | null, bin: string | null, fresh: boolean, read: (bin: string) => Promise<T>, none: T): Probe<T> {
   const now = Date.now();
   if (!fresh && last !== null && last.bin === bin && now - last.at < PROBE_CACHE_MS) return last;
@@ -413,21 +398,16 @@ export class PortalService {
   private error: string | null = null;
   private lines: string[] = [];
   private child: Child | null = null;
-  /** a start between its request and its process, or the boot's cleanup: one at a time */
   private launching = false;
-  /** invalidates starts/resumes that are still waiting on a version, relay or old process */
   private operation = 0;
-  /** shutdown is final for this server instance, even if a start has not spawned yet */
   private shutdownRequested = false;
   private cleanup: Promise<void> | null = null;
-  /** a child asked to end, once: its exit is no failure */
   private ending: Child | null = null;
   private versionRead: Probe<VersionRead> | null = null;
   private signInsRead: Probe<PortalSignIn[]> | null = null;
   /** who may open the address: the running Portal's, else the saved choice the next start uses */
   private auth: PortalAuth = NO_PORTAL_AUTH;
   private invites: NonNullable<SavedState["invites"]> = [];
-  /** the short host of the address being served (`shortReadyUrl`), reported only while `url` is */
   private shortUrl: string | null = null;
   /** the port this service represents; a service for another port must not change the owner's saved choice */
   private serverPort: number | null = null;
@@ -435,10 +415,8 @@ export class PortalService {
   private guards: (() => Guards) | null = null;
   /** what the running Portal, started with a sign-in, sends with the identity it vouches for; made at its launch, kept here and nowhere else */
   private proof: string | null = null;
-  /** the child that printed its address, and the identity file it served with */
   private readyChild: Child | null = null;
   private readyIdentity: string | null = null;
-  /** the one relaunch an explicit start, a stop or the boot's resume allows has been used */
   private recovered = false;
   private readonly dir: string;
 
@@ -483,7 +461,6 @@ export class PortalService {
     const read = await this.version();
     const version = "tag" in read ? read.tag : null;
     const usable = version !== null && atLeast(version, PORTAL_VERSION);
-    // a sign-in the start would refuse is not offered either
     const methods = usable && releaseAtLeast(version, SIGN_IN_VERSION) ? await this.signIns() : [];
     return {
       supported: true,
@@ -612,14 +589,12 @@ export class PortalService {
   private run(request: Launch, operation: number, recovery: Recovery | null): void {
     this.launching = true;
     void this.launch(request, operation, recovery)
-      // a start stopped meanwhile failed for no one
       .catch((error: unknown) => {
         if (this.isCurrentStart(operation)) this.fail(recovery === null ? messageOf(error) : `${recovery.stopped} It was not restarted: ${messageOf(error)}${lastWords(this.lines)}`);
       })
       .finally(() => { this.launching = false; });
   }
 
-  /** Takes this server's address down and remembers that it is off when this server owns the saved state. */
   stop(): void {
     this.operation++;
     this.url = null;
@@ -629,14 +604,12 @@ export class PortalService {
       this.phase = "stopping";
       this.end(this.child);
     } else if (this.phase === "starting" || this.phase === "recovering" || this.phase === "error") {
-      // a start still asking its relay ends there
       this.phase = "idle";
     }
     const saved = this.saved();
     if (saved.port === null || saved.port === this.serverPort) this.save({ enabled: false });
   }
 
-  /** The server is going away: Portal goes with it, and the saved choice stays for the next server. Settles once Portal has exited. */
   shutdown(): Promise<void> {
     this.shutdownRequested = true;
     this.operation++;
@@ -717,7 +690,6 @@ export class PortalService {
     // another server of this app on this identity: two Portals keep taking the address from each other
     await this.cleanLeftover(this.saved().pid);
     if (!this.isCurrentStart(operation)) return;
-    // what was true before the awaits may not be now
     if (recovery !== null) this.checkRecovery(request, recovery);
     // Portal needs its identity parent before it starts; it contains the saved address.
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
@@ -795,7 +767,6 @@ export class PortalService {
       this.error = `${stopped} It was not restarted: its identity file could not be read. Start it again.${lastWords(this.lines)}`;
       return;
     }
-    // the one relaunch is spent before anything is awaited, so no second exit can take another
     this.recovered = true;
     this.phase = "recovering";
     this.error = null;
@@ -815,11 +786,10 @@ export class PortalService {
         }
       }
       this.line(pending + decoder.decode(), child);
-    } catch { /* the pipe closes with the process */ }
+    } catch { }
   }
 
   private line(raw: string, child: Child): void {
-    // NO_COLOR is set; a terminal's codes would be no use here either way
     const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
     if (line === "" || this.child !== child) return;
     this.lines = [...this.lines, line].slice(-OUTPUT_LINES);
@@ -959,7 +929,6 @@ export class PortalService {
     return { enabled, relay: origin, port: port as number | null, pid: pid as number | null, auth: auth.auth, ...(invites.length > 0 ? { invites } : {}) };
   }
 
-  /** at once, not awaited: a stop and a start's own save never interleave */
   private save(change: Partial<SavedState>): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const temp = `${this.statePath}.tmp-${process.pid}`;
@@ -979,7 +948,6 @@ export async function handlePortalRequest(request: Request, pathname: string, po
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (pathname === "/api/portal" && request.method === "GET") {
     setRequestRoute(pathname);
-    // a server started without the service (tests, an embedding) offers nothing
     return reply(portal ? await portal.status(context) : NO_PORTAL);
   }
   const action = pathname.slice("/api/portal/".length);
@@ -994,7 +962,7 @@ export async function handlePortalRequest(request: Request, pathname: string, po
     return reply({ accepted: true }, 202);
   }
   let body: unknown = null;
-  try { body = await request.json(); } catch { /* checked below */ }
+  try { body = await request.json(); } catch { }
   if (action === "invite") {
     const fields = isJsonObject(body) ? body : {};
     const name = checkEntry("credential", typeof fields["name"] === "string" ? fields["name"] : "");

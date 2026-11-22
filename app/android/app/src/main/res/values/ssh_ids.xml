@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SshSetupActivity's views, by name, for its instrumented test (SshSetupFlowTest) -->
+<resources>
+    <item name="ssh_host" type="id" />
+    <item name="ssh_port" type="id" />
+    <item name="ssh_user" type="id" />
+    <item name="ssh_method_phone" type="id" />
+    <item name="ssh_method_password" type="id" />
+    <item name="ssh_method_paste" type="id" />
+    <item name="ssh_advanced" type="id" />
+    <item name="ssh_key_line" type="id" />
+    <item name="ssh_password" type="id" />
+    <item name="ssh_private_key" type="id" />
+    <item name="ssh_key_state" type="id" />
+    <item name="ssh_passphrase" type="id" />
+    <item name="ssh_status" type="id" />
+    <item name="ssh_connect" type="id" />
+</resources>

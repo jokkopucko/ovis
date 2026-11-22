@@ -1,5 +1,3 @@
-/** pi's pictures end to end in Chrome: parsed page -> prompt, work line or row -> <img> bytes. A
- * prompt that is only a picture is a turn of its own; a tool result's picture shows on its work line. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +34,6 @@ const entries = [
       { type: "image", mimeType: "image/gif", data: GIF },
     ],
   } },
-  // a second call's four pictures: the folded line holds the latest four, the first two counted on a tile
   { type: "message", id: "a2", parentId: "r1", timestamp: "2026-09-30T00:00:04Z", message: {
     role: "assistant", model: "qwen-test", provider: "test", stopReason: "toolUse", usage: { input: 10, output: 4 },
     content: [{ type: "toolCall", id: "call-2", name: "read", arguments: { path: "shots" } }],
@@ -97,7 +94,6 @@ try {
   await page.goto(`http://127.0.0.1:${server.port}/`);
   await page.getByText("what is in this screenshot?").waitFor();
 
-  // the prompt that is only a picture is a turn of its own: its thumbnail, decoded, and no empty bubble
   const sent = page.locator(".chat-turn-user").first();
   assert.equal(await sent.locator(".chat-user-images img").count(), 1);
   assert.equal(await sent.locator(".chat-bubble").count(), 0, "a picture alone draws no empty bubble");
@@ -108,8 +104,6 @@ try {
   assert.ok(served.includes("pi-prompt:u0:0"), "the prompt's picture loads with the prompt");
   console.log("PASS a pi prompt that is only a picture is its own turn, its thumbnail decoded from the served bytes");
 
-  // a settled turn's work is folded, and its line shows what the tools returned: the latest four
-  // small, the two before them on a "+2" tile; the conversation itself carries refs only
   assert.equal(await page.locator(".work-block-head").getAttribute("aria-expanded"), "false");
   const line = page.locator(".work-block-line .work-images");
   assert.equal(await line.getAttribute("aria-label"), "Pictures from this work");
@@ -120,7 +114,6 @@ try {
   assert.equal(await page.locator(".chat-tool-images").count(), 0, "no row is open");
   console.log("PASS a folded block's line shows its latest four pictures and counts the rest, fetching only those four");
 
-  // hovering a thumbnail shows it larger, with the tool's name and its place among the block's
   const second = line.locator(".work-image:not(.is-more)").nth(1);
   await second.hover();
   const preview = page.locator(".work-image-preview");
@@ -128,13 +121,11 @@ try {
   assert.equal(await preview.locator(".work-image-preview-bar").textContent(), "read4 of 6");
   assert.deepEqual(await decoded(page, ".work-image-preview img"), [[1, 1]]);
   const [thumbBox, previewBox] = [await second.boundingBox(), await preview.boundingBox()];
-  // above its thumbnail where that fits, else under it: never over it
   assert.ok(thumbBox !== null && previewBox !== null && (previewBox.y + previewBox.height <= thumbBox.y || previewBox.y >= thumbBox.y + thumbBox.height), "the preview leaves its thumbnail in view");
   await page.mouse.move(5, 5);
   await preview.waitFor({ state: "detached" });
   console.log("PASS a hover shows the picture larger, named by its tool and place, and leaving takes it away");
 
-  // a click opens the viewer on all six at that one; the tile opens it at the first
   await second.click();
   const viewer = page.getByRole("dialog", { name: "Image viewer" });
   await viewer.waitFor();
@@ -142,8 +133,6 @@ try {
   assert.equal(await preview.count(), 0, "the viewer takes the preview's place");
   await page.keyboard.press("Escape");
   await viewer.waitFor({ state: "detached" });
-  // by keyboard: Enter on a thumbnail opens the viewer, and the focus Escape gives back to the
-  // thumbnail is a return, not a reader reaching it, so the preview stays away
   await page.mouse.move(5, 5);
   await second.focus();
   await page.keyboard.press("Enter");
@@ -160,8 +149,6 @@ try {
   await viewer.waitFor({ state: "detached" });
   console.log("PASS a click opens the viewer on every picture of the block, at the one clicked or at the first from the tile");
 
-  // opened, the block's line gives its pictures to its rows, each on its own line; an opened row
-  // shows them larger in its detail
   await page.locator(".work-block-head").click();
   assert.equal(await page.locator(".work-block-line .work-images").count(), 0, "an open block's line carries none");
   assert.equal(await page.locator(".work-row-line .work-images").count(), 2);
@@ -186,7 +173,6 @@ try {
     await page.locator(".work-row-head").first().click();
   }
 
-  // a picture the endpoint cannot answer leaves the line and the count, and the one before it moves up
   bytes.delete("pi:call-2:3");
   const reloaded = await browser.newPage({ viewport: { width: 1200, height: 800 }, locale: "en-US" });
   await reloaded.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
@@ -199,7 +185,6 @@ try {
   await reloaded.close();
   console.log("PASS a picture that fails to load leaves the line, and the line fills from the ones before it");
 
-  // beside a finger each thumbnail is a --touch-target square, three to the line
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
   const small = await phone.newPage();
   await small.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
@@ -240,11 +225,10 @@ try {
   await phone.close();
   console.log("PASS on a phone the line holds three 44px thumbnails and a tap opens the viewer");
 
-  // a result whose pictures vanish (the branch moved, the file changed) must not strand an <img>
   const kept = entries.filter((entry) => !["r1", "a2", "r2"].includes((entry as { id?: string }).id ?? ""));
   write(kept);
   await page.evaluate(() => window.qa.refresh());
-  await page.locator(".work-block-head").click(); // fold, then unfold, so the row re-renders
+  await page.locator(".work-block-head").click();
   assert.equal(await page.locator(".work-images").count(), 0, "no picture, no line thumbnails");
   await page.locator(".work-block-head").click();
   assert.equal(await page.locator(".chat-tool-images").count(), 0, "no image, no container");

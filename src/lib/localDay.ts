@@ -1,6 +1,5 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 
-/** The start of `nowMs`'s local calendar day, in ms: the same number all day, a new one after local midnight. */
 export function localDayKey(nowMs: number): number {
   const now = new Date(nowMs);
   return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -16,7 +15,7 @@ export interface DayClock {
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
-  /** calls `fn` when the page comes back (shown again, woken): a timer's clock can stop while the device sleeps */
+  /** a timer's clock can stop while the device sleeps */
   onResume?(fn: () => void): () => void;
 }
 
@@ -25,11 +24,6 @@ export interface DayStore {
   getSnapshot(): number;
 }
 
-/**
- * A shared source of the local day key: one timer to the next local midnight while anything
- * listens, none otherwise. The snapshot is read from the clock each time, so a timer a sleeping
- * device fired late still renders the right day; the timer only says when to look again.
- */
 export function createDayStore(clock: DayClock): DayStore {
   const listeners = new Set<() => void>();
   let timer: unknown = null;
@@ -93,10 +87,8 @@ const browserDay = createDayStore({
   },
 });
 
-/** The day store `useLocalDay` reads: the browser clock unless a provider (a test) gives another. */
 export const DayStoreContext = createContext<DayStore>(browserDay);
 
-/** The local day key (see `localDayKey`); the component re-renders when the local day changes, and only then. */
 export function useLocalDay(): number {
   const store = useContext(DayStoreContext);
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);

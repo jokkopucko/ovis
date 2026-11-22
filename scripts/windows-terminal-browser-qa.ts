@@ -1,9 +1,4 @@
-/** Native Windows/PowerShell regression in the isolated test session. Not in the browser lane:
- * .github/workflows/windows-terminal-qa.yml runs it on a Windows runner.
- * Requires Bun, herdr on PATH and Chromium (`bun node_modules/playwright-core/cli.js install chromium`).
- * Run after `bun install --frozen-lockfile` and `bun run build`:
- *   bun scripts/windows-terminal-browser-qa.ts
- * CHROME_PATH selects an installed browser; otherwise uses Playwright's Chromium.
+/**
  * Never run with HERDR_TEST_LIVE=1. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -43,7 +38,6 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, hasTouch: true });
   await context.addInitScript(() => {
     localStorage.setItem("ovis:settings", JSON.stringify({ terminalWheelSpeed: 1 }));
-    // the pane menu's Original width: unchosen, a touch or narrow screen folds the wide grid and nothing pans
     localStorage.setItem("ovis:mirror-wrap", JSON.stringify(false));
   });
   const page = await context.newPage();
@@ -57,7 +51,6 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   const host = page.locator(".pane-terminal");
-  // the rows the user sees, one line each: libghostty's while it draws, else xterm's (shown-rows.ts)
   const text = () => page.locator(shownRow()).evaluateAll((rows) => rows.map((row) => row.textContent ?? "").join("\n"));
   await until(async () => (await text()).includes("WIN-HISTORY-120"), "mirrored output");
   await host.hover();
@@ -126,6 +119,7 @@ try {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await until(async () => ((await paneScrollInfo(pane))?.offset_from_bottom ?? 0) > 0, "touch scrolls native history");
   console.log("PASS native Windows PowerShell touch scrolls history");
+  await page.waitForFunction(() => document.querySelector("[data-touch-fling]") === null, undefined, { polling: 50, timeout: 15_000 });
   await paneScroll(pane, 0);
   await until(async () => (await text()).includes("P".repeat(100)), "return to prompt");
   await page.locator(".xterm-helper-textarea").focus();
@@ -159,20 +153,31 @@ try {
   // screen and moves the anchor), one column short of the edge, wherever this PC's font puts the columns:
   // the cell width is read from the long prompt's run of P's.
   await pan(0);
-  const { cellWidth, visibleWidth } = await host.evaluate((element, drawn) => {
-    const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (!node.textContent?.startsWith("P".repeat(100))) continue;
-      const range = document.createRange();
-      range.setStart(node, 0);
-      range.setEnd(node, 100);
-      const screen = element.querySelector(".xterm-screen")!.getBoundingClientRect();
-      const box = element.getBoundingClientRect();
-      return { cellWidth: range.getBoundingClientRect().width / 100, visibleWidth: box.left + element.clientLeft + element.clientWidth - screen.left };
-    }
-    throw new Error("no rendered run of the long prompt's P's to measure a cell by");
-  }, shownRows());
-  // the cursor sits after the V's and "> ", in column count + 2
+  // the mirrored rows are redrawn from herdr's read, so the prompt's run of P's can be between draws at any
+  // instant: it is found and measured in the same callback, at once and again after each redraw, until it is drawn
+  const { cellWidth, visibleWidth } = await host.evaluate((element, drawn) => new Promise<{ cellWidth: number; visibleWidth: number }>((resolve, reject) => {
+    const measure = () => {
+      const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.startsWith("P".repeat(100))) continue;
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, 100);
+        const screen = element.querySelector(".xterm-screen")!.getBoundingClientRect();
+        const box = element.getBoundingClientRect();
+        return { cellWidth: range.getBoundingClientRect().width / 100, visibleWidth: box.left + element.clientLeft + element.clientWidth - screen.left };
+      }
+      return null;
+    };
+    const now = measure();
+    if (now) { resolve(now); return; }
+    const observer = new MutationObserver(() => {
+      const found = measure();
+      if (found) { observer.disconnect(); clearTimeout(timer); resolve(found); }
+    });
+    const timer = setTimeout(() => { observer.disconnect(); reject(new Error("no rendered run of the long prompt's P's to measure a cell by, within 15 s")); }, 15_000);
+    observer.observe(element, { childList: true, subtree: true, characterData: true });
+  }), shownRows());
   const vs = Math.floor(visibleWidth / cellWidth) - 4;
   await paneSendText(pane, `function prompt { ("V" * ${vs}) + "> " }`);
   await paneSendKeys(pane, ["Enter"]);

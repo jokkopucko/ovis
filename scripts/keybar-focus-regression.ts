@@ -1,11 +1,3 @@
-/**
- * On a touch screen a key-bar tap sends its key without taking the focus, so a keyboard put away
- * stays away; only the keyboard key (or a tap on the line or the grid) brings it up. At 412 wide, in
- * Direct typing and Input line modes, with nothing focused (the keyboard down): Esc, Ctrl and Enter
- * leave the focus and the visual viewport as they were, and Enter and Esc still reach the pane, each
- * as one input frame on the wire. A fine pointer at the same width (a narrow desktop window) keeps
- * the focus move: its first key click puts the keyboard in the grid. On the isolated test herdr.
- */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -18,7 +10,6 @@ import { shownRows } from "./shown-rows.ts";
 
 type InputWindow = Window & { typed_: { pane: string; text: string }[] };
 
-/** what each tapped key puts on the wire: a sticky modifier sends nothing by itself */
 const SENT: Record<string, string | null> = { Control: null, Enter: "\r", Escape: "\x1b" };
 
 export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: string): Promise<void> {
@@ -31,7 +22,6 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
       const context = await browser.newContext({ viewport: { width: 412, height: 915 }, isMobile: touch, hasTouch: touch, deviceScaleFactor: 2.625 });
       try {
         await context.addInitScript((m) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: m })), mode);
-        // every input frame the page sends, as it leaves for the socket
         await context.addInitScript(() => {
           const typed: InputWindow["typed_"] = [];
           (window as unknown as InputWindow).typed_ = typed;
@@ -59,13 +49,11 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
         // (Esc C-g aborts too) and C-u clears the line, so the command is typed on an empty prompt
         await paneSendText(pane, `\x07\x15printf 'KB_%s\\n' ${nonce}`);
         await page.locator(shownRows(), { hasText: nonce }).waitFor({ timeout: 10_000 });
-        // the keyboard put away: nothing focused
         await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
         const focus = () => page.evaluate(() => ({ active: document.activeElement?.tagName, grid: document.activeElement?.classList.contains("xterm-helper-textarea") === true, height: visualViewport!.height }));
         const before = await focus();
         assert.equal(before.active, "BODY", `${tag}: nothing focused to start with`);
         await page.locator(".key-bar").waitFor();
-        // Ctrl steps through held for one key and locked back to off, so Enter goes out plain
         for (const key of ["Control", "Control", "Control", "Enter", "Escape"]) {
           const sentBefore = await page.evaluate(() => (window as unknown as InputWindow).typed_.length);
           const button = page.locator(`.key-bar [data-key="${key}"]`);
@@ -80,7 +68,6 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
           const sent = await page.evaluate((from) => (window as unknown as InputWindow).typed_.slice(from), sentBefore);
           assert.deepEqual(sent, [{ pane, text }], `${tag}: a ${key} tap sends its key to the pane once, and nothing else`);
         }
-        // and the shell took the Enter: the command ran
         await page.locator(shownRows(), { hasText: marker }).waitFor({ timeout: 10_000 }).catch(async (error) => {
           throw new Error(`${tag}: the key bar's Enter did not run the typed command (${marker}); screen: ${JSON.stringify((await page.locator(shownRows()).first().textContent())?.slice(-300))}`, { cause: error });
         });
@@ -101,10 +88,26 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
         assert.equal(await page.evaluate((field) => document.activeElement?.matches(field) === true, field), true, `${tag}: the field keeps the focus`);
         await page.waitForFunction(([pane, from]) => (window as unknown as InputWindow).typed_.slice(from).some((frame) => frame.pane === pane && frame.text === "\x1b"), [pane, sentBefore] as const, { timeout: 10_000 });
         await page.waitForFunction(([field, before]) => document.querySelector(field)?.getAttribute("inputmode") === before, [field, modeBefore] as const, { timeout: 10_000 });
-        // More keys only opens the second row: its tap holds the keyboard down as a key's does
         await page.locator('.key-bar [data-key="more"]').tap();
         assert.deepEqual(await page.evaluate(() => (window as unknown as { atClick_: (string | null)[] }).atClick_), ["none", "none"], `${tag}: at More keys' click the focused field asks for no keyboard`);
         await page.waitForFunction(([field, before]) => document.querySelector(field)?.getAttribute("inputmode") === before, [field, modeBefore] as const, { timeout: 10_000 });
+        // with the keyboard UP (data-keyboard, which lib/viewport.ts sets), the hold must not touch the
+        // field at all: inputmode=none on a focused field makes Android's IME hide the keyboard that
+        // is showing.
+        await page.locator(field).focus();
+        await page.evaluate((field) => {
+          const seen: (string | null)[] = [];
+          (window as unknown as { modes_: (string | null)[] }).modes_ = seen;
+          const target = document.querySelector(field)!;
+          new MutationObserver(() => seen.push(target.getAttribute("inputmode"))).observe(target, { attributes: true, attributeFilter: ["inputmode"] });
+          document.documentElement.setAttribute("data-keyboard", "");
+        }, field);
+        for (const key of ["Escape", "more"]) {
+          await page.evaluate(() => document.documentElement.setAttribute("data-keyboard", ""));
+          await page.locator(`.key-bar [data-key="${key}"]`).tap();
+          assert.equal(await page.evaluate((field) => document.activeElement?.matches(field) === true, field), true, `${tag}: with the keyboard up a ${key} tap keeps the focus`);
+        }
+        assert.deepEqual(await page.evaluate(() => (window as unknown as { modes_: (string | null)[] }).modes_), [], `${tag}: with the keyboard up a key tap never changes the field's inputmode`);
       } finally { await context.close(); }
     }
     console.log("PASS key-bar taps on a touch screen send their keys without taking the focus (the keyboard stays down), in Direct typing and Input line modes; a fine pointer's click still focuses the grid");

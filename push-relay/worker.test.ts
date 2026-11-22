@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import webpush from "web-push";
+import { RELAY_MAX_BODY_BYTES } from "../server/push.ts";
 import {
   DEVICE_RATE_LIMIT, ENDPOINTS_PER_TOKEN, ENDPOINT_TTL_SECONDS, FALLBACK_BODY, RATE_LIMIT, RATE_WINDOW_SECONDS,
   expire, handle, readRegistration, verifyVapid, type Env,
@@ -20,7 +21,6 @@ const message = JSON.stringify({ pane_id: "w1-1", title: "secret-project - claud
 const apnsPair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
 const pem = async (key: CryptoKey) => `-----BEGIN PRIVATE KEY-----\n${Buffer.from(await crypto.subtle.exportKey("pkcs8", key)).toString("base64").replace(/.{64}/g, "$&\n")}\n-----END PRIVATE KEY-----\n`;
 const apnsPem = await pem(apnsPair.privateKey);
-/** a Google service account's RSA key, as its JSON key file holds it */
 const googlePair = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
 const googlePem = await pem(googlePair.privateKey);
 /** an FCM registration token: mixed case and a colon, as Firebase hands them out */
@@ -30,18 +30,11 @@ let accounts = 0;
 
 interface ApnsCall { url: string; headers: Record<string, string>; body: string }
 
-/** a Rate Limiting binding that records each key it is asked about and lets through while `allow` */
 function fakeLimiter(name: string, asked: string[]) {
   const limiter = { allow: true, limit: async ({ key }: { key: string }) => { asked.push(`${name}:${key}`); return { success: limiter.allow }; } };
   return limiter;
 }
 
-/**
- * The relay over a real SQLite table, fake registration limiters, an APNs or FCM that answers
- * `apnsAnswer` and records each call in `calls`, and Google's token endpoint answering
- * `tokenAnswer` (its calls in `tokenCalls`). Each relay has a service account of its own, so no
- * test reuses another's access token.
- */
 function relay(keyId = "KEY1234567", options: { fcm?: boolean } = {}) {
   const db = new Database(":memory:");
   db.exec(schema);
@@ -90,7 +83,6 @@ async function register(r: Relay, body: Record<string, unknown> = {}, now = new 
 }
 const idOf = (endpoint: string) => endpoint.split("/").at(-1)!;
 
-/** a push exactly as server/push.ts builds it: web-push's aes128gcm body and VAPID header */
 function pushRequest(endpoint: string, options: { key?: { publicKey: string; privateKey: string }; payload?: string; urgency?: "normal" | "high"; TTL?: number; topic?: string; to?: string } = {}) {
   const key = options.key ?? pcKey;
   const details = webpush.generateRequestDetails({ endpoint, keys: device }, options.payload ?? message, {
@@ -191,7 +183,6 @@ describe("push relay: registration", () => {
     const start = Date.now();
     const endpoints: string[] = [];
     for (let i = 0; i < ENDPOINTS_PER_TOKEN - 1; i++) endpoints.push(await register(r, {}, new Date(start + i * 1000)));
-    // registered earliest but stored last: the registration time decides, not the row's place
     r.db.query("INSERT INTO endpoints (id, token, environment, vapid_key, created_at, used_at) VALUES (?, ?, 'production', ?, ?, ?)")
       .run("old_endpoint_000000000", TOKEN, pcKey.publicKey, Math.floor(start / 1000) - 3600, Math.floor(start / 1000));
     const newest = await register(r, {}, new Date(start + 60_000));
@@ -205,7 +196,6 @@ describe("push relay: registration", () => {
 
   test(`deletes endpoints unused for ${ENDPOINT_TTL_SECONDS / 86_400} days, and only those`, async () => {
     const r = relay();
-    // both registered 30 days ago; one is pushed to now, through the real push path
     const start = Date.now() - 30 * 86_400_000;
     const pushed = await register(r, {}, new Date(start));
     const idle = await register(r, {}, new Date(start));
@@ -224,9 +214,7 @@ describe("push relay: pushes", () => {
 
   test("forwards the ciphertext untouched to APNs in a mutable-content push it cannot read", async () => {
     const now = new Date();
-    // a key ID of its own: the provider token cache is per isolate, and this test checks a fresh token's iat
     const own = relay("KEYFORWARD1");
-    // registered an hour before the push, so the push is what sets used_at
     const endpoint = await register(own, {}, new Date(now.getTime() - 3_600_000));
     const { request, body } = pushRequest(endpoint, { topic: "pane-w1-1" });
     const response = await own.handle(request, now);
@@ -282,7 +270,6 @@ describe("push relay: pushes", () => {
     const [first, stale, fresh] = own.calls.map((call) => call.headers["authorization"]);
     expect(stale).toBe(first);
     expect(fresh).not.toBe(stale);
-    // the new token is the one kept
     own.answer(() => new Response(null, { status: 200 }));
     expect((await own.handle(pushRequest(endpoint).request)).status).toBe(201);
     expect(own.calls.at(-1)!.headers["authorization"]).toBe(fresh);
@@ -356,7 +343,6 @@ describe("push relay: pushes", () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toBe(String(RATE_WINDOW_SECONDS - 60));
     expect(r.rows().find((row) => row["id"] === idOf(endpoints[2]!))!["window_count"]).toBe(0);
-    // another phone is not held back
     expect((await r.handle(pushRequest(other).request, start)).status).toBe(201);
     expect((await r.handle(pushRequest(endpoints[2]!).request, new Date(start.getTime() + RATE_WINDOW_SECONDS * 1000))).status).toBe(201);
   });
@@ -426,6 +412,16 @@ describe("push relay: pushes", () => {
     expect(r.calls).toEqual([]);
     expect(r.rows()[0]!["window_count"]).toBe(0);
     expect((await r.handle(request)).status).toBe(201);
+  });
+
+  test("passes on a body of the size a PC counts on (server/push.ts RELAY_MAX_BODY_BYTES), and refuses one byte more", async () => {
+    const endpoint = await register(r);
+    const { headers } = pushRequest(endpoint);
+    const send = (size: number) => r.handle(new Request(endpoint, { method: "POST", headers, body: new Uint8Array(size) }));
+    expect((await send(RELAY_MAX_BODY_BYTES + 1)).status).toBe(413);
+    expect(r.calls).toEqual([]);
+    expect((await send(RELAY_MAX_BODY_BYTES)).status).toBe(201);
+    expect(r.calls).toHaveLength(1);
   });
 
   test("an unknown endpoint is 404, like any other path", async () => {

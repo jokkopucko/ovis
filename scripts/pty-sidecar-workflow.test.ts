@@ -27,3 +27,9 @@ test("every caller grants the attest job its permissions, and Release publishes 
   expect(workflow("pty-sidecar-attach.yml").jobs["build"]!.permissions).toEqual(ATTESTS);
   expect(workflow("beta.yml").jobs["host-build"]!.permissions).toEqual(ATTESTS);
 });
+
+test("no job that checks out the ref it was given takes a local action: a repair build checks out an older tag, whose actions differ", () => {
+  const jobs = Object.entries(workflow("pty-sidecar.yml").jobs).filter(([, job]) => job.steps?.some((step) => step.uses?.startsWith("actions/checkout@") && String(step.with?.["ref"] ?? "").includes("inputs.ref")));
+  expect(jobs.map(([id]) => id)).toEqual(["build", "manifest"]);
+  for (const [id, job] of jobs) expect([id, job.steps!.filter((step) => step.uses?.startsWith("./")).map((step) => step.uses)]).toEqual([id, []]);
+});

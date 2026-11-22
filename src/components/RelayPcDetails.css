@@ -1,9 +1,3 @@
-/*
- * The PC details pane (RelayPcDetails.tsx): a 360px non-modal side panel in normal document flow
- * from 1100px (--bg-panel, --divider left edge), and a full view with Back below 1100px.
- * 44px location bar at top; full metadata wraps without truncation; zero resting shadows.
- */
-
 .relay-pc-details {
   display: flex;
   flex-direction: column;

@@ -1,4 +1,3 @@
-/** A phone's New worktree sheet, on a herdr of the run's own. Run after `bun run build`. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -44,7 +43,6 @@ try {
     await page.locator(".row-sheet").getByRole("button", { name: "New worktree", exact: true }).click();
     const sheet = page.getByRole("dialog", { name: /^New worktree/ });
     await sheet.waitFor();
-    // the sheet has risen: a drag moves it from where it rests
     await page.waitForFunction(() => document.querySelector(".modal-scrim")?.getAnimations({ subtree: true }).length === 0);
 
     const agent = sheet.getByRole("combobox", { name: "Agent" });
@@ -98,7 +96,7 @@ try {
     await workspaceClose(workspace.workspace_id).catch(() => undefined);
   }
   // herdr keeps the repository's folder under its worktree directory once the checkout is gone: only an empty one is ours to drop
-  try { rmdirSync(join(homedir(), ".herdr", "worktrees", basename(repo))); } catch { /* not there, or not empty: not ours */ }
+  try { rmdirSync(join(homedir(), ".herdr", "worktrees", basename(repo))); } catch {}
   for (const id of owned.reverse()) await workspaceClose(id).catch(() => {});
   server.stop();
   rmSync(root, { recursive: true, force: true });

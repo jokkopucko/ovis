@@ -1,20 +1,4 @@
 /**
- * The repository diff viewer (Files → Changes → RepoDiffViewer) in the built app, against real git
- * repositories answered by the server's own repo-diff module: the changed files of the working
- * tree, the index and two commits with their statuses; a 10 000-line diff as a bounded window of
- * rows, unified and split, at the top, the middle and the end; the layout setting kept across a
- * reload and declined on a phone; the context folded and shown again with the line numbers kept;
- * native selection and a real copy that keep blank lines and leave the gutters out; binary,
- * too-large, conflicted, deleted, untracked and renamed files and their notes; a folder that is no
- * repository and a commit that does not exist; the file itself opened on the owning PC; Escape,
- * Back and Close with the focus returned; a remote PC's routes; the rows in the app's palette; Find
- * in the 10 000-line diff (folded context at the top, the middle and the end, both sides, split and
- * wrap, Escape order, and a loading, refused, offline or watch-only patch with nothing to search);
- * the Branch scope against a chosen base (the picker's refs, typed and picked bases, the list from
- * the merge base with untracked files, a patch pinned to that merge base while the base moves on,
- * the refresh a moved HEAD asks for, and every refusal: an unknown base, unrelated histories, no
- * commit yet, a watching device, a bridge too old for it); and the static demo's fixture.
- *
  * The browser is Playwright's headless shell, whose clipboard is its own: a real Cmd+C here never
  * touches the clipboard of the PC running the check.
  */
@@ -27,13 +11,14 @@ import { build as viteBuild } from "vite";
 import { repoDiffResponse } from "../server/repo-diff.ts";
 import { serveStatic } from "../server/static.ts";
 import { buildDemoApp } from "./demo-build.ts";
+import { startRendererTiming } from "./repo-diff-task-timing.ts";
 import { KO as KO_TEXT } from "../src/lib/i18n.ko.ts";
 
 process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
 process.env["GIT_CONFIG_NOSYSTEM"] = "1";
 
 const BIG_LINES = 10_000;
-/** Rewritten whole, its patch passes the server's 1 MiB cap; the 10 000-line diff stays under it. */
+const SMALL_LINES = 400;
 const LARGE_LINES = 8_000;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-repo-diff-")));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -44,7 +29,6 @@ function git(cwd: string, ...args: string[]): string {
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
   return result.stdout.toString();
 }
-/** Numbered TypeScript lines, a blank one every tenth; `changed` rewrites every fourth line's comment. */
 function numbered(lines: number, changed: boolean): string {
   const out: string[] = [];
   for (let line = 1; line <= lines; line++) {
@@ -58,12 +42,10 @@ const MONEY_NEW = MONEY_OLD
   .replace("  return amount * 100;", "  const scaled = Math.abs(amount) * 100;\n  return Math.sign(amount) * Math.round(scaled);")
   .replace("  return (cents / 100).toFixed(2);", "  return `$${(cents / 100).toFixed(2)}`;");
 
-/** `git update-ref --stdin`: many refs made in one process. */
 function updateRefs(cwd: string, commands: string[]): void {
   const result = Bun.spawnSync(["git", "-C", cwd, "update-ref", "--stdin"], { stdin: Buffer.from(`${commands.join("\n")}\n`), stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error(`git update-ref --stdin failed: ${result.stderr.toString()}`);
 }
-/** A new commit on `ref` with the same tree, made without touching the checkout: the ref moved on, nothing else did. */
 function moveRef(cwd: string, ref: string, message: string): string {
   const tip = git(cwd, "rev-parse", ref).trim();
   const moved = git(cwd, "commit-tree", git(cwd, "rev-parse", `${tip}^{tree}`).trim(), "-p", tip, "-m", message).trim();
@@ -73,7 +55,6 @@ function moveRef(cwd: string, ref: string, message: string): string {
 const LONG_BRANCH = "fix/a-very-long-branch-name-that-goes-on-and-on-without-a-break-anywhere-in-it-at-all-until-here";
 const LONG_PATH = "src/a-folder-with-a-very-long-name-that-never-breaks/and-another-one-below-it/an-unbroken-file-name-of-some-length.ts";
 
-/** Real repositories and a plain folder, as the panes of the fixture would sit in them. */
 function fixtures(): { main: string; detached: string; plain: string; long: string; fork: string; unborn: string; orphan: string; crowded: string } {
   const main = join(root, "repo");
   mkdirSync(join(main, "src"), { recursive: true });
@@ -82,6 +63,8 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
   mkdirSync(join(main, "notes", "dir with space"), { recursive: true });
   git(main, "init", "-q", "-b", "main");
   writeFileSync(join(main, "src/big.ts"), numbered(BIG_LINES, false));
+  // Keep the small patch plain too: big.ts exceeds the syntax highlighting budget.
+  writeFileSync(join(main, "src/small.txt"), numbered(SMALL_LINES, false));
   writeFileSync(join(main, "src/money.ts"), MONEY_OLD.replace("export function add", "export function sum"));
   writeFileSync(join(main, "src/gone.ts"), "export const gone = true;\n\nexport const twice = 2;\n");
   writeFileSync(join(main, "src/staged.ts"), "export const staged = 1;\n");
@@ -95,13 +78,12 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
   writeFileSync(join(main, "CHANGELOG.md"), "# Changelog\n\n- money: add\n");
   git(main, "add", ".");
   git(main, "commit", "-q", "-m", "second");
-  // staged: a rename with an edit, and an edit that is edited again below
   git(main, "mv", "docs/old-name.md", "docs/new-name.md");
   writeFileSync(join(main, "docs/new-name.md"), "# Notes\n\nthe first paragraph, revised\n\nthe second paragraph\n");
   writeFileSync(join(main, "src/staged.ts"), "export const staged = 2;\n");
   git(main, "add", "docs/new-name.md", "src/staged.ts");
-  // unstaged
   writeFileSync(join(main, "src/big.ts"), numbered(BIG_LINES, true));
+  writeFileSync(join(main, "src/small.txt"), numbered(SMALL_LINES, true));
   writeFileSync(join(main, "src/money.ts"), MONEY_NEW);
   writeFileSync(join(main, "src/staged.ts"), "export const staged = 3;\n");
   writeFileSync(join(main, "src/large.txt"), `${"y".repeat(80)}\n`.repeat(LARGE_LINES));
@@ -129,8 +111,6 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
   const plain = join(root, "plain");
   mkdirSync(plain);
 
-  // one line longer than any screen, its match 600 characters in, beside a short one; below it an
-  // unchanged line that wraps taller than any view, its match at the very end
   const long = join(root, "long");
   mkdirSync(join(long, "src"), { recursive: true });
   git(long, "init", "-q", "-b", "main");
@@ -140,8 +120,6 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
   git(long, "commit", "-q", "-m", "long");
   writeFileSync(join(long, "src/long.ts"), `export const short = 1;\nexport const wide = "${"x".repeat(600)} needle";\n${tall}`);
 
-  // a branch forked from main, which went on without it: base-only commits, branch commits, staged
-  // and unstaged work, a rename, untracked text and binary files, local and remote branches
   const fork = join(root, "fork");
   mkdirSync(join(fork, "src"), { recursive: true });
   mkdirSync(join(fork, "docs"));
@@ -178,12 +156,10 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
   git(fork, "update-ref", "refs/remotes/origin/feat/idempotent-payments", "feat/idempotent-payments");
   git(fork, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
 
-  // no commit yet: nothing to compare a branch from, and no branch to offer
   const unborn = join(root, "unborn");
   mkdirSync(unborn);
   git(unborn, "init", "-q", "-b", "main");
 
-  // two histories that share nothing
   const orphan = join(root, "orphan");
   mkdirSync(orphan);
   git(orphan, "init", "-q", "-b", "main");
@@ -195,7 +171,6 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
   git(orphan, "add", ".");
   git(orphan, "commit", "-q", "-m", "island");
 
-  // more branches than the picker lists
   const crowded = join(root, "crowded");
   mkdirSync(crowded);
   git(crowded, "init", "-q", "-b", "main");
@@ -210,15 +185,10 @@ function fixtures(): { main: string; detached: string; plain: string; long: stri
 const repos = fixtures();
 const panes = new Map([["pane-main", repos.main], ["pane-conflict", repos.detached], ["pane-plain", repos.plain], ["pane-long", repos.long], ["pane-fork", repos.fork], ["pane-unborn", repos.unborn], ["pane-orphan", repos.orphan], ["pane-crowded", repos.crowded], ["pane-observe", repos.fork], ["pane-old", repos.fork], ["pane-offline", repos.fork]]);
 const requests: string[] = [];
-/** a patch request for `pane-held` waits on this until the check lets it through */
 let held = Promise.withResolvers<void>();
-/** each diff route's path with its query: which target and scope a read was for */
 const diffQueries: string[] = [];
-/** the query of each branch patch read: what identity the viewer carried back */
 const branchPatches: URLSearchParams[] = [];
-/** a PC whose branch list is held until released: a switch to another PC must not take its late answer */
 let branchHeld: { promise: Promise<void>; release: () => void } | null = null;
-/** one route of pane-fork held for a loading capture: `reached` settles once the request is in */
 let hold: { kind: "files" | "file" | "refs"; reached: () => void; gate: Promise<void> } | null = null;
 function holdNext(kind: "files" | "file" | "refs"): { reached: Promise<void>; release: () => void } {
   let open = (): void => {};
@@ -232,7 +202,6 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 let demoServer: ReturnType<typeof Bun.serve> | undefined;
 
-/** The route the real server gives these paths, on a stand-in that maps a pane to its folder. */
 async function api(request: Request, url: URL): Promise<Response | null> {
   const diff = /^\/api\/(?:machines\/([^/]+)\/)?workspace\/diff\/(files|file|refs)$/.exec(url.pathname);
   if (diff) {
@@ -242,20 +211,16 @@ async function api(request: Request, url: URL): Promise<Response | null> {
     const kind = diff[2] as "files" | "file" | "refs";
     // a device that may only watch is refused as the server refuses it, before any repository is read
     if (paneId === "pane-observe") return Response.json({ error: { code: "read_only", message: "this device can only watch" } }, { status: 403 });
-    // a bridge from before the branch scope: no refs route, and a scope it does not know
     if (paneId === "pane-old" && kind === "refs") return Response.json({ error: { code: "not_found", message: "unknown endpoint /api/workspace/diff/refs" } }, { status: 404 });
     if (paneId === "pane-old" && url.searchParams.get("scope") === "branch") return Response.json({ error: { code: "invalid_scope", message: "scope must be workspace, staged or commit" } }, { status: 400 });
-    // a PC that is offline: its bridge answers nothing, as the machine proxy says
     if (paneId === "pane-offline") return Response.json({ error: { code: "machine_offline", message: "that PC is offline" } }, { status: 503 });
     if (hold !== null && hold.kind === kind && paneId === "pane-fork") { const current = hold; current.reached(); await current.gate; }
-    // the slow PC answers its branches from the crowded repository, once released
     if (diff[1] === "slow-fixture" && kind === "refs") {
       if (branchHeld) await branchHeld.promise;
       return repoDiffResponse("refs", repos.crowded, url.searchParams);
     }
     if (kind === "file" && url.searchParams.get("scope") === "branch") branchPatches.push(url.searchParams);
     const cwd = (paneId !== null ? panes.get(paneId) : undefined) ?? url.searchParams.get("directory");
-    // a PC that is offline, a device that may only watch, and a patch held on its way, each as the real routes answer
     if (diff[1] === "offline-pc") return Response.json({ error: { code: "machine_offline", message: "that PC is offline" } }, { status: 503 });
     if (paneId === "pane-watch") return Response.json({ error: { code: "read_only", message: "this device can only watch" } }, { status: 403 });
     if (paneId === "pane-held") { await held.promise; return repoDiffResponse(diff[2] === "files" ? "files" : "file", repos.main, url.searchParams); }
@@ -284,10 +249,8 @@ async function api(request: Request, url: URL): Promise<Response | null> {
   return null;
 }
 
-/** The diff's rows in its shadow DOM, a self-contained reader serialized into each `evaluate`. */
 const diffRows = () => Array.from(document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelectorAll<HTMLElement>("[data-line]") ?? []);
 
-/** The words the controls go by, in English and in Korean (the one capture of every new string). */
 const EN = { files: "Files", changes: "Changes", branch: "Branch", base: "Base branch", choose: "Choose a branch", compare: "Compare", refresh: "Refresh changes", closeDiff: "Close diff" };
 const KO: typeof EN = { files: "파일", changes: "변경 사항", branch: "브랜치", base: "기준 브랜치", choose: "브랜치 선택", compare: "비교", refresh: "변경 사항 새로 고침", closeDiff: "비교 닫기" };
 type Words = typeof EN;
@@ -300,7 +263,6 @@ async function closeFiles(page: Page, words: Words = EN): Promise<void> {
   await page.evaluate(() => window.repoDiffQA.closeFiles());
   await page.getByRole("dialog", { name: words.files, exact: true }).waitFor({ state: "detached" });
 }
-/** The Changes list once it has answered for `scope`: its rows as `mark path counts`. */
 async function changeRows(page: Page, scope = "workspace"): Promise<string[]> {
   const list = page.locator(`.repo-changes:not([aria-busy='true']) .repo-changes-list[data-scope='${scope}']`);
   await list.waitFor();
@@ -311,10 +273,11 @@ async function openChange(page: Page, path: string): Promise<void> {
   await page.locator(".repo-diff-viewer").waitFor();
 }
 async function closeDiff(page: Page): Promise<void> {
+  // a press on the viewer while it still rises lands where its Close was, and the viewer stays open
+  await page.waitForFunction(() => document.querySelector(".repo-diff-viewer")?.getAnimations().length === 0);
   await page.getByRole("button", { name: "Close diff", exact: true }).click();
   await page.locator(".repo-diff-viewer").waitFor({ state: "detached" });
 }
-/** Waits for the diff's rows; a wait that runs out says what the viewer shows instead. */
 async function waitRows(page: Page): Promise<void> {
   try {
     await page.waitForFunction(() => (document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
@@ -344,7 +307,6 @@ async function scrollDiff(page: Page, where: "top" | "middle" | "end"): Promise<
     scroll.scrollTop = where === "end" ? scroll.scrollHeight : where === "middle" ? Math.floor(scroll.scrollHeight / 2) : 0;
   }, where);
 }
-/** Waits for a row at or past `line` to mount after a scroll; a wait that runs out reports the scroll root and the rows. */
 async function rowReached(page: Page, line: number, step: string): Promise<void> {
   try {
     await page.waitForFunction((line) => [...(document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelectorAll<HTMLElement>("[data-line]") ?? [])].some((row) => Number(row.dataset["line"] ?? row.dataset["altLine"]) >= line), line);
@@ -358,7 +320,22 @@ async function rowReached(page: Page, line: number, step: string): Promise<void>
     throw new Error(`${step}: no row at or past ${line} mounted: ${JSON.stringify(seen)}`, { cause: error });
   }
 }
-/** The viewer's note once it has settled: never the "Opening…" it shows while the patch is read. */
+async function measureDiffScroll(page: Page, path: string, lines: number, label: string) {
+  const stopTiming = await startRendererTiming(page);
+  const taskStart = await page.evaluate(() => performance.now());
+  await openChange(page, path);
+  await waitRows(page);
+  await scrollDiff(page, "middle");
+  await rowReached(page, Math.floor(lines * 0.4), `${label} ${path} middle`);
+  await scrollDiff(page, "end");
+  await rowReached(page, lines - 1, `${label} ${path} end`);
+  const [cpuMs, taskEnd] = await Promise.all([stopTiming(), page.evaluate(() => performance.now())]);
+  const longestTaskMs = await page.evaluate(([start, end]) => {
+    const tasks: { start: number; elapsed: number }[] = Reflect.get(window, "repoDiffLongTasks");
+    return Math.max(0, ...tasks.filter((task) => task.start >= start && task.start < end).map((task) => task.elapsed));
+  }, [taskStart, taskEnd] as const);
+  return { cpuMs, longestTaskMs };
+}
 async function note(page: Page): Promise<string> {
   const text = page.locator(".repo-diff-body .repo-diff-note").filter({ hasNotText: "Opening…" });
   await text.waitFor();
@@ -367,27 +344,19 @@ async function note(page: Page): Promise<string> {
 async function shot(page: Page, name: string): Promise<void> {
   if (evidence) await page.screenshot({ path: join(evidence, `repo-diff-${name}.png`) });
 }
-/** The Branch scope's captures, named `branch-review-<width>-<theme>[-ko][-<state>].png` as the visual QA reads them. */
 async function branchShot(page: Page, name: string): Promise<void> {
   if (evidence) await page.screenshot({ path: join(evidence, `branch-review-${name}.png`) });
 }
-/** The base picker's rows, once the list has answered (its loading note gone). */
 async function refRows(page: Page): Promise<string[]> {
   const list = page.locator(".repo-changes-refs:not([aria-busy='true'])");
   await list.waitFor();
   return list.locator("[role='option'] .menu-item-main").allTextContents();
 }
-/** The base picker's note (loading, none, none matching, cut short, refused), once the list has answered. */
 async function refNote(page: Page): Promise<string> {
   const note = page.locator(".repo-changes-refs:not([aria-busy='true']) .repo-changes-refs-note").last();
   await note.waitFor();
   return (await note.textContent()) ?? "";
 }
-/**
- * The scope buttons' pressed transition has ended: a capture mid-way would show two of them lit. The
- * pressed pill is read where it is drawn: the button's own background, or under a coarse pointer its
- * ::before (the button a finger's height, its pill inset inside it: the segmented rule in styles.css).
- */
 async function scopesSettled(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const probe = document.createElement("span");
@@ -399,13 +368,11 @@ async function scopesSettled(page: Page): Promise<void> {
     return [...document.querySelectorAll(".repo-changes-scopes button")].every((button) => (button.getAttribute("aria-pressed") === "true") === (getComputedStyle(button, pill).backgroundColor === pressed));
   });
 }
-/** The identity line under the repository line: the merge base a branch comparison was read from. */
 async function identityLine(page: Page): Promise<string> {
   const line = page.locator(".repo-changes-identity");
   await line.waitFor();
   return (await line.textContent()) ?? "";
 }
-/** The rows of the diff open now, by type. */
 async function rowTexts(page: Page): Promise<{ deletions: string[]; additions: string[] }> {
   return page.evaluate(() => {
     const shadow = document.querySelector(".repo-diff diffs-container")!.shadowRoot!;
@@ -414,12 +381,6 @@ async function rowTexts(page: Page): Promise<{ deletions: string[]; additions: s
   });
 }
 
-/**
- * The Branch scope end to end, in one language: its picker (the branches, a filter, the keyboard, a
- * typed name), the list from the merge base with the branch's own work and untracked files and
- * none of the base's, the untracked patch, the patch pinned while the base moves on, the refresh a
- * moved HEAD asks for, the same from a detached HEAD, and every refusal in the app's words.
- */
 async function branchReview(page: Page, label: string, width: 390 | 1440, theme: "dark" | "light", words: Words): Promise<void> {
   const ko = words === KO;
   const tag = `${width}-${theme}${ko ? "-ko" : ""}`;
@@ -450,11 +411,9 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   assert.equal(await page.locator(".repo-changes[aria-busy='true'], .repo-changes-loading").count(), 0, `${label}: and nothing is shown as loading`);
   assert.equal(await base.inputValue(), "", `${label}: no base is guessed`);
   await shoot("rest");
-  // Compare stays disabled while the field, focused, is empty
   await base.focus();
   await shoot("disabled");
   if (!phone) {
-    // the keyboard's focus ring: Tab from the field lands on the picker's toggle (and closes the list the click opened)
     await base.click();
     await page.keyboard.press("Tab");
     await page.locator(".repo-changes-base-toggle:focus-visible").waitFor();
@@ -463,7 +422,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
     await shoot("hover");
   }
 
-  // the picker: local and remote branches by their short names, the remote's symbolic HEAD left out
   const refsHeld = holdNext("refs");
   await choose.click();
   await refsHeld.reached;
@@ -482,13 +440,11 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   }
   const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, menu: document.querySelector(".repo-changes-refs")!.getBoundingClientRect().right }));
   assert.ok(widths.page <= widths.viewport && widths.menu <= widths.viewport, `${label}: the picker stays on the screen: ${JSON.stringify(widths)}`);
-  // the list is in the form's flow under the field and Compare: it covers neither, nor the scopes above them
   const placed = await page.evaluate(() => {
     const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
     return { list: box(".repo-changes-refs").top, compare: box(".repo-changes-base-form button[type=submit]").bottom, field: box(".repo-changes-base-input").bottom, position: getComputedStyle(document.querySelector(".repo-changes-refs")!).position };
   });
   assert.ok(placed.position === "static" && placed.list >= placed.compare && placed.list >= placed.field, `${label}: the list sits under the field and Compare: ${JSON.stringify(placed)}`);
-  // typed text filters the rows; the arrow keys walk them; Enter takes one, by its full refname
   await base.fill("zzz");
   assert.equal(await refNote(page), t("No branch matches; Compare takes the name as typed."), `${label}: no match says so`);
   await shoot("picker-no-match");
@@ -503,7 +459,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   assert.equal(await base.inputValue(), "origin/main", `${label}: Enter takes the active row`);
   assert.equal(await compare.isDisabled(), false, `${label}: Compare is ready with a base`);
   await shoot("selected");
-  // Compare held down, then the list on its way
   const listHeld = holdNext("files");
   const box = (await compare.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -517,19 +472,16 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   const rows = await changeRows(page, "branch");
   assert.deepEqual(rows, expectedRows, `${label}: the branch's changes, and none of the base's: ${JSON.stringify(rows)}`);
   const identity = await identityLine(page);
-  // the identity line as the dictionary words it, its placeholders a short hash and the base's name
   const escaped = t("Compared from {hash}, the merge base with {base}").replace(/[.*+?^${}()|[\]\\]/g, (char) => `\\${char}`);
   const identityPattern = new RegExp(`^${escaped.replace("\\{hash\\}", "[0-9a-f]{7}").replace("\\{base\\}", "origin/main")}$`);
   assert.match(identity, identityPattern, `${label}: the identity line: ${identity}`);
   const mergeBase = await page.locator(".repo-changes-list[data-scope='branch']").getAttribute("data-merge-base");
   assert.match(mergeBase ?? "", /^[0-9a-f]{40}$/, `${label}: the list carries its merge base`);
   await shoot("compared");
-  // the list's own scroller at its end and the list's bottom edge on the screen: the last row whole and in view
   const listEnd = await page.evaluate(() => {
     const last = [...document.querySelectorAll<HTMLElement>(".repo-changes-list .repo-change")].at(-1)!;
     let scroller = last.parentElement;
     while (scroller !== null && !(/auto|scroll/.test(getComputedStyle(scroller).overflowY) && scroller.scrollHeight > scroller.clientHeight)) scroller = scroller.parentElement;
-    // the list scrolls in itself (to its end), and on a phone the sheet around it too (to the list's bottom edge)
     if (scroller !== null) {
       scroller.scrollTop = scroller.scrollHeight;
       scroller.scrollIntoView({ block: "end", behavior: "instant" });
@@ -542,7 +494,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   assert.ok(listEnd.path.endsWith("untracked.ts") && listEnd.atEnd && listEnd.visible, `${label}: the file list scrolled to its last row: ${JSON.stringify(listEnd)}`);
   await shoot("compared-end");
 
-  // the untracked file's patch is whole, read from the pinned identity
   branchPatches.length = 0;
   const patchHeld = holdNext("file");
   await openChange(page, "src/untracked.ts");
@@ -566,7 +517,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   await page.getByRole("button", { name: words.closeDiff, exact: true }).click();
   await page.locator(".repo-diff-viewer").waitFor({ state: "detached" });
 
-  // the base moves on alone: the open comparison stays, read from its pinned merge base
   const baseBefore = moveRef(repos.fork, "refs/remotes/origin/main", "base moves again");
   branchPatches.length = 0;
   await openChange(page, "src/shared.ts");
@@ -577,7 +527,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   await page.getByRole("button", { name: words.closeDiff, exact: true }).click();
   await page.locator(".repo-diff-viewer").waitFor({ state: "detached" });
 
-  // HEAD moves on: a patch says the list is to be refreshed, and Refresh lists again
   const headBefore = moveRef(repos.fork, "refs/heads/feat/idempotent-payments", "more branch work");
   await openChange(page, "src/shared.ts");
   assert.equal(await note(page), refreshRequired, `${label}: a moved HEAD asks for a refresh`);
@@ -588,7 +537,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   await page.getByRole("button", { name: words.refresh, exact: true }).click();
   assert.deepEqual(await changeRows(page, "branch"), expectedRows, `${label}: Refresh lists the branch again`);
 
-  // the same from a detached HEAD
   git(repos.fork, "checkout", "-q", "--detach");
   try {
     await closeFiles(page, words);
@@ -608,7 +556,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
     git(repos.fork, "checkout", "-q", "feat/idempotent-payments");
   }
 
-  // refusals, each in the app's words: an unknown base, a malformed one, unrelated histories, no commit yet
   await base.fill("nope");
   await compare.click();
   await page.locator(".repo-changes-error").filter({ hasText: t("No commit by that name.") }).waitFor();
@@ -635,7 +582,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   await shoot("unborn");
   await closeFiles(page, words);
 
-  // more branches than are listed: the note says so, and one not listed is still a base when typed
   await openFiles(page, "pane-crowded", "local", words);
   await page.getByRole("button", { name: words.branch, exact: true }).click();
   await choose.click();
@@ -652,7 +598,6 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   await shoot("no-changes");
   await closeFiles(page, words);
 
-  // a device that may only watch, and a PC whose bridge is from before the branch scope
   await openFiles(page, "pane-observe", "local", words);
   await page.getByRole("button", { name: words.branch, exact: true }).click();
   await choose.click();
@@ -668,19 +613,16 @@ async function branchReview(page: Page, label: string, width: 390 | 1440, theme:
   await page.locator(".repo-changes-error").filter({ hasText: t("This PC's bridge cannot compare branches yet.") }).waitFor();
   await shoot("older-pc");
   await closeFiles(page, words);
-  // a PC that is offline: the picker says so in the app's words
   await openFiles(page, "pane-offline", "local", words);
   await page.getByRole("button", { name: words.branch, exact: true }).click();
   await choose.click();
   assert.equal(await refNote(page), t("That PC is not reachable right now."), `${label}: an offline PC is explained`);
   await shoot("offline");
   await closeFiles(page, words);
-  // nothing of this fetched or checked anything out: the branch is where it was, the base one commit on
   assert.equal(git(repos.fork, "rev-parse", "HEAD").trim(), headBefore, `${label}: HEAD is where it was`);
   assert.equal(git(repos.fork, "status", "--porcelain").split("\n").filter(Boolean).length, 6, `${label}: the working tree is as it was`);
   console.log(`PASS ${label}: the branch against a chosen base: picker, merge-base list with untracked files, pinned patches, refresh on a moved HEAD, detached HEAD, and every refusal`);
 }
-/** The text the rows `from`..`to` (indexes into the unified rows) hold, selected natively. */
 async function selectRows(page: Page, from: number, to: number): Promise<string> {
   return page.evaluate(([from, to, rowsSource]) => {
     const rows = (new Function(`return (${rowsSource})()`) as () => HTMLElement[])();
@@ -697,7 +639,6 @@ async function copied(page: Page): Promise<string> {
   await page.keyboard.press("ControlOrMeta+c");
   return page.evaluate(() => navigator.clipboard.readText());
 }
-/** Find in the diff: the bar's count and place, its hint, its input, the marked row and the painted text. */
 interface Found { count: string; place: string; hint: string; enabled: boolean; marked: { line: number; type: string | null; column: "old" | "new" | "unified"; inView: boolean }[]; painted: string[]; rows: number }
 async function found(page: Page): Promise<Found> {
   return page.evaluate(() => {
@@ -722,7 +663,6 @@ async function found(page: Page): Promise<Found> {
     };
   });
 }
-/** Waits until the find bar says `count` and `place` and the active row is marked, in view, with its text painted. */
 async function foundAt(page: Page, count: string, place: string, step: string): Promise<Found> {
   try {
     await page.waitForFunction(([count, place]) => {
@@ -744,7 +684,6 @@ async function findShot(page: Page, width: number, theme: string, state: string)
   if (evidence) await page.screenshot({ path: join(evidence, `diff-find-${width}-${theme}-${state}.png`) });
 }
 
-/** What the unified rows of a patch's first hunk say, in order, as the viewer draws them: deletions before additions within a change. */
 function hunkRowTexts(patch: string, count: number): string[] {
   const body = patch.slice(patch.indexOf("\n@@"));
   const lines = body.split("\n").slice(1).filter((line) => !line.startsWith("@@") && !line.startsWith("\\"));
@@ -779,11 +718,12 @@ try {
     const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme });
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await context.addInitScript((theme) => {
-      // once: a reload keeps what the page saved since (the diff layout)
       if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
-      const record = window as unknown as { longTasks: number[] };
-      record.longTasks = [];
-      new PerformanceObserver((list) => { for (const entry of list.getEntries()) record.longTasks.push(entry.duration); }).observe({ type: "longtask" });
+      const tasks: { start: number; elapsed: number }[] = [];
+      Reflect.set(window, "repoDiffLongTasks", tasks);
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) tasks.push({ start: entry.startTime, elapsed: entry.duration });
+      }).observe({ type: "longtask" });
     }, theme);
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -791,14 +731,11 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
       if (message.type() !== "error") return;
-      // the refusals asked for on purpose (a missing commit, a folder outside git, a malformed base, a watching
-      // device, a bridge too old for the branch scope) are logged by the browser as failed loads
       if (/Failed to load resource/.test(message.text()) && /\/workspace\/diff\//.test(message.location().url ?? "") && /status of (?:400|403|404|409|503)/.test(message.text())) return;
       errors.push(`console: ${message.text()}`);
     });
     await page.goto(origin);
 
-    // the working tree's changes, each with its status, counts and the repository they are in
     await openFiles(page, "pane-main");
     const rows = await changeRows(page);
     assert.deepEqual(rows, [
@@ -810,17 +747,34 @@ try {
       "M src/large.txt +8,000−8,000",
       "M src/money.ts +3−2",
       "? src/new.ts",
+      "M src/small.txt +80−80",
       "M src/staged.ts +1−1",
     ], `${label}: the working tree's changed files`);
     assert.equal(await page.locator(".repo-changes-branch").textContent(), "main", `${label}: the branch`);
     assert.equal(await page.locator(".repo-changes-root").textContent(), repos.main, `${label}: the repository root`);
     await shot(page, `list-${width}-${theme}`);
 
-    // a 10 000-line diff: a window of rows at the top, the middle and the end, with old and new numbers
-    const before = await page.evaluate(() => history.length);
+    // Warm the shared diff component and worker pool outside both timing windows.
+    await openChange(page, "src/small.txt");
+    await waitRows(page);
+    await closeDiff(page);
+
+    const before = await page.evaluate(() => ({ length: history.length, index: navigation.currentEntry?.index, hasForward: navigation.canGoForward }));
+    const big = await measureDiffScroll(page, "src/big.ts", BIG_LINES, label);
+    const after = await page.evaluate(() => ({ length: history.length, index: navigation.currentEntry?.index }));
+    // A desktop push after Back discards the warm-up's forward entry.
+    assert.equal(after.length, phone || before.hasForward ? before.length : before.length + 1, `${label}: the diff is a history entry`);
+    if (!phone) assert.ok(before.index !== undefined && after.index === before.index + 1, `${label}: opening the diff advances desktop history`);
+    await closeDiff(page);
+    const small = await measureDiffScroll(page, "src/small.txt", SMALL_LINES, label);
+    const ratio = big.cpuMs / small.cpuMs;
+    // Both paint viewport-sized windows; 5x leaves room to parse the bigger patch, well below the 25x full row count.
+    const maxCpuRatio = 5;
+    const timing = `renderer CPU: big ${big.cpuMs.toFixed(1)} ms, small ${small.cpuMs.toFixed(1)} ms (${ratio.toFixed(2)}x); longest task ${big.longestTaskMs} ms elapsed for big, ${small.longestTaskMs} ms for small`;
+    assert.ok(big.cpuMs > 0 && small.cpuMs > 0 && ratio < maxCpuRatio, `${label}: opening and scrolling the big diff uses less than ${maxCpuRatio}x the small diff's renderer CPU (${timing})`);
+    console.log(`${label}: ${timing}`);
+    await closeDiff(page);
     await openChange(page, "src/big.ts");
-    // a phone's Files sheet holds an entry of its own, which the diff takes over (lib/sheetHistory.ts): one Back closes the diff
-    assert.equal(await page.evaluate(() => history.length), phone ? before : before + 1, `${label}: the diff is a history entry`);
     await page.getByRole("dialog", { name: "Changes to big.ts", exact: true }).waitFor();
     await waitRows(page);
     const top = await mounted(page);
@@ -846,7 +800,6 @@ try {
     await rowReached(page, Math.floor(BIG_LINES / 2) - 1000, `${label} middle`);
     const middle = await mounted(page);
     assert.ok(middle.rows > 0 && middle.rows < 600 && middle.inView > 0 && middle.first > 1000, `${label}: bounded rows in the middle: ${JSON.stringify(middle)}`);
-    // the last line is blank and past the last hunk's context: the diff's last row is the line before it
     await scrollDiff(page, "end");
     await rowReached(page, BIG_LINES - 1, `${label} end`);
     const end = await mounted(page);
@@ -855,7 +808,6 @@ try {
     const widths = await page.evaluate(() => ({ page: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, dialog: document.querySelector(".repo-diff-viewer")!.getBoundingClientRect().width }));
     assert.ok(widths.page <= widths.viewport && widths.dialog <= widths.viewport, `${label}: nothing wider than the screen: ${JSON.stringify(widths)}`);
     await shot(page, `end-${width}-${theme}`);
-    // the rows take the app's tokens, inside the shadow root
     const colors = await page.evaluate(() => {
       const probe = document.createElement("span");
       document.body.append(probe);
@@ -883,11 +835,9 @@ try {
     assert.equal(tints.additionNumber, tints.inserted, `${label}: an added row's number is the inserted token: ${JSON.stringify(tints)}`);
     assert.equal(tints.deletionNumber, tints.deleted, `${label}: a removed row's number is the deleted token: ${JSON.stringify(tints)}`);
     assert.ok(tints.additionRow !== tints.contextRow && tints.deletionRow !== tints.contextRow && tints.additionRow !== tints.deletionRow, `${label}: added and removed rows are each tinted: ${JSON.stringify(tints)}`);
-    assert.ok((await page.evaluate(() => (window as unknown as { longTasks: number[] }).longTasks)).every((task) => task < 1_000), `${label}: no long task of a second`);
     assert.deepEqual(errors, [], `${label}: no errors while opening the big diff`);
     console.log(`PASS ${label}: a 10 000-line diff as a bounded window of rows at the top, the middle and the end (rows ${top.rows}/${middle.rows}/${end.rows}), in the app's palette`);
 
-    // unified or split: a setting kept across a reload; a phone draws one column and says why
     await scrollDiff(page, "top");
     const split = page.getByRole("button", { name: "Split", exact: true });
     if (phone) {
@@ -913,14 +863,12 @@ try {
       assert.equal((await mounted(page)).style, "split", `${label}: a reload keeps the diff open, split`);
       await page.getByRole("button", { name: "Unified", exact: true }).click();
       await page.waitForFunction(() => document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelector("pre")?.getAttribute("data-diff-type") === "single");
-      // the reload lost the Files list beneath: Close steps back off the diff's entry, and the list is opened again
       await closeDiff(page);
       await openFiles(page, "pane-main");
       await changeRows(page);
     }
     console.log(`PASS ${label}: ${phone ? "a phone declines Split and says so" : "Split is kept across a reload, and Unified restored"}`);
 
-    // the context folded to a line around each change, the numbers kept, and shown whole again
     await openChange(page, "src/money.ts");
     await waitRows(page);
     const whole = await page.evaluate(() => {
@@ -946,7 +894,6 @@ try {
     assert.equal(await page.evaluate(() => document.querySelector(".repo-diff diffs-container")!.shadowRoot!.querySelectorAll("[data-line]").length), whole.rows, `${label}: shown whole again`);
     console.log(`PASS ${label}: the context folds to a line around each change and unfolds, numbers kept`);
 
-    // native selection and a real copy: the rows' text alone, blank lines kept, no gutter numbers
     if (!phone) {
       // the worker's colors redraw the rows, plain until then, and a redraw drops a selection made on the plain ones
       await page.locator(".repo-diff[data-colored]").waitFor();
@@ -960,7 +907,6 @@ try {
       console.log(`PASS ${label}: native selection and a real copy keep blank lines and leave the gutters out`);
     }
 
-    // the file itself opens on the owning PC, above the diff; Escape closes one surface at a time
     await page.getByRole("button", { name: "Open file", exact: true }).click();
     const file = page.getByRole("dialog", { name: "money.ts", exact: true });
     await file.waitFor();
@@ -974,7 +920,6 @@ try {
     await page.getByRole("dialog", { name: "Files", exact: true }).waitFor();
     console.log(`PASS ${label}: Open file shows the file above the diff; Escape closes the file, then the diff, and the list stays`);
 
-    // Back and Close return the focus to the row that opened the diff
     const row = page.locator(".repo-change").filter({ has: page.locator(".repo-change-path", { hasText: "src/money.ts" }) }).first();
     await row.focus();
     await page.keyboard.press("Enter");
@@ -988,7 +933,6 @@ try {
     assert.equal(await page.evaluate(() => document.activeElement?.querySelector(".repo-change-path")?.textContent), "src/money.ts", `${label}: Close returns the focus to the row`);
     console.log(`PASS ${label}: Back and Close each close the diff alone and return the focus to its row`);
 
-    // the kinds a diff cannot draw, and the kinds it draws from one side
     await openChange(page, "assets/pic.bin");
     assert.equal(await note(page), "This is a binary file; there are no lines to compare.", `${label}: a binary file says so`);
     assert.ok((await page.locator(".repo-diff-meta").first().textContent())?.includes("Binary"), `${label}: and is marked binary`);
@@ -1016,7 +960,6 @@ try {
     await closeDiff(page);
     console.log(`PASS ${label}: binary, too large, untracked, deleted and Unicode paths each show what they are`);
 
-    // the index against HEAD: a rename with its old path; two commits by name; a commit that is not there
     await page.getByRole("button", { name: "Staged", exact: true }).click();
     const staged = await changeRows(page, "staged");
     assert.deepEqual(staged, ["R docs/old-name.md → docs/new-name.md +1−1", "M src/staged.ts +1−1"], `${label}: the staged changes: ${JSON.stringify(staged)}`);
@@ -1041,7 +984,6 @@ try {
     await closeFiles(page);
     console.log(`PASS ${label}: staged renames, commit comparisons and a missing commit each read right`);
 
-    // a conflicted file on a detached HEAD, and a folder that is no repository
     await openFiles(page, "pane-conflict");
     assert.deepEqual(await changeRows(page), ["U src/conflict.ts"], `${label}: a conflict is listed`);
     assert.equal(await page.locator(".repo-changes-branch").textContent(), "Detached HEAD", `${label}: a detached HEAD says so`);
@@ -1054,7 +996,6 @@ try {
     await closeFiles(page);
     console.log(`PASS ${label}: a conflict, a detached HEAD and a folder outside git are each explained`);
 
-    // Find in the 10 000-line diff: the whole loaded patch, its folded context and its rows not mounted
     await openFiles(page, "pane-main");
     await changeRows(page);
     await openChange(page, "src/big.ts");
@@ -1062,21 +1003,18 @@ try {
     await page.getByRole("button", { name: "Fold context", exact: true }).click();
     await page.locator(".repo-diff[data-folded]").waitFor();
     const findButton = page.getByRole("button", { name: "Find in diff", exact: true });
-    // a phone taps the header's Find; a keyboard presses Ctrl/Cmd+F with the focus on Fold context, which gets it back
     if (phone) await findButton.tap();
     else await page.keyboard.press("ControlOrMeta+f");
     const query = page.getByRole("searchbox", { name: "Find in diff", exact: true });
     await query.waitFor();
     assert.equal(await query.evaluate((input) => input === document.activeElement), true, `${label}: the query takes the focus`);
     if (!phone) {
-      // a second Ctrl/Cmd+F on the open bar keeps the focus in the query, and Fold context keeps the return (checked at Escape)
       await page.keyboard.press("ControlOrMeta+f");
       assert.equal(await query.evaluate((input) => input === document.activeElement), true, `${label}: Ctrl/Cmd+F again keeps the query focused`);
     }
     assert.equal(await page.getByRole("dialog", { name: "Files", exact: true }).count(), 1, `${label}: the Files list stays beneath`);
     const hint = (await found(page)).hint;
     assert.equal(hint, "Searches this loaded patch, including context. Content outside the patch is not searched.", `${label}: the bar says what it searches`);
-    // top, middle and end, each a context line the folded rows leave out
     for (const [text, line, where] of [["line_00002 ", 2, "top"], ["line_05002 ", 5002, "middle"], ["line_09998 ", 9998, "end"]] as const) {
       if (where !== "top") {
         await page.getByRole("button", { name: "Fold context", exact: true }).click();
@@ -1091,7 +1029,6 @@ try {
       if (where === "top") await findShot(page, width, theme, "folded");
       if (where === "end") await findShot(page, width, theme, "end");
     }
-    // next and previous across both sides, wrapping
     await query.fill("line 9996");
     let at = await foundAt(page, "1 of 2", "Removed line 9,996", `${label} first`);
     assert.deepEqual(at.marked.map((row) => [row.line, row.type]), [[9996, "change-deletion"]], `${label}: the first hit is the removed line: ${JSON.stringify(at)}`);
@@ -1103,7 +1040,6 @@ try {
     await query.press("Shift+Enter");
     await foundAt(page, "2 of 2", "Added line 9,996", `${label} previous`);
     if (!phone) {
-      // the same logical match through split, wrap and back
       await page.getByRole("button", { name: "Split", exact: true }).click();
       at = await foundAt(page, "2 of 2", "Added line 9,996", `${label} split`);
       assert.deepEqual(at.marked.map((row) => [row.line, row.column]), [[9996, "new"]], `${label}: split marks the new side's row: ${JSON.stringify(at)}`);
@@ -1120,7 +1056,6 @@ try {
       await page.evaluate(() => window.repoDiffQA.settings({ wrapCode: false }));
       await foundAt(page, "1 of 2", "Removed line 9,996", `${label} wrap off`);
     }
-    // literal punctuation, an absent term
     await query.fill("= 9996; // changed");
     await foundAt(page, "1 of 1", "Added line 9,996", `${label} punctuation`);
     for (const absent of ["line_0999.", "line_.*", "LINE_09998"]) {
@@ -1132,13 +1067,11 @@ try {
     await query.fill("line 9996");
     await query.press("Enter");
     await foundAt(page, "2 of 2", "Added line 9,996", `${label} before close`);
-    // Escape closes Find, then the diff; the focus goes back to what opened Find
     await page.keyboard.press("Escape");
     await query.waitFor({ state: "detached" });
     await page.locator(".repo-diff-viewer").waitFor();
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null), phone ? "Find in diff" : "Fold context", `${label}: the focus returns to the control that opened Find`);
     assert.equal((await found(page)).marked.length, 0, `${label}: no row stays marked`);
-    // reopened untouched, Find shows the same query, count and active match again
     if (phone) await findButton.tap();
     else await findButton.click();
     await query.waitFor();
@@ -1152,7 +1085,6 @@ try {
     await page.getByRole("dialog", { name: "Files", exact: true }).waitFor();
     console.log(`PASS ${label}: Find reaches folded context at the top, middle and end of 10 000 lines, steps across both sides${phone ? "" : " through split and wrap"}, takes punctuation literally, closes before the viewer${phone ? "" : " with a repeated Ctrl/Cmd+F"} and reopens on the same match`);
 
-    // unwrapped rows: a match past the screen's right edge is scrolled into view across, and back for one at the start
     await page.evaluate(() => window.repoDiffQA.settings({ wrapCode: false }));
     await page.evaluate((directory) => window.repoDiffQA.openDiff({ machineId: "local", paneId: "pane-long", directory, scope: "workspace", base: null, head: null, comparison: null, path: "src/long.ts", oldPath: null }), repos.long);
     await waitRows(page);
@@ -1201,7 +1133,6 @@ try {
       await inViewAcross("needle in split");
       await page.getByRole("button", { name: "Unified", exact: true }).click();
     }
-    // wrapped rows: a match at the end of a row taller than the view is brought into view itself, not the row's middle
     await page.evaluate(() => window.repoDiffQA.settings({ wrapCode: true }));
     await query.fill("haystack");
     const down = (): Promise<{ count: string; place: string; text: string; row: { top: number; bottom: number }; match: { top: number; bottom: number }; view: { top: number; bottom: number } }> => page.evaluate(() => {
@@ -1241,7 +1172,6 @@ try {
     assert.deepEqual(errors, [], `${label}: no errors after the long line`);
     console.log(`PASS ${label}: a match past the right edge of an unwrapped row is scrolled into view across${phone ? "" : ", in split too"}, and back for one at the start; one at the end of a wrapped row taller than the view is brought into view itself`);
 
-    // a comparison changed under live results drops them; a patch on its way, an offline PC and a watch-only device have none to search.
     // The Files list stays open beneath, as when a row opens a diff: closing a phone's sheet goes Back in history, which would race the next open
     const target = { machineId: "local", paneId: "pane-main", directory: repos.main, scope: "commit" as const, base: "HEAD~1", head: "HEAD", comparison: null, path: "src/money.ts", oldPath: null };
     await page.evaluate((target) => window.repoDiffQA.openDiff(target), target);
@@ -1293,13 +1223,11 @@ try {
     assert.deepEqual(errors, [], `${label}: no errors after Find`);
     console.log(`PASS ${label}: a changed comparison drops live results; loading, refused, offline, watch-only, binary and too-large patches leave Find off and say why`);
 
-    // the branch against a chosen base: nothing is compared until a base is chosen and Compare pressed
     await branchReview(page, label, width, theme, EN);
     assert.deepEqual(errors, [], `${label}: no errors at the end`);
     await context.close();
   }
 
-  // every new string once in Korean, on a phone
   {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: "dark" });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "ko", theme: "dark" })));
@@ -1313,7 +1241,6 @@ try {
     await context.close();
   }
 
-  // a PC whose branch list is still on its way when the reader switches PC: its late answer is dropped
   {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
@@ -1327,7 +1254,6 @@ try {
     await page.getByRole("button", { name: EN.choose, exact: true }).click();
     await page.locator(".repo-changes-refs[aria-busy='true'] .repo-changes-refs-note").filter({ hasText: "Loading" }).waitFor();
     await branchShot(page, "1440-dark-loading-refs-pc-switch");
-    // the same pane on another PC: the picker closes, and its list is read from that PC
     await page.evaluate(([paneId, directory]) => window.repoDiffQA.openFiles("local", paneId, directory), ["pane-fork", repos.fork] as const);
     await page.locator(".repo-changes-refs").waitFor({ state: "detached" });
     await page.getByRole("button", { name: EN.choose, exact: true }).click();
@@ -1335,7 +1261,6 @@ try {
     assert.ok(local.includes("origin/main") && local.length < 10, `the local PC's branches: ${JSON.stringify(local)}`);
     branchHeld.release();
     branchHeld = null;
-    // the slow PC's crowded answer arrives now, and changes nothing
     await page.waitForFunction(() => performance.getEntriesByType("resource").some((entry) => entry.name.includes("/api/machines/slow-fixture/workspace/diff/refs") && (entry as PerformanceResourceTiming).responseEnd > 0));
     assert.deepEqual(await refRows(page), local, "the late answer of the PC switched away from is not taken");
     await closeFiles(page);
@@ -1343,8 +1268,6 @@ try {
     console.log("PASS a branch list still on its way is dropped when the reader switches PC");
   }
 
-  // another pane, folder or PC starts the Branch scope over: no base carried along, nothing compared
-  // there until Compare; and a file list still on its way for the target left behind is dropped
   for (const width of [1440, 390] as const) {
     const phone = width === 390;
     const context: BrowserContext = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone });
@@ -1373,7 +1296,6 @@ try {
       assert.deepEqual(state, { base: "", compareDisabled: true, branchPressed: "true", repositoryLines: 0, branchReads: [] }, `${width}px: ${paneId} on ${machine} starts the Branch scope over: ${JSON.stringify(state)}`);
       if (index === 1) await branchShot(page, `${width}-dark-target-change`);
     }
-    // a working-tree list held for pane-fork; the reader picks Branch, then another pane; the held list lands late
     await page.getByRole("button", { name: "Working tree", exact: true }).click();
     await changeRows(page);
     const staleList = holdNext("files");
@@ -1385,12 +1307,10 @@ try {
     const landed = page.waitForResponse((response) => response.url().includes("/workspace/diff/files") && response.url().includes("pane_id=pane-fork"));
     staleList.release();
     await (await landed).finished();
-    // the answer is in; React has had a frame to (wrongly) show it
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const after: Record<string, number | boolean> = { rows: await page.locator(".repo-change").count(), repositoryLines: await page.locator(".repo-changes-repo").count(), awaiting: await awaiting.count(), compareDisabled: await compare.isDisabled() };
     assert.deepEqual(after, { rows: 0, repositoryLines: 0, awaiting: 1, compareDisabled: true }, `${width}px: the late list of the pane left behind is dropped: ${JSON.stringify(after)}`);
     await branchShot(page, `${width}-dark-stale-list-dropped`);
-    // and one still on its way when the view closes lands on nothing
     const closing = holdNext("files");
     await page.getByRole("button", { name: "Working tree", exact: true }).click();
     await openFiles(page, "pane-fork", "local");
@@ -1402,7 +1322,6 @@ try {
     console.log(`PASS ${width}px: another pane, folder or PC starts the Branch scope over, and a list read for the target left behind is dropped`);
   }
 
-  // a remote PC's repository reads through its bridge, the file too
   {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
@@ -1422,7 +1341,6 @@ try {
     console.log("PASS a remote PC's changes and files read through its bridge");
   }
 
-  // the static demo answers the routes from its fixture: the list, a diff and no missing route
   {
     const app = join(root, "demo");
     await buildDemoApp(app);
@@ -1443,12 +1361,9 @@ try {
     page.setDefaultTimeout(20_000);
     const missing: string[] = [];
     page.on("response", (response) => { if (response.status() === 404) missing.push(response.url()); });
-    // the demo ends its opening agent turn on a 4.5 s timer (site/demo/transport.ts); run the clock past it
-    // first, so the sheet's backdrop is the finished turn in every capture rather than whichever the timer reached
     await page.clock.install();
     await page.goto(`http://127.0.0.1:${demoServer.port}/herdr-web-ui/demo/app/`);
     await page.clock.runFor(4_500);
-    // a computer's header opens Files from its own button (the More menu keeps it on a phone)
     await page.locator(".header-files-button").click();
     await page.getByRole("dialog", { name: "Files", exact: true }).waitFor();
     await page.getByRole("button", { name: "Changes", exact: true }).click();
@@ -1463,11 +1378,9 @@ try {
     await openChange(page, "src/lib/idempotency.ts");
     assert.equal(await note(page), "No lines changed.", "a pure rename has no lines");
     await closeDiff(page);
-    // the demo's branch against its fictional main: the picker's refs, the branch's own commit and a pinned patch
     await page.getByRole("button", { name: EN.branch, exact: true }).click();
     await page.getByRole("button", { name: EN.choose, exact: true }).click();
     const demoRefs = await refRows(page);
-    // only bases the demo can compare are offered: none of them answers "No commit by that name"
     assert.deepEqual(demoRefs, ["main", "origin/main"], `the demo's branches: ${JSON.stringify(demoRefs)}`);
     await page.locator(".repo-changes-refs [role='option']").filter({ has: page.locator(".menu-item-main", { hasText: /^main$/ }) }).click();
     await page.getByRole("button", { name: EN.compare, exact: true }).click();

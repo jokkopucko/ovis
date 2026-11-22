@@ -47,7 +47,6 @@ describe("MicButton", () => {
       down: (pointerType: string, pointerId?: number, mouseButton?: number) => act(() => { button().props.onPointerDown(pointer(pointerType, pointerId, mouseButton)); }),
       up: (pointerType: string, pointerId?: number, mouseButton?: number) => act(() => { button().props.onPointerUp(pointer(pointerType, pointerId, mouseButton)); }),
       click: () => act(() => { button().props.onClick({ detail: 1 }); }),
-      /** the take moved on by itself (recognition ended) between the tap's pointerdown and its click */
       becomes: (next: VoiceState) => act(() => { voice.state = next; renderer!.update(view()); }),
     };
   }
@@ -145,7 +144,6 @@ describe("useDictation", () => {
     descriptors.clear();
   });
 
-  /** the composer's box after an earlier dictation, the caret right after its last word */
   async function field() {
     globals();
     const element = Object.assign(new EventTarget(), { value: "first dictation", selectionStart: 15, selectionEnd: 15 });

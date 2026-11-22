@@ -39,7 +39,6 @@ function window(value: unknown): { used_percentage: number; resets_at?: number }
   const used = number(found["used_percentage"]);
   return used === undefined ? undefined : { used_percentage: used, resets_at: number(found["resets_at"]) };
 }
-/** Context is session-scoped, not account-wide like quota; another pane must not overwrite it. */
 function captureContext(body: Record<string, unknown>): void {
   const session = body["session_id"];
   const model = record(body["model"])["id"];

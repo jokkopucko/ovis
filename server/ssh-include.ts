@@ -24,29 +24,18 @@ import { matchComponent, parseComponent, type Token } from "./ssh-include-glob.t
 
 /** an ssh config is a few kilobytes; past this it is not read on */
 export const MAX_FILE_BYTES = 256 * 1024;
-/** files every Include of one config together reads at most */
 const MAX_INCLUDED_FILES = 64;
-/** bytes every Include of one config together reads at most */
 const MAX_INCLUDED_BYTES = 1024 * 1024;
-/** folder entries every Include of one config together looks at, matching or not */
 const MAX_SCANNED_ENTRIES = 1024;
-/** characters every Include of one config together tries a pattern on */
 const MAX_MATCH_STEPS = 1_000_000;
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 type Budget = { files: number; bytes: number; entries: number; steps: number };
-/** a folder's names; "unread" for one left unlisted (out of reach, past the budget, or not listed safely); null for none there */
 type Listing = string[] | "unread" | null;
-/** something open: a FileHandle, or a descriptor openat answered */
 type Handle = { readonly fd: number; close: () => Promise<void> };
-/**
- * a path, and where a listing reached it from: the folder it held open and the rest of the path below it; `listed` when
- * its last name came from a listing, so it was there when listed
- */
 type Entry = { path: string; base?: { fd: number; rest: string }; listed?: true };
 const [fstatOf, readOf, closeOf] = [promisify(fstat), promisify(read), promisify(close)];
 
-/** a regular file's text when it is at most `cap` bytes, read from the open descriptor; "folder" for one; null for anything else */
 async function readHandle(fd: number, cap: number): Promise<string | "folder" | null> {
   const found = await fstatOf(fd);
   if (found.isDirectory()) return "folder";
@@ -112,10 +101,6 @@ const openAtGlibc: OpenAt | null = glibcOpenAt();
 /** whether a wildcard Include's folders are listed through their descriptor (getdents64); without it, by path, unclaimed */
 export const wildcardIncludesRead = getdents !== null;
 
-/**
- * for tests only: getdents64 and openat stood in for (a fake, or null for a platform without them), and the platform
- * openedInside checks on
- */
 export const includeTestOnly: { getdents?: Getdents | null; openAt?: OpenAt | null; platform?: NodeJS.Platform } = {};
 const descriptorListing = (): Getdents | null => includeTestOnly.getdents === undefined ? getdents : includeTestOnly.getdents;
 const openAtCall = (): OpenAt | null => includeTestOnly.openAt === undefined ? openAtGlibc : includeTestOnly.openAt;
@@ -158,7 +143,6 @@ async function listInside(dir: Entry, roots: readonly string[], budget: Budget):
   return { names };
 }
 
-/** `name` below an entry, reached from the same held folder */
 const under = ({ path, base }: Entry, name: string): Entry => ({ path: `${path}${sep}${name}`, ...(base ? { base: { fd: base.fd, rest: `${base.rest}/${name}` } } : {}) });
 
 /**

@@ -1,6 +1,4 @@
 /**
- * Serves the built client out of dist/.
- *
  * Cache-Control is decided per file on purpose: Vite fingerprints everything under
  * /assets/, so those are safe to pin for a year, while the service worker, the web
  * manifest and the index.html shell must revalidate on every load - a cached sw.js
@@ -10,9 +8,13 @@
 import type { BunFile } from "bun";
 import { existsSync } from "node:fs";
 import { join, normalize } from "node:path";
+import { accountServiceOrigin, CSP_DIRECTIVES, DEFAULT_ACCOUNT_SERVICE, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy } from "../shared/web-policy.ts";
+import { ASSETS } from "./entries.ts";
+
+export { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy };
 
 // A URL's pathname is not a file path: on Windows it is `/C:/...`, and spaces come percent-encoded.
-const DIST_DIR = join(import.meta.dir, "..", "dist");
+const DIST_DIR = join(ASSETS, "dist");
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -32,10 +34,7 @@ const MIME: Record<string, string> = {
 /** Files whose URL never changes but whose contents decide what the app becomes. */
 const REVALIDATED_PATHS = new Set(["/sw.js", "/manifest.webmanifest", "/index.html"]);
 
-/** The hosted shell's Pages `_headers` (scripts/shell-build.ts) caches by the same rules. */
-export const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 const SHORT_CACHE = "public, max-age=86400";
-export const REVALIDATE = "no-cache";
 
 function contentTypeFor(path: string): string {
   const dot = path.lastIndexOf(".");
@@ -50,127 +49,16 @@ function cacheControlFor(pathname: string): string {
 }
 
 /**
- * The app's own Content-Security-Policy, sent with the shell and every static file. The file
- * viewer's own answers (`/api/fs/*`, a PDF in a frame, images in an <img>) do not pass through
- * here: `fileResponse` (file-view.ts) sends them its own, stricter `sandbox; default-src 'none'`.
- * Every directive is here for a reason, and none of them is a guess:
- *
- * - `default-src 'self'`: the fallback for anything not named below. Nothing is fetched
- *   from another host: the API, the terminal socket, the machines event stream, the
- *   fonts (bundled woff2, `src/fonts/`), the PC bundle and the push endpoints are all
- *   same-origin, and the remote PCs are reached through this server's own /api/machines
- *   proxy rather than from the browser.
- * - `script-src 'self'`: both entry points are Vite modules (index.html), nothing in the
- *   app evaluates a string, and there is no inline handler attribute. This is the
- *   directive that matters: KaTeX output and the agent marks are the two places that put
- *   third-party HTML into the page. `'wasm-unsafe-eval'` lets the page compile WebAssembly
- *   and nothing else (no eval, no string to script): the terminal's sixel decoder
- *   (@xterm/addon-image, Settings -> Pictures in the terminal) and libghostty-vt (which draws
- *   every terminal) are modules bundled in the app.
- * - `style-src 'self' 'unsafe-inline'`: inline style attributes are how measured layout
- *   reaches the DOM (AgentPicker, RowMenu, Droplet, UsageMeters), and KaTeX writes one on
- *   every expression it cannot render. It is also load-bearing for the terminal itself:
- *   xterm.js builds its layers by appending a <style> element to the DOM, and a
- *   DOM-inserted <style> is subject to style-src, so without 'unsafe-inline' the pane
- *   loses its cursor and its layers. The unsafe part is styles, not script.
- * - `img-src 'self' data: blob:`: same-origin icons, pane images and file-viewer images;
- *   `blob:` for a pasted image previewed before it is uploaded; `data:` for the inline
- *   agent marks.
- * - `font-src 'self' data:`: every face is bundled (the app's own and KaTeX's, both
- *   through Vite). No font CDN. The `data:` is Vite's own inlining: an asset under ~4 KB
- *   is emitted as a data: URL inside the CSS rather than as a file, and KaTeX_Size3's
- *   3 KB woff2 is one of them. That data: is app-bundled bytes, never anything an agent
- *   or a transcript can reach. Measured in Chromium: without it the load reports one
- *   `font-src` violation per maths-bearing page, and the browser falls through to the
- *   same-origin .woff of the same face, so the maths still draws.
- * - `connect-src 'self'`: every fetch is a relative /api path, the terminal socket is
- *   window.location.host over ws:/wss: (which 'self' matches — confirmed in Chromium:
- *   an explicit `new WebSocket("ws://<same host>/ws")` and the machines event stream both
- *   connect under the enforcing header).
- * - `media-src 'self'`: the file viewer's <video>/<audio>, same-origin.
- * - `frame-src 'self'`: the PDF viewer frames /api/fs/file, same-origin. With the request's
- *   origin known, also any port of the host the browser used for the app: the web panel
- *   (src/lib/webPanel.ts) frames a page served by this PC, a dev server's localhost:5173 named
- *   under that host. No other host is framed.
- * - `worker-src 'self'`: the service worker is /sw.js, same-origin.
- * - `object-src 'none'`: no <object>/<embed> in the app, and none may appear.
- * - `base-uri 'self'`: no <base>, and a tag that adds one changes what every relative URL
- *   in the page means.
- * - `form-action 'self'`: every form is submitted by script, but a form that ever grows
- *   an action must not post this PC's credentials somewhere else.
- * - `frame-ancestors 'none'`: nothing frames the app itself.
- */
-const CSP_DIRECTIVES = [
-  "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "media-src 'self'",
-  "frame-src 'self'",
-  "worker-src 'self'",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-];
-
-/**
  * The policy both headers carry, before contentSecurityPolicy() adds the request's host to `frame-src`
  * and the account service to `connect-src`. A browser script that serves a build of its own sends it as it is:
  * serveStatic reads only this checkout's dist/, and sends no policy before that is built.
  */
 export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
 
-/**
- * What the hosted shell (dist-shell/, app.ovis.sh) changes in the policy above, and nothing else:
- * its server is reached through a relay's WebSocket, not its own origin, so `connect-src` admits
- * any wss: address (relay.ovis.sh, or a self-hosted relay from OVIS_RELAY_URL), and a video or a
- * PDF it cannot address by URL (the native app's WebView has no service worker, todo 17) plays or
- * frames from a blob: URL it fetched over the relay. Every other directive, `style-src
- * 'unsafe-inline'` and `font-src 'self' data:` among them, stays for the reasons given above.
- */
-const SHELL_SOURCES: Record<string, string> = {
-  // the account service the shell signs in to (docs/account.md); a self-hosted one is not added yet
-  "connect-src": "'self' wss: https://account.ovis.sh",
-  "media-src": "'self' blob:",
-  "frame-src": "'self' blob:",
-};
-
-/**
- * The hosted shell's policy: `CONTENT_SECURITY_POLICY` with only the transport-related sources
- * changed (SHELL_SOURCES). `connect` adds origins the shell may fetch from: the hosted build passes
- * the regional copies of the app, whose build its first script compares (scripts/shell-build.ts).
- */
-export function shellContentSecurityPolicy(connect: readonly string[] = []): string {
-  return CSP_DIRECTIVES.map((directive) => {
-    const name = directive.slice(0, directive.indexOf(" "));
-    const sources = SHELL_SOURCES[name];
-    if (sources === undefined) return directive;
-    return name === "connect-src" && connect.length ? `${name} ${sources} ${connect.join(" ")}` : `${name} ${sources}`;
-  }).join("; ");
-}
-
 /** A host name or bracketed IPv6 address, nothing that could end or add a directive. */
 const FRAMEABLE_HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i;
 
 /** The policy for a request from `origin` (requestOrigin): its host's other ports may be framed. */
-/** The account service when OVIS_ACCOUNT_SERVICE_URL is unset; `OVIS_ACCOUNT_SERVICE_URL=off` names none. */
-export const DEFAULT_ACCOUNT_SERVICE = "https://account.ovis.sh";
-
-/**
- * The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is
- * https, account.ovis.sh when it is unset, and none when it is `off` or not https.
- */
-export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && /^[a-z0-9.-]+(?::[0-9]+)?$/i.test(url.host) ? url.origin : null;
-  } catch { return null; }
-}
-
 export function contentSecurityPolicy(origin?: string): string {
   let host: string | null = null;
   try {
@@ -201,10 +89,9 @@ function cspHeader(origin?: string): Record<string, string> {
 }
 
 /**
- * OVIS_APP_NAME names the installed app. Each PC is its own origin, so two PCs installed
- * on one phone are two apps, and both would be called "Ovis" (#476). Unset or blank, every
- * file is served as built. Read on every request, like OVIS_CSP; the manifest and the
- * shell revalidate on every load, so an installed app learns a new name without a reinstall.
+ * Each PC is its own origin, so two PCs installed on one phone are two apps, and both would be called
+ * "Ovis" (#476). Read on every request, like OVIS_CSP; the manifest and the shell revalidate on every
+ * load, so an installed app learns a new name without a reinstall.
  */
 export function appName(): string | null {
   const name = process.env["OVIS_APP_NAME"]?.trim();
@@ -226,7 +113,6 @@ export function relateManifest(text: string, origin: string): string {
   return JSON.stringify({ ...JSON.parse(text), related_applications: [{ platform: "webapp", id: `${origin}/` }] }, null, 2);
 }
 
-/** What /manifest.webmanifest answers: renamed under OVIS_APP_NAME, then related to its origin. */
 export function manifestBody(text: string, origin: string): string {
   const name = appName();
   return relateManifest(name ? renameManifest(text, name) : text, origin);
@@ -261,7 +147,6 @@ export function accountShell(html: string): string {
   return origin === null ? html : html.replace("</head>", `<meta name="ovis-pc-account-service" content="${origin}" />\n</head>`);
 }
 
-/** The file as built, or the manifest under OVIS_APP_NAME, and the shell with its account service and name. */
 async function body(file: BunFile, kind: "manifest" | "shell" | null, origin?: string): Promise<BunFile | string> {
   if (kind === "manifest" && origin !== undefined) return manifestBody(await file.text(), origin);
   const name = appName();
@@ -270,8 +155,6 @@ async function body(file: BunFile, kind: "manifest" | "shell" | null, origin?: s
   return renameManifest(await file.text(), name);
 }
 
-/** Accepted representations, with a server preference for br over gzip on ties.
- * An implicit identity is the fallback; explicit identity quality participates. */
 function encodings(header: string | null | undefined): Array<"br" | "gzip" | "identity"> {
   if (!header?.trim()) return ["identity"];
   const weights = new Map<string, number>();
@@ -284,7 +167,6 @@ function encodings(header: string | null | undefined): Array<"br" | "gzip" | "id
   return (["br", "gzip", "identity"] as const).filter(coding => weight(coding) > 0).sort((a, b) => weight(b) - weight(a));
 }
 
-/** `origin` is what requestOrigin answers; a caller that has no request (a QA script) may leave it out. */
 export async function serveStatic(pathname: string, acceptEncoding?: string | null, origin?: string): Promise<Response> {
   const indexPath = join(DIST_DIR, "index.html");
   if (!existsSync(indexPath)) {
@@ -321,6 +203,7 @@ export async function serveStatic(pathname: string, acceptEncoding?: string | nu
     return new Response(null, { status: 404, headers: { "cache-control": REVALIDATE, ...cspHeader() } });
   }
   return new Response(await body(Bun.file(indexPath), "shell"), {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": REVALIDATE, ...cspHeader(origin) },
+    // a sign-in's return carries its code in the address (src/lib/account/ownWindow.ts): no cache keeps that page
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": pathname === "/callback" ? "no-store" : REVALIDATE, ...cspHeader(origin) },
   });
 }

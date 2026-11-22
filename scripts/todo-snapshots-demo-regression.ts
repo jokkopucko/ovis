@@ -9,15 +9,9 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Contiguous todo updates folded into one row, on the unmodified app over the demo's fixture
-// transport. The curated chats carry the native fields (Claude's id and recorded outcome, Codex's id
-// alone once answered, neither for another agent); then each pane's conversation reads answer the
-// turns this script feeds, announced as a transcript change the way the bridge does: pending calls,
-// results appended, the page polled again, narration and hidden thinking between updates, failed,
-// unreadable and repeated calls, Codex's unknown outcomes and an agent that records none. Everything
-// stays in this disposable, loopback-only app; no herdr session is opened. With UI_EVIDENCE_DIR set,
-// every state is also captured at 390 (phone) and 1440, light and dark, and in Korean at 390.
+// Everything stays in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-todo-snapshots-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 
@@ -32,18 +26,15 @@ type State = Tool["state"];
 const todos = (labels: string[], done = 0) => ({
   todos: labels.map((content, index) => ({ content, status: index < done ? "completed" : index === done ? "in_progress" : "pending", activeForm: content })),
 });
-/** A Claude TodoWrite as the server sends it: its id, and the outcome its tool_result recorded. */
 const claude = (id: string, state: State, input: unknown, output = state === "ok" ? "Todos have been modified successfully." : ""): Tool => ({
   kind: "tool", name: "TodoWrite", summary: "TodoWrite", input: typeof input === "string" ? input : JSON.stringify(input, null, 2), output, call_id: id,
   ...(state === undefined ? {} : { state }), ...(state === "error" ? { error: true } : {}),
 });
-/** A Codex update_plan: its id, pending until its output, then no state at all. */
 const codex = (id: string, answered: boolean, steps: string[], done: number, output = "Plan updated"): Tool => ({
   kind: "tool", name: "update_plan", summary: "update_plan", call_id: id, output: answered ? output : "",
   input: JSON.stringify({ plan: steps.map((step, index) => ({ step, status: index < done ? "completed" : index === done ? "in_progress" : "pending" })) }, null, 2),
   ...(answered ? {} : { state: "pending" as const }),
 });
-/** An omp todo call: an operation, answered with the whole list; omp records neither field. */
 const legacy = (op: unknown, items: string[], done: number): Tool => ({
   kind: "tool", name: "todo", summary: "todo", input: JSON.stringify(op, null, 2),
   output: `Overall: ${done}/${items.length} done.\n  Plan:\n${items.map((item, index) => `    - [${index < done ? "X" : " "}] ${item}${index === done ? " (in progress)" : ""}`).join("\n")}`,
@@ -60,7 +51,6 @@ const PROSE = "The first two updates only reordered the list; reading the test b
 
 interface Scenario { pane: string; name: string; parts: ConversationPart[] }
 
-/** The turns a conversation read answers: the user's line names the scenario, so its landing is seen. */
 const turnsOf = (scenario: Scenario): ConversationTurn[] => [
   { role: "user", ts: "2026-10-21T09:00:00.000Z", parts: [{ kind: "text", text: `Scenario ${scenario.name}` }] },
   { role: "assistant", ts: "2026-10-21T09:00:02.000Z", parts: scenario.parts },
@@ -68,7 +58,6 @@ const turnsOf = (scenario: Scenario): ConversationTurn[] => [
 
 const S = {
   pending: { pane: panes.flaky, name: "pending", parts: [claude("toolu_a", "pending", todos(STEPS, 0)), claude("toolu_b", "pending", todos(STEPS, 1))] },
-  // the same calls answered (an empty ok, an explicit failure) and a third appended
   append: { pane: panes.flaky, name: "append", parts: [claude("toolu_a", "ok", todos(STEPS, 1), ""), claude("toolu_b", "error", todos(STEPS, 2), "<tool_use_error>InputValidationError</tool_use_error>"), claude("toolu_c", "pending", todos(STEPS, 2))] },
   narration: { pane: panes.flaky, name: "narration", parts: [
     claude("toolu_n1", "ok", todos(STEPS, 0)), claude("toolu_n2", "ok", todos(STEPS, 1)), narration(PROSE), claude("toolu_n3", "ok", todos(STEPS, 1)),
@@ -80,7 +69,6 @@ const S = {
   long: { pane: panes.flaky, name: "long", parts: [claude("toolu_l1", "ok", todos(LONG, 0)), claude("toolu_l2", "ok", todos(LONG, 1))] },
   identical: { pane: panes.flaky, name: "identical", parts: [claude("toolu_i1", "ok", todos(STEPS, 1)), claude("toolu_i2", "ok", todos(STEPS, 1))] },
   codexPending: { pane: panes.web, name: "codex", parts: [codex("call_k1", false, STEPS, 0), codex("call_k2", false, STEPS, 1)] },
-  // answered: an empty output and one whose text describes a failure, both outcome unknown
   codexDone: { pane: panes.web, name: "codex-done", parts: [codex("call_k1", true, STEPS, 0, ""), codex("call_k2", true, STEPS, 1, "Error: plan update failed")] },
   codexAfterOk: { pane: panes.web, name: "codex-after-ok", parts: [claude("toolu_o1", "ok", todos(STEPS, 0)), codex("call_o2", true, STEPS, 2)] },
   legacy: { pane: panes.omp, name: "legacy", parts: [legacy({ op: "init", list: [{ phase: "Plan", items: STEPS }] }, STEPS, 0), legacy({ op: "done", task: STEPS[0] }, STEPS, 1)] },
@@ -88,7 +76,6 @@ const S = {
 
 interface Group { id: string; expanded: boolean; head: string; caption: string | null; list: string[]; attempts: string[]; failedClipped: boolean }
 
-/** Every folded todo run on the page, as a reader gets it. */
 const groups = (page: Page): Promise<Group[]> => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-todo-group]")].map((group) => {
   const head = group.querySelector<HTMLElement>(":scope > .work-row-head")!;
   const failed = head.querySelector<HTMLElement>(".work-row-failed");
@@ -104,7 +91,6 @@ const groups = (page: Page): Promise<Group[]> => page.evaluate(() => [...documen
   };
 }));
 
-// the demo's own turn ends a few seconds in and would drop its alert over the captures
 const settings = (theme: string, language: string) => JSON.stringify({ language, theme, alertsOn: false });
 
 async function open(context: BrowserContext, base: string, pane: string): Promise<Page> {
@@ -116,7 +102,6 @@ async function open(context: BrowserContext, base: string, pane: string): Promis
   return page;
 }
 
-/** Serves the scenario on its pane, announces it, and waits until its turn and its rows are drawn. */
 async function feed(page: Page, scenario: Scenario, expectGroups: number, unchanged = false): Promise<void> {
   const reads = await page.evaluate(([pane, turns]) => {
     const view = window as unknown as { todoTurns: Record<string, unknown>; todoReads: Record<string, number>; announceTodos: (pane: string) => void };
@@ -127,17 +112,14 @@ async function feed(page: Page, scenario: Scenario, expectGroups: number, unchan
   }, [scenario.pane, turnsOf(scenario)] as const);
   await page.waitForFunction(([pane, count]) => ((window as unknown as { todoReads: Record<string, number> }).todoReads[pane as string] ?? 0) > (count as number), [scenario.pane, reads] as const, { timeout: 10_000 });
   if (unchanged) {
-    // the same content again: nothing to see change, so the frames after the read's answer are waited for
     await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
   }
   await page.locator(".chat-turn", { hasText: `Scenario ${scenario.name}` }).waitFor({ timeout: 10_000 });
-  // the work block of the scenario's turn, opened if the turn settled folded
   const head = page.locator(".chat-turn-agent .work-block-head").last();
   if (await head.getAttribute("aria-expanded") === "false") await head.click();
   await page.waitForFunction((count) => document.querySelectorAll("[data-todo-group]").length === count, expectGroups, { timeout: 10_000 });
 }
 
-/** Opens the (only, or first) folded run if it is closed. */
 async function expand(page: Page): Promise<void> {
   const heads = page.locator("[data-todo-group] > .work-row-head");
   for (let index = 0; index < await heads.count(); index++) {
@@ -152,11 +134,9 @@ async function collapse(page: Page): Promise<void> {
   await page.locator("[data-todo-group] .work-todo-attempts").waitFor({ state: "detached" });
 }
 
-/** No page-level or chat-level sideways scroll. */
 async function noSidewaysScroll(page: Page, what: string): Promise<void> {
   const overflow = await page.evaluate(() => {
     const root = document.scrollingElement!;
-    // the hover plate of a row overhangs its block by design; what counts is a box that scrolls
     const scrollers = [...document.querySelectorAll<HTMLElement>(".terminal-stack *")].filter((node) => /auto|scroll/.test(getComputedStyle(node).overflowX) && node.clientWidth > 0);
     return { page: root.scrollWidth - root.clientWidth, chat: Math.max(0, ...scrollers.map((node) => node.scrollWidth - node.clientWidth)) };
   });
@@ -166,23 +146,17 @@ async function noSidewaysScroll(page: Page, what: string): Promise<void> {
 const shots: { file: string; width: number; height: number; theme: string; language: string; state: string; sha256: string; capturedAt: string }[] = [];
 const measurements: Record<string, unknown>[] = [];
 
-/** The end of the chat, by the app's own Jump to latest: nothing floats over the last rows then. */
 async function toEnd(page: Page): Promise<void> {
-  // A reader who opened a run reads there (#1388), so the button can be offered while the chat is
-  // already at its end and leave on its own once a layout change scrolls there: it is pressed only
-  // if it is there at that moment, and either way the end is reached with nothing over it.
   await page.evaluate(() => document.querySelector<HTMLElement>(".chat-virtual-jump")?.click());
   await page.locator(".chat-virtual-jump").waitFor({ state: "detached", timeout: 10_000 });
 }
 
 async function shoot(page: Page, config: Config, state: string, end = false): Promise<void> {
   if (evidence === null) return;
-  // a pane waiting on an approval keeps its card over the chat: folded, as a reader can
   const fold = page.locator(".prompt-card-fold[aria-expanded=\"true\"]");
   if (await fold.count() > 0) await fold.click();
   if (end) await toEnd(page);
   else await page.locator("[data-todo-group]").first().scrollIntoViewIfNeeded().catch(() => undefined);
-  // a rest state is drawn without the pointer over it: the last click leaves it on the head
   if (state !== "hover" && state !== "pressed") {
     const viewport = page.viewportSize()!;
     await page.mouse.move(viewport.width - 2, Math.round(viewport.height / 2));
@@ -194,7 +168,6 @@ async function shoot(page: Page, config: Config, state: string, end = false): Pr
   shots.push({ file, width: viewport.width * config.scale, height: viewport.height * config.scale, theme: config.theme, language: config.language, state, sha256: createHash("sha256").update(buffer).digest("hex"), capturedAt: new Date().toISOString() });
 }
 
-/** Font size, contrast against the backdrop and hit box of the run's head and its badges. */
 async function measure(page: Page, config: Config, state: string): Promise<void> {
   if (evidence === null) return;
   measurements.push({ config: `${config.width}-${config.theme}${config.language === "ko" ? "-ko" : ""}`, state, ...(await page.evaluate(() => {
@@ -245,9 +218,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // Over the demo's own fetch: a pane named in window.todoTurns answers those turns (a new parse
-  // each read, as the bridge sends), counted in window.todoReads; window.announceTodos pushes the
-  // change on the page's sockets. window.todoOffline refuses every socket opened after it is set.
   const wrapper = `<script>(() => {
     const demo = window.fetch;
     window.todoTurns = {};
@@ -283,17 +253,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${wrapper}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const base = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -311,7 +271,6 @@ try {
           const label = `${config.width} ${config.theme}${en ? "" : " ko"}`;
 
           if (en && config.width === 1440 && config.theme === "light") {
-            // the curated chats as the demo serves them: Claude's id and ok, Codex's id alone, omp neither
             const page = await open(context, base, panes.flaky);
             const served = await page.evaluate(async (ids) => Object.fromEntries(await Promise.all(Object.entries(ids).map(async ([key, id]) => {
               const body = await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(id)}`)).json() as { turns: { parts: Record<string, unknown>[] }[] };
@@ -338,7 +297,6 @@ try {
             console.log("PASS curated demo chats carry Claude ids and ok, Codex ids alone, omp neither; only Claude's run claims its list");
           }
 
-          // Claude: pending calls, then their results appended and a third call, then the page polled again
           const page = await open(context, base, panes.flaky);
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
@@ -353,7 +311,6 @@ try {
             assert.equal(run!.caption, "No update has completed, so there is no current list.");
             assert.deepEqual(run!.list, [], "no list is invented from pending calls");
           }
-          // the reader is on the run: it keeps its row, its opening and the focus through what follows
           await page.locator("[data-todo-group] > .work-row-head").focus();
           await page.locator("[data-todo-group]").evaluate((node) => { (node as HTMLElement & { mark?: boolean }).mark = true; });
           await feed(page, S.append, 1);
@@ -369,7 +326,6 @@ try {
           }
           await shoot(page, config, "streamed-append");
           await measure(page, config, "streamed-append");
-          // the next poll: the same content parsed anew
           await feed(page, S.append, 1, true);
           [run] = await groups(page);
           assert.equal(run!.id, firstId);
@@ -379,8 +335,6 @@ try {
           await collapse(page);
           await shoot(page, config, "collapsed");
           await measure(page, config, "collapsed");
-          // interaction states of the disclosure
-          // focus after a key press is keyboard focus, as Tab gives it
           await page.keyboard.press("Shift");
           await page.locator("[data-todo-group] > .work-row-head").focus();
           assert.equal(await page.locator("[data-todo-group] > .work-row-head").evaluate((node) => node.matches(":focus-visible")), true, `${label}: keyboard focus is visible`);
@@ -405,8 +359,6 @@ try {
           await noSidewaysScroll(page, `${label} append`);
           console.log(`PASS ${label}: Claude pending calls, appended results and a poll keep one open, focused run with its id; ok, failed and pending apart`);
 
-          // narration and hidden thinking end a run: the two before the narration fold, the one
-          // between it and the thinking stays a row, the two after fold
           await feed(page, S.narration, 2);
           await expand(page);
           const split = await groups(page);
@@ -419,7 +371,6 @@ try {
           await shoot(page, config, "narration-boundary", true);
           await noSidewaysScroll(page, `${label} narration`);
 
-          // a later pending and a failed call never stand for the list: the earlier ok one does
           await feed(page, S.failed, 1);
           await expand(page);
           [run] = await groups(page);
@@ -457,17 +408,14 @@ try {
           await expand(page);
           await noSidewaysScroll(page, `${label} long labels`);
           await shoot(page, config, "long-labels");
-          // the end of the chat, scrolled to
           await shoot(page, config, "list-end", true);
           console.log(`PASS ${label}: narration and hidden thinking split runs; failed, all-failed, unreadable, identical and long runs read right`);
 
-          // an observer reads the same runs
           await feed(page, S.narration, 2);
           await page.evaluate(() => { for (const socket of (window as unknown as { todoSockets: Set<{ send: (text: string) => void; readyState: number }> }).todoSockets) if (socket.readyState === 1) socket.send(JSON.stringify({ type: "role", mode: "observe" })); });
           await expand(page);
           assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1);
           await shoot(page, config, "observe-readonly", true);
-          // the PC goes away: what was drawn stays readable
           await page.evaluate(() => {
             const view = window as unknown as { todoOffline: boolean; todoSockets: Set<{ close: () => void }> };
             view.todoOffline = true;
@@ -481,7 +429,6 @@ try {
           assert.deepEqual(errors, []);
           await page.close();
 
-          // Codex: pending until its output, then no state; never a success claim, whatever the output says
           const codexPage = await open(context, base, panes.web);
           await feed(codexPage, S.codexPending, 1);
           [run] = await groups(codexPage);
@@ -503,7 +450,6 @@ try {
           if (en) assert.equal(run!.head, "Plan 2 updates · 2/3 done, outcome not recorded", "a completed snapshot after an older ok one claims nothing");
           await codexPage.close();
 
-          // an agent that records neither field
           const ompPage = await open(context, base, panes.omp);
           await feed(ompPage, S.legacy, 1);
           await expand(ompPage);

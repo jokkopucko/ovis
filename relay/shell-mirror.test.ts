@@ -16,7 +16,6 @@ function temp(): string {
 const LIVE = "a".repeat(40);
 const OLDER = "b".repeat(40);
 
-/** A release's dist-shell.tar.gz, built by the real tar, holding a build.json for `revision`. */
 async function tarball(revision: string, index = "<!doctype html>", extra: Record<string, string> = {}): Promise<Uint8Array> {
   const src = temp();
   writeFileSync(join(src, "build.json"), JSON.stringify({ revision }));
@@ -27,9 +26,6 @@ async function tarball(revision: string, index = "<!doctype html>", extra: Recor
   return new Uint8Array(readFileSync(out));
 }
 
-/**
- * GitHub's tags and releases (a tag with no `archive` has a release without assets), and app.ovis.sh serving `served` (its build.json from `live`, read again by `lives` in turn).
- */
 function github(releases: { tag: string; commit: string; archive?: Uint8Array; digest?: string }[], live = LIVE,
   served: Record<string, string> = { "index.html": "<!doctype html>" }, lives: string[] = [], later = false) {
   const asked: string[] = [];
@@ -41,7 +37,6 @@ function github(releases: { tag: string; commit: string; archive?: Uint8Array; d
     if (path !== undefined && served[path] !== undefined) return new Response(served[path]);
     const tags = /\/tags\?per_page=100&page=(\d+)$/.exec(url);
     if (tags && url.startsWith(`https://api.github.com/repos/${REPOSITORY}/`)) {
-      // with `later`, a full first page of newer tags on other commits puts these on page 2
       const newer = Array.from({ length: later ? 100 : 0 }, (_, i) => ({ name: `v9.${i}`, commit: { sha: "c".repeat(40) } }));
       const all = [...newer, ...releases.map(({ tag, commit }) => ({ name: tag, commit: { sha: commit } }))];
       const page = Number(tags[1]);

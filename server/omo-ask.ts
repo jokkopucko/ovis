@@ -18,13 +18,10 @@ export const OMO_ASK_TOOLS: ReadonlySet<string> = new Set(["ask_user_question", 
 
 export interface OmoAskCall {
   id: string;
-  /** the call waits for its answer */
   wait: boolean;
-  /** the call's arguments, as recorded */
   args: unknown;
 }
 
-/** The open calls, oldest first. */
 export type OmoAsks = readonly OmoAskCall[];
 
 interface Entry {
@@ -45,7 +42,6 @@ function without(open: OmoAsks, id: string): OmoAsks {
   return open.some((call) => call.id === id) ? open.filter((call) => call.id !== id) : open;
 }
 
-/** One session record, parsed, applied to the open calls. */
 export function omoAsksAfter(open: OmoAsks, entry: Entry): OmoAsks {
   if (entry.type === "custom") {
     const id = entry.customType === "ask-user:settlement" ? (entry.data as { requestId?: unknown } | null)?.requestId : undefined;
@@ -56,7 +52,6 @@ export function omoAsksAfter(open: OmoAsks, entry: Entry): OmoAsks {
     const calls = (Array.isArray(message.content) ? message.content as Record<string, unknown>[] : [])
       .filter((part) => part?.["type"] === "toolCall" && typeof part["id"] === "string" && OMO_ASK_TOOLS.has(part["name"] as string) && part["incomplete"] !== true)
       .map((part) => ({ id: part["id"] as string, wait: waits(part["arguments"]), args: part["arguments"] }));
-    // Assistant narration is not evidence of an answer (including across resume).
     const ids = new Set(calls.map((call) => call.id));
     return calls.length > 0 ? [...open.filter((call) => !ids.has(call.id)), ...calls] : open;
   }
@@ -78,7 +73,7 @@ export function omoAsksAfter(open: OmoAsks, entry: Entry): OmoAsks {
 
 
 /**
- * One record of an omp session applied to its open `ask` calls. omp records the call when its
+ * omp records the call when its
  * dialog opens and its toolResult when it is answered or cancelled. A user message starts a new
  * turn, so no call stays open past one.
  */
@@ -96,7 +91,6 @@ export function ompAsksAfter(open: OmoAsks, entry: Entry): OmoAsks {
   return open;
 }
 
-/** Incremental question replay shared with the status reader's JSONL projection; `after` applies one record (omoAsksAfter, or ompAsksAfter for omp). */
 export class OmoAskReader {
   constructor(private readonly after: (open: OmoAsks, entry: Entry) => OmoAsks = omoAsksAfter) {}
 
@@ -114,7 +108,7 @@ export class OmoAskReader {
       state.offset = readOmoLines(fd, state.offset, stat.size, (line) => {
         const text = "text" in line ? line.text : line.record;
         if (text === undefined) return;
-        try { state!.asks = this.after(state!.asks, JSON.parse(text)); } catch { /* partial or invalid record */ }
+        try { state!.asks = this.after(state!.asks, JSON.parse(text)); } catch {}
       });
       state.size = stat.size;
       state.mtime = stat.mtimeMs;

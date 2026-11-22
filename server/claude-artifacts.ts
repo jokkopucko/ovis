@@ -24,21 +24,17 @@ const PAGE = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Row : null;
 const words = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim().slice(0, 300) : null;
-/** a tool answer's whole text, where its link can come after a long path: a string, or its text blocks */
 const said = (value: unknown): string => typeof value === "string" ? value : Array.isArray(value) ? value.map((part) => { const text = row(part)?.["text"]; return typeof text === "string" ? text : ""; }).join("\n") : "";
 
 interface Read {
   id: string;
   offset: number;
   skipping: boolean;
-  /** publish calls still waiting for their answer, by tool_use id: the published file's name */
   calls: Map<string, string | null>;
-  /** by URL, oldest publish first */
   pages: Map<string, ClaudeArtifact>;
 }
 const reads = new Map<string, Read>();
 
-/** The pages the transcript at `path` published, newest first. */
 export function claudeArtifacts(path: string): ClaudeArtifact[] {
   const stat = plain(path);
   if (stat === null) return [];
@@ -48,7 +44,6 @@ export function claudeArtifacts(path: string): ClaudeArtifact[] {
   const state = read;
   while (state.offset < stat.size) {
     const done = readLines(path, state.offset, stat, LINE_BUDGET, (line) => artifactLine(state, line), state.skipping);
-    // a failed read is tried again at the next ask; what is left unread is a line still being written
     if (done.failed || done.offset === state.offset) break;
     state.offset = done.offset;
     state.skipping = done.skipping;
@@ -57,7 +52,6 @@ export function claudeArtifacts(path: string): ClaudeArtifact[] {
   return [...state.pages.values()].reverse();
 }
 
-/** Forgets every read (tests). */
 export function forgetArtifacts(): void {
   reads.clear();
 }
@@ -73,7 +67,6 @@ function artifactLine(read: Read, line: string): void {
     if (block === null) continue;
     if (block["type"] === "tool_use" && block["name"] === "Artifact" && typeof block["id"] === "string") {
       const input = row(block["input"]) ?? {};
-      // the name is taken from the whole path, never one cut to a title's length
       const file = typeof input["file_path"] === "string" ? words(basename(input["file_path"])) : null;
       if ((input["action"] ?? "publish") === "publish" && input["asset"] !== true) read.calls.set(block["id"], file);
       continue;
@@ -91,19 +84,14 @@ function artifactLine(read: Read, line: string): void {
   if (read.calls.size > MAX_ARTIFACTS) read.calls.clear();
 }
 
-/** The core's own tracker: the route reads it and never makes its own. */
 export type ArtifactTrackers = { claudeAgents: Pick<ClaudeSubagentStatus, "sessionOf" | "ensure"> };
 
-/** The answer for the artifacts route, or null when the path is not it. */
 export async function handleArtifactsRequest(request: Request, url: URL, pathname: string, { claudeAgents }: ArtifactTrackers): Promise<Response | null> {
   if (pathname !== "/api/pane/artifacts") return null;
   setRequestRoute(pathname);
   if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
   const paneId = url.searchParams.get("pane_id");
   if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
-  // the pane as herdr has it now, for a second at most: a session the background lookup has not got to yet, or
-  // another one the pane runs since, is looked up here, as for a subagent's detail (background-agent.ts).
-  // A pane herdr did not answer for in time, or that runs another agent, is told none
   const seen: { pane?: Awaited<ReturnType<typeof paneGet>> } = {};
   await within(1000, (async () => {
     const pane = seen.pane = await paneGet(paneId);

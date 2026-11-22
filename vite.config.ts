@@ -8,10 +8,10 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const xtermSource = normalizePath(buildXtermSource(fileURLToPath(new URL(".", import.meta.url))));
+const patchedXtermSource = normalizePath(buildXtermSource(fileURLToPath(new URL(".", import.meta.url))));
 
 let revision: string | null = null;
-try { revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* non-Git build */ }
+try { revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch {}
 // whether the tree differs from that commit, an untracked (not ignored) file included: it can go into the build, so such a
 // build is not that revision (server/app-revision.ts trusts no dirty one)
 let dirty = true;
@@ -25,8 +25,6 @@ const thirdPartyNotices: Plugin = {
   },
 };
 
-// the commit this client was built from, read by the managed bridge that serves it (server/update-api.ts):
-// a checkout rebuilt under a running server serves this build before the server runs it
 const buildRevision: Plugin = {
   name: "build-revision",
   generateBundle() {
@@ -34,8 +32,6 @@ const buildRevision: Plugin = {
   },
 };
 
-// `vite build --mode shell` builds the hosted shell (scripts/shell-build.ts) into its own directory;
-// its plugin is loaded only then, so the server-served build stays as it is
 export default defineConfig(async ({ mode }) => ({
   // the theme boot script is emitted before compressedAssets and serviceWorkerBuild read the bundle
   plugins: [react(), thirdPartyNotices, buildRevision, themeBootstrapBuild(), compressedAssets(), serviceWorkerBuild(mode === "shell"),
@@ -60,11 +56,11 @@ export default defineConfig(async ({ mode }) => ({
   // The Bun patch targets xterm's readable source, not its minified distribution. Build that
   // source so dev, production and the website use the same reviewed IME backport.
   resolve: { alias: [
-    { find: /^@xterm\/xterm$/, replacement: `${xtermSource}/browser/public/Terminal.js` },
-    { find: /^browser\//, replacement: `${xtermSource}/browser/` },
-    { find: /^common\//, replacement: `${xtermSource}/common/` },
-    { find: /^vs\/nls$/, replacement: `${xtermSource}/vs/patches/nls.js` },
-    { find: /^vs\//, replacement: `${xtermSource}/vs/` },
+    { find: /^@xterm\/xterm$/, replacement: `${patchedXtermSource}/browser/public/Terminal.js` },
+    { find: /^browser\//, replacement: `${patchedXtermSource}/browser/` },
+    { find: /^common\//, replacement: `${patchedXtermSource}/common/` },
+    { find: /^vs\/nls$/, replacement: `${patchedXtermSource}/vs/patches/nls.js` },
+    { find: /^vs\//, replacement: `${patchedXtermSource}/vs/` },
     { find: "@shared", replacement: new URL("./shared", import.meta.url).pathname },
   ] },
 }));

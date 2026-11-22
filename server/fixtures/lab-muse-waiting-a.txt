@@ -1,0 +1,24 @@
+/home/user/.dori-sa/agent-lab/run muse
+user@host:~/scratch/lab-muse$ /home/user/.dori-sa/agent-lab/run m
+use
+
+  Muse Code 1.4.14
+
+❯ Use your tool for asking the user a question to ask me ONE multiple-choice question: 'Which color?' with options red,
+  green, blue. Wait for my answer, then reply with just the color.
+
+◈ Request user input Color — running (59s)
+
+  Which color?
+
+  ⟩ 1. red
+    2. green
+    3. blue
+    4. None of the above  Optionally, add details in notes (tab).
+
+  Enter to select · ↑/↓ to move · Tab for an optional note · Esc to interrupt
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  gpt-6-luna · high · /home/user/scratch/lab-muse · Auto-review

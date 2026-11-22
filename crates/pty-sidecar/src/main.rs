@@ -25,10 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// After the child exits, what is left in the pty is read until EOF, or until it has been quiet this long
-/// (the rest of its process group is hung up first, so that EOF usually comes first)...
 const EXIT_QUIET: Duration = Duration::from_millis(200);
-/// ...and for at most this long once reads may go on: a re-attach waits for the host.
 const EXIT_DRAIN_LIMIT: Duration = Duration::from_secs(2);
 /// Output paused when the child exits is held for the parent this long: the server resumes or drops a
 /// slow client within 10 s (OUTPUT_PAUSE_MAX_MS), and its kill unpauses.
@@ -39,20 +36,14 @@ const READ_CHUNK: usize = 64 * 1024;
 /// The longest frame held: every input the server writes comes from one WebSocket message, which Bun
 /// caps at 16 MiB by default and which escapes the text the way this frame does.
 const MAX_FRAME_BYTES: usize = 17 * 1024 * 1024;
-/// Input the command has not read yet, each frame counted with its FRAME_COST, past which more is dropped
-/// (see InputQueue).
 const MAX_QUEUED_INPUT_BYTES: usize = 16 * 1024 * 1024;
-/// What the last read after a limit takes before the host ends.
 const FINAL_READ_BYTES: usize = 16 * 1024 * 1024;
 
 struct State {
     paused: bool,
     stopping: bool,
-    /// the host hung up (SIGHUP) or killed (SIGKILL) a command still running: that signal ending it is the
-    /// host's own end, not the command's; any other signal is the command's
     hup_sent: bool,
     kill_sent: bool,
-    /// when the child exited (it is reaped only by `finish`)
     exit: Option<Instant>,
 }
 
@@ -75,7 +66,6 @@ impl Shared {
     }
 }
 
-/// The parent left or asked us to end: hang up the command's group, read on to EOF, and give it KILL_AFTER.
 fn stop(shared: &Arc<Shared>) {
     {
         let mut state = shared.lock();
@@ -107,16 +97,13 @@ fn stop(shared: &Arc<Shared>) {
     });
 }
 
-/// The one way out once the command runs: kill what is left of its group, reap it, and exit with its code,
-/// or with `unexited` when it never exited (a stop that outlasted SIGKILL, a failure before it ran on).
-fn finish(shared: &Shared, unexited: i32) -> ! {
+fn finish(shared: &Shared, code_if_never_exited: i32) -> ! {
     static FINISHING: AtomicBool = AtomicBool::new(false);
     if FINISHING.swap(true, Ordering::SeqCst) {
         loop {
             thread::park();
         }
     }
-    // a command the host ended itself (hung up by a stop, or killed then or just below) ends with 0 as before
     let (exited, sent) = {
         let mut state = shared.lock();
         state.kill_sent |= !pty::has_exited(shared.pid);
@@ -130,8 +117,7 @@ fn finish(shared: &Shared, unexited: i32) -> ! {
         (state.exit.is_some(), sent)
     };
     pty::signal_group(shared.pid, libc::SIGKILL);
-    // an exit the waiter has not recorded yet is still the command's own code
-    let code = pty::reap(shared.pid, !exited).map_or(unexited, |status| pty::exit_code(status, &sent));
+    let code = pty::reap(shared.pid, !exited).map_or(code_if_never_exited, |status| pty::exit_code(status, &sent));
     std::process::exit(code);
 }
 
@@ -196,7 +182,6 @@ fn main() {
             if let Err(error) = pty::wait_exited(shared.pid) {
                 eprintln!("pty-sidecar: waiting for the command: {error}");
             }
-            // the rest of its group goes with it, and their ends close the pty
             pty::signal_group(shared.pid, libc::SIGHUP);
             shared.lock().exit = Some(Instant::now());
             shared.notify();
@@ -253,8 +238,8 @@ fn control(shared: &Arc<Shared>, input: &InputQueue, master: RawFd) {
             let Some(frame) = frames::parse(text.trim()) else { return };
             match frame {
                 Frame::Input(text) => match input.push(text.into_bytes()) {
-                    Pushed::Queued | Pushed::Empty | Pushed::Dropped => {}
-                    Pushed::Overflowed => {
+                    Pushed::Queued | Pushed::Empty | Pushed::StillOverflowing => {}
+                    Pushed::FirstOverflow => {
                         eprintln!("pty-sidecar: the command is not reading its input: {MAX_QUEUED_INPUT_BYTES} bytes wait, dropping input until it takes some");
                     }
                 }
@@ -283,20 +268,15 @@ fn control(shared: &Arc<Shared>, input: &InputQueue, master: RawFd) {
 }
 
 enum Gate {
-    /// how long to wait for output: None until the child exits
     Read(Option<Duration>),
     Finish,
 }
 
 struct Drain {
-    /// when output last moved
     active: Instant,
-    /// when reads last resumed after the child exited
     resumed: Option<Instant>,
 }
 
-/// Holds reads while the parent has output paused (input stays live meanwhile), and ends them once the
-/// exited child's output is done.
 fn gate(shared: &Shared, drain: &mut Drain) -> Gate {
     let mut state = shared.lock();
     let mut held = false;
@@ -332,8 +312,6 @@ fn gate(shared: &Shared, drain: &mut Drain) -> Gate {
     }
 }
 
-/// Copies the pty to stdout until it ends, then waits for the child's exit. A blocking write to stdout
-/// holds the reads, so a parent that stops reading stops the pty too.
 fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
     let mut buf = vec![0u8; READ_CHUNK];
@@ -349,7 +327,6 @@ fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
     loop {
         let wait = match gate(shared, &mut drain) {
             Gate::Finish => {
-                // what is already there when a limit ends the reads still goes out
                 let mut taken = 0;
                 while taken < FINAL_READ_BYTES {
                     match pty::wait_readable(master, wake, Some(Duration::ZERO)) {
@@ -383,7 +360,6 @@ fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
         if !ready.master {
             continue;
         }
-        // a pause taken while waiting holds what arrived after it
         {
             let state = shared.lock();
             if state.paused && !state.stopping {
@@ -394,7 +370,6 @@ fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
             Ok(0) => break,
             Ok(read) => {
                 copy(&buf[..read], &mut discard);
-                // time spent blocked on stdout is not the pty being quiet
                 drain.active = Instant::now();
             }
             Err(error) if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => continue,
@@ -405,17 +380,22 @@ fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
     // a command dying closes its terminal before it can be waited for: its end is its own unless it is
     // still running after EXIT_QUIET, when it has closed its terminal without exiting
     {
+        // Test mode removes only the deadline: both modes use the same exit decision.
+        let no_deadline = std::env::var("OVIS_TEST_PTY_NO_CLOSE_DEADLINE").is_ok_and(|value| value == "1");
         let mut state = shared.lock();
         let deadline = Instant::now() + EXIT_QUIET;
         while state.exit.is_none() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
+            if no_deadline {
+                state = shared.changed.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
+            } else {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                state = shared.changed.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0;
             }
-            state = shared.changed.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0;
         }
     }
-    // a command that closed its terminal without exiting ends as a stopped one does
     stop(shared);
     let mut state = shared.lock();
     while state.exit.is_none() {

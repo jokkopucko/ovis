@@ -1,11 +1,14 @@
 import "./RelayOverview.css";
 
 import { AlertCircle, ChevronRight, Monitor } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { MIN_SERVER_VERSION } from "../../shared/relay-mux.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
-import { currentLocale, useT } from "../lib/i18n.ts";
+import { DEVICE_PROVIDERS } from "../lib/account/service.ts";
+import type { AccountProvider } from "../lib/account/store.ts";
+import { copyText } from "../lib/clipboard.ts";
+import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { dashboardModel, relayHost, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -13,14 +16,17 @@ import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { skeletonRows } from "../lib/skeleton.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
+import { PROVIDER_NAMES } from "./AccountPcs.tsx";
+import { askToJoinReason, localStateWord, outOfReachReason, outOfReachWord, pcDotState, type DashboardRow } from "./relayPcState.tsx";
+import { INSTALLER_COMMAND } from "./RelayShellScreens.tsx";
 import { Skeleton } from "./Skeleton.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const ATTENTION_LIMIT = 3;
 export const SKELETON_ROWS = 4;
 export const LOADING_SPINNER_MS = 1_000;
+export const CHECK_AGAIN_BUSY_MS = 1_000;
 
-/** Ready and Needs you omit unchecked pairings. Needs you includes Offline as a note. */
 type StripCell = { readonly key: string; readonly glyph: StatusDotState; readonly label: string; readonly count: number; readonly onClick: () => void; readonly pressed: boolean; readonly offline?: number };
 
 export interface RelayOverviewProps {
@@ -28,6 +34,7 @@ export interface RelayOverviewProps {
   readonly mode?: "account" | "local";
   readonly defaultRelay: string;
   readonly meLabel?: string;
+  readonly provider?: AccountProvider;
   readonly now?: number;
   readonly error?: string | null;
   readonly pcStatus?: ReadonlyMap<string, PcStatus>;
@@ -39,17 +46,18 @@ export interface RelayOverviewProps {
   readonly onFilter?: (filter: DashboardFilter) => void;
   readonly onOpenRelay?: (origin?: string) => void;
   readonly onRetryError?: () => void;
-  readonly onRefreshAccount?: () => void;
+  readonly onRefreshAccount?: () => void | Promise<void>;
   readonly onAddPc?: () => void;
   readonly onPairByQr?: () => void;
   readonly onOpenSheet?: (pc: MyPc, mode: "new" | "join") => void;
   readonly onSelectPc?: (serverId: string) => void;
   readonly onSelect?: (serverId: string) => void;
   readonly onOpenPc?: (pc: DashboardPc) => void;
+  /** Check again on a PC this device could not reach: that PC alone */
+  readonly onCheckPc?: (serverId: string) => void;
   readonly children?: ReactNode;
 }
 
-/** Latest measured handshake RTT through a relay origin, or null when no check answered through it. */
 export function relayLatencyMs(relay: { readonly origin: string; readonly pcs: readonly string[] }, pcStatus: ReadonlyMap<string, PcStatus> | undefined): number | null {
   if (!pcStatus) return null;
   let best: number | null = null;
@@ -61,35 +69,31 @@ export function relayLatencyMs(relay: { readonly origin: string; readonly pcs: r
   return best;
 }
 
-/** One cause/onset sentence for an attention row: fresh Add countdown, closed window, available update, or offline duration. */
 export function attentionReasonText(
-  pc: DashboardPc,
+  pc: DashboardRow,
   expiresAt: number | null,
   t: ReturnType<typeof useT>,
   options: { readonly now: number; readonly targetVersion: string },
 ): string {
-  switch (pc.state) {
+  switch (pc.displayState) {
     case "needs-approval":
       if (expiresAt !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((expiresAt - options.now) / 60_000)) });
-      return pc.added_at !== null ? t("Add window closed · an account member must approve") : t("Needs approval");
+      return askToJoinReason(pc, t) ?? t("Needs approval");
     case "needs-update":
       return t("update to {version}", { version: options.targetVersion });
-    case "offline": {
-      if (pc.last_seen_at === null) return t("Offline");
-      const minutes = Math.max(1, Math.round((options.now - Date.parse(pc.last_seen_at)) / 60_000));
-      if (minutes < 60) return t("offline since {n} min", { n: minutes });
-      if (minutes < 60 * 48) return t("offline since {n} h", { n: Math.round(minutes / 60) });
-      return t("offline since {when}", { when: new Date(pc.last_seen_at).toLocaleDateString(currentLocale()) });
-    }
+    case "offline": case "unreachable":
+      return [outOfReachWord(pc.displayState, t), outOfReachReason(pc, t, options.now)].join(" · ");
     case "paired":
       return t("Ready");
+    case "unchecked":
+      return localStateWord(pc.check, t);
   }
 }
 
-function rowAction(pc: DashboardPc, fresh: boolean, t: ReturnType<typeof useT>, props: Pick<RelayOverviewProps, "onOpenSheet" | "onSelectPc" | "onSelect" | "onOpenPc">): ReactNode {
+function rowAction(pc: DashboardRow, fresh: boolean, t: ReturnType<typeof useT>, props: Pick<RelayOverviewProps, "onOpenSheet" | "onSelectPc" | "onSelect" | "onOpenPc" | "onCheckPc">): ReactNode {
   const openPc = (): void => { if (props.onOpenPc) props.onOpenPc(pc); else window.location.assign(serverScopePath(pc.server_id)); };
   const selectPc = (): void => { (props.onSelectPc ?? props.onSelect)?.(pc.server_id); };
-  switch (pc.state) {
+  switch (pc.displayState) {
     case "needs-approval":
       if (!pc.join) return null;
       return fresh
@@ -100,20 +104,60 @@ function rowAction(pc: DashboardPc, fresh: boolean, t: ReturnType<typeof useT>, 
     case "offline":
       if (pc.paired) return <button type="button" className="btn" data-attention-action="details" onClick={selectPc}>{t("Details")}</button>;
       return pc.join ? <button type="button" className="btn" data-attention-action="join" onClick={() => props.onOpenSheet?.(pc, "join")}>{t("Join")}</button> : null;
-    case "paired":
+    // Open can only fail while no relay answers this device: the check is what to try once its network is back
+    case "unreachable":
+      return props.onCheckPc
+        ? <button type="button" className="btn" data-attention-action="check" onClick={() => props.onCheckPc?.(pc.server_id)}>{t("Check again")}</button>
+        : <button type="button" className="btn" data-attention-action="details" onClick={selectPc}>{t("Details")}</button>;
+    case "paired": case "unchecked":
       return <button type="button" className="btn" data-attention-action="open" onClick={openPc}>{t("Open")}</button>;
   }
 }
 
+/** The installer for a PC on Windows, as README.md gives it: the `sh` line of `INSTALLER_COMMAND` does not run there. */
+export const WINDOWS_INSTALLER_COMMAND = "irm https://ovis.sh/install.ps1 | iex";
+export const COPIED_MS = 1_600;
+
+function InstallCommand({ os, command, action }: { readonly os: string; readonly command: string; readonly action: string }) {
+  const t = useT();
+  const osId = useId();
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current); }, []);
+  const copy = (): void => {
+    void copyText(command, preRef.current).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => { copiedTimer.current = null; setCopied(false); }, COPIED_MS);
+    });
+  };
+  return (
+    <>
+      <span id={osId} className="relay-overview-empty-os">{os}</span>
+      <div className="relay-overview-empty-command-row">
+        <pre ref={preRef} className="relay-overview-empty-command"><code>{command}</code></pre>
+        <button type="button" className="btn" data-action={action} aria-describedby={osId} onClick={copy}>{t(copied ? "Copied" : "Copy")}</button>
+      </div>
+    </>
+  );
+}
+
 export function RelayOverview(props: RelayOverviewProps) {
-  const { pcs, mode = "account", defaultRelay, meLabel, error = null, pcStatus, targetVersion = MIN_SERVER_VERSION, onOpenRelay, onAddPc, onPairByQr, children } = props;
+  const { pcs, mode = "account", defaultRelay, meLabel, provider, error = null, pcStatus, targetVersion = MIN_SERVER_VERSION, onOpenRelay, onAddPc, onPairByQr, children } = props;
   const currentFilter = props.activeFilter ?? props.filter;
   const selectFilter = props.onSelectFilter ?? props.onFilter;
-  const retryError = props.onRetryError ?? props.onRefreshAccount;
+  const refreshAccount = props.onRefreshAccount;
+  const retryError = props.onRetryError ?? (refreshAccount ? (): void => { void refreshAccount(); } : undefined);
   const t = useT();
   const now = props.now ?? Date.now();
   const loading = pcs === null;
   const [showSpinner, setShowSpinner] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const checkTimer = useRef<number | null>(null);
+  const checkWaits = useRef<{ timer: boolean; read: boolean }>({ timer: false, read: false });
+  const mounted = useRef(false);
   const announcedWait = useAnnouncedText(loading ? t("Loading your PCs…") : null);
 
   useEffect(() => {
@@ -121,6 +165,29 @@ export function RelayOverview(props: RelayOverviewProps) {
     const timer = window.setTimeout(() => setShowSpinner(true), LOADING_SPINNER_MS);
     return () => window.clearTimeout(timer);
   }, [loading]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; if (checkTimer.current !== null) window.clearTimeout(checkTimer.current); };
+  }, []);
+
+  const checkAgain = (): void => {
+    if (checking || !refreshAccount) return;
+    const waits = { timer: true, read: true };
+    checkWaits.current = waits;
+    const landed = (part: "timer" | "read"): void => {
+      waits[part] = false;
+      if (checkWaits.current === waits && !waits.timer && !waits.read && mounted.current) setChecking(false);
+    };
+    setChecking(true);
+    checkTimer.current = window.setTimeout(() => { checkTimer.current = null; landed("timer"); }, CHECK_AGAIN_BUSY_MS);
+    let read: void | Promise<void>;
+    try { read = refreshAccount(); } catch { read = undefined; }
+    void Promise.resolve(read).then(() => landed("read"), () => landed("read"));
+  };
+  const providerName = mode === "account" && provider !== undefined && error === null ? PROVIDER_NAMES[provider] : null;
+  // a PC's own page signs in through a device flow, which Apple has none of: such an account is not told to sign in there with Apple
+  const pcCanSignIn = provider !== undefined && (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel ?? t("This device"), now, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);
   const byId = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
@@ -134,9 +201,7 @@ export function RelayOverview(props: RelayOverviewProps) {
       { key: "needs", glyph: "needs-you", label: t("Needs you"), count: model.counts.needsYou, onClick: () => selectFilter?.("needs"), pressed: currentFilter === "needs", offline: model.counts.offline },
       { key: "relays", glyph: "ready", label: t("Relays in use"), count: model.relays.length, onClick: () => onOpenRelay?.(), pressed: false },
     ];
-  // the attention rows on show, with the reason each one carries; a reason they all share is said once, above them
-  const attentionRows = (model?.attention ?? []).slice(0, ATTENTION_LIMIT).flatMap(({ server_id, reason, expiresAt }) => { const pc = byId.get(server_id); return pc === undefined ? [] : [{ pc, reason, expiresAt, why: attentionReasonText(pc, expiresAt, t, { now, targetVersion }) }]; });
-  // how many PCs this device reaches right now and by which way; a check still running or never run counts nowhere
+  const attentionRows = (model?.attention ?? []).slice(0, ATTENTION_LIMIT).flatMap(({ server_id, reason, expiresAt }) => { const pc = byId.get(server_id); return pc === undefined ? [] : [{ pc, reason, expiresAt, why: attentionReasonText(pc, expiresAt, t, { now, targetVersion }), joins: pc.state === "needs-approval" && expiresAt === null && askToJoinReason(pc, t) !== null }]; });
   const reachable = { direct: 0, relay: 0, none: 0 };
   for (const { check } of model?.rows ?? []) if (check !== null && check.kind !== "checking") reachable[check.kind === "offline" ? "none" : check.route === "relay" ? "relay" : "direct"] += 1;
   const firstAttention = attentionRows[0];
@@ -175,8 +240,29 @@ export function RelayOverview(props: RelayOverviewProps) {
         <section className="relay-overview-empty" data-dashboard-empty="">
           <Monitor className="relay-overview-empty-icon" aria-hidden="true" />
           <h2 className="relay-overview-empty-title">{t("No PCs yet")}</h2>
-          <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
+          {providerName === null ? (
+            error === null && <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
+          ) : (
+            <>
+              <ol className="relay-overview-empty-steps" data-empty-steps="">
+                <li>
+                  <span>{t("Install Ovis on the PC.")}</span>
+                  <InstallCommand os={t("On macOS or Linux:")} command={INSTALLER_COMMAND} action="copy-install" />
+                  <InstallCommand os={t("On Windows, in PowerShell:")} command={WINDOWS_INSTALLER_COMMAND} action="copy-install-windows" />
+                </li>
+                <li>{pcCanSignIn
+                  ? t("On that PC, open Settings → Devices and PCs → Add a connection → Ovis relay and sign in with the same {provider} account as on this device.", { provider: providerName })
+                  : t("On that PC, open Settings → Devices and PCs → Add a connection → Ovis relay and sign in with a GitHub or Google sign-in that is linked to this account.")}</li>
+                <li>{t("Choose Add this PC to my account there. It then shows here.")}</li>
+              </ol>
+              <p className="relay-overview-empty-copy" data-empty-provider="">{pcCanSignIn
+                ? t("Signed in with {provider}. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.", { provider: providerName })
+                : t("Signed in with {provider}. A PC signs in with GitHub or Google only, and each is a separate Ovis account until you link it to this one. Without a linked sign-in, pair with a QR or code instead.", { provider: providerName })}</p>
+            </>
+          )}
           <div className="relay-overview-empty-actions">
+            {/* aria-disabled, not disabled: a press keeps the focus it had instead of dropping it to the page */}
+            {providerName !== null && refreshAccount && <button type="button" className="btn relay-overview-check-again" data-action="check-again" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={checkAgain}>{t(checking ? "Checking…" : "Check again")}</button>}
             {onAddPc && <button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAddPc}>{t("Add a PC")}</button>}
             {onPairByQr && <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>}
           </div>
@@ -215,7 +301,7 @@ export function RelayOverview(props: RelayOverviewProps) {
             <section className="relay-overview-attention-section" aria-label={t("Needs you")}>
               {(sharedReason !== null || model.attention.length > ATTENTION_LIMIT) && (
                 <div className="relay-overview-attention-head">
-                  {sharedReason !== null && <p className="relay-overview-attention-caption">{sharedReason}</p>}
+                  {sharedReason !== null && <p className="relay-overview-attention-caption" {...(firstAttention?.joins ? { "data-reason": "join" } : {})}>{sharedReason}</p>}
                   {model.attention.length > ATTENTION_LIMIT && (
                     <button type="button" className="btn btn-ghost relay-overview-view-all" data-action="view-all-attention" data-attention-total={model.counts.needsYou} onClick={() => selectFilter?.("needs")}>
                       {t("View all {count}", { count: model.counts.needsYou })}
@@ -224,11 +310,11 @@ export function RelayOverview(props: RelayOverviewProps) {
                 </div>
               )}
               <ol className="relay-overview-attention">
-                {attentionRows.map(({ pc, reason, expiresAt, why }) => (
-                  <li key={pc.server_id} className="relay-overview-attention-row" data-pc-state={pc.state}>
-                    <StatusDot state={reason === "offline" ? "offline" : "needs-you"} />
+                {attentionRows.map(({ pc, reason, expiresAt, why, joins }) => (
+                  <li key={pc.server_id} className="relay-overview-attention-row" data-pc-state={reason}>
+                    <StatusDot state={pcDotState(pc)} />
                     <span className="relay-overview-attention-name" title={pc.name}>{pc.name}</span>
-                    <span className="relay-overview-attention-why">{sharedReason === null ? why : pc.relay !== null ? relayHost(pc.relay) : pc.last_seen_at !== null ? lastSeen(pc.last_seen_at, now) : "—"}</span>
+                    <span className="relay-overview-attention-why" {...(sharedReason === null && joins ? { "data-reason": "join" } : {})}>{sharedReason === null ? why : pc.relay !== null ? relayHost(pc.relay) : pc.last_seen_at !== null ? lastSeen(pc.last_seen_at, now) : "—"}</span>
                     <div className="relay-overview-attention-act">{rowAction(pc, expiresAt !== null, t, props)}</div>
                   </li>
                 ))}

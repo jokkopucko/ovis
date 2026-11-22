@@ -2,8 +2,6 @@
 # Microsoft Store package), on Windows with the .NET SDK and the Windows SDK (a GitHub windows-latest runner
 # has both).
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File app/windows/build.ps1 [-Version X.Y.Z]
-#
 # The MSIX takes its identity from OVIS_MSIX_NAME, OVIS_MSIX_PUBLISHER and OVIS_MSIX_PUBLISHER_DISPLAY_NAME
 # (Partner Center's Product identity page). Without them it gets a local identity, for a test install only.
 param([string]$Version = '0.0.0')
@@ -32,7 +30,6 @@ function Save-Png([int]$Size, [string]$Path, [int]$Width = $Size) {
     $bitmap.Dispose()
 }
 
-# The icon, as PNG frames in one .ico
 $sizes = 16, 24, 32, 48, 64, 128, 256
 $frames = foreach ($size in $sizes) {
     $bitmap = Resize $size
@@ -60,7 +57,6 @@ dotnet build Ovis.csproj -c Release -nologo "-p:Version=$Version"
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)." }
 Copy-Item 'bin\Release\net48\Ovis.exe' (Join-Path $build 'Ovis.exe')
 
-# The MSIX: the same Ovis.exe, its tiles and the manifest
 $layout = Join-Path $build 'msix'
 New-Item -ItemType Directory -Force -Path (Join-Path $layout 'Assets') | Out-Null
 Copy-Item 'bin\Release\net48\Ovis.exe' $layout

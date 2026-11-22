@@ -5,8 +5,7 @@ using System.Linq;
 namespace Ovis
 {
     /// <summary>
-    /// Which screen the app shows for what a PC has, and what it reads to choose. Run Ovis.Tests.exe: it prints each
-    /// case and exits 1 when one fails. The herdr answers are shaped as herdr 0.9.3 and 0.9.5 print them.
+    /// The herdr answers are shaped as herdr 0.9.3 and 0.9.5 print them.
     /// </summary>
     internal static class SetupTests
     {
@@ -39,7 +38,6 @@ namespace Ovis
                 Case("a server that runs older than the app gets Update, naming both versions", () =>
                 {
                     var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
-                    // running, it says so itself; stopped, its status line names the release its start runs
                     foreach (var running in new[] { true, false })
                     {
                         var reported = running ? new[] { "0.4.15", null } : new[] { null, "0.4.15" };
@@ -57,8 +55,6 @@ namespace Ovis
                     var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
                     Equal(UpdateReason.None, Setup.Reason(plugin, "0.4.22", null, true, App));
                     Equal(UpdateReason.None, Setup.Reason(plugin, null, "0.4.19", false, App));
-                    // a reinstalled checkout while the old server still runs: the running one decides, and the status
-                    // line, which names the next start's release, never stands in for it
                     Equal(UpdateReason.Older, Setup.Reason(plugin, "0.4.15", "0.4.22", true, App));
                     Equal(UpdateReason.VersionUnknown, Setup.Reason(plugin, null, "0.4.22", true, App));
                 }),
@@ -69,9 +65,7 @@ namespace Ovis
                     Equal(Phase.Installed, Setup.Choose(plugin, UpdateReason.None, null));
                     // running, but not answering its version (a token): herdr's list is not taken for it
                     Equal(UpdateReason.VersionUnknown, Setup.Reason(plugin, null, null, true, App));
-                    // nor is a checkout herdr lists at or past the app: an older process may still run on it
                     Equal(UpdateReason.VersionUnknown, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.22"))), null, "0.4.22", true, App));
-                    // stopped, the status line names what its start runs
                     Equal(UpdateReason.None, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.22"))), null, "0.4.22", false, App));
                     bool exact;
                     Equal(new Version(0, 4, 15), Setup.ServerVersion(plugin, false, null, null, out exact));
@@ -83,7 +77,6 @@ namespace Ovis
                     Equal("v0.4.21", Setup.UpdateTag(tags, App));
                     Equal("v0.4.19", Setup.UpdateTag("aa\trefs/tags/v0.4.18\n", App));
                     Equal("v0.4.21", Setup.UpdateTag(tags, null));
-                    // without the list nothing is installed: the app's own tag could be older than what runs
                     Equal(null, Setup.UpdateTag(null, App));
                     Equal(null, Setup.UpdateTag("", null));
                 }),
@@ -109,12 +102,9 @@ namespace Ovis
                 }),
                 Case("a server running without the update supervisor is not offered Update: the plugin's reinstall would not replace it", () =>
                 {
-                    // also one the plugin just started, whose supervisor has not reported yet: right after an update
                     var plugin = Setup.ParsePlugin(List(Entry(Links.PluginId, "0.4.15")));
                     Equal(UpdateReason.None, Setup.Reason(plugin, null, null, true, App, true));
-                    // a version it does report still decides
                     Equal(UpdateReason.Older, Setup.Reason(plugin, "0.4.15", null, true, App, true));
-                    // and the old id still moves
                     Equal(UpdateReason.LegacyId, Setup.Reason(Setup.ParsePlugin(List(Entry(Links.LegacyPluginId, "0.3.45"))), null, null, true, App, true));
                     Equal(true, Setup.UpdatesUnmanaged("{\"managed\":false,\"current_version\":null}"));
                     Equal(false, Setup.UpdatesUnmanaged("{\"managed\":true,\"current_version\":\"0.4.19\"}"));
@@ -202,6 +192,27 @@ namespace Ovis
                     Equal("file", Setup.EnvToken(new[] { Setup.EnvironmentLayer(name => oldOnly.ContainsKey(name) ? oldOnly[name] : null), "OVIS_TOKEN=file\n" }));
                     Equal("", Setup.EnvironmentLayer(name => null));
                 }),
+                Case("install.ps1's compiled server is asked through its run.ps1, which needs no Bun; a checkout through plugin.ts with Bun", () =>
+                {
+                    // install.ps1 (0.5.4 and newer) links %LOCALAPPDATA%\ovis\plugin, which holds herdr-plugin.toml and run.ps1 alone
+                    var linked = @"C:\Users\u\AppData\Local\ovis\plugin";
+                    var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { linked + @"\herdr-plugin.toml", linked + @"\run.ps1" };
+                    Equal("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + linked + @"\run.ps1 status", string.Join(" ", Setup.PluginCommandLine(linked, "status", files.Contains)));
+                    var checkout = @"C:\Users\u\AppData\Roaming\herdr\plugins\github\devswha.ovis-aa47ee43150f";
+                    files.Add(checkout + @"\herdr-plugin.toml");
+                    files.Add(checkout + @"\scripts\plugin.ts");
+                    files.Add(checkout + @"\scripts\plugin.ps1");
+                    Equal("bun " + checkout + @"\scripts\plugin.ts stop", string.Join(" ", Setup.PluginCommandLine(checkout, "stop", files.Contains)));
+                    files.Add(checkout + @"\run.ps1");
+                    Equal("bun " + checkout + @"\scripts\plugin.ts status", string.Join(" ", Setup.PluginCommandLine(checkout, "status", files.Contains)));
+                }),
+                Case("Start reports a stop that failed, but not one that left another program's reused pid alone", () =>
+                {
+                    Equal(false, Setup.StopFailed(0, "stopped Ovis (pid 5472)\n"));
+                    Equal(false, Setup.StopFailed(1, "could not verify the recorded Ovis process; it was left running and its pid file was kept\n"));
+                    Equal(true, Setup.StopFailed(1, "could not stop Ovis: Access is denied.\n"));
+                    Equal(true, Setup.StopFailed(1, null));
+                }),
                 Case("the old id's plugin.ts is told the state dir herdr keeps for it, found as herdr finds it", () =>
                 {
                     var windows = new Dictionary<string, string> { { "LOCALAPPDATA", @"C:\Users\u\AppData\Local" }, { "USERPROFILE", @"C:\Users\u" } };
@@ -285,7 +296,6 @@ namespace Ovis
             return new KeyValuePair<string, Action>(name, body);
         }
 
-        /// <summary>One plugin as herdr's list prints it; a null version leaves the field out.</summary>
         private static string Entry(string id, string version, string kind = "github", string minHerdr = "0.9.0", string owner = "devswha")
         {
             var root = (@"C:\Users\u\AppData\Roaming\herdr\plugins\" + id).Replace(@"\", @"\\");

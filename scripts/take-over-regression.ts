@@ -7,11 +7,6 @@ import { createServer } from "../server/index.ts";
 import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 
-/**
- * A pane another web bridge holds (a second server on the same herdr, as a Mac's server beside
- * this PC's): the waiting tab offers Open here, which takes the pane; the tab it was taken from
- * shows the same wait and the same button, its terminal not ended.
- */
 export async function checkTakeOver(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-take-over-"));
   const cwd = join(root, "pane");
@@ -23,7 +18,6 @@ export async function checkTakeOver(browser: Browser, origin: string): Promise<v
   try {
     await context.addInitScript(() => {
       if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
-      // what this page's socket was told, to wait on the server's answers
       const frames: string[] = [];
       Object.assign(window, { takenText_: false });
       (window as unknown as { frames_: string[] }).frames_ = frames;
@@ -61,7 +55,6 @@ export async function checkTakeOver(browser: Browser, origin: string): Promise<v
     await openHere(there).click();
     await told(there, "attach-resumed");
     await waiting(there).waitFor({ state: "detached" });
-    // the tab it was taken from waits in turn, with the same way back
     await waiting(here).waitFor();
     await openHere(here).waitFor();
     if (process.env.UI_EVIDENCE_DIR) await here.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "take-over-taken.png") });

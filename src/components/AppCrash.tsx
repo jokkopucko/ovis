@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type Ref } from "react";
 import { copyText } from "../lib/clipboard.ts";
 import { crashProbe, type CrashRegion } from "../lib/crashProbe.ts";
-import { t, useT } from "../lib/i18n.ts";
+import { resolveLanguage, t, translate, useT, type Language } from "../lib/i18n.ts";
+import { loadSettings } from "../lib/settings.ts";
 import "./AppCrash.css";
 
-/** The error as text a bug report can carry: its message, its stack, where and on what it ran. */
 export function crashDetails(error: unknown): string {
   const head = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   const stack = error instanceof Error && error.stack ? error.stack : "";
@@ -31,7 +31,6 @@ export function AppCrash({ error }: { error: unknown }) {
           <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>{t("Reload app")}</button>
           <button type="button" className="btn" onClick={() => void copyText(details, detailsRef.current).then(setCopied)}>{copied === true ? t("Copied") : t("Copy details")}</button>
         </div>
-        {/* opened when copying was refused: copyText has selected the text for a long press or Ctrl+C */}
         <details className="app-crash-details" open={copied === false || undefined}>
           <summary>{t("Details")}</summary>
           <pre ref={detailsRef}>{details}</pre>
@@ -42,10 +41,26 @@ export function AppCrash({ error }: { error: unknown }) {
 }
 
 /**
- * A part of the app (Sidebar, a pane slot, Settings) that could not be drawn; the rest goes on.
- * `onShown` runs once it is drawn and again whenever the caller hands a new one, for what the part
- * that threw can no longer report itself (a pane slot's terminal its connection going).
+ * What the hosted shell shows when its code still did not load after one reload (lib/relay/boot.ts):
+ * nothing broke in the app, so no crash details, only the way to try again. It shows before any
+ * SettingsProvider set the language, so it reads the saved one itself.
  */
+export function AppLoadFailed({ retry }: { retry: () => void }) {
+  let language: Language;
+  try { language = resolveLanguage(loadSettings().language); } catch { language = resolveLanguage("system"); }
+  const t = (key: string): string => translate(language, key);
+  return (
+    <main className="app-crash">
+      <div className="app-crash-card error-state" role="alert">
+        <p className="error-message">{t("Ovis could not load. Check your connection, then try again.")}</p>
+        <div className="app-crash-actions">
+          <button type="button" className="btn btn-primary" onClick={retry}>{t("Try again")}</button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export function RegionCrash({ message, retry, retryLabel, buttonRef, onShown }: {
   message: string; retry: () => void; retryLabel?: string; buttonRef?: Ref<HTMLButtonElement>; onShown?: () => void;
 }) {
@@ -59,7 +74,6 @@ export function RegionCrash({ message, retry, retryLabel, buttonRef, onShown }: 
   );
 }
 
-/** Renders nothing; in a build with test hooks it throws where the address says (lib/crashProbe.ts). */
 export function CrashProbe({ region }: { region: CrashRegion }) {
   crashProbe(region);
   return null;

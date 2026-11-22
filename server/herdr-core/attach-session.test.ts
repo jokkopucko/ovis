@@ -6,12 +6,10 @@ import { encodeFrame, FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DA
 const CHANNEL = 7;
 /** what the session asks the viewers' terminal on attach, as `hc attach` asks its own */
 const ASKED = "\x1b[?1004h\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[16t\x1b[c";
-/** what the session asks again on a focus-in: the display questions, focus reports being on already */
 const ASKED_AGAIN = ASKED.slice("\x1b[?1004h".length);
 /** what goes ahead of hc's first bytes: the viewer's last attach's scrollback is erased, on the main screen, before hc replays it */
 const CLEARED = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
 
-/** A core behind a fake `hc connect` that answers `terminal.attach` with one channel and records what the viewer sends on it. */
 class FakeCore implements HcTransport {
   readonly readable: ReadableStream<Uint8Array>;
   readonly exited = Promise.withResolvers<unknown>().promise;
@@ -22,19 +20,13 @@ class FakeCore implements HcTransport {
   private answered = Promise.withResolvers<void>();
   private waiters: (() => void)[] = [];
   private readonly frames = makeFrameReader((frame) => this.onFrame(frame), () => {});
-  /** the attach's reply, held back until `reply()` when the core was made with `holdReply` */
   private heldReply: (() => void) | null = null;
 
-  /**
-   * `paintFirst`: the first paint goes out before the attach's reply, as hc's writer may send it.
-   * `holdReply`: the reply waits for `reply()`. `answerClose`: a viewer's CLOSE is answered with one.
-   * `features`: what its hello names. `confirmAutomatic`: the attach's reply confirms `automatic_input`.
-   */
+  /** `paintFirst`: the first paint goes out before the attach's reply, as hc's writer may send it. */
   constructor(private readonly options: { paintFirst?: string; holdReply?: boolean; answerClose?: boolean; features?: readonly string[]; confirmAutomatic?: boolean } = {}) {
     this.readable = new ReadableStream({ start: (controller) => { this.controller = controller; } });
   }
 
-  /** resolves once the attach call has been answered */
   get attached(): Promise<void> {
     return this.answered.promise;
   }
@@ -58,7 +50,6 @@ class FakeCore implements HcTransport {
     this.controller.enqueue(encodeFrame(CHANNEL, FRAME_CLOSE, JSON.stringify(reason)));
   }
 
-  /** resolves once the viewer has sent `count` frames of `kind` on the channel */
   until(kind: number, count: number): Promise<void> {
     const { promise, resolve } = Promise.withResolvers<void>();
     const check = () => { if (this.of(kind).length >= count) { resolve(); return true; } return false; };
@@ -91,7 +82,6 @@ class FakeCore implements HcTransport {
     };
     if (this.options.holdReply) {
       this.heldReply = reply;
-      // other traffic keeps the line heard, so the held call times out alone
       this.controller.enqueue(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", method: "heartbeat", params: { seq: 1 } })));
     } else reply();
   }
@@ -110,6 +100,23 @@ function attach(onData: (data: string) => void = () => {}, options: ConstructorP
     onExit: (code) => { exits.push(code); exited.resolve(); },
   });
   return { core, session, exits, exited: exited.promise };
+}
+
+/** An attached session whose program prints in hc frames: `program` resolves once the session has heard them all. */
+async function attachedProgram() {
+  const seen: string[] = [];
+  // the attach's own questions come first, or they would land between the program's frames
+  const next = { want: ASKED, hit: Promise.withResolvers<void>() };
+  const attached = attach((data) => { seen.push(data); if (next.want && seen.join("").includes(next.want)) next.hit.resolve(); });
+  await next.hit.promise;
+  const program = async (...frames: string[]) => {
+    next.want = frames.join("");
+    next.hit = Promise.withResolvers<void>();
+    for (const frame of frames) attached.core.output(frame);
+    await next.hit.promise;
+  };
+  const typed = () => attached.core.of(FRAME_DATA).map((frame) => new TextDecoder().decode(frame.payload));
+  return { ...attached, program, typed };
 }
 
 describe("CoreAttachSession", () => {
@@ -216,7 +223,6 @@ describe("CoreAttachSession", () => {
     await core.until(FRAME_DATA, 1);
     expect(core.of(FRAME_DATA).map((frame) => new TextDecoder().decode(frame.payload))).toEqual(["a"]);
     expect(core.of(FRAME_FACTS).map((frame) => JSON.parse(new TextDecoder().decode(frame.payload)))).toEqual([{ fg: "#eeeeee", bg: "#181818", cell: [9, 17] }]);
-    // the same answers again change nothing hc has
     session.write("\x1b]11;rgb:1818/1818/1818\x07b");
     await core.until(FRAME_DATA, 2);
     expect(core.of(FRAME_FACTS)).toHaveLength(1);
@@ -238,6 +244,44 @@ describe("CoreAttachSession", () => {
     next.hit = Promise.withResolvers<void>();
     core.output("off\x1b[?1004l");
     await next.hit.promise;
+  });
+
+  it("types a lone cursor key in the cursor mode hc's stream last set, not the one the viewer's terminal still believed in", async () => {
+    const { core, session, program, typed } = await attachedProgram();
+    // application cursor keys, its sequence split across two of hc's frames: an arrow and Home typed as CSI reach it as SS3
+    await program("less\x1b[?", "1h");
+    session.write("\x1b[A");
+    session.write("\x1b[H");
+    // a subparameter 1 is mode 1004's, no DECCKM; a chord and a typed line are no lone cursor key
+    await program("\x1b[?1004:1l");
+    session.write("\x1b[B");
+    session.write("\x1b[1;5A");
+    session.write("\x1b[A\r");
+    // back to normal mode: an arrow the viewer encoded as SS3 just before it heard reaches the program as CSI
+    await program("\x1b[?1l$ ");
+    session.write("\x1bOA");
+    await core.until(FRAME_DATA, 6);
+    expect(typed()).toEqual(["\x1bOA", "\x1bOH", "\x1bOB", "\x1b[1;5A", "\x1b[A\r", "\x1b[A"]);
+    session.kill();
+  });
+
+  it("puts cursor keys back in normal mode on a terminal reset, and reads a mode list split anywhere or zero-padded", async () => {
+    const { core, session, program, typed } = await attachedProgram();
+    // `reset` after a program left application cursor keys on: RIS, then DECSTR
+    await program("\x1b[?1h", "\x1bc$ ");
+    session.write("\x1b[A");
+    await program("\x1b[?1h", "\x1b[!p$ ");
+    session.write("\x1b[H");
+    // a mode list hc split far from its ESC, then one written with leading zeros
+    await program("x\x1b[?1000;1006;1015;", "1", "h");
+    session.write("\x1b[A");
+    await program("\x1b[?0", "01l");
+    session.write("\x1bOB");
+    await program("\x1b[?01h");
+    session.write("\x1b[F");
+    await core.until(FRAME_DATA, 5);
+    expect(typed()).toEqual(["\x1b[A", "\x1b[H", "\x1bOA", "\x1b[B", "\x1bOF"]);
+    session.kill();
   });
 
   it("does not keep asking viewers whose terminal answers every focus-reports switch with a focus-in (#2815)", async () => {

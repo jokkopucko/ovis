@@ -40,6 +40,32 @@ export type UsageCredits =
  */
 export type UsageProblem = "expired" | "rate_limited" | "failed" | "locked";
 
+/** A tool on the server's PC whose own record of an account's limits the server reads: Oh My Pi, Gajae Code. */
+export type UsageRecorder = "omp" | "gjc";
+
+/**
+ * How long a tool may go without reading an account's limits before its record is one it has stopped updating. Either
+ * tool reads again five minutes after its last read, give or take a quarter: this is three reads missed. The server
+ * says so in `stale` with each report; a page ages the records of the report it holds against the same time.
+ */
+export const RECORDED_STALE_AFTER_MS: Readonly<Record<UsageRecorder, number>> = { omp: 15 * 60_000, gjc: 15 * 60_000 };
+
+/**
+ * Numbers the server did not read itself: another tool on its PC read them with that tool's own sign-in and kept
+ * them in its store, and the server read that record. No sign-in of that tool is read and nothing is asked of the
+ * provider for it, so the numbers are as old as that tool's last read.
+ */
+export interface UsageRecorded {
+  readonly by: UsageRecorder;
+  /** that tool has not read the limits for longer than it leaves between reads while it runs: they may have moved since */
+  readonly stale: boolean;
+  /**
+   * Whether the server's PC also holds a sign-in of this account. True: `plan` and `problem` are that sign-in's, and
+   * the record stands in for its numbers only. False: the account is known from the record alone.
+   */
+  readonly signed_in: boolean;
+}
+
 export interface ProviderUsage {
   readonly id: UsageProviderId;
   /**
@@ -62,6 +88,12 @@ export interface ProviderUsage {
   /** ISO 8601 time `windows` were read; null when they never were */
   readonly checked_at: string | null;
   /**
+   * Present when `windows` are another tool's record of this account's limits, read at `checked_at` by that tool, and
+   * not a reading the server made with a sign-in of its own: `resets` and `credits`, no part of a record, are then absent.
+   * Absent for every reading the server made itself.
+   */
+  readonly recorded?: UsageRecorded;
+  /**
    * Claude refused a sign-in whose token has not expired (a 403, as a blocked network answers, not a
    * real expiry), and Claude's limits are not read from its status line on this PC yet: turning that
    * on (POST /api/usage/statusline) can stand in. Absent otherwise.
@@ -79,6 +111,12 @@ export interface StatuslineState {
 
 /** GET /api/usage: only providers a CLI on this PC is signed in to are listed, once per account. */
 export interface UsageReport {
+  /**
+   * The PC's clock, which the times are on (ISO time). A page ages a record by it: the record's age as the PC saw it
+   * (this less `checked_at`) plus the time gone by on the device, never the device's clock against the PC's.
+   * Absent from an older server, for whose records the page has only its own clock to ask.
+   */
+  readonly server_time?: string;
   readonly providers: readonly ProviderUsage[];
   /**
    * Providers with no account found on this PC (a hub's accounts may still be listed) whose sign-in may be kept where this PC cannot look: the

@@ -7,7 +7,6 @@ export function relayShellQaVersions(shellVersion: string, minServerVersion: str
   const minimum = parseVersion(minServerVersion);
   assert.ok(shell);
   assert.ok(minimum);
-  // An unreleased shell below MIN admits its own server, so the old PC must be below both.
   const [major, minor, patch] = compareVersions(shell, minimum) < 0 ? shell : minimum;
   assert.ok(major > 0 || minor > 0 || patch > 0, "no older PC exists below a 0.0.0 floor");
   const below = patch > 0 ? `${major}.${minor}.${patch - 1}`

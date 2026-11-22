@@ -21,7 +21,6 @@ test("the folded line counts what ended, and what of it went wrong", () => {
   const tasks = [task({}), task({ status: "completed" }), task({ status: "failed" }), task({ status: "cancelled" }), task({ status: "lost" })];
   const runs = [run("running"), run("pending"), run("paused"), run("completed"), run("failed"), run("cancelled")];
   expect(runs.filter(runGoing).map((item) => item.status)).toEqual(["running", "pending", "paused"]);
-  // 4 ended tasks and 3 ended workflows; a failed and a lost task and a failed workflow went wrong
   expect(endedSummary(tasks, runs)).toEqual({ ended: 7, failed: 3 });
   expect(endedSummary([task({})], [run("running")])).toEqual({ ended: 0, failed: 0 });
 });
@@ -30,7 +29,6 @@ test("a task call reads as the tasks it starts: OmO's one and batch, omp's batch
   expect(taskCallItems({ description: "short", task_summary: "What it is for", subagent_type: "explore", prompt: "TASK: look" })).toEqual([
     { title: "What it is for", agent: "explore", prompt: "TASK: look" },
   ]);
-  // a batch item takes the call's agent unless it names its own
   expect(taskCallItems({ category: "quick", tasks: [{ description: "one", prompt: "a" }, { task_summary: "two", category: "deep", prompt: "b" }, "junk", {}] })).toEqual([
     { title: "one", agent: "quick", prompt: "a" },
     { title: "two", agent: "deep", prompt: "b" },
@@ -55,13 +53,11 @@ test("a task's answer framed in section tags reads as named sections, its own ta
 });
 
 test("a task's answer keeps a code block whole as the chat draws it, a fence line naming a language inside it too", () => {
-  // the chat's Markdown closes a block only at three backticks alone: the ```ts line is the block's own
   const answer = ["```md", "```ts", "<analysis>", "", "", "</analysis>", "```", "<answer>"].join("\n");
   expect(taskResultMarkdown(answer)).toBe(["```md", "```ts", "<analysis>", "", "", "</analysis>", "```", "**Answer**"].join("\n"));
 });
 
 test("a fence after a tab is no fence to the chat, so the block it would open is read as the chat reads it", () => {
-  // the chat opens a block only after up to three spaces: the tabbed line is text, the bare ``` opens the block, <results> is inside it
   const answer = ["intro", "\t```ts", "<analysis>", "x", "</analysis>", "```", "<results>"].join("\n");
   expect(taskResultMarkdown(answer)).toBe(["intro", "\t```ts", "**Analysis**", "x", "```", "<results>"].join("\n"));
 });

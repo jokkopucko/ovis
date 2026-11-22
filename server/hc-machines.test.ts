@@ -13,18 +13,15 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
-/** A manager reading herdr-core's machines, whose servers are stand-ins: each start and stop is recorded. */
 async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-machines-"));
   const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
-  // what a connection reads through the PC's server is not this test's business: it connects
   const observe = spyOn(manager as unknown as { observe(runtime: { machine: { state: string } }): Promise<void> }, "observe").mockImplementation(async (runtime) => { runtime.machine.state = "connected"; });
   const events: string[] = [];
   const start = async (machine: Pick<HcMachine, "id" | "name">): Promise<MachineBridge> => {
     events.push(`start ${machine.name}`);
     return { endpoint: { url: "http://127.0.0.1:1", token: "t" }, exited: new Promise(() => {}), stop: () => events.push(`stop ${machine.name}`) };
   };
-  // the watch's own first read (none yet) is in before the test tells the core's list
   manager.watchHcMachines(async () => [], start, 3_600_000);
   await settled();
   cleanups.push(() => { manager.stop(); observe.mockRestore(); rmSync(dir, { recursive: true, force: true }); });

@@ -7,7 +7,6 @@ import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES } from "../output-window.ts";
 export type RelaySocketHandlers = ReturnType<typeof createCore>["socketHandlers"];
 type SocketLike = Parameters<RelaySocketHandlers["open"]>[0];
 
-/** One logical socket, never the carrier's queue. RECEIVED is not CREDIT or a terminal ACK. */
 export class VirtualSocket implements SocketLike {
   private closing = false;
   private ended = false;
@@ -15,7 +14,7 @@ export class VirtualSocket implements SocketLike {
   private aboveLow = false;
   readonly closed: Promise<void>;
 
-  constructor(readonly data: SocketData, private readonly stream: WsStream, private readonly handlers: RelaySocketHandlers) {
+  constructor(readonly data: SocketData, private readonly stream: WsStream, private readonly handlers: RelaySocketHandlers, private readonly listed: boolean) {
     const closed = Promise.withResolvers<void>();
     this.closed = closed.promise;
     stream.onClose = ({ code, reason }) => {
@@ -36,7 +35,6 @@ export class VirtualSocket implements SocketLike {
     };
   }
 
-  /** The peer closed, and the messages it sent before that are still being handed over. */
   private get peerDraining(): boolean {
     return this.stream.closedByPeer && !this.closing && !this.detached && !this.ended && this.stream.live;
   }
@@ -61,10 +59,6 @@ export class VirtualSocket implements SocketLike {
     if (this.peerDraining) return Buffer.byteLength(text);
     if (this.readyState !== WebSocket.OPEN) return 0;
     const bytes = Buffer.byteLength(text);
-    // The core holds each client to OUTPUT_HARD_BYTES itself and excuses frames larger than that, a large
-    // session's snapshot among them, while they drain (connections.ts `backlog`); this is only the last guard,
-    // as `backpressureLimit` is on a native socket (core/socket.ts). A frame the phone cannot take in one
-    // message (relay-mux.ts LARGE_WS_MESSAGES) closes as stalled, as before it did (#2773).
     if (bytes > this.stream.engine.sendMessageBytes || this.getBufferedAmount() + bytes > OUTPUT_HARD_BYTES + LARGE_REPLY_BYTES) {
       this.close(OUTPUT_STALLED_CLOSE_CODE, "terminal output transport stalled");
       return 0;
@@ -80,7 +74,6 @@ export class VirtualSocket implements SocketLike {
     return this.stream.getBufferedAmount();
   }
 
-  /** Called after mux receive: only a peer receipt can reduce queued + in-flight bytes. */
   drain(): void {
     if (this.readyState !== WebSocket.OPEN || !this.aboveLow || this.getBufferedAmount() >= OUTPUT_LOW_BYTES) return;
     this.aboveLow = false;
@@ -90,10 +83,9 @@ export class VirtualSocket implements SocketLike {
   close(code = 1000, reason = ""): void {
     if (this.closing || this.ended || this.detached || !this.stream.live) return;
     this.closing = true;
-    // MachineRelay maps upstream disappearance to 1012 on native sockets. Mux carries RESET.
     if (code === 1006 || code === 1012 && this.data.relay) this.stream.reset("upstream_lost");
-    else this.stream.close(code, reason, code === OUTPUT_STALLED_CLOSE_CODE);
-    // A last client's attachment must not wait for the peer's CLOSE response.
+    // A listed principal's policy close must not drain its stale events; ordinary sockets keep their bounded close handshake.
+    else this.stream.close(code, reason, (this.listed && code === 1008) || code === OUTPUT_STALLED_CLOSE_CODE);
     this.detach(code, reason);
   }
 

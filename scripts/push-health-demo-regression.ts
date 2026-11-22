@@ -1,14 +1,9 @@
 /**
- * The alerts health notice and Settings → Alerts on the unmodified app over the demo's fixture
- * transport, with a stand-in PushManager lent to the page: a push service that retired this
- * device's subscription is told once, over the pane and in Settings alike, repaired once from
- * Settings, and the line leaves on the success the repair proves. Then the states around it: a
+ * Then the states around it: a
  * refusal (no repair, Alerts opens Settings), a key mismatch, a denied permission, no push
  * support, the PC out of reach, a look still under way, and a test refused to a watching
  * device. No notification is sent to any real device; all files and HTTP traffic stay in this
  * disposable, loopback-only app, and no herdr session is opened.
- *
- * UI_EVIDENCE_DIR: push-health-<390|1440>-<light|dark>[-ko][-<state>].png and manifest.json.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -17,10 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
 import { DEMO_PUSH } from "../site/demo/fixtures.ts";
+import { JA } from "../src/lib/i18n.ja.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openSettingsPage } from "./settings-page.ts";
+import { openSettingsPage, pressInSettings } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 type Theme = "light" | "dark";
 type Language = "en" | "ko";
@@ -35,11 +32,6 @@ const NOTICE = '[data-testid="push-health-notice"]';
 const HINT = '[data-testid="push-health-hint"]';
 const QA_KEY = "ovis:push-health-qa";
 
-/**
- * Lent to the page after the demo transport: a PushManager whose subscriptions are the fixtures
- * (site/demo/fixtures.ts) or fresh ones, and a gate on the transport's fetch so an answer can be
- * held back, counted, refused or lost. `localStorage[QA_KEY]` picks the state the page loads in.
- */
 const STAND_IN = `<script>(() => {
   const FIXTURES = ${JSON.stringify({ retired: DEMO_PUSH.retired.subscription, refused: DEMO_PUSH.refused.subscription, key: DEMO_PUSH.publicKey })};
   const mode = localStorage.getItem(${JSON.stringify(QA_KEY)}) ?? "fresh";
@@ -93,12 +85,6 @@ const STAND_IN = `<script>(() => {
   window.__push = hook;
 })();</script>`;
 
-/**
- * Run around the demo transport's own script: the transport ends the turn it opens with on a 4500 ms timer
- * (site/demo/transport.ts, "the turn in progress"), which would land at whatever moment a capture is taken.
- * That one timer is held, never run, so every frame shows the same turn in progress; the page's own timers
- * are untouched once the transport has loaded.
- */
 const HOLD_DEMO_TURN = `<script>(() => { const later = window.setTimeout; window.__laterTimeout = later; window.setTimeout = (callback, ms, ...args) => ms === 4500 ? (window.__heldDemoTurn = callback, 0) : later(callback, ms, ...args); })();</script>`;
 const RELEASE_TIMERS = `<script>window.setTimeout = window.__laterTimeout;</script>`;
 
@@ -127,7 +113,6 @@ async function capture(page: Page, width: number, theme: Theme, language: Langua
   if (!EVIDENCE) return;
   const file = `push-health-${width}-${theme}${language === "ko" ? "-ko" : ""}${state === "rest" ? "" : `-${state}`}.png`;
   const path = join(EVIDENCE, file);
-  // a sheet still rising or dropping is drawn at its end, so a capture never lands mid-slide
   await page.screenshot({ path, animations: "disabled" });
   const viewport = page.viewportSize()!;
   manifest.push({ file, width: viewport.width, height: viewport.height, theme, language, state, sha256: sha256(path), capturedAt: new Date().toISOString() });
@@ -136,7 +121,6 @@ async function capture(page: Page, width: number, theme: Theme, language: Langua
 const count = (page: Page, key: string): Promise<number> => page.evaluate((k) => window.__push.counts[k] ?? 0, key);
 const waitForCount = (page: Page, key: string, least: number): Promise<unknown> => page.waitForFunction(([k, n]) => (window.__push.counts[k] ?? 0) >= n, [key, least] as const);
 const cameToFront = (page: Page): Promise<void> => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-/** Nothing in the page scrolls sideways: no control reaches past the viewport. */
 const noSidewaysScroll = (page: Page): Promise<boolean> => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth && [...document.querySelectorAll<HTMLElement>(".settings-dialog, .pane-column")].every((el) => el.scrollWidth <= el.clientWidth + 0.5));
 const touchSized = (locator: Locator): Promise<boolean> => locator.evaluate((el) => { const box = el.getBoundingClientRect(); return box.width >= 44 && box.height >= 44; });
 
@@ -177,13 +161,11 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
   const REPAIR = label("Turn alerts on again");
   const REPAIRING = label("Turning alerts on…");
 
-  // ---- the retired device: told once, repaired once from Settings ----------------------------
   {
     const { context, page, errors } = await open("fresh");
     try {
       await waitForCount(page, "POST /api/push/status", 1);
       assert.equal(await notice(page).count(), 0, `${tag}: a registered subscription with a clean record shows no notice`);
-      // the push service retired this device's subscription since: the app comes to the front and reads it
       await page.evaluate(() => window.__push.holdSubscription("retired"));
       await cameToFront(page);
       await notice(page).waitFor();
@@ -193,7 +175,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.ok(await noSidewaysScroll(page), `${tag}: nothing scrolls sideways with the notice`);
       const button = notice(page).getByRole("button", { name: REPAIR, exact: true });
       if (phone) assert.ok(await touchSized(button), `${tag}: the notice's button is a finger-sized target`);
-      // one line at every width (G-103): Close shares the button's row and keeps to the notice's right end
       {
         const close = (await notice(page).getByRole("button", { name: language === "ko" ? "닫기" : "Dismiss", exact: true }).boundingBox())!;
         const repairBox = (await button.boundingBox())!;
@@ -219,14 +200,12 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       await page.mouse.up();
       assert.equal(await count(page, "POST /api/push/subscribe"), 1, `${tag}: a press let go elsewhere starts no repair`);
 
-      // a look still under way: nothing changes until the answer comes
       await page.evaluate(() => window.__push.hold("POST /api/push/status"));
       await cameToFront(page);
       await waitForCount(page, "POST /api/push/status", 3);
       await capture(page, width, theme, language, "loading");
       assert.equal(await notice(page).count(), 1);
       await page.evaluate(() => window.__push.release("POST /api/push/status"));
-      // the PC out of reach: what was known stands
       await page.evaluate(() => { window.__push.offline = true; });
       await cameToFront(page);
       await waitForCount(page, "POST /api/push/status", 4);
@@ -235,7 +214,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       await capture(page, width, theme, language, "offline");
       await page.evaluate(() => { window.__push.offline = false; });
 
-      // Settings says the same, once; the repair runs there
       const dialog = await openAlerts(page);
       await hint(page).filter({ hasText: GONE }).waitFor();
       assert.equal(await page.locator(".update-notice.is-alerts").count(), 1, `${tag}: Settings adds no second banner`);
@@ -244,13 +222,22 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.ok(await noSidewaysScroll(page), `${tag}: Settings fits`);
       await capture(page, width, theme, language, "settings");
       await page.evaluate(() => { window.__push.hold("POST /api/push/subscribe"); window.__push.hold("POST /api/push/test"); });
-      await repair.click();
-      await dialog.getByRole("button", { name: REPAIRING, exact: true }).waitFor();
+      let phase = "the repair press";
+      await (async () => {
+        await pressInSettings(repair);
+        phase = "the wait for the repairing state";
+        await dialog.getByRole("button", { name: REPAIRING, exact: true }).waitFor();
+      })().catch(async (error: Error) => {
+        const state = await page.evaluate(() => ({
+          counts: window.__push.counts,
+          buttons: [...document.querySelectorAll<HTMLButtonElement>(".settings-dialog button, .update-notice button")].map((button) => `${button.textContent?.trim()}${button.disabled ? " (disabled)" : ""}`),
+        })).catch(() => null);
+        throw new Error(`${error.message}; ${phase} failed, and the page showed ${JSON.stringify(state)}`, { cause: error });
+      });
       assert.equal(await dialog.getByRole("button", { name: REPAIRING, exact: true }).isDisabled(), true);
       assert.equal(await notice(page).getByRole("button", { name: REPAIRING, exact: true }).isDisabled(), true, `${tag}: the notice's button waits with Settings'`);
       assert.equal(await dialog.getByRole("button", { name: label("Send test"), exact: true }).isDisabled(), true);
       await capture(page, width, theme, language, "repairing");
-      // the retired endpoint is refused and a new subscription made, then the confirmation push, then the look that clears the line
       await page.evaluate(() => window.__push.release("POST /api/push/subscribe"));
       await waitForCount(page, "POST /api/push/test", 1);
       assert.equal(await notice(page).count(), 1, `${tag}: still one notice until the push is proven`);
@@ -280,7 +267,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       await page.evaluate(() => window.__push.answerAgain("POST /api/push/test"));
       await closeSettings(page);
 
-      // a subscription made for another server key: the longest line, repaired from the notice
       await page.evaluate(() => window.__push.holdSubscription("mismatch"));
       await cameToFront(page);
       await notice(page).waitFor();
@@ -297,7 +283,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.equal(await count(page, "POST /api/push/subscribe"), before + 1, `${tag}: a mismatched key is replaced with one registration`);
       await capture(page, width, theme, language, "repaired");
 
-      // the server no longer knows this subscription: told as missing, with the same repair
       await page.evaluate(() => window.__push.refuse("POST /api/push/status", 404, "subscription_not_found"));
       await cameToFront(page);
       await notice(page).and(page.locator('[data-problem="missing"]')).waitFor();
@@ -305,7 +290,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.ok(await noSidewaysScroll(page), `${tag}: the missing line fits`);
       await capture(page, width, theme, language, "missing");
 
-      // a transient failure newer than the last success: a line in Settings, never a notice, no repair
       await page.evaluate(() => window.__push.respond("POST /api/push/status", { registered: true, last_success_at: "2026-10-20T08:12:00.000Z", last_failure_at: "2026-10-21T07:41:00.000Z", last_failure: "network" }));
       await cameToFront(page);
       await notice(page).waitFor({ state: "detached" });
@@ -319,7 +303,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
     } finally { await context.close(); }
   }
 
-  // ---- a refusal: told, and Alerts opens Settings where Send test answers it -------------------
   {
     const { context, page, errors } = await open("refused");
     try {
@@ -338,7 +321,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
     } finally { await context.close(); }
   }
 
-  // ---- a denied permission: guidance in Settings, no notice, no repair ------------------------
   {
     const { context, page, errors } = await open("denied");
     try {
@@ -351,7 +333,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
     } finally { await context.close(); }
   }
 
-  // ---- no push here: the line says what push needs ---------------------------------------------
   {
     const { context, page, errors } = await open("unsupported");
     try {
@@ -366,12 +347,6 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
   console.log(`PASS push health ${tag}: one notice over the pane and in Settings, repaired once, cleared on the proven push; refusal, key mismatch, missing, transient, denied, unsupported, offline, loading and a watching device's refused test`);
 }
 
-/**
- * A repair that fails says why in full (repairFailureText): on a narrow phone at the largest interface text the
- * sentence keeps most of the line's width, the repair button drops under it, Close stays at the top right, and the
- * notice stays within the screen, scrolling inside itself when it must (G-103). A wide screen keeps the line's row:
- * only the sentence wraps, the repair button and Close stay beside it.
- */
 async function checkFailedRepairAtLargeText(browser: Browser, origin: string, width: number): Promise<void> {
   const wide = width > 640;
   const viewport = wide ? DESKTOP : { width, height: width === 320 ? 568 : 844 };
@@ -383,8 +358,6 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
     await page.goto(origin);
     await page.locator(".conn-live").waitFor();
     await waitForCount(page, "POST /api/push/status", 1);
-    // the subscription is gone from this device, and the browser will not make another: the repair fails for the
-    // fault it was meant to mend, which keeps its reason on the line
     await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.getRegistration();
       await (await registration!.pushManager.getSubscription())?.unsubscribe();
@@ -394,7 +367,6 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
     const notice = page.locator(NOTICE);
     await notice.waitFor();
     await notice.getByRole("button", { name: "Turn alerts on again", exact: true }).click();
-    // whichever way the browser's refusal is told (refused, no worker, not registered), the line says why in full
     await page.locator(`${NOTICE}:is([data-result="refused"], [data-result="no-worker"], [data-result="unregistered"])`).waitFor();
     const box = async (locator: Locator) => (await locator.boundingBox())!;
     const line = await box(notice);
@@ -413,9 +385,48 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
     assert.ok(action.y >= reason.y + reason.height - 1, `${tag}: the repair button sits under the reason`);
     assert.ok(close.y - line.y < 24 && line.x + line.width - (close.x + close.width) < 24, `${tag}: Close stays at the top right`);
     assert.ok(line.y + line.height <= viewport.height / 2 + 1, `${tag}: the notice keeps to the top half of the screen (${Math.round(line.height)}px tall)`);
-    // what does not fit is read by scrolling the notice itself
     assert.ok(await notice.evaluate((node) => node.scrollHeight <= node.clientHeight + 1 || getComputedStyle(node).overflowY === "auto"), `${tag}: an overflowing reason scrolls inside the notice`);
     console.log(`PASS ${tag}: the reason reads at width, the button under it, Close at the top right, the notice within the screen`);
+  } finally { await context.close(); }
+}
+
+async function checkLineAtLargeText(browser: Browser, origin: string, width: number): Promise<void> {
+  const viewport = { width, height: width === 320 ? 568 : 844 };
+  const tag = `${width} ja line at 20px`;
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "ja-JP", permissions: ["notifications"] });
+  await context.addInitScript(([settings, key]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, "fresh"); }, [JSON.stringify({ language: "ja", theme: "light", alertsOn: true, uiFontSize: 20 }), QA_KEY] as const);
+  try {
+    const page = await context.newPage();
+    await page.goto(origin);
+    await page.locator(".conn-live").waitFor();
+    await waitForCount(page, "POST /api/push/status", 1);
+    await page.evaluate(() => window.__push.holdSubscription("retired"));
+    await cameToFront(page);
+    const notice = page.locator(NOTICE);
+    await notice.waitFor();
+    const close = notice.getByRole("button", { name: JA["Dismiss"]!, exact: true });
+    const fits = async (state: string, name: string): Promise<void> => {
+      const action = notice.getByRole("button", { name, exact: true });
+      const line = (await notice.boundingBox())!;
+      const actionBox = (await action.boundingBox())!;
+      const closeBox = (await close.boundingBox())!;
+      assert.ok(closeBox.x >= actionBox.x + actionBox.width && closeBox.x + closeBox.width <= viewport.width, `${tag}, ${state}: Close is whole on the screen after the button (${Math.round(closeBox.x)} to ${Math.round(closeBox.x + closeBox.width)} of ${viewport.width}px)`);
+      assert.ok(line.x + line.width - (closeBox.x + closeBox.width) < 24, `${tag}, ${state}: Close keeps to the line's right end`);
+      assert.ok(await touchSized(close) && await touchSized(action), `${tag}, ${state}: the button and Close are finger-sized targets`);
+      assert.ok(await action.evaluate((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight), `${tag}, ${state}: the label stays inside its button`);
+      assert.ok(await noSidewaysScroll(page) && await notice.evaluate((el) => el.scrollWidth <= el.clientWidth), `${tag}, ${state}: nothing reaches past the screen`);
+      if (width > 320) assert.ok(actionBox.height < 45, `${tag}, ${state}: a label that fits keeps its one line (${Math.round(actionBox.height)}px tall)`);
+    };
+    await fits("rest", JA["Turn alerts on again"]!);
+    if (EVIDENCE) await page.screenshot({ path: join(EVIDENCE, `push-health-${width}-light-ja-20px.png`) });
+    await page.evaluate(() => window.__push.hold("POST /api/push/subscribe"));
+    await notice.getByRole("button", { name: JA["Turn alerts on again"]!, exact: true }).tap();
+    await notice.getByRole("button", { name: JA["Turning alerts on…"]!, exact: true }).waitFor();
+    await fits("repairing", JA["Turning alerts on…"]!);
+    await close.tap();
+    await notice.waitFor({ state: "detached" });
+    await page.evaluate(() => window.__push.release("POST /api/push/subscribe"));
+    console.log(`PASS ${tag}: Close on the screen at the line's right end beside the repair button, and it closes the line`);
   } finally { await context.close(); }
 }
 
@@ -426,18 +437,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `${HOLD_DEMO_TURN}<script src="./demo-transport.js"></script>${RELEASE_TIMERS}${STAND_IN}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -447,6 +447,7 @@ try {
         await run(browser, origin, width, theme, language);
       }
       for (const width of [320, PHONE.width, DESKTOP.width]) await checkFailedRepairAtLargeText(browser, origin, width);
+      for (const width of [320, PHONE.width]) await checkLineAtLargeText(browser, origin, width);
     } finally { await browser.close(); }
   } finally { server.stop(true); }
   if (EVIDENCE) {

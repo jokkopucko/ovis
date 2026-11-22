@@ -4,11 +4,10 @@ import type { ProcessInfo } from "./herdr/client.ts";
 type ForegroundProcess = NonNullable<ProcessInfo["foreground_processes"]>[number];
 
 /**
- * The agent process in front of a pane: what a pending send (core/pending.ts currentIdentity) and a command
- * outcome (prompt.ts outcomeProcess) are both bound to, picked here so the two cannot drift. `bound` (the process a
- * send was bound to, or the one its launch reported) while herdr still lists it, else `held` (the OmO process that
- * holds a session, heldOmoProcess, which an argv-silent custom OmO is known by alone), else the agent's own program
- * (agentProcesses: its native binary before an interpreter or launcher running it), else none. Never the shell.
+ * `bound` (the process a send was bound to, or the one its launch reported) while herdr still lists it, else
+ * `held` (the OmO process that holds a session, heldOmoProcess, which an argv-silent custom OmO is known by alone),
+ * else the agent's own program (agentProcesses: its native binary before an interpreter or launcher running it),
+ * else none. Never the shell.
  */
 export function agentProcessInFront(info: ProcessInfo | null | undefined, agent: string | null | undefined, bound?: number | null, held?: number | null): ForegroundProcess | null {
   const foreground = info?.foreground_processes ?? [];

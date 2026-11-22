@@ -132,7 +132,6 @@ public class WebPushDecryptTest {
         assertInvalid(malformed);
     }
 
-    /** The stored halves belong together: each side's private key with the other's public point agree. */
     @Test
     public void generatesMatchingHalves() throws GeneralSecurityException {
         PushKeys a = PushKeys.generate();

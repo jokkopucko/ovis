@@ -1,23 +1,14 @@
 /**
- * Every test belongs to one suite; newly added unit tests are picked up automatically.
- *
- * The unit suite runs its files in parallel processes: UNIT_TEST_WORKERS sets the count
- * (default: min(cores/2, 8) locally, 2-4 in CI). Files run independently with no shared
- * state; each process gets a subset balanced by file size. Each file runs in a process group of
- * its own: a test that signals its own group (kill(0), kill(-pgid)) ends only its file, which then
- * fails by that signal, instead of the whole run, which `bun run check` runs in one group and
- * which would otherwise end with no failure named. What a file leaves running is ended with it.
- *
- * The integration suite runs its files side by side: a few workers take files off one
- * queue, each worker on a herdr session of its own (`<session>-<n>`), so no two files
- * ever share a herdr, and none shares the plain `<session>` with the browser scripts.
- * HERDR_TEST_SHARDS sets the worker count; 1 is the old serial run.
+ * In a parallel unit run, off Windows, each file runs in a process group of its own: a test that signals its own group
+ * (kill(0), kill(-pgid)) ends only its file, which then fails by that signal, instead of the whole run, which `bun run
+ * check` runs in one group and which would otherwise end with no failure named. What a file leaves running is ended
+ * with it. A unit run with one worker and the integration files share this runner's group.
  */
 import { availableParallelism } from "node:os";
 
 const suite = process.argv[2];
 if (suite !== "unit" && suite !== "integration") throw new Error("Usage: bun scripts/ci-tests.ts unit|integration");
-const files = [...new Bun.Glob("{src,shared,server,scripts,telemetry,push-relay,relay,integrations}/**/*.test.{ts,tsx}").scanSync({ cwd: process.cwd() })].sort();
+const files = [...new Bun.Glob("{src,shared,server,scripts,telemetry,push-relay,relay,integrations,tui}/**/*.test.{ts,tsx}").scanSync({ cwd: process.cwd() })].sort();
 // The legacy updater suite mixes Git-only cases with real bridge restart/rollback cases.
 const needsHerdr = (file: string) => file.endsWith(".contract.test.ts") || file === "server/updater.test.ts" || file.startsWith("server/herdr/") || file.startsWith("server/pty/");
 const selected = files.filter((file) => needsHerdr(file) === (suite === "integration"));
@@ -55,26 +46,23 @@ if (suite === "unit") {
   const unread: string[] = [];
   const startedAt = Date.now();
   // The files' groups are not this process's: a Ctrl+C, or check.ts ending its step, reaches only
-  // this one, and check.ts cannot reach them either. It passes the signal on to every file still
-  // running, gives them a moment to end, then kills whatever is left in their groups, and only
-  // then ends itself.
+  // this one, and check.ts cannot reach them either.
   const running = new Map<number, Promise<number>>();
   let stopping = false;
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
     process.on(signal, () => {
       if (stopping) return;
       stopping = true;
-      // no file starts after this
       queue.length = 0;
       const groups = [...running];
-      for (const [group] of groups) try { process.kill(-group, signal); } catch { /* already gone */ }
+      for (const [group] of groups) try { process.kill(-group, signal); } catch {}
       let grace: ReturnType<typeof setTimeout> | undefined;
       void Promise.race([
         Promise.all(groups.map(([, exited]) => exited)),
         new Promise((resolve) => { grace = setTimeout(resolve, 5_000); }),
       ]).then(() => {
         clearTimeout(grace);
-        for (const [group] of groups) try { process.kill(-group, "SIGKILL"); } catch { /* already gone */ }
+        for (const [group] of groups) try { process.kill(-group, "SIGKILL"); } catch {}
         process.exit(code);
       });
     });
@@ -93,7 +81,7 @@ if (suite === "unit") {
       const code = await child.exited;
       // what the file left in its group, which may still hold its output open
       let leftover = false;
-      try { process.kill(-child.pid, "SIGKILL"); leftover = true; } catch { /* the group is gone */ }
+      try { process.kill(-child.pid, "SIGKILL"); leftover = true; } catch {}
       running.delete(child.pid);
       const output = (await read) + (leftover ? "\nci-tests: ended processes the file left running" : "")
         + (child.signalCode ? `\nci-tests: the file's test process was ended by ${child.signalCode}` : "");
@@ -130,7 +118,6 @@ async function work(session: string): Promise<void> {
   for (let file = queue.shift(); file; file = queue.shift()) {
     const fileStartedAt = Date.now();
     // Live process/pane probes can poll for 10s; Bun's 5s default would cut them off early.
-    // One stream, so a file's output reads in the order it was written.
     // bun colours its counts when anything in the environment asks for colour (FORCE_COLOR
     // outranks NO_COLOR), and a count line then reads `\e[0m\e[32m 13 pass\e[0m` — which the
     // patterns below cannot match. Every file came back unreadable and the run failed with
@@ -143,7 +130,6 @@ async function work(session: string): Promise<void> {
     const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
     const count = (word: keyof typeof totals) => Number(new RegExp(`^\\s*(\\d+) ${word}$`, "m").exec(plain)?.[1] ?? 0);
     for (const word of ["pass", "fail", "skip"] as const) totals[word] += count(word);
-    // a run that never printed its counts cannot be told from one that ran nothing
     if (!/^\s*\d+ pass$/m.test(plain) && !/^\s*\d+ fail$/m.test(plain)) unread.push(file);
     if (code !== 0) failed.push(file);
     console.log(`\n--- ${file} (${session}, ${((Date.now() - fileStartedAt) / 1000).toFixed(1)}s, exit ${code})\n${output.trimEnd()}`);
@@ -151,7 +137,6 @@ async function work(session: string): Promise<void> {
 }
 
 await Promise.all(sessions.map(work));
-// The sessions `<session>-<n>` exist for this run only.
 await Promise.all(sessions.map((session) => Bun.spawn([herdr, "--session", session, "server", "stop"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }).exited));
 console.log(`\nintegration: ${totals.pass} pass, ${totals.fail} fail, ${totals.skip} skip in ${selected.length} files, ${shards} at a time, ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 for (const file of failed) console.log(`FAILED ${file}`);

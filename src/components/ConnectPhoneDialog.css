@@ -2,7 +2,6 @@
   width: min(100%, 520px);
 }
 
-/* opened from Settings only, so above it even where Settings is raised over a file preview (SettingsDialog.css) */
 .modal-scrim:has(> .connect-phone-dialog) {
   z-index: calc(var(--z-modal) + 3);
 }
@@ -22,7 +21,6 @@
   margin: 0;
 }
 
-/* the identity reset is the relay's last and quietest action */
 .connect-phone-reset {
   padding-top: var(--space-2);
   border-top: var(--hairline) solid var(--border);
@@ -41,7 +39,6 @@
   margin: 0;
 }
 
-/* on a phone: this phone's own one-tap relay pairing, then the link for another device under a hairline */
 .connect-phone-self,
 .relay-pairing-phone {
   display: flex;
@@ -89,16 +86,52 @@
   color: var(--text);
 }
 
-/* Add a connection's ways, one tab each across the top, as herdr's Add a machine */
-.connect-tabs {
+/* the three ways to add a PC, and pairing a phone apart at their end */
+.connect-ways {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   align-self: stretch;
+}
+
+/* on a narrow phone the tabs keep the row, and pairing a phone goes under them */
+.connect-tabs {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.connect-phone-way {
+  flex: none;
+}
+
+.connect-phone-way[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+.connect-picks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connect-picks-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.connect-outside-help {
+  align-self: flex-start;
 }
 
 .connect-tabs > button {
   flex: 1;
 }
 
-.connect-tab {
+.connect-tab,
+.connect-devices-local {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -110,7 +143,8 @@
 }
 
 /* a tab not chosen stays mounted (its pairing code is kept), hidden: the flex above would show it */
-.connect-tab[hidden] {
+.connect-tab[hidden],
+.connect-devices-local[hidden] {
   display: none;
 }
 
@@ -125,7 +159,6 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* the PCs a way found: its name, how it is reached, where it was found, then Add, Connect or Added */
 .connect-found {
   display: flex;
   flex-direction: column;
@@ -166,6 +199,11 @@
   margin-inline-start: auto;
 }
 
+/* a pill inside the name (This PC among the account's PCs) keeps a gap from it */
+.connect-found-name > .connect-found-source {
+  margin-inline-start: var(--space-2);
+}
+
 .connect-found-source {
   flex: none;
   padding: 0 var(--space-2);
@@ -182,6 +220,21 @@
   gap: var(--space-1);
   color: var(--status-done);
   font-size: var(--fs-sm);
+}
+
+.connect-qr-link {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.connect-qr-link:hover:not(:disabled) {
+  text-decoration: underline;
 }
 
 .connect-found-added svg {
@@ -215,7 +268,53 @@
   align-self: flex-start;
 }
 
-/* on a phone the address goes under the name, so the name, its source and its button keep one line */
+.connect-account-qr,
+.connect-account-qr-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connect-account-qr {
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.connect-account-qr:empty {
+  display: none;
+}
+
+.connect-account-qr[data-first] {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.connect-signin[data-bare] {
+  display: contents;
+}
+
+.connect-account-qr-notice {
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.connect-account-qr .phone-actions {
+  flex-wrap: wrap;
+}
+
+/* what the owner has to answer: a device nobody vouched for, or an account this browser cannot call its own */
+.connect-account-qr-warning {
+  color: var(--text);
+}
+
+/* the PC joined an account that is not this browser's */
+.connect-account-qr-notice[data-account="other"] {
+  border-color: var(--status-blocked);
+  background: var(--danger-tint);
+}
+
 @media (max-width: 480px) {
   .connect-found-row {
     flex-wrap: wrap;
@@ -228,7 +327,22 @@
     flex-basis: 100%;
   }
 
-  .connect-found-source {
+  .connect-found-source,
+  .connect-found-row > :last-child:not(.connect-found-detail) {
     margin-inline-start: auto;
   }
+}
+
+.connect-command {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.connect-command code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
 }

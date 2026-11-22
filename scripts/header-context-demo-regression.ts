@@ -6,24 +6,15 @@ import { chromium } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// The existing compact title names its pane's full context without adding a second h1.
-// A desktop split uses this title too; an ordinary desktop uses its tab strip instead.
 const app = mkdtempSync(join(tmpdir(), "ovis-header-context-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    let file: string;
-    try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -58,8 +49,22 @@ try {
               assert.equal(await title.textContent(), pane.title, "visible text is unchanged");
               assert.equal(await page.getByRole("heading", { level: 1 }).count(), 1, "the copy lane's hidden h1 stays the only first-level heading");
               assert.equal(await page.locator("h1.visually-hidden").textContent(), pane.title);
+              await page.locator(".context-title .agent-mark svg").waitFor();
+              const centres = await page.locator("header.app-header").evaluate((header) => {
+                const box = header.getBoundingClientRect();
+                const style = getComputedStyle(header);
+                const line = (box.top + parseFloat(style.paddingTop) + box.bottom - parseFloat(style.borderBottomWidth)) / 2;
+                return [...header.querySelectorAll(".context-title .agent-mark svg, .header-side .icon-button")]
+                  .filter((element) => element.getClientRects().length > 0)
+                  .map((element) => {
+                    const drawn = element.getBoundingClientRect();
+                    return { control: element.closest(".agent-mark") ? "agent mark" : element.getAttribute("aria-label"), offset: Math.round((drawn.top + drawn.height / 2 - line) * 100) / 100 };
+                  });
+              });
+              if (width === 1440) assert.ok(centres.some(({ control }) => control === "Hide workspace list"), `${label}: the sidebar's top row is in the header`);
+              assert.deepEqual(centres.filter(({ offset }) => Math.abs(offset) > 0.25), [], `${label}: the agent's mark and the sidebar's top row are centred on the header's line`);
               assert.deepEqual(errors, []);
-              console.log(`PASS ${label}: full accessible context and one unchanged h1`);
+              console.log(`PASS ${label}: full accessible context and one unchanged h1; the mark and the sidebar's top row on the header's line`);
             } finally { await page.close(); }
           }
         } finally { await context.close(); }

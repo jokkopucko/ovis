@@ -19,7 +19,7 @@ function parse(raw: string | null): StoredFinish | null {
       && typeof value.id === "number" && Number.isSafeInteger(value.id) && value.id > 0
       && typeof value.at === "number" && Number.isFinite(value.at)) return { id: value.id, at: value.at,
         ...("answer" in value && typeof value.answer === "string" ? { answer: value.answer } : {}) };
-  } catch { /* corrupt storage is not an acknowledgement */ }
+  } catch {}
   return null;
 }
 
@@ -46,7 +46,7 @@ const recordScope = (pc: string, epoch: string): string => JSON.stringify([pc, e
 
 function storageNow(): Storage | null {
   let current: Storage | null = null;
-  try { if (typeof localStorage !== "undefined") current = localStorage; } catch { /* unavailable */ }
+  try { if (typeof localStorage !== "undefined") current = localStorage; } catch {}
   if (current === storageIdentity) return current;
   const previous = storageIdentity;
   storageIdentity = current;
@@ -59,7 +59,6 @@ function storageNow(): Storage | null {
     return null;
   }
   if (previous === null) {
-    // Storage access returned; refresh persisted records without losing session-only marks.
     hydrated = false;
     refreshSnapshot = true;
     scopeRecords.clear();
@@ -95,12 +94,6 @@ function oldestRecord(): CachedFinish | undefined {
   return oldest;
 }
 
-/**
- * Keeps the index (and storage) at SEEN_LIMIT records, dropping the oldest first. Deliberately
- * no exception for a pane still on screen: once evicted, an old read finish shows its DONE dot
- * again, as it would after a reload. It takes SEEN_LIMIT other panes read since, and keeping
- * evicted records for the page's life would bring back the per-update merge this index replaced.
- */
 function trimRecords(storage: Storage | null, changes?: SeenChange[]): void {
   while (records.size > SEEN_LIMIT) {
     const oldest = oldestRecord();
@@ -108,7 +101,7 @@ function trimRecords(storage: Storage | null, changes?: SeenChange[]): void {
     records.delete(oldest.key);
     scopeRecords.delete(recordScope(oldest.pc, oldest.epoch));
     if (oldest.stored) {
-      try { storage?.removeItem(oldest.key); } catch { /* blocked storage */ }
+      try { storage?.removeItem(oldest.key); } catch {}
     }
     changes?.push({ pc: oldest.pc, epoch: oldest.epoch });
   }
@@ -154,7 +147,6 @@ function hydrate(): void {
     }
   } catch {
     complete = false;
-    /* blocked storage; this page keeps a bounded session cache */
   }
   if (refreshing && complete && seenDuringRefresh) {
     const changes: SeenChange[] = [];
@@ -182,7 +174,6 @@ function recordFor(pc: string, epoch: string): SeenRecord {
       hasFinish = true;
     }
   }
-  // A PC with no finishes is cached too, so each roster update does not walk the index for it.
   const result = hasFinish ? record : emptyRecord;
   scopeRecords.set(cacheKey, result);
   return result;
@@ -240,7 +231,7 @@ function handleStorage(event: StorageEvent): void {
   let stored = current.id === id && (current.answer !== undefined || answer === undefined);
   if (!stored) {
     try { storage?.setItem(key, JSON.stringify(merged)); stored = true; }
-    catch { /* retain the monotonic mark in this page only */ }
+    catch {}
   }
   const changes: SeenChange[] = [];
   cacheChange({ key, ...parts, ...merged, stored }, changes);
@@ -276,8 +267,6 @@ function write(pc: string, epoch: string, pane: string, id: number, answer?: str
   const held = records.get(key);
   const storage = storageNow();
   if (held?.stored && (held.id > id || (held.id === id && (held.answer !== undefined || answer === undefined)))) {
-    // A subscriber's storage listener keeps `stored` true to what other tabs did. With none, another
-    // tab may have removed the key since it was read: look, and write the record back if so.
     if (listeningWindow !== null || !storage) return { id: held.id, changes: [] };
     let current: StoredFinish | null = null;
     try { current = parse(storage.getItem(key)); } catch { return { id: held.id, changes: [] }; }
@@ -288,7 +277,7 @@ function write(pc: string, epoch: string, pane: string, id: number, answer?: str
   let read = false;
   try {
     if (storage) { saved = parse(storage.getItem(key)); read = true; }
-  } catch { /* blocked storage; keep the acknowledgement in memory */ }
+  } catch {}
   const latestId = Math.max(id, held?.id ?? 0, saved?.id ?? 0);
   const latestAnswer = (saved?.id === latestId ? saved.answer : undefined)
     ?? (held?.id === latestId ? held.answer : undefined)
@@ -301,7 +290,7 @@ function write(pc: string, epoch: string, pane: string, id: number, answer?: str
     try {
       if (needsWrite) storage.setItem(key, JSON.stringify(merged));
       stored = true;
-    } catch { /* retain a bounded session-only acknowledgement */ }
+    } catch {}
   }
 
   const changes: SeenChange[] = [];
@@ -310,14 +299,12 @@ function write(pc: string, epoch: string, pane: string, id: number, answer?: str
   return { id: records.get(key)?.id ?? latestId, changes };
 }
 
-/** One pane per key: concurrent writes of different panes cannot overwrite one another. */
 export function saveSeen(pc: string, epoch: string, pane: string, id: number, answer?: string): number {
   const saved = write(pc, epoch, pane, id, answer);
   notify(saved.changes);
   return saved.id;
 }
 
-/** Subscribe to targeted same-page and cross-tab changes; one storage listener serves all consumers. */
 export function subscribeSeen(listener: SeenListener): () => void {
   storageNow();
   if (listeners.size === 0) {
@@ -333,8 +320,6 @@ export function subscribeSeen(listener: SeenListener): () => void {
     listeners.delete(listener);
     if (listeners.size === 0) {
       stopStorageListener();
-      // Persisted records are rehydrated by the next owner; session-only fallback lasts only
-      // while a consumer is mounted, matching the hook's previous lifetime.
       records.clear();
       scopeRecords.clear();
       hydrated = false;
@@ -343,7 +328,6 @@ export function subscribeSeen(listener: SeenListener): () => void {
   };
 }
 
-/** Finishes another browser of this server presented (a `seen` event), kept as this browser's own. */
 export function receiveSeen(finishes: readonly SeenFinish[]): void {
   hydrate();
   const changes: SeenChange[] = [];
@@ -365,7 +349,7 @@ export function cleanSeen(retired: readonly { pc: string; epoch: string }[]): vo
   for (const [key, entry] of records) {
     if (!retiredScopes.has(recordScope(entry.pc, entry.epoch))) continue;
     if (entry.stored) {
-      try { storage?.removeItem(key); } catch { /* blocked storage */ }
+      try { storage?.removeItem(key); } catch {}
     }
     records.delete(key);
     scopeRecords.delete(recordScope(entry.pc, entry.epoch));

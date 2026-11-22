@@ -8,11 +8,6 @@ export type ToolPart = Extract<ConversationPart, { kind: "tool" }>;
 export type ThinkingPart = Extract<ConversationPart, { kind: "thinking" }>;
 export type TextPart = Extract<ConversationPart, { kind: "text" }>;
 
-/**
- * A turn the way Codex shows it: tool calls, reasoning and explicit progress narration fold under
- * one "Worked for 7s · 1 edit" header. Every other assistant response stays in the main chat,
- * including an unphased response followed by more work or another answer.
- */
 export interface SplitTurn {
   work: ConversationPart[];
   answer: TextPart[];
@@ -26,15 +21,9 @@ export function splitTurn(parts: ConversationPart[]): SplitTurn {
   return { work: parts.filter(isWork), answer: parts.filter(isAnswer) };
 }
 
-/** `start`: the index of the run's first part in the turn, which names the run while it grows */
 export type TurnSegment = { kind: "work"; start: number; parts: ConversationPart[] } | { kind: "answer"; start: number; parts: TextPart[] };
 export type WorkSegment = Extract<TurnSegment, { kind: "work" }>;
 
-/**
- * The turn in the agent's own order, as its terminal shows it: each run of work between two
- * answers is its own block, so words written before a tool call stay above it. Classified as
- * `splitTurn` classifies; whitespace-only text is in neither.
- */
 export function turnSegments(parts: ConversationPart[]): TurnSegment[] {
   const segments: TurnSegment[] = [];
   parts.forEach((part, index) => {
@@ -50,19 +39,6 @@ export function turnSegments(parts: ConversationPart[]): TurnSegment[] {
   return segments;
 }
 
-/**
- * The name of each run's block, which also keeps its fold. A run keeps its name while its parts
- * change: words before its tools join it (a record marks them commentary, a blank one is filled
- * in), a part leaves it, or it splits or merges with another run (#2063). `previous` holds the name
- * of the run each part was in when the turn was last drawn, by part index. A run takes the first
- * of those names among its own parts that no earlier run has taken. Only then does a run with none
- * get `work:<start>`, so a new run never takes the name of a run already shown.
- *
- * A run that draws no block (`drawn`: hidden reasoning alone) has no fold to keep: the runs drawn
- * choose first, so it never takes a drawn block's name when the two split or merge (#2111). Its own
- * name is `dormant`, by part index as `previous` is: a run drawn again takes it back, its fold with
- * it, but only after every name a drawn run had.
- */
 export function runNames(runs: readonly WorkSegment[], at: ReadonlyMap<ConversationPart, number>, previous: ReadonlyMap<number, string>,
   drawn: (run: WorkSegment) => boolean = () => true, dormant: ReadonlyMap<number, string> = new Map()): string[] {
   const used = new Set<string>();
@@ -83,13 +59,8 @@ export function runNames(runs: readonly WorkSegment[], at: ReadonlyMap<Conversat
   });
 }
 
-/** An answer run as the chat draws it: its words, and with request details on, each run of failed requests as one row. */
 export type AnswerItem = { kind: "text"; part: TextPart } | { kind: "failed"; parts: TextPart[] };
 
-/**
- * Consecutive requests the agent recorded as failed read as one row (#901); with `requestDetails`
- * off (a caller that wants them plain), each stays its error line.
- */
 export function answerItems(parts: readonly TextPart[], requestDetails: boolean): AnswerItem[] {
   const items: AnswerItem[] = [];
   for (const part of parts) {
@@ -101,11 +72,6 @@ export function answerItems(parts: readonly TextPart[], requestDetails: boolean)
   return items;
 }
 
-/**
- * With failed requests drawn as rows, the row a search's match (its matched words) is folded in: the
- * index of its first part, which names the row (`failed:<index>`). Null when the turn's first match
- * of those words, the one the search's snippet shows, is drawn outside every such row.
- */
 export function foldedRequestsMatch(turn: ConversationTurn, match: string): number | null {
   const pattern = searchPattern(match);
   const index = pattern === null ? undefined : matchPart(turn, pattern);
@@ -119,30 +85,13 @@ export function foldedRequestsMatch(turn: ConversationTurn, match: string): numb
   return null;
 }
 
-/**
- * A work block is open while its turn runs and folded once the turn settles: the answer stays
- * outside the fold, so a finished turn reads as its answer under one "Worked for" row.
- *
- * A settled turn keeps its block open when explicit commentary comes after the last answer, or
- * when commentary has no answer at all. Folding would hide the newest thing the agent said, or all
- * of it. It takes the turn's parts, not the split: the order decides.
- */
 export function workStartsOpen(live: boolean, parts: ConversationPart[]): boolean {
   if (live) return true;
   const lastAnswer = splitTurn(parts).answer.at(-1);
   const after = lastAnswer === undefined ? 0 : parts.lastIndexOf(lastAnswer) + 1;
-  // everything readable after the last answer part is work: it is inside the fold
   return parts.slice(after).some((part) => part.kind === "text" && part.text.trim().length > 0);
 }
 
-/**
- * Whether one block of a turn starts open, until the reader opens or closes it. `live` and `waiting`
- * are the block's own (only the turn's head runs or waits); `last`: no part of the turn comes after
- * its run. By default that is `workStartsOpen`: the running block open, a settled turn's last block
- * open for words said after its answer. With Collapse work on (Settings → Chat) every block starts
- * folded to its head line, the running one included, as the Codex and Claude apps keep one working
- * line (#2228); the block that waits on the user still opens, since it may hold what they answer.
- */
 export function workBlockStartsOpen(block: { live: boolean; waiting: boolean; last: boolean }, parts: ConversationPart[], foldWork: boolean): boolean {
   if (foldWork) return block.waiting;
   return block.live || (block.last && workStartsOpen(false, parts));
@@ -150,7 +99,6 @@ export function workBlockStartsOpen(block: { live: boolean; waiting: boolean; la
 
 type WorkCategory = "edit" | "read" | "command" | "other";
 
-/** "{n} edit" / "{n} edits": both forms are translated, Korean uses one */
 export const CATEGORY_LABEL: Record<WorkCategory, [singular: string, plural: string]> = {
   edit: ["{n} edit", "{n} edits"],
   read: ["{n} file read", "{n} file reads"],
@@ -166,10 +114,6 @@ function categorize(name: string): WorkCategory {
   return "other";
 }
 
-/**
- * "1 edit · 2 file reads · 1 command" — the block's header, in the order a reader cares about.
- * The failures are not in it (`workFailed`): a narrow header cuts this line short.
- */
 export function workSummary(parts: readonly ConversationPart[]): string {
   const counts: Record<WorkCategory, number> = { edit: 0, read: 0, command: 0, other: 0 };
   for (const part of parts) {
@@ -184,15 +128,10 @@ export function workSummary(parts: readonly ConversationPart[]): string {
     .join(" · ");
 }
 
-/**
- * How many calls failed, whatever they were. The folded header says it apart from the counts, where
- * it is never cut: it is what a glance at a finished turn must not miss, and the fold hides the row.
- */
 export function workFailed(parts: readonly ConversationPart[]): number {
   return parts.filter((part) => part.kind === "tool" && part.error === true).length;
 }
 
-/** "7s" / "1m 12s" for a block header; null when the span is unknown or nonsense. */
 export function formatWorkDuration(startTs: string | null, endTs: string | null): string | null {
   if (startTs === null || endTs === null) return null;
   const ms = Date.parse(endTs) - Date.parse(startTs);
@@ -207,15 +146,6 @@ export function formatWorkDuration(startTs: string | null, endTs: string | null)
 
 /**
  * end_ts is the latest activity time, not proof that an approval-blocked turn finished.
- *
- * `sentOver` is the assistant turn that was last when a message was sent. The pushed status turns
- * `working` before the transcript holds the new user message, so until it does, that finished turn
- * is still the last one and must not be titled as if it were the one running. The turn itself, not
- * its time: a turn may have no `ts`, and the browser's clock and the transcript's need not agree.
- *
- * A turn that ended on its final answer is over as well, with no send from here to say so: an agent
- * at work again is in a turn the transcript does not hold yet (one it began by itself when a
- * background task ended, or a message from the terminal or another device).
  */
 export function isLiveWorkTurn(turn: ConversationTurn, last: boolean, status?: string, sentOver?: ConversationTurn | null): boolean {
   if (turn === sentOver) return false;
@@ -223,39 +153,25 @@ export function isLiveWorkTurn(turn: ConversationTurn, last: boolean, status?: s
   return last && turn.role === "assistant" && (status === "working" || status === "blocked");
 }
 
-/** The turn's last part is its final answer: the agent ended the turn there. */
 export function endedOnAnswer(turn: ConversationTurn): boolean {
   const end = turn.parts.at(-1);
   return end?.kind === "text" && end.phase === "final_answer";
 }
 
 /**
- * One todo call in a run of them. `state` is the transcript's own word for it (shared/protocol.ts):
- * `unknown` when it records none (Codex after its output, other agents, older servers). Nothing
- * here reads the output text or its emptiness for an outcome.
+ * `state` is the transcript's own word for it (shared/protocol.ts):
+ * `unknown` when it records none (Codex after its output, other agents, older servers).
  */
 export interface TodoAttempt {
   part: ToolPart;
   state: "ok" | "pending" | "error" | "unknown";
-  /** the list this call left, null when it cannot be read */
   items: TodoItem[] | null;
 }
 
-/**
- * Todo calls the agent made one after another, with nothing between them, drawn as one row: the
- * plan's progress without a line per snapshot. Every attempt stays inside it, in order.
- */
 export interface TodoGroup {
-  /** stable while calls are appended and the page is polled again: the first call's own id, in its turn's row */
   id: string;
   attempts: TodoAttempt[];
-  /**
-   * The list the row stands for: the latest call that completed (`ok`, or done with no recorded
-   * outcome). Null when none did. Its items are null when that list cannot be read; an earlier list
-   * never stands in for it.
-   */
   current: TodoAttempt | null;
-  /** calls that have not answered, and calls that failed (by the transcript's flag) */
   pending: number;
   failed: number;
 }
@@ -264,12 +180,6 @@ function attemptOf(part: ToolPart): TodoAttempt {
   return { part, state: part.state ?? "unknown", items: todoSnapshot(part) };
 }
 
-/**
- * The runs of two or more todo calls in a turn, by their first call. It walks the turn's own parts,
- * before hidden thinking, skills or the answer are taken out: any other part, narration included,
- * ends a run, so nothing the agent did between two updates is folded away. `rowKey` is the turn's
- * row in the timeline; with the first call's original index it names a run whose calls carry no id.
- */
 export function todoGroups(parts: readonly ConversationPart[], rowKey: string): Map<ToolPart, TodoGroup> {
   const groups = new Map<ToolPart, TodoGroup>();
   let run: { start: number; parts: ToolPart[] } | null = null;
@@ -278,7 +188,6 @@ export function todoGroups(parts: readonly ConversationPart[], rowKey: string): 
       const first = run.parts[0]!;
       const attempts = run.parts.map(attemptOf);
       let current: TodoAttempt | null = null;
-      // a call flagged failed never stands for the list, whatever state it carries
       for (const attempt of attempts) if ((attempt.state === "ok" || attempt.state === "unknown") && attempt.part.error !== true) current = attempt;
       groups.set(first, {
         id: JSON.stringify([rowKey, first.call_id ?? `#${run.start}`]),
@@ -300,14 +209,12 @@ export function todoGroups(parts: readonly ConversationPart[], rowKey: string): 
   return groups;
 }
 
-/** The rows a work block draws: skills are chips beside the prompt, thinking only when shown. */
 export function visibleWorkParts(parts: ConversationPart[], showThinking: boolean): ConversationPart[] {
   return parts.filter((part) => part.kind !== "skill" && (showThinking || part.kind !== "thinking"));
 }
 
 /**
- * Whether the open work block's head says the agent waits for the user ("Needs you") instead of
- * "Working…". By the pane's status, not by a parsed prompt: a blocked pane whose menu no reader
+ * By the pane's status, not by a parsed prompt: a blocked pane whose menu no reader
  * knows waits just the same, and a question in Codex's queue leaves Codex working.
  */
 export function isWaitingWorkTurn(live: boolean, status?: string): boolean {

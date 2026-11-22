@@ -2,17 +2,14 @@ import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { workspacePane } from "./deepLink.ts";
 
 type Roster = Pick<SessionSnapshot, "workspaces" | "tabs" | "panes" | "layouts">;
-/** the pane this browser last viewed in a tab or a workspace (lib/lastViewedPane.ts) */
 type Viewed = (scope: "tab" | "workspace", id: string) => string | null | undefined;
 
-/** the first of `ids` after `at`, else the nearest before it, that `alive` keeps */
 function nearest(ids: string[], at: number, alive: (id: string) => boolean, before = false): string | null {
   const after = ids.slice(at + 1);
   const earlier = ids.slice(0, Math.max(at, 0)).reverse();
   return (before ? [...earlier, ...after] : [...after, ...earlier]).find(alive) ?? null;
 }
 
-/** the pane a tab opens on a click (TabStrip): the one last viewed in it, else its focused pane, else its first */
 function tabPane(roster: Roster, tabId: string, viewed?: Viewed): string | null {
   const front = roster.layouts?.find((layout) => layout.tab_id === tabId)?.focused_pane_id;
   const panes = roster.panes.filter((pane) => pane.tab_id === tabId);
@@ -40,14 +37,11 @@ export function paneAfterClose(before: Roster, after: Roster, closed: string, pr
     ?? before.panes.filter((candidate) => candidate.tab_id === pane.tab_id).map((candidate) => candidate.pane_id);
   const sibling = nearest(order, order.indexOf(closed), inTab);
   if (sibling) return sibling;
-  // a pane made in the tab after `before` was read
   const survivor = tabPane(after, pane.tab_id, viewed);
   if (survivor) return survivor;
-  // in the roster's order, which the tab strip and sidebar show: a number stays with a tab that was moved
   const tabs = before.tabs.filter((tab) => tab.workspace_id === pane.workspace_id).map((tab) => tab.tab_id);
   const tab = nearest(tabs, tabs.indexOf(pane.tab_id), (id) => after.tabs.some((candidate) => candidate.tab_id === id), true);
   if (tab) return tabPane(after, tab, viewed);
-  // a tab made in the workspace after `before` was read keeps the selection in the workspace
   const made = after.tabs.filter((candidate) => candidate.workspace_id === pane.workspace_id)
     .map((candidate) => tabPane(after, candidate.tab_id, viewed)).find((id) => id !== null);
   if (made) return made;

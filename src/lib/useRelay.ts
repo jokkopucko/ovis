@@ -14,40 +14,53 @@ export function inRelayShell(): boolean {
 
 /**
  * The server keeps one pending pairing code, which both the Devices group's code and the relay
- * panel's QR offer carry. A panel that started a new one says so on `window`, with the code as
- * `detail`, and the other panel shows that code instead of the one it had.
+ * panel's QR offer carry.
  */
 export const PAIRING_CODE_EVENT = "ovis:pairing-code";
 
-export function announcePairingCode(code: PairingCode): void {
-  window.dispatchEvent(new CustomEvent<PairingCode>(PAIRING_CODE_EVENT, { detail: code }));
+/** `qrOnly`: the code of a QR code shown alone (RelayPairing `qrOnly`), which no place shows as digits */
+export interface AnnouncedCode extends PairingCode {
+  readonly qrOnly?: true;
+}
+
+export function announcePairingCode(code: AnnouncedCode): void {
+  window.dispatchEvent(new CustomEvent<AnnouncedCode>(PAIRING_CODE_EVENT, { detail: code }));
 }
 
 /**
- * The PC's device list changed behind the app: the relay shell linked this client's pairing to the
- * account (relay/shell.tsx) and the session that signed in again is up, so a Devices panel read
- * before the link lists this client as no member yet and reads the list again.
+ * The relay tab's QR codes in this browser's other windows share the PC's one pending code (server/devices.ts
+ * `pairingForNoAccount`): one that ends it says so on this channel, with the code as the message, and one still
+ * showing that code asks for a new one (RelayPairing `qrOnly`).
  */
+export const QR_CODE_ENDED_CHANNEL = "ovis:qr-code-ended";
+
+export function announceQrCodeEnded(code: string): void {
+  announcePairingCode({ code, expires_at: new Date(0).toISOString(), qrOnly: true });
+  tellOtherWindowsQrCodeEnded(code);
+}
+
+export function tellOtherWindowsQrCodeEnded(code: string): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+  channel.postMessage(code);
+  channel.close();
+}
+
 export const DEVICES_CHANGED_EVENT = "ovis:devices-changed";
 
-/** how often the relay is asked again: closely while it connects or retries, otherwise at rest */
 function pollDelay(status: RelayStatus): number {
   if (status.phase === "connecting") return 1_500;
   if (status.phase === "error" && status.blocked === null) return 5_000;
   return 15_000;
 }
 
-/**
- * The Ovis relay's state on the server's PC (server/relay/service.ts), asked while Settings →
- * Phone & devices is open, and the actions that change it. An older server has no such route:
- * `unsupported` then, and the panel shows nothing.
- */
 export function useRelay() {
   const [status, setStatus] = useState<RelayStatus | null>(null);
+  /** the last read of the relay's state failed (not a missing route): no state may be on its way */
+  const [readFailed, setReadFailed] = useState(false);
   const [unsupported, setUnsupported] = useState(false);
   const [pending, setPending] = useState(false);
   const [refresh, setRefresh] = useState(0);
-  // the component's own lifetime, not the poll's: a page hidden while the request is on its way must still get the answer
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -64,10 +77,12 @@ export function useRelay() {
         const next = await fetchRelay();
         if (stopped) return;
         setStatus((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+        setReadFailed(false);
         delay = pollDelay(next);
       } catch (error) {
         // the route is missing on an older server; a restart or a dropped answer must not erase the last state
         if (!stopped && error instanceof ApiError && error.status === 404) { setUnsupported(true); return; }
+        if (!stopped) setReadFailed(true);
       }
       if (!stopped) timer = setTimeout(() => void poll(), delay);
     }
@@ -75,20 +90,20 @@ export function useRelay() {
     return () => { stopped = true; clearTimeout(timer); };
   }, [refresh, visible, unsupported]);
 
-  /** Start, stop, reset or the direct switch: the answer is the relay's state after it, or the failure's words. */
   const request = useCallback(async (action: "start" | "stop" | "reset-identity" | { direct: boolean }): Promise<RelayStatus> => {
     setPending(true);
     try {
       const next = typeof action === "string" ? await requestRelay(action) : await requestRelayDirect(action.direct);
       if (mounted.current) {
         setStatus(next);
-        // a start is still connecting: the next answers follow it closely
         setRefresh((value) => value + 1);
       }
       return next;
     } finally { if (mounted.current) setPending(false); }
   }, []);
-  return { status, unsupported, pending, request };
+  /** Asks for the relay's state again now, without waiting for the poll's next round. */
+  const reread = useCallback(() => setRefresh((value) => value + 1), []);
+  return { status, unsupported, readFailed, pending, request, reread };
 }
 
 export type RelayState = ReturnType<typeof useRelay>;

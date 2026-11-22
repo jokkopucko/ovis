@@ -19,7 +19,6 @@ const FIRST = "11111111-1111-4111-8111-111111111111";
 const SECOND = "22222222-2222-4222-8222-222222222222";
 const json = (value: unknown): string => `${JSON.stringify(value)}\n`;
 
-/** a store with one session per id, each with the subagent `agent` */
 function store(): { root: string; transcript: (session: string) => string } {
   const root = mkdtempSync(join(tmpdir(), "herdr-background-agent-"));
   roots.push(root);
@@ -33,7 +32,6 @@ function store(): { root: string; transcript: (session: string) => string } {
   return { root, transcript: (session) => join(root, "projects", "p", `${session}.jsonl`) };
 }
 
-/** a `Bash` call of the session `session` sent to the background as the task `id` */
 function command(transcript: string, id: string): void {
   appendFileSync(transcript, json({ type: "assistant", timestamp: "2026-10-06T11:02:00.000Z", message: { role: "assistant", content: [{ type: "tool_use", id: `toolu_${id}`, name: "Bash", input: { command: "bun test", run_in_background: true } }] } }));
   appendFileSync(transcript, json({ type: "user", timestamp: "2026-10-06T11:02:01.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${id}`, content: `Command running in background with ID: ${id}.` }] }, toolUseResult: { stdout: "", stderr: "", interrupted: false, isImage: false, backgroundTaskId: id } }));
@@ -46,7 +44,6 @@ function harness(sessions: string[], agent = "claude", read?: BackgroundAgentDep
   const claudeAgents = new ClaudeSubagentStatus({ resolve: async (seen) => ({ path: files.transcript(seen.agent_session?.value ?? ""), startedAt: null, pid: null }), onChange: () => {} });
   const asked: string[] = [];
   const request = (query: string) => handleBackgroundAgentRequest(new Request(`http://local/api/pane/background-agent?${query}`), new URL(`http://local/api/pane/background-agent?${query}`), {
-    // herdr answers the pane as it is at each ask: the sessions in turn, the last one from then on
     paneGet: async () => { asked.push("pane"); return pane(sessions[Math.min(asked.length, sessions.length) - 1]!, agent); },
     omoPane: () => false,
     claudeAgents,
@@ -71,7 +68,6 @@ describe("handleBackgroundAgentRequest", () => {
     const response = await request("pane_id=w0:p0&agent_id=a1");
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "background_target_changed" } });
-    // settled on the second session: its own agent is answered from then on
     const settled = await request("pane_id=w0:p0&agent_id=a1");
     expect(settled.status).toBe(200);
     expect(((await settled.json()) as PaneBackgroundAgentDetail).session_id).toBe(SECOND);
@@ -120,7 +116,6 @@ describe("handleBackgroundAgentRequest", () => {
     const { request } = harness(sessions, "claude", async (path, id) => { const read = backgroundAgentDetail(path, id); entered(); await gate; return read; });
     const answer = request("pane_id=w0:p0&agent_id=a1");
     await held;
-    // the pane's Claude is now on the second session, which has an agent of the same id
     sessions.push(SECOND);
     release();
     const response = await answer;
@@ -142,7 +137,6 @@ const PARENT_A = "ses_parentA";
 const PARENT_B = "ses_parentB";
 const AT = Date.parse("2026-10-06T11:00:00.000Z");
 
-/** A store whose two parent sessions each started the child `ses_child<parent's letter>`, with writers for more rows. */
 function opencodeStore() {
   const root = mkdtempSync(join(tmpdir(), "herdr-background-agent-opencode-"));
   roots.push(root);
@@ -162,7 +156,6 @@ function opencodeStore() {
     db.query("INSERT INTO session_v2 (id, parent_id, title, agent, time_created) VALUES (?, NULL, 'parent', 'build', ?)").run(parent, AT);
     child(parent, `ses_child${parent.at(-1)}`);
   }
-  // a background command of the first session: a shell row, no child session
   add(PARENT_A, "shell", { shellID: "shl_build", command: "bun test", status: "running", metadata: { background: true } });
   return { path, db, add, child };
 }
@@ -222,7 +215,6 @@ describe("handleBackgroundAgentRequest on an OpenCode pane", () => {
   it("is bounded: the newest work within the limits, the prompt kept, and what was left out said", async () => {
     const { request, files } = opencodeHarness([PARENT_A]);
     for (let step = 0; step < DETAIL_LIMITS.max_events + 20; step++) files.add("ses_childA", "assistant", { content: [{ type: "text", text: `step ${step} ${"x".repeat(2000)}` }] });
-    // a row over a record's size is not read, and says so
     files.add("ses_childA", "assistant", { content: [{ type: "text", text: "y".repeat(70 * 1024) }] });
     files.add("ses_childA", "assistant", { content: [{ type: "text", text: "newest" }] });
     const body: PaneBackgroundAgentDetail = await (await request("pane_id=w0:p0&agent_id=ses_childA")).json();

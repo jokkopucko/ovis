@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ovis-tui <ovis-tui@users.noreply.github.com>
+Date: Sun, 15 Nov 2026 03:54:35 +0900
+Subject: [PATCH 5/7] feat(embed): let an embedding program forbid starting a
+ core
+
+Embed::no_core_start: run_embedded then never runs `hc server start`; a core that is not running stays so and the embedder says how to start it. A core start would hand the embedder's environment to the core and every program it starts.
+---
+ crates/hc-tui/src/cli.rs        |  7 ++++++-
+ crates/hc-tui/src/core_start.rs | 25 +++++++++++++++++++++++++
+ crates/hc-tui/src/embed.rs      |  3 +++
+ 3 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/crates/hc-tui/src/cli.rs b/crates/hc-tui/src/cli.rs
+index 1aeb00f..b721018 100644
+--- a/crates/hc-tui/src/cli.rs
++++ b/crates/hc-tui/src/cli.rs
+@@ -187,6 +187,7 @@ pub async fn run_embedded(
+     embed: crate::embed::Embed,
+ ) -> Result<(), String> {
+     App::discard_input_on_recovery(embed.discard_input_on_recovery);
++    let embed_no_core_start = embed.no_core_start;
+     // The user's herdr config drives prefix + keybindings, read-only.
+     let config_path = crate::config::config_path();
+     let loaded = crate::config::load(&config_path);
+@@ -270,7 +271,11 @@ pub async fn run_embedded(
+     // Terminal setup has succeeded — a run with no terminal already
+     // failed above and starts nothing. Kick the one-shot local core
+     // start; its report lands as a notice only when it fails.
+-    app.set_core_start(crate::core_start::kick(endpoint, env));
++    app.set_core_start(crate::core_start::kick_unless(
++        embed_no_core_start,
++        endpoint,
++        env,
++    ));
+     // The sanctioned one-off release check: one curl HEAD, bounded and
+     // silent — `update.version_check = false` or HC_TUI_NO_UPDATE_CHECK
+     // disarm it before anything spawns.
+diff --git a/crates/hc-tui/src/core_start.rs b/crates/hc-tui/src/core_start.rs
+index fcfad0f..e53de7b 100644
+--- a/crates/hc-tui/src/core_start.rs
++++ b/crates/hc-tui/src/core_start.rs
+@@ -1,3 +1,4 @@
++// Modified by Ovis (https://github.com/devswha/ovis): an embedder may forbid the start.
+ //! One-shot `hc server start` when a local endpoint's socket does not
+ //! answer: never for `--remote`, never when `HC_SOCKET` names a core
+ //! someone else manages, and never more than once per process — the
+@@ -37,6 +38,19 @@ pub fn kick(endpoint: &Endpoint, env: &Env) -> Option<Report> {
+     kick_with(endpoint, env, OsStr::new("hc"))
+ }
+ 
++/// [`kick`], unless the embedding program forbids starting a core
++/// (`Embed::no_core_start`): then nothing is checked or started.
++pub fn kick_unless(forbidden: bool, endpoint: &Endpoint, env: &Env) -> Option<Report> {
++    kick_unless_with(forbidden, endpoint, env, OsStr::new("hc"))
++}
++
++fn kick_unless_with(forbidden: bool, endpoint: &Endpoint, env: &Env, hc: &OsStr) -> Option<Report> {
++    if forbidden {
++        return None;
++    }
++    kick_with(endpoint, env, hc)
++}
++
+ /// `kick` with the `hc` program named explicitly — tests hand in a
+ /// fake by path instead of rewriting `PATH` for the whole process.
+ fn kick_with(endpoint: &Endpoint, env: &Env, hc: &OsStr) -> Option<Report> {
+@@ -289,6 +303,17 @@ mod tests {
+         assert_eq!(std::fs::read_to_string(&record).unwrap(), recorded);
+     }
+ 
++    /// Not latched (forbidden starts nothing): it may share the
++    /// process with the once-per-process test above.
++    #[tokio::test]
++    async fn an_embedder_that_forbids_core_starts_never_runs_hc() {
++        let scratch = Scratch::new();
++        let socket = scratch.0.join("missing.sock");
++        let (hc, record) = fake_hc(&scratch.0, "ok");
++        assert!(kick_unless_with(true, &local(&socket), &env_with(&[]), &hc).is_none());
++        assert!(!record.exists());
++    }
++
+     #[tokio::test]
+     async fn a_remote_endpoint_never_starts_a_local_core() {
+         let remote = Endpoint::Remote(Remote {
+diff --git a/crates/hc-tui/src/embed.rs b/crates/hc-tui/src/embed.rs
+index b127eac..a343ad1 100644
+--- a/crates/hc-tui/src/embed.rs
++++ b/crates/hc-tui/src/embed.rs
+@@ -11,4 +11,7 @@ pub struct Embed {
+     /// terminal of a split tab alone, as a zoom does. Local to this
+     /// client: the shared layout is not written.
+     pub solo_on_narrow: bool,
++    /// Never run `hc server start`: a core that is not running stays so,
++    /// and the embedding program says how to start it.
++    pub no_core_start: bool,
+ }

@@ -3,8 +3,7 @@ import { AGENT_NAME_MAX_LENGTH as MAX_LENGTH } from "../shared/agent-name.ts";
 /**
  * herdr's agent.start takes a name no other agent in the session holds (it answers
  * `agent_name_taken` otherwise), and a name follows the rule in shared/agent-name.ts
- * (`invalid_agent_name`). A client that names no agent gets the kind while it is free, then
- * `<kind>-2`, `<kind>-3`, ...
+ * (`invalid_agent_name`).
  */
 
 export function freeAgentName(kind: string, taken: Iterable<string | null | undefined>): string {

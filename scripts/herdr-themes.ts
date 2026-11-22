@@ -1,5 +1,4 @@
 /**
- * Offline raw import, never runtime theme data.
  * https://github.com/herdrdev/herdr/blob/143bf5fd4781d164260c63fe28e7dc08054ad32f/src/app/state.rs#L76-L523
  * Reset is null; the symbolic terminal theme is deliberately omitted.
  * Named fields were reviewed against the pinned Rust source and the research palette table.

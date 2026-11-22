@@ -1,4 +1,3 @@
-/* the agent picker: a select whose rows show each agent's mark (New workspace, New worktree, Earlier sessions) */
 .agent-picker {
   position: relative;
 }
@@ -52,8 +51,6 @@
   overscroll-behavior: contain;
 }
 
-/* aria-selected is the chosen agent (bold); the keyboard/pointer row is data-active and carries
-   the highlight, which the shared menu gives aria-selected elsewhere */
 .agent-picker-menu .menu-item[aria-selected="true"] {
   background: transparent;
   color: var(--text);
@@ -68,12 +65,10 @@
   font-weight: var(--fw-selected);
 }
 
-/* a row never shrinks under the list's max height: the list scrolls instead (G-120) */
 .agent-picker-menu .menu-item {
   flex-shrink: 0;
 }
 
-/* the quiet last row: set apart by a rule, in the dimmer text, and never bold as a chosen agent is */
 .agent-picker-menu .agent-picker-add {
   margin-top: var(--space-1);
   border-top: var(--hairline) solid var(--border);

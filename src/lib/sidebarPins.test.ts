@@ -36,7 +36,6 @@ describe("sidebar agent pins", () => {
     expect(pruneSidebarPins(pins, new Set(), [])).toEqual(pins);
     expect(pruneSidebarPins(pins, new Set(), [{ id: "local", snapshot: null }, { id: "remote", snapshot: null }])).toEqual(pins);
     expect(pruneSidebarPins(pins, live, [{ id: "local", snapshot: {} }, { id: "remote", snapshot: null }])).toEqual(pins);
-    // a PC hidden on this device is out of the list: its pins are not taken for gone panes
     expect(pruneSidebarPins(["pc-a:p1", "pc-b:p1"], new Set(["pc-a:p1"]), [{ id: "pc-a", snapshot: {} }], ["pc-b"])).toEqual(["pc-a:p1", "pc-b:p1"]);
     expect(pruneSidebarPins(["pc-a:p1", "pc-b:p1"], new Set(["pc-a:p1"]), [{ id: "pc-a", snapshot: {} }])).toEqual(["pc-a:p1"]);
     expect(pruneSidebarPins(pins, live, [{ id: "local", snapshot: {} }, { id: "remote", snapshot: {} }])).toEqual(["local:p1"]);
@@ -65,9 +64,7 @@ describe("sidebar agent pins", () => {
 
   it("prunes each kind of pin only where it is known", () => {
     const keys = ["pc-a:workspace:w1", "pc-a:workspace:gone", "pc-b:workspace:gone", "pc-a:p1"];
-    // the Agents list leaves workspace pins alone, even of a loaded PC
     expect(pruneSidebarPins(keys, new Set(["pc-a:p1"]), [{ id: "pc-a", snapshot: {} }, { id: "pc-b", snapshot: {} }])).toEqual(keys);
-    // a PC's workspace list prunes its own gone workspaces only
     expect(pruneWorkspacePins(keys, "pc-a", new Set(["w1"]))).toEqual(["pc-a:workspace:w1", "pc-b:workspace:gone", "pc-a:p1"]);
   });
 
@@ -153,7 +150,6 @@ describe("a pane moved under a new ID (#1503)", () => {
       .toEqual(["pc:workspace:a", "pc:w2:p1", "other:w1:p1", "pc:w1:p2"]);
     const unpinned = ["pc:w1:p2"];
     expect(movedSidebarPins(unpinned, "pc", "w1:p1", "w2:p1")).toBe(unpinned);
-    // the new ID pinned already keeps its one place
     expect(movedSidebarPins(["pc:w1:p1", "pc:w2:p1"], "pc", "w1:p1", "w2:p1")).toEqual(["pc:w2:p1"]);
   });
 });

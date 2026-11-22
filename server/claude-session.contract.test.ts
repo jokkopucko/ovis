@@ -9,7 +9,6 @@ import { startFakePushService } from "./push.fake.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { ConversationResponse, HerdrPane, OmoActivity, PanePlan, ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
 
-// Real foreground processes and native PID records, without hooks or a model request.
 const root = mkdtempSync(join(tmpdir(), "herdr-claude-session-"));
 const originalHome = process.env["HOME"];
 const originalConfigDir = process.env["CLAUDE_CONFIG_DIR"];
@@ -143,7 +142,6 @@ process.stdin.resume();
   first = await pane(FIRST);
   second = await pane(SECOND);
   process.env["HOME"] = root;
-  // alerts and the hold on a turn's background work wait moments, not minutes: a test sees what goes out, and what does not
   server = makeServer();
   await bounded(server.statusReady, "Initial status subscription");
 }, 15_000);
@@ -159,7 +157,6 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Polls `check` for up to 10 s, then asserts it: the server answers what it knows now, and knows more later. */
 async function until(check: () => Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 100 && !(await check()); attempt++) await Bun.sleep(100);
   expect(await check()).toBe(true);
@@ -172,7 +169,6 @@ async function read(paneId: string): Promise<ConversationResponse> {
 }
 
 it.skipIf(!NATIVE)("reads each hookless Claude pane's own conversation in a shared cwd", async () => {
-  // The pane has no session id from Herdr; cwd and recency cannot distinguish these.
   const info = await herdrRpc<{ agent: { agent_session?: unknown } }>("agent.get", { target: first.pane });
   expect(info.agent.agent_session).toBeUndefined();
   const a = await read(first.pane);
@@ -196,38 +192,29 @@ it.skipIf(!NATIVE)("lists a Claude pane's subagents, counts the running ones and
   writeFileSync(join(folder, "agent-a1.meta.json"), JSON.stringify({ agentType: "reviewer", description: "Review the parser", toolUseId: "toolu_a1", requestShape: "background" }));
   writeFileSync(join(folder, "agent-a1.jsonl"), `${JSON.stringify({ isSidechain: true, agentId: "a1", type: "user", timestamp: new Date().toISOString(), message: { role: "user", content: "go" } })}\n`);
 
-  // a device that wants every alert: a count that changes alone must not reach it
   const device = await startFakePushService();
   try {
     const subscribed = await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subscription: device.subscription, alerts: { input: true, done: "always" } }) });
     expect(subscribed.status).toBe(204);
-    // asked: the server finds the pane's transcript itself. Its background lookup may already have come up empty
-    // (herdr busy or late under load), which it does not repeat for a few seconds: the list follows once it looks again,
-    // as the client's own retries see it
     await until(async () => (await tasks(second.pane)).tasks.some((task) => task.id === "a1" && task.status === "running"));
     expect((await tasks(second.pane)).tasks).toMatchObject([{ id: "a1", status: "running" }]);
-    // from the first frame: the count may have been pushed while the list was polled
     await frames.wait((frame) => frame.type === "pane-status" && frame.pane_id === second.pane && frame.background_tasks === 1, 0);
     expect(await counted(second.pane)).toBe(1);
     expect(await tasks(second.pane)).toMatchObject({ tasks: [{ id: "a1", title: "Review the parser", category: "reviewer", status: "running" }], runs: [] });
-    // a pane with no subagents has no count and no list
     expect(await counted(first.pane)).toBeUndefined();
     expect((await tasks(first.pane)).tasks).toEqual([]);
 
-    // the agent ends: its notification is written to the session's transcript
     const notice = "<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_a1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review the parser\" finished</summary>\n<result>fine</result>\n</task-notification>";
     const endedFrame = frames.wait((frame) => frame.type === "pane-status" && frame.pane_id === second.pane && frame.background_tasks === 0);
     appendFileSync(join(project, `${SECOND}.jsonl`), `\n${JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: new Date(Date.now() + 1000).toISOString(), content: notice })}\n`);
     await endedFrame;
     expect(await counted(second.pane)).toBeUndefined();
     expect((await tasks(second.pane)).tasks).toMatchObject([{ id: "a1", status: "completed" }]);
-    // pushed as a count alone: the pane's status is the one it had, and it counts as no turn
     const pushed = frames.seen.filter((frame) => frame.type === "pane-status" && frame.pane_id === second.pane && frame.background_tasks !== undefined);
     expect(pushed.at(-1)).toMatchObject({ background_tasks: 0, agent_status: expect.stringMatching(/^(idle|done)$/) });
     const conversation = await read(second.pane);
     expect(conversation.source).toBe("claude-transcript");
     expect(conversation.turns.flatMap((turn) => turn.parts).filter((part) => part.kind === "task_result")).toMatchObject([{ kind: "task_result", tasks: [{ id: "a1", status: "completed", result: "fine" }] }]);
-    // A later collector alert waits through the same delivery queue as any earlier alert.
     const barrier = device.waitFor((push) => push.payload.pane_id === first.pane, "input alert barrier", 10_000);
     await herdrRpc("pane.report_agent", { pane_id: first.pane, source: "manual", agent: "claude", state: "blocked" });
     await barrier;
@@ -240,7 +227,6 @@ it.skipIf(!NATIVE)("lists a Claude pane's subagents, counts the running ones and
   }
 }, 25_000);
 
-/** Each hold owns its pane, transcript and bridge, so running one test never needs an earlier one. */
 async function backgroundTurn(taskId: string) {
   server.stop();
   forgetTranscriptState();
@@ -266,7 +252,6 @@ async function backgroundTurn(taskId: string) {
     return await frame;
   };
   const write = (...entries: unknown[]) => appendFileSync(join(project, `${sessionId}.jsonl`), "\n" + entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-  // Prompt association compares transcript time with observed rest: both use the injected clock.
   const now = () => new Date(statusClock).toISOString();
   const close = async () => {
     frames.socket.close();
@@ -280,7 +265,6 @@ async function backgroundTurn(taskId: string) {
     await bounded(server.statusReady, "Restored status subscription");
   };
   try {
-    // Resolve the native session before the status event's synchronous transcript poll.
     const tasks = await fetch(`${base}/api/pane/omo-tasks?pane_id=${encodeURIComponent(target.pane)}`);
     expect(tasks.status).toBe(200);
     const subscribed = await fetch(`${base}/api/push/subscribe`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subscription: device.subscription, alerts: { input: true, done: "long" } }) });
@@ -359,14 +343,12 @@ it.skipIf(!NATIVE)("reads a Claude pane's task list as its plan, and pushes its 
   socket.onmessage = (event) => { frames.push(JSON.parse(String(event.data))); };
   await new Promise<void>((resolve, reject) => { socket.onopen = () => resolve(); socket.onerror = () => reject(new Error("no socket")); });
   try {
-    // a session that made no task has no plan
     expect((await plan(first.pane)).plan).toBeNull();
     appendFileSync(path, `\n${call("toolu_p1", "TaskCreate", { subject: "Read", activeForm: "Reading" }, { task: { id: "1", subject: "Read" } }, "Task #1 created successfully: Read")}\n${call("toolu_p2", "TaskCreate", { subject: "Write" }, { task: { id: "2", subject: "Write" } }, "Task #2 created successfully: Write")}\n${call("toolu_p3", "TaskUpdate", { taskId: "2", addBlockedBy: ["1"] }, { success: true, taskId: "2", updatedFields: ["blockedBy"] }, "Updated task #2 blockedBy")}\n`);
     await until(async () => JSON.stringify(await summary(first.pane)) === JSON.stringify({ done: 0, total: 2, current: null }));
     expect((await plan(first.pane)).plan?.steps.map((step) => `${step.id}:${step.status}:${step.blocked_by.join(",")}`)).toEqual(["1:pending:", "2:pending:1"]);
     appendFileSync(path, `${call("toolu_p4", "TaskUpdate", { taskId: "1", status: "in_progress" }, { success: true, taskId: "1", updatedFields: ["status"] }, "Updated task #1 status")}\n`);
     await until(async () => frames.some((frame) => frame.type === "pane-status" && frame.pane_id === first.pane && frame.plan?.current === "Reading"));
-    // pushed as progress alone: the pane's status is the one it had
     expect([...frames].reverse().find((frame) => frame.type === "pane-status" && frame.pane_id === first.pane && frame.plan !== undefined)).toMatchObject({ plan: { done: 0, total: 2, current: "Reading" }, agent_status: expect.stringMatching(/^(idle|done)$/) });
   } finally {
     socket.close();
@@ -407,7 +389,6 @@ it.skipIf(!NATIVE)("follows a /branch the PID record names while Herdr's report 
     // Claude rewrites its PID record for the branch; Herdr's report stays on FIRST
     writeFileSync(path, JSON.stringify({ ...record, sessionId: BRANCH }));
     expect((await read(hooked.pane)).turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer in ${BRANCH}` });
-    // a session that is no branch of the reported one keeps the report's
     writeFileSync(path, JSON.stringify({ ...record, sessionId: ELSEWHERE }));
     expect((await read(hooked.pane)).turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer ${FIRST}` });
   } finally {
@@ -422,7 +403,7 @@ it.skipIf(!NATIVE)("refuses a reused PID record rather than selecting another sa
   const previous = readFileSync(path, "utf8");
   try {
     writeFileSync(path, JSON.stringify({ ...JSON.parse(previous), procStart: "1" }));
-    expect(await read(first.pane)).toEqual({ source: "scrollback", turns: [] });
+    expect(await read(first.pane)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
   } finally { writeFileSync(path, previous); }
 });
 
@@ -436,7 +417,7 @@ it.skipIf(!NATIVE)("answers a session Claude has not written yet as an empty con
   expect(written.history_id).not.toBe(`unwritten:${UNWRITTEN}`);
   expect(written.turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer ${UNWRITTEN}` });
   rmSync(join(project, `${UNWRITTEN}.jsonl`));
-  expect(await read(fresh.pane)).toEqual({ source: "scrollback", turns: [] });
+  expect(await read(fresh.pane)).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
 });
 
 it.skipIf(!NATIVE)("answers a session not written yet as empty while Herdr says working, as a /clear does for a moment (#2550)", async () => {
@@ -462,7 +443,6 @@ it.skipIf(!NATIVE)("keeps the existing Herdr hook path when no native PID record
 it.skipIf(!NATIVE)("uses each process's config dir before the server's store, with and without a hook", async () => {
   const ownStore = join(root, "environment with spaces", ".claude");
   const serverStore = join(root, "server-store");
-  // Same session id and cwd in all stores: only the process environment selects the right one.
   transcript(FIRST, ownStore, "Pane's own answer");
   transcript(FIRST, serverStore, "Server's other answer");
   const custom = await pane(FIRST, ownStore);
@@ -476,7 +456,6 @@ it.skipIf(!NATIVE)("uses each process's config dir before the server's store, wi
       pane_id: custom.pane, source: "herdr:claude", agent: "claude", seq: 1, agent_session_id: FIRST,
     });
     expect((await read(custom.pane)).turns.at(-1)?.parts[0]).toMatchObject({ text: "Pane's own answer" });
-    // A process without the variable retains the server-level fallback.
     const fallback = await pane(FIRST);
     await herdrRpc("pane.report_agent_session", {
       pane_id: fallback.pane, source: "herdr:claude", agent: "claude", seq: 1, agent_session_id: FIRST,
@@ -485,12 +464,10 @@ it.skipIf(!NATIVE)("uses each process's config dir before the server's store, wi
   } finally { delete process.env["CLAUDE_CONFIG_DIR"]; }
 });
 
-/** A `claude attach` stand-in: it tells the test its pid and runs until the pane closes. */
 const ATTACH_STAND_IN = `require("node:net").connect(Number(process.env.ATTACH_READY), "127.0.0.1", function () { this.end(String(process.pid)); });
 process.stdin.resume();
 `;
 
-/** A job's state with the fields Claude requires of it, made before any client in this file starts. */
 function jobState(job: string, state: Record<string, unknown>): void {
   const made = "2026-01-01T00:00:00.000Z";
   mkdirSync(join(root, ".claude", "jobs", job), { recursive: true });
@@ -528,9 +505,7 @@ async function attachPane(args: readonly string[], before?: (pane: string) => Pr
   } finally { clearTimeout(timeout); listener.stop(true); }
 }
 
-// The stand-in is the renamed Node, which takes `attach` for its script; the macOS one above is Bun.
 it.skipIf(process.platform !== "linux")("follows a `claude attach <job>` pane to the job's conversation, with no start time of its own (#1645)", async () => {
-  // the job's state names the session it started with and the one /clear moved it on to
   const job = "4c1d2e3f";
   const started = `${job}-0000-4000-8000-000000000001`;
   const resumed = "6e5d4c3b-2a19-4807-b6a5-948372615f0e";
@@ -555,7 +530,6 @@ it.skipIf(process.platform !== "linux")("shows the attached job's conversation, 
   transcript(shown);
   mkdirSync(join(root, ".claude", "jobs", job), { recursive: true });
   writeFileSync(join(root, ".claude", "jobs", job, "state.json"), JSON.stringify({ sessionId: shown, state: "running" }));
-  // a reused pane: the Claude that ran here before reported its session through the hook
   const attach = await attachPane(["attach", job], async (paneId) => {
     await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
     await herdrRpc("pane.report_agent_session", {
@@ -574,7 +548,6 @@ it.skipIf(process.platform !== "linux")("keeps the terminal of a reused pane att
   const job = "5e6f7a8b";
   mkdirSync(join(root, ".claude", "jobs", job), { recursive: true });
   writeFileSync(join(root, ".claude", "jobs", job, "state.json"), JSON.stringify({ command: "sleep 100", state: "running" }));
-  // the Claude that ran here before reported its session through the hook, and herdr still has it
   const attach = await attachPane(["attach", job], async (paneId) => {
     await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
     await herdrRpc("pane.report_agent_session", {
@@ -583,7 +556,6 @@ it.skipIf(process.platform !== "linux")("keeps the terminal of a reused pane att
   });
   const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: attach.pane });
   expect(info.agent.agent_session?.value).toBe(FIRST);
-  // the job shows no conversation: the earlier Claude's would be another session's
   expect((await read(attach.pane)).source).toBe("scrollback");
 });
 
@@ -628,6 +600,5 @@ it.skipIf(process.platform !== "linux")("keeps the terminal of a reused pane who
   });
   const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: attach.pane });
   expect(info.agent.agent_session?.value).toBe(FIRST);
-  // neither the earlier Claude's session, nor a guess between the two jobs
   expect((await read(attach.pane)).source).toBe("scrollback");
 });

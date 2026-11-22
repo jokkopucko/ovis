@@ -20,7 +20,6 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** a bounded wait on an event, never a fixed delay */
 const within = <T>(promise: Promise<T>, what: string, ms = 3_000): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not happen`)), ms); })]).finally(() => clearTimeout(timer));

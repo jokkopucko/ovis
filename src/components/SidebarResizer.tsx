@@ -5,40 +5,79 @@ import "./SidebarResizer.css";
 import { useT } from "../lib/i18n.ts";
 import { clampSidebarWidth, keyedSidebarWidth, sidebarMaxWidth, SIDEBAR_MIN_WIDTH, storeSidebarWidth } from "../lib/sidebarWidth.ts";
 
+/** An overlay scrollbar takes no width and is not found. */
+function onListScrollbar(sidebar: Element | null | undefined, x: number, y: number): boolean {
+  if (!sidebar) return false;
+  return document.elementsFromPoint(x, y).some((element) => {
+    if (!(element instanceof HTMLElement) || element === sidebar || !sidebar.contains(element) || element.scrollHeight <= element.clientHeight) return false;
+    const border = parseFloat(getComputedStyle(element).borderRightWidth) || 0;
+    const bar = element.offsetWidth - element.clientWidth - element.clientLeft - border;
+    const right = element.getBoundingClientRect().right - border;
+    return bar > 0 && x >= right - bar && x < right;
+  });
+}
+
 export interface SidebarResizerProps {
-  /** the chosen width in px; null is the density's own */
   width: number | null;
   onResize(width: number | null): void;
 }
 
-/**
- * The sidebar's right edge, as herdr's: drag it to resize, double-click to go back to the
- * default width. Drawn inside the sidebar it sizes; a phone's drawer has none.
- */
 export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ left: number; grip: number; width: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
-  // what the sidebar measures now: the default width is a token, and a narrow window caps a chosen one
+  const [yielding, setYielding] = useState(false);
   const [shown, setShown] = useState(width ?? SIDEBAR_MIN_WIDTH);
-  // the widest the keys allow in this window; a resize can move it while the sidebar's own width holds
   const [limit, setLimit] = useState(() => sidebarMaxWidth(window.innerWidth));
   const measure = (): number => {
     const measured = Math.round(ref.current?.parentElement?.getBoundingClientRect().width ?? shown);
-    // a closed sidebar measures nothing; the last width it showed stays the value
     if (measured > 0) setShown(measured);
     setLimit(sidebarMaxWidth(window.innerWidth));
     return measured;
   };
   useLayoutEffect(() => { measure(); }, [width]);
-  // the default width follows the density setting, with no width prop and no window resize to say so
   useEffect(() => {
     const sidebar = ref.current?.parentElement;
     if (!sidebar || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => { measure(); });
     observer.observe(sidebar);
     return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    let mouse: { x: number; y: number } | null = null;
+    let buttons = 0;
+    const check = (): void => {
+      const grip = ref.current;
+      if (!grip || mouse === null || buttons !== 0) return;
+      const box = grip.getBoundingClientRect();
+      const over = mouse.x >= box.left && mouse.x < box.right && mouse.y >= box.top && mouse.y < box.bottom;
+      setYielding(over && onListScrollbar(grip.parentElement, mouse.x, mouse.y));
+    };
+    const onPointer = (event: globalThis.PointerEvent): void => {
+      if (event.pointerType !== "mouse") { mouse = null; setYielding(false); return; }
+      mouse = { x: event.clientX, y: event.clientY };
+      buttons = event.buttons;
+      check();
+    };
+    window.addEventListener("pointermove", onPointer, { passive: true });
+    window.addEventListener("pointerdown", onPointer, { capture: true, passive: true });
+    window.addEventListener("pointerup", onPointer, { capture: true, passive: true });
+    window.addEventListener("scroll", check, { capture: true, passive: true });
+    window.addEventListener("wheel", check, { passive: true });
+    window.addEventListener("resize", check);
+    const sidebar = ref.current?.parentElement;
+    const observer = sidebar && typeof ResizeObserver !== "undefined" ? new ResizeObserver(check) : null;
+    if (sidebar) observer?.observe(sidebar);
+    return () => {
+      window.removeEventListener("pointermove", onPointer);
+      window.removeEventListener("pointerdown", onPointer, { capture: true });
+      window.removeEventListener("pointerup", onPointer, { capture: true });
+      window.removeEventListener("scroll", check, { capture: true });
+      window.removeEventListener("wheel", check);
+      window.removeEventListener("resize", check);
+      observer?.disconnect();
+    };
   }, []);
   useEffect(() => {
     const onWindowResize = (): void => { measure(); };
@@ -50,7 +89,6 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
     if (event.button !== 0) return;
     const sidebar = event.currentTarget.parentElement?.getBoundingClientRect();
     if (!sidebar) return;
-    // no text selection in the pane while the edge moves
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = { left: sidebar.left, grip: event.clientX - sidebar.right, width: Math.round(sidebar.width), moved: false };
@@ -71,8 +109,6 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
     drag.current = null;
     setDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    // a press that moved nothing chooses no width; the drag's own record says so, since the
-    // width prop of a first drag may not have come back yet
     if (state.moved) storeSidebarWidth(state.width);
   };
   const reset = (): void => {
@@ -90,7 +126,7 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
   return (
     <div
       ref={ref}
-      className={`sidebar-resizer${dragging ? " is-dragging" : ""}`}
+      className={`sidebar-resizer${dragging ? " is-dragging" : ""}${yielding ? " is-yielding" : ""}`}
       role="separator"
       tabIndex={0}
       aria-orientation="vertical"

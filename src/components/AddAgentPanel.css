@@ -1,4 +1,3 @@
-/* a creation dialog's Add another agent: the agents to install, as tiles (AddAgentPanel) */
 .add-agent {
   display: flex;
   flex-direction: column;

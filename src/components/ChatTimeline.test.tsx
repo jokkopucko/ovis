@@ -36,7 +36,6 @@ afterEach(() => {
   }
 });
 
-/** what the list and the footer read of their nodes: an empty box */
 const node = () => Object.assign(new EventTarget(), {
   offsetHeight: 0, scrollTop: 0, clientHeight: 0, scrollHeight: 0, style: {},
   getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0, x: 0, y: 0 }), querySelector: () => null, querySelectorAll: () => [],

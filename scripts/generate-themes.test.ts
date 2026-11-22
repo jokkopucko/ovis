@@ -14,7 +14,6 @@ afterEach(() => {
   for (const dir of copies.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A temporary repo holding only the generator's input and outputs, so a run never touches committed files. */
 function copyRoot(): string {
   const dir = mkdtempSync(join(tmpdir(), "generate-themes-"));
   copies.push(dir);
@@ -110,7 +109,6 @@ describe("generate-themes", () => {
     }
     expect(() => renderManifest(css, manifest.replace('"theme_color"', '"x_theme_color"'))).toThrow('"theme_color" found 0 times');
 
-    // a duplicate hidden after '<!--' inside a quoted attribute is still found, in both modes, and nothing is written
     for (const mode of [["--check"], []]) {
       const root = copyRoot();
       writeFileSync(join(root, OUTPUTS.index), html.replace(tag, `<meta name="description" content="<!--">\n    <meta name="theme-color" content="#abcdef">\n    <!-- -->\n    ${tag}`));
@@ -120,7 +118,6 @@ describe("generate-themes", () => {
       expect(Object.values(OUTPUTS).map((file) => read(root, file))).toEqual(before);
     }
 
-    // a look-alike alone is a missing target in both modes, and nothing is written
     for (const mode of [["--check"], []]) {
       const root = copyRoot();
       const broken = html.replace(tag, '<meta data-name="theme-color" content="#abcdef">');
@@ -144,7 +141,6 @@ describe("generate-themes", () => {
 
   it("writes every copy from src/styles.css and never writes the CSS", async () => {
     const root = copyRoot();
-    // amber's panel feeds the module and DESIGN.md; the default theme's dark panel (codex) the page and manifest
     const source = read(root, SOURCE).replace("--bg-panel: #181613;", "--bg-panel: #1a1714;").replace("--bg-panel: #1f1f1f;", "--bg-panel: #202020;");
     expect(source).not.toBe(css);
     writeFileSync(join(root, SOURCE), source);

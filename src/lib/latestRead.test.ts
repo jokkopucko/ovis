@@ -1,8 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { latestRead, READ_AGAIN_MS, READ_AGAIN_TIMES, readAgainUntil, type ReadOutcome } from "./latestRead.ts";
 
-// A creation dialog reads the PC's agents when it opens and again after Add another agent… installs
-// one: whichever answer comes last, only the read asked for last may set the list.
 describe("latestRead", () => {
   it("lets only the read asked for last apply, whatever order the answers come in", () => {
     const reads = latestRead();
@@ -20,15 +18,11 @@ describe("latestRead", () => {
   });
 });
 
-// After Add another agent… installs one, the PC may list it only once its installer has finished
-// with the shell profile: the dialog reads again for a while, not just once.
 describe("readAgainUntil", () => {
-  /** a `later` whose runs the test fires itself; each entry says when it is cancelled */
   function laterQueue() {
     const all: { run: () => void; at: number; cancelled: boolean; gone: ReturnType<typeof Promise.withResolvers<void>> }[] = [];
     const queued: typeof all = [];
     let wake = Promise.withResolvers<void>();
-    // a virtual clock: firing a run moves it to the time that run was scheduled for
     let clock = 0;
     return {
       now: () => clock,
@@ -39,7 +33,6 @@ describe("readAgainUntil", () => {
         wake.resolve();
         return () => { entry.cancelled = true; entry.gone.resolve(); };
       },
-      /** waits for the next run still wanted to be scheduled, then fires it */
       next: async () => {
         for (;;) {
           const entry = queued.shift();
@@ -47,14 +40,12 @@ describe("readAgainUntil", () => {
           if (!entry.cancelled) { clock = Math.max(clock, entry.at); entry.run(); return; }
         }
       },
-      /** the last run scheduled: a read's deadline, cancelled once that read's answer is taken */
       last: () => all[all.length - 1]!,
       pending: () => queued.filter((entry) => !entry.cancelled).length,
     };
   }
 
   type Seen = { kind: string; value?: unknown; last: boolean };
-  /** records each outcome the helper accepts; `found` ends it on an answer it says yes to */
   const recorder = (found: (value: unknown) => boolean) => {
     const seen: Seen[] = [];
     let wake = Promise.withResolvers<void>();
@@ -65,7 +56,6 @@ describe("readAgainUntil", () => {
         wake.resolve();
         return outcome.kind === "answer" && found(outcome.value);
       },
-      /** waits until `n` outcomes were accepted */
       until: async (n: number) => { while (seen.length < n) { await wake.promise; wake = Promise.withResolvers<void>(); } },
     };
   };
@@ -107,10 +97,8 @@ describe("readAgainUntil", () => {
     const q = laterQueue();
     const r = recorder(() => true);
     const late = Promise.withResolvers<string>();
-    // neither read answers in time; the first one answers after its deadline
     let reads = 0;
     readAgainUntil(() => { reads += 1; return reads === 1 ? late.promise : new Promise<string>(() => undefined); }, { every: 10_000, times: 2, later: q.later, now: q.now, apply: r.apply });
-    // the first deadline: a timeout, and the second read starts at once
     await q.next();
     await r.until(1);
     late.resolve("found, too late");
@@ -121,7 +109,6 @@ describe("readAgainUntil", () => {
   });
 
   it("releases a dialog whose every read stalls within READ_AGAIN_TIMES deadlines: the next read starts as one times out", async () => {
-    // a virtual clock: each run fires at the time it was scheduled for
     let clock = 0;
     const timers: { at: number; run: () => void; cancelled: boolean }[] = [];
     const later = (run: () => void, ms: number) => { const timer = { at: clock + ms, run, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; };
@@ -156,7 +143,6 @@ describe("readAgainUntil", () => {
       due.cancelled = true;
       clock = due.at;
       due.run();
-      // an answer is taken a promise turn later: wait for the helper to accept it
       if (due.answer) { await accepted.promise; accepted = Promise.withResolvers<void>(); }
     }
     expect(ended).toBe(READ_AGAIN_MS * (READ_AGAIN_TIMES - 1) + 9_000);

@@ -8,7 +8,6 @@ import { FAVICON_CANDIDATES, findProjectFavicon } from "./project-favicon.ts";
 const root = mkdtempSync(join(tmpdir(), "ovis-project-favicon-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-/** A project folder holding these files. */
 function project(name: string, files: string[]): string {
   const folder = join(root, name);
   mkdirSync(folder, { recursive: true });

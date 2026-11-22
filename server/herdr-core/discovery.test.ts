@@ -3,7 +3,8 @@ import { chmodSync, existsSync, statSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAbsolute, relative } from "node:path";
-import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup, trustRefusal } from "./discovery.ts";
+import { coreSocket, plainSession } from "./core-socket.ts";
+import { aclReader, discoverHc, findHc, harmlessGroups, herdrCoreFacts, macAclGrantsWrite, ownedByUser, privateGroup, PROBE_TIMEOUT_MS, trustRefusal } from "./discovery.ts";
 
 const unix = process.platform !== "win32";
 let cleanup = () => {};
@@ -20,7 +21,6 @@ function scratch(): { root: string; log: string } {
   return { root, log: join(root, "argv.log") };
 }
 
-/** a stand-in executable that logs every argument list it is run with, then says `output` */
 function fake(dir: string, name: string, output: string, log: string, exit = 0): string {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   const path = join(dir, name);
@@ -28,7 +28,6 @@ function fake(dir: string, name: string, output: string, log: string, exit = 0):
   return path;
 }
 
-/** a stand-in whose whole script is `body`, logging its argument lists */
 function script(dir: string, name: string, body: string, log: string): string {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   const path = join(dir, name);
@@ -50,7 +49,6 @@ it.skipIf(!unix)("looks in OVIS_HC_BIN, the usual places, the PATH, then the log
     env, home: root, loginShellPath: async () => login, usualDirs: [join(root, "usual")],
   });
   expect(await findHc(options({ OVIS_HC_BIN: named, PATH: join(root, "path") }, join(root, "login")))).toEqual({ bin: named, version: "0.1.20" });
-  // the usual place wins over the PATH: what an earlier PATH folder holds is not asked first
   expect(await findHc(options({ PATH: join(root, "path") }, join(root, "login")))).toEqual({ bin: usual, version: "0.1.17" });
   rmSync(usual);
   expect(await findHc(options({ PATH: join(root, "path") }, join(root, "login")))).toEqual({ bin: onPath, version: "0.1.19" });
@@ -58,7 +56,6 @@ it.skipIf(!unix)("looks in OVIS_HC_BIN, the usual places, the PATH, then the log
   expect(await findHc(options({ PATH: join(root, "empty") }, null))).toBeNull();
 });
 
-/** a stand-in that leaves `marker` behind when it is run at all */
 function planted(dir: string, mode: number, marker: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   writeFileSync(join(dir, "hc"), `#!/bin/sh\n: > '${marker}'\nprintf 'hc 0.1.99\\n'\n`, { mode: 0o755 });
@@ -91,6 +88,43 @@ it.skipIf(!unix)("never runs an hc from a folder another account can write, earl
   } finally {
     for (const dir of ["open", "others", "stickybin", "shared", "open2"]) chmodSync(join(root, dir), 0o755);
   }
+});
+
+it.skipIf(!unix)("regression: a set OVIS_HC_BIN that fails is not swapped for another hc", async () => {
+  const { root, log } = scratch();
+  const broken = fake(join(root, "named"), "my-hc", "not hc", log);
+  fake(join(root, "path"), "hc", "hc 0.1.19", log);
+  fake(join(root, "usual"), "hc", "hc 0.1.17", log);
+  const look = (named: string) => findHc({ env: { OVIS_HC_BIN: named, PATH: join(root, "path") }, home: root, loginShellPath: async () => join(root, "path"), usualDirs: [join(root, "usual")] });
+  expect(await look(broken)).toBeNull();
+  expect(await look(join(root, "missing", "hc"))).toBeNull();
+  expect(await look("no-such-hc")).toBeNull();
+});
+
+it.skipIf(!unix)("looks in the usual places when the app's own hc (OVIS_HC_BIN_BUNDLED) fails, and says which it used instead", async () => {
+  const { root, log } = scratch();
+  const broken = fake(join(root, "app"), "herdr-core", "not hc", log);
+  const usual = fake(join(root, "usual"), "hc", "hc 0.1.17", log);
+  const options = { env: { OVIS_HC_BIN: broken, OVIS_HC_BIN_BUNDLED: "1", PATH: join(root, "empty") }, home: root, usualDirs: [join(root, "usual")] };
+  expect(await findHc({ ...options, loginShellPath: async () => null })).toEqual({ bin: usual, version: "0.1.17", insteadOf: broken });
+  expect(runs(log)).toEqual(["--version", "--version"]);
+  // Settings is told the app's own hc was not used
+  await discoverHc(options);
+  expect(herdrCoreFacts()).toMatchObject({ version: "0.1.17", bundled_unused: true });
+});
+
+it.skipIf(!unix)("gives the app's own hc longer to answer --version than any other", async () => {
+  const { root, log } = scratch();
+  const own = fake(join(root, "app"), "herdr-core", "hc 0.1.17", log);
+  const usual = fake(join(root, "usual"), "hc", "hc 0.1.17", log);
+  const asked: [string, number][] = [];
+  const version = async (bin: string, _env: unknown, timeoutMs: number) => { asked.push([bin, timeoutMs]); return bin === usual ? "0.1.17" : null; };
+  const look = (env: Record<string, string>) => findHc({ env: { ...env, OVIS_HC_BIN: own, PATH: join(root, "empty") }, home: root, loginShellPath: async () => null, usualDirs: [join(root, "usual")], version });
+  expect(await look({ OVIS_HC_BIN_BUNDLED: "1" })).toEqual({ bin: usual, version: "0.1.17", insteadOf: own });
+  expect(asked.splice(0)).toEqual([[own, 10_000], [usual, 3_000]]);
+  // one the user named keeps the usual wait, and nothing else is asked
+  expect(await look({})).toBeNull();
+  expect(asked).toEqual([[own, 3_000]]);
 });
 
 it.skipIf(!unix)("runs one in the user's own folder, through a sticky shared one and a link, and an explicit OVIS_HC_BIN anywhere", async () => {
@@ -189,21 +223,39 @@ it.skipIf(process.platform !== "linux" || setfacl === null)("without getfacl, tr
   // an ACL there, even one that only reads, cannot be read without getfacl
   expect(Bun.spawnSync([setfacl!, "-m", "u:nobody:r-x", join(root, "bin")]).exitCode).toBe(0);
   expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(false);
-  // gone again: trusted again
   expect(Bun.spawnSync([setfacl!, "-b", join(root, "bin")]).exitCode).toBe(0);
   expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(true);
 });
 
-it.skipIf(process.platform !== "linux")("checks with the platform it is given: none on Windows", async () => {
+it.skipIf(process.platform !== "linux")("on Windows runs only an hc inside the user's profile, never one a folder like C:\\tools holds", async () => {
   const { root } = scratch();
+  const home = join(root, "home");
+  const outside = join(root, "tools");
   const marker = join(root, "ran");
-  planted(join(root, "open"), 0o755, marker);
-  writeFileSync(join(root, "open", "hc.exe"), readFileSync(join(root, "open", "hc")), { mode: 0o755 });
-  chmodSync(join(root, "open"), 0o777);
-  try {
-    // a Windows look reads no modes, so this PC's 0777 folder is not refused for it
-    expect((await findHc({ env: { PATH: join(root, "open") }, home: root, platform: "win32", loginShellPath: async () => null, usualDirs: [] }))?.version).toBe("0.1.99");
-  } finally { chmodSync(join(root, "open"), 0o755); }
+  planted(outside, 0o755, marker);
+  writeFileSync(join(outside, "hc.exe"), readFileSync(join(outside, "hc")), { mode: 0o755 });
+  const win = (PATH: string) => findHc({ env: { PATH }, home, platform: "win32", loginShellPath: async () => null, usualDirs: [] });
+  mkdirSync(home, { mode: 0o755 });
+  expect(await win(outside)).toBeNull();
+  expect(existsSync(marker)).toBe(false);
+  // a link inside the profile to that folder is followed out of it
+  symlinkSync(outside, join(home, "tools"));
+  expect(await win(join(home, "tools"))).toBeNull();
+  expect(existsSync(marker)).toBe(false);
+  planted(join(home, "scoop"), 0o755, join(root, "ran-home"));
+  writeFileSync(join(home, "scoop", "hc.exe"), readFileSync(join(home, "scoop", "hc")), { mode: 0o755 });
+  expect((await win([outside, join(home, "scoop")].join(";")))?.version).toBe("0.1.99");
+  expect(existsSync(marker)).toBe(false);
+  // a link outside the profile into it is refused too: whoever may write there could repoint it after the check
+  symlinkSync(join(home, "scoop"), join(root, "tools-link"));
+  expect(await win(join(root, "tools-link"))).toBeNull();
+  // a bare OVIS_HC_BIN is looked for in every PATH folder: one refused outside leaves the next
+  const bare = await findHc({ env: { PATH: [outside, join(home, "scoop")].join(";"), OVIS_HC_BIN: "hc" }, home, platform: "win32", loginShellPath: async () => null, usualDirs: [] });
+  expect(bare?.bin).toBe(join(home, "scoop", "hc.exe"));
+  expect(existsSync(marker)).toBe(false);
+  // a HOME the environment sets is not the profile: with no USERPROFILE the OS's answer is
+  expect(await findHc({ env: { PATH: outside, HOME: outside }, platform: "win32", loginShellPath: async () => null, usualDirs: [] })).toBeNull();
+  expect(existsSync(marker)).toBe(false);
 });
 
 it.skipIf(!unix)("says which entry a refused candidate fails on, and which rule", () => {
@@ -255,7 +307,6 @@ it.skipIf(!unix)("gives the probe only absolute, checked PATH folders, never an 
 it.skipIf(!unix)("runs a candidate with only the PATH folders that pass the same check", async () => {
   const { root, log } = scratch();
   const marker = join(root, "ran");
-  // a user-owned wrapper that runs a helper by name
   const real = script(join(root, "real"), "hc", "helper\nprintf 'hc 0.1.17\\n'", log);
   mkdirSync(join(root, "open"), { mode: 0o755 });
   writeFileSync(join(root, "open", "helper"), `#!/bin/sh\n: > '${marker}'\n`, { mode: 0o755 });
@@ -277,14 +328,12 @@ it.skipIf(!unix)("passes over an hc that is not herdr-core's, and one that fails
   const { root, log } = scratch();
   fake(join(root, "wm"), "hc", "herbstclient 0.9.5", log);
   fake(join(root, "broken"), "hc", "hc 0.1.17", log, 1);
-  const named = fake(join(root, "named"), "hc", "hcx 2", log);
   const real = fake(join(root, "login"), "hc", "hc 0.1.17", log);
   const found = await findHc({
-    env: { OVIS_HC_BIN: named, PATH: [join(root, "wm"), join(root, "broken")].join(":") },
+    env: { PATH: [join(root, "wm"), join(root, "broken")].join(":") },
     home: root, loginShellPath: async () => join(root, "login"), usualDirs: [],
   });
   expect(found).toEqual({ bin: real, version: "0.1.17" });
-  // nothing that answers otherwise is ever taken
   expect(await findHc({ env: { PATH: join(root, "wm") }, home: root, loginShellPath: async () => null, usualDirs: [] })).toBeNull();
 });
 
@@ -345,7 +394,6 @@ it.skipIf(!unix)("does not wait on what a candidate left holding its output, and
   const found = await findHc({ env: { PATH: join(root, "bin") }, home: root, loginShellPath: async () => null, usualDirs: [], timeoutMs: 10_000 });
   expect(found?.version).toBe("0.1.17");
   const left = Number(readFileSync(pidFile, "utf8"));
-  // the group was killed once the answer was in: signalling the leftover now finds nothing
   let alive = true;
   for (let attempt = 0; attempt < 50 && alive; attempt++) {
     try { process.kill(left, 0); await Bun.sleep(20); } catch { alive = false; }
@@ -353,12 +401,17 @@ it.skipIf(!unix)("does not wait on what a candidate left holding its output, and
   expect(alive).toBe(false);
 });
 
+
 it.skipIf(!unix)("passes over a candidate that does not answer in time", async () => {
   const { root, log } = scratch();
   script(join(root, "slow"), "hc", "exec /bin/sleep 30", log);
   const real = fake(join(root, "real"), "hc", "hc 0.1.17", log);
-  expect(await findHc({ env: { PATH: [join(root, "slow"), join(root, "real")].join(":") }, home: root, loginShellPath: async () => null, usualDirs: [], timeoutMs: 200 })).toEqual({ bin: real, version: "0.1.17" });
-});
+  // the product's own deadline, not a shorter one: it also bounds the candidate that does answer, which a starved
+  // runner can take hundreds of ms just to start
+  expect(await findHc({ env: { PATH: [join(root, "slow"), join(root, "real")].join(":") }, home: root, loginShellPath: async () => null, usualDirs: [] })).toEqual({ bin: real, version: "0.1.17" });
+  expect(runs(log)).toEqual(["--version", "--version"]);
+  // two probes in a row and as long again for the rest: a late answer fails on the assertion, not the runner's timeout
+}, 3 * PROBE_TIMEOUT_MS);
 
 it.skipIf(!unix)("waits for a candidate that closed its output to exit, within the time it is given", async () => {
   const { root, log } = scratch();

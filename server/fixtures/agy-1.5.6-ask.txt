@@ -1,0 +1,30 @@
+agy
+user@host:~/scratch/agy$ agy
+
+
+      ▄▀▀▄        Antigravity CLI 1.5.6
+     ▀▀▀▀▀▀       user@example.com (Antigravity Starter Quota)
+    ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (High)
+   ▄▀▀    ▀▀▄     ~/scratch/agy
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> Use your ask_question tool to ask me ONE question: which file to create, options hello.txt or bye.txt. Wait for my
+  answer, then reply with just the file name. Do not create anything.
+
+▸ Thought for 6s, 492 tokens
+  Initial hypothesis: The task requires determining the preferred file name. The tool's documentation suggests prio...
+
+? Which file would you like to create?
+
+Question
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 1/1: Which file would you like to create?
+
+> 1. (Recommended) hello.txt
+  2. bye.txt
+  3. Write-in...
+
+  ↑/↓ Navigate · enter Select · esc Skip
+esc to cancel                                                                                   Gemini 3.8 Flash · high

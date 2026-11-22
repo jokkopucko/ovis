@@ -1,33 +1,21 @@
 #!/usr/bin/env bun
 /**
- * Generate TypeScript wire types from herdr's own API schema.
- *
  *   bun run scripts/generate-protocol-types.ts            # write shared/herdr-api.generated.ts
  *   bun run scripts/generate-protocol-types.ts --check     # fail if the committed output is stale
  *   bun run scripts/generate-protocol-types.ts --refresh   # re-read the schema from `herdr api schema --json`
  *                                                           (OVIS_HERDR_BIN picks the herdr binary)
  *   bun run scripts/generate-protocol-types.ts --refresh-hc  # re-read herdr-core's from `hc schema`
  *                                                           (OVIS_HC_BIN picks the hc binary; use the
- *                                                           version ci.yml's herdr-core-live job pins)
+ *                                                           newest version in the HC_RELEASES list of ci.yml's herdr-core-live job)
  *
- * herdr-core's (`hc`) types come from its own OpenRPC schema, scripts/hc-schema.json, into
- * server/herdr-core/hc-api.generated.ts: see scripts/hc-types.ts for their shape.
- *
- * Shape decisions, and why:
- *
- * - Only the types Ovis actually consumes are emitted, plus their transitive
- *   closure. Generating all 170+ definitions would bury the ones under review.
  * - String enums become unions widened with `(string & {})`. herdr gives no
  *   stability guarantee, so a value from a future version must still flow through
- *   instead of failing to typecheck. This mirrors the RawRepresentable structs
- *   Heeler generates for the same reason.
+ *   instead of failing to typecheck.
  * - Definition names repeat across the schema's five top-level sections and are
  *   NOT always structurally identical: in herdr 0.9.0 a request's ReadSource is
  *   "recent-unwrapped" while a response's is "recent_unwrapped". Colliding names
  *   are therefore namespaced by section rather than merged, because merging them
  *   would silently emit invalid requests.
- * - Output is deterministic (types and properties sorted, no timestamps), so
- *   regenerating against an unchanged schema is a no-op diff.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -40,7 +28,6 @@ const OUTPUT_PATH = join(ROOT, "shared", "herdr-api.generated.ts");
 const HC_SCHEMA_PATH = join(ROOT, "scripts", "hc-schema.json");
 const HC_OUTPUT_PATH = join(ROOT, "server", "herdr-core", "hc-api.generated.ts");
 
-/** Roots per schema section; their transitive closure is what gets emitted. */
 const ROOTS: Record<string, string[]> = {
   success_response: ["SessionSnapshot", "PaneReadResult", "AgentManifestInfo", "PaneProcessInfo"],
   request: [
@@ -72,7 +59,6 @@ interface Collected {
 }
 
 function parseRef(ref: string): { section: string; name: string } {
-  // "#/schemas/success_response/$defs/PaneInfo"
   const parts = ref.split("/");
   const section = parts[2];
   const name = parts[4];
@@ -113,7 +99,6 @@ function walkRefs(node: unknown, onRef: (ref: string) => void): void {
   }
 }
 
-/** Colliding names are namespaced only when their structures actually differ. */
 function resolveNames(found: Map<string, Collected>): Map<string, string> {
   const byName = new Map<string, Collected[]>();
   for (const entry of found.values()) {
@@ -142,7 +127,6 @@ function tsTypeOf(def: Json, section: string, names: Map<string, string>, indent
   }
   if (def.enum) {
     const literals = [...def.enum].sort().map((value: string) => JSON.stringify(value));
-    // widened so an unknown value from a newer herdr still typechecks
     return `${literals.join(" | ")} | (string & {})`;
   }
   if (def.oneOf || def.anyOf) {
@@ -202,8 +186,6 @@ function generate(schema: Json): string {
   const found = collect(schema);
   const names = resolveNames(found);
 
-  // Definitions that repeat across sections with an identical shape resolve to one
-  // name, so they must also emit exactly one declaration.
   const emitted = new Map<string, string>();
   for (const entry of found.values()) {
     const tsName = names.get(`${entry.section}/${entry.name}`)!;
@@ -236,7 +218,6 @@ function generate(schema: Json): string {
 
 async function loadSchema(refresh: boolean): Promise<Json> {
   if (refresh) {
-    // the same binary the tests and the server use, so a schema can come from a herdr that is not installed
     const herdr = process.env["OVIS_HERDR_BIN"] || "herdr";
     const proc = Bun.spawn([herdr, "api", "schema", "--json"], { stdout: "pipe", stderr: "pipe" });
     const text = await new Response(proc.stdout).text();
@@ -248,7 +229,6 @@ async function loadSchema(refresh: boolean): Promise<Json> {
   return JSON.parse(readFileSync(SCHEMA_PATH, "utf8")) as Json;
 }
 
-/** hc's schema as `hc schema` prints it, kept indented so a refresh reads as a diff. */
 async function loadHcSchema(refresh: boolean): Promise<Json> {
   if (refresh) {
     const hc = process.env["OVIS_HC_BIN"] || "hc";

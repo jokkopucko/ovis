@@ -75,7 +75,6 @@ describe("theme lookups", () => {
 describe("picking a theme", () => {
   it("fills the other side with the sibling while that side is the default or the previous pick's sibling", () => {
     expect(pickTheme({ darkTheme: "amber", lightTheme: "amber" }, "dark", "tokyo-night")).toEqual({ darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" });
-    // codex is the default, and amber, the default before it, is as unchosen
     expect(pickTheme({ darkTheme: "codex", lightTheme: "codex" }, "dark", "tokyo-night")).toEqual({ darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" });
     expect(pickTheme({ darkTheme: "codex", lightTheme: "amber" }, "light", "catppuccin-latte")).toEqual({ darkTheme: "catppuccin", lightTheme: "catppuccin-latte" });
     expect(pickTheme({ darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" }, "dark", "gruvbox")).toEqual({ darkTheme: "gruvbox", lightTheme: "gruvbox-light" });

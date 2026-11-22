@@ -1,7 +1,3 @@
-/**
- * A WebSocket peer of the relay for tests, the QA script and the load smoke: every frame and the
- * close are queued as events to await, each with a deadline, never a fixed wait.
- */
 import { bytesToHex } from "@noble/hashes/utils.js";
 import nacl from "tweetnacl";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
@@ -23,7 +19,6 @@ export class Peer {
       else this.queue.push(frame);
     });
     this.closed = new Promise((resolve) => socket.addEventListener("close", (event) => resolve({ code: event.code, reason: event.reason })));
-    // a refused socket opens and closes at once; either way it is ready to be looked at
     this.ready = Promise.race([new Promise<void>((resolve) => socket.addEventListener("open", () => resolve())), this.closed.then(() => undefined)]);
   }
 
@@ -49,7 +44,6 @@ export class Peer {
     return within(this.closed, what, timeoutMs).then((close) => close.code);
   }
 
-  /** frames queued and not yet taken */
   get pending(): number {
     return this.queue.length;
   }
@@ -65,10 +59,8 @@ export function within<T>(promise: Promise<T>, what: string, timeoutMs = 5000): 
 
 export const randomServerId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-/** A PC as the relay knows it: its X25519 key pair and the server_id derived from the public key. */
 export interface TestServer {
   serverId: string;
-  /** the public key as the socket URL carries it, 64 lowercase hex digits */
   publicKey: string;
   secretKey: Uint8Array;
 }
@@ -78,12 +70,10 @@ export function newServer(): TestServer {
   return { serverId: deriveServerId(keys.publicKey), publicKey: bytesToHex(keys.publicKey), secretKey: keys.secretKey };
 }
 
-/** The answer to the relay's server_challenge `frame` with `secretKey`, or null for anything else. */
 export function answerChallenge(frame: unknown, server: TestServer, connectionId: string | null, secretKey = server.secretKey): string | null {
   return answerServerChallenge(frame, secretKey, { server_id: server.serverId, role: connectionId === null ? "control" : "data", connection_id: connectionId });
 }
 
-/** URLs of a relay at `base` (ws://host:port) for one PC; its sockets offer the PC's public key */
 export function relayUrls(base: string, server: TestServer) {
   const proof = `&proof=1&public_key=${server.publicKey}`;
   return {
@@ -93,7 +83,6 @@ export function relayUrls(base: string, server: TestServer) {
   };
 }
 
-/** Opens a PC socket (control, or data for `connectionId`) and answers the relay's challenge with the PC's key. */
 export async function openServer(url: string, server: TestServer, connectionId: string | null = null): Promise<Peer> {
   const peer = await Peer.open(url);
   const answer = answerChallenge(await peer.next("server_challenge"), server, connectionId);
@@ -102,7 +91,6 @@ export async function openServer(url: string, server: TestServer, connectionId: 
   return peer;
 }
 
-/** A PC's control socket, a client, and the data socket the PC opens for it once told. */
 export async function openPair(base: string, server: TestServer, control?: Peer) {
   const urls = relayUrls(base, server);
   const ownControl = control ?? await openServer(urls.control, server);
@@ -116,7 +104,6 @@ export async function openPair(base: string, server: TestServer, control?: Peer)
   return { control: ownControl, client, data, connectionId };
 }
 
-/** The PC answers its client's handshake: its first frame reaches the client, which then holds a full slot. */
 export async function establish(pair: { client: Peer; data: Peer }, frame = "handshake answer"): Promise<void> {
   pair.data.socket.send(frame);
   const got = await pair.client.next("the PC's first frame");

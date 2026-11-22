@@ -45,7 +45,6 @@ try {
   });
   const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   for (let step = 0; step < STEPS; step++) {
-    // scroll to a spot near the end, then change the header above it and the rows below it
     await page.evaluate((step) => {
       const scroller = document.querySelector<HTMLElement>(".padding-qa-scroller");
       if (!scroller) throw new Error("no list scroller");
@@ -66,7 +65,6 @@ try {
       if (!content || !scroller || !footer) throw new Error("list parts missing");
       return {
         padding: content.style.paddingBottom,
-        // space the scroller holds past the footer
         afterFooter: Math.round(scroller.scrollHeight - scroller.scrollTop - (footer.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top)),
       };
     });

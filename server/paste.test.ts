@@ -41,7 +41,6 @@ describe("pasteDirectory", () => {
     expect(pasteDirectory("/work/repo")).toBe(join(homedir(), "pastes"));
     process.env["OVIS_PASTE_DIR"] = "~\\pastes";
     expect(pasteDirectory("/work/repo")).toBe(join(homedir(), "pastes"));
-    // a name that only starts with ~ is a folder of that name, not the home directory
     process.env["OVIS_PASTE_DIR"] = "~pastes";
     expect(pasteDirectory("/work/repo")).toBe(resolve("~pastes"));
   });
@@ -69,7 +68,6 @@ describe("savePaneImage", () => {
   };
   const GIF89A = bytes("GIF89a", [1, 0, 1, 0]);
   const RASTER_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-  /** Text and the prefix one byte short of each signature (or one byte off it) under a raster claim. */
   const FAKES: Buffer[] = [
     bytes("SECRET-UPLOAD-TEXT not an image"),
     bytes([137, 80, 78, 71, 13, 10, 26]),
@@ -108,7 +106,6 @@ describe("savePaneImage", () => {
 
   it("uses sniffed extension for every supported raster claim", async () => {
     for (const [extension, data] of [...Object.entries(RASTERS), ["gif", GIF89A] as const]) {
-      // the browser infers the type from the file name, so a mislabeled raster still arrives
       for (const contentType of RASTER_TYPES) {
         const path = await save(contentType, data, "shot.png");
         expect(dirname(path)).toBe(join(cwd, ".ovis"));
@@ -128,7 +125,6 @@ describe("savePaneImage", () => {
     }
     expect(paneGet).not.toHaveBeenCalled();
     expect(existsSync(join(cwd, ".ovis"))).toBe(false);
-    // the size and empty checks still answer first
     expect((await refusal(save("image/png", ""))).code).toBe("empty_image");
     expect((await refusal(save("image/png", "A".repeat(Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 8)))).code).toBe("image_too_large");
     expect(paneGet).not.toHaveBeenCalled();
@@ -143,7 +139,6 @@ describe("savePaneImage", () => {
   });
 
   it("preserves generic named uploads", async () => {
-    // other types keep their names and bytes, even when the bytes happen to look like a raster
     for (const [contentType, name, data, pattern] of [
       ["image/svg+xml", "../omo icon.SVG", bytes('<svg xmlns="http://www.w3.org/2000/svg"/>'), /^omo_icon-\d{8}-\d{6}-[0-9a-f]{8}\.svg$/],
       ["application/json", "report.json", bytes('{"month":"2026-09"}'), /^report-.*\.json$/],
@@ -177,7 +172,6 @@ describe("preparePasteDirectory", () => {
       expect(directory).toBe(join(cwd, ".ovis"));
       expect(readFileSync(join(directory, ".gitignore"), "utf8")).toBe("*\n");
       if (process.platform !== "win32") expect(statSync(join(directory, ".gitignore")).mode & 0o777).toBe(0o600);
-      // the next paste finds it there and leaves it
       expect(preparePasteDirectory(cwd)).toBe(directory);
       expect(readFileSync(join(directory, ".gitignore"), "utf8")).toBe("*\n");
     }
@@ -222,7 +216,6 @@ describe("preparePasteDirectory", () => {
     const cwd = temp();
     symlinkSync(outside, join(cwd, ".ovis"));
     expect(preparePasteDirectory(cwd)).toBe(join(cwd, ".ovis"));
-    // the link's target, another repository's root for example, is left as it was
     expect(readdirSync(outside)).toEqual(["user-file"]);
   });
 
@@ -233,11 +226,9 @@ describe("preparePasteDirectory", () => {
     expect(preparePasteDirectory(cwd)).toBe(override);
     expect(statSync(override).isDirectory()).toBe(true);
     expect(existsSync(join(override, ".gitignore"))).toBe(false);
-    // an override naming the default path is still the user's own directory
     process.env["OVIS_PASTE_DIR"] = join(cwd, ".ovis");
     expect(preparePasteDirectory(cwd)).toBe(join(cwd, ".ovis"));
     expect(existsSync(join(cwd, ".ovis", ".gitignore"))).toBe(false);
-    // and so is one under ~, expanded against a home of the test's own (a child reads HOME at start)
     const home = temp();
     const child = Bun.spawnSync([process.execPath, "-e", `const { preparePasteDirectory } = await import(${JSON.stringify(join(import.meta.dir, "paste.ts"))}); console.log(preparePasteDirectory(${JSON.stringify(cwd)}));`], {
       env: { ...process.env, HOME: home, USERPROFILE: home, OVIS_PASTE_DIR: " ~/pastes " },

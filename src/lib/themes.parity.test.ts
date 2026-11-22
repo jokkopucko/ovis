@@ -12,7 +12,6 @@ import { resolveEntry } from "./themeCss.ts";
 const frozen: Record<string, { declared: Record<string, string>; resolved: Record<string, string>; terminal: ReturnType<typeof terminalTheme>; themeColor: string }> = baseline.combos;
 const css = readFileSync(join(import.meta.dir, "..", "styles.css"), "utf8");
 
-/** Every frozen property of `kind` whose current value differs, as `combo property: frozen -> now`. */
 function drift(kind: "declared" | "resolved"): string[] {
   return LEGACY_COMBOS.flatMap(({ palette, mode }) => {
     const key = comboKey(palette, mode);
@@ -43,7 +42,6 @@ describe("legacy palette parity", () => {
   it("terminal and theme-color: xterm and the <meta> color of every legacy combo are unchanged", () => {
     for (const { palette, mode } of LEGACY_COMBOS) {
       const key = comboKey(palette, mode);
-      // Additions (light ANSI colours) are allowed; every frozen value stays unchanged.
       expect({ key, terminal: terminalTheme(mode, palette), themeColor: themeColor(mode, palette) }).toMatchObject({ key, terminal: frozen[key]!.terminal, themeColor: frozen[key]!.themeColor });
     }
   });

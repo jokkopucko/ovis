@@ -3,6 +3,10 @@ package sh.ovis.app;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.net.Uri;
+import java.io.UnsupportedEncodingException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URLDecoder;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -39,7 +43,6 @@ public class OvisAuthPlugin extends Plugin {
             call.reject("That sign-in names no state", "invalid_url");
             return;
         }
-        // one sign-in at a time: a new one ends the one before
         if (waiting != null) {
             PluginCall replaced = waiting;
             release(replaced);
@@ -67,18 +70,50 @@ public class OvisAuthPlugin extends Plugin {
     protected void handleOnNewIntent(Intent intent) {
         super.handleOnNewIntent(intent);
         Uri data = intent.getData();
-        if (data == null || !"ovis".equals(data.getScheme()) || !"account".equals(data.getHost()) || !"/callback".equals(data.getPath())) return;
+        if (data == null) return;
         PluginCall call = waiting;
-        if (call == null) return;
-        // another app can send this address too: only this sign-in's own return, with a code or an error, ends the wait
-        String state = data.getQueryParameter("state");
-        boolean answered = data.getQueryParameter("code") != null || data.getQueryParameter("error") != null;
-        if (expectedState == null || !expectedState.equals(state) || !answered) return;
+        if (call == null || !isOwnReturn(data.toString(), expectedState)) return;
         waiting = null;
         expectedState = null;
         JSObject result = new JSObject();
         result.put("url", data.toString());
         release(call);
         call.resolve(result);
+    }
+
+    /**
+     * Whether `url` is the return of the sign-in waiting on `expectedState`. Another app can send
+     * this address too: only ovis://account/callback naming that state, with a code or an error,
+     * counts. The account service puts the fields in the fragment; as in native.ts, a non-empty
+     * fragment is read, else the query.
+     */
+    static boolean isOwnReturn(String url, String expectedState) {
+        if (expectedState == null) return false;
+        URI uri;
+        try {
+            uri = new URI(url);
+        } catch (URISyntaxException error) {
+            return false;
+        }
+        if (!"ovis".equals(uri.getScheme()) || !"account".equals(uri.getHost()) || !"/callback".equals(uri.getPath())) return false;
+        String fragment = uri.getRawFragment();
+        String fields = fragment != null && !fragment.isEmpty() ? fragment : uri.getRawQuery();
+        if (fields == null) return false;
+        String state = null;
+        boolean answered = false;
+        for (String pair : fields.split("&")) {
+            int equals = pair.indexOf('=');
+            String name;
+            String value;
+            try {
+                name = URLDecoder.decode(equals < 0 ? pair : pair.substring(0, equals), "UTF-8");
+                value = URLDecoder.decode(equals < 0 ? "" : pair.substring(equals + 1), "UTF-8");
+            } catch (UnsupportedEncodingException | IllegalArgumentException error) {
+                return false;
+            }
+            if ("state".equals(name) && state == null) state = value;
+            if ("code".equals(name) || "error".equals(name)) answered = true;
+        }
+        return answered && expectedState.equals(state);
     }
 }

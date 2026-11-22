@@ -1,24 +1,18 @@
 /**
- * Fixture fleets for the hosted relay app's dashboard (scripts/relay-dashboard-browser-qa.ts): the PCs an account's
- * directory lists and the pairings this device holds, with no live service behind them. The directory is answered
- * from these specs at request time (times relative to that moment), so "seen a minute ago" and "new in your account"
- * hold however long a run takes; the pairings are written into the page's IndexedDB as lib/relay/device.ts writes
- * them, with a real non-extractable key. The fleet names follow the capture matrix's (F0, F4, FREADY, F20, FLONG,
- * FUNKNOWN, FLEET50, FLEET200, FLEET1000), so a state name means the same fleet in both.
+ * the pairings are written into the page's IndexedDB as lib/relay/device.ts writes
+ * them, with a real non-extractable key.
  */
 import type { Page } from "playwright-core";
 import type { FakePc } from "../shared/account-service-fake.ts";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
 
-/** The account a GitHub sign-in at the fake service turns out to be. */
 export const ACCOUNT = "acct_github";
 export const GLOBAL_RELAY = "wss://relay.ovis.sh";
 export const AP_RELAY = "wss://relay-ap.ovis.sh";
 const MIN = 60_000;
 const DAY = 864e5;
 
-/** One PC of a fleet. `seenAgo`/`addedAgo` in ms before the directory is read (null: never seen); `paired`: this device holds a key; `listed`: in the account's directory. */
 export interface PcSpec { readonly label: string; readonly relay: string; readonly seenAgo: number | null; readonly addedAgo: number; readonly paired: boolean; readonly listed: boolean }
 
 export type FleetName = "F0" | "F4" | "FREADY" | "F20" | "FLONG" | "FUNKNOWN" | "FLEET50" | "FLEET200" | "FLEET1000";
@@ -26,7 +20,6 @@ export type FleetName = "F0" | "F4" | "FREADY" | "F20" | "FLONG" | "FUNKNOWN" | 
 function f20(): PcSpec[] {
   const names = ["Studio desktop", "Work laptop", "Home server", "Build box", "Render node", "Media PC", "Lab NUC", "Office iMac", "Garage Pi", "Test rig A",
     "Test rig B", "CI runner 1", "CI runner 2", "Backup NAS", "Game PC", "Kids laptop", "Travel laptop", "Old MacBook", "Kitchen tablet PC", "Spare desktop"];
-  // 0-7 paired and seen now (Ready), 8-11 paired and offline 2-5 days, 12-15 seen now and not paired (Join), 16-19 never seen
   return names.map((label, i) => ({
     label, relay: i % 3 === 0 ? AP_RELAY : GLOBAL_RELAY, paired: i < 12, listed: true,
     seenAgo: i < 8 || (i >= 12 && i < 16) ? MIN : i < 12 ? (2 + (i - 8)) * DAY : null,
@@ -34,7 +27,6 @@ function f20(): PcSpec[] {
   }));
 }
 
-/** `n` PCs, every fifth on the AP relay: the first 8 paired and seen now, then seen-now unpaired, offline 1-6 days and never seen in turn. */
 function fleet(n: number): PcSpec[] {
   return Array.from({ length: n }, (_, i) => {
     const kind = i < 8 ? "ready" : (["join", "offline", "never", "join", "offline"] as const)[i % 5] ?? "join";
@@ -51,20 +43,18 @@ export const LONG_NAME = "Workstation on the third floor lab bench with a very l
 
 export const FLEETS: Readonly<Record<FleetName, readonly PcSpec[]>> = {
   F0: [],
-  // four PCs in the directory, none paired with this device: Ready 0, Needs you 4 (one of them offline)
   F4: [
     { label: "Studio desktop", relay: GLOBAL_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: false, listed: true },
     { label: "Work laptop", relay: AP_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: false, listed: true },
     { label: "Home server", relay: GLOBAL_RELAY, seenAgo: 3 * DAY, addedAgo: 7 * DAY, paired: false, listed: true },
     { label: "Old MacBook", relay: AP_RELAY, seenAgo: null, addedAgo: 7 * DAY, paired: false, listed: true },
   ],
-  // every row state: Ready (linked), Ready not in the account, offline paired, new in the account (Add), waiting (Join)
   FREADY: [
     { label: "Studio desktop", relay: GLOBAL_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: true, listed: true },
     { label: "Work laptop", relay: AP_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: true, listed: true },
     { label: "Home server", relay: GLOBAL_RELAY, seenAgo: 3 * DAY, addedAgo: 7 * DAY, paired: true, listed: true },
     { label: "Lab NUC", relay: GLOBAL_RELAY, seenAgo: null, addedAgo: 7 * DAY, paired: true, listed: false },
-    { label: "New mini PC", relay: GLOBAL_RELAY, seenAgo: MIN, addedAgo: 2 * MIN, paired: false, listed: true },
+    { label: "New mini PC", relay: GLOBAL_RELAY, seenAgo: null, addedAgo: 2 * MIN, paired: false, listed: true },
     { label: "Old MacBook", relay: AP_RELAY, seenAgo: null, addedAgo: 7 * DAY, paired: false, listed: true },
   ],
   F20: f20(),
@@ -72,24 +62,20 @@ export const FLEETS: Readonly<Record<FleetName, readonly PcSpec[]>> = {
     { label: LONG_NAME, relay: GLOBAL_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: true, listed: true },
     { label: "Render node in the basement rack that nobody remembers naming", relay: AP_RELAY, seenAgo: null, addedAgo: 7 * DAY, paired: false, listed: true },
   ],
-  // a paired PC of the account the directory has never seen (no last-seen time, no version)
   FUNKNOWN: [
     { label: "Spare desktop", relay: GLOBAL_RELAY, seenAgo: null, addedAgo: 7 * DAY, paired: true, listed: true },
     { label: "Studio desktop", relay: GLOBAL_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: true, listed: true },
   ],
-  // just under the table's large-fleet threshold (200 rows): every row stays fully rendered
   FLEET50: fleet(50),
   FLEET200: fleet(200),
   FLEET1000: fleet(1000),
 };
 
-/** A pairing this device holds, as the page's seed script writes it. */
 export interface Seed { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string; readonly listed: boolean }
 export interface FleetPc extends PcSpec { readonly server_id: string; readonly public_key_hex: string; readonly server_public_key: string }
 export interface Fleet { readonly name: FleetName; readonly pcs: readonly FleetPc[]; readonly seeds: readonly Seed[] }
 
 const made = new Map<FleetName, Fleet>();
-/** A fleet's PCs with real identities (each id derived from its key, as every PC's is), made once per run. */
 export function fleetOf(name: FleetName): Fleet {
   const known = made.get(name);
   if (known) return known;
@@ -103,7 +89,6 @@ export function fleetOf(name: FleetName): Fleet {
   return fleet;
 }
 
-/** The account directory's GET /v1/pcs answer for `fleet` at `now`. */
 export function directoryOf(fleet: Fleet, now: number): FakePc[] {
   return fleet.pcs.filter((pc) => pc.listed).map((pc) => ({
     server_id: pc.server_id, label: pc.label, public_key: pc.public_key_hex, relay: pc.relay,
@@ -113,22 +98,10 @@ export function directoryOf(fleet: Fleet, now: number): FakePc[] {
 }
 
 /**
- * Writes `seeds` into the page's IndexedDB as lib/relay/device.ts does. Signed in (`account`), under the account's
- * own key, the listed ones linked to the account; signed out, under a fresh non-extractable key of their own.
+ * Signed in (`account`), under the account's own key, the listed ones linked to the account; signed out, under a
+ * fresh non-extractable key of their own.
  */
 export async function seedPairings(page: Page, seeds: readonly Seed[], account: string | null): Promise<void> {
-  // the sign-in shows the dashboard before its key is stored: wait for the key the pairings are written under
-  if (account !== null) await page.waitForFunction(() => new Promise<boolean>((resolve) => {
-    const request = indexedDB.open("ovis-account", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("account");
-    request.onerror = () => resolve(false);
-    request.onsuccess = () => {
-      const db = request.result;
-      const read = db.transaction("account", "readonly").objectStore("account").get("key");
-      read.onsuccess = () => { db.close(); resolve(read.result !== undefined); };
-      read.onerror = () => { db.close(); resolve(false); };
-    };
-  }));
   await page.evaluate(async ({ seeds, account }) => {
     const open = (name: string, version: number, upgrade: (db: IDBDatabase) => void) => new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(name, version);

@@ -10,7 +10,6 @@ afterEach(() => mock.restore());
 
 const QUEUE_SCREEN = "• WAITING\n• Queued follow-up inputs\n  ? 2 questions · 8s\n    alt+↑ to answer\n› Ask Codex to do anything\n  GPT-6-Sol xhigh · ~/lab · Context 97% left\n";
 
-/** Codex blocked only by its collapsed question queue; `exitsOnRead`: it exits while that screen is read. */
 function codexQueue(exitsOnRead: boolean) {
   let alive = true;
   const writes: string[] = [];
@@ -23,9 +22,10 @@ function codexQueue(exitsOnRead: boolean) {
   spyOn(native, "openCodeSkillsToType").mockImplementation(async (_pane, sent) => ({ sent, skills: [] }));
   spyOn(native, "startOpenCodeWatch").mockReturnValue(null);
   spyOn(herdr, "agentPrompt").mockImplementation(async () => { throw new herdr.HerdrError("agent_blocked", "questions collapsed"); });
-  spyOn(herdr, "paneRead").mockImplementation(async () => {
+  spyOn(herdr, "paneRead").mockImplementation(async (options) => {
     if (exitsOnRead) alive = false;
-    return { text: QUEUE_SCREEN } as Awaited<ReturnType<typeof herdr.paneRead>>;
+    const text = options.format === "ansi" ? QUEUE_SCREEN.replace("Ask Codex to do anything", "\u001b[2mAsk Codex to do anything\u001b[0m") : QUEUE_SCREEN;
+    return { text } as Awaited<ReturnType<typeof herdr.paneRead>>;
   });
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, data) => { writes.push(data); });
   spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { writes.push(keys.join("+")); });
@@ -35,7 +35,6 @@ function codexQueue(exitsOnRead: boolean) {
   return { writes, send };
 }
 
-// the queue's screen is Codex's only while Codex still runs once it is read
 it("types nothing when Codex exits while its collapsed queue is read", async () => {
   const { writes, send } = codexQueue(true);
   await expect(send(false)).rejects.toMatchObject({ code: "agent_blocked" });

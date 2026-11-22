@@ -4,12 +4,10 @@ import OvisPushCore
 import UIKit
 import UserNotifications
 
-/// The open PC's push subscription for this phone, shaped like a browser's PushSubscriptionJSON
-/// ({ endpoint, expirationTime, keys: { p256dh, auth } }), so the client hands it to the PC as it
-/// does a browser's (src/lib/push.ts). The endpoint is the relay's for this phone's APNs token, one
+/// The endpoint is the relay's for this phone's APNs token, one
 /// per PC, as the relay pins each endpoint to the PC's key; the token itself stays at the relay.
 /// The keys are the phone's (OvisPushCore), shared with the extension that decrypts
-/// (OvisNotifications). Android's twin: app/android/ovis-push.
+/// (OvisNotifications).
 @objc(OvisPushPlugin)
 public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerProtocol {
     public let identifier = "OvisPushPlugin"

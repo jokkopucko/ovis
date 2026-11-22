@@ -29,7 +29,6 @@ test("a turn parsed again unchanged keeps its revision; new content or a later e
   expect(turnRevision(turn("same"))).toBe(turnRevision(structuredClone(turn("same"))));
   expect(turnRevision(turn("same"))).not.toBe(turnRevision(turn("same, and more")));
   expect(turnRevision(turn("same"))).not.toBe(turnRevision(turn("same", "2026-10-02T00:00:09Z")));
-  // rewritten to the same length, or a tool renamed: still a change
   expect(turnRevision(turn("ab"))).not.toBe(turnRevision(turn("cd")));
   const tool = (name: string): ConversationTurn => ({ role: "assistant", ts: null, parts: [{ kind: "tool", name, summary: "", input: "{}", output: "" }] });
   expect(turnRevision(tool("read"))).not.toBe(turnRevision(tool("edit")));

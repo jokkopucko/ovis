@@ -1,9 +1,7 @@
 .repo-diff-scrim {
-  /* above the Files list it opens from; a file opened from here mounts later and sits above */
   z-index: calc(var(--z-modal) + 1);
 }
 
-/* the rows are a window the user scrolls, so the dialog takes its full height for the scroll root to fill */
 .repo-diff-viewer {
   width: min(96vw, var(--dialog-w-xl));
   max-width: 100%;
@@ -29,7 +27,6 @@
   min-width: 0;
 }
 
-/* the extension never gives way: a long name is cut inside its stem */
 .repo-diff-title .modal-title {
   display: flex;
   min-width: 0;
@@ -53,7 +50,6 @@
   white-space: nowrap;
 }
 
-/* the status in words, tinted as the rows of that kind are */
 .repo-diff-status {
   flex: none;
   display: inline-flex;
@@ -107,7 +103,6 @@
   font-family: var(--font-ui);
 }
 
-/* the status and counts come with the patch: their places are kept, so the line does not jump when they land */
 .repo-diff-skeleton-status {
   width: 6em;
   height: var(--chip-h);
@@ -116,7 +111,6 @@
 
 .repo-diff-skeleton-counts { width: 4em; }
 
-/* a partial view (left plain, one column on a phone): the warning color with an icon, so it is not told by color alone */
 .repo-diff-notice {
   flex: none;
   display: inline-flex;
@@ -134,7 +128,6 @@
   height: 1.1em;
 }
 
-/* the folder gets only the room left, so it gives way first, from its start */
 .repo-diff-path {
   flex: 1 1 0;
   min-width: 0;
@@ -149,7 +142,6 @@
   .repo-diff-path > span { visibility: hidden; }
 }
 
-/* the header's actions stay quiet beside the name: dim until pointed at, pressed or on */
 .repo-diff-action {
   flex: none;
   color: var(--text-dim);
@@ -179,7 +171,6 @@
   color: var(--accent);
 }
 
-/* Split on a phone: offered and declined in place, with the reason as its tooltip and a note in the meta line */
 .repo-diff-styles > button:disabled {
   opacity: 0.55;
   cursor: default;
@@ -203,7 +194,6 @@
   text-align: center;
 }
 
-/* the patch on its way: rows the size of the diff's, a number and a line each, so the dialog holds its shape */
 .repo-diff-loading {
   display: flex;
   flex-direction: column;
@@ -221,7 +211,6 @@
 
 .repo-diff-loading-number { width: var(--space-6); }
 
-/* the patch as one text, selected for a copy by hand when the clipboard is out of reach */
 .repo-diff-select-source {
   flex: 1 1 auto;
   min-height: 0;
@@ -239,12 +228,10 @@
   resize: none;
 }
 
-/* Find in this diff: the terminal find bar's markup and tokens, between the header and the rows */
 .repo-diff-find .find-bar-count {
   display: inline-flex;
   flex-wrap: wrap;
   column-gap: var(--space-2);
-  /* clear of Previous's focus ring, which is drawn outside the button */
   margin-inline-end: var(--space-2);
 }
 
@@ -252,9 +239,6 @@
   color: var(--text);
 }
 
-/* the bar's own words are read, not glanced at: the body size on a computer, the reading size on a
-   phone (below); its name stays in view beside the query once something is typed; and its buttons
-   keep a finger's gap between them */
 .repo-diff-find .find-bar-controls {
   gap: var(--space-2);
 }
@@ -270,13 +254,20 @@
   white-space: nowrap;
 }
 
+/* the query is read at the body size too. On iOS a pressed or focused field is armed to at least
+   --fs-input (lib/viewport.ts, styles.css .input[data-armed]) so Safari does not zoom the page into it:
+   this size leaves an armed field alone, and --field-fs hands the armed rule the body size to keep
+   when it is the larger one */
 @media (min-width: 641px) {
   .repo-diff-find .input {
+    --field-fs: var(--fs-md);
+  }
+
+  .repo-diff-find .input:not([data-armed]) {
     font-size: var(--fs-md);
   }
 }
 
-/* on a narrow screen the name and Close keep the first row; the actions take the second */
 @media (max-width: 600px) {
   .repo-diff-header {
     display: grid;
@@ -286,7 +277,6 @@
   }
 
   .repo-diff-header .repo-diff-title { grid-area: title; }
-  /* the meta line has more than a phone's width holds: it wraps, and the folder takes a line of its own */
   .repo-diff-meta {
     flex-wrap: wrap;
     row-gap: var(--space-1);
@@ -313,8 +303,6 @@
   .repo-diff-header .repo-diff-actions::-webkit-scrollbar {
     display: none;
   }
-  /* the row holds the layout switch and four 44px actions only with the switch's words gone from
-     view (a screen reader still has them); Split is declined on a phone anyway */
   .repo-diff-style-word {
     position: absolute;
     width: 1px;
@@ -361,13 +349,11 @@
     height: var(--touch-target);
   }
 
-  /* the find query is a touch target as tall as the buttons beside it */
   .repo-diff-find .input {
     min-height: var(--touch-target);
   }
 }
 
-/* a note on a line (#1603): the diff body picks a line with the arrow keys, so it shows when it has the focus */
 .repo-diff-body:focus-visible {
   outline: var(--ring);
   outline-offset: calc(var(--ring-offset) * -1);
@@ -397,7 +383,6 @@
 }
 .repo-diff-line-note-plus svg { width: 80%; height: 80%; }
 
-/* the picked line and Add a note, under the rows */
 .repo-diff-line-bar {
   flex: none;
   display: flex;
@@ -420,7 +405,6 @@
   gap: var(--space-1);
 }
 
-/* the small editor: docked along the bottom edge, where a phone's keyboard meets it */
 .repo-diff-line-note-form {
   flex: none;
   display: grid;
@@ -472,7 +456,6 @@
   gap: var(--space-2);
 }
 
-/* on a touch screen the line's action and the editor's buttons are full touch targets */
 @media (pointer: coarse) {
   .repo-diff-line-note-open,
   .repo-diff-line-note-actions .btn {

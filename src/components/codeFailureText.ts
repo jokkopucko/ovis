@@ -3,13 +3,11 @@ import { TYPED_CODE_FAILURES, type TypedCodeFailure } from "../../shared/relay-c
 
 export type { TypedCodeFailure };
 
-/** The failure an API error code `typed_code_<failure>` names (server/machine-api.ts); null for any other. */
 export function typedCodeFailure(code: string | null): TypedCodeFailure | null {
   const failure = code?.startsWith("typed_code_") ? code.slice("typed_code_".length) : null;
   return TYPED_CODE_FAILURES.find((known) => known === failure) ?? null;
 }
 
-/** What a code screen (the hosted app's, Settings → Devices and PCs) says when the last code gave no PC. */
 export function codeFailureText(t: Translate, failure: TypedCodeFailure): string {
   switch (failure) {
     case "not-a-code": return t("A code has ten letters and digits, like 7K3QD-M2XHA.");

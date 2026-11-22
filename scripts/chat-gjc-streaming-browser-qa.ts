@@ -1,4 +1,3 @@
-/** GJC-shaped records appended one at a time, read by the real transcript parser and drawn by the real ChatView (#1388). */
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +57,6 @@ function write(record: string, rewrite: boolean): number {
 }
 
 interface Frame { y: number | null; expanded: string | null; bottom: number }
-/** `group`: once the head's todo update is folded into a run (#1846), the run's head stands in its place */
 interface Track { head?: string; key?: string; group?: boolean }
 
 function sampleScript(track: Track): Frame {
@@ -85,7 +83,6 @@ async function still(page: Page, track: Track): Promise<Frame> {
   }, { track, sample: sampleScript.toString() });
 }
 
-/** Every frame from the refresh until the answer holding `bytes` is drawn and the view has held still for 10 frames. */
 async function step(page: Page, bytes: number, track: Track): Promise<Frame[]> {
   return page.evaluate(async ({ bytes, track, sample }) => {
     const read = new Function("track", `return (${sample})(track)`) as (track: Track) => Frame;
@@ -115,7 +112,6 @@ const RECORDS = (): Array<[string, string]> => [
   ["result gamma", result("c3", "gamma", 25)],
   ["call delta", call("c4", "src/delta.ts")],
 ];
-/** A todo update the reader opened, then the next one, which folds both into one Plan row. */
 const TODO_RECORDS = (): Array<[string, string]> => [
   ["call todo 2", todoCall("t2", [{ op: "done", task: TODO[0] }])],
   ["result todo 2", todoResult("t2", 1)],
@@ -155,7 +151,6 @@ try {
   for (const width of [1440, 390] as const) {
     for (const scenario of ["reading", "short", "following", "scrolled", "todo", "jump"] as const) {
       for (const rewrite of [false, true]) {
-        // Jump to latest straight after opening, before any record: nothing to rewrite
         if (scenario === "jump" && rewrite) continue;
         const name = `${width} ${scenario} ${rewrite ? "rewrite" : "append"}`;
         const opens = scenario === "reading" || scenario === "short" || scenario === "todo" || scenario === "jump";
@@ -220,10 +215,7 @@ try {
           track = { key };
         }
         if (scenario === "jump") {
-          // the opened tool's own layout is no longer held once the reader is back at the end: a row
-          // that grows afterwards (a whole output, a late image) is followed with no record between
           const jump = page.locator(".chat-virtual-jump");
-          // each wait says which step never reached the end, and how far from it the view stayed
           const atEnd = async (step: string) => {
             try { await page.waitForFunction(() => { const node = document.querySelector(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; }, undefined, { timeout: 5000 }); return true; }
             catch { expect(false, `${name}: ${step} reaches the end (bottom ${(await still(page, {})).bottom})`); return false; }
@@ -231,8 +223,6 @@ try {
           await jump.click();
           await atEnd("the first Jump");
           await still(page, {});
-          // closed while following (its own layout is held), opened again, then back to the end: the
-          // earlier hold is not left behind either. Clicked in place, so no scroll moves the reader.
           const head = page.locator(".work-row-head", { hasText: "beta.ts" });
           await head.evaluate((button: HTMLElement) => button.click());
           await still(page, {});
@@ -245,8 +235,6 @@ try {
           await grow();
           const end = await still(page, {});
           expect(end.bottom <= 1, `${name}: after Jump to latest, a row that grows with no new record is followed (bottom ${end.bottom})`);
-          // closed while following (the hold is set), then scrolled away and back with Jump: Jump lets
-          // that hold go too
           await head.evaluate((button: HTMLElement) => button.click());
           await still(page, {});
           const box = (await page.locator(".chat-view").boundingBox())!;
@@ -261,14 +249,12 @@ try {
             await grow();
             const back = await still(page, {});
             expect(back.bottom <= 1, `${name}: after closing, scrolling away and Jump to latest, a row that grows is followed (bottom ${back.bottom})`);
-            // the same, coming back to the end by hand instead of Jump
             await head.evaluate((button: HTMLElement) => button.click());
             await jump.click();
             await atEnd("Jump after opening again");
             await still(page, {});
             await head.evaluate((button: HTMLElement) => button.click());
             await still(page, {});
-            // over the transcript's upper part: the way-back button that shows once away takes no wheel
             await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.3);
             await page.mouse.wheel(0, -400);
             await still(page, {});
@@ -303,10 +289,8 @@ try {
         }
         if (scenario === "short") expect(steps.at(-1)!.bottom > 1, `${name}: the records outgrew a chat that fit the screen when the tool was opened (bottom ${steps.at(-1)!.bottom})`);
         if (scenario === "todo") {
-          // the run the next update formed is open, and in it the update the reader opened still is
           const attempts = await page.locator("[data-todo-group] .work-todo-attempts .work-row-head").evaluateAll((heads) => heads.map((head) => head.getAttribute("aria-expanded")));
           expect(JSON.stringify(attempts) === JSON.stringify(["true", "false"]), `${name}: the opened update stays open inside its Plan row (${JSON.stringify(attempts)})`);
-          // and keeps the keyboard's focus: the row the reader clicked moved into the run, the focus with it (#1601)
           const focused = await page.evaluate(() => document.activeElement === document.querySelector("[data-todo-group] .work-todo-attempts .work-row-head") ? "attempt" : document.activeElement?.tagName ?? "none");
           expect(focused === "attempt", `${name}: the focus stays on the update the reader opened (${focused})`);
         }

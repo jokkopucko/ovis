@@ -16,10 +16,8 @@ const PAGE = `<!doctype html>
 </html>
 `;
 
-// a browser script's fixture page, which it builds through vite.config.ts (scripts/math-browser-qa.ts and others)
 const UNTITLED_PAGE = '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/main.ts"></script></body></html>';
 
-/** A page, an app module and a worker, built by Vite with this plugin and the worker stamp, as vite.config.ts orders them. */
 async function buildFixture(base: string, page: string = PAGE): Promise<{ html: string; files: string[]; worker: string; boot: string }> {
   const root = mkdtempSync(join(tmpdir(), "herdr-theme-boot-build-"));
   try {
@@ -79,7 +77,6 @@ describe("theme boot script build", () => {
       expect(bootstrapFileName(a)).toMatch(/^assets\/theme-bootstrap-[0-9a-f]{10}\.js$/);
       expect(bootstrapFileName(a)).not.toBe(bootstrapFileName(b));
       expect(bootstrapFileName(again)).toBe(bootstrapFileName(a));
-      // a classic script: nothing imported or exported at its top level
       expect(a).not.toMatch(/^\s*(import|export)\b/m);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -96,7 +93,6 @@ describe("theme boot script build", () => {
       expect(html).toContain(tag);
       const head = html.slice(0, html.indexOf("</head>"));
       expect(head).toContain(tag);
-      // ahead of every stylesheet and module script Vite adds
       for (const later of ['rel="stylesheet"', 'type="module"']) {
         expect(head).toContain(later);
         expect(head.indexOf(tag)).toBeLessThan(head.indexOf(later));

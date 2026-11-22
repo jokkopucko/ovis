@@ -4,7 +4,6 @@
  * in the roster's order with its pins and folds; that nothing is typed into a terminal, focused in herdr,
  * moved, stored or sent; that a live roster change and an offline PC show through it; and the screenshots
  * of every state at 390 and 1440, light and dark, Korean at 390 (UI_EVIDENCE_DIR).
- * Tags: sidebar, filter, agents, pins, folds, browser, regression, visual.
  * Usage: UI_EVIDENCE_DIR=<dir> bun scripts/sidebar-filter-demo-regression.ts   (SIDEBAR_FILTER_CASE=en|ko runs one half)
  */
 import assert from "node:assert/strict";
@@ -15,10 +14,10 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
+import { sheetRisen } from "./settings-page.ts";
 
-// All PCs reuse the demo's herdr IDs under their own names and labels. Only this disposable demo
-// fixture rewrites its roster; the app and its storage code are the production client. No live
-// session is read, and nothing leaves the loopback server below.
+// No live session is read, and nothing leaves the loopback server below.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-filter-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const LONG_LABEL = "release-candidate-verification-pipeline-with-an-unbroken-name-that-keeps-going";
@@ -85,6 +84,14 @@ const patch = `(() => {
         const message = JSON.parse(event.data);
         if (message.type === "machines") { last = message.machines; message.machines = roster(last); }
         this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(message) }));
+        // the build PC is the laptop's roster under other names: a pane's own status change reaches both, as a roster does,
+        // and stays in the roster this fixture sends again after an edit
+        if (message.machine_id === "local" && message.message?.type === "pane-status") {
+          const { pane_id, agent_status, finish_id } = message.message;
+          const snap = last?.find((item) => item.id === "local")?.snapshot;
+          for (const entry of [...(snap?.panes ?? []), ...(snap?.agents ?? [])]) if (entry.pane_id === pane_id) Object.assign(entry, { agent_status, ...(finish_id === undefined ? {} : { finish_id }) });
+          this.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...message, machine_id: "build" }) }));
+        }
       };
       this.inner.onerror = (event) => this.onerror?.(event);
       this.inner.onopen = (event) => this.onopen?.(event);
@@ -131,10 +138,8 @@ const agentRows = (page: Page): Locator => page.locator(".agents-sidebar .agent-
 const filterInput = (page: Page): Locator => page.locator(".sidebar-filter-input");
 const clearButton = (page: Page): Locator => page.locator(".sidebar-filter-clear");
 
-/** Every row the lists draw, in document order: the roster as the user sees it, to compare before, during and after a filter. */
 async function rosterView(page: Page) {
   return page.evaluate(() => {
-    // a PC the filter hides stays mounted, hidden; the user sees only the groups that show
     const groups = [...document.querySelectorAll<HTMLElement>(".machine-list .machine-group:not([hidden])")].map((group) => ({
       name: group.querySelector(".machine-name")?.textContent ?? "",
       offline: group.classList.contains("is-offline"),
@@ -163,7 +168,6 @@ async function rosterView(page: Page) {
       context: row.classList.contains("is-filter-context"),
       offline: row.classList.contains("is-offline"),
       note: row.querySelector(".sidebar-filter-note")?.textContent ?? null,
-      // drawn, not only in the document: a folded Agents list keeps its rows hidden
       visible: row.getClientRects().length > 0,
     }));
     const agentsExpanded = document.querySelector(".agent-section-toggle")?.getAttribute("aria-expanded") === "true";
@@ -173,7 +177,8 @@ async function rosterView(page: Page) {
 
 /** Everything this page keeps: folds, pins and the rest, to prove a filter writes none of it and the query is nowhere. */
 const storageView = (page: Page) => page.evaluate(() => {
-  const read = (store: Storage) => Object.fromEntries(Object.keys(store).filter((key) => key !== "ovis:chat-positions").sort().map((key) => [key, store.getItem(key)]));
+  const apart = new Set(["ovis:chat-positions", "ovis:agent-state-since"]);
+  const read = (store: Storage) => Object.fromEntries(Object.keys(store).filter((key) => !apart.has(key)).sort().map((key) => [key, store.getItem(key)]));
   return { local: read(localStorage), session: read(sessionStorage) };
 });
 
@@ -187,9 +192,9 @@ const fixture = (page: Page, call: string) => page.evaluate((expression) => {
   return run((window as unknown as { sidebarFilterFixture: unknown }).sidebarFilterFixture);
 }, call);
 
-const DRAWER_LABEL: Record<Language, { open: string; close: string }> = {
-  en: { open: "Open workspace list", close: "Close workspace list" },
-  ko: { open: "워크스페이스 목록 열기", close: "워크스페이스 목록 닫기" },
+const DRAWER_LABEL: Record<Language, { open: string }> = {
+  en: { open: "Open workspace list" },
+  ko: { open: "워크스페이스 목록 열기" },
 };
 
 async function openDrawer(page: Page, language: Language = "en"): Promise<void> {
@@ -197,8 +202,8 @@ async function openDrawer(page: Page, language: Language = "en"): Promise<void> 
   await page.locator(".sidebar.is-open").waitFor();
 }
 
-async function closeDrawer(page: Page, language: Language = "en"): Promise<void> {
-  await page.getByRole("button", { name: DRAWER_LABEL[language].close, exact: true }).click();
+async function closeDrawer(page: Page): Promise<void> {
+  await page.mouse.click(page.viewportSize()!.width - 8, page.viewportSize()!.height / 2);
   await page.locator(".sidebar.is-open").waitFor({ state: "detached" });
 }
 
@@ -220,6 +225,16 @@ async function waitWorkspaceIds(page: Page, predicate: string): Promise<void> {
 }
 
 interface Scene { phone: boolean; theme: Theme; language: Language }
+/**
+ * The demo ends the api pane's turn 4.5 s after each load (site/demo/transport.ts), on both PCs' rows (the fixture
+ * passes its status to the build PC's copy too) or already in the first roster when that comes later, and both rows
+ * leave for the resting part. Every roster a step compares with another is taken after that, never across it.
+ */
+async function turnEnded(page: Page): Promise<void> {
+  await page.waitForFunction((api) => ["local", "build"].every((machine) =>
+    document.querySelector(`.agents-sidebar .agent-item[data-machine="${machine}"][data-pane="${api}"] [data-status="done"]`) !== null), panes.api);
+}
+
 async function newPage(browser: Browser, scene: Scene, search: string, stored: Record<string, string> = {}): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
   const context = await browser.newContext(scene.phone
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: scene.language === "ko" ? "ko-KR" : "en-US", colorScheme: scene.theme }
@@ -237,6 +252,7 @@ async function newPage(browser: Browser, scene: Scene, search: string, stored: R
   if (scene.phone) await openDrawer(page, scene.language);
   await agentRows(page).first().waitFor({ state: "attached" });
   await page.waitForFunction(() => document.querySelectorAll(".machine-list .machine-group").length >= 2);
+  await turnEnded(page);
   await page.evaluate(() => document.fonts.ready);
   return { context, page, errors };
 }
@@ -246,7 +262,6 @@ function pngSize(file: string): { width: number; height: number } {
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
-// the demo's timeline raises a finish droplet at its own moment, over the drawer's top; the shots are of the sidebar, so it is not drawn
 const DROPLET_HIDDEN = ".droplet { visibility: hidden !important; }";
 
 async function capture(page: Page, scene: Scene, state: string): Promise<void> {
@@ -255,7 +270,6 @@ async function capture(page: Page, scene: Scene, state: string): Promise<void> {
   const file = `sidebar-filter-${scene.phone ? 390 : 1440}-${scene.theme}${scene.language === "ko" ? "-ko" : ""}-${state}.png`;
   const path = join(evidence, file);
   await page.evaluate(() => document.fonts.ready);
-  // a drawer still sliding in (or any other finite transition) settles first; endless ones (a spinner) are not waited on
   await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
   // a touch device's emulated pointer is drawn into the screenshot where the last tap left it: it leaves the page first
   // (a held button keeps its :active state), and the shot waits for the frame that draws it gone
@@ -270,11 +284,6 @@ async function capture(page: Page, scene: Scene, state: string): Promise<void> {
   manifest.push({ file, ...pngSize(path), theme: scene.theme, language: scene.language, viewport: scene.phone ? 390 : 1440, state, sha256: hasher.digest("hex"), capturedAt: new Date().toISOString() });
 }
 
-/**
- * What a screenshot cannot show, read in the page: computed font sizes, WCAG contrast of each text (and the clear's
- * glyph) over the background it sits on, hit rectangles, accessible names and whether the words can be selected.
- * Colours go through a canvas so any CSS colour form resolves to sRGB; a translucent layer is blended over the next.
- */
 async function measure(page: Page): Promise<Record<string, unknown>> {
   return await page.evaluate(() => {
     const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
@@ -296,14 +305,12 @@ async function measure(page: Page): Promise<Record<string, unknown>> {
     };
     const luminance = (c: [number, number, number]) => { const [r, g, b] = c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
     const contrast = (a: [number, number, number], b: [number, number, number]) => { const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m); return Math.round(((x! + 0.05) / (y! + 0.05)) * 100) / 100; };
-    // a dimmed group (an offline PC) fades its words with opacity: the colour is blended by every opacity over it
     const opacity = (el: Element): number => { let value = 1; for (let node: Element | null = el; node; node = node.parentElement) value *= parseFloat(getComputedStyle(node).opacity); return value; };
     const text = (el: Element | null, colorOf: (style: CSSStyleDeclaration) => string = (style) => style.color) => {
       if (!el) return null;
       const style = getComputedStyle(el), bg = background(el), [r, g, b, a] = rgba(colorOf(style)), fg = over([r, g, b, a * opacity(el)], bg), box = el.getBoundingClientRect();
       return { text: (el.textContent ?? "").trim().slice(0, 60), fontSizePx: parseFloat(style.fontSize), contrast: contrast(fg, bg), userSelect: style.userSelect || style.webkitUserSelect, width: Math.round(box.width * 10) / 10, height: Math.round(box.height * 10) / 10 };
     };
-    // a control's edge against what is around it (the panel) and what it holds (its own fill)
     const edge = (el: Element | null) => {
       if (!el) return null;
       const style = getComputedStyle(el), around = el.parentElement ? background(el.parentElement) : [255, 255, 255] as [number, number, number], fill = background(el), line = over(rgba(style.borderTopColor), around);
@@ -315,7 +322,6 @@ async function measure(page: Page): Promise<Record<string, unknown>> {
     const svg = clear?.querySelector("svg") ?? null;
     return {
       input: { ...text(input), placeholder: input.value === "" ? text(input, () => getComputedStyle(input, "::placeholder").color) : null, accessibleName: input.getAttribute("aria-label") ?? input.labels?.[0]?.textContent ?? null, placeholderText: input.placeholder, type: input.type, width: inputBox.width, height: inputBox.height, suggestions: input.list?.options.length ?? 0 },
-      // the glass in the field's leading cell stands for its word: no label beside the field
       glass: (() => {
         const glass = document.querySelector(".sidebar-filter-glass");
         if (!glass) return null;
@@ -328,10 +334,8 @@ async function measure(page: Page): Promise<Record<string, unknown>> {
       contextAgent: [...document.querySelectorAll(".agent-item.is-filter-context .agent-title")].slice(0, 3).map((el) => text(el)),
       matchedWorkspace: [...document.querySelectorAll(".workspace-group:not(.is-filter-context) > .workspace-header .workspace-name")].slice(0, 3).map((el) => text(el)),
       noMatch: text(document.querySelector(".sidebar-filter-empty")),
-      // the space between an agent row's title and its Selected tag
       agentNoteGap: [...document.querySelectorAll(".agent-item .sidebar-filter-note")].map((note) => Math.round((note.getBoundingClientRect().left - note.closest(".agent-item")!.querySelector(".agent-title")!.getBoundingClientRect().right) * 10) / 10),
       inputEdge: edge(input),
-      // the roster's own rows and states, as they were before the filter (visual/out-of-scope.md)
       rosterWorkspace: text(document.querySelector(".machine-group:not([hidden]) .workspace-group > .workspace-header .workspace-name")),
       rosterAgent: text(document.querySelector(".agents-sidebar .agent-item .agent-title")),
       offlineWorkspace: text(document.querySelector(".machine-group.is-offline:not([hidden]) .workspace-name")),
@@ -405,22 +409,19 @@ const subsequence = <T>(shown: readonly T[], original: readonly T[]): boolean =>
   return true;
 };
 
-/** The repository key of the demo's checkout-api group, for the fold's storage key (Sidebar.tsx). */
 const repoKeyOf = (page: Page, workspaceId: string) => page.evaluate((id) => {
   const roster = (window as unknown as { sidebarFilterFixture: { roster(): { snapshot: { workspaces: { workspace_id: string; worktree?: { repo_key: string } | null }[] } }[] } }).sidebarFilterFixture.roster();
   return roster[0]!.snapshot.workspaces.find((workspace) => workspace.workspace_id === id)?.worktree?.repo_key ?? null;
 }, workspaceId);
 
 /**
- * The clear held down for its pressed shot, then let go. A mouse holds it on a desktop. A phone is a touch
- * screen: its shot hides the pointer by moving it away, and a held pointer moved over a list that scrolls is a
- * pan, which a touch screen never turns into a tap; so the pressed look is the browser's own :active, forced on
- * the clear for the shot, and the clear is then tapped.
+ * A phone is a touch screen: its shot hides the pointer by moving it away, and a held pointer moved over a list
+ * that scrolls is a pan, which a touch screen never turns into a tap; so the pressed look is the browser's own
+ * :active, forced on the clear for the shot, and the clear is then tapped.
  */
 async function pressClear(page: Page, scene: Scene): Promise<void> {
   const box = (await clearButton(page).boundingBox())!;
   if (!scene.phone) {
-    // the keyboard's focus ring leaves first, so the shot shows the press alone
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
@@ -447,9 +448,6 @@ async function happyPath(browser: Browser, scene: Scene): Promise<void> {
   const pins = JSON.stringify([`local:workspace:w1H`, `build:${panes.omp}`]);
   const { context, page, errors } = await newPage(browser, scene, `pane=${encodeURIComponent(WEB)}`, { "ovis:sidebar-agent-pins": pins });
   try {
-    // the demo ends the api pane's turn a few seconds after load (site/demo/transport.ts) and the Agents list reorders
-    // when it does: the roster every later step is compared with is the one after that, the Laptop's row done
-    await page.locator(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${panes.api}"] [data-status="done"]`).waitFor({ state: "attached", timeout: 15_000 });
     const before = await rosterView(page);
     const storageBefore = await storageView(page);
     assert.equal(before.groups.map((group) => group.name).join(","), "Laptop,Build PC", `${name}: two connected PCs`);
@@ -474,15 +472,12 @@ async function happyPath(browser: Browser, scene: Scene): Promise<void> {
     assert.equal(during.selectedPane, WEB, `${name}: filtering changes no selection`);
     const laptop = during.groups[0]!, build = during.groups[1]!;
     assert.equal(laptop.name, "Laptop"); assert.equal(build.name, "Build PC");
-    // the laptop: the pinned flaky worktree stays in its card, then the repository head as context over the selected worktree;
-    // the build PC: its head as context over its matching worktree. The pinned build agent is no match and waits.
     assert.deepEqual(laptop.workspaces.map((row) => [row.id, row.pinned, row.nested, row.context, row.note]), [["w1H", true, false, false, null], ["w1C", false, false, true, null], ["w1D", false, true, true, "Selected"]], `${name}: laptop rows under the filter`);
     assert.deepEqual(build.workspaces.map((row) => [row.id, row.nested, row.context]), [["w1C", false, true], ["w1H", true, false]], `${name}: build PC rows under the filter`);
     assert.deepEqual(during.agents.map((row) => [row.machine, row.pane, row.pinned, row.context, row.note]), [["local", WEB, false, true, "Selected"], ["local", panes.flaky, false, false, null], ["build", panes.flaky, false, false, null]], `${name}: agent rows under the filter`);
     assert.ok(subsequence(laptop.workspaces.filter((row) => !row.pinned).map((row) => row.id), before.groups[0]!.workspaces.filter((row) => !row.pinned).map((row) => row.id)), `${name}: laptop rows keep their order`);
     assert.ok(subsequence(during.agents.map((row) => `${row.machine}:${row.pane}`), before.agents.map((row) => `${row.machine}:${row.pane}`)), `${name}: agent rows keep their order`);
     assert.ok(laptop.workspaces.every((row) => row.draggable !== "true" && row.shortcuts === null), `${name}: no row can be moved while the filter is on`);
-    // the rows kept are drawn, not only kept: a phone's folded Agents list opens for the filter's time
     assert.ok(during.agentsExpanded && during.agents.every((row) => row.visible), `${name}: every kept agent row is visible: ${JSON.stringify(during.agents)}`);
     if (scene.phone) assert.equal(before.agentsExpanded, false, `${name}: a phone's Agents list starts folded`);
     assert.equal(await pickerArrowDrawn(page), false, `${name}: the browser's suggestions arrow is not drawn beside the clear`);
@@ -510,7 +505,6 @@ async function happyPath(browser: Browser, scene: Scene): Promise<void> {
     assert.equal(await input.inputValue(), "", `${name}: Escape clears the field`);
     assert.deepEqual(await rosterView(page), { ...before, activeIsFilter: true }, `${name}: Escape brings the roster back too`);
     if (scene.phone) {
-      // the field's Escape clears it in place; only the empty field's Escape is the drawer's
       assert.equal(await page.locator(".sidebar.is-open").count(), 1, `${name}: Escape in a field with words leaves the drawer open`);
       await page.keyboard.press("Escape");
       await page.locator(".sidebar.is-open").waitFor({ state: "detached" });
@@ -558,7 +552,6 @@ async function selectedNonMatch(browser: Browser, scene: Scene): Promise<void> {
     const measured = await measure(page);
     assertMeasured(measured, scene.phone, name);
     report(`measurements-zero-matches-${scene.phone ? 390 : 1440}-${scene.theme}${scene.language === "ko" ? "-ko" : ""}`, measured);
-    // a match inside the fold shows it, and the fold is still not written
     await clearButton(page).click();
     await input.pressSequentially("flaky");
     await waitWorkspaceIds(page, 'ids.join(",") === "w1C,w1D,w1H,w1C,w1H"');
@@ -568,7 +561,7 @@ async function selectedNonMatch(browser: Browser, scene: Scene): Promise<void> {
     if (scene.language === "ko") await capture(page, scene, "retained-selection");
     assert.deepEqual(await storageView(page), storageBefore, `${name}: the fold and everything else in storage stay as they were`);
     if (scene.phone) {
-      await closeDrawer(page, scene.language);
+      await closeDrawer(page);
       await openDrawer(page, scene.language);
       assert.equal(await input.inputValue(), "", `${name}: closing the drawer clears the filter`);
       await waitWorkspaceIds(page, `ids.length === ${before.groups.reduce((sum, group) => sum + group.workspaces.length, 0)}`);
@@ -586,6 +579,7 @@ async function selectedNonMatch(browser: Browser, scene: Scene): Promise<void> {
     if (scene.phone) await openDrawer(page, scene.language);
     await agentRows(page).first().waitFor({ state: "attached" });
     await page.waitForFunction(() => document.querySelectorAll(".machine-list .machine-group").length >= 2);
+    await turnEnded(page);
     assert.equal(await filterInput(page).inputValue(), "", `${name}: a reload starts with an empty filter`);
     assert.equal(await page.locator(".sidebar-filter-empty").count(), 0, `${name}: nothing says no match after a reload`);
     assert.deepEqual(await rosterView(page), before, `${name}: the roster is back after a reload`);
@@ -607,19 +601,17 @@ async function openWorktreeUnderFilter(browser: Browser, scene: Scene): Promise<
     await input.click();
     await input.pressSequentially("checkout-api");
     await page.waitForFunction(() => document.querySelector('.workspace-group[data-workspace="w1C"]') !== null);
-    // a checkout opened from the group's dialog under the filter opens the group for the filter's time only
-    // the group's menu: a right-click on a desktop, its ⋯ on a phone (the demo's PCs share workspace ids)
     const head = page.getByRole("region", { name: "PC Laptop" }).locator('.workspace-group[data-workspace="w1C"] > .workspace-header').first();
     if (scene.phone) {
-      // a phone's menu is a sheet of buttons
       await head.locator(".row-menu-toggle").tap();
-      await page.getByRole("dialog").getByRole("button", { name: "Open worktree…", exact: true }).tap();
+      await sheetRisen(page, ".row-sheet");
+      await page.locator(".row-sheet").getByRole("button", { name: "Open worktree…", exact: true }).tap();
     } else {
       await head.locator(".workspace-select").click({ button: "right" });
       await page.getByRole("menu").getByRole("menuitem", { name: "Open worktree…", exact: true }).click();
     }
     const dialog = page.locator(".worktree-modal");
-    await dialog.waitFor();
+    await sheetRisen(page, ".worktree-modal");
     await dialog.locator(".worktree-row:not([disabled])").first().click();
     await dialog.waitFor({ state: "detached" });
     assert.equal((await storageView(page)).local[foldKey], "1", `${name}: opening a checkout under the filter writes no fold`);
@@ -650,11 +642,9 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     await page.evaluate(() => { const list = document.querySelector<HTMLElement>(".machine-list"); if (list) list.scrollTop = 0; });
     const input = filterInput(page);
     await input.click();
-    // "tols" reaches the two tool repositories alone (the letters in order): their worktrees and agents come as descendants
     await input.pressSequentially("tols");
     await waitWorkspaceIds(page, 'ids.join(",") === "w1K,w1C,w1D,w1J,w1L,w1J,w1K,w1L"');
     const filtered = await rosterView(page);
-    // a PC whose roster has not come cannot be searched: it stays, as context, saying its state
     assert.deepEqual(filtered.groups.map((group) => [group.name, group.context]), [["Laptop", false], ["Build PC", false], ["Old PC", true], ["Rack PC", true]], `${name}: the PCs that have not answered stay as context`);
     assert.ok(filtered.agents[0]!.machine === "build" && filtered.agents[0]!.pane === panes.omp && filtered.agents[0]!.pinned, `${name}: the pinned build agent keeps its card, first`);
     assert.deepEqual(filtered.agents.map((row) => `${row.machine}:${row.pane}`), [`build:${panes.omp}`, `local:${WEB}`, `local:${panes.omp}`, `local:${panes.cli}`, `local:${panes.hermes}`, `build:${panes.cli}`, `build:${panes.hermes}`], `${name}: the selected agent and the agents of the matched repositories, in order`);
@@ -662,7 +652,6 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     await page.locator(".machine-group", { has: page.locator(".machine-name", { hasText: "Rack PC" }) }).scrollIntoViewIfNeeded();
     await capture(page, scene, "pending-pcs-filtered");
     await page.evaluate(() => { const list = document.querySelector<HTMLElement>(".machine-list"); if (list) list.scrollTop = 0; });
-    // a label changed on the build PC: a pane that now matches comes with its head, a repository that no longer matches leaves with its worktrees
     await fixture(page, `relabelPane("build", ${JSON.stringify(panes.api)}, "Toolsmith review")`);
     await waitWorkspaceIds(page, 'agents.includes("build:' + panes.api + '")');
     await fixture(page, `relabelWorkspace("build", "w1J", "ops-kit")`);
@@ -670,13 +659,11 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     const relabelled = await rosterView(page);
     assert.ok(relabelled.agents.some((row) => row.machine === "build" && row.pane === panes.api && row.title === "Toolsmith review"), `${name}: a relabelled pane is listed by its new label`);
     assert.deepEqual(relabelled.groups[1]!.workspaces.map((row) => [row.id, row.context]), [["w1C", true]], `${name}: the build PC shows the new match's head as context and nothing of the renamed repository`);
-    // an unselected row removed on the laptop leaves at once
     await fixture(page, `removePane("local", ${JSON.stringify(panes.hermes)})`);
     await waitWorkspaceIds(page, 'ids.join(",") === "w1K,w1C,w1D,w1J,w1C"');
     const removed = await rosterView(page);
     assert.ok(!removed.agents.some((row) => row.machine === "local" && row.pane === panes.hermes), `${name}: a removed pane's agent row is gone too`);
     assert.deepEqual(await storageView(page), storageBefore, `${name}: the removal prunes no pin and writes no fold`);
-    // the build PC goes away: its rows stay, say so, and cannot be driven
     await fixture(page, `disconnect("build")`);
     const buildGroup = machineGroup(page, "Build PC");
     await page.locator(".machine-list .machine-group.is-offline", { has: page.locator(".machine-name", { hasText: "Build PC" }) }).waitFor();
@@ -689,7 +676,6 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     assert.ok(await buildGroup.locator(".machine-offline[inert]").count() >= 1, `${name}: its workspace rows are inert`);
     await capture(page, scene, "offline-pc");
     report(`measurements-offline-pc-${scene.phone ? 390 : 1440}-${scene.theme}`, await measure(page));
-    // a word found only in a working directory matches nothing
     await clearButton(page).click();
     await input.pressSequentially("home/demo");
     await page.locator(".sidebar-filter-empty").waitFor();
@@ -703,19 +689,15 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     assert.equal(transport.focus, 0, `${name}: nothing called pane.focus`);
     assert.equal(transport.moves, 0, `${name}: nothing moved a workspace`);
     assert.ok(!transport.text.includes("tols"), `${name}: no query left the page`);
-    // long labels and a scrolled-to-end list and agents, for the eye
     await input.pressSequentially("e");
     await page.locator(".sidebar-filter-clear").waitFor();
     await page.evaluate(() => { const list = document.querySelector<HTMLElement>(".machine-list"); if (list) list.scrollTop = list.scrollHeight; });
-    // the pointer leaves the sidebar, so the scrolled ends show no hover
     if (!scene.phone) await page.mouse.move(1400, 880);
     await capture(page, scene, "list-end");
-    // the drawer's Agents list starts folded: open it for the eye, then scroll both lists to their ends
     if (await page.locator(".agent-section-toggle[aria-expanded=\"false\"]").count() > 0) await page.locator(".agent-section-toggle").click();
     await page.locator(".agent-list-contents:not([hidden]) .agent-item").first().waitFor();
     await page.evaluate(() => { const list = document.querySelector<HTMLElement>(".agent-list-contents"); if (list) list.scrollTop = list.scrollHeight; });
     await capture(page, scene, "agents-end");
-    // a long unbroken query scrolls inside the field, which never grows
     const fieldBox = await input.boundingBox();
     await input.fill(LONG_LABEL + LONG_TITLE);
     assert.deepEqual(await input.boundingBox(), fieldBox, `${name}: a long query does not resize the field`);
@@ -730,7 +712,6 @@ const machineGroup = (page: Page, pc: string): Locator => page.locator(".machine
 const groupRows = (view: Awaited<ReturnType<typeof rosterView>>, pc: string) => view.groups.find((group) => group.name === pc)?.workspaces.map((row) => row.id) ?? null;
 
 async function waitRoster(page: Page, what: string, predicate: (view: Awaited<ReturnType<typeof rosterView>>) => boolean): Promise<Awaited<ReturnType<typeof rosterView>>> {
-  // a bounded re-check of the drawn roster after each animation frame: the change has no event of its own
   const deadline = Date.now() + 10_000;
   for (;;) {
     const view = await rosterView(page);
@@ -740,11 +721,6 @@ async function waitRoster(page: Page, what: string, predicate: (view: Awaited<Re
   }
 }
 
-/**
- * Folds and query transitions: a PC hidden by one query is found again by its branch in the next; a match under
- * a folded parent, or a parent's match, opens the fold; a folded selected PC opens for the selection; and while the
- * filter is on, the PC's, the worktrees' and the Agents list's carets fold and open what is drawn, never the saved fold.
- */
 async function foldTransitions(browser: Browser, scene: Scene): Promise<void> {
   const name = `${scene.phone ? "phone" : "desktop"} ${scene.theme}`;
   const results: Record<string, unknown> = {};
@@ -752,7 +728,6 @@ async function foldTransitions(browser: Browser, scene: Scene): Promise<void> {
     const { context, page, errors } = await newPage(browser, scene, `pane=${encodeURIComponent(WEB)}`);
     try {
       const input = filterInput(page);
-      // the build PC's roster reads its branches; a branch-only query finds the row on both PCs
       await page.waitForFunction(() => document.querySelectorAll('.machine-list .machine-group .workspace-group[data-branch="docs/changelog"]').length >= 2);
       await input.fill("docs/changelog");
       const first = await waitRoster(page, "docs/changelog on both PCs", (view) => (groupRows(view, "Build PC") ?? []).includes("w1L") && (groupRows(view, "Laptop") ?? []).includes("w1L"));
@@ -762,7 +737,6 @@ async function foldTransitions(browser: Browser, scene: Scene): Promise<void> {
       const again = await waitRoster(page, "docs/changelog on both PCs again", (view) => (groupRows(view, "Build PC") ?? []).includes("w1L") && (groupRows(view, "Laptop") ?? []).includes("w1L"));
       assert.deepEqual(groupRows(again, "Build PC"), groupRows(first, "Build PC"), `${name}: a PC hidden by one query is found by its branch in the next`);
       results["branchAfterNoMatch"] = { first, none, again };
-      // a parent's match opens its folded worktrees, and the caret folds them for the filter's time only
       await clearButton(page).click();
       const storageBefore = await storageView(page);
       await machineGroup(page, "Laptop").getByRole("button", { name: "Collapse worktrees of checkout-api", exact: true }).click();
@@ -787,10 +761,8 @@ async function foldTransitions(browser: Browser, scene: Scene): Promise<void> {
     } finally { await context.close(); }
   }
   {
-    // the laptop's own fold is saved: the selection opens it under the filter, and its caret folds it for the filter's time
     const { context, page, errors } = await newPage(browser, scene, `pane=${encodeURIComponent(WEB)}`, { "ovis:pc-collapsed:local": "1" });
     try {
-      // the folds saved on this page; the roster that opens for the selection remembers the pane it shows, as an unfolded roster does
       const folds = async () => Object.fromEntries(Object.entries((await storageView(page)).local).filter(([key]) => key.includes("collapsed")));
       const foldsBefore = await folds();
       assert.equal(foldsBefore["ovis:pc-collapsed:local"], "1", `${name}: the laptop's fold is saved`);
@@ -807,7 +779,6 @@ async function foldTransitions(browser: Browser, scene: Scene): Promise<void> {
       const caretFolded = await waitRoster(page, "the laptop folded by its caret", (view) => view.groups[0]!.folded && view.groups[0]!.workspaces.length === 0);
       await machineGroup(page, "Laptop").locator(".machine-toggle").click();
       const caretOpened = await waitRoster(page, "the laptop opened by its caret", (view) => !view.groups[0]!.folded && (groupRows(view, "Laptop") ?? []).includes("w1H"));
-      // the Agents list's caret folds it for the filter's time as well
       await page.locator(".agent-section-toggle").click();
       const agentsFolded = await waitRoster(page, "the Agents list folded", (view) => !view.agentsExpanded && view.agents.every((row) => !row.visible));
       await page.locator(".agent-section-toggle").click();
@@ -821,7 +792,6 @@ async function foldTransitions(browser: Browser, scene: Scene): Promise<void> {
     } finally { await context.close(); }
   }
   {
-    // the build PC is folded from the start, so its roster has never read a branch: under a filter it reads them, hidden
     const { context, page, errors } = await newPage(browser, scene, `pane=${encodeURIComponent(WEB)}`, { "ovis:pc-collapsed:build": "1" });
     try {
       const rest = await rosterView(page);
@@ -893,7 +863,6 @@ async function koreanShots(browser: Browser): Promise<void> {
     } finally { await context.close(); }
     await selectedNonMatch(browser, current);
     {
-      // the no-match line that names the PCs that answered, in Korean
       const pending = await newPage(browser, current, `pane=${encodeURIComponent(WEB)}&loading=1&error=1`);
       try {
         await filterInput(pending.page).click();
@@ -913,15 +882,7 @@ try {
   writeFileSync(join(app, "sidebar-filter.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-filter.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   url = `http://127.0.0.1:${server.port}/`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

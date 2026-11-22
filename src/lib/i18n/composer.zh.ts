@@ -7,7 +7,6 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_ZH: Record<string, string> = {
-  "Next": "下一个",
   "Next question": "下一个问题",
   "Edit queued message": "编辑排队消息",
   "Sent to Pi · waiting for transcript": "已发送到 Pi · 正在等待写入对话记录",
@@ -18,8 +17,10 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Update this PC to use masked input.": "请更新此电脑上的应用以使用密码输入框。",
   "Check the terminal before entering the secret again.": "重新输入前，请先检查终端状态。",
   "Sent directly to this terminal. Never saved as a draft or queued.": "直接发送到此终端，不会存为草稿或加入待发队列。",
+  "This PC is not updated: what you type goes to the terminal without checking that the prompt is still there.": "此电脑上的应用尚未更新：你输入的内容会直接发送到终端，不会确认提示是否还在。",
   "Only the first {count} of {total} files were taken.": "{total} 个文件中只取了前 {count} 个。",
   "Not sent: the page that started this agent left before it was ready. Send it now or discard it.": "未发送：启动此代理的页面在其就绪前已离开。请立即发送或丢弃。",
+  "Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.": "未发送：omp 启动期间终端里有输入。请先检查终端的输入行，再发送这条消息。",
   "Not sent: the agent started for this message has ended. Review the message before sending it.": "未发送：为这条消息启动的代理已结束。发送前请先检查消息。",
   "Not sent: the pane's terminal or agent session changed. Review the message before sending it again.": "未发送：窗格的终端或代理会话已更改。再次发送前请先检查消息。",
   "Skip question": "跳过问题",
@@ -71,6 +72,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Remove {file}": "移除 {file}",
   "Message": "消息",
   "Attach": "附加",
+  "Waiting for omp to start…": "正在等待 omp 启动…",
   "Next turn": "下一轮",
   "Waits for Send now": "按“立即发送”后发送",
   "Discard saved copy": "丢弃已保存的副本",
@@ -82,6 +84,8 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Not sent: this view only watches the pane.": "未发送：此视图仅用于查看窗格。",
   "Not sent: Claude Code's input box in the terminal is not empty. Send or clear it there, then send this message.": "未发送：终端中 Claude Code 的输入框不是空的。请先在那里发送或清除，再发送这条消息。",
   "Not sent: Hermes' input in the terminal is not empty. Send or clear it there, then send this message.": "未发送：终端中 Hermes 的输入框不是空的。请先在终端里发送或清除它，然后再发送这条消息。",
+  "Not sent: the agent's input box in the terminal holds text typed there. Send or clear it there, then send this message.": "未发送：终端中代理的输入框里有已输入的文字。请先在终端里发送或清除它，然后再发送这条消息。",
+  "Not sent: Claude Code's input box in the terminal holds a paste or image it folded, whose lines are not shown here, so it cannot be sent over. Send or clear it there, then send this message.": "未发送：终端中 Claude Code 的输入框里有折叠的粘贴内容或图片，其中的行不会显示在这里，因此不能覆盖发送。请先在终端里发送或清除它，然后再发送这条消息。",
   "Not sent: Claude Code's input box in the terminal already holds “{draft}”.": "未发送：终端中 Claude Code 的输入框里已有“{draft}”。",
   "Clear it and send": "清除并发送",
   "Send it": "原样发送",
@@ -239,12 +243,12 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Question {n}": "问题 {n}",
   "Tab switched OpenCode's agent from {from} to {to}. Nothing more was typed. Check the terminal before sending again.": "Tab 键将 OpenCode 的 Agent 从 {from} 切换为 {to}。未继续输入。请先检查终端，再重新发送。",
   "OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.": "OpenCode 附加了另一个 Skill。聊天文本仍保留在这里。请先检查终端，再重新发送。",
-  // quoting a selection into the composer (lib/chatQuote.ts)
+  "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.": "已在 Grok 的队列中，排在之前的 {count} 条之后；它们发送后才会发送。未再按任何键。此副本保留在这里供查看，不会再次发送。",
+  "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.": "已在 Grok 的队列中，轮到时 Grok 会发送。未再按任何键。此副本保留在这里供查看，不会再次发送。",
   "Quote": "引用",
   "Quote it in your message": "引用到消息中",
   "Selection": "所选文本",
   "Too long to quote: shorten the message or the selection.": "太长，无法引用：请缩短消息或所选内容。",
-  // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "评论回复",
   "Add a comment": "添加评论",
   "1 comment waiting": "1 条评论等待中",

@@ -1,123 +1,19 @@
 import type { IBuffer, ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
+import { isWebLink } from "./externalLink.ts";
 import { isCodeName } from "./filePaths.ts";
-import { inMacApp, inNativeApp } from "./nativeApp.ts";
 
-/**
- * Whether this page can keep a browser tab to reuse. The iOS, Android, Mac and desktop apps hand an
- * external address to the system browser, so the window they give back is never that tab.
- */
-export function canReuseExternalLinkTab(): boolean {
-  return !inNativeApp() && !inMacApp() && !(typeof navigator !== "undefined" && /\bElectron\//.test(navigator.userAgent));
-}
-
-/** what a name is made of: letters, digits and the marks that complete them (a decomposed `é` is two) */
 const NAME = "\\p{L}\\p{N}\\p{M}_";
 /**
- * A path, optionally followed by an agent's line/column or #L reference, kept for the viewer.
- * A path with a folder in it opens on a plain click. A bare name (`README.md`) opens only on
- * Cmd+click, Ctrl+click off a Mac (`bareNameLinks`): a terminal is full of them (`ls`, `git status`, a
- * compiler's output), a tap or a click to focus the pane lands on one, and the file viewer
- * would open over the terminal for it. A chat's plain text is read the same way (BARE_PATH in
- * filePaths.ts). The character before it is matched too, not looked behind at
- * (shared/lookbehind.ts): group 1 is the link, group 2 its path.
+ * A bare name (`README.md`) opens only on Cmd+click, Ctrl+click off a Mac (`bareNameLinks`): a terminal
+ * is full of them (`ls`, `git status`, a compiler's output), a tap or a click to focus the pane lands on
+ * one, and the file viewer would open over the terminal for it. The character before it is matched too,
+ * not looked behind at (shared/lookbehind.ts): group 1 is the link, group 2 its path.
  */
 const FILE_PATH = new RegExp(`(?:^|[^${NAME}/.@~:-])(((?:~\\/|\\.{1,2}\\/|\\/)?(?:[${NAME}@.+-]+\\/)*[${NAME}@+-][${NAME}@.+-]*\\.[A-Za-z0-9]{1,8})(?::\\d+(?::\\d+)?|#L\\d+(?:-L?\\d+)?)?)(?![${NAME}/])`, "gu");
-/** `name.ext(` is a call, not a file, unless the parenthesis holds a compiler's line and column: `App.tsx(120,8)` */
 const CALL = /\s*\((?!\d+(?:,\d+)?\))/y;
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
-/** A logical line longer than this is not prose with paths in it (a minified bundle, a blob): it is left alone. */
 const MAX_LINE_CHARS = 8192;
-
-/**
- * A URI this app opens in a new tab: an http(s) address and nothing else. Both link paths in
- * PaneTerminal answer to it, so a line crafted to look like a link cannot hand the browser a
- * scheme of its own choosing (`javascript:`, `data:`, an OS handler).
- */
-export function isWebLink(uri: string): boolean {
-  return /^https?:\/\//i.test(uri);
-}
-
-/**
- * The address that opens an http(s) link of another site in the Safari app, in the iOS home-screen
- * app; null anywhere else. A home-screen app opens every new tab and every other site in a sheet
- * of its own, and only the `x-safari-https` scheme (iOS 17 and later) reaches Safari. Ovis's own
- * addresses stay in the app: Safari has none of its sign-in. The iOS app (app/) is a WebView,
- * not a home-screen app, and hands links to the system browser itself.
- */
-export function safariUrl(uri: string): string | null {
-  if (typeof navigator === "undefined" || typeof window === "undefined") return null;
-  if ((navigator as Navigator & { standalone?: boolean }).standalone !== true || inNativeApp()) return null;
-  if (!isWebLink(uri)) return null;
-  try {
-    if (new URL(uri).origin === window.location.origin) return null;
-  } catch {
-    return null;
-  }
-  return `x-safari-${uri}`;
-}
-
-/**
- * Sends a click on a link to another site to Safari in the iOS home-screen app (safariUrl), for
- * every plain `<a>` of the page. It listens on the document, below React's root, so a handler that
- * took the click first (the web panel, a file link) has already called preventDefault.
- */
-export function installSafariLinks(): () => void {
-  const onClick = (event: MouseEvent): void => {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
-    const url = link === null || link.hasAttribute("download") ? null : safariUrl(link.href);
-    if (url === null) return;
-    event.preventDefault();
-    window.location.href = url;
-  };
-  document.addEventListener("click", onClick);
-  return () => document.removeEventListener("click", onClick);
-}
-
-/**
- * Makes an http(s) link opener. Each instance owns at most one reusable tab. A browser lets a page
- * steer a tab of another site only as its opener, so the reused tab keeps its opener: the site in it
- * can see and navigate this tab. That is why reuse is a setting, off by default; a new tab has none.
- */
-export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
-  let reusable: Window | null = null;
-  const newTab = (uri: string): void => {
-    const link = document.createElement("a");
-    link.href = uri;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.click();
-  };
-  return (uri, reuse) => {
-    const safari = safariUrl(uri);
-    if (safari !== null) {
-      // Safari opens a tab of its own for each: the home-screen app can neither reuse nor steer it
-      window.location.href = safari;
-      return;
-    }
-    if (!reuse || !canReuseExternalLinkTab()) {
-      newTab(uri);
-      return;
-    }
-    try {
-      if (reusable === null || reusable.closed) {
-        reusable = window.open(uri, "_blank");
-        if (reusable === null) newTab(uri);
-        return;
-      }
-      reusable.location.href = uri;
-      reusable.focus();
-    } catch {
-      // the browser refused to open or steer that tab (say, it no longer counts this page as its opener): a click never does nothing
-      reusable = null;
-      newTab(uri);
-    }
-  };
-}
-
-/** Opens links from coding-agent chat and terminal output. */
-export const openWebLink = createWebLinkOpener();
 
 /**
  * The OSC 8 handler that keeps a hyperlink this app cannot open from being drawn as one (#739).
@@ -191,11 +87,9 @@ interface LogicalLine {
   text: string;
   /** the cell each UTF-16 unit of `text` sits in (1-based, as xterm's link ranges are) and its width */
   positions: { x: number; y: number; width: number }[];
-  /** the line's beginning scrolled off the top: its first word is the end of something longer */
   clipped: boolean;
 }
 
-/** The whole wrapped line that buffer row `lineNumber` (1-based) is part of. */
 function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
   let first = lineNumber - 1;
   while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
@@ -218,7 +112,6 @@ function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
   return { text, positions, clipped: buffer.getLine(first)?.isWrapped === true };
 }
 
-/** The runs of `text` that hold `://`, each from the whitespace before to the whitespace after: one pass. */
 function addresses(text: string): [number, number][] {
   const spans: [number, number][] = [];
   let end = 0;
@@ -234,7 +127,6 @@ function addresses(text: string): [number, number][] {
 
 type FileLink = Omit<ILink, "activate"> & { activate: (event: MouseEvent) => void };
 
-/** With `bare`, bare names are links too, followed only with its key; without it only paths with a folder are. */
 export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): FileLink[] {
   const line = logicalLine(buffer, lineNumber);
   if (line === null) return [];
@@ -248,7 +140,6 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
     const last = positions[index + shown.length - 1];
     if (!start || !last || index < lead || lineNumber < start.y || lineNumber > last.y) return;
     const found: FileLink = {
-      // a wide character's last cell is the link's end, not its first
       range: { start: { x: start.x, y: start.y }, end: { x: last.x + last.width - 1, y: last.y } },
       text: shown,
       // xterm keeps a row's links until the pointer leaves the row: the row is read again at the
@@ -273,7 +164,6 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
     const path = fileUriPath(uri);
     if (path) link(match.index, uri, path);
   }
-  // Web addresses belong to WebLinksAddon, and a file URI was read above.
   const spans = addresses(text);
   let span = 0;
   for (const found of text.matchAll(FILE_PATH)) {

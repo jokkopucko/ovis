@@ -1,7 +1,4 @@
-/**
- * The mic button and the recording pill for the composer and the terminal input line, on top
- * of useVoiceInput. Dictated text is only inserted at the caret; nothing here ever sends.
- */
+/** Dictated text is only inserted at the caret; nothing here ever sends. */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Check, Mic, Square, X } from "lucide-react";
 
@@ -13,7 +10,6 @@ import { isMacPlatform, isVoiceShortcut } from "../lib/shortcuts.ts";
 import { applyDictation, useVoiceInput, type InsertedSpan, type VoiceError, type VoiceInput, type VoiceText, type VoiceUnavailable } from "../lib/voice.ts";
 import { VOICE_MAX_SECONDS, type VoiceMode } from "../../shared/voice.ts";
 
-// literal t() calls, so the i18n test finds every key
 function errorNote(t: Translate, error: VoiceError | VoiceUnavailable): string | null {
   switch (error) {
     case "insecure": return t("Voice input needs HTTPS");
@@ -33,7 +29,6 @@ function errorNote(t: Translate, error: VoiceError | VoiceUnavailable): string |
 
 const BAR_COUNT = 7;
 
-// Mod+Shift+Space dictates into one mounted field: the focused one, else the composer, else any visible one
 interface VoiceTarget { mode: VoiceMode; box: RefObject<HTMLTextAreaElement | null>; voice: () => VoiceInput; press: () => void }
 const targets = new Set<VoiceTarget>();
 let held: VoiceTarget | null = null;
@@ -90,37 +85,24 @@ export interface DictationOptions {
   mode: VoiceMode;
   connected: boolean;
   polish: boolean;
-  /** a phone's input, short of room: the mic is there only when Settings asks for it */
   phone?: boolean;
   keywords?: () => string[];
   box: RefObject<HTMLTextAreaElement | null>;
-  /** the input's current text */
   read: () => string;
-  /** sets the text and puts the caret at `caret`, without taking focus */
   write: (value: string, caret: number) => void;
-  /** the input's character limit: a dictation that would pass it is refused whole, not cut */
   maxLength?: number;
-  /** the input's one-line note: a failed dictation's reason, null to clear it */
   onNote: (note: string | null) => void;
 }
 
 export interface Dictation {
-  /** the button and pill are shown at all: settings.voiceInput, and on auto only where dictation can work */
   shown: boolean;
   connected: boolean;
   voice: VoiceInput;
-  /** drops the polish still owed to text already in the box: the caller is sending that text as it is */
   forget: () => void;
-  /** the transcript so far, while it is being made */
   partial: string;
   press: () => void;
 }
 
-/**
- * Inserts what is said at the caret (raw first, then its polished form over it unless the user
- * edited that span meanwhile), registers the field for the desktop shortcut, cancels on Esc,
- * on unmount and when the connection drops.
- */
 export function useDictation(options: DictationOptions): Dictation {
   const t = useT();
   const { settings } = useSettings();
@@ -128,7 +110,6 @@ export function useDictation(options: DictationOptions): Dictation {
   const [partial, setPartial] = useState("");
   const latest = useRef(options);
   latest.current = options;
-  // per take: a slow polish of an earlier dictation must not land on a later one's words
   const spans = useRef(new Map<number, InsertedSpan>());
 
   const apply = useCallback((result: VoiceText): void => {
@@ -152,7 +133,6 @@ export function useDictation(options: DictationOptions): Dictation {
   const composing = useRef(false);
   const held = useRef<VoiceText[]>([]);
   const onText = useCallback((result: VoiceText): void => {
-    // behind what is still held, so a polish never lands before the raw text it rewrites
     if (composing.current || held.current.length > 0) held.current.push(result);
     else apply(result);
   }, [apply]);
@@ -181,7 +161,6 @@ export function useDictation(options: DictationOptions): Dictation {
       element.removeEventListener("compositionend", end);
     };
   }, [options.box, apply]);
-  // a flush already scheduled finds nothing to insert once the field is gone
   useEffect(() => () => { held.current = []; }, []);
 
   const voice = useVoiceInput({
@@ -194,10 +173,8 @@ export function useDictation(options: DictationOptions): Dictation {
   });
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
-  // nobody asked for the button on auto, so one that cannot work here is left out, not shown disabled
   const shown = wanted && (settings.voiceInput === "on" || voice.available);
 
-  // a transcript waiting for an IME composition to end is part of what the user cancels
   const engineCancel = voice.cancel;
   const cancel = useCallback((): void => { held.current = []; engineCancel(); }, [engineCancel]);
   const forget = useCallback((): void => { spans.current.clear(); held.current = held.current.filter((result) => result.phase === "raw"); }, []);
@@ -240,7 +217,6 @@ export function useDictation(options: DictationOptions): Dictation {
   return { shown, connected: options.connected, voice: { ...voice, cancel }, forget, partial, press };
 }
 
-/** The mic: press to talk, held (release finishes) or tapped (tap again to finish). */
 export function MicButton({ dictation, className = "", disabled = false }: { dictation: Dictation; className?: string; disabled?: boolean }) {
   const t = useT();
   const { voice, connected, press } = dictation;
@@ -315,7 +291,7 @@ function clock(totalSeconds: number): string {
 
 /**
  * Always mounted, so CSS transitions carry both ways (a cancel mid-entrance reverses) and the
- * live region exists before it speaks. `align` is the mic's side: the pill grows from there.
+ * live region exists before it speaks.
  */
 export function VoiceRecordingPill({ dictation, align }: { dictation: Dictation; align: "start" | "end" }) {
   const t = useT();

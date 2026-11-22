@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Root } from "react-dom/client";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
@@ -7,7 +7,7 @@ import type { loadRelayShell } from "../relay.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { serverIdOfPath, serverScopePath, shellModeOf, shellServiceWorker } from "../shellMode.ts";
-import { bootRelayShell, takeEntryUrl } from "./boot.ts";
+import { bootRelayShell, showStart, takeEntryUrl } from "./boot.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { testOffer } from "./device.test.ts";
@@ -35,8 +35,19 @@ describe("the shell's entry", () => {
     expect(shellEntry(`${APP}/s/not-an-id/#offer=abc`)).toEqual({ serverId: null, offer: null, damaged: true });
   });
 
+  // the mark of a code its PC pins keeps its one value, and no other
+  it("keeps the mark admission: 1 of an offer, and calls any other value of it damaged", () => {
+    const offer = { ...testOffer(), code: "123456" };
+    expect(shellEntry(encodeOffer({ ...offer, admission: 1 }, APP)).offer?.admission).toBe(1);
+    expect(shellEntry(encodeOffer(offer, APP)).offer).not.toHaveProperty("admission");
+    // an offer is written by hand here: encodeOffer would refuse these too
+    for (const value of [2, true, "1", 0]) {
+      const fragment = Buffer.from(JSON.stringify({ ...offer, admission: value })).toString("base64url");
+      expect(shellEntry(`${APP}/s/${offer.server_id}/#offer=${fragment}`)).toMatchObject({ offer: null, damaged: true });
+    }
+  });
+
   it("calls an offer forged when its key is not the one its PC's id is derived from", () => {
-    // Given a PC's real identity (server/relay/identity.ts) and a key of someone else's.
     const own = generateKeyPair().publicKey;
     const genuine = { ...testOffer(), server_id: deriveServerId(own), server_public_key: exportPublicKey(own) };
     // Then only the PC's own key passes; another key under its id, or no key at all, is forged.
@@ -52,7 +63,6 @@ describe("the shell's entry", () => {
     const link = (key: Uint8Array) => ({ key: exportPublicKey(key), from: "link" as const });
     const saved = (key: Uint8Array) => ({ key: exportPublicKey(key), from: "saved" as const });
     expect(keyMismatch(serverId, [link(own)])).toBeNull();
-    // the saved key and the link's disagree: whichever is not the id's is named, with where it came from
     expect(keyMismatch(serverId, [saved(own), link(other)])).toEqual({ expected: serverId, received: deriveServerId(other), from: "link" });
     expect(keyMismatch(serverId, [saved(other), link(own)])).toEqual({ expected: serverId, received: deriveServerId(other), from: "saved" });
     expect(keyMismatch(serverId, [{ key: "not-a-key", from: "link" }])).toEqual({ expected: serverId, received: null, from: "link" });
@@ -209,7 +219,6 @@ describe("the offer fragment", () => {
   });
 
   it("is taken off before boot loads, requests or opens anything, and the shell gets it whole", async () => {
-    // Given a page loaded with an offer, and every way boot could reach out recorded in order.
     const offer = encodeOffer(testOffer(), APP);
     const loaded = page(offer);
     const order: string[] = [];
@@ -223,18 +232,15 @@ describe("the offer fragment", () => {
       WebSocket: function () { order.push("socket"); },
     });
     try {
-      // When boot runs, with the shell's chunk loading as lib/relay.ts loads it.
-      bootRelayShell({} as HTMLElement, () => ({}) as Root, () => {
+      bootRelayShell({ querySelector: () => null, dataset: {} } as unknown as HTMLElement, () => ({}) as Root, () => {
         order.push("load");
         const shell = { mountRelayShell: async ({ entryUrl }: RelayShellMount) => { mounted.resolve(entryUrl); } };
         return Promise.resolve(shell as Awaited<ReturnType<typeof loadRelayShell>>);
       });
-      // Then the address changed first and synchronously, and the shell still got the offer.
       expect(order).toEqual(["address", "load"]);
       expect(loaded.replaced).toEqual([`/s/${"12".repeat(16)}/`]);
       expect(await mounted.promise).toBe(offer);
       expect(order).toEqual(["address", "load"]);
-      // And Back onto an older entry that still holds a query moves it into the fragment too.
       loaded.location.search = "?file=%2Fa.md";
       loaded.listeners.get("popstate")?.();
       expect(loaded.replaced.at(-1)).toBe(`/s/${"12".repeat(16)}/#file=%2Fa.md`);
@@ -269,5 +275,59 @@ describe("a link without a code that the PC refused before any digits", () => {
     expect(failureOf(refused, { code: true, paired: false })).toBe("code-expired");
     expect(failureOf(refused, { code: false, paired: true })).toBe("revoked");
     expect(failureOf(refused, { code: false, paired: false, codeless: true, compared: true })).toBe("pair-declined");
+  });
+});
+
+describe("the start screen while the shell loads", () => {
+  class Node {
+    isConnected = true; className = ""; children: Node[] = []; parent: Node | null = null;
+    readonly classList = { names: new Set<string>(), add: (name: string) => { this.classList.names.add(name); } };
+    constructor(readonly selector = "") {}
+    querySelector(selector: string): Node | null { return this.children.find((child) => child.selector === selector) ?? null; }
+    append(child: Node): void { child.parent = this; this.children.push(child); }
+    replaceWith(next: Node): void { const parent = this.parent!; parent.children[parent.children.indexOf(this)] = next; next.parent = parent; this.isConnected = false; }
+  }
+  const page = () => { const root = new Node(), boot = new Node(".boot"), ring = new Node(".boot-spinner"); root.append(boot); boot.append(ring); return { root, boot, ring }; };
+  const saved: Record<string, PropertyDescriptor | undefined> = {};
+  beforeEach(() => {
+    for (const key of ["document", "window"]) saved[key] = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => new Node() } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+  });
+  afterEach(() => {
+    for (const [key, descriptor] of Object.entries(saved)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+
+  it("keeps the loading ring and its words until the sheep is drawn, then puts the sheep in its place", async () => {
+    const { root, boot, ring } = page();
+    const drawn: string[] = [];
+    const loaded = Promise.withResolvers<void>();
+    const shown = showStart(root as unknown as ParentNode, async () => {
+      await loaded.promise;
+      return { SMALL_BELOW_PX: 96, playMascot: (_host: HTMLElement, state: string) => { drawn.push(state); return () => {}; } } as never;
+    });
+    expect(boot.children).toEqual([ring]);
+    expect(boot.classList.names.has("relay-start")).toBe(false);
+    loaded.resolve();
+    await shown;
+    expect(ring.isConnected).toBe(false);
+    expect(boot.children.map((child) => child.className)).toEqual(["sheep-badge sheep-badge-112"]);
+    expect(boot.classList.names.has("relay-start")).toBe(true);
+    expect(drawn).toEqual(["hello"]);
+  });
+
+  it("leaves the page alone when the shell's first screen took it before the sheep loaded", async () => {
+    const { root, boot, ring } = page();
+    const drawn: string[] = [];
+    await showStart(root as unknown as ParentNode, async () => {
+      ring.isConnected = false;
+      return { SMALL_BELOW_PX: 96, playMascot: (_host: HTMLElement, state: string) => { drawn.push(state); return () => {}; } } as never;
+    });
+    expect(boot.children).toEqual([ring]);
+    expect(boot.classList.names.has("relay-start")).toBe(false);
+    expect(drawn).toEqual([]);
   });
 });

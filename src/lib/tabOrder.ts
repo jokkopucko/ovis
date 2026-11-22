@@ -10,19 +10,12 @@ export function movedTabOrder(ids: readonly string[], tabId: string, insertIndex
   return order;
 }
 
-/** One adjacent move, expressed in native insertion-boundary coordinates. */
 export function adjacentTabBoundary(ids: readonly string[], tabId: string, direction: -1 | 1): number | null {
   const source = ids.indexOf(tabId);
   if (source < 0 || source + direction < 0 || source + direction >= ids.length) return null;
   return direction < 0 ? source - 1 : source + 2;
 }
 
-/** DOM hit rectangles stay in snapshot order, including the source tab. */
-/**
- * The boundary among all the tabs for a drop at `at` among the drawn ones, whose places among all
- * are `places` (a row that leaves tabs out behind More, TabStrip): right after the drawn tab before
- * the line, or the first drawn tab's place when the line is before them all.
- */
 export function drawnTabBoundary(places: readonly number[], at: number): number {
   return at === 0 ? places[0]! : places[at - 1]! + 1;
 }

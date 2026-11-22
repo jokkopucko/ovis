@@ -17,7 +17,6 @@ const titleResult = (id: string, title: string) => message("toolResult", "Starte
   toolName: "task", toolCallId: `call-${id}`, details: { task_id: id, task_summary: title },
 });
 
-/** Every record boundary also exercises a speculative valid and torn final line. */
 function appendRecords(rows: unknown[], options: { images?: boolean } = {}) {
   const parser = createOmpTranscriptParser(options);
   let committed = "";

@@ -39,7 +39,6 @@ describe("adjacentTabPane", () => {
     expect(adjacentTabPane(withLayout, "p1", 1, nothingViewed)).toBe("p3b");
     const viewed = (scope: "tab" | "workspace", id: string) => scope === "tab" && id === "w1:t3" ? "p3a" : undefined;
     expect(adjacentTabPane(withLayout, "p1", 1, viewed)).toBe("p3a");
-    // a remembered pane that has since closed is passed over
     expect(adjacentTabPane(withLayout, "p1", 1, () => "gone")).toBe("p3b");
   });
 
@@ -84,7 +83,6 @@ describe("sidebarWorkspaceSteps", () => {
     expect(sidebarWorkspaceSteps(tagged, [], () => false, null)).toEqual(["x", "a", "y", "d"]);
     expect(sidebarWorkspaceSteps(tagged, [], () => false, null, false)).toEqual(["a", "d", "x", "y"]);
     expect(sidebarWorkspaceSteps(tagged, [], () => false, "y", true)).toEqual(["a", "d", "y"]);
-    // one whose agent asks a question stays in a folded part, as the sidebar draws it
     expect(sidebarWorkspaceSteps(tagged, [], () => false, "a", true, new Set(["x"]))).toEqual(["a", "d", "x"]);
   });
 });

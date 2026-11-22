@@ -19,7 +19,6 @@ describe("compact sidebar rows", () => {
     expect(compactBranch(null)).toBeNull();
     expect(compactBranch("feat/human-chat")).toBe("human-chat");
     expect(compactBranch("fix/pin/order")).toBe("pin/order");
-    // a prefix that says whose branch it is stays, so two teams' branches never read the same
     expect(compactBranch("team-a/fix")).toBe("team-a/fix");
     expect(compactBranch("integration")).toBe("integration");
   });

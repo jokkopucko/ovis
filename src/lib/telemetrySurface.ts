@@ -3,11 +3,8 @@ import { isAppWindow } from "./install.ts";
 import { inAndroidApp, inMacApp, inNativeApp } from "./nativeApp.ts";
 
 export interface SurfaceInput {
-  /** the iOS or Android app around this page (lib/nativeApp.ts), or null in a browser */
   nativeApp: "ios" | "android" | null;
-  /** Ovis for Mac's own window */
   macApp: boolean;
-  /** this window is an installed web app's, not a browser tab (lib/install.ts isAppWindow) */
   installed: boolean;
   userAgent: string;
   maxTouchPoints: number;

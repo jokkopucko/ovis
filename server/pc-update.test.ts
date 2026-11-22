@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { unmanagedUpdateStatus, type UpdateStatus } from "../shared/update.ts";
 import { followOwnUpdate, offerFromStatus } from "./pc-update.ts";
 
-// Another PC's own Ovis as a real HTTP stand-in on loopback: nothing is installed or restarted anywhere.
 const OFFERED = "a".repeat(40);
 const CURRENT = "c".repeat(40);
 const TOKEN = "d".repeat(64);
@@ -12,7 +11,6 @@ const offered = (patch: Partial<UpdateStatus> = {}): UpdateStatus => ({ ...unman
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => { for (const server of servers.splice(0)) server.stop(true); });
 
-/** `after`: what its status says on each read once asked to install (the last repeats) */
 function remote(before: UpdateStatus, after: Partial<UpdateStatus>[], install: { status: number; code?: string } = { status: 202 }) {
   const installs: unknown[] = [];
   let reads = 0;
@@ -68,7 +66,6 @@ describe("followOwnUpdate", () => {
   it("waits while the PC is away restarting, and ends once it answers again on the new revision", async () => {
     const pc = remote(offered(), [{ phase: "restarting", step: "restart" }, { phase: "idle", available: false, current_revision: OFFERED }]);
     let away = 0;
-    // the PC's connection drops for three reads while its server restarts
     const endpoint = () => pc.installs.length > 0 && away++ < 3 ? undefined : pc.endpoint;
     await followOwnUpdate({ endpoint, signal: new AbortController().signal, onStep: () => {}, ...fast });
     expect(away).toBeGreaterThanOrEqual(3);
@@ -119,7 +116,6 @@ describe("followOwnUpdate", () => {
         asked = true;
         return new Response(null, { status: 202 });
       }
-      // the check that made it busy, then the offer again; once asked, the install and the new release
       if (!asked) return Response.json(installs.length === 1 && reads++ === 0 ? offered({ phase: "checking" }) : offered());
       return Response.json(offered({ phase: "idle", available: false, current_revision: OFFERED }));
     } });

@@ -1,4 +1,3 @@
-/** Input lifecycle adversarial cases, using an owned pane and intercepted submits. */
 import assert from "node:assert/strict";
 import type { Browser } from "playwright-core";
 import { openSettingsPage } from "./settings-page.ts";
@@ -18,19 +17,15 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
   const resizes: any[] = [];
   let acknowledge: (() => void) | undefined;
   let refuse: (() => void) | undefined;
-  // an Insert held here like a submit: the bridge's insert-result goes to the page only when the test says
   let acknowledgeInsert: (() => void) | undefined;
   let ready: (() => void) | undefined;
   let delayReady = false;
   let refuseConnections = false;
   let currentSocket: { close: () => Promise<void> } | undefined;
-  // the page's latest connection, to play output the pane did not write (a keyboard mode it asks for)
   let toPage: ((frame: unknown) => void) | undefined;
-  // liveness pings held back from the server, so a probe stays in flight until they are let through
   let holdPings = false;
   const heldPings: string[] = [];
   let toServer: ((raw: string) => void) | undefined;
-  // the snapshot names what the bridge answers, pings among it; it can follow input-ready by a few ms
   let snapshotSent = false;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     if (refuseConnections) { void socket.close(); return; }
@@ -62,7 +57,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     });
   });
   const line = page.getByRole("textbox", { name: "Terminal input line", exact: true });
-  // A desktop has no key bar: the input mode is a Settings choice there.
   const setMode = async (mode: "line" | "direct") => {
     await page.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(page, "Terminal");
@@ -87,14 +81,9 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     assert.equal(await line.evaluate(node => node === document.activeElement), true, "the input shortcut focuses the terminal line");
     assert.equal(sent.length, beforeFocus, "focus does not submit or send terminal input");
 
-    // A liveness probe refuses input without a frame to say so: on a quiet pane the 1 s poll reads
-    // it, so the terminal shows it waits instead of looking ready while typing goes to the draft.
     const waiting = page.locator(".terminal-banner", { hasText: "Waiting for terminal input…" });
-    // the banner is drawn only on a connected pane: before the socket opens it is absent too, and
-    // a wake then finds nothing to probe
     await page.locator(".conn-live").waitFor();
     await waiting.waitFor({ state: "hidden" });
-    // nor does a wake probe before the snapshot has said the bridge answers pings
     await until(() => snapshotSent);
     holdPings = true;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
@@ -102,13 +91,10 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     const probeAt = Date.now();
     await waiting.waitFor({ timeout: 2_000 });
     assert(Date.now() - probeAt < 1_800, "the poll reads the refused input within about a second");
-    // the pong ends the probe: input reads ready again
     holdPings = false;
     for (const raw of heldPings.splice(0)) toServer!(raw);
     await waiting.waitFor({ state: "hidden", timeout: 2_000 });
 
-    // The line grows over the grid's last rows: neither its growth nor its collapse after Send
-    // changes the grid's height, which is the shared pty's size.
     await line.waitFor();
     const gridHeight = () => page.locator(".pane-terminal").evaluate((element) => element.getBoundingClientRect().height);
     const height = (selector: string) => page.locator(selector).evaluate((element) => element.getBoundingClientRect().height);
@@ -149,11 +135,8 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     assert.equal(await gridHeight(), restingGrid, "the line's collapse after Send keeps the grid's height");
     assert.equal(await page.evaluate(() => (window as any).gridResized), 0, "the grid's observer never fired");
     assert(Math.abs(await height(".terminal-input") - await height(".terminal-input-slot")) < 1, "a one-row line covers no grid row");
-    // what PaneTerminal's observer would have sent comes 120 ms after a change, and none happened
     assert.equal(resizes.length, resizesBefore, "typing three lines and Send send no resize");
 
-    // Insert beside Send, in the still grid Send just used: the line typed with no Enter, in its own
-    // frame, and cleared only on the bridge's answer; what replaced it meanwhile stays, as after Send
     const insertButton = page.getByRole("button", { name: "Insert text without Enter", exact: true });
     await line.fill("cd");
     await until(async () => !(await insertButton.isDisabled()));
@@ -175,7 +158,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await until(async () => !(await insertButton.isDisabled()));
     assert.equal(await line.inputValue(), "cd src/components", "a late insert acknowledgement cannot erase replacement text");
     assert.equal(sent.length, 1, "nothing but the insert frame went: no input, no submit, no Enter");
-    // in the same still grid as the Send above (its observer never fired): any resize now would be Insert's
     assert.equal(await page.evaluate(() => (window as any).gridResized), 0, "the grid stayed still through Insert");
     assert.equal(resizes.length, resizesBeforeInsert, "Insert takes no grid back: no resize went with it");
     await line.fill("");
@@ -185,7 +167,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     sent.length = 0;
     acknowledge = undefined;
 
-    // a note under the one-row line (a refused send) floats too, and so does its going
     await line.fill("refused");
     await page.getByRole("button", { name: "Send to the terminal", exact: true }).click();
     await until(() => !!refuse);
@@ -202,14 +183,12 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     sent.length = 0;
     acknowledge = refuse = undefined;
 
-    // the slot's row is a hand-made calc of the line's metrics: it must match at either density
     const density = await page.evaluate(() => document.documentElement.getAttribute("data-density"));
     await page.evaluate(() => document.documentElement.setAttribute("data-density", "compact"));
     await frame();
     assert(Math.abs(await height(".terminal-input") - await height(".terminal-input-slot")) < 1, "a one-row line covers no grid row at the compact density");
     await page.evaluate((density) => { if (density === null) document.documentElement.removeAttribute("data-density"); else document.documentElement.setAttribute("data-density", density); }, density);
 
-    // a short pane: the grown line reaches the grid's top at most, and its text scrolls past that
     await page.setViewportSize({ width: 1280, height: 160 });
     await frame();
     const surfaceTop = () => page.locator(".terminal-surface").evaluate((element) => element.getBoundingClientRect().top);
@@ -221,7 +200,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     const lineTop = await page.locator(".terminal-input").evaluate((element) => element.getBoundingClientRect().top);
     assert(lineTop >= await surfaceTop() - 1, `the grown line stays under the grid's top (${lineTop} < ${await surfaceTop()})`);
     assert(await line.evaluate((element) => element.scrollHeight > element.clientHeight), "the capped line scrolls its text");
-    // the banners stay over the capped line, where it reaches the grid's top: their buttons take the tap
     toPage!({ type: "error", code: "input_failed", pane_id: sentPane, message: "Not sent: test banner" });
     const dismiss = page.locator(".terminal-banners").getByRole("button", { name: "Dismiss", exact: true });
     await dismiss.waitFor();
@@ -249,8 +227,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await line.waitFor();
     assert.equal(await line.inputValue(), "draft 한글 😀");
 
-    // `note` is the input line's note locator declared above
-    // one read: a note that goes between a count and a textContent would wait out the timeout
     const noteText = () => note.evaluateAll((elements) => elements[0]?.textContent ?? null);
     const sendButton = page.getByRole("button", { name: "Send to the terminal", exact: true });
     // A real composition (Chrome's IME path, as Gboard composes every word): the Send keeps focus,
@@ -260,7 +236,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Input.imeSetComposition", { text: "글", selectionStart: 1, selectionEnd: 1 });
     await until(async () => (await line.inputValue()) === "real 한글");
-    // a word committed inside the tap sends with no "Finishing the word…" alert ever mounted
     await page.evaluate(() => {
       (window as any).noteAdded = 0;
       (window as any).noteObserver = new MutationObserver((records) => {
@@ -281,8 +256,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     acknowledge!();
     await until(async () => (await line.inputValue()) === "");
     acknowledge = undefined;
-    // A keyboard that commits on its own within the wait: the line as committed is sent, once,
-    // even when the committing input lands in the same task as compositionend.
     await line.fill("commit 한");
     await line.dispatchEvent("compositionstart", { data: "" });
     await sendButton.click();
@@ -314,7 +287,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await page.waitForTimeout(400); // fixed wait: an empty commit may send no Enter
     assert.equal(sent.length, 2, "an empty commit after a text Send sends no Enter");
     assert.equal(await line.inputValue(), "");
-    // Compositions that keep chaining after the tap cannot stretch its wait past the deadline.
     await line.fill("chain 한");
     await line.dispatchEvent("compositionstart", { data: "" });
     await sendButton.click();
@@ -333,8 +305,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await page.waitForTimeout(100); // fixed wait: a chain of compositions past the deadline may send nothing
     assert.equal(sent.length, 2, "a chain of compositions past the deadline sends nothing");
     assert.equal(await noteText(), "Finish the word, then send.");
-    // A drop and a quick reconnect while the word is still open withdraw the tap: the later
-    // commit sends nothing and the note says why.
     await line.fill("drop 한");
     await line.dispatchEvent("compositionstart", { data: "" });
     await sendButton.click();
@@ -342,7 +312,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     refuseConnections = true;
     await currentSocket!.close();
     await until(() => sendButton.isDisabled());
-    // the withdrawal runs in an effect after the disabled button paints
     await until(async () => (await noteText()) === "Not sent: the terminal is disconnected.");
     refuseConnections = false;
     await until(async () => !(await sendButton.isDisabled()));
@@ -350,8 +319,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await page.waitForTimeout(100); // fixed wait: a commit after reconnect may not send the withdrawn tap
     assert.equal(sent.length, 2, "a commit after a drop and reconnect does not send the withdrawn tap");
     assert.equal(await noteText(), "Not sent: the terminal is disconnected.");
-    // The terminal drops while the word is still being finished: the commit says so instead of
-    // leaving "Finishing the word…" up for good.
     await line.fill("offline 한");
     await line.dispatchEvent("compositionstart", { data: "" });
     await sendButton.click();
@@ -365,18 +332,15 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     assert.equal(sent.length, 2);
     refuseConnections = false;
     await until(async () => !(await sendButton.isDisabled()));
-    // No commit within the wait: the tap is withdrawn with a note, and a later commit sends nothing.
     await line.fill("draft 한글 😀");
     await line.dispatchEvent("compositionstart", { data: "" });
     await sendButton.click();
     await until(async () => (await note.textContent()) === "Finish the word, then send.");
     await line.dispatchEvent("compositionend", { data: "😀" });
-    // past a deferred send's tick and a whole commit window
     await page.waitForTimeout(400);
     assert.equal(sent.length, 2, "a commit after the withdrawn tap does not send");
     assert.equal(await note.textContent(), "Finish the word, then send.");
     await line.dispatchEvent("compositionstart", { data: "" });
-    // Leaving during composition must not leave the composition guard stuck.
     await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
     await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
     await remountLine();
@@ -440,16 +404,12 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await page.keyboard.press("ControlOrMeta+Shift+E");
     assert.equal(await page.locator(".xterm-helper-textarea").evaluate(node => node === document.activeElement), true, "the input shortcut also focuses direct terminal input before readiness");
     assert.equal(sent.length, before, "focus sends no input before readiness");
-    // the held-input row: the command and its two controls, no sentence (todo 27)
     const heldNotice = page.locator(".pane-frame.is-current .terminal-banner-draft");
     const leftOut = page.getByText("An Enter or line break was left out: Send never presses Enter.", { exact: true });
-    // Enter on a terminal that is not ready, with nothing held, separates nothing: no notice.
-    // The "a" landing after it proves the Enter was handled first.
     await page.locator(".xterm-helper-textarea").press("Enter");
     await page.locator(".xterm-helper-textarea").press("a");
     await until(async () => (await page.locator(".draft-text").textContent()) === "a");
     assert.equal(await leftOut.count(), 0);
-    // Backspace edits what is held; an Enter is never held, but it is told
     await page.locator(".xterm-helper-textarea").press("b");
     await until(async () => (await page.locator(".draft-text").textContent()) === "ab");
     await page.locator(".xterm-helper-textarea").press("Backspace");
@@ -459,7 +419,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await leftOut.waitFor();
     await until(async () => (await page.locator(".draft-text").textContent()) === "a ");
     assert.equal(sent.length, before);
-    // Exactly the held text must survive reload, not merely later edits, and so must the left-out notice.
     ready = undefined;
     await page.reload();
     await page.locator(".draft-text").waitFor();
@@ -471,13 +430,11 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await page.waitForTimeout(150); // fixed wait: ready may not replay the draft
     assert.equal(sent.length, before, "ready does not replay the draft");
     // Held input keeps later typing until Send or Discard, on a ready terminal too: a key sent beside
-    // it would reach the pty without the held start, and an Enter would run that partial line. The
-    // "b" landing after the Enter proves the Enter was handled first (the Enter folds into the held space).
+    // it would reach the pty without the held start, and an Enter would run that partial line.
     await page.locator(".xterm-helper-textarea").press("Enter");
     await page.locator(".xterm-helper-textarea").press("b");
     await until(async () => (await page.locator(".draft-text").textContent()) === "a b");
     assert.equal(sent.length, before, "typing beside a held draft reaches nothing");
-    // an interrupt is not typing: it still reaches the program while the draft waits
     await page.locator(".xterm-helper-textarea").press("Escape");
     await until(() => sent.length > before);
     assert.equal(sent.at(-1).text, "\x1b");
@@ -514,11 +471,9 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await pasteIntoTerminal("x\ny");
     await until(async () => (await banner.isVisible()) || (await draftText()) !== beforeMultiLine);
     assert.equal(sent.length, afterEscape, "a multi-line paste beside a held draft reaches nothing");
-    // never a silent drop: refused with the note, or taken into the draft (a draft that folds line breaks)
     const multiLineNoted = await banner.isVisible();
     assert(multiLineNoted || (await draftText()) !== beforeMultiLine, "a multi-line paste is told or held, never dropped in silence");
     if (multiLineNoted) await dismissBanner();
-    // the input line is refused beside a held draft too, with the held-input reason, not "disconnected"
     await setMode("line");
     const lineNote = page.locator(".terminal-input-note");
     await line.fill("");
@@ -531,13 +486,11 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     assert.equal(sent.length, afterEscape, "the input line beside a held draft reaches nothing");
     await line.fill("");
     await setMode("direct");
-    // a draft that takes pastes holds more than "a b" by now: Send types what it holds
     const heldText = await page.locator(".draft-text").textContent();
     await page.getByRole("button", { name: "Send held input", exact: true }).click();
     await until(() => sent.length > before + 1);
     assert.equal(sent.at(-1).text, heldText);
     assert.equal(sent.length, before + 2, "Send types the held text once, with no Enter");
-    // Real xterm handling: an IME's provisional syllable stays local until commit.
     const imeBefore = sent.length;
     const input = page.locator(".xterm-helper-textarea");
     await input.evaluate((element) => {
@@ -622,7 +575,6 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
     await page.waitForTimeout(75); // fixed wait: the old composition may not send across a pane reset
     assert.equal(sent.length, switchBefore, "old composition cannot cross a pane reset");
     assert.equal(await page.locator(".draft-text").count(), 0, "old commit cannot enter the new pane's held draft");
-    // A late end after reset is stale, not a second attempt to send the abandoned input.
     await page.locator(".pane-frame.is-current .xterm-helper-textarea").dispatchEvent("compositionend", { data: "한" });
     await page.waitForTimeout(75); // fixed wait: a late compositionend after the reset may send nothing
     assert.equal(sent.length, switchBefore);
@@ -637,10 +589,7 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
 
 /**
  * An image pasted into the phone's input line (#801): the long-press Paste hands the line a
- * file-only clipboard, and the key bar's Paste reads one with clipboard.read(). Either way the
- * image goes up the same route as a paste into the grid, and its quoted path lands in the line at
- * the caret, to send or edit. A text paste stays the browser's own. A browser that can read only
- * text says where an image can be pasted instead of calling the clipboard empty.
+ * file-only clipboard, and the key bar's Paste reads one with clipboard.read().
  */
 export async function checkLineImagePaste(browser: Browser, origin: string, pane: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
@@ -676,7 +625,6 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     await line.waitFor();
     await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.key-bar [data-key="paste"]')?.disabled === false);
 
-    // a text paste is the browser's own: nothing uploaded, nothing taken from it
     const textPaste = await line.evaluate((element) => {
       const data = new DataTransfer();
       data.setData("text/plain", "ls -la");
@@ -686,7 +634,6 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     });
     assert.equal(textPaste, false, "a text paste is left to the browser");
 
-    // the long-press Paste of a screenshot: a file-only clipboard, uploaded and its path put at the caret
     await line.fill("look at ");
     const first = uploaded();
     const filePaste = await line.evaluate((element, png) => {
@@ -726,12 +673,10 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     await landed(`look at ${quoted(rangedPath)}`);
     console.log("PASS input line: a screenshot pasted over a selected word replaces it");
 
-    // the key bar's Paste with an image on the clipboard: read with clipboard.read(), the same upload
     await line.fill("");
     await page.evaluate((png) => {
       const blob = new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" });
       Object.assign(navigator.clipboard, {
-        // an empty text beside the image, as some apps copy one: the image is what is there
         read: () => Promise.resolve([new ClipboardItem({ "text/plain": new Blob([""], { type: "text/plain" }), "image/png": blob })]),
         readText: () => Promise.resolve(""),
       });
@@ -744,7 +689,6 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     assert.equal(await note.count(), 0, "no note: the image was pasted");
     console.log("PASS key bar Paste: an image read with clipboard.read() is uploaded and its path inserted");
 
-    // a browser with only readText cannot see an image: it says where one can be pasted
     await line.fill("");
     await page.evaluate(() => { Object.assign(navigator.clipboard, { read: undefined, readText: () => Promise.resolve("") }); });
     await paste.tap();
@@ -753,7 +697,6 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     assert.equal(uploads.length, 3, "nothing uploaded");
     console.log("PASS key bar Paste without clipboard.read(): an empty text read says how to paste an image");
 
-    // a path that would be cut at the line's limit names no file: the line stays as it was
     const full = "x".repeat(await line.evaluate((element) => (element as HTMLTextAreaElement).maxLength) - 4);
     await line.fill(full);
     const third = uploaded();
@@ -777,7 +720,7 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
  * The terminal input line's multiline Unicode text, sent for real to a program that records its raw input: with
  * bracketed paste on it gets one paste, with it off only the lines, and on a mirror (no PTY sidecar, so the browser
  * never learns the mode) an agent's pane gets one paste the bridge adds, a plain one the lines; each time exactly
- * one Enter of the bridge's own after them. The submit frames go to the bridge unchanged, which checks their framing.
+ * one Enter of the bridge's own after them.
  */
 async function checkCanonicalSubmit(browser: Browser): Promise<void> {
   const { createServer } = await import("../server/index.ts");
@@ -787,10 +730,7 @@ async function checkCanonicalSubmit(browser: Browser): Promise<void> {
   const { join } = await import("node:path");
   const root = mkdtempSync(join(tmpdir(), "herdr-canonical-submit-"));
   const script = join(root, "record.cjs");
-  // the recorder asks for its mode, then names its pid once that is written; SIGUSR2 has it ask again (after the
-  // browser attached) and draw "ready$"; every byte it reads goes to its log as one JSON string per chunk
   writeFileSync(script, `const fs=require("node:fs");const [out,mode]=process.argv.slice(2);const seq=mode==="on"?"\\x1b[?2004h":"\\x1b[?2004l";process.stdin.setRawMode(true);process.stdin.resume();process.on("SIGUSR2",()=>process.stdout.write(seq+"\\r\\nready$ "));process.stdin.on("data",c=>fs.appendFileSync(out,JSON.stringify(c.toString("utf8"))+"\\n"));process.stdout.write(seq+"$ ",()=>{fs.writeFileSync(out,"");fs.writeFileSync(out+".pid",String(process.pid))});`);
-  /** Settles once `ready()` holds, checked now and on every change under `path` (subscribed at the call); throws at the deadline. */
   const whenChanged = (path: string, ready: () => boolean, what: string, ms = 10_000): Promise<void> => new Promise((resolve, reject) => {
     let settled = false;
     const settle = (error?: unknown) => {
@@ -846,7 +786,6 @@ async function checkCanonicalSubmit(browser: Browser): Promise<void> {
       const results: Array<{ ok: boolean; code?: string }> = [];
       let resultArrived = () => {};
       const resultSeen = new Promise<void>((resolve) => { resultArrived = resolve; });
-      // the attach stream as the browser's terminal got it: the last bracketed-paste request in it is the mode it holds
       let drawn = "";
       page.on("websocket", (socket) => socket.on("framereceived", ({ payload }) => {
         const frame = JSON.parse(String(payload));
@@ -863,16 +802,13 @@ async function checkCanonicalSubmit(browser: Browser): Promise<void> {
         await page.locator(".conn-live").waitFor();
         const line = page.getByRole("textbox", { name: "Terminal input line", exact: true });
         await line.waitFor();
-        // the input line holds the program's prompt once the pane is drawn: the mode the program asked for came before it
         await page.locator(shownRows(), { hasText: "$" }).waitFor();
         await page.waitForFunction(() => document.querySelector(".terminal-banner") === null);
-        // with the browser attached, the program asks for its mode again; its "ready$" comes after that request
         process.kill(recorder, "SIGUSR2");
         await page.locator(shownRows(), { hasText: "ready$" }).waitFor();
         if (item.server === "attached") {
           const mode = browserMode();
           if (mode !== item.mode) {
-            // the scenario cannot be shown here: the browser's terminal never learned the program's mode
             assert.equal(item.mode, "off", `${item.name}: the browser holds bracketed paste ${mode}`);
             console.log(`BLOCKED canonical multiline submit, ${item.name}: the program asked for bracketed paste off after the attach, but the attach stream left the browser's terminal ${mode} (requests seen: ${JSON.stringify(drawn.match(/\u001b\[\?2004[hl]/g) ?? [])}); nothing was sent`);
             assert.deepEqual(errors, []);
@@ -895,7 +831,6 @@ async function checkCanonicalSubmit(browser: Browser): Promise<void> {
         assert.deepEqual(results, [{ ...results[0], ok: true }], `${item.name}: the bridge took the submit`);
         assert.equal(submits.length, 1, `${item.name}: one submit`);
         assert.equal(submits[0]!.text, text, `${item.name}: the text as written`);
-        // an attached pane's browser shapes the payload by the mode it saw; a mirror's always sends the bare lines
         assert.equal(submits[0]!.payload, item.server === "attached" && item.mode === "on" ? paste : lines, `${item.name}: the canonical payload for the mode`);
         await landed;
         assert.deepEqual(errors, []);
@@ -909,7 +844,6 @@ async function checkCanonicalSubmit(browser: Browser): Promise<void> {
   }
 }
 
-/** A composition in the input line must not grey out the phone key bar: Esc and ^C go to the pane at once. */
 async function checkKeyBarWhileLineComposes(browser: Browser, origin: string, pane: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
@@ -926,7 +860,6 @@ async function checkKeyBarWhileLineComposes(browser: Browser, origin: string, pa
     server.onMessage((raw) => socket.send(raw));
     socket.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
-      // intercepted: the assertions are about what the browser sends, not the PTY
       if (frame.type === "input" || frame.type === "keys" || frame.type === "submit") frames.push(frame);
       else server.send(raw);
     });
@@ -945,7 +878,6 @@ async function checkKeyBarWhileLineComposes(browser: Browser, origin: string, pa
     await line.fill("fix the");
     await line.dispatchEvent("compositionstart", { data: "" });
     await line.dispatchEvent("compositionupdate", { data: "the" });
-    // let React commit any state the composition would set before reading the bar
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(await esc.isDisabled(), false, "Esc stays live while the input line composes");
     assert.equal(await interrupt.isDisabled(), false, "^C stays live while the input line composes");

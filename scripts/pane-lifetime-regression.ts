@@ -1,10 +1,6 @@
 /**
  * herdr gives pane IDs out again once it is replaced (#1608): what was typed for a pane of the
- * previous herdr must not show in the pane that now has its ID. On a herdr of its own, with its two
- * agent panes: a message draft and a picked lens survive a restart of the web server alone; after
- * herdr itself restarts, each pane opens with an empty box and its default lens, and the text waits
- * in Recover unsent text, whose Put in message box fills the box without sending and whose Discard
- * removes it. A server that names no herdr lifetime (an older bridge) keeps a draft in the page only.
+ * previous herdr must not show in the pane that now has its ID.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
@@ -66,7 +62,6 @@ async function stopHerdr(): Promise<void> {
   daemon = undefined;
 }
 
-/** an agent in the pane, so it has a chat lens and a message box */
 const reportAgent = (pane: string): Promise<unknown> => herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "claude", state: "idle" }, socketPath);
 
 function frame(socket: BrowserSocket, label: string, accepts: (message: ServerMessage) => boolean): Promise<ServerMessage> {
@@ -99,7 +94,6 @@ async function select(page: Page, pane: string): Promise<void> {
   await page.locator(`.agent-item[data-pane="${pane}"].is-selected`).waitFor();
 }
 
-/** The selected pane's actions: a lone pane keeps them in its tab's ⋯, shown once the pointer is over the strip. */
 async function openPaneMenu(page: Page): Promise<void> {
   await page.locator(".tab-strip").hover();
   await page.locator(".tab-strip-item.is-active .tab-strip-menu").click();
@@ -113,7 +107,6 @@ async function openRecovery(page: Page) {
   return dialog;
 }
 
-/** the first snapshot frame of the page's next socket (a reconnect), its sends watched from the start */
 function nextSnapshot(page: Page, watch: (socket: BrowserSocket) => void): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
     page.once("websocket", (socket) => {
@@ -155,7 +148,6 @@ try {
   };
   watchSubmits(socket);
 
-  // Given a message draft in each pane's box, typed in the chat lens picked by hand.
   for (const [pane, text] of [[one, "for the old one"], [two, "for the old two"]] as const) {
     await select(page, pane);
     await chatButton(page).click();
@@ -167,7 +159,6 @@ try {
   assert.equal(before[`ovis:composer-draft:${one}`], "for the old one");
   assert.equal(before[`ovis:view:${one}`], "chat");
 
-  // When the web server alone restarts on the same herdr, the open page keeps both, and so does a reload.
   await server.stop();
   const resnapshot = nextSnapshot(page, watchSubmits);
   server = createServer({ hostname: "127.0.0.1", port, stateDir: join(root, "web"), token: "" });
@@ -180,15 +171,12 @@ try {
   assert.deepEqual(await stored(page), before, "a server restart retires nothing");
   console.log("PASS a web server restart keeps the draft and the lens");
 
-  // When herdr itself restarts: it restores both panes under their IDs, with new terminals.
   await stopHerdr();
   await startHerdr();
   for (const pane of [one, two]) await reportAgent(pane);
 
-  // the page has seen the new herdr once its pane state names another lifetime (a roster away, 5 s apart)
   await page.waitForFunction((was) => { const now = localStorage.getItem("ovis:pane-lifetime:local"); return now !== null && now !== was; },
     before["ovis:pane-lifetime:local"] ?? null, { timeout: 60_000 });
-  // Then the page shows each pane as the new herdr has it: its default lens, and an empty box.
   await page.waitForFunction(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith("Live terminal") === true,
     undefined, { timeout: 20_000 }).catch(async (error: unknown) => {
     const roster = await (await fetch(`${origin}/api/machines`)).json() as { machines: { id: string; state: string; snapshot: { herdr_lifetime?: string; panes: { pane_id: string; agent?: string }[] } | null }[] };
@@ -212,7 +200,6 @@ try {
     [{ pane_id: one, text: "for the old one", kind: "message" }, { pane_id: two, text: "for the old two", kind: "message" }].sort((a, b) => a.pane_id.localeCompare(b.pane_id)));
   console.log("PASS a herdr restart opens the reused pane IDs empty, on their default lens, and keeps the text for recovery");
 
-  // The recovery list puts a text back in the box it was opened from, without sending it.
   await select(page, one);
   let dialog = await openRecovery(page);
   assert.match(await dialog.locator(".modal-title").textContent() ?? "", /lifetime-one/, "the dialog title names the destination workspace");
@@ -224,7 +211,6 @@ try {
   assert.match(await lens(page) ?? "", /^Chat transcript/, "Recover shows the box it filled");
   assert.deepEqual(submits, [], "nothing was sent");
   assert.doesNotMatch((await paneRead({ paneId: one, source: "visible" }, socketPath)).text, /for the old one/);
-  // And Discard removes the other: with nothing left, the dialog closes and the pane menu offers no recovery.
   dialog = await openRecovery(page);
   assert.equal(await dialog.locator(".unsent-item").count(), 1, "a recovered text leaves the list");
   await dialog.locator(".unsent-item", { hasText: "for the old two" }).getByRole("button", { name: "Discard" }).click();

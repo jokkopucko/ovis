@@ -1,0 +1,87 @@
+/*
+ * Add a machine (AddMachineSheet.tsx): the system's modal (styles.css .modal*), the relay sheet's
+ * width, a bottom sheet at 640px and under. The join line sits in the relay shell's command box
+ * (RelayShell.css) cut to four lines: nobody reads it, Copy takes all of it, and what pasting it
+ * allows stays in the first view under it. The cut is on the code inside the box, so the box's own
+ * padding never shows the top of a fifth line. Tokens only.
+ */
+
+.add-machine-sheet { width: min(100%, var(--relay-sheet-w)); }
+.add-machine-sheet:focus { outline: none; }
+
+.add-machine-head { display: block; }
+
+.add-machine-sub {
+  max-width: 65ch;
+  margin: var(--space-1) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+  text-wrap: pretty;
+}
+
+.add-machine-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.add-machine-body .field { margin-bottom: 0; }
+.add-machine-body .segmented { align-self: flex-start; }
+.add-machine-limit { width: calc(2 * var(--touch-target) + var(--space-2)); }
+
+.add-machine-hint, .add-machine-once {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  text-wrap: pretty;
+}
+
+.add-machine-sheet .relay-shell-command-row { margin-top: 0; }
+
+.add-machine-line > code {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  font: inherit;
+  /* the line is one token: it breaks anywhere, never at its one hyphen */
+  word-break: break-all;
+}
+
+.add-machine-copy { min-width: calc(2 * var(--touch-target)); }
+
+.add-machine-consent {
+  max-width: 65ch;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+  text-wrap: pretty;
+}
+
+.add-machine-progress { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.add-machine-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+
+.add-machine-error { margin: 0; color: var(--danger-text); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .add-machine-sheet { width: 100%; }
+  .add-machine-sheet .relay-shell-command-row { flex-direction: column; align-items: stretch; }
+
+  .add-machine-footer {
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .add-machine-footer .btn { width: 100%; }
+}

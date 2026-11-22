@@ -9,7 +9,6 @@ export interface OmoDetachedCell {
 export const DETACHED = /^Eval cell (\S+) (?:detached and is (?:still )?running in the (?:js|py) kernel|is detached and waiting for the (?:js|py) kernel to be ready|is queued behind [^\n]*? in the (?:js|py) kernel and detached)/;
 const ENDED = /(?:^|\n)(?:<system-reminder>)?Detached eval cell (\S+) \((?:js|py)\) (?:completed|failed|cancelled|was killed[^\n]*)\./g;
 
-/** A notification's text: a string, or the text parts of a list that also carries images. */
 export function notificationText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";

@@ -3,7 +3,6 @@ import { inactiveSidebarFilter, type SidebarFilter } from "./sidebarFilter.ts";
 
 export interface SidebarFilterView {
   filter: SidebarFilter;
-  /** the roster of a PC (components/Sidebar.tsx) tells the filter the branch each of its rows says, so a query can find it */
   reportBranches(machineId: string, branches: ReadonlyMap<string, string>): void;
 }
 

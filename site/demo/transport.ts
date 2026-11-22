@@ -1,19 +1,3 @@
-/**
- * The browser demo's stand-in for the server. Loaded before the app on the demo page, it answers
- * `fetch("/api/…")`, `new EventSource("/api/machines/events")` and `new WebSocket("…/ws")` from
- * fixtures (site/demo/fixtures/, captured by scripts/demo-fixtures.ts from the staged fictional
- * session) instead of the network. The app's own code is unchanged: it believes it talks to a
- * Ovis server on a PC called "workstation".
- *
- * What works: the sidebar (two repositories, each with two agent worktrees) and its live statuses,
- * every chat, the Codex approval card (answering it sets Codex to work and ends the turn), the
- * command palette, settings, and the terminal: the release shell tab replays a recording of `git log` and `bun test`, then a small pretend shell answers what you
- * type. `demo logs` loads fictional retained history for scrolling and search; agent panes show
- * one notice instead of a TUI, and Claude Code's and omp's draw their empty input row under it (and
- * the screen a few terminal commands open over it, site/demo/agentScreens.ts). A message sent from
- * a chat gets a demo answer.
- * What does not: files, images, push and remote PCs, which need a real machine.
- */
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { resolveHerdrKeys } from "../../shared/herdr-keys.ts";
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
@@ -30,6 +14,7 @@ import { firstMessageFault } from "../../shared/launch-rules.ts";
 import { insertTextProblem } from "../../shared/terminal-insert.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import { searchPattern, searchTurns, MAX_SEARCH_QUERY, type ConversationSearchResponse } from "../../shared/conversation-search.ts";
+import { PANE_SUMMARY_MAX_IDS, summaryOf, type PaneSummaries } from "../../shared/pane-summary.ts";
 import { neighborPane } from "../../src/lib/layoutMap.ts";
 import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { deviceLabel } from "../../src/lib/phone.ts";
@@ -44,17 +29,6 @@ import commandsFixture from "./fixtures/commands.json";
 import panesFixture from "./fixtures/panes.json";
 import terminalFixture from "./fixtures/terminal.json";
 
-/**
- * The fictional access facts the Phone & devices page shows, picked by `?demo_security=` when the
- * demo loads, or by `ovis:demo-security` in this tab's sessionStorage, which a check changes to see
- * the next answer replace the last (scripts/security-summary-demo-regression.ts); none of them is
- * any real server's. `older` answers without facts, `error` fails the bridge health and `loading`
- * never answers it.
- */
-/**
- * `?demo_runtime=both`: the PC has herdr's TUI and the Herdr app's core (hc) both installed, serving
- * herdr, so Settings > About offers the switch between them (scripts/settings-pages-demo-regression.ts).
- */
 const DEMO_RUNTIME_FACTS = new URLSearchParams(location.search).get("demo_runtime") === "both" ? {
   herdr_runtime: { serving: "herdr" as const, source: "detected" as const, tui: { installed: true, running: true }, app_installed: true, switch_to: "herdr-core" as const, locked: null },
   herdr_core: { version: "0.1.17", session: "default", running: true },
@@ -73,21 +47,21 @@ const DEMO_SECURITY_FACTS: Record<string, SecuritySummary> = {
   tailnet: { token_configured: true, pairing_gate: "closed", bind_scope: "tailnet", observed_ingress: "direct", public_exposure: "unknown" },
   unavailable: { token_configured: false, pairing_gate: "unavailable", bind_scope: "other", observed_ingress: "direct", public_exposure: "unknown" },
 };
-/** Only an explicit `demo logs` command starts this fictional retained history. */
 const histories = new Map<string, DemoHistory>();
 const terminalGrids = new Map<string, { cols: number; rows: number }>();
 const heldCopyResends = new Map<string, { text: string; reply: Extract<ServerMessage, { type: "submit-result" }>; at: number }>();
+const HELD_RECEIPT_MS = 10 * 60 * 1000;
+const heldReceipts = new Map<string, { paneId: string; at: number }>();
+/** a pane that closes takes its held receipts with it: a later pane given its ID is another pane */
+const forgetHeldReceipts = (paneId: string): void => { for (const [id, receipt] of heldReceipts) if (receipt.paneId === paneId) heldReceipts.delete(id); };
 const demoGrid = (paneId: string) => terminalGrids.get(paneId) ?? { cols: 80, rows: 24 };
 function redrawHistory(paneId: string): void {
   for (const socket of sockets) socket.renderHistory(paneId);
 }
 const PROMPT_ANSWER_TURN_MS = 2600;
 const CHAT_ANSWER_MS = 2400;
-/** a terminal command's screen has changed this long after the send: its preview appears then */
 const OUTCOME_PREVIEW_MS = 600;
-/** the recording's gaps, capped so the replay stays brisk */
 const MAX_FRAME_GAP_MS = 500;
-/** Settings → Agents' session resume: one of each state, in herdr's order */
 const integrationsFixture: AgentIntegration[] = [
   ["pi", "pi", true, "not_installed"], ["omp", "omp", false, "not_installed"], ["claude", "claude", true, "current"],
   ["codex", "codex", true, "outdated"], ["copilot", "copilot", false, "not_installed"], ["opencode", "opencode", true, "not_installed"],
@@ -97,25 +71,20 @@ const integrationsFixture: AgentIntegration[] = [
 type Pane = SessionSnapshot["panes"][number];
 type SseListener = (event: MessageEvent) => void;
 
-// ---- state -----------------------------------------------------------------------------------
 
 const machines: Machine[] = structuredClone(machinesFixture.machines as Machine[]);
 const local = machines[0]!;
 const snapshot = (): SessionSnapshot => local.snapshot!;
-// Reloading the demo starts its in-memory server over, so IDs from the previous page cannot match.
+const FINISH_EPOCH = new URLSearchParams(location.search).get("demo_finish_epoch");
 for (const machine of machines) if (machine.snapshot) {
-  machine.snapshot.finish_epoch = crypto.randomUUID();
-  // each PC's one fictional herdr, the same on every load: what the demo stores stays its panes'
+  machine.snapshot.finish_epoch = FINISH_EPOCH ?? crypto.randomUUID();
   machine.snapshot.herdr_lifetime = `demo-${machine.id}`;
   for (const pane of machine.snapshot.panes) pane.finish_id = pane.agent_status === "done" ? 1 : 0;
 }
-/** pane id -> fixture key ("api", "web", …) */
 const keyOfPane = new Map<string, string>(Object.entries(panesFixture as Record<string, string>).map(([key, paneId]) => [paneId, key]));
 const chats = new Map<string, { turns: ConversationTurn[]; metadata: { model: string; reasoning_effort: string } }>(
   Object.entries(CHATS).map(([key, chat]) => [key, structuredClone(chat)]),
 );
-// The fixtures' clocks say September 25th; the demo happens now. Every timestamp moves by the same
-// amount, so "Worked for" stays what it was and the newest turn ended three minutes ago.
 {
   const stamps = [...chats.values()].flatMap((chat) => chat.turns.flatMap((turn) => [turn.ts, turn.end_ts].filter((v): v is string => typeof v === "string")));
   const newest = Math.max(...stamps.map((v) => Date.parse(v)));
@@ -136,7 +105,6 @@ const replying = new Set(snapshot().panes.filter((pane) => pane.agent && pane.ag
 let stateSeq = Math.max(0, ...(local.snapshot?.agents ?? []).map((agent) => agent.state_change_seq ?? 0));
 const nextStateSeq = (): number => ++stateSeq;
 /** herdr lists an agent pane under `agents` too, with the counter the sidebar's Activity order reads */
-// taken once, as the pane, tab and workspace templates are: the last agent can be closed in a demo
 const agentTemplate = local.snapshot?.agents[0] ? structuredClone(local.snapshot.agents[0]) : null;
 function addAgent(pane: Pane): void {
   pane.finish_id = pane.agent_status === "done" ? 1 : 0;
@@ -158,8 +126,6 @@ function addDemoLayout(workspaceId: string, tabId: string, paneId: string): void
   snapshot().layouts.push({ workspace_id: workspaceId, tab_id: tabId, zoomed: false, area, focused_pane_id: paneId, panes: [{ pane_id: paneId, focused: true, rect: { ...area } }], splits: [] });
 }
 
-// Fictional repositories keep their checkout catalog after a workspace closes. The list joins
-// each checkout to the current snapshot, so closed checkouts can be opened again without git.
 interface DemoRepository {
   repoKey: string;
   repoName: string;
@@ -181,16 +147,6 @@ function worktreeMetadata(repo: DemoRepository, path = repo.repoRoot): NonNullab
   return { repo_key: repo.repoKey, repo_name: repo.repoName, repo_root: repo.repoRoot, checkout_path: path, is_linked_worktree: path !== repo.repoRoot };
 }
 
-/**
- * The demo's roster, laid out from SPECS over what the fixtures recorded. `fixtures/machines.json`
- * is recorded by `bun scripts/demo-fixtures.ts`, which drives a live herdr, so it is rarely re-cut
- * for the roster's sake: `fixtures/panes.json` names the pane each spec has, a recorded pane no spec
- * names is dropped, a spec the recording lacks gets a pane cloned from a recorded one (with the ID
- * panes.json gives it, so the browser checks can name it), a `tabOf` spec moves into its parent's
- * workspace as a second tab, and a `worktreeOf` spec becomes a linked checkout of its parent's
- * repository. Each workspace takes its spec's label and folder; the recorded panes keep their own
- * terminals and state counters.
- */
 function layOutRoster(): void {
   const snap = snapshot();
   const paneTemplate = snap.panes.find((pane) => pane.agent) ?? snap.panes[0];
@@ -211,7 +167,6 @@ function layOutRoster(): void {
     const parent = spec.worktreeOf ? SPECS.find((candidate) => candidate.key === spec.worktreeOf) : undefined;
     return parent ? `/home/demo/.herdr/worktrees/${parent.label}/${spec.label}` : `/home/demo/${spec.label}`;
   };
-  // a pane for every spec, in a workspace of its own for now
   for (const spec of SPECS) {
     if (paneOfKey(spec.key)) continue;
     const recordedId = (panesFixture as Record<string, string>)[spec.key];
@@ -238,12 +193,10 @@ function layOutRoster(): void {
       continue;
     }
     const tab = snap.tabs.find((candidate) => candidate.tab_id === pane.tab_id)!;
-    // a recording staged with the tab already in its parent's workspace only takes the spec's label
     if (pane.workspace_id === parent.workspace_id) {
       tab.label = spec.label;
       continue;
     }
-    // the spec's own workspace folds into its parent's as the next tab
     const own = pane.workspace_id;
     const into = parent.workspace_id;
     const number = snap.tabs.filter((tab) => tab.workspace_id === into).length + 1;
@@ -258,11 +211,9 @@ function layOutRoster(): void {
     host.tab_count = number;
     host.pane_count = snap.panes.filter((candidate) => candidate.workspace_id === into).length;
   }
-  // herdr's order is the specs' order: each repository, then its worktrees
   const rank = (workspaceId: string) => SPECS.findIndex((spec) => paneOfKey(spec.key)?.workspace_id === workspaceId && !spec.tabOf);
   snap.workspaces.sort((a, b) => rank(a.workspace_id) - rank(b.workspace_id));
   snap.workspaces.forEach((workspace, index) => { workspace.number = index + 1; });
-  // a repository's checkouts: its own, then each linked worktree on its branch
   for (const spec of SPECS) {
     if (spec.tabOf) continue;
     const workspace = snap.workspaces.find((candidate) => candidate.workspace_id === paneOfKey(spec.key)!.workspace_id)!;
@@ -279,12 +230,6 @@ function layOutRoster(): void {
 layOutRoster();
 for (const pane of snapshot().panes) if (keyOfPane.get(pane.pane_id) === "api") Object.assign(pane, { plan: { done: 1, total: planSteps.length, current: "Adding the replay metric" } });
 
-/**
- * The flaky-retry pane's background work (GET /api/pane/omo-tasks): a Claude subagent still
- * reviewing, a background command, and a subagent that ended. The subagent's own transcript
- * (GET /api/pane/background-agent) grows by one fictional record each time it is read, so Refresh
- * has something new to show; the command has no transcript to open, as on a real PC.
- */
 const minutesAgo = (minutes: number, seconds = 0): string => new Date(Date.now() - minutes * 60_000 - seconds * 1000).toISOString();
 const BACKGROUND_TASKS: OmoTask[] = [
   { id: "demo-review", title: "Review the retry test for timing assumptions", category: "reviewer", model: "claude-opus-5-5", status: "running", started_at: minutesAgo(4), ended_at: null, turns: 3, tool_calls: 4, tokens: 48_120, detail_kind: "claude-subagent" },
@@ -308,7 +253,6 @@ const BACKGROUND_MORE: PaneBackgroundAgentDetail["events"] = [
 ];
 let backgroundReads = 0;
 
-// The last workspace can be closed in a demo, so creation keeps templates independent of it.
 const newPaneTemplate = structuredClone(snapshot().panes[0]!);
 const newTabTemplate = structuredClone(snapshot().tabs[0]!);
 const newWorkspaceTemplate = structuredClone(snapshot().workspaces[0]!);
@@ -334,7 +278,7 @@ function createDemoWorkspace(cwd: string, label: string, agent: string | null, w
 function closeDemoWorkspaces(ids: Set<string>): void {
   const snap = snapshot();
   for (const removed of snap.panes.filter((pane) => ids.has(pane.workspace_id))) {
-    for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+    { forgetHeldReceipts(removed.pane_id); for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
     replying.delete(removed.pane_id);
   }
   snap.panes = snap.panes.filter((pane) => !ids.has(pane.workspace_id));
@@ -357,10 +301,9 @@ const sockets = new Set<DemoSocket>();
 const conversationVersions = new Map<string, number>();
 
 // herdr names an unnamed tab by its place in the row and moves that name up when an earlier tab
-// closes; a renamed tab keeps its name. The demo tracks which tabs still carry the automatic name.
+// closes; a renamed tab keeps its name.
 const autoTabs = new Set<string>();
 function relabelAutoTabs(workspaceId: string): void {
-  // a tab that is gone is forgotten, so a later tab given its ID keeps the name it was created with
   const live = new Set(snapshot().tabs.map((tab) => tab.tab_id));
   for (const id of autoTabs) if (!live.has(id)) autoTabs.delete(id);
   let place = 0;
@@ -376,10 +319,6 @@ function emitSse(event: MachineEvent): void {
   for (const listener of sseListeners) listener(message);
 }
 
-// The settings, pins and muted panes every browser of a server shares (shared/preferences.ts),
-// kept the way server/preferences.ts keeps them: one document, a change laid over it, told on the
-// event stream. The demo is one page, so the document is this page's and a reload starts it over,
-// as the rest of the demo's state does; it is here so an agent's Mute alerts works as on a server.
 let preferences: SharedPreferences = { revision: 0, settings: {}, muted_panes: [] };
 
 function changePreferences(raw: unknown): Response {
@@ -420,14 +359,6 @@ function conversationChanged(paneId: string): void {
   for (const socket of sockets) socket.push({ type: "conversation-changed", pane_id: paneId, signature: `demo:${revision}` });
 }
 
-// ---- workspace order (server/order-sequence.ts) -------------------------------------------------
-// Each fictional PC's server keeps one move counter per lifetime: a read carries the count when it
-// starts, a confirmed move takes the next number. The regression script holds reads, cached GETs,
-// SSE rosters, move answers and boot proofs apart through `window.__herdrDemoOrder`, so each can
-// arrive in any order; the app itself only ever sees the answers.
-// The roster is the fictional manager's (server/machines.ts): it publishes a PC's snapshot of an
-// epoch only once its own sideband health call proved that epoch (`accepted`), keeps the last one it
-// accepted until then, and names the proved boot in source_boot_id.
 interface DemoOrder { epoch: string; seq: number; legacy: boolean; accepted: string; cached: SessionSnapshot | null }
 const orders = new Map<string, DemoOrder>();
 function orderOf(machineId: string): DemoOrder {
@@ -435,7 +366,6 @@ function orderOf(machineId: string): DemoOrder {
   if (!order) { const epoch = crypto.randomUUID(); order = { epoch, seq: 0, legacy: false, accepted: epoch, cached: null }; orders.set(machineId, order); }
   return order;
 }
-/** a PC's roster as its server reads it now: the read's pair is taken when it starts */
 function readSnapshot(machine: Machine): SessionSnapshot | null {
   if (!machine.snapshot) return null;
   const order = orderOf(machine.id);
@@ -445,18 +375,14 @@ function readRoster(): Machine[] {
   return machines.map((machine) => {
     const order = orderOf(machine.id);
     const { source_boot_id: _proof, ...withoutId } = machine;
-    // with the device routes on, the Host carries the fictional relay ID My devices shows at its top
     const rest = DEVICE_STATE !== null && machine.kind === "local" ? { ...withoutId, server_id: demoRelayServerId() } : withoutId;
     if (order.legacy) return { ...rest, snapshot: readSnapshot(machine) };
-    // a restart its manager has not proved yet: the cache keeps the last accepted server's read
     if (order.epoch !== order.accepted) return { ...rest, snapshot: structuredClone(order.cached), source_boot_id: order.accepted };
     order.cached = readSnapshot(machine);
     return { ...rest, snapshot: structuredClone(order.cached), source_boot_id: order.accepted };
   });
 }
-/** answer: proof with a fresh roster; proof-only: proof whose roster has no entry for the PC yet; refuse: the health call fails */
 type VerifyMode = "answer" | "proof-only" | "hold" | "refuse";
-/** the manager's per-PC health-call admission: one call in flight, starts SOURCE_CHECK_INTERVAL_MS apart */
 interface Admission { inflight: Promise<VerifyMode> | null; lastStart: number | null }
 const admissions = new Map<string, Admission>();
 const admissionOf = (machineId: string): Admission => {
@@ -465,20 +391,13 @@ const admissionOf = (machineId: string): Admission => {
   return admission;
 };
 const orderControl = {
-  /** rosters read now, delivered later by the script */
   held: [] as Machine[][],
-  /** answers the next GET /api/machines gives instead of a fresh read (a cache that lags) */
   cachedGets: [] as Machine[][],
-  /** plain GET /api/machines answers wait for releaseGet() while this is set; each is read when it arrives */
   holdGets: false,
   gets: [] as (() => void)[],
-  /** moves to let through before the next one is refused (null: none refused) */
   failAfter: null as number | null,
-  /** the admission's monotonic clock, in ms: only the script moves it */
   clock: 0,
-  /** SSE rosters wait while this is set: publication is held apart from the move's receipt */
   holdSse: false,
-  /** move answers wait for release() while this is set */
   holdMoves: false,
   moves: [] as (() => void)[],
   verifyMode: "answer" as VerifyMode,
@@ -493,11 +412,6 @@ function publishRoster(roster: Machine[] = readRoster()): void {
   emitSse({ type: "machines", machines: roster });
 }
 const unverified = (headers: Record<string, string> = {}) => json({ error: { code: "source_unverified", message: "This PC's server could not be verified now" } }, 503, { "cache-control": "no-store", ...headers });
-/**
- * GET /api/machines?verify_source_boot=<id>: the PC's boot, asked of its server during this request.
- * Admitted like the manager's (server/machines.ts sourceCheck): an asker that finds a call in flight
- * waits for it and is refused, and one within the interval of the last start is refused at once.
- */
 async function verifySourceBoot(machineId: string): Promise<Response> {
   if (machineId === "") return error("invalid_query", "verify_source_boot names one PC", 400);
   const machine = machines.find((candidate) => candidate.id === machineId);
@@ -524,13 +438,11 @@ async function verifySourceBoot(machineId: string): Promise<Response> {
   const order = orderOf(machineId);
   note(`verify-${mode}`, { machine_id: machineId, epoch: order.epoch });
   if (mode === "refuse" || order.legacy) return unverified();
-  // the health call proved the server that answers now: the manager accepts its epoch
   order.accepted = order.epoch;
   const roster = readRoster();
   return json({ machines: mode === "proof-only" ? roster.filter((candidate) => candidate.id !== machineId) : roster, verified_source_boot: { machine_id: machineId, boot_id: order.epoch } }, 200, { "cache-control": "no-store" });
 }
 (window as unknown as { __herdrDemoOrder: unknown }).__herdrDemoOrder = {
-  /** a roster read now, for later delivery; its index */
   hold: () => orderControl.held.push(readRoster()) - 1,
   deliverSse: (index: number) => { const roster = orderControl.held[index]!; note("publication", { machine_id: local.id, epoch: roster[0]?.snapshot?.order_epoch, seq: roster[0]?.snapshot?.read_seq }); emitSse({ type: "machines", machines: roster }); },
   cacheNextGet: (index: number) => { orderControl.cachedGets.push(orderControl.held[index]!); },
@@ -538,28 +450,20 @@ async function verifySourceBoot(machineId: string): Promise<Response> {
   publish: () => publishRoster(),
   holdMoves: (on: boolean) => { orderControl.holdMoves = on; },
   releaseMove: () => { orderControl.moves.shift()?.(); },
-  /** stop holding move answers and answer every held one */
   releaseAllMoves: () => { orderControl.holdMoves = false; for (const release of orderControl.moves.splice(0)) release(); },
   pendingMoves: () => orderControl.moves.length,
   verifyMode: (mode: VerifyMode) => { orderControl.verifyMode = mode; },
   releaseVerify: (mode?: VerifyMode) => { orderControl.verifies.shift()?.release(mode); },
   pendingVerifies: () => orderControl.verifies.length,
-  /** the PC's server restarts: a new epoch, counted from 0 again, which its manager has not proved yet */
   restart: (machineId = local.id) => { const order = orderOf(machineId); order.epoch = crypto.randomUUID(); order.seq = 0; return order.epoch; },
-  /** the manager's own sideband health call proves the PC's current server: passive proof only */
   proveSource: (machineId = local.id) => { const order = orderOf(machineId); order.accepted = order.epoch; note("sideband-proof", { machine_id: machineId, epoch: order.epoch }); },
-  /** move the admission clock on */
   advance: (ms: number) => { orderControl.clock += ms; },
   holdGets: (on: boolean) => { orderControl.holdGets = on; },
-  /** answer the oldest held GET /api/machines */
   releaseGet: () => { orderControl.gets.shift()?.(); },
   releaseAllGets: () => { orderControl.holdGets = false; for (const release of orderControl.gets.splice(0)) release(); },
   pendingGets: () => orderControl.gets.length,
-  /** let `skip` moves through, then refuse the next one without moving anything */
   failMove: (skip = 0) => { orderControl.failAfter = skip; },
-  /** the PC's server is one from before order evidence: no pairs, no receipts' numbers, no proof */
   legacy: (on: boolean, machineId = local.id) => { orderOf(machineId).legacy = on; },
-  /** another client moves a workspace: herdr's order and the counter change, nothing is published */
   otherClientMove: (workspaceId: string, insertIndex: number) => {
     const snap = snapshot();
     const order = movedTabOrder(snap.workspaces.map((workspace) => workspace.workspace_id), workspaceId, insertIndex);
@@ -567,14 +471,12 @@ async function verifySourceBoot(machineId: string): Promise<Response> {
     snap.workspaces.forEach((workspace, index) => { workspace.number = index + 1; });
     orderOf(local.id).seq++;
   },
-  /** a second fictional PC, with its own server and order */
   addPc: () => {
     if (machines.some((machine) => machine.id === "laptop")) return "laptop";
     machines.push({ ...structuredClone(local), id: "laptop", name: "laptop", kind: "ssh" } as Machine);
     publishRoster();
     return "laptop";
   },
-  /** a pane's status patch on the local PC: no full roster */
   status: (paneId: string, status: AgentStatus) => setStatus(paneId, status),
   epoch: (machineId = local.id) => orderOf(machineId).epoch,
   seq: (machineId = local.id) => orderOf(machineId).seq,
@@ -611,11 +513,6 @@ function agentOf(paneId: string): string {
   return SPECS.find((spec) => spec.key === key)?.agent ?? paneOf(paneId)?.agent ?? "the agent";
 }
 
-/**
- * How Claude's builtins behave, as the bridge describes them (shared/protocol.ts CommandForm): a
- * screen or output the chat cannot show runs in the terminal, a choice opens a dialog, the rest
- * needs nothing. The other agents' panes keep the recorded list as it is.
- */
 const CLAUDE_FORMS: Record<string, CommandForm[]> = {
   clear: [{ match: "bare", interaction: "none" }],
   compact: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }],
@@ -661,7 +558,6 @@ const OMP_TERMINAL: SlashCommand[] = [
   { name: "copy", description: "Copy the last answer", source: "builtin", forms: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }] },
 ];
 
-/** GET /api/pane/commands: the recorded Claude list, with its forms for a Claude pane (and omp's terminal screens for an omp pane). */
 function paneCommandRows(paneId: string): SlashCommand[] {
   const rows = (commandsFixture as { commands: SlashCommand[] }).commands;
   if (agentOf(paneId) === "omp") return [...rows, ...OMP_TERMINAL.map((row) => ({ ...row, provenance: { transport: "static" as const, verified: false }, id: row.name }))];
@@ -673,10 +569,8 @@ function paneCommandRows(paneId: string): SlashCommand[] {
   return [...described, ...[...CLAUDE_LATER, ...CLAUDE_HIDDEN].map((row) => ({ ...row, provenance: { transport: "static" as const, verified: false }, id: row.name }))];
 }
 
-/** The last five commands sent from Chat to each pane, as the bridge tracks them (GET /api/pane/prompt `outcomes`). */
 const outcomesByPane = new Map<string, CommandOutcome[]>();
 let nextOutcome = 1;
-/** per pane, the outcomes whose evidence arrives when its current mock turn ends */
 const settleAtTurnEnd = new Map<string, (() => void)[]>();
 
 function recordOutcome(paneId: string, text: string, state: CommandOutcome["state"]): CommandOutcome {
@@ -692,12 +586,6 @@ function settleOutcome(outcome: CommandOutcome, state: CommandOutcome["state"], 
   if (evidence !== undefined) outcome.evidence.push({ kind: evidence, at: outcome.updated_at });
 }
 
-/**
- * The command a sent text invokes in this pane's syntax, as the composer reads it
- * (shared/skill-syntax.ts): the leading `/word` for every agent and `$word` where `$` triggers, else
- * an inline `/word` or `$word` for the agents that read one. Prose is null; a leading command no row
- * lists is kept with no form, as a runtime command the bridge cannot describe.
- */
 function sentCommand(paneId: string, text: string): { name: string; form: CommandForm | null; listed: boolean } | null {
   const syntax = skillSyntax(agentOf(paneId));
   const [first = "", ...rest] = text.trim().split(/\s+/);
@@ -718,13 +606,11 @@ function sentCommand(paneId: string, text: string): { name: string; form: Comman
   return { name, form, listed: true };
 }
 
-/** What Hermes's classic CLI printed for an informational command, as recorded (server/fixtures/hermes-results), with the demo pane's model. */
 const HERMES_PRINTED: Record<string, string> = {
   status: ["Hermes CLI Status", "", "Session ID: 20261020_184853_b7a650", "Path: ~/.hermes", "Model: hermes-4-405b (nous)", "Approvals: smart",
     "Created: 2026-10-20 18:48", "Last Activity: 2026-10-20 18:48", "Tokens: 0", "Agent Running: No"].join("\n"),
 };
 
-/** The screen after a terminal command, as the bridge previews it: the echo, then the lines the agent printed where the transcript does not reach. */
 function terminalPreview(paneId: string, text: string, name: string): string {
   return [`\u276f ${text}`, "", `${agentOf(paneId)} answered /${name} here, on its screen, and wrote nothing to its transcript.`, "The real app shows the pane's own lines; this is the demo's stand-in for them.", "", "\u276f "].join("\n");
 }
@@ -740,7 +626,6 @@ const now = () => new Date().toISOString();
 const CLAUDE_PANEL_CLOSED: Record<string, string> = {
   config: "Config dialog dismissed", status: "Settings dialog dismissed", cost: "Settings dialog dismissed", help: "Help dialog dismissed",
 };
-/** the panel a terminal command left open in each Claude pane, by what its close records */
 const openPanels = new Map<string, string>();
 
 /** Escape typed into a Claude pane closes the panel a terminal command opened, and Claude records that it did. */
@@ -753,16 +638,13 @@ function closeClaudePanel(paneId: string, text: string): void {
   conversationChanged(paneId);
 }
 
-/** what a Claude or omp pane's screen shows over its input row (site/demo/agentScreens.ts), by pane */
 const agentScreens = new Map<string, { open: { name: string; text: string } | null; printed: string | null }>();
 const screenOf = (paneId: string) => agentScreens.get(paneId) ?? { open: null, printed: null };
 
-/** the pane's screen drawn again for its grid, to every terminal attached to it */
 function drawAgentScreen(paneId: string): void {
   for (const socket of sockets) socket.drawScreen(paneId);
 }
 
-/** A terminal command that opens a screen in the demo's Claude or omp pane, or prints over its input row. */
 function openAgentScreen(paneId: string, text: string, name: string): void {
   const agent = screenAgent(agentOf(paneId));
   const effect = agent === null ? null : screenCommand(agent, name);
@@ -771,7 +653,6 @@ function openAgentScreen(paneId: string, text: string, name: string): void {
   drawAgentScreen(paneId);
 }
 
-/** Escape typed into such a pane closes the screen (or clears the line printed over the row), and the row comes back. */
 function closeAgentScreen(paneId: string, text: string): void {
   if (text !== "\x1b" || screenAgent(agentOf(paneId)) === null) return;
   const screen = screenOf(paneId);
@@ -780,7 +661,6 @@ function closeAgentScreen(paneId: string, text: string): void {
   drawAgentScreen(paneId);
 }
 
-/** The bridge takes one accepted pending message when the current mock turn finishes. */
 /**
  * The first messages create requests queued for new panes' agents (`first_message`), by pane, as the
  * bridge keeps them: told to every socket attached to the pane, typed into the chat once when the
@@ -789,7 +669,6 @@ function closeAgentScreen(paneId: string, text: string): void {
  * through pending-action by any attached socket.
  */
 const firstMessages = new Map<string, PendingMessage>();
-/** the connection that asked for each pane's first message */
 const firstRequesters = new Map<string, string>();
 let nextFirst = 1;
 let nextConnection = 1;
@@ -813,7 +692,7 @@ function publishFirstMessage(paneId: string, removed?: { id: string; outcome: "s
 
 /**
  * The pane's first message typed into its chat: on its own (`by` null) only while it waits and the socket that
- * asked is attached; on a socket's Send now (`by`) when that socket is attached. False when it was not typed.
+ * asked is attached; on a socket's Send now (`by`) when that socket is attached.
  */
 function deliverFirstMessage(paneId: string, by: DemoSocket | null = null): boolean {
   const message = firstMessages.get(paneId);
@@ -837,12 +716,6 @@ function finishDemoTurn(paneId: string, status: "idle" | "done" = "done"): void 
   }
 }
 
-/**
- * A sent Enter joins the conversation now; another Enter steers the current mock turn. A command
- * gets an outcome: a terminal one is answered on the screen alone (no turn, no mock answer, a
- * preview once the screen changed), the rest settle when the mock turn ends, on the evidence the
- * bridge would have (the transcript, or the card for a dialog); one no row lists stays unknown.
- */
 function submitToChat(paneId: string, text: string): void {
   const key = keyOfPane.get(paneId);
   const chat = key ? chats.get(key) : undefined;
@@ -905,7 +778,6 @@ function answerPrompt(paneId: string, optionIndex: number | undefined): void {
   }, PROMPT_ANSWER_TURN_MS);
 }
 
-// ---- HTTP -------------------------------------------------------------------------------------
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", ...headers } });
@@ -915,7 +787,7 @@ async function bodyOf(init: RequestInit | undefined, input: RequestInfo | URL): 
   try {
     if (init?.body) return JSON.parse(String(init.body)) as Record<string, unknown>;
     if (input instanceof Request) return (await input.clone().json()) as Record<string, unknown>;
-  } catch { /* not JSON */ }
+  } catch { }
   return {};
 }
 
@@ -929,20 +801,11 @@ async function layoutBodyOf(method: string, init: RequestInit | undefined, input
   return body as Record<string, unknown>;
 }
 
-/** The store key the demo's Claude lists give: one fictional store. */
 const DEMO_CLAUDE_STORE = "de000000000000000000c1ad";
-/**
- * The workspace whose Claude list answers as a bridge from before store-bound Resume would: rows with
- * no source, and no POST /api/sessions/resume (404), so the list shows Resume as unavailable.
- */
 const olderBridgeWorkspace = (workspaceId: string): boolean => snapshot().workspaces.find((workspace) => workspace.workspace_id === workspaceId)?.label === SPECS.find((spec) => spec.key === "flaky")?.label;
 
 const DEMO_FILES = ["src/routes/payments.ts", "src/lib/idempotency.ts", "src/metrics.ts", "src/pages/Reports.tsx", "src/money.ts", "src/money.test.ts", "package.json", "README.md"];
 
-/**
- * The demo repository's uncommitted work, as GET /api/workspace/diff/* answers it: one file of
- * each kind a diff view has to draw. The patches are what git would print, hunk counts included.
- */
 const DEMO_DIFF_LIMITS = { max_files: 2000, max_list_bytes: 2 * 1024 * 1024, max_patch_bytes: 1024 * 1024, context_lines: 3 };
 const DEMO_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
   { file: { path: "docs/checkout-flow.png", old_path: null, status: "modified", additions: null, deletions: null, binary: true }, patch: null },
@@ -987,17 +850,9 @@ const DEMO_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
   ].join("\n") },
 ];
 
-/**
- * The demo repository's HEAD, and the branches a base picker is offered (GET /api/workspace/diff/refs):
- * only the bases its branch comparison below answers, so no offered branch is refused on Compare.
- */
 const DEMO_HEAD = "4f2a9c1d7e3b5a8c6d0e1f2a3b4c5d6e7f8a9b0c";
 const DEMO_MAIN = "7a3e5c19b2d84f06a1c3e5b7d9f1a3c5e7b9d1f3";
-/**
- * The pull request a worktree's branch has in the demo (GET /api/workspace/pr): one failing check
- * whose log Send to agent reads, one still running, the rest passed, and two open review threads.
- * Merge stays off (a required check failed), as GitHub would keep it.
- */
+/** Merge stays off (a required check failed), as GitHub would keep it. */
 const DEMO_PR: PullRequestView = {
   number: 128,
   title: "Retry webhook deliveries with backoff",
@@ -1044,12 +899,6 @@ const DEMO_REFS: RepoDiffRefs["refs"] = [
   { name: "refs/remotes/origin/main", oid: DEMO_MAIN },
 ];
 
-/**
- * What the demo's branch changed against `main` or `origin/main` (both at the same commit): the
- * uncommitted work above, plus the branch's own committed file. Any other base is one the demo
- * repository does not know. The merge base is pinned in the comparison the list answers with, as
- * the server pins it.
- */
 const DEMO_BRANCH_COMPARISON: RepoBranchComparison = { repository_root: "", head_oid: DEMO_HEAD, base_oid: DEMO_MAIN, merge_base_oid: "e5b7d9f1a3c5e7b9d1f37a3e5c19b2d84f06a1c3" };
 const DEMO_BRANCH_FILE: RepoDiffFile = { path: "src/routes/payments.ts", old_path: null, status: "modified", additions: 3, deletions: 1, binary: false };
 const DEMO_BRANCH_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
@@ -1073,15 +922,13 @@ const DEMO_BRANCH_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
 ].sort((left, right) => (left.file.path < right.file.path ? -1 : 1));
 
 /**
- * Settings → Agents' "Read Claude's limits from its status line" on the demo: off until
- * turned on. `?demo_usage=refused` starts Claude refused as a blocked network refuses it (a 403 to a
+ * `?demo_usage=refused` starts Claude refused as a blocked network refuses it (a 403 to a
  * token that has not expired), offering the status line until it is turned on.
  */
 let demoStatusline = false;
 const removedUsageAccounts = new Set<string>();
 const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
 
-/** A calm PC, a little different each time it is asked, for the sidebar's CPU, memory and disk meters. */
 function systemReport(): SystemReport {
   const wobble = (base: number, spread: number): number => Math.round((base + (Math.random() - 0.5) * spread) * 10) / 10;
   const gib = 1024 ** 3;
@@ -1092,7 +939,6 @@ function systemReport(): SystemReport {
   };
 }
 
-/** Settings → Agents' accounts on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
 /**
  * `?demo_sign_in=1`: the in-browser sign-in plays the flows recorded from Claude Code 2.1.312 and
  * codex-cli 0.163.0 (server/fixtures/usage-login): Claude starts with no account, so its row offers
@@ -1137,48 +983,26 @@ function usageReport(): UsageReport {
       { kind: "month", scope: null, used_percent: 15, resets_at: at(520), starts_at: null },
     ] },
   ] };
-  // with `demo_usage=refused` Claude keeps its expired account, so its row offers Sign in again instead
   return SIGN_IN_DEMO && USAGE_STATE !== "refused" && !signInDemo.signedIn.has("claude") ? { providers: report.providers.filter((usage) => usage.id !== "claude") } : report;
 }
 
-// ---- paired devices (Settings → Phone & devices) ----------------------------------------------
 
-/**
- * Fictional paired devices, and what that page does with them: rename, revoke one, revoke all,
- * and start a pairing that a fictional phone completes a moment later, which is what sends the
- * `device-paired` event every open window shows as a line (src/components/DevicePairedNotice.tsx).
- * All of it answers only with `?demo_devices=`: without it the demo has no device list (its
- * /api/devices is a 404, which scripts/security-summary-demo-regression.ts relies on). `list` is the
- * fictional devices below; another value picks a state for the browser lane's captures: `empty` (nothing paired),
- * `watch` (this browser is a device that only watches), `slow` (the list is held until the page calls
- * `herdrDemoReleaseDevices()`, so a capture of the loading state never races the answer) or `error`
- * (the registry cannot be written, so revoking fails). No real credential is involved anywhere.
- * `?demo_connection=drops` loses the bridge connection right after the first pairing is heard, and
- * never gets it back: the line stays while the header says it is reconnecting. `?demo_pairing=held`
- * keeps the fictional phone from entering the code until the page calls `herdrDemoReleasePairing()`
- * (once per pairing started), so the lane sees the code before the enrollment takes it away; without
- * it, the phone enters the code a moment later, as a visitor to the demo expects.
- */
+/** No real credential is involved anywhere. */
 const DEVICE_STATE = new URLSearchParams(location.search).get("demo_devices");
 const ACCOUNT_MEMBER = new URLSearchParams(location.search).get("demo_account") === "member";
 const CONNECTION_DROPS = new URLSearchParams(location.search).get("demo_connection") === "drops";
 let connectionLost = false;
-/** `?demo_connection=switch`: the page loses the bridge connection with `herdrDemoLoseConnection()` and lets it
- *  back with `herdrDemoRestoreConnection()`, so a capture of the header while it reconnects never races a timer
- *  (scripts/reconnect-header-demo-regression.ts) */
 if (new URLSearchParams(location.search).get("demo_connection") === "switch") Object.assign(globalThis, {
   herdrDemoLoseConnection: () => {
     connectionLost = true;
     for (const socket of [...sockets]) socket.close(1006, "demo: the connection was lost");
   },
-  // an attempt made during the outage never opens: it fails now, so the client's next retry finds the bridge back
   herdrDemoRestoreConnection: () => {
     connectionLost = false;
     for (const socket of [...sockets]) if (socket.readyState === 0) socket.close(1006, "demo: the attempt failed");
   },
 });
 const DEVICE_PAIRS_AFTER_MS = 1800;
-/** `held`: each pairing started waits here until the page releases it; no timer decides it */
 const PAIRING_HELD = new URLSearchParams(location.search).get("demo_pairing") === "held";
 const heldPairings: (() => void)[] = [];
 if (PAIRING_HELD) (globalThis as { herdrDemoReleasePairing?: () => boolean }).herdrDemoReleasePairing = () => {
@@ -1186,31 +1010,24 @@ if (PAIRING_HELD) (globalThis as { herdrDemoReleasePairing?: () => boolean }).he
   release?.();
   return release !== undefined;
 };
-/** `slow`: the device list waits on this until `herdrDemoReleaseDevices()` is called; no timer decides it */
 const deviceListHeld = DEVICE_STATE === "slow" ? new Promise<void>((resolve) => { (globalThis as { herdrDemoReleaseDevices?: () => void }).herdrDemoReleaseDevices = resolve; }) : null;
 const demoDevices: PairedDevice[] = DEVICE_STATE === "empty" ? [] : [
   { id: "6f1c2a9d4b7e8503", label: "Pixel 9", role: "drive", created_at: ago(41 * 24 * 60), last_seen_at: ago(3), current: DEVICE_STATE === "watch" },
   { id: "0b8e7d6c5a493f21", label: "iPad", role: "drive", created_at: ago(12 * 24 * 60), last_seen_at: ago(26 * 60), current: false },
   { id: "c3d9e1f24a5b6078", label: "Kitchen laptop, the old one with the broken hinge", role: "drive", created_at: ago(3 * 24 * 60), last_seen_at: null, current: false },
-  // `relay`: a device paired through the relay under this browser's own name, as Connect a phone's same-name hint reads it
   ...(DEVICE_STATE === "relay" ? [{ id: "9a7e5c3b1d2f4068", label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), role: "drive" as const, created_at: ago(5 * 24 * 60), last_seen_at: ago(40), current: false, via_relay: true as const }] : []),
 ];
-const demoAuth: HealthAuth = DEVICE_STATE === "watch" ? { required: false, authenticated: true, via: "device", role: "watch" } : { required: false, authenticated: true };
+const DEMO_VIA = new URLSearchParams(location.search).get("demo_via");
+const DEMO_VIA_DEVICE = DEMO_VIA === "device";
+const demoAuth: HealthAuth = DEVICE_STATE === "watch" ? { required: false, authenticated: true, via: "device", role: "watch" } : DEMO_VIA_DEVICE ? { required: false, authenticated: true, via: "device" } : DEMO_VIA === "local" ? { required: false, authenticated: true, via: "local" } : { required: false, authenticated: true };
 let demoPairings = 0;
-// what a server answers when the registry write fails (server/http.ts): a log reference, nothing more
 const registryUnwritable = () => error("internal_error", "internal error (d3m0f41l0001)", 500);
-/**
- * The one pending pairing code, as the server keeps it (server/devices.ts): started by the Devices
- * group or the relay panel's New code, carried by the relay offer while it lasts, gone once the
- * fictional phone enters it. The code itself never changes: the demo's captures show one code.
- */
 let demoPairing: PairingCode | null = null;
 function startDemoPairing(): PairingCode {
   demoPairing = { code: "482913", expires_at: new Date(Date.now() + 10 * 60_000).toISOString() };
   return demoPairing;
 }
 const activeDemoPairing = (): PairingCode | null => demoPairing !== null && Date.parse(demoPairing.expires_at) > Date.now() ? demoPairing : null;
-/** The fictional phone that enters the code: a device more, and the event every window hears. */
 function demoDevicePairs(): void {
   demoPairings += 1;
   demoPairing = null;
@@ -1223,7 +1040,6 @@ function demoDevicePairs(): void {
   }
 }
 
-/** One fictional plugin, so the palette's Plugin actions group and Settings have something to show. */
 const PLUGINS: PluginActions[] = [
   { plugin_id: "example.layout", name: "Layout", version: "0.1.0", description: "Apply project layouts", enabled: true, actions: [
     { action_id: "apply", title: "Apply layout", description: "Arrange this workspace's panes", contexts: ["workspace"] },
@@ -1233,34 +1049,24 @@ const PLUGINS: PluginActions[] = [
 
 const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null, auth: { method: "none", allow: [], issuer: null, client_id: null }, auth_methods: [], oidc_secret: false };
 
-// ---- the Ovis relay (Settings → Phone & devices → Connect a phone) ------------------
 
-/**
- * A fictional relay link, so the demo shows the panel's online state: the switch turns it on and
- * off, no phone is ever connected, the pairing offer is a real offer URL (shared/relay-offer.ts)
- * around a made-up server identity and key, and a reset gives the PC the next made-up identity.
- * Nothing here opens a socket or holds a credential.
- */
+/** Nothing here opens a socket or holds a credential. */
 const DEMO_RELAY = "wss://relay.ovis.sh";
 const DEMO_RELAY_APP = "https://app.ovis.sh";
-/** 32 made-up key bytes, in the canonical base64 the offer's validator accepts */
 const DEMO_RELAY_PUBLIC_KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, index) => (index * 37 + 11) & 0xff)));
-/** `?demo_relay=on` opens the demo with the relay already online, as a PC that turned it on before */
 const DEMO_RELAY_PARAM = new URLSearchParams(location.search).get("demo_relay");
 const DEMO_RELAY_PASS = new URLSearchParams(location.search).get("demo_relay_pass");
 let demoRelayOnline = DEMO_RELAY_PARAM === "on" || DEMO_RELAY_PASS !== null;
+let demoRelayStartError: string | null = null;
 let demoRelayIdentities = 1;
 const demoRelayServerId = (): string => `${demoRelayIdentities.toString(16).padStart(4, "0")}5e1f1d0ff3ab1e0ff3ab1e5e1f1d`;
-/** direct connections on the PC's network: on by default; the demo listens nowhere, and names a made-up home address while the relay is on */
 let demoRelayDirect = true;
 function demoRelayPass(): RelayStatus["pass"] | undefined {
   switch (DEMO_RELAY_PASS) {
-    // passes needed from a month on: the reminder names that date
     case "grace": return { state: "no_account", relay: "missing", enforce_at: new Date(Date.now() + 30 * 86_400_000).toISOString(), refused: false };
     case "required": return { state: "no_account", relay: null, enforce_at: null, refused: true };
     case "not-listed": return { state: "not_listed", relay: null, enforce_at: null, refused: true };
     case "limit": return { state: "limit", relay: null, enforce_at: null, refused: true };
-    // passes needed since yesterday: the data limit holds now
     case "data-limit": return { state: "ok", relay: "ok", enforce_at: new Date(Date.now() - 86_400_000).toISOString(), refused: false, new_sessions: false };
     default: return undefined;
   }
@@ -1271,12 +1077,11 @@ const demoRelayStatus = (): RelayStatus => {
   return {
     phase: !demoRelayOnline ? "off" : refused ? "error" : "online",
     relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null,
-    error: refused ? "The Ovis relay needs an Ovis account." : null,
+    error: refused ? "The Ovis relay needs an Ovis account." : demoRelayStartError,
     direct: { on: demoRelayDirect, carriers: demoRelayDirect && demoRelayOnline ? ["ws://192.168.0.10:7319"] : [] },
     ...(pass ? { pass } : {}),
   };
 };
-/** POST /api/relay/offer: the pending code inside an offer for the fictional identity, as the server reuses it */
 function demoRelayOffer(): Response {
   if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
   const pairing = activeDemoPairing() ?? startDemoPairing();
@@ -1292,7 +1097,7 @@ function demoPortal(): PortalStatus {
   try {
     const staged = window.sessionStorage.getItem("ovis:demo-portal");
     if (staged !== null) return { ...NO_PORTAL, supported: true, ...(JSON.parse(staged) as Partial<PortalStatus>) };
-  } catch { /* storage blocked or not JSON: the section stays hidden */ }
+  } catch { }
   return NO_PORTAL;
 }
 
@@ -1303,11 +1108,9 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
 
   if (path === "/api/health") {
     const variant = demoSecurity();
-    // a device that only watches, from either demo switch: the security facts' own, or the device states' (`?demo_devices=watch`)
     const auth: HealthAuth = variant === "watch" ? { required: false, authenticated: true, via: "device", role: "watch" } : demoAuth;
     const security = DEMO_SECURITY_FACTS[variant];
     const facts = security ? { security } : {};
-    // only the herdr-free bridge scope fails or waits: the rest of the demo keeps answering
     if (query.get("scope") === "bridge") {
       if (variant === "loading") return await new Promise<Response>(() => undefined);
       if (variant === "error") return error("server_unavailable", "The demo server is not answering.", 503);
@@ -1317,10 +1120,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const lan = variant === "unknown" ? { lan_exposure: { host: "0.0.0.0" } } : {};
     return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, relay: demoRelayStatus(), ...lan, ...facts, ...DEMO_RUNTIME_FACTS, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } }, 200, { "cache-control": "no-store" });
   }
-  // the demo serves no herdr TUI of its own: no move to herdr-core is offered
   if (path === "/api/runtime/move") return json({ available: false, reason: "not_herdr", status: { state: "idle" } }, 200, { "cache-control": "no-store" });
-  // a code starts here from the Devices group or from the relay panel's New code; the fictional phone
-  // enters it only where the demo has a device list to add it to
   if (path === "/api/devices/pair/start") {
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (DEVICE_STATE !== null) {
@@ -1329,12 +1129,9 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     }
     return json(startDemoPairing(), 200, { "cache-control": "no-store" });
   }
-  // `?demo_account=member`: this PC belongs to an account, so a signed-in Settings offers joining by signing in
   if (path === "/api/account/status" && ACCOUNT_MEMBER) return json({ account: "demo-account", unlinked: [], removals: [], adds: [], blocked: [] }, 200, { "cache-control": "no-store" });
-  // without `?demo_devices=` the demo answers no other device route: its /api/devices stays a 404, as before
   if (DEVICE_STATE !== null) {
     if (path === "/api/devices") {
-      // the `slow` state: held until released, so the lane captures the page while its list loads
       if (deviceListHeld) await deviceListHeld;
       return json({ devices: demoDevices }, 200, { "cache-control": "no-store" });
     }
@@ -1374,11 +1171,8 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/updates") return json({ managed: false, auto_update: false, phase: "idle", current_revision: null, latest_revision: null, current_version: __APP_VERSION__, latest_version: null, available: false, checked_at: null, blocked_reason: null, error: null }, 200, { "cache-control": "no-store" });
   if (path === "/api/updates/notes") return json({ revision: null, releases: [], omitted: 0 }, 200, { "cache-control": "no-store" });
   if (path === "/api/updates/installed") return json({ revision: null, version: null, previous_version: null, installed_at: null, releases: [], omitted: 0 }, 200, { "cache-control": "no-store" });
-  // the demo has no herdr to update: the controls stay hidden
-  // the demo sends no counts: a server without telemetry answers 404, and the app shows neither its notice nor its switch
   // Connection breadcrumbs stay inside the fictional demo; never send them to a real endpoint.
   if (path === "/api/connection-diagnostics") return new Response(null, { status: 204 });
-  // the demo is one browser: a finish read here is kept in its own storage, with no other browser to tell
   if (path === "/api/seen") return method === "POST" ? new Response(null, { status: 204 }) : json({ finishes: [] }, 200, { "cache-control": "no-store" });
   if (path === "/api/preferences") {
     if (method === "GET") return json(preferences, 200, { "cache-control": "no-store" });
@@ -1392,8 +1186,10 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/herdr/update") return json({ supported: false, phase: "idle", server_version: null, binary_version: null, stale: false, output: null, finished_at: null }, 200, { "cache-control": "no-store" });
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
+  // the demo is this PC's own window, with no account join waiting
+  if (path === "/api/relay/joins") return json({ joins: [] }, 200, { "cache-control": "no-store" });
   if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
-    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct") {
+    || path === "/api/relay/link" || path === "/api/relay/link/close" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct" || path === "/api/relay/join") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (path === "/api/relay/offer") return demoRelayOffer();
@@ -1401,14 +1197,14 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
       return json({ url: encodeOffer({ v: 1, server_id: demoRelayServerId(), server_public_key: DEMO_RELAY_PUBLIC_KEY, relay: DEMO_RELAY }, DEMO_RELAY_APP) }, 200, { "cache-control": "no-store" });
     }
-    // a made-up code: no device can find the demo with it, as no relay holds it
     if (path === "/api/relay/code") {
       if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
       const pairing = startDemoPairing();
       return json({ code: "7K3QD-M2XHA", expires_at: pairing.expires_at, server_id: demoRelayServerId() }, 200, { "cache-control": "no-store" });
     }
     if (path === "/api/relay/code/cancel") return json({ ok: true }, 200, { "cache-control": "no-store" });
-    // no phone ever compares digits with the demo, so none is waiting to be approved
+    if (path === "/api/relay/link/close") return json({ ok: true }, 200, { "cache-control": "no-store" });
+    if (path === "/api/relay/join") return error("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
     if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
     if (path === "/api/relay/direct") {
       const body = await layoutBodyOf(method, init, input);
@@ -1417,15 +1213,22 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       demoRelayDirect = body.on;
       return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
     }
-    if (path === "/api/relay/start") demoRelayOnline = true;
+    if (path === "/api/relay/start" && new URLSearchParams(location.search).get("demo_relay_hold") === "1") {
+      await new Promise<void>((done) => { (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart = done; });
+    }
+    if (path === "/api/relay/start") { if (new URLSearchParams(location.search).get("demo_relay_fail") === "1") demoRelayStartError = "Could not reach relay.ovis.sh."; else demoRelayOnline = true; }
     else if (path === "/api/relay/stop") demoRelayOnline = false;
-    // a new identity: the offers made so far name a PC that no longer exists; the link stays as it was
     else demoRelayIdentities += 1;
     return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   }
   if (path === "/api/portal/start" || path === "/api/portal/stop" || path === "/api/portal/invite") return error("portal_unsupported", "The demo opens no public address.", 409);
   if (path === "/api/herdr-ui") return json({ copy_on_select: true, keys: resolveHerdrKeys(undefined) }, 200, { "cache-control": "no-store" });
-  if (path === "/api/access") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
+  if (path === "/api/access") {
+    const tailscale = new URLSearchParams(location.search).get("demo_tailscale");
+    if (tailscale === "missing") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null } });
+    if (tailscale === "command") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: null, serve_command: "tailscale serve --bg --https=443 http://127.0.0.1:7317", serve_url: "https://workstation.example.ts.net" } });
+    return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
+  }
   if (path === "/api/system") return json(systemReport(), 200, { "cache-control": "no-store" });
   if (path === "/api/usage") {
     const report = usageReport();
@@ -1527,7 +1330,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const paneId = query.get("pane_id");
     if (paneId !== null && !snapshot().panes.some((pane) => pane.pane_id === paneId && pane.workspace_id === workspaceId)) return error("pane_not_in_workspace", "pane_id must name a pane of the workspace", 400);
     const cwd = workspace.worktree?.checkout_path || snapshot().panes.find((pane) => pane.workspace_id === workspaceId)?.cwd || "";
-    // a Claude list asked for from a pane is that pane's store's: each Resume carries it (one fictional store here)
     const sessions = sessionHistoryRows(agent as SessionHistoryAgent).map((row) => agent === "claude" && paneId !== null && row.resume && !olderBridgeWorkspace(workspaceId) ? { ...row, resume: { ...row.resume, source: { pane_id: paneId, store_key: DEMO_CLAUDE_STORE } } } : row);
     const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryAgent, cwd, sessions };
     return json(answer, 200, { "cache-control": "no-store" });
@@ -1545,7 +1347,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (!source) return error("stale_source", "the pane the list came from is gone: list the sessions again", 409);
     if (source.workspace_id !== workspaceId) return error("pane_not_in_workspace", "pane_id must name a pane of the workspace", 400);
     if (!sessionHistoryRows("claude").some((row) => row.id === sessionId)) return error("session_not_found", "no such session in this folder's store", 404);
-    // the demo's one store: a pane of the workspace that reports the session shows it there
     const showing = snapshot().panes.find((pane) => pane.workspace_id === workspaceId && pane.agent_session?.agent === "claude" && pane.agent_session.value === sessionId);
     if (showing) return json({ action: "opened", workspace_id: workspaceId, pane_id: showing.pane_id } satisfies SessionResumeResponse);
     const created = await route(new URL("/api/tab/create", url), "POST", { method: "POST", body: JSON.stringify({ workspace_id: workspaceId, agent: { kind: "claude", args: ["--resume", sessionId] } }) }, input);
@@ -1553,7 +1354,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ action: "created", ...(await created.json() as { workspace_id: string; pane_id: string; agent_started: boolean }) } satisfies SessionResumeResponse);
   }
 
-  // the sidebar's one read for every repository (#2661): each workspace answered as the list route answers it
   if (path === "/api/worktree/inventory") {
     if (method !== "GET") return error("method_not_allowed", "use GET", 400);
     const workspaceIds = [...new Set(query.getAll("workspace_id"))];
@@ -1629,7 +1429,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ workspace_id: made.workspace_id, pane_id: made.pane_id, already_open: false, path: checkout.path, branch: checkout.branch, ...(agent ? { agent_started: made.agent_started } : {}) } satisfies WorktreeOpened);
   }
 
-  // the demo's chats are one page each: the whole chat is searched at once
   if (path === "/api/pane/conversation/search") {
     const q = query.get("q") ?? "";
     const pattern = q.length > MAX_SEARCH_QUERY ? null : searchPattern(q);
@@ -1644,13 +1443,25 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const agent = agentOf(paneId);
     if (!chat) return json({ source: "scrollback", turns: [] });
     const source = agent === "claude" ? "claude-transcript" : agent === "codex" ? "codex-transcript" : agent === "gjc" ? "gjc-transcript" : agent === "omo" ? "omo-transcript" : agent === "pi" ? "pi-transcript" : agent === "cmd" ? "cmd-transcript" : agent === "devin" ? "devin-transcript" : agent === "hermes" ? "hermes-transcript" : "omp-transcript";
-    // These demo fixtures have no native Grok/Agy lifecycle: omit optional activity.
     return json({ source, turns: chat.turns, metadata: chat.metadata, cursor: null });
   }
   if (path === "/api/pane/plan") {
     if (method !== "GET") return error("method_not_allowed", "use GET", 400);
     if (!paneId) return error("missing_pane_id", "pane_id query parameter is required", 400);
     return json({ plan: keyOfPane.get(paneId) === "api" ? { steps: planSteps } : null, server_time: new Date().toISOString() } satisfies PanePlan);
+  }
+  if (path === "/api/pane/summary") {
+    if (method !== "GET") return error("method_not_allowed", "use GET", 400);
+    const paneIds = [...new Set(query.getAll("pane_id").filter((id) => id.trim() !== ""))];
+    if (paneIds.length === 0) return error("missing_pane_id", "pane_id query parameter is required", 400);
+    if (paneIds.length > PANE_SUMMARY_MAX_IDS) return error("too_many_panes", `at most ${PANE_SUMMARY_MAX_IDS} pane_id values`, 400);
+    const summaries: PaneSummaries["summaries"] = Object.create(null);
+    for (const id of paneIds) {
+      const key = keyOfPane.get(id);
+      const chat = key ? chats.get(key) : undefined;
+      summaries[id] = chat ? summaryOf(chat.turns) : null;
+    }
+    return json({ server_time: new Date().toISOString(), summaries } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
   }
   if (path === "/api/pane/prompt") return json({ prompt: keyOfPane.get(paneId) === "web" && promptOpen ? { ...PROMPT, id: promptId } : null, outcomes: outcomesByPane.get(paneId) ?? [] });
   if (path === "/api/pane/prompt/answer") {
@@ -1661,8 +1472,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ ok: true });
   }
   if (path === "/api/pane/commands") return json({ commands: paneCommandRows(paneId) });
-  // an agent's commands in a folder before any pane runs it: the new workspace and tab dialogs' skill
-  // chips. The static rows the bridge would read for the agent are not bundled here; the skills are
   if (path === "/api/agent/commands") {
     if (method !== "GET") return error("method_not_allowed", "use GET", 400);
     const agent = query.get("agent") ?? "";
@@ -1716,9 +1525,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (request.jump !== false && result.match) redrawHistory(target);
     return json(result);
   }
-  // the demo's sessions publish no pages: the artifacts chip stays away
   if (path === "/api/pane/artifacts") return json({ artifacts: [] });
-  // nor do they keep OMP side conversations: the side conversations chip stays away
   if (path === "/api/pane/btw") return json({ topics: [], more: false });
   if (path === "/api/pane/omo-tasks") return json({ tasks: keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS : [], runs: [], server_time: new Date().toISOString() } satisfies OmoActivity);
   if (path === "/api/pane/background-agent") {
@@ -1732,7 +1539,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const task = keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS.find((candidate) => candidate.id === agentId) : undefined;
     if (task === undefined) return error("background_agent_not_found", "no such subagent in the pane's session", 404);
     if (task.detail_kind === null) return error("background_detail_unsupported", "a background command's output is not read", 501);
-    // the agent writes on between reads: each read finds one more record, up to what it has
     backgroundReads += 1;
     const events = [...BACKGROUND_EVENTS, ...BACKGROUND_MORE.slice(0, Math.min(backgroundReads - 1, BACKGROUND_MORE.length))];
     return json({
@@ -1744,7 +1550,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const q = (query.get("q") ?? "").toLowerCase();
     return json({ files: DEMO_FILES.filter((file) => file.toLowerCase().includes(q)).slice(0, Number(query.get("limit") ?? 20)) });
   }
-  // Files' Documents tab (off by default): the demo folder's Markdown files, changed an hour apart
   if (path === "/api/pane/docs") {
     const pane = paneOf(paneId);
     if (!pane) return error("pane_not_found", "no such pane", 404);
@@ -1754,12 +1559,10 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/pane/input" || path === "/api/pane/keys") return json({ ok: true });
   if (path === "/api/plugins/actions") return json({ plugins: PLUGINS } satisfies PluginActionsResponse);
   if (path === "/api/plugin/action") {
-    // nothing here is ever left running, so no run is asked about again
     if (method === "GET") return error("plugin_log_not_found", "plugin log not found", 404);
     const body = await bodyOf(init, input);
     const known = PLUGINS.some((plugin) => plugin.plugin_id === body["plugin_id"] && plugin.actions.some((action) => action.action_id === body["action_id"]));
     if (!known) return error("plugin_action_not_found", "plugin action not found", 404);
-    // the demo runs nothing: the action reads as done
     return json({ log_id: "demo", status: "succeeded", exit_code: 0, output: null, opened_pane_id: null } satisfies PluginActionResult);
   }
   if (path === "/api/pane/rename") {
@@ -1804,7 +1607,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const snap = snapshot();
     const closedLayout = snap.layouts.find((layout) => layout.tab_id === pane.tab_id);
     if (closedLayout) closeLayoutPane(closedLayout, pane.pane_id);
-    for (const socket of sockets) socket.holdPending(pane.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+    { forgetHeldReceipts(pane.pane_id); for (const socket of sockets) socket.holdPending(pane.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
     replying.delete(pane.pane_id);
     snap.panes = snap.panes.filter((candidate) => candidate.pane_id !== pane.pane_id);
     const survivingPanes = snap.panes.filter((candidate) => candidate.workspace_id === pane.workspace_id);
@@ -2041,7 +1844,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       w.tab_count = snap.tabs.filter((t) => t.workspace_id === w.workspace_id).length;
       w.pane_count = snap.panes.filter((p) => p.workspace_id === w.workspace_id).length;
     }
-    // a workspace's last tab takes the workspace with it; one that stays opens another tab
     const left = snap.tabs.find((t) => t.workspace_id === from);
     if (!left) snap.workspaces = snap.workspaces.filter((w) => w.workspace_id !== from);
     else for (const w of snap.workspaces) if (w.active_tab_id === tab.tab_id) w.active_tab_id = left.tab_id;
@@ -2063,7 +1865,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const tab = snap.tabs.find((t) => t.tab_id === body["tab_id"]);
     if (!tab) return error("tab_not_found", "no such tab", 404);
     for (const removed of snap.panes.filter((p) => p.tab_id === tab.tab_id)) {
-      for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+      { forgetHeldReceipts(removed.pane_id); for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
       replying.delete(removed.pane_id);
     }
     snap.panes = snap.panes.filter((p) => p.tab_id !== tab.tab_id);
@@ -2071,7 +1873,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     autoTabs.delete(tab.tab_id);
     relabelAutoTabs(tab.workspace_id);
     snap.layouts = snap.layouts.filter((l) => l.tab_id !== tab.tab_id);
-    // a workspace's last tab takes the workspace with it
     if (!snap.tabs.some((t) => t.workspace_id === tab.workspace_id)) snap.workspaces = snap.workspaces.filter((w) => w.workspace_id !== tab.workspace_id);
     structureChanged();
     return json({ ok: true });
@@ -2098,7 +1899,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const order = movedTabOrder(ids, workspace.workspace_id, Number(body["insert_index"] ?? 0));
     if (order) snap.workspaces.sort((a, b) => order.indexOf(a.workspace_id) - order.indexOf(b.workspace_id));
     snap.workspaces.forEach((w, i) => { w.number = i + 1; });
-    // confirmed: the receipt's number is taken before anything else waits
     const counter = orderOf(local.id);
     const receipt = { order_epoch: counter.epoch, moved_seq: ++counter.seq };
     note("move", { machine_id: local.id, epoch: receipt.order_epoch, seq: receipt.moved_seq });
@@ -2107,7 +1907,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json(counter.legacy ? { ok: true } : { ok: true, ...receipt });
   }
   if (path === "/api/workspace/directories" && method === "POST") {
-    // New folder: the demo has no disk, so the folder opens empty and is not listed again
     const body = await bodyOf(init, input);
     const name = String(body["name"] ?? "").trim();
     if (name === "" || name === "." || name === ".." || /[/\\]/.test(name)) return error("invalid_name", "name must be one folder name", 400);
@@ -2171,25 +1970,21 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (typeof body["first_message"] !== "string") return json(made);
     return json({ ...made, first_message: agent !== null ? { id: queueFirstMessage(pane.pane_id, body["first_message"], body["first_message_connection"]).id } : null });
   }
-  // no key in the demo: the app falls back to the browser's own speech recognition
   if (path === "/api/voice") return json({ configured: false, source: null, ...VOICE_DEFAULTS } satisfies VoiceStatus, 200, { "cache-control": "no-store" });
   if (path === "/api/voice/config") return error("demo", "the demo saves no OpenAI key", 409);
   if (path === "/api/voice/transcribe") return error("voice_not_configured", "transcription is unavailable in the demo", 409);
   if (path === "/api/workspace/diff/files" || path === "/api/workspace/diff/file" || path === "/api/workspace/diff/refs") {
     const root = snapshot().panes.find((pane) => pane.pane_id === paneId)?.cwd ?? query.get("directory") ?? "/home/demo/checkout-api";
-    // a worktree's checkout is on its own branch, as the sidebar and the footer say
     const branch = [...repositories.values()].flatMap((repo) => repo.checkouts).find((checkout) => checkout.path === root)?.branch ?? "main";
     const repository: RepoDiffRepository = { root, branch, head: DEMO_HEAD, detached: false, unborn: false };
     if (path === "/api/workspace/diff/refs") return json({ repository, refs: DEMO_REFS, truncated: false, limits: { max_refs: 200, max_list_bytes: DEMO_DIFF_LIMITS.max_list_bytes } } satisfies RepoDiffRefs);
     const scope = query.get("scope") || "workspace";
     if (scope !== "workspace" && scope !== "staged" && scope !== "commit" && scope !== "branch") return error("invalid_scope", "scope must be workspace, staged, commit or branch", 400);
-    // the demo keeps no history to name commits in
     if (scope === "commit") return error("revision_not_found", "the demo repository has no commits to compare", 404);
     let comparison: RepoBranchComparison | null = null;
     if (scope === "branch") {
       const pinned = query.get("comparison");
       if (pinned !== null) {
-        // a patch read carries the list's identity back: the demo's one branch comparison, or nothing
         let parsed: unknown;
         try { parsed = JSON.parse(pinned); } catch { return error("invalid_comparison", "comparison must be the identity a branch list answered with", 400); }
         const identity = parsed as Partial<RepoBranchComparison> | null;
@@ -2204,7 +1999,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       }
       comparison = { ...DEMO_BRANCH_COMPARISON, repository_root: root };
     }
-    // everything in the demo is unstaged work; the branch adds its one committed file
     const changed = scope === "workspace" ? DEMO_DIFF : scope === "branch" ? DEMO_BRANCH_DIFF : [];
     const compared: RepoDiffScope = scope;
     const shared = { repository, scope: compared, base: comparison?.base_oid ?? null, head: comparison?.head_oid ?? null, comparison };
@@ -2218,7 +2012,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/workspace/pr" || path === "/api/workspace/pr/log" || path === "/api/workspace/pr/merge") {
     const root = snapshot().panes.find((pane) => pane.pane_id === paneId)?.cwd ?? query.get("directory") ?? "/home/demo/checkout-api";
     const branch = [...repositories.values()].flatMap((repo) => repo.checkouts).find((checkout) => checkout.path === root)?.branch ?? "main";
-    // a worktree's branch has a pull request in the demo; main has none
     if (branch === "main") return error("no_pull_request", "This branch has no pull request", 404);
     if (path === "/api/workspace/pr/merge") return error("merge_refused", "The demo merges nothing.", 409);
     if (path === "/api/workspace/pr/log") return json({ job_id: query.get("job_id") ?? "", text: DEMO_PR_LOG, truncated: true } satisfies PullRequestCheckLog);
@@ -2228,15 +2021,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   return error("demo", `${method} ${path} is not part of the demo`, 404);
 }
 
-// ---- web push -----------------------------------------------------------------------------------
 
-/**
- * The workstation's push state, as a server keeps it (server/push.ts): the subscriptions this
- * browser registered and how the last push to each went. The public demo has no PushManager, so
- * the app never asks; a browser script that lends one (scripts/push-health-demo-regression.ts)
- * hands over the fixtures of site/demo/fixtures.ts and sees the notice and its repair. No push
- * ever goes out: a test push is answered as delivered and recorded as the last success.
- */
 interface DemoSubscription { endpoint: string; keys: { p256dh: string; auth: string } }
 const pushRegistry = new Map<string, { keys: DemoSubscription["keys"]; status: PushSubscriptionStatus }>();
 const FIXTURE_STATUS = new Map([DEMO_PUSH.retired, DEMO_PUSH.refused].map((fixture) => [fixture.subscription.endpoint, fixture]));
@@ -2312,7 +2097,6 @@ function alertWebhookRoute(path: string, method: string, init: RequestInit | und
   if (!secret && !same) return error("invalid_webhook", preset === "telegram" ? "a bot token is required" : "a URL is required", 400);
   demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
     chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts,
-    // as the server does: this PC's own localhost is not an address a phone opens
     reachable_link: demoWebhook.reachable_link || !/^(?:localhost|.+\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\]|\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\])\.?$/i.test(location.hostname) };
   return json(demoWebhook, 200, { "cache-control": "no-store" });
 }
@@ -2325,7 +2109,6 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   return route(url, method.toUpperCase(), init, input);
 }) as typeof window.fetch;
 
-// ---- SSE --------------------------------------------------------------------------------------
 
 const RealEventSource = window.EventSource;
 class DemoEventSource extends EventTarget {
@@ -2343,7 +2126,6 @@ class DemoEventSource extends EventTarget {
     setTimeout(() => {
       this.onopen?.(new Event("open"));
       this.listener(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: readRoster() } satisfies MachineEvent) }));
-      // as the server's stream: it opens with the shared document, so a page that reconnects holds the latest
       this.listener(new MessageEvent("message", { data: JSON.stringify({ type: "preferences", preferences } satisfies MachineEvent) }));
     }, 30);
   }
@@ -2354,7 +2136,6 @@ window.EventSource = function (url: string | URL, init?: EventSourceInit) {
   return target.pathname === "/api/machines/events" ? (new DemoEventSource(target.href) as unknown as EventSource) : new RealEventSource(url, init);
 } as unknown as typeof EventSource;
 
-// ---- WebSocket: terminals ----------------------------------------------------------------------
 
 const PROMPT_TEXT = "\x1b[38;5;214mrelease\x1b[0m $ ";
 const NOTICE_LINES = [
@@ -2364,7 +2145,6 @@ const NOTICE_LINES = [
   "live through herdr terminal attach and shared with",
   "the herdr TUI on the PC. Switch back to Chat above.",
 ];
-/** the notice's box as plain rows, for the screens that draw an agent's input row under it */
 const NOTICE_BOX = (() => {
   const width = Math.max(...NOTICE_LINES.map((line) => line.length)) + 4;
   return [`┌${"─".repeat(width)}┐`, ...NOTICE_LINES.map((line) => `│  ${line.padEnd(width - 4)}  │`), `└${"─".repeat(width)}┘`];
@@ -2376,12 +2156,10 @@ const NOTICE = (() => {
   return ["\x1b[2J\x1b[H", amber(`┌${"─".repeat(width)}┐`), ...rows, amber(`└${"─".repeat(width)}┘`)].join("\r\n") + "\r\n";
 })();
 
-/** what the pretend shell answers; anything else is "command not found" */
 /**
- * What a `keys` chord types into the demo's shell. The server hands the chord to herdr, which
- * encodes it for the pane's program; the demo has only this shell, so it takes what a plain
- * terminal would send and the shell can use: Enter, Backspace, a character, Shift's capital
- * and Ctrl's control code (^C). Alt, the arrows and the F keys have nothing to do here.
+ * The server hands the chord to herdr, which encodes it for the pane's program; the demo has only
+ * this shell, so it takes what a plain terminal would send and the shell can use: Enter, Backspace,
+ * a character, Shift's capital and Ctrl's control code (^C).
  */
 const CHORD_KEYS = new Map([["enter", "\r"], ["backspace", "\x7f"], ["tab", "\t"], ["esc", "\x1b"], ["space", " "], ["plus", "+"]]);
 function chordText(chord: string): string {
@@ -2406,7 +2184,6 @@ const SHELL_COMMANDS: Record<string, string> = {
 };
 
 class DemoSocket extends EventTarget {
-  /** this socket's id, told in its snapshot: a create request names it as its first message's typist */
   readonly connection = `demo-connection-${nextConnection++}`;
   static readonly CONNECTING = 0; static readonly OPEN = 1; static readonly CLOSING = 2; static readonly CLOSED = 3;
   readonly url: string;
@@ -2426,17 +2203,14 @@ class DemoSocket extends EventTarget {
   private readonly outcomes = new Map<string, { paneId: string; outcome: "sent" | "discarded" }>();
   private readonly requests = new Map<number, { signature: string; reply?: ServerMessage }>();
   private readonly conversationInterests = new Set<string>();
-  /** the pretend shell's current line, per shell pane */
   private readonly lines = new Map<string, string>();
 
   constructor(url: string) {
     super();
     this.url = url;
     sockets.add(this);
-    // opens on its own tick, like a real socket; `later` guards on OPEN, so not through it
     const opening = setTimeout(() => {
       this.timers.delete(opening);
-      // a lost connection stays lost: every new socket keeps trying and never opens
       if (this.readyState !== 0 || connectionLost) return;
       this.readyState = 1;
       const open = new Event("open");
@@ -2447,7 +2221,6 @@ class DemoSocket extends EventTarget {
     this.timers.add(opening);
   }
 
-  /** runs `fn` unless the socket closed first */
   private later(fn: () => void, ms: number): void {
     const timer = setTimeout(() => { this.timers.delete(timer); if (this.readyState === 1) fn(); }, ms);
     this.timers.add(timer);
@@ -2507,7 +2280,6 @@ class DemoSocket extends EventTarget {
     }
     switch (message.type) {
       case "machine-events":
-        // Not advertised by the demo: its machine document still arrives through its SSE stand-in.
         break;
       case "role":
         this.mode = message.mode === "observe" ? "observe" : "interact";
@@ -2515,9 +2287,7 @@ class DemoSocket extends EventTarget {
         this.push({ type: "role-ack", mode: this.mode });
         break;
       case "presence":
-        // the demo sends no alerts, so whether the page is in use holds nothing back
         break;
-      // the demo socket never goes half-open, but it answers the liveness probe as the server does
       case "ping":
         if (Number.isSafeInteger(message.id)) this.push({ type: "pong", id: message.id! });
         break;
@@ -2534,14 +2304,11 @@ class DemoSocket extends EventTarget {
       case "resize":
         if (message.pane_id && this.attached.has(message.pane_id) && this.mode === "interact") this.resizeGrid(message.pane_id, message.cols, message.rows);
         break;
-      // the demo page is its pane's only terminal: no other grid to hand the pty to, and the server answers nothing
       case "release-size":
         break;
-      // The demo has no competing attach slots and does not advertise this capability.
       case "take-over":
         this.push({ type: "error", code: "unsupported", message: "The demo has no competing terminal attachments.", pane_id: message.pane_id });
         break;
-      // Nor a read-only view: the site's page never lets go of its pane, and a watch ends at once.
       case "watch": if (message.pane_id) this.push({ type: "watch-end", pane_id: message.pane_id }); break;
       case "unwatch": break;
       case "detach":
@@ -2565,7 +2332,6 @@ class DemoSocket extends EventTarget {
           this.conversationInterests.delete(message.pane_id);
         }
         break;
-      // a Stop (`stop`) is typed like any key: the demo has no pty for a following message to overtake
       case "input":
         if (message.pane_id && message.text !== undefined) {
           if (this.mode === "interact") { closeClaudePanel(message.pane_id, message.text); closeAgentScreen(message.pane_id, message.text); }
@@ -2576,8 +2342,6 @@ class DemoSocket extends EventTarget {
       case "secret":
         if (message.id !== undefined && message.pane_id) this.push({ type: "secret-result", id: message.id, pane_id: message.pane_id, ok: false, code: "prompt_changed" });
         break;
-      // the input line typed without Enter: the pretend shell takes it at its prompt and runs nothing
-      // until an Enter is typed; refused as the server refuses, and answered only once it holds the text
       case "insert": {
         if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id) {
           this.push({ type: "error", code: "invalid_insert", message: "id must be an integer and pane_id a string" });
@@ -2614,9 +2378,9 @@ class DemoSocket extends EventTarget {
           const badFraming = !queued && (text.length > framingLimit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)
             || (message.payload !== body && message.payload !== `\u001b[200~${body}\u001b[201~`));
           const resendKey = message.resend_id === undefined ? null : JSON.stringify([message.pane_id, message.resend_id, message.resend_generation ?? 0]);
+          if (typeof message.resend_id === "string") heldReceipts.delete(message.resend_id);
           const previous = resendKey === null || badFraming ? undefined : heldCopyResends.get(resendKey);
           if (previous && this.mode !== "observe" && message.clear_draft === undefined) {
-            // the bridge keys a resend on its normalized text, so a CRLF copy of the same message replays
             this.push(previous.text === text ? { ...previous.reply, id: message.id }
               : { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: false, code: "invalid_submit_id", message: "This resend id already belongs to another message." });
             break;
@@ -2631,7 +2395,6 @@ class DemoSocket extends EventTarget {
           else if (this.mode === "observe") code = "read_only";
           // a message for an agent alone (#511), as the bridge refuses it: nothing typed where no agent is
           else if (message.agent_only === true && !paneOf(message.pane_id)?.agent) code = "agent_not_ready";
-          // the demo agent never refuses over its input box, so there is nothing to clear or send over
           else if (message.clear_draft !== undefined || message.send_anyway !== undefined) code = "unsupported";
           else if (message.resend_id !== undefined && (typeof message.resend_id !== "string" || !message.resend_id || message.resend_id.length > 128 || queued || message.typed === true)) code = "invalid_delivery";
           else if (message.resend_generation !== undefined && (typeof message.resend_generation !== "number" || !Number.isSafeInteger(message.resend_generation) || message.resend_generation < 0 || message.resend_id === undefined)) code = "invalid_delivery";
@@ -2677,7 +2440,6 @@ class DemoSocket extends EventTarget {
               firstMessages.delete(message.pane_id);
               publishFirstMessage(message.pane_id, [{ id: first.id, outcome: "discarded" }]);
               result(true);
-            // read before the send, which sets the pane working: at rest it goes, otherwise nothing is sent
             } else if (!["idle", "done"].includes(paneOf(message.pane_id)?.agent_status ?? "")) result(false, "agent_blocked");
             else result(deliverFirstMessage(message.pane_id, this));
             break;
@@ -2720,7 +2482,7 @@ class DemoSocket extends EventTarget {
           }
         }
         break;
-      default: /* pty-ack: nothing to do in the demo */
+      default:
     }
   }
 
@@ -2748,6 +2510,20 @@ class DemoSocket extends EventTarget {
       }
       this.publishPending(pane);
     }
+  }
+
+  private keepHeldReceipts(): void {
+    for (const [pane, pending] of this.pending) for (const item of pending) if (item.state === "held") heldReceipts.set(item.id, { paneId: pane, at: Date.now() });
+  }
+
+  private tellHeldReceipts(paneId: string): void {
+    const now = Date.now();
+    for (const [id, receipt] of heldReceipts) if (now - receipt.at >= HELD_RECEIPT_MS) heldReceipts.delete(id);
+    const held = [...heldReceipts].filter(([, receipt]) => receipt.paneId === paneId);
+    if (held.length === 0) return;
+    this.push({ type: "pending-messages", pane_id: paneId, messages: [], held: held.map(([id]) => id),
+      held_ms: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS - now])),
+      held_until: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS])), server_time: now });
   }
 
   private pendingTargetError(paneId: string): string | null {
@@ -2810,7 +2586,6 @@ class DemoSocket extends EventTarget {
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols! < 2 || rows! < 1 || cols! > 1000 || rows! > 1000) return;
     const before = terminalGrids.get(paneId);
     terminalGrids.set(paneId, { cols: cols!, rows: rows! });
-    // like the server: a changed grid reaches every client of the pane, this one included even if it is still attaching
     if (before?.cols !== cols || before?.rows !== rows) {
       for (const socket of sockets) if (socket === this || socket.attached.has(paneId)) socket.push({ type: "pane-geometry", pane_id: paneId, cols: cols!, rows: rows! });
     }
@@ -2820,7 +2595,6 @@ class DemoSocket extends EventTarget {
     else if (before?.cols !== cols || before?.rows !== rows) { drawAgentScreen(paneId); drawAgentScreen(paneId); }
   }
 
-  /** the pane's agent screen, when it draws one, for the pane's grid; `replay`: the screen a new attach is handed */
   drawScreen(paneId: string, replay = false): void {
     const agent = screenAgent(agentOf(paneId));
     if (agent === null || !this.attached.has(paneId) || histories.has(paneId)) return;
@@ -2829,7 +2603,6 @@ class DemoSocket extends EventTarget {
     this.push({ type: "pty-data", pane_id: paneId, data: screenFrame(agent, NOTICE_BOX, screen.printed, screen.open, grid.cols, grid.rows), ...(replay ? { replay: true as const } : {}) });
   }
 
-  /** `replay`: the screen a new attach is handed, as the bridge marks its replay */
   renderHistory(paneId: string, replay = false): void {
     const history = histories.get(paneId);
     if (history && this.attached.has(paneId)) this.push({ type: "pty-data", pane_id: paneId, data: history.render(), ...(replay ? { replay: true as const } : {}) });
@@ -2855,9 +2628,9 @@ class DemoSocket extends EventTarget {
       return;
     }
     this.attached.add(paneId);
+    if ([...heldReceipts.values()].some((receipt) => receipt.paneId === paneId)) this.later(() => { if (this.attached.has(paneId)) this.tellHeldReceipts(paneId); }, 0);
     this.publishPending(paneId);
     this.push({ type: "input-ready", pane_id: paneId });
-    // the bridge's first message for the pane, told to this attaching socket; a pane already at rest gets it typed now.
     // On its own tick: an attach sent in the open handler is answered here before this socket's snapshot goes out,
     // and the client takes pending messages only after the snapshot, as a real bridge sends them
     this.later(() => {
@@ -2879,7 +2652,6 @@ class DemoSocket extends EventTarget {
       return;
     }
     if (pane && !pane.agent && !chats.has(paneId)) {
-      // a shell the demo user started: an empty prompt
       this.later(() => { if (this.attached.has(paneId) && !histories.has(paneId)) this.push({ type: "pty-data", pane_id: paneId, data: "\x1b[2J\x1b[H" + PROMPT_TEXT, replay: true }); }, 60);
       return;
     }
@@ -2887,7 +2659,6 @@ class DemoSocket extends EventTarget {
     else this.later(() => this.push({ type: "pty-data", pane_id: paneId, data: NOTICE, replay: true }), 60);
   }
 
-  /** the pretend shell: echo, backspace, and a few commands it knows */
   private typed(paneId: string, text: string): void {
     const pane = paneOf(paneId);
     if (!pane || pane.agent || chats.has(paneId) || this.mode === "observe") return;
@@ -2936,6 +2707,7 @@ class DemoSocket extends EventTarget {
     if (this.readyState >= 2) return;
     this.readyState = 3;
     this.holdPending();
+    this.keepHeldReceipts();
     this.holdAsked();
     for (const timer of this.timers) clearTimeout(timer);
     sockets.delete(this);
@@ -2954,11 +2726,8 @@ window.WebSocket = function (url: string | URL, protocols?: string | string[]) {
 } as unknown as typeof WebSocket;
 for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"] as const) Object.defineProperty(window.WebSocket, name, { value: RealWebSocket[name] });
 
-// ---- the turn in progress ----------------------------------------------------------------------
 
-// The Claude pane is mid-turn when the demo opens (RUN); a few seconds later the metric lands and
-// the turn ends, so the first thing a visitor sees move is a status, the way it does for real.
-setTimeout(() => {
+function finishOpeningTurn(): void {
   const chat = chats.get("api");
   const paneId = panesFixture.api;
   const turn = chat?.turns.filter((turn) => turn.role === "assistant" && !turn.end_ts).at(-1);
@@ -2971,25 +2740,22 @@ setTimeout(() => {
   turn.end_ts = now();
   conversationChanged(paneId);
   finishDemoTurn(paneId);
-}, 4500);
+}
+if (Reflect.get(window, "__ovisDemoHoldTurn") === true) Reflect.set(window, "__ovisDemoFinishTurn", finishOpeningTurn);
+else setTimeout(finishOpeningTurn, 4500);
 
-// ---- what the demo opens first ------------------------------------------------------------------
 
-// On a desktop the app opens a pane in its terminal, where the demo has only a notice: agent
-// panes open in the chat here unless this browser already chose (the same key the app writes).
 for (const pane of snapshot().panes) {
   if (!pane.agent) continue;
   const key = `ovis:view:${pane.pane_id}`;
-  try { if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, "chat"); } catch { /* storage blocked: the app falls back to its default */ }
+  try { if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, "chat"); } catch { }
 }
 
-// ---- browser features the demo cannot honour --------------------------------------------------
 
 // no service worker: the page would otherwise register /sw.js of the site's origin, which is not there
 if ("serviceWorker" in navigator) {
   Object.defineProperty(navigator.serviceWorker, "register", { value: () => new Promise(() => {}) });
 }
-// no push: the bell then says alerts are unsupported here instead of failing to subscribe
 Object.defineProperty(globalThis, "PushManager", { value: undefined, configurable: true });
 
 declare const __APP_VERSION__: string;

@@ -1,4 +1,3 @@
-/** Browser-only regression fixture, bundled by session-history-browser-qa.ts: the sidebar and the session list over a fictional roster. */
 import React, { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { HerdrPane, SessionSnapshot, TabCreated } from "../shared/protocol.ts";
@@ -13,15 +12,11 @@ import { CLAUDE_SHARED, SHOWN_SESSION } from "./session-history-fixture-data.ts"
 import "../src/styles.css";
 declare global { interface Window { qa: {
   machine: (id: string) => void; selected: string | null; resumed: TabCreated[]; historyOpen: boolean;
-  /** herdr reporting the pane's session later, as it does once it has looked at the new agent */
   reportSession: (paneId: string, id: string, agent?: string) => void;
-  /** the pane closed (its tab with it) */
   closePane: (paneId: string) => void;
   openHistory: (workspaceId: string, agent: string, paneId: string) => void;
-  /** true: a resumed tab's pane stays out of the roster until rosterCatchUp, as before load() answers */
   holdRoster: boolean;
   rosterCatchUp: () => void;
-  /** this device only watches (its paired role): App passes it to the sidebar */
   watch: (watching: boolean) => void;
 } } }
 const pane = (id: string, workspace: string, overrides: Partial<HerdrPane> = {}): HerdrPane => ({
@@ -33,9 +28,7 @@ const SNAPSHOT: SessionSnapshot = {
   workspaces: [
     { workspace_id: "w1", label: "fixture-folder", number: 1, active_tab_id: "w1:t1", agent_status: "idle", focused: true, pane_count: 1, tab_count: 1 },
     { workspace_id: "w2", label: "shown-folder", number: 2, active_tab_id: "w2:t1", agent_status: "idle", focused: false, pane_count: 1, tab_count: 1 },
-    // two Claude panes on two stores: p3 lists its store, p4 reports CLAUDE_SHARED from another
     { workspace_id: "w3", label: "claude-folder", number: 3, active_tab_id: "w3:t1", agent_status: "idle", focused: false, pane_count: 2, tab_count: 2 },
-    // a Claude pane on a PC whose bridge lists rows with no store source (from before store-bound Resume)
     { workspace_id: "w4", label: "older-bridge", number: 4, active_tab_id: "w4:t1", agent_status: "idle", focused: false, pane_count: 1, tab_count: 1 },
   ],
   tabs: [
@@ -61,7 +54,6 @@ function Root() {
   const [watching, setWatching] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [history, setHistory] = useState<{ workspaceId: string; agent: string | null; paneId: string | null; askingPaneId: string | null } | null>(null);
-  // the PC's roster as App holds it: a resumed tab's pane joins it (as load() brings it), reporting no session until told
   const [snapshot, setSnapshot] = useState<SessionSnapshot>(SNAPSHOT);
   const machines = useMemo(() => [{ id: machine, snapshot }], [machine, snapshot]);
   const { standing: recentResumes, remember: rememberResume } = useRecentResumes(machines);
@@ -77,7 +69,6 @@ function Root() {
   const actions: AppActions = {
     selectPane: setSelected, selectAdjacentPane: noop, setView: noop, toggleView: noop, focusInput: noop, scrollPage: noop, openNewSession: noop, openNewTab: noop, renameTab: noop,
     openTerminalTab: async () => {}, openSessionHistory: (target) => {
-      // as App does: prefer Claude for its store, keeping the original request for picker changes
       if (target) setHistory({ workspaceId: target.workspaceId, agent: target.agent ?? null, askingPaneId: target.paneId ?? null, paneId: sessionHistorySourcePane(sessionHistoryAgent(target.agent) ?? "codex", snapshot.panes, { workspaceId: target.workspaceId, askingPaneId: target.paneId, selectedPaneId: selected }) });
     },
     openPalette: noop, agentStarted: noop, openFind: noop, openSettings: noop, openAddPc: noop, toggleSidebar: noop, openSidebarFilter: noop, toggleTheme: noop, lock: null, enableNotifications: null,

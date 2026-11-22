@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -6,7 +6,10 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { dashboardPcs, type DashboardPc } from "../lib/relay/dashboard.ts";
 import { loadSettings, SettingsProvider } from "../lib/settings.ts";
+import * as sheetHistory from "../lib/sheetHistory.ts";
 import { RelayDashboard, type RelayDashboardProps } from "./RelayDashboard.tsx";
+
+const loadedSheet = { ...sheetHistory };
 
 const AP = "wss://relay-ap.ovis.sh";
 const GLOBAL = "wss://relay.ovis.sh";
@@ -35,7 +38,6 @@ const fourPcs = (): DashboardPc[] =>
       pc(IDS.desk, "Desk PC", "paired", { last_seen_at: new Date().toISOString() }),
       pc(IDS.mac, "MacBook", "paired", { listed: false, linked: false }),
       pc(IDS.mini, "Mac mini", "needs-approval", {
-        last_seen_at: new Date().toISOString(),
         added_at: new Date().toISOString(),
         join: { server_public_key: "k", relay: AP },
       }),
@@ -84,7 +86,6 @@ describe("RelayDashboard frame and routes", () => {
   let narrowMatches = false;
   let narrowSplitMatches = false;
   let events: EventTarget;
-  /** the open details panel and its heading, as the dashboard finds them under the PCs split (the renderer draws no DOM) */
   let detailsHeading: { tabIndex: number; focus: () => void };
   let detailsPanel: { scrolledTo: unknown[]; scrollIntoView: (options?: unknown) => void; querySelector: (selector: string) => unknown };
 
@@ -276,6 +277,103 @@ describe("RelayDashboard frame and routes", () => {
     expect(tabLinks).toEqual(["#overview", "#pcs", "#devices", "#relay", "#settings"]);
   });
 
+  describe("a closed sheet's Back still on its way", () => {
+    let pending = false;
+    let pushed: string[] = [];
+    // what sheetHistory answers: the key of the entry the Back lands on (none where the browser tells no entries),
+    // and whether a popstate is that landing
+    let onto: string | null = "details";
+    let landed = false;
+    const details = () => renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined);
+    const back = async () => { await act(async () => { renderer!.root.find((n) => n.type === "button" && textOf(n).trim() === "Back").props.onClick(); }); };
+    const place = async (name: string) => { await act(async () => { renderer!.root.find((n) => n.type === "a" && n.props.className?.includes("relay-dash-nav-item") && textOf(n).includes(name)).props.onClick({ preventDefault() {}, button: 0 }); }); };
+    /** the sheet's Back lands on the details' entry, or the user's own Back or Forward lands elsewhere */
+    const lands = async (hash: string, sheets: boolean) => {
+      pending = false;
+      landed = sheets;
+      await navigateHash(hash, "popstate");
+    };
+    beforeEach(async () => {
+      pending = false;
+      pushed = [];
+      onto = "details";
+      landed = false;
+      mock.module("../lib/sheetHistory.ts", () => ({ ...loadedSheet, sheetBackOnto: () => (pending ? onto : null), sheetBackLanded: () => landed }));
+      const push = window.history.pushState.bind(window.history);
+      window.history.pushState = (data: unknown, unused: string, url?: string | URL | null) => { pushed.push(String(url)); push(data, unused, url); };
+      phoneMatches = true;
+      narrowMatches = true;
+      window.location.hash = `#pcs?pc=${IDS.home}`;
+      await mount();
+      expect(details()).toHaveLength(1);
+    });
+    afterEach(() => { mock.module("../lib/sheetHistory.ts", () => loadedSheet); });
+
+    it("keeps the details closed when that Back lands on them: the list's address is written then, and Back opens them again", async () => {
+      pending = true;
+      await back();
+      expect(details()).toHaveLength(0);
+      expect(pushed).toEqual([]);
+      expect(window.location.hash).toBe(`#pcs?pc=${IDS.home}`);
+      await lands(`#pcs?pc=${IDS.home}`, true);
+      expect(details()).toHaveLength(0);
+      expect(window.location.hash).toBe("#pcs");
+      expect(pushed).toEqual(["/#pcs"]);
+      await navigateHash(`#pcs?pc=${IDS.home}`, "popstate");
+      expect(details()).toHaveLength(1);
+    });
+
+    it("writes every place opened meanwhile, in order, so Back goes through each", async () => {
+      pending = true;
+      await back();
+      await place("Devices");
+      expect(pushed).toEqual([]);
+      await lands(`#pcs?pc=${IDS.home}`, true);
+      expect(pushed).toEqual(["/#pcs", "/#devices"]);
+      expect(renderer!.root.findByType("h1").children.join("")).toBe("Devices");
+    });
+
+    it("lets the user's own Back or Forward win over what it held", async () => {
+      pending = true;
+      await back();
+      await lands("#relay", false);
+      expect(pushed).toEqual([]);
+      expect(window.location.hash).toBe("#relay");
+      expect(renderer!.root.findByType("h1").children.join("")).toBe("Relay");
+    });
+
+    it("keeps what it held for a dashboard mounted before that Back lands", async () => {
+      pending = true;
+      await back();
+      await act(async () => { renderer!.unmount(); });
+      await mount();
+      expect(details()).toHaveLength(0);
+      await lands(`#pcs?pc=${IDS.home}`, true);
+      expect(details()).toHaveLength(0);
+      expect(pushed).toEqual(["/#pcs"]);
+    });
+
+    it("lets a Back of the user's own made while no dashboard is mounted win over what it held", async () => {
+      pending = true;
+      await back();
+      await act(async () => { renderer!.unmount(); });
+      pending = false;
+      window.location.hash = "#overview";
+      window.location.href = "https://app.ovis.sh/#overview";
+      window.dispatchEvent(new Event("popstate"));
+      await mount();
+      expect(pushed).toEqual([]);
+      expect(renderer!.root.findByType("h1").children.join("")).toBe("Overview");
+    });
+
+    it("holds nothing where sheetHistory names no entry the Back lands on (no Navigation API), and writes the address at once as before", async () => {
+      onto = null;
+      pending = true;
+      await back();
+      expect(pushed).toEqual(["/#pcs"]);
+    });
+  });
+
   it("loads directly into any of the five routes, updates aria-current on Back/Forward, and moves focus to the view heading only on route changes", async () => {
     window.location.hash = "#relay";
     await mount();
@@ -292,7 +390,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(currentHrefs()).toEqual(["#devices", "#devices"]);
     expect(focusedNodes.length).toBeGreaterThan(0);
 
-    // Data refresh (re-render with updated pcs) never steals focus
     focusedNodes = [];
     await act(async () => {
       renderer!.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, baseProps()) }));
@@ -314,17 +411,14 @@ describe("RelayDashboard frame and routes", () => {
         .map((r) => textOf(r.find((n) => n.props.className === "relay-pc-name-label")));
     expect(rows()).toEqual(["Home server"]);
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(1);
-    // with Details open beside it the table drops Last seen, so its cells stay on one line
     const headers = () => renderer!.root.findAll((n) => n.type === "th").map(textOf);
     expect(headers()).toEqual(["Name", "State", "Relay", "Action"]);
 
-    // Back to Needs you filter without selection
     await navigateHash("#pcs?filter=needs", "popstate");
     expect(rows()).toEqual(["Mac mini", "Home server"]);
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
     expect(headers()).toEqual(["Name", "State", "Relay", "Last seen", "Action"]);
 
-    // Missing PC id in route renders no details panel
     await navigateHash("#pcs?pc=missing_pc_id", "popstate");
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
   });
@@ -338,7 +432,6 @@ describe("RelayDashboard frame and routes", () => {
     const scrolls: unknown[][] = [];
     (window as unknown as { scrollTo: (...args: unknown[]) => void }).scrollTo = (...args) => { scrolls.push(args); };
 
-    // a phone (the tab-bar layout): the details are the whole view, started at the top; Back brings the list back under the focus
     phoneMatches = true;
     narrowMatches = true;
     window.location.hash = "#pcs";
@@ -356,7 +449,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(details()).toHaveLength(0);
     expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
-    // browser Back (popstate) from phone Details also restores focus to the row
     focusedNodes = [];
     await select();
     expect(details()).toHaveLength(1);
@@ -366,7 +458,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
-    // between the phone and 1100px: the details also replace the list as a full view, started at the top, and Back restores focus to the row
     await act(async () => { renderer!.unmount(); });
     phoneMatches = false;
     focusedNodes = [];
@@ -385,7 +476,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(details()).toHaveLength(0);
     expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
-    // browser Back (popstate) from narrow Details also restores focus to the row
     focusedNodes = [];
     await select();
     expect(details()).toHaveLength(1);
@@ -395,7 +485,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
-    // a deep link opens with the details and moves no focus
     await act(async () => { renderer!.unmount(); });
     focusedNodes = [];
     window.location.hash = `#pcs?pc=${IDS.home}`;
@@ -420,7 +509,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(details()).toHaveLength(0);
     expect(lists().map((n) => n.props["data-pc-list"])).toEqual(["table"]);
 
-    // the side panel from 1392px+: the click keeps its focus, nothing scrolls, Close moves nothing
     await act(async () => { renderer!.unmount(); });
     narrowSplitMatches = false;
     focusedNodes = [];
@@ -465,17 +553,14 @@ describe("RelayDashboard frame and routes", () => {
         { server_id: zed.server_id, relay: AP },
       ]);
       await mount(baseProps({ pcs: withZed }));
-      // MacBook is before Zed laptop in the table: forgetting MacBook focuses the next row (Zed laptop)
       await forgetSelect(IDS.mac);
       focusedNodes = [];
       await closeAfterForget(withZed.filter((item) => item.server_id !== IDS.mac));
       expect(focusedNodes).toEqual([`row:${zed.server_id}`]);
-      // Zed laptop is now the last row in the table: forgetting it focuses the previous row (Desk PC)
       await forgetSelect(zed.server_id);
       focusedNodes = [];
       await closeAfterForget(fourPcs().filter((item) => item.server_id !== IDS.mac));
       expect(focusedNodes).toEqual([`row:${IDS.desk}`]);
-      // When the forgotten unlisted pairing was the only PC, the split unmounts and focus lands on the view heading
       await act(async () => { renderer?.unmount(); });
       window.location.hash = "#pcs";
       const sole = dashboardPcs([pc(IDS.mac, "MacBook", "paired", { listed: false, linked: false })], [{ server_id: IDS.mac, relay: AP }]);
@@ -501,20 +586,82 @@ describe("RelayDashboard frame and routes", () => {
     expect(String(removeBtn.props.className)).not.toContain("btn-danger");
     expect(String(removeBtn.props.className)).not.toContain("account-link-danger");
 
-    // First click arms confirmation on the exact same button instance
     await act(async () => { removeBtn.props.onClick(); });
     expect(left).toBe(0);
     expect(String(removeBtn.props.className)).toContain("btn-danger");
     expect(removeBtn.props["data-confirm"]).toBe("remove-device");
 
-    // Second click on the same button invokes onLeave
     await act(async () => { removeBtn.props.onClick(); });
     expect(left).toBe(1);
 
-    // Sign out button works
     const signOutBtn = sideFoot.find((n) => n.type === "button");
     await act(async () => { signOutBtn.props.onClick(); });
     expect(signedOut).toBe(1);
+  });
+
+  it("offers Delete account in Devices only, says what it erases before the second press, and Cancel takes it back", async () => {
+    let deleted = 0;
+    await mount(baseProps({ onDeleteAccount: () => { deleted += 1; } }));
+    expect(textOf(renderer!.root.findByProps({ className: "relay-dash-foot" }))).not.toContain("Delete account");
+
+    await navigateHash("#devices");
+    const button = () => renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "delete-account");
+    expect(textOf(button())).toBe("Delete account");
+    expect(String(button().props.className)).not.toContain("btn-danger");
+    expect(textOf(renderer!.root)).not.toContain("for good");
+
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(0);
+    expect(String(button().props.className)).toContain("btn-danger");
+    expect(button().props["data-confirm"]).toBe("delete-account");
+    expect(textOf(button())).toBe("Delete account for good?");
+    const said = textOf(renderer!.root.find((n) => n.props["data-testid"] === "delete-account-says"));
+    expect(said).toContain("your sign-in methods, your list of PCs and your plan");
+    expect(said).toContain("stay paired");
+
+    const cancel = renderer!.root.findAll((n) => n.type === "button" && textOf(n) === "Cancel").at(-1)!;
+    await act(async () => { cancel.props.onClick(); });
+    expect(textOf(button())).toBe("Delete account");
+    expect(deleted).toBe(0);
+
+    await act(async () => { button().props.onClick(); });
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(1);
+  });
+
+  it("drops an asked Delete account when another sign-in is shown, so its second press never reaches that one", async () => {
+    let deleted = 0;
+    const shown = (signedInAs: string) => baseProps({ signedInAs, onDeleteAccount: () => { deleted += 1; } });
+    await mount(shown("sign-in-one"));
+    await navigateHash("#devices");
+    const button = () => renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "delete-account");
+    await act(async () => { button().props.onClick(); });
+    expect(textOf(button())).toBe("Delete account for good?");
+    await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, shown("sign-in-two")) })); });
+    expect(textOf(button())).toBe("Delete account");
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(0);
+  });
+
+  it("says on Devices why a delete was refused, and there only", async () => {
+    await mount(baseProps({ deleteError: "Cancel your subscription first, then delete the account.", onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    const alert = renderer!.root.findAll((n) => n.props.role === "alert" && textOf(n).includes("Cancel your subscription first"));
+    expect(alert.length).toBeGreaterThan(0);
+    await navigateHash("#overview");
+    expect(textOf(renderer!.root)).not.toContain("Cancel your subscription first");
+  });
+
+  it("draws no directory failure under Delete account", async () => {
+    await mount(baseProps({ error: "The account service could not be reached.", onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    expect(textOf(renderer!.root)).not.toContain("could not be reached");
+  });
+
+  it("offers no Delete account without an account", async () => {
+    await mount(baseProps({ account: null, onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    expect(renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "delete-account")).toHaveLength(0);
   });
 
   it("persists theme, density and language through SettingsProvider in the Settings view", async () => {
@@ -579,7 +726,6 @@ describe("RelayDashboard frame and routes", () => {
     ]);
     await mount(baseProps({ pcs: fleet, pcStatus: liveStatus, onCheckPcs: () => {} }));
 
-    // 1. The live answer replaces stale Offline; the unchecked QR pairing counts in neither group.
     const stripBtns = renderer!.root.findAll((n) => n.type === "button" && typeof n.props["data-strip-cell"] === "string");
     expect(stripBtns.map((b) => [b.props["data-strip-cell"], b.props["data-strip-count"], textOf(b)])).toEqual([
       ["ready", 2, "Ready2"],
@@ -591,13 +737,11 @@ describe("RelayDashboard frame and routes", () => {
     const viewAll = renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "view-all-attention");
     expect(viewAll).toHaveLength(0);
 
-    // 2. Needs you contains exactly the three PCs still needing action, excluding the answered PC.
     await act(async () => { stripBtns[1]!.props.onClick(); });
     expect(window.location.hash).toBe("#pcs?filter=needs");
     const needsTableRows = renderer!.root.findAll((n) => n.type === "tr" && n.props["data-pc-id"] !== undefined);
     expect(needsTableRows.map((row) => row.props["data-pc-id"])).toEqual([extra1.server_id, IDS.mini, extra2.server_id]);
 
-    // 3. The answered PC belongs to Ready; its name opens Details without opening the PC.
     const readyFilter = renderer!.root.find((n) => n.type === "button" && textOf(n) === "Ready");
     await act(async () => { readyFilter.props.onClick(); });
     const homeRow = renderer!.root.find((n) => n.type === "tr" && n.props["data-pc-id"] === IDS.home);
@@ -608,7 +752,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(textOf(detailsPane)).toContain("Home server");
     expect(textOf(detailsPane)).toContain("This device: answered · 24 ms");
 
-    // 4. Relay route passes live pcStatus into RelayMap (only checking wire animates, answered/no-answer reflected) and selecting a PC in the map opens Details
     await navigateHash("#relay");
     const flows = renderer!.root.findAll((n) => n.type === "path" && n.props.className === "relay-map-flow");
     expect(flows.length).toBeGreaterThan(0);
@@ -618,7 +761,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(window.location.hash).toContain(`pc=${IDS.desk}`);
     expect(renderer!.root.find((n) => n.props["data-pc-details"] === IDS.desk)).toBeDefined();
 
-    // 5. Local mode's Overview shows no account-availability words (Ready/Needs you/Offline)
     window.location.hash = "#overview";
     const localHtml = renderStatic(baseProps({
       account: null,
@@ -629,7 +771,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(localHtml).not.toContain('data-strip-cell="ready"');
     expect(localHtml).not.toContain(">Ready<");
 
-    // 6. Empty fleet (F0) on Overview/PCs keeps only the empty state's Add a PC as .btn-primary while making the header action quiet, and restores the header .btn-primary on Devices/Relay/Settings
     await act(async () => {
       renderer!.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, baseProps({ pcs: [] })) }));
     });
@@ -649,6 +790,4 @@ describe("RelayDashboard frame and routes", () => {
     expect(String(headerAdd().props.className)).toBe("btn btn-primary");
   });
 
-  // the page heading's ring and the phone map's rail are what the browser draws: scripts/relay-dashboard-browser-qa.ts
-  // (view-heading-focus, details-390-focus, map-rail-390) reads their computed styles and rectangles
 });

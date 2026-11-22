@@ -45,7 +45,6 @@ function NodeTooltip({ node, detail, t }: { readonly node: RelayMapNode; readonl
   );
 }
 
-/** One PC in the route list: its glyph, name and route word, with the tooltip; a fan item under its hub, or a route of its own when reached directly. */
 function PcHop({ node, selected, onSelectPc, t }: { readonly node: RelayMapNode; readonly selected: boolean; readonly onSelectPc?: (serverId: string) => void; readonly t: Translate }) {
   const detailWord = mapStateDetail(node, t);
   return (
@@ -122,7 +121,8 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
     ...(dotStates.has("needs-you") ? [{ key: "needs-you", dot: "needs-you" as const, label: t("Needs you") }] : []),
     ...(dotStates.has("checking") ? [{ key: "checking", dot: "checking" as const, label: t("Checking…") }] : []),
     ...(hasUnchecked ? [{ key: "unchecked", dot: "offline" as const, label: t("Paired · not checked") }] : []),
-    ...(nodes.some((node) => node.state === "offline") ? [{ key: "offline", dot: "offline" as const, label: t("Offline") }] : []),
+    ...(nodes.some((node) => node.state === "offline") ? [{ key: "offline", dot: "offline" as const, label: t("Machine offline") }] : []),
+    ...(dotStates.has("failed") ? [{ key: "unreachable", dot: "failed" as const, label: t("Could not reach this machine") }] : []),
   ];
 
   const checkingWires = checkingWirePaths(map, layout);
@@ -154,7 +154,6 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
               <path key={hub.origin} className="relay-map-edge" data-wire={hubWireState(hubRoutedNodes(map.hubs[hub.hub] ?? { origin: hub.origin, nodes: [] }))} data-hub={hub.origin} d={wire(layout.me, hub)} />
             ))}
             {layout.pcs.flatMap((pc) => {
-              // a PC reached directly is wired from this device itself: no relay hub lies on its way
               const from = pc.via === "direct" ? layout.me : layout.hubs[pc.hub];
               return from ? [<path key={pc.node.server_id} className="relay-map-edge" data-wire={nodeWireState(pc.node)} data-pc={pc.node.server_id} d={wire(from, pc)} data-via={pc.via} />] : [];
             })}
@@ -210,7 +209,6 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
             <span className="relay-map-hop-name" title={map.me.label}>{map.me.label}</span>
           </div>
         </li>
-        {/* a PC reached directly is a route of its own, before the relays: this device, then the PC */}
         {nodes.filter(isDirectRoute).map((node) => (
           <li key={node.server_id} className="relay-map-route" data-route="direct">
             <div className="relay-map-link" data-wire={nodeWireState(node)} data-live="" aria-hidden="true" />

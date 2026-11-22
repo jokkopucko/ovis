@@ -56,7 +56,6 @@ describe("repository diff words", () => {
     expect(diffErrorMessage(t, new ApiError("/api/workspace/diff/files", 403, "watch only", "read_only"))).toBe("This device can only watch.");
     expect(diffErrorMessage(t, new ApiError("/api/workspace/diff/files", 504, "deadline", "git_timeout"))).toBe("git took too long to answer.");
     expect(diffErrorMessage(t, new Error("socket closed"))).toBe("Changes could not be loaded.");
-    // the branch scope's own refusals, each told apart, and an older bridge that knows no such scope
     expect(diffErrorMessage(t, new ApiError("/api/workspace/diff/files", 409, "no commit yet", "unborn_head"))).toBe("The repository has no commits yet, so there is no branch to compare.");
     expect(diffErrorMessage(t, new ApiError("/api/workspace/diff/files", 409, "unrelated", "no_common_ancestor"))).toBe("That base shares no history with HEAD.");
     expect(diffErrorMessage(t, new ApiError("/api/workspace/diff/file", 409, "moved", "comparison_changed"))).toBe(comparisonChangedWord(t));
@@ -107,7 +106,6 @@ describe("repository diff history entry", () => {
   it("keeps a branch comparison's identity whole, and takes none of another shape", () => {
     const branch: RepoDiffTarget = { ...target, scope: "branch", base: "origin/main", head: null, comparison: identity };
     expect(diffTargetFromState(diffTargetState(null, branch))).toEqual(branch);
-    // an entry from before the branch scope carries no identity: read as none
     const { comparison: _comparison, ...older } = target;
     expect(diffTargetFromState({ "ovis:repo-diff": older })).toEqual(target);
     expect(diffTargetFromState({ "ovis:repo-diff": { ...branch, comparison: "pinned" } })).toBeNull();

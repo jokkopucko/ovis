@@ -20,7 +20,6 @@ beforeEach(() => {
     value: {
       isNativePlatform: () => true,
       PluginHeaders: [{ name: "OvisPush" }],
-      // A damaged store has no usable subscription keys, but retains its relay endpoint.
       nativePromise: async (_plugin: string, method: string, options: Record<string, unknown>) => {
         if (method === "getSubscription") {
           return { subscription: options.endpointOnly && savedEndpoint ? { endpoint: savedEndpoint } : null };

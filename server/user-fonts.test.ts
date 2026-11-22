@@ -27,7 +27,6 @@ describe("GET /api/fonts", () => {
     writeFileSync(join(fonts, "notes.txt"), "not a font");
     writeFileSync(join(fonts, ".hidden.ttf"), "hidden");
     writeFileSync(join(fonts, 'Odd"Name.ttf'), "a name CSS would need escaped");
-    // past the cap: a phone would download it on every font change
     writeFileSync(join(fonts, "Huge.ttf"), "");
     truncateSync(join(fonts, "Huge.ttf"), USER_FONT_MAX_BYTES + 1);
     // a link could name any file this user may read
@@ -41,10 +40,7 @@ describe("GET /api/fonts", () => {
   });
 
   it("lists the font files of the state folder's fonts/, with the family, weight and style their names give", async () => {
-    // Given the folder above.
-    // When a signed-in client asks for the list.
     const response = await signedIn("/api/fonts");
-    // Then only the fonts it may serve are listed, the suffix read as weight and style.
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     const { fonts } = await response.json() as UserFontList;
@@ -64,7 +60,6 @@ describe("GET /api/fonts", () => {
     expect(served.status).toBe(200);
     expect(served.headers.get("content-type")).toBe("font/ttf");
     expect(served.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
-    // an address without the file's current version may name an older file: it is checked again
     expect((await signedIn(`/api/fonts/${encodeURIComponent("QA Mono-Regular.ttf")}?v=old`)).headers.get("cache-control")).toBe("private, no-cache");
     expect(await served.text()).toBe("regular face");
     for (const name of ["notes.txt", "Huge.ttf", ".hidden.ttf", "Linked.ttf", "missing.ttf"]) {

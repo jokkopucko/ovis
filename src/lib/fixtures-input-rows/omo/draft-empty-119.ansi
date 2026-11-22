@@ -1,0 +1,22 @@
+[0m[1m[38;5;2mtester0@host000-ThinkStation-P620[0m:[0m[1m[38;5;4m~/.cache/ovis-tmp/chat-draft-guard/scratch[0m$ omo
+omo (omo-ai 5.1.69)
+omo: sibling credentials detected; run `omo setup` to review them
+
+[0m[1m[38;2;167;152;215mOptimized system prompt applied: claude-opus-5-5[0m
+
+ [0m[38;2;126;136;142mTip: Paste an image from the clipboard with ctrl+v.                                                                   [0m
+ [0m[38;2;126;136;142m↳ Want the full story on any tip? Ask about it: the give-me-tips skill has the tour.[0m                                  
+
+[0m[38;2;205;154;34m[Skills][0m                                                                                                               
+[0m[38;2;126;136;142m  computer-use, dori-mode, ego-browser, find-skills, herdr, reverse-engineer-anything[0m                                  
+
+
+ [0m[38;2;126;136;142mSettings: settings.json (JSON)[0m                                                                                        
+
+ [0m[38;2;205;154;34mWarning: Your OmO sign-in is behind a locked keychain. Unlock it, then try again.[0m                                     
+
+[0m[38;2;97;133;204m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;97;133;204m❯[0m [0m[7m [0m                                                                                                                    
+[0m[38;2;97;133;204m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;167;152;215m~/.cache/ovis-tmp/chat-draft-guard/scratch[0m[38;2;118;129;134m • [0m[38;2;157;165;169m0/1M (0.0%) (auto)[0m             [0m[38;2;157;165;169m(anthropic) [0m[38;2;167;152;215mclaude-opus-5-5[0m[38;2;118;129;134m • [0m[38;2;157;165;169meffort medium[0m
+(😺 OmO Native by Q Kim) done

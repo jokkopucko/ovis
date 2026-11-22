@@ -121,7 +121,6 @@ it("writes unchanged approvals again when their file was deleted or replaced on 
   store.approve("id", { destination: "BuildBox" });
   store.flush();
   expect(readFileSync(path, "utf8")).toBe(saved);
-  // the same length, other bytes
   writeFileSync(path, saved.replace('"id"', '"xx"'));
   store.approve("id", { destination: "BuildBox" });
   store.flush();
@@ -140,7 +139,6 @@ it("writes durably, and only when the document changed", () => {
     store.saveSnapshot("id", { panes: [{ pane_id: "test-pane" }] } as SessionSnapshot);
     store.flush();
     expect(temporaries).toHaveLength(1);
-    // every refresh brings a new snapshot object: the same panes write nothing
     store.saveSnapshot("id", { panes: [{ pane_id: "test-pane" }] } as SessionSnapshot);
     store.flush();
     expect(temporaries).toHaveLength(1);

@@ -264,12 +264,10 @@ it("reads usage after a Settings change only with Plan limits on, and only once 
   servers.push(server);
   const origin = `http://127.0.0.1:${server.port}`;
   const share = (settings: Record<string, unknown>) => fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ settings }) });
-  // Plan limits off: no change of the hidden accounts reads anything
   expect((await share({ showUsage: false })).status).toBe(200);
   expect((await share({ usageHidden: ["copilot:a"] })).status).toBe(200);
   expect((await share({ usageHidden: [] })).status).toBe(200);
   expect(searches).toBe(0);
-  // Plan limits on: hiding one reads nothing, showing it again reads at once
   expect((await share({ showUsage: true })).status).toBe(200);
   expect((await fetch(`${origin}/api/usage`)).status).toBe(200);
   expect(searches).toBe(1);

@@ -9,8 +9,6 @@ routes = [{ pattern = "relay.ovis.sh", custom_domain = true }]
 [observability]
 enabled = false
 
-# One Durable Object per server_id holds that PC's sockets (worker.ts RelayRoom). It keeps them in
-# memory and in each socket's attachment only; its SQLite storage stays empty.
 [[durable_objects.bindings]]
 name = "RELAY"
 class_name = "RelayRoom"
@@ -36,7 +34,8 @@ namespace_id = "1697"
   period = 60
 
 # The backstop: connections per minute from all addresses together, per Cloudflare location.
-# Asked only after an address's own limit lets a connection through.
+# Asked after an address's own limit lets a connection through or, once that is spent, before a
+# PC's relay pass is checked for RELAY_PC_LIMITER below: that path can get a 429 here too.
 [[ratelimits]]
 name = "RELAY_GLOBAL_LIMITER"
 namespace_id = "1698"

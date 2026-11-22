@@ -14,16 +14,13 @@ export class TranscriptBusyError extends Error {
   constructor(message = "the transcript reader is busy") { super(message); this.name = "TranscriptBusyError"; }
 }
 
-/** The small native surface also lets lifecycle tests hold actual operation settlement. */
 export interface TranscriptHandle {
   stat(): Promise<Stats>;
   read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   close(): Promise<void>;
-  /** The same calls on the event loop, if the handle has them (used on a local filesystem only). */
   readNow?(buffer: Buffer, offset: number, length: number, position: number): number;
   statNow?(): Stats;
 }
-/** A handle whose calls also run on the event loop, for a transcript on a local filesystem. */
 export interface TranscriptHandleNow extends TranscriptHandle {
   readNow(buffer: Buffer, offset: number, length: number, position: number): number;
   statNow(): Stats;
@@ -36,12 +33,10 @@ export interface TranscriptIO {
   /**
    * Whether `directory` is on a local filesystem, where a read the page cache answers costs less
    * on the event loop than a round trip through the thread pool, and its device: a transcript on
-   * another device (a file mounted into the directory) is not known to be local. Left out: every
-   * read is async.
+   * another device (a file mounted into the directory) is not known to be local.
    */
   filesystem?(directory: string): Promise<{ local: boolean; dev: number }>;
   openNow?(path: string): TranscriptHandleNow;
-  /** `stat` on the event loop. */
   statNow?(path: string, follow?: boolean): Stats;
 }
 const FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
@@ -72,7 +67,6 @@ const nativeIO: TranscriptIO = {
       return {
         readNow: (buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
         statNow: () => fstatSync(fd),
-        // the same descriptor through the thread pool, once a read on the event loop was slow
         read: (buffer, offset, length, position) => new Promise((resolve, reject) => read(fd, buffer, offset, length, position, (error, bytesRead) => error ? reject(error) : resolve({ bytesRead }))),
         stat: () => new Promise((resolve, reject) => fstat(fd, (error, stats) => error ? reject(error) : resolve(stats))),
         close: async () => closeSync(fd),
@@ -84,42 +78,20 @@ const nativeIO: TranscriptIO = {
 const WINDOW_BYTES = 1024 * 1024;
 /** A call on the event loop slower than this was answered by the disk, not the page cache. */
 const SLOW_MS = 2;
-/** After two in a row (or a call that threw), a transcript's reads go through the thread pool this long; the first lease after tries again. */
 const SLOW_FOR_MS = 1000;
-/** How long a directory's filesystem is taken as known. */
 const FILESYSTEM_MS = 60_000;
 
 export interface TranscriptFile {
-  /** Identity already checked when this handle was opened, without another metadata round trip. */
   readonly initial: TranscriptVersion;
-  /** When the read is given up (Date.now()): its deadline, or its budget's end, the sooner; Infinity with neither. */
   readonly deadline: number;
   stat(): Promise<TranscriptVersion>;
-  /** The pinned handle's whole stat, for a reader that keys on more than a TranscriptVersion (its change time). */
   stats(): Promise<Stats>;
   pathVersion(): Promise<TranscriptVersion | null>;
-  /** The path's whole stat (followed as `pathVersion` is), change time included. */
   pathStats(): Promise<Stats>;
-  /**
-   * Owned bytes, at an explicit position, at most one MiB. Short reads are completed up to EOF.
-   * `into`: the caller's buffer they are read into (at least `length` long), so none is allocated.
-   */
   read(position: number, length: number, into?: Buffer): Promise<Buffer>;
   /** The same bytes in a buffer the lease keeps for them, so no window is allocated: they hold only until the next `window` or the lease's end. */
   window(position: number, length: number): Promise<Buffer>;
-  /**
-   * Starts reading the window a later `window(position, length)` will ask for, into the lease's
-   * other buffer, so the read goes on while the lease awaits its other operations (a stat). The
-   * bytes the last `window` returned stay as they are. A `window` that asks for anything else
-   * waits for this read to settle first, and one read ahead at a time is kept.
-   */
   ahead(position: number, length: number): void;
-  /**
-   * Whether the event loop ran other work while the last call waited (it went through the thread
-   * pool). Before the work's first call: whether the lease waited for its turn in the reader, or
-   * reads through the thread pool. False while calls are answered on the event loop: then nothing
-   * else ran since the work's caller last let the loop go.
-   */
   waited(): boolean;
 }
 interface Request {
@@ -131,18 +103,8 @@ interface Request {
 }
 
 /**
- * One main-process reader. A lease owns its path, handle and native-operation allowance until
- * close actually settles. Cancellation ends only the caller's wait. Native async FS uses Bun's
- * shared runtime pool; this bound does not reserve runtime capacity or interrupt a stuck syscall.
- * A lease has at most two native operations in flight, the one it awaits and a read ahead, so the
- * reader has at most twice its capacity of them.
- *
- * On a local Linux filesystem (LOCAL) a lease opens, stats, reads and closes on the event loop
- * instead, with no read ahead, while each call is fast. A lease that has to look up its
- * directory's filesystem (once a minute) opens through the thread pool meanwhile. The second call in a row slower than
- * SLOW_MS sends the rest of the lease through the thread pool, and the transcript's leases for SLOW_FOR_MS (one alone
- * may be a garbage collection, not the disk). Every
- * other filesystem and platform reads through the thread pool only.
+ * Cancellation ends only the caller's wait. Native async FS uses Bun's shared runtime pool; this
+ * bound does not reserve runtime capacity or interrupt a stuck syscall.
  *
  * Known limits:
  * - A local disk that stops answering inside a call on the event loop blocks the loop, as a
@@ -159,21 +121,13 @@ export class TranscriptReader {
   private readonly paths = new Set<string>();
   private resetting = false;
   private readonly idle = new Set<() => void>();
-  /** `window` buffers of leases that ended, every native operation on them settled */
   private readonly spare: Buffer[] = [];
-  /** Directories known to be on a local filesystem (with its device) or not (null), until a time */
   private readonly filesystems = new Map<string, { dev: number | null; until: number }>();
-  /** Transcripts whose reads go through the thread pool until a time: one on the event loop was slow */
   private readonly slow = new Map<string, number>();
-  /** The request `read` is admitting: a lease it starts at once waited for nothing. */
   private admitting: Request | null = null;
   constructor(private readonly io: TranscriptIO = nativeIO, readonly capacity = 2, private readonly waiting = 32) {}
 
-  /**
-   * `follow`: the path may be a link to the transcript (it is opened through one anyway), and is checked by the file it names.
-   * `deadline`: when the read is given up (Date.now()), its wait for a lease included. `budget`: how long it may take once
-   * its lease begins (its open included), however long it waited for it behind other reads.
-   */
+  /** `follow`: the path may be a link to the transcript (it is opened through one anyway), and is checked by the file it names. */
   read<T>(path: string, work: (file: TranscriptFile) => Promise<T>, options: { signal?: AbortSignal; deadline?: number; budget?: number; follow?: boolean } = {}): Promise<T> {
     const { signal, budget, follow = false } = options;
     let { deadline } = options;
@@ -206,18 +160,15 @@ export class TranscriptReader {
           this.pump();
         },
         run: async () => {
-          // a budget counts from here: the time the read waited for its lease was another read's
           if (budget !== undefined) { deadline = Math.min(deadline ?? Infinity, Date.now() + budget); arm(); }
           const immediate = this.admitting === request;
           let handle: Awaited<ReturnType<TranscriptIO["open"]>> | undefined;
-          // the handle was opened on the event loop, and closes there
           let closeNow = false;
           const operations = new Set<Promise<unknown>>();
           let accepting = true;
           let value: T | undefined;
           let error: unknown;
           let failed = false;
-          // the buffer the last window was returned in, and the one a read ahead fills
           let front: Buffer | undefined;
           let back: Buffer | undefined;
           let readAhead: { position: number; length: number; bytes: Promise<Buffer> } | null = null;
@@ -227,14 +178,11 @@ export class TranscriptReader {
             // core and a wake of the event loop, more than the read itself
             const near = this.near(path);
             let direct: TranscriptHandleNow | null = null;
-            // the device of the directory's local filesystem: a transcript on another goes through the thread pool
             let device: number | null;
             let slowOpen = false;
             if (!(near instanceof Promise)) {
               device = near;
               if (device !== null) {
-                // an open on the event loop is timed like any call there: slow, or one that throws,
-                // and the transcript goes through the thread pool
                 const started = performance.now();
                 try { direct = this.io.openNow!(path); } catch (caught) { this.slowed(path); throw caught; }
                 closeNow = true;
@@ -252,16 +200,14 @@ export class TranscriptReader {
             current();
             const pinned = handle;
             let busy = false;
-            // reads on the event loop until two calls in a row are slow, or one throws: then through the
-            // thread pool, for the rest of the lease. One slow call alone may be the process's pause (a
-            // garbage collection of a few ms lands inside a call now and then); a disk that does not have
-            // the transcript cached is slow again on the next. The cost: a slow local disk blocks the loop
-            // for one more call before the lease leaves it
+            // One slow call alone may be the process's pause (a garbage collection of a few ms lands
+            // inside a call now and then); a disk that does not have the transcript cached is slow again
+            // on the next.
             let now = direct !== null && !slowOpen;
             let slowBefore = false;
             let waited = true;
-            // `read`: a read of the file's bytes. Only a fast read ends a run of slow calls: a scan stats its
-            // file each window, and a stat the inode cache answers says nothing of the disk
+            // Only a fast read ends a run of slow calls: a scan stats its file each window, and a stat the
+            // inode cache answers says nothing of the disk
             const timed = <V>(call: (direct: TranscriptHandleNow) => V, read = false): Promise<V> => {
               try {
                 current();
@@ -277,7 +223,6 @@ export class TranscriptReader {
                 return Promise.resolve(value);
               } catch (caught) { return Promise.reject(caught); }
             };
-            // a read ahead (`beside`) runs next to the one operation the work awaits at a time
             const operation = <V>(call: () => Promise<V>, beside = false): Promise<V> => {
               const pending = (async () => {
                 current();
@@ -296,7 +241,6 @@ export class TranscriptReader {
             const valid = (position: number, length: number) => {
               if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(length) || length < 0 || length > WINDOW_BYTES) throw new RangeError("invalid transcript window");
             };
-            // a window read whole (short reads completed, up to EOF)
             const fill = async (position: number, length: number, bytes: Buffer) => {
               current();
               valid(position, length);
@@ -309,7 +253,6 @@ export class TranscriptReader {
               }
               return bytes.subarray(0, offset);
             };
-            // the same on the event loop
             const fillNow = (direct: TranscriptHandleNow, position: number, length: number, bytes: Buffer) => {
               valid(position, length);
               let offset = 0;
@@ -361,7 +304,6 @@ export class TranscriptReader {
               }),
               read: (position, length, into) => now ? timed((direct) => fillNow(direct, position, length, into ?? Buffer.allocUnsafe(length)), true)
                 : operation(() => fill(position, length, into ?? Buffer.allocUnsafe(length))),
-              // no read ahead is started while reads are on the event loop
               window: (position, length) => now ? timed((direct) => fillNow(direct, position, length, front ??= spareWindow()), true) : operation(async () => {
                 const read = readAhead;
                 readAhead = null;
@@ -380,7 +322,6 @@ export class TranscriptReader {
                 if (now || readAhead !== null || !accepting) return;
                 valid(position, length);
                 const bytes = operation(() => fill(position, length, back ??= spareWindow()), true);
-                // a read ahead nobody asks for is let go of: its failure is no failure of the lease
                 bytes.catch(() => {});
                 readAhead = { position, length, bytes };
               },
@@ -390,8 +331,6 @@ export class TranscriptReader {
             initial = before;
             const named = await file.pathVersion();
             if (named === null || named.id !== before.id) throw new Error("the transcript was replaced");
-            // a lease let in at once that reads on the event loop: the loop has not run anything else
-            // since `read` was called (a lookup or open it waited for is no wait for the storage)
             waited = !immediate || !now;
             value = await work(file);
             current();
@@ -402,7 +341,6 @@ export class TranscriptReader {
             // Even an open that answered after cancellation must close; neither its path nor the
             // physical allowance is available to a replacement until this await has settled.
             try {
-              // a close on the event loop is timed too: slow, or one that throws, and the transcript goes through the thread pool
               const started = performance.now();
               const closing = handle?.close();
               if (closeNow && performance.now() - started > SLOW_MS) this.slowed(path);
@@ -448,11 +386,6 @@ export class TranscriptReader {
     }
   }
 
-  /**
-   * Whether `path` is read on the event loop: the device of its directory's local filesystem
-   * (known, or found out), which the transcript has to be on too; null for the thread pool (another
-   * filesystem, or a call on it slow lately).
-   */
   private near(path: string): number | null | Promise<number | null> {
     if (this.io.filesystem === undefined || this.io.openNow === undefined || this.io.statNow === undefined) return null;
     const until = this.slow.get(path);
@@ -466,14 +399,12 @@ export class TranscriptReader {
       return dev;
     });
   }
-  /** `path` is read through the thread pool for `ms`: a call on the event loop was slow or threw, or it is on another device than its directory. */
   private slowed(path: string, ms = SLOW_FOR_MS): void {
     if (this.slow.size >= 256) this.slow.clear();
     this.slow.set(path, Date.now() + ms);
   }
 
   reset(): void {
-    // a lease still open puts its buffer back once it ends
     this.spare.length = 0;
     this.filesystems.clear();
     this.slow.clear();
@@ -485,5 +416,4 @@ export class TranscriptReader {
   size(): { active: number; waiting: number; paths: number } { return { active: this.active.size, waiting: this.queue.length, paths: this.paths.size }; }
 }
 
-/** The server's one reader. */
 export const transcriptReader = new TranscriptReader();

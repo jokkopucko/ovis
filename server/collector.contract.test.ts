@@ -112,8 +112,6 @@ describe("completion replay across a moved subscription key", () => {
       },
     }, {
       async snapshot() {
-        // No timing luck: reconciliation can read the moved pane only after
-        // it finishes, even if the machine stalls beyond the debounce.
         if (moving) await finished.promise;
         return sessionSnapshot();
       },
@@ -124,8 +122,6 @@ describe("completion replay across a moved subscription key", () => {
           onEvent(frame) {
             const data = frame.data as { type?: string; pane_id?: string; agent_status?: string };
             if (frame.event === "pane.agent_status_changed" && data.pane_id === workspace.root_pane.pane_id && data.agent_status === "working") {
-              // Hold the old connection's event until the lifecycle connection
-              // has delivered the move, preserving the real frame and callbacks.
               delayedWorking = () => handlers.onEvent(frame);
               queued.resolve();
               return;
@@ -199,7 +195,6 @@ describe("a pane moved to another workspace outside this server (#1503)", () => 
     });
     try {
       source = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-source" });
-      // a second pane keeps the source workspace open after the move
       await herdrRpc("pane.split", { target_pane_id: source.root_pane.pane_id, direction: "right", cwd: stateDir, focus: false });
       target = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-target" });
       app = createServer({ port: 0, stateDir });
@@ -207,12 +202,10 @@ describe("a pane moved to another workspace outside this server (#1503)", () => 
       const from = source.root_pane.pane_id;
       const mover: ServerMessage[] = [], stayer: ServerMessage[] = [];
       const moverWs = await open(mover), stayerWs = await open(stayer);
-      // both show the pane's terminal; the second keeps its old-ID attach after the move
       for (const ws of [moverWs, stayerWs]) ws.send(JSON.stringify({ type: "attach", pane_id: from, cols: 80, rows: 24 }));
       await until(mover, (frame) => frame.type === "input-ready" && frame.pane_id === from, moverWs, "old-ID input-ready");
       await until(stayer, (frame) => frame.type === "input-ready" && frame.pane_id === from, stayerWs, "old-ID input-ready");
       mover.length = 0;
-      // the RPC behind `herdr pane move <pane> --new-tab --workspace <id>` in herdr's own window
       const { move_result } = await herdrRpc<{ move_result: { pane: { pane_id: string } } }>("pane.move", {
         pane_id: from, destination: { type: "new_tab", workspace_id: target.workspace.workspace_id }, focus: false,
       });

@@ -10,13 +10,10 @@
   min-width: 0;
 }
 
-/* a relay's or Portal's sentence can carry a long address or path */
 .portal-error {
   overflow-wrap: anywhere;
 }
 
-/* what Portal is doing right now (Starting, Recovering, Stopping) is read, not a footnote: body
-   size, and a phone's reading size under a finger */
 .portal-progress {
   font-size: var(--fs-md);
 }
@@ -33,7 +30,6 @@
   }
 }
 
-/* who may open the address: one fieldset (it disables what is inside), a radio a line with its sentence, then the details of the chosen one */
 .portal-auth {
   min-width: 0;
   border: 0;
@@ -67,7 +63,6 @@
   color: var(--text-dim);
 }
 
-/* a choice a finger lands on has the finger's height */
 @media (pointer: coarse) {
   .portal-option {
     min-height: var(--touch-target);
@@ -91,7 +86,6 @@
   min-width: 0;
 }
 
-/* an entry's field and the button that adds it: a line, like the relay's */
 .portal-entry {
   display: flex;
   gap: var(--space-2);
@@ -103,7 +97,6 @@
   min-width: 0;
 }
 
-/* what is on the list: link names, wallets, accounts */
 .portal-chips {
   display: flex;
   flex-wrap: wrap;
@@ -152,15 +145,12 @@
   cursor: pointer;
 }
 
-/* the glyph keeps its --chip-h look and reaches the smallest hit area a mouse gets through an
-   invisible expander (the border is 0, so it is measured from the button's own box) */
 .portal-chip-remove::before {
   content: "";
   position: absolute;
   inset: calc((var(--chip-h) - var(--pointer-target)) / 2);
 }
 
-/* a finger gets the target's size from the chip itself: expanders of chips one line apart would overlap */
 @media (pointer: coarse) {
   .portal-chip:has(.portal-chip-remove) {
     min-height: var(--touch-target);
@@ -197,7 +187,6 @@
   color: var(--danger-text);
 }
 
-/* the link is read once: it is the whole line, selectable, never cut */
 .portal-link {
   flex: 1 1 auto;
   min-width: 0;

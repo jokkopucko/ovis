@@ -1,4 +1,3 @@
-/** Mouse and phone scrolling on fixed mirror grids; no herdr, Pi install or user state. */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +8,8 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 import { shownRows } from "./shown-rows.ts";
+import { FLING_STOPPED_MS } from "../src/lib/touchFling.ts";
+import { serveDemo } from "./demo-server.ts";
 
 interface Frame { type: string; pane_id?: string; text?: string; mode?: string }
 interface MirrorFixture {
@@ -21,7 +22,6 @@ interface MirrorFixture {
 declare global { interface Window { mirrorFixture: MirrorFixture } }
 type FixtureWindow = Window;
 
-/** The demo already owns metadata and auth. Only its mirror geometry/scroll seam is replaced. */
 function installMirrorFixture(): void {
   const state: MirrorFixture = { inputs: [], offsets: [], reads: 0, offset: 0, sockets: [] };
   (window as FixtureWindow).mirrorFixture = state;
@@ -45,8 +45,6 @@ function installMirrorFixture(): void {
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (frame.type === "pane-geometry") push({ ...frame, fixed: true });
-      // The demo shell's timed recording must not move the fixture's cursor between
-      // a deliberate local pan and the frame under test.
       else if (frame.type === "pty-data" && typeof frame.data === "string") {
         if (frame.fixture !== "mirror") return;
         const { fixture: _, ...output } = frame;
@@ -82,17 +80,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installMirrorFixture.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -186,12 +174,15 @@ try {
             await settled(page);
             assert.deepEqual((await state(page)).inputs, [], "touch also leaves unknown applications alone");
           }
+          await page.waitForFunction(() => document.querySelector("[data-touch-fling]") === null, undefined, { polling: 50, timeout: 15_000 });
           await settled(page);
 
           const touchGesture = async (dx: number, dy: number): Promise<void> => {
             await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
             if (dx !== 0 || dy !== 0) {
               await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + dx, y: y + dy }] });
+              const moved = await page.evaluate(() => performance.now());
+              await page.waitForFunction(([at, still]) => performance.now() - at > still, [moved, FLING_STOPPED_MS * 2] as const, { polling: 10 });
             }
             await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
             await settled(page);
@@ -210,7 +201,6 @@ try {
           await assertNoTouchScroll(0, shortMove, "below-half-step vertical move");
           await cdp.detach();
 
-          // A fixed grid taller than the phone still reveals its clipped rows locally first.
           await page.evaluate((paneId) => (window as FixtureWindow).mirrorFixture.sockets.at(-1)!.push({
             type: "pty-data", fixture: "mirror", pane_id: paneId, data: "\x1b[40;1H\x1b[2KLOCAL-PAN-START",
           }), pane);

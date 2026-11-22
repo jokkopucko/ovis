@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { outsideSettings } from "./settingsHistory.ts";
-import { FILE_PREVIEW_KEY, WEB_PANEL_BELOW_KEY, webPagesBelow, withoutWebPanel } from "./historyKeys.ts";
+import { FILE_PREVIEW_KEY, WEB_PANEL_BELOW_KEY, sheetStep, webPagesBelow, withoutWebPanel } from "./historyKeys.ts";
 import type { FilePresentation } from "./filePresentation.ts";
 import { backUnderCurrentEntry } from "./historyNavigation.ts";
 
@@ -32,15 +32,13 @@ function previewFromState(state: unknown): FilePreview | null {
 export function useFileViewer() {
   const [viewing, setViewing] = useState(() => previewFromState(window.history.state));
   const closing = useRef(false);
-  // the file shown is the one a Back or Forward restored (a reload's too), not one opened since: the
-  // pop's number, 0 for none, so a later pop is told apart from one already handled
   const pops = useRef(viewing !== null ? 1 : 0);
   const popped = useRef(pops.current);
 
   useEffect(() => {
     const onPop = (event: PopStateEvent): void => {
+      if (sheetStep.taking(event) || sheetStep.holds(event)) return;
       closing.current = false;
-      // Forward restores the preview with its original PC/pane, including after reload.
       const preview = previewFromState(event.state);
       if (preview !== null) pops.current += 1;
       popped.current = preview !== null ? pops.current : 0;
@@ -52,10 +50,8 @@ export function useFileViewer() {
 
   const openFile = useCallback((preview: FilePreview, replace = false) => {
     if (closing.current) return;
-    // a preview opened over Settings is no entry of Settings: a reload on it closes Settings and keeps the file
     const current = outsideSettings(window.history.state);
     const state = { ...withoutWebPanel(current), [HISTORY_KEY]: preview };
-    // Choosing a different file inside an open preview must not add another Back step.
     if (replace || previewFromState(window.history.state)) {
       // a docked file taking over the entry of a page stacked on the web panel's other entries keeps
       // their count: closing it goes back past them too, or the page under it would show again (#3058)
@@ -84,11 +80,6 @@ export function useFileViewer() {
     setViewing(next);
   }, []);
 
-  /**
-   * Hands the file's entry to a move to another pane, or to a web page that takes its place: the file
-   * leaves it without a traversal, and the viewer closes. The count of the web panel's entries under it
-   * stays, so a page taking the entry over still goes back past them on closing.
-   */
   const releaseFile = useCallback(() => {
     const { [HISTORY_KEY]: _, ...rest } = (window.history.state ?? {}) as Record<string, unknown>;
     window.history.replaceState(rest, "");
@@ -96,10 +87,6 @@ export function useFileViewer() {
     setViewing(null);
   }, []);
 
-  /**
-   * Hides the file when a tab switch leaves it behind and Settings asks for it again on return
-   * (#3179): its entry keeps it, so Back to that tab shows it again, and the move pushes its own.
-   */
   const hideFile = useCallback(() => { popped.current = 0; setViewing(null); }, []);
   const fileFromPop = useCallback(() => popped.current, []);
 

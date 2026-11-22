@@ -1,0 +1,15 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/tester0/…/codex-cap/work
+
+
+
+
+
+
+
+  Name thread
+
+› Type a name and press Enter
+
+  enter submit · esc back

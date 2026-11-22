@@ -60,7 +60,6 @@ describe("alert turns with a local clock", () => {
     b.receive({ ...claim, kind: "done" }, 1);
     expect(a.tick(150)).toEqual([{ ...play, kind: "done" }]);
     expect(b.tick(150)).toEqual([]);
-    // a's audio did not start (suspended, or its sound was turned off meanwhile)
     expect(b.receive(a.finish(key, false, 160)[0]!, 161)).toEqual([{ ...play, kind: "done" }]);
   });
 
@@ -120,7 +119,6 @@ describe("alert turns with a local clock", () => {
     const tab = new AlertTurns("b");
     tab.receive(claim, 1);
     tab.receive(chimed, 151);
-    // the tab that chimed the first question no longer takes part (its pane is in front now)
     expect(tab.start(key, "blocked", 800)).toEqual([{ ...claim, tab: "b" }]);
     expect(tab.tick(950)).toEqual([play]);
   });
@@ -130,9 +128,7 @@ describe("alert turns with a local clock", () => {
     a.start(key, "blocked", 0);
     expect(a.tick(150)).toEqual([play]);
     a.finish(key, true, 150);
-    // tab b heard the first question late and chimed it again
     a.receive({ ...chimed, tab: "b" }, 1_100);
-    // the pane asks again; b now has it in front, so a is the only tab to tell it
     expect(a.start(key, "blocked", 1_480)).toEqual([claim]);
     expect(a.tick(1_630)).toEqual([play]);
   });
@@ -140,11 +136,9 @@ describe("alert turns with a local clock", () => {
   it("takes another tab's chime of the pane's next question although it chimed the first one itself", () => {
     const a = new AlertTurns("a");
     const b = new AlertTurns("b");
-    // b alone chimed the pane's first question
     b.start(key, "blocked", 0);
     expect(b.tick(150)).toEqual([play]);
     b.finish(key, true, 150);
-    // the pane asks again; both tabs take part now, and a is the lower one
     a.start(key, "blocked", 800);
     b.start(key, "blocked", 800);
     a.receive({ ...claim, tab: "b" }, 801);
@@ -152,7 +146,6 @@ describe("alert turns with a local clock", () => {
     expect(a.tick(950)).toEqual([play]);
     expect(b.tick(950)).toEqual([]);
     b.receive(a.finish(key, true, 950)[0]!, 951);
-    // a told it: b's rescue must not chime it a second time
     expect(b.tick(10_000)).toEqual([]);
   });
 
@@ -166,7 +159,6 @@ describe("alert turns with a local clock", () => {
       b.receive({ ...claim, kind }, 1);
       expect(a.tick(150)).toEqual([{ ...play, kind }]);
       expect(b.tick(150)).toEqual([]);
-      // a's audio waits behind a chime it still plays: it says so before it starts
       b.receive(a.announce(key, kind), 151);
       expect(b.tick(750)).toEqual([]);
       expect(b.tick(1_400)).toEqual([]);
@@ -192,7 +184,6 @@ describe("alert turns with a local clock", () => {
     c.receive({ ...claim, tab: "b" }, 1);
     c.tick(150);
     c.receive({ ...claim, type: "playing" }, 151);
-    // b's rescue comes at 5151: c waits one turn longer
     expect(c.tick(5_151)).toEqual([]);
     expect(c.tick(5_750)).toEqual([]);
     expect(c.tick(5_751)).toEqual([play]);
@@ -270,11 +261,9 @@ describe("alert turns with a local clock", () => {
     try {
       player.chime(key, "blocked");
       jest.advanceTimersByTime(150);
-      // the pane asks again; this chime waits behind another sound of the tab
       player.chime(key, "blocked");
       jest.advanceTimersByTime(150);
       expect(heard).toEqual(["blocked", "blocked"]);
-      // another tab's chime of the first question arrives meanwhile
       channel.onmessage?.({ data: { ...chimed, tab: "b" } } as MessageEvent<unknown>);
       release(true);
       await Promise.resolve();

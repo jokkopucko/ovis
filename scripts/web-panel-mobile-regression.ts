@@ -1,4 +1,3 @@
-/** The actual same-host web panel in a mobile popup and on desktop, without a live herdr session. */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { contentSecurityPolicy } from "../server/static.ts";
 import { chromePath } from "./chrome-path.ts";
+import { sheetRisen } from "./settings-page.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-web-panel-")));
 const repo = realpathSync(join(import.meta.dir, ".."));
@@ -117,21 +117,27 @@ try {
     await reportLink.tap();
     const dialog = page.getByRole("dialog");
     await dialog.waitFor();
+    await page.waitForFunction(() => document.activeElement?.classList.contains("web-panel-body"));
     assert.ok(await page.evaluate(() => document.activeElement?.classList.contains("web-panel-body")), "opening focuses the page content");
     const reportFrame = await popupReport;
     assert.equal(reportFrame.parentFrame(), page.mainFrame(), "the report is loaded inside the popup frame");
     await reportFrame.getByRole("heading", { name: "Report ready" }).waitFor();
+    // The popup rises from the bottom edge carrying the frame, while the link stands still within the frame:
+    // a tap aimed at it during the rise lands below it, and the report never navigates.
+    await sheetRisen(page, ".web-panel-popup");
     await reportFrame.getByRole("link", { name: "Details" }).tap();
     await reportFrame.waitForURL(`${reportUrl}#details`);
     assert.equal(await page.getByRole("button", { name: "Close page" }).count(), 1, "mobile popup has a named close button");
     assert.equal(await page.locator("#conversation-state").innerText(), "Conversation remains open", "conversation stays mounted under the popup");
     await page.getByRole("button", { name: "Close page" }).tap();
     await dialog.waitFor({ state: "detached" });
+    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "same-host report" && history.state?.["ovis:web-panel"] === undefined);
     assert.equal(await reportLink.evaluate((link) => document.activeElement === link), true, "closing returns focus to the report link");
     assert.equal(await page.locator("#conversation-state").innerText(), "Conversation remains open", "closing leaves the conversation intact");
 
     await reportLink.tap();
     await dialog.waitFor();
+    await page.waitForFunction(() => history.state?.["ovis:web-panel"] !== undefined);
     await page.goBack();
     await dialog.waitFor({ state: "detached" });
     assert.equal(await page.locator("#conversation-state").count(), 1, "mobile browser Back closes the popup without navigating away");

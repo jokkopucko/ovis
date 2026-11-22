@@ -9,12 +9,10 @@ const Terminal = await patchedTerminal(join(import.meta.dir, "../../.."));
 
 interface Layout { cells: [number, string][]; cursor: number }
 
-/** Each drawn cell's column and grapheme on the first row, and the cursor's column, as libghostty lays out `text`. */
 async function ghosttyLayout(...chunks: string[]): Promise<Layout> {
   return await ghosttyScreen(40, 0, chunks);
 }
 
-/** The same on one row of a `cols`-wide terminal, given in `chunks` with a reset() after the `resetAfter`th (0: none). */
 async function ghosttyScreen(cols: number, resetAfter: number, chunks: string[], row = 0): Promise<Layout> {
   const vt = await GhosttyVt.create(cols, 2);
   try {
@@ -39,7 +37,6 @@ async function ghosttyScreen(cols: number, resetAfter: number, chunks: string[],
   }
 }
 
-/** The same, as xterm counts them with herdr's widths: the grid the cursor, selection and links use. */
 async function xtermLayout(text: string, cols = 40, row = 0): Promise<Layout> {
   const term = new Terminal({ allowProposedApi: true, cols, rows: 2 });
   matchHerdrWidths(term);
@@ -62,8 +59,6 @@ const ascii = ({ cells, cursor }: Layout): Layout => ({
 });
 
 describe("GhosttyVt frame", () => {
-  // the layer redraws its cursor only on a frame that changed: an arrow key or a space typed onto a blank cell
-  // moves the cursor and changes no row (#3266, #3268)
   it("tells a frame that only moved, hid or showed the cursor", async () => {
     const vt = await GhosttyVt.create(80, 5);
     try {
@@ -163,5 +158,26 @@ describe("GhosttyVt widths", () => {
     expect(await ghosttyLayout("\x1b[\x00?2027haक्षX")).toEqual(await xtermLayout("\x1b[\x00?2027haक्षX"));
     expect(await ghosttyLayout("\x1b[?2027\x7fhaक्षX")).toEqual(await xtermLayout("\x1b[?2027\x7fhaक्षX"));
     expect(await ghosttyScreen(40, 1, ["\x1b[?20", "27haक्षX"])).toEqual(await xtermLayout("aक्षX"));
+  });
+});
+
+
+describe("resize after a program changed its columns", () => {
+  it("draws the size it is given again after the program switched to 132 columns", async () => {
+    const vt = await GhosttyVt.create(80, 24);
+    try {
+      vt.resize(80, 24, 8, 16);
+      vt.write("\x1b[?40h\x1b[?3h");
+      vt.frame(() => {});
+      vt.resize(80, 24, 8, 16);
+      vt.write("\x1b[2JX");
+      let drawn = 0;
+      vt.frame((_y, runs) => {
+        for (const run of runs) drawn = Math.max(drawn, run.x + run.cells.reduce((width, cell) => width + (cell.wide ? 2 : 1), 0));
+      });
+      expect({ cols: vt.cols, drawn }).toEqual({ cols: 80, drawn: 80 });
+    } finally {
+      vt.dispose();
+    }
   });
 });

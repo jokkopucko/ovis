@@ -5,17 +5,10 @@ type Tabs = { identity: string; index: number };
 /** How long a tab lit over the question it left must stay so before it counts: two tabs may ask the same. */
 const SAME_QUESTION_SETTLE_MS = 150;
 
-/** The question as drawn, without the tab's title: what a redraw changes after the tab bar. */
 const questionOf = (prompt: ParsedPrompt): string => JSON.stringify([prompt.kind, prompt.question, prompt.options]);
 
-/**
- * Switch only native tabs, observing every move; this path never sends text, Enter or Space.
- * `tabsOf` names the form's tab shown: pi's by default, Claude's question tabs (claude.ts) too.
- * Returns the frame the form ended on, showing the tab asked for; null when it stopped.
- */
 export async function navigatePiAsk(initial: ParsedPrompt, target: number, io: {
   read(): Promise<ParsedPrompt | null>;
-  /** sends the key once the read right before it still shows `from`, the tab it moves from */
   send(key: string, from: (shown: ParsedPrompt) => boolean): Promise<void>;
   active(): boolean;
   deadline: number;
@@ -29,16 +22,13 @@ export async function navigatePiAsk(initial: ParsedPrompt, target: number, io: {
     if (!io.active() || Date.now() >= io.deadline) return null;
     // The request's first read can already be stale; recheck before the first arrow too.
     let before = await io.read();
-    // a Claude frame mid-redraw whose colors could not be checked shows no tab: look again
     while (before && tabsOf(before) === undefined && initial.claudeTabs !== undefined && io.active() && Date.now() < io.deadline) {
       await Bun.sleep(Math.min(50, Math.max(0, io.deadline - Date.now())));
       before = await io.read();
     }
-    // before the first arrow the card asked from is still the one shown; after a move the tabs say
-    // where the form is, and a question still being redrawn under them is no other form
     if (!before || tabsOf(before)?.identity !== form.identity || tabsOf(before)!.index !== index
       || previous === initial && before.id !== initial.id || !io.active()) return null;
-    previous = before; // what the arrow leaves: the wait below tells a move from this frame
+    previous = before;
     const direction = target > index ? 1 : -1;
     const at = index;
     const left = previous;
@@ -60,8 +50,7 @@ export async function navigatePiAsk(initial: ParsedPrompt, target: number, io: {
       }
       if (tabs.identity !== form.identity) return null;
       if (tabs.index === expected) {
-        // the bar can light the new tab before the question under it is redrawn: that frame is no
-        // finished move until its question changes, or stays the same long enough to be the tab's own
+        // the bar can light the new tab before the question under it is redrawn
         litOverOld ??= Date.now();
         if (questionOf(shown) !== questionOf(previous) || Date.now() - litOverOld >= SAME_QUESTION_SETTLE_MS) {
           previous = shown; index = expected; moved = true; break;

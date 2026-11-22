@@ -26,7 +26,6 @@ describe("senpi host tool results in a Claude Code transcript", () => {
     expect(said(turns)).toEqual([LEAD]);
     expect(turns.map((turn) => turn.role)).toEqual(["assistant", "user", "assistant"]);
     expect(tools(turns).map((tool) => [tool.name, tool.call_id, tool.state, tool.error ?? false])).toEqual([
-      // its call is before the recording: still a tool's output, in the work it belongs to
       ["mcp__custom-tools__eval", "toolu_01FSxdroiRvixwBG2JJ3B9FW", "ok", false],
       ["mcp__custom-tools__eval", "toolu_012w5d2nn5pdAknCBscThLjd", "ok", false],
       ["mcp__custom-tools__eval", "toolu_01Qo5kjwt5xeTtJZsdyeWNjA", "ok", false],
@@ -43,7 +42,6 @@ describe("senpi host tool results in a Claude Code transcript", () => {
   it("keeps a call senpi took to its host running until its result arrives", () => {
     const lines = recorded.split("\n");
     const parser = createClaudeTranscriptParser();
-    // up to the denial of the second call, before the host's result for it
     parser.write(lines.slice(0, lines.findIndex((line) => line.includes("\"tool_use_id\":\"toolu_012w5d2nn5pdAknCBscThLjd\"")) + 1).join("\n"));
     const call = tools(parser.snapshot()).find((tool) => tool.call_id === "toolu_012w5d2nn5pdAknCBscThLjd");
     expect(call).toMatchObject({ state: "pending", output: "" });
@@ -117,11 +115,8 @@ describe("senpi host tool results in a Claude Code transcript", () => {
     const quote = "Tool result (Read, id=toolu_quoted):\n";
     const user = (content: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "user", ...extra, message: { role: "user", content } });
     const turns = parseClaudeTranscript([
-      // typed at Claude Code's own prompt
       user(`${quote}why does this show up?`, { promptSource: "typed", entrypoint: "cli" }),
-      // blocks of their own, but at Claude Code's own prompt, not from a program
       user([{ type: "text", text: quote }, { type: "text", text: "is this mine?" }], { entrypoint: "cli" }),
-      // a program's prompt whose header is no block of its own: the message's words
       user([{ type: "text", text: `${quote}a quoted result` }], { promptSource: "sdk", entrypoint: "sdk-ts" }),
     ].join("\n"));
     expect(said(turns)).toEqual([`${quote}why does this show up?`, `${quote}\nis this mine?`, `${quote}a quoted result`]);

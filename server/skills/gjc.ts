@@ -150,7 +150,7 @@ function customCommandFiles(root: string, origin: "user" | "project"): SlashComm
             const name = relative(root, path).slice(0, -3).split(sep).join(":");
             commands.push({ name, description: description(readFileSync(path, "utf8")), source: origin, id: realpathSync(path) });
           }
-        } catch { continue; /* broken links or unreadable files are skipped */ }
+        } catch { continue; }
       }
     } finally { ancestors.delete(canonical); }
   };

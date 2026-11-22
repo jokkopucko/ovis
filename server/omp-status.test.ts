@@ -3,7 +3,6 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { ompScreenContext, ompStatusContext } from "./omp-status.ts";
 import * as herdr from "./herdr/client.ts";
 
-// a pane's bottom rows, as `pane.read?format=text` answers them
 const bar = (size: string, percent: string): string => [
   "",
   " ⠋ 46s · ◒ deepseek-flash · 📁 ~/coding_agent · ◫ " + percent + "/" + size + " ⟲ · $105.66 (+30.57) ↑ + 👁 1.68   🖥️ WUI: Review repo chang…",
@@ -25,7 +24,6 @@ describe("ompStatusContext", () => {
   it("says nothing where omp drew no bar", () => {
     expect(ompStatusContext("")).toBeNull();
     expect(ompStatusContext("plain output\nwith no status bar")).toBeNull();
-    // a dialog over the bar, and a bar whose percent is not a number this reader guesses
     expect(ompStatusContext("◫ --/1M")).toBeNull();
   });
 });

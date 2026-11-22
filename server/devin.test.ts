@@ -9,7 +9,7 @@ const dirs: string[] = [];
 const databases: Database[] = [];
 afterEach(() => {
   forgetDevinState();
-  for (const db of databases.splice(0)) { try { db.close(); } catch { /* failed assertions still release fixture handles */ } }
+  for (const db of databases.splice(0)) { try { db.close(); } catch {} }
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 function fixture() {
@@ -306,7 +306,6 @@ function realSession() {
   const db = new Database(dbPath);
   databases.push(db);
   db.exec("PRAGMA journal_mode=WAL");
-  // The captured save is one snapshot; only its committed rows matter to the reader.
   db.transaction(() => {
     for (const table of ["sessions", "message_nodes", "tool_call_state"] as const) {
       const columns = Object.keys(rows[table][0]!);

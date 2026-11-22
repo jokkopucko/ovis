@@ -34,7 +34,6 @@ beforeAll(async () => {
     async fetch(req) {
       const url = new URL(req.url);
       const auth = req.headers.get("authorization") ?? "";
-      // the identity check: the process service.json names answers at its URL
       if (req.method === "GET" && url.pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [url.origin], paths: { tmp: root } });
 
       // List forms: GET /api/session/{sessionID}/form
@@ -60,7 +59,6 @@ beforeAll(async () => {
         const formID = decodeURIComponent(replyMatch[2]!);
         const body = (await req.json()) as { answer: Record<string, string | string[]> };
         receivedReplies.push({ sessionID, formID, answer: body.answer, auth });
-        // remove pending form
         pendingForms[sessionID] = (pendingForms[sessionID] ?? []).filter((f) => f.id !== formID);
         return new Response(null, { status: 204 });
       }
@@ -71,7 +69,6 @@ beforeAll(async () => {
 
   mockPort = mockService.port ?? 0;
 
-  // Write service.json into state dir
   writeFileSync(
     join(root, "service.json"),
     JSON.stringify({
@@ -120,7 +117,6 @@ async function setupOpencodePane(sessionID: string, label: string): Promise<stri
     subscription.close();
   }
 
-  // Report OpenCode session and blocked status to herdr
   await herdrRpc("pane.report_agent_session", {
     pane_id: paneId,
     source: "herdr:opencode",
@@ -142,7 +138,6 @@ async function setupOpencodePane(sessionID: string, label: string): Promise<stri
   return paneId;
 }
 
-/** settles once `holds` after a frame the socket received (at once when it holds already), or fails after 10 s */
 function frameWhere(ws: WebSocket, holds: () => boolean): Promise<void> {
   if (holds()) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -243,16 +238,14 @@ describe("opencode prompt contract", () => {
 
     const paneId = await setupOpencodePane(SESSION_SINGLE, "single");
 
-    // Poll GET /api/pane/prompt
     const prompt = await readCard(paneId);
     expect(prompt).not.toBeNull();
     expect(prompt!.agent).toBe("opencode");
     expect(prompt!.kind).toBe("question");
     expect(prompt!.question).toBe("What is your favorite color?");
-    expect(prompt!.options.length).toBe(3); // Blue, Red, Type your own answer
+    expect(prompt!.options.length).toBe(3);
     expect(prompt!.custom_option_index).toBe(2);
 
-    // Answer with "Red" (option_index 1)
     const answerRes = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -269,7 +262,6 @@ describe("opencode prompt contract", () => {
     const answerBody = JSON.parse(answerText);
     expect(answerBody).toEqual({ ok: true });
 
-    // Verify mock server received reply with Basic auth and answer
     expect(receivedReplies.length).toBe(1);
     const reply = receivedReplies[0]!;
     expect(reply.sessionID).toBe(SESSION_SINGLE);
@@ -316,7 +308,6 @@ describe("opencode prompt contract", () => {
 
     const paneId = await setupOpencodePane(SESSION_MULTI, "multi");
 
-    // 1. Fetch step 1
     const step1 = await readCard(paneId);
     expect(step1).not.toBeNull();
     expect(step1!.question).toBe("Which frontend framework?");
@@ -325,7 +316,6 @@ describe("opencode prompt contract", () => {
     expect(step1!.steps?.[0]?.current).toBe(true);
     expect(step1!.steps?.[0]?.answered).toBe(false);
 
-    // Answer step 1 with "React" (index 0)
     const ansRes1 = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -336,10 +326,8 @@ describe("opencode prompt contract", () => {
       }),
     });
     expect(ansRes1.status).toBe(200);
-    // Mock server must NOT have received reply yet!
     expect(receivedReplies.length).toBe(0);
 
-    // 2. Fetch step 2
     const step2 = await readCard(paneId);
     expect(step2).not.toBeNull();
     expect(step2!.question).toBe("Select tooling");
@@ -347,7 +335,6 @@ describe("opencode prompt contract", () => {
     expect(step2!.steps?.[0]?.answered).toBe(true);
     expect(step2!.steps?.[1]?.current).toBe(true);
 
-    // Answer step 2 with ESLint (0) and Tailwind (2)
     const ansRes2 = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -360,7 +347,6 @@ describe("opencode prompt contract", () => {
     });
     expect(ansRes2.status).toBe(200);
 
-    // Mock server must NOW have received the consolidated reply!
     expect(receivedReplies.length).toBe(1);
     const reply = receivedReplies[0]!;
     expect(reply.sessionID).toBe(SESSION_MULTI);
@@ -424,7 +410,6 @@ describe("opencode prompt contract", () => {
     expect(prompt).not.toBeNull();
     expect(prompt!.custom_option_index).toBe(0);
 
-    // Answer with custom_text
     const ansRes = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -486,13 +471,11 @@ describe("opencode prompt contract", () => {
 
     const paneId = await setupOpencodePane(SESSION_STEP_BACK, "stepback");
 
-    // 1. Fetch step 0 (framework)
     const prompt0 = await readCard(paneId);
     expect(prompt0).not.toBeNull();
     expect(prompt0!.can_step_back).toBeFalsy();
     expect(prompt0!.steps?.[0]?.current).toBe(true);
 
-    // Answer step 0 with "React" (index 0)
     const ans0 = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -504,14 +487,12 @@ describe("opencode prompt contract", () => {
     });
     expect(ans0.status).toBe(200);
 
-    // 2. Fetch step 1 (styling)
     const prompt1 = await readCard(paneId);
     expect(prompt1).not.toBeNull();
     expect(prompt1!.can_step_back).toBe(true);
     expect(prompt1!.steps?.[0]?.answered).toBe(true);
     expect(prompt1!.steps?.[1]?.current).toBe(true);
 
-    // Step back to step 0
     const backRes = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -523,13 +504,11 @@ describe("opencode prompt contract", () => {
     });
     expect(backRes.status).toBe(200);
 
-    // 3. Fetch step 0 again, verify default_option_index is preserved as React (0)
     const prompt0Again = await readCard(paneId);
     expect(prompt0Again).not.toBeNull();
     expect(prompt0Again!.can_step_back).toBeFalsy();
     expect(prompt0Again!.default_option_index).toBe(0);
 
-    // Revise step 0 answer to "Vue" (index 1)
     const reviseAns = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -541,7 +520,6 @@ describe("opencode prompt contract", () => {
     });
     expect(reviseAns.status).toBe(200);
 
-    // 4. Fetch step 1 again and answer with "Tailwind" (0)
     const prompt1Again = await readCard(paneId);
     expect(prompt1Again).not.toBeNull();
     const ans1 = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
@@ -555,12 +533,10 @@ describe("opencode prompt contract", () => {
     });
     expect(ans1.status).toBe(200);
 
-    // 5. Fetch step 2 (notes), test direct step_index jump back to step 0
     const prompt2 = await readCard(paneId);
     expect(prompt2).not.toBeNull();
     expect(prompt2!.can_step_back).toBe(true);
 
-    // Direct jump to step 0 via step_index
     const jumpRes = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -572,12 +548,10 @@ describe("opencode prompt contract", () => {
     });
     expect(jumpRes.status).toBe(200);
 
-    // Verify we're back at step 0 with Vue (1) preserved
     const prompt0Jumped = await readCard(paneId);
     expect(prompt0Jumped).not.toBeNull();
     expect(prompt0Jumped!.default_option_index).toBe(1);
 
-    // Keep Vue (index 1), answer and advance through styling to notes
     await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -590,7 +564,7 @@ describe("opencode prompt contract", () => {
 
     const prompt1Adv = await readCard(paneId);
     expect(prompt1Adv).not.toBeNull();
-    expect(prompt1Adv!.default_option_index).toBe(0); // Tailwind was previously chosen
+    expect(prompt1Adv!.default_option_index).toBe(0);
 
     await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
@@ -602,7 +576,6 @@ describe("opencode prompt contract", () => {
       }),
     });
 
-    // Finally at notes, submit custom_text
     const prompt2Final = await readCard(paneId);
     expect(prompt2Final).not.toBeNull();
 
@@ -617,7 +590,6 @@ describe("opencode prompt contract", () => {
     });
     expect(finalAns.status).toBe(200);
 
-    // Consolidated payload submitted to OpenCode
     expect(receivedReplies.length).toBe(1);
     expect(receivedReplies[0]!.sessionID).toBe(SESSION_STEP_BACK);
     expect(receivedReplies[0]!.formID).toBe("form_stepback_1");
@@ -655,7 +627,6 @@ describe("opencode prompt contract", () => {
     const prompt = await readCard(paneId);
     expect(prompt).not.toBeNull();
 
-    // Simulate 500 error on first reply attempt
     replyStatusOverride = 500;
     const failRes = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
@@ -668,13 +639,11 @@ describe("opencode prompt contract", () => {
     });
     expect(failRes.status).toBe(502);
 
-    // A failed submission does not become defaults and remount over the client's later edits.
     const retryPrompt = await readCard(paneId);
     expect(retryPrompt).not.toBeNull();
     expect(retryPrompt!.id).toBe(prompt!.id);
     expect(retryPrompt!.default_option_index).toBeUndefined();
 
-    // Retry succeeds
     const successRes = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -743,14 +712,12 @@ describe("opencode prompt contract", () => {
 
     receivedReplies = [];
 
-    // 1. Fetch prompts for both instances
     const promptA1 = await readCard(paneIdA);
     const promptB = await readCard(paneIdB);
 
     expect(promptA1).not.toBeNull();
     expect(promptB).not.toBeNull();
 
-    // 2. Answer step 1 of Instance A with custom text "AuthService"
     const ansA1 = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -762,13 +729,11 @@ describe("opencode prompt contract", () => {
     });
     expect(ansA1.status).toBe(200);
 
-    // Verify Instance B's prompt is still active and unchanged
     const resBCheck = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt?pane_id=${encodeURIComponent(paneIdB)}`);
     const bodyBCheck = (await resBCheck.json()) as { prompt: InteractivePrompt | null };
     expect(bodyBCheck.prompt).not.toBeNull();
     expect(bodyBCheck.prompt!.question).toBe("Database Engine");
 
-    // 3. Answer Instance B with "PostgreSQL" (index 0) -> this settles Instance B
     const ansB = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -780,18 +745,15 @@ describe("opencode prompt contract", () => {
     });
     expect(ansB.status).toBe(200);
 
-    // Verify Instance B reply was sent, but NOT Instance A
     expect(receivedReplies.length).toBe(1);
     expect(receivedReplies[0]!.sessionID).toBe(SESSION_B);
     expect(receivedReplies[0]!.formID).toBe("form_b_1");
     expect(receivedReplies[0]!.answer).toEqual({ db: "postgres" });
 
-    // 4. Fetch step 2 of Instance A
     const promptA2 = await readCard(paneIdA);
     expect(promptA2).not.toBeNull();
     expect(promptA2!.can_step_back).toBe(true);
 
-    // 5. Answer step 2 of Instance A with "Production" (index 1) -> settles Instance A
     const ansA2 = await fetch(`http://127.0.0.1:${server.port}/api/pane/prompt/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -803,7 +765,6 @@ describe("opencode prompt contract", () => {
     });
     expect(ansA2.status).toBe(200);
 
-    // Both instances have now replied with their own respective answers
     expect(receivedReplies.length).toBe(2);
     expect(receivedReplies[1]!.sessionID).toBe(SESSION_A);
     expect(receivedReplies[1]!.formID).toBe("form_a_1");

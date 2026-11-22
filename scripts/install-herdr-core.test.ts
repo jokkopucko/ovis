@@ -12,13 +12,12 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const INSTALLER = readFileSync(join(ROOT, "install.sh"), "utf8");
-/** one top-level shell function from install.sh, by name, as written there (one line or a block) */
 function fn(name: string): string {
   const match = new RegExp(`^${name}\\(\\) \\{.*\\}$`, "m").exec(INSTALLER) ?? new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}$`, "m").exec(INSTALLER);
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const CONSTANTS = ["PLUGIN", "LEGACY_PLUGIN", "APP_DIR", "SERVICE", "AGENT_LABEL"].map((name) => {
+const CONSTANTS = ["PLUGIN", "LEGACY_PLUGIN", "APP_DIR", "OVIS_HOME", "SERVICE", "AGENT_LABEL"].map((name) => {
   const line = new RegExp(`^${name}=.*$`, "m").exec(INSTALLER)?.[0];
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
@@ -28,7 +27,6 @@ const FUNCTIONS = ["say", "fail", "kill_tree", "bounded", "is_core", "core_dirs"
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-core-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-/** the system's tools without a herdr, herdr-core or hc this PC has in /usr/bin or /bin, so only a test's stand-ins answer */
 const SYSTEM = join(dir, "system");
 mkdirSync(SYSTEM);
 const linked = new Set(["herdr", "herdr-core", "hc"]);
@@ -40,7 +38,6 @@ for (const from of ["/usr/bin", "/bin"].filter((system) => existsSync(system))) 
   }
 }
 
-/** a PC of its own: HOME, and a bin dir of stand-in tools that is the whole PATH besides the system's */
 function pc(tools: Record<string, string> = {}): { home: string; bin: string; env: Record<string, string> } {
   const home = mkdtempSync(join(dir, "home-"));
   const bin = join(home, "tools");
@@ -49,7 +46,6 @@ function pc(tools: Record<string, string> = {}): { home: string; bin: string; en
   return { home, bin, env: { HOME: home, PATH: `${bin}:${SYSTEM}`, OVIS_RUNTIME: "", XDG_CONFIG_HOME: "", OVIS_HC_BIN: "", HC_SESSION: "", HC_SOCKET: "" } };
 }
 
-/** runs `call` after install.sh's constants and functions under /bin/sh with `set -eu`, as the script runs */
 function sh(call: string, env: Record<string, string>): { code: number; out: string; ms: number } {
   const started = performance.now();
   const run = Bun.spawnSync(["/bin/sh", "-c", `set -eu\n${CONSTANTS}\n${FUNCTIONS}\n${call}`], { env, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
@@ -219,7 +215,6 @@ describe("core_settings", () => {
 });
 
 describe("core_service", () => {
-  /** records each call of a stand-in tool, one line of arguments per call */
   const recorder = (name: string, extra = "") => `echo "${name} $*" >> "$HOME/calls"\n${extra}`;
   const bun = "exit 0";
 
@@ -294,12 +289,12 @@ describe("core_service", () => {
 });
 
 describe("install_core", () => {
-  it("builds the app with herdr-plugin.toml's Linux/macOS build steps, the Rust PTY host aside", () => {
+  it("builds the checkout from source after herdr-plugin.toml's pre-flight step, the Rust PTY host aside", () => {
     const manifest = readFileSync(join(ROOT, "herdr-plugin.toml"), "utf8");
-    const steps = [...manifest.matchAll(/\[\[build\]\]\ncommand = (\[.*\])\nplatforms = \["linux", "macos"\]/g)]
+    const preflight = [...manifest.matchAll(/\[\[build\]\]\ncommand = (\[.*\])\nplatforms = \["linux", "macos"\]/g)]
       .map((match) => (JSON.parse(match[1]!) as string[]).join(" "))
-      .filter((step) => !step.includes("pty-sidecar"));
-    expect(steps.length).toBeGreaterThan(0);
-    expect(fn("install_core")).toContain(`(cd "$APP_DIR.new" && ${steps.join(" && ")})`);
+      .filter((step) => step.includes("preflight"));
+    expect(preflight).toEqual(["sh scripts/preflight.sh"]);
+    expect(fn("install_core")).toContain(`(cd "$APP_DIR.new" && ${preflight[0]} && sh scripts/with-bun.sh install && sh scripts/with-bun.sh run build)`);
   });
 });

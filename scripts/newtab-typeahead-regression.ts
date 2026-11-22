@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser, Page, Route } from "playwright-core";
+import type { Browser, Page, Route, WebSocketRoute } from "playwright-core";
 import { paneRead, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
 
@@ -18,15 +18,10 @@ interface Case {
   way: Way;
   viewport: { width: number; height: number };
   touch?: boolean;
-  /** the keys, typed right after the choice */
   type: (page: Page) => Promise<void>;
-  /** the line the new tab's shell prints, or null when the keys must be held for review */
   ran: string | null;
-  /** exactly what the new tab is sent, when it is known */
   sent?: string;
-  /** herdr's answer waits until the keys are typed */
   holdCreate?: boolean;
-  /** the keys typed on once the new tab takes input: the tab came while the user was still typing */
   typeOn?: (page: Page) => Promise<void>;
 }
 
@@ -42,20 +37,42 @@ async function until(check: () => boolean | Promise<boolean>, label: string): Pr
   }
 }
 
-function watch(page: Page): { sent: Sent[]; ready: Set<string> } {
+/**
+ * What the page sends a pane, as the browser's frame events report it (they can come later than the shell's output on a
+ * busy machine), and how many input and keys frames have been heard in all: the page counts what it sends itself
+ * (sentByPage), so a check can wait until everything sent so far, an unexpected extra frame included, has been heard.
+ * Awaited before the page's goto: an init script runs only in documents loaded after it is installed.
+ */
+async function watch(page: Page): Promise<{ sent: Sent[]; ready: Set<string>; heard: { count: number } }> {
   const sent: Sent[] = [];
   const ready = new Set<string>();
+  const heard = { count: 0 };
+  await page.addInitScript(() => {
+    const qa = window as unknown as { sentByPage: number };
+    qa.sentByPage = 0;
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (this: WebSocket, data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      // only a frame that leaves is counted: a send on a socket still connecting throws, and one on a closing or closed
+      // socket is dropped, and neither ever reaches the browser's frame events the check counts against
+      const open = this.readyState === WebSocket.OPEN;
+      const result = send.call(this, data);
+      if (open && typeof data === "string") {
+        try { const type = (JSON.parse(data) as { type?: string }).type; if (type === "input" || type === "keys") qa.sentByPage += 1; } catch {}
+      }
+      return result;
+    };
+  });
   page.on("websocket", (socket) => {
     socket.on("framesent", ({ payload }) => {
       const message = JSON.parse(String(payload));
-      if (message.type === "input" || message.type === "keys") sent.push(message);
+      if (message.type === "input" || message.type === "keys") { sent.push(message); heard.count += 1; }
     });
     socket.on("framereceived", ({ payload }) => {
       const message = JSON.parse(String(payload));
       if (message.type === "input-ready" && message.ready !== false) ready.add(message.pane_id);
     });
   });
-  return { sent, ready };
+  return { sent, ready, heard };
 }
 
 const textOf = (sent: Sent[], paneId: string): string => sent.filter((message) => message.pane_id === paneId && !MOUSE_REPORT.test(message.text ?? ""))
@@ -64,8 +81,7 @@ const screenOf = (page: Page, paneId: string) => page.locator(`[data-layout-pane
 
 async function choose(page: Page, first: string, item: Case, sent: Sent[]): Promise<void> {
   if (item.way === "sheet") {
-    // the title's list stands in for the row on a narrow window
-    if (item.touch) await page.locator(".app-header .context-tabs").tap(); else await page.locator(".app-header .context-tabs").click();
+    if (item.touch) await page.locator(".app-header .header-tabs-sheet").tap(); else await page.locator(".app-header .header-tabs-sheet").click();
     sent.length = 0;
     const entry = page.locator(".row-sheet-item", { hasText: "New terminal" });
     if (item.touch) await entry.tap(); else await entry.click();
@@ -91,14 +107,13 @@ async function typeAhead(browser: Browser, origin: string, item: Case): Promise<
   const workspaceId = created.workspace.workspace_id;
   const first = created.root_pane.pane_id;
   const context = await browser.newContext({ viewport: item.viewport, hasTouch: item.touch === true, isMobile: item.touch === true, locale: "en-US" });
-  // the away case clicks the sidebar's Filter field, which is off until chosen (Settings → Sidebar filter)
-  await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })); localStorage.setItem("ovis:sidebar-filter-shown", "true"); });
+  await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })); localStorage.setItem("ovis:sidebar-filter-shown", "true"); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const { sent, ready } = watch(page);
+    const { sent, ready, heard } = await watch(page);
     let held: Route | null = null;
     if (item.holdCreate) await page.route("**/api/**tab/create", (route) => { held = route; });
     await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
@@ -117,10 +132,23 @@ async function typeAhead(browser: Browser, origin: string, item: Case): Promise<
     const lines = async () => (await paneRead({ paneId: second!, source: "recent", lines: 30, stripAnsi: true })).text.split("\n").map((line) => line.trim());
     if (item.ran !== null) {
       const ran = item.ran;
-      await until(async () => (await lines()).includes(ran), `${item.name}: the new tab ran the command typed ahead`);
-      if (item.sent !== undefined) assert.equal(textOf(sent, second!), item.sent, `${item.name}: every key reaches the new tab, in order`);
+      await until(async () => (await lines()).includes(ran), `${item.name}: the new tab ran the command typed ahead`).catch(async (error: unknown) => {
+        const held = await page.getByRole("button", { name: "Discard held input", exact: true }).count();
+        throw new Error(`${(error as Error).message}; sent to it: ${JSON.stringify(textOf(sent, second!))}, held for review: ${held > 0}, its last lines: ${JSON.stringify((await lines()).filter(Boolean).slice(-4))}`);
+      });
+      if (item.sent !== undefined) {
+        // the shell's line is read through herdr, the page's frames through the browser's own events, which can come
+        // later on a busy machine: what the page sent is read once every frame it has sent by now has been heard
+        const expected = item.sent;
+        const sentByPage = await page.evaluate(() => (window as unknown as { sentByPage?: number }).sentByPage);
+        // without the counter the wait below could never end: say so at once
+        assert.ok(typeof sentByPage === "number", `${item.name}: the page has no frame counter (window.sentByPage is ${String(sentByPage)}): watch() must install it before the page loads`);
+        await until(() => heard.count >= sentByPage, `${item.name}: the page's frames for the new tab are all heard`).catch((error: unknown) => {
+          throw new Error(`${(error as Error).message}; expected ${JSON.stringify(expected)}, heard ${JSON.stringify(textOf(sent, second!))}`);
+        });
+        assert.equal(textOf(sent, second!), expected, `${item.name}: every key reaches the new tab, in order`);
+      }
     } else {
-      // held for review as typing offline is: the new tab offers it with Send and Discard
       const frame = page.locator(`[data-layout-pane=${JSON.stringify(second!)}]`);
       await frame.getByRole("button", { name: "Discard held input", exact: true }).waitFor();
       assert.match(await frame.innerText(), /echo ahead-/, `${item.name}: what was typed is held for review`);
@@ -146,14 +174,12 @@ const typed = (text: string, delay = 0) => async (page: Page): Promise<void> => 
 const CASES: Case[] = [
   { name: "plus", way: "plus", viewport: desktop, type: typed("echo ahead-plus"), ran: "ahead-plus", sent: "echo ahead-plus\r" },
   { name: "sheet", way: "sheet", viewport: phone, type: typed("echo ahead-sheet"), ran: "ahead-sheet", sent: "echo ahead-sheet\r" },
-  { name: "touch", way: "sheet", viewport: phone, touch: true, type: typed("echo ahead-touch"), ran: "ahead-touch", sent: "echo ahead-touch\r" },
-  // a keyboard on a touch screen: the keys typed after the new tab came go on to it, not lost
+  { name: "touch", way: "sheet", viewport: phone, touch: true, holdCreate: true, type: typed("echo ahead-touch"), ran: "ahead-touch", sent: "echo ahead-touch\r" },
   {
     name: "touch-midway", way: "sheet", viewport: phone, touch: true, holdCreate: true, ran: "ahead-midway", sent: "echo ahead-midway\r",
     type: async (page) => { await page.keyboard.type("echo ahead-"); },
     typeOn: typed("midway"),
   },
-  // slower, so the keys go on while the dialog closes over the old tab
   { name: "dialog", way: "dialog", viewport: desktop, type: typed("echo ahead-dialog", 15), ran: "ahead-dialog", sent: "echo ahead-dialog\r" },
   {
     name: "edit", way: "plus", viewport: desktop, ran: "ahead-edit",
@@ -165,7 +191,6 @@ const CASES: Case[] = [
     },
   },
   {
-    // the dialog's focus trap leaves Tab to the keys typed ahead while it waits for herdr
     name: "dialog-tab", way: "dialog", viewport: desktop, ran: "ahead-tab", sent: "echo ahead-tab\t\r", holdCreate: true,
     type: async (page) => {
       await page.keyboard.type("echo ahead-tab");
@@ -195,13 +220,11 @@ const CASES: Case[] = [
     name: "away", way: "plus", viewport: desktop, ran: null, holdCreate: true,
     type: async (page) => {
       await page.keyboard.type("echo ahead-away");
-      // the user goes elsewhere before herdr has made the tab
       await page.getByPlaceholder("Filter workspaces and agents").click();
     },
   },
 ];
 
-/** A composition still open when the tab arrives keeps its field until it ends, then goes after what came before it. */
 async function composingAcrossHandOver(browser: Browser, origin: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-newtab-typeahead-")));
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-newtab-ime" });
@@ -214,7 +237,7 @@ async function composingAcrossHandOver(browser: Browser, origin: string): Promis
     page.setDefaultTimeout(10_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const { sent, ready } = watch(page);
+    const { sent, ready } = await watch(page);
     let held: Route | null = null;
     await page.route("**/api/**tab/create", (route) => { held = route; });
     await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
@@ -243,7 +266,7 @@ async function composingAcrossHandOver(browser: Browser, origin: string): Promis
   }
 }
 
-async function ownedPage(browser: Browser, origin: string, label: string) {
+async function ownedPage(browser: Browser, origin: string, label: string, receipts?: { held: boolean; socket: WebSocketRoute | null }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-newtab-typeahead-")));
   const created = await workspaceCreate({ cwd: root, label });
   const context = await browser.newContext({ viewport: desktop, locale: "en-US" });
@@ -252,9 +275,17 @@ async function ownedPage(browser: Browser, origin: string, label: string) {
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const { sent, ready } = watch(page);
+  const { sent, ready } = await watch(page);
   const held: Route[] = [];
   await page.route("**/api/**tab/create", (route) => { held.push(route); });
+  if (receipts) await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    receipts.socket = socket;
+    const server = socket.connectToServer();
+    server.onMessage((raw) => {
+      try { if (receipts.held && (JSON.parse(String(raw)) as { type?: string }).type === "input-result") return; } catch {}
+      socket.send(raw);
+    });
+  });
   const first = created.root_pane.pane_id;
   await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
   await page.locator(".conn-live").waitFor();
@@ -269,7 +300,6 @@ async function ownedPage(browser: Browser, origin: string, label: string) {
   return { page, context, errors, sent, ready, held, first, added, close };
 }
 
-/** A second New terminal before the first tab is made: each tab gets what was typed for it (the first's held, as the user moved on). */
 async function twoCatches(browser: Browser, origin: string): Promise<void> {
   const owned = await ownedPage(browser, origin, "ovis-test-newtab-two");
   const { page, sent, ready, held, first, added, errors } = owned;
@@ -282,7 +312,6 @@ async function twoCatches(browser: Browser, origin: string): Promise<void> {
     await page.keyboard.type("echo ahead-two");
     await page.keyboard.press("Enter");
     await until(() => held.length === 2, "the page asked herdr for both tabs");
-    // the second tab is made first: it is shown, and takes the keys typed for it
     await held[1]!.continue();
     let second: string | undefined;
     await until(async () => (second = await added([])) !== undefined, "herdr has the second tab");
@@ -305,7 +334,8 @@ async function twoCatches(browser: Browser, origin: string): Promise<void> {
 
 /** What an open composition commits after the new tab shows a masked prompt goes as a secret: no receipt keeps it. */
 async function secretAfterComposition(browser: Browser, origin: string): Promise<void> {
-  const owned = await ownedPage(browser, origin, "ovis-test-newtab-secret");
+  const receipts: { held: boolean; socket: WebSocketRoute | null } = { held: false, socket: null };
+  const owned = await ownedPage(browser, origin, "ovis-test-newtab-secret", receipts);
   const { page, context, sent, ready, held, first, added, errors } = owned;
   try {
     await screenOf(page, first).click();
@@ -322,10 +352,19 @@ async function secretAfterComposition(browser: Browser, origin: string): Promise
     await until(() => ready.has(second!), "the new tab accepts input");
     await until(async () => /Password:\s*$/.test((await paneRead({ paneId: second!, source: "visible", stripAnsi: true })).text.trimEnd()), "the new tab shows the masked prompt");
     await page.locator(`[data-layout-pane=${JSON.stringify(second!)}] .secret-input`).waitFor();
+    receipts.held = true;
     if (await page.evaluate(() => document.activeElement?.className) === "type-ahead") await cdp.send("Input.insertText", { text: "한" });
     let composed: Sent | undefined;
     await until(() => (composed = sent.find((message) => message.pane_id === second && /[하한]/.test(message.text ?? ""))) !== undefined, "the composed text reaches the prompt");
-    assert.equal((composed as { id?: number }).id, undefined, "typed into a masked prompt, it is sent as a secret: no receipt keeps it");
+    // typed into a masked prompt it goes as a password: the connection ends before its receipt, and the terminal says a
+    // key may not have arrived and keeps nothing of it, where a key typed as usual would come back in a draft
+    await receipts.socket!.close();
+    await page.getByText("A key may not have reached the terminal", { exact: false }).first().waitFor();
+    await page.locator(".conn-live").waitFor();
+    assert.equal(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("ovis:terminal-draft:"))
+      .some((key) => { try { return /[하한]/.test((JSON.parse(localStorage.getItem(key) ?? "{}") as { text?: string }).text ?? ""); } catch { return false; } })), false,
+    "typed into a masked prompt, it is kept in no draft");
+    assert.equal(await page.locator(".draft-text").count(), 0, "typed into a masked prompt, it is never held in a draft");
     assert.equal(textOf(sent, first), "", "no key goes to the old tab");
     assert.deepEqual(errors, []);
   } finally { await owned.close(); }

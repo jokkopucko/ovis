@@ -2,13 +2,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildDemoApp } from "./demo-build.ts";
 
-/** The real client with one inert SSH registration over the demo's own transport. */
 export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
   const demoFetch = window.fetch.bind(window);
   const DemoEventSource = window.EventSource;
   const sources = new Set();
   const observers = [];
-  const calls = { mutations: [], deleteAttempts: 0, deleteCount: 0, frames: 0 };
+  const calls = { mutations: [], deleteAttempts: 0, deleteCount: 0, frames: 0, sessionReads: 0 };
   let demoMachines = [];
   let remote = {
     id: "sidebar-fixture", name: "Demo remote PC", kind: "ssh",
@@ -80,6 +79,8 @@ export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
     },
     releaseMutation,
     observe,
+    // the remote PC as the server would tell it next (an SSH PC it keeps failing to reach, say)
+    setRemote(patch) { Object.assign(remote, patch); broadcast(); },
     observerRoster(index) { return observers[index]?.frames.at(-1) ?? null; },
   };
 
@@ -93,6 +94,12 @@ export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
       const payload = await response.json();
       demoMachines = payload.machines;
       return json({ ...payload, machines: roster() });
+    }
+
+    // a read of the remote PC: what Check again asks; the server answers a PC it has no connection to so
+    if (url.pathname === "/api/machines/sidebar-fixture/session" && method === "GET") {
+      calls.sessionReads++;
+      return error("machine_offline", "This PC is disconnected", 503);
     }
 
     const machinePath = url.pathname.match(/^\/api\/machines(?:\/([^/]+)(?:\/.*)?)?$/);
@@ -162,7 +169,6 @@ export const MACHINE_CONTROLS_FIXTURE_SCRIPT = String.raw`(() => {
   };
 })();`;
 
-/** Copy the shared production-client build, then install demo transport before this fixture. */
 export async function prepareMachineControlsDemo(app: string): Promise<void> {
   await buildDemoApp(app);
   const index = join(app, "index.html");

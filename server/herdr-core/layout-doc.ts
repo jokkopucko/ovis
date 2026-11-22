@@ -2,19 +2,16 @@ import type { PaneLayoutRect, PaneLayoutSplit } from "../../shared/herdr-api.gen
 import { isRecord } from "./snapshot.ts";
 
 /**
- * Ovis's own layout on a herdr-core no Herdr app arranges: one hc document, `ovis-layout`
- * (docs/herdr-core-layout.md), that holds what labels cannot: the order of workspaces and tabs,
- * each tab's split tree with its ratios, and the pane a tab shows alone. Which tab a terminal is
- * in stays in its `herdr.space` and `herdr.tab` labels, so a Herdr app started later adopts it.
+ * Which tab a terminal is in stays in its `herdr.space` and `herdr.tab` labels, so a Herdr app
+ * started later adopts it.
  *
  * Geometry flows top down: a tab is a fixed LAYOUT_AREA square cut by its splits' ratios, never
  * the terminals' own grids (a viewer sizes the terminal to its cell, and a grid read back as the
- * cell made panes shrink each other, #2812). The client only reads rects as shares of the area.
+ * cell made panes shrink each other, #2812).
  */
 
 export const OVIS_LAYOUT_DOC = "ovis-layout";
 export const OVIS_LAYOUT_SCHEMA = 1;
-/** a tab's area in the snapshot: units of its own, which the client reads as shares */
 export const LAYOUT_AREA: PaneLayoutRect = Object.freeze({ x: 0, y: 0, width: 1000, height: 1000 });
 
 export type SplitDirection = "right" | "down";
@@ -23,7 +20,6 @@ export interface TabLayout { id: string; root: LayoutNode; zoomed: string | null
 export interface WorkspaceLayout { id: string; tabs: TabLayout[] }
 export interface OvisLayout { schema: typeof OVIS_LAYOUT_SCHEMA; workspaces: WorkspaceLayout[] }
 
-/** Where a pane sits, as the label grouping shows it: the workspaces and tabs Ovis keeps, each tab's terminals in order. */
 export interface Grouping { id: string; tabs: { id: string; panes: readonly string[] }[] }
 
 const MIN_RATIO = 0.1;
@@ -42,11 +38,6 @@ function parseNode(value: unknown): LayoutNode | null {
   return { split, ratio: clampRatio(ratio), first, second };
 }
 
-/**
- * The document as this Ovis reads it; null when it was never written, was deleted, or is not one
- * it understands (another schema: a newer Ovis's, which this one neither reads nor overwrites).
- * A tab whose tree does not parse keeps its place and gets its tree back from the labels.
- */
 export function parseOvisLayout(value: unknown): OvisLayout | null {
   if (!isRecord(value) || value["schema"] !== OVIS_LAYOUT_SCHEMA || !Array.isArray(value["workspaces"])) return null;
   const workspaces: WorkspaceLayout[] = [];
@@ -63,7 +54,6 @@ export function parseOvisLayout(value: unknown): OvisLayout | null {
   return { schema: OVIS_LAYOUT_SCHEMA, workspaces };
 }
 
-/** Whether a stored value is a document another Ovis wrote in a schema this one does not know: never overwritten. */
 export function foreignLayout(value: unknown): boolean {
   return value !== null && value !== undefined && parseOvisLayout(value) === null;
 }
@@ -72,7 +62,6 @@ export function leaves(node: LayoutNode): string[] {
   return "leaf" in node ? (node.leaf ? [node.leaf] : []) : [...leaves(node.first), ...leaves(node.second)];
 }
 
-/** The tree without the leaves `keep` refuses; a split left with one side becomes that side. */
 function prune(node: LayoutNode, keep: (leaf: string) => boolean): LayoutNode | null {
   if ("leaf" in node) return node.leaf && keep(node.leaf) ? node : null;
   const first = prune(node.first, keep);
@@ -81,18 +70,11 @@ function prune(node: LayoutNode, keep: (leaf: string) => boolean): LayoutNode | 
   return { ...node, first, second };
 }
 
-/** Panes side by side in equal shares, the way a tab with no tree yet shows them. */
 export function sideBySide(panes: readonly string[]): LayoutNode {
   if (panes.length === 1) return { leaf: panes[0]! };
   return { split: "right", ratio: clampRatio(1 / panes.length), first: { leaf: panes[0]! }, second: sideBySide(panes.slice(1)) };
 }
 
-/**
- * The document over what is live, as the snapshot shows it: workspaces and tabs in the document's
- * order, then the ones it does not hold yet in the labels' order; each tab's tree without the panes
- * that are gone, and with the ones it does not hold yet to its right (a terminal an older Ovis or a
- * script labeled into the tab). A tab the document does not know lays its panes out side by side.
- */
 export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): OvisLayout {
   const order = <T extends { id: string }, S extends { id: string }>(kept: readonly T[], live: readonly S[]): { live: S; kept: T | undefined }[] => {
     const byId = new Map(live.map((entry) => [entry.id, entry]));
@@ -106,7 +88,6 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
       id: live.id,
       tabs: order(kept?.tabs ?? [], live.tabs).filter(({ live: tab }) => tab.panes.length > 0).map(({ live: tab, kept: stored }) => {
         const panes = new Set(tab.panes);
-        // a pane named twice (a document another client wrote) is placed once
         const seen = new Set<string>();
         let root = stored ? prune(stored.root, (leaf) => panes.has(leaf) && !seen.has(leaf) && Boolean(seen.add(leaf))) : null;
         const held = new Set(root ? leaves(root) : []);
@@ -123,7 +104,6 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
   };
 }
 
-/** The least extent a subtree needs along that axis: one unit per pane side by side on it. */
 function minimum(node: LayoutNode, axis: SplitDirection): number {
   if ("leaf" in node) return 1;
   const first = minimum(node.first, axis);
@@ -131,10 +111,6 @@ function minimum(node: LayoutNode, axis: SplitDirection): number {
   return node.split === axis ? first + second : Math.max(first, second);
 }
 
-/**
- * A split's two sides within its rect: the first `ratio` of its extent, the second the rest, each
- * kept wide enough for every pane in it to get a unit (the client's layoutTree.ts does the same).
- */
 function sides(node: Extract<LayoutNode, { split: SplitDirection }>, rect: PaneLayoutRect): readonly [PaneLayoutRect, PaneLayoutRect] {
   const horizontal = node.split === "right";
   const extent = horizontal ? rect.width : rect.height;
@@ -146,12 +122,7 @@ function sides(node: Extract<LayoutNode, { split: SplitDirection }>, rect: PaneL
 
 export interface Placed { panes: { pane_id: string; rect: PaneLayoutRect }[]; splits: PaneLayoutSplit[] }
 
-/**
- * The tree cut from `area` top down: each split gives its first side `ratio` of its extent (at
- * least one unit to each side), the second the rest. Splits carry herdr's stable path ids
- * (`split_<n>_root`, `split_<n>_01`: 0 the first side, 1 the second), which the client's divider
- * drag turns back into `layout.set_split_ratio` paths.
- */
+// herdr's stable split path ids: `split_<n>_root`, `split_<n>_01` (0 the first side, 1 the second)
 export function place(root: LayoutNode, area: PaneLayoutRect = LAYOUT_AREA): Placed {
   const placed: Placed = { panes: [], splits: [] };
   const walk = (node: LayoutNode, rect: PaneLayoutRect, path: string): void => {
@@ -181,7 +152,6 @@ export function splitLeaf(root: LayoutNode, target: string, made: string, direct
   return found ? next : null;
 }
 
-/** Two panes change places; the splits and their ratios stay. */
 export function swapLeaves(root: LayoutNode, a: string, b: string): LayoutNode {
   const walk = (node: LayoutNode): LayoutNode => {
     if ("leaf" in node) return node.leaf === a ? { leaf: b } : node.leaf === b ? { leaf: a } : node;
@@ -243,7 +213,6 @@ export function resizeLeaf(root: LayoutNode, pane: string, direction: PaneDirect
   return setRatio(root, step.path, ratio);
 }
 
-/** The pane beside this one on that side, the one sharing most of its edge; null at the tab's edge. */
 export function neighbour(root: LayoutNode, pane: string, direction: PaneDirection): string | null {
   const { panes } = place(root);
   const from = panes.find((entry) => entry.pane_id === pane)?.rect;

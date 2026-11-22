@@ -1,8 +1,3 @@
-/**
- * A markdown file in a tab of its own: the document is the page, with its name, path, raw file
- * and download above it. Not the app: no sidebar, no panes, no connection to a PC's session.
- * Its links to other files open here, from the document's folder, and Back returns.
- */
 import { useCallback, useEffect, useState } from "react";
 
 import { AccessGate } from "./AccessGate.tsx";
@@ -60,7 +55,6 @@ export function FileReader({ target }: { target: ReaderTarget }) {
 
   if (locked === null) return <main className="file-reader"><p className="file-viewer-note" role="status">{t("Opening…")}</p></main>;
   if (locked) return <AccessGate reason={lockReason} initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => setLocked(false)} />;
-  // the app's update line is not here, so a part that cannot load (math, a diagram) is told on its own
   return <div className="file-reader-frame">
     <ChunkFailureNotice />
     <MachineContext.Provider value={target.machine}>

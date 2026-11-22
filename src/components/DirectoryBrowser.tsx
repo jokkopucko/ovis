@@ -15,13 +15,9 @@ import { homeRelative, subscribeFilesFolder, takeFilesFolder } from "../lib/pale
 export { homeRelative };
 
 export interface DirectoryBrowserProps {
-  /** where to open: the path typed so far (absolute, `~` or `~/…`); empty or unreadable opens home */
   start: string;
-  /** the folder chosen, in the dialog's own syntax (`~/…` inside home); without it there is no "Use this folder" */
   onPick?: (path: string) => void;
-  /** lists files too, and opens the one clicked (its absolute path) */
   onOpenFile?: (path: string) => void;
-  /** told the folder shown (its absolute path, and the PC's home) each time one opens; New workspace drafts Directory from it */
   onFolder?: (path: string, home: string) => void;
 }
 
@@ -29,10 +25,6 @@ function childPath(parent: string, name: string): string {
   return parent.endsWith("/") ? `${parent}${name}` : `${parent}/${name}`;
 }
 
-/**
- * A folder browser for the new-session dialog: one directory at a time, fetched from the
- * PC the session starts on. Nothing is kept but the folder shown now.
- */
 export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: DirectoryBrowserProps) {
   const t = useT();
   const { fetchDirectories, createDirectory } = useMachineApi();
@@ -41,18 +33,14 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
   const [hidden, setHidden] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // New folder: the name being typed (null: no field), and why the last try failed
   const [naming, setNaming] = useState<string | null>(null);
   const [namingError, setNamingError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const request = useRef(0);
   const listRef = useRef<HTMLUListElement>(null);
   const shownPath = listing?.path;
-  // home shown in place of a path that does not open was not opened by the user: the typed path stays
   const fellBack = useRef(false);
-  // counts moves to another folder; a refresh of the one shown (Show hidden) is not one
   const moves = useRef(0);
-  // Show hidden as it is when a made folder opens, not as it was when making it began
   const hiddenRef = useRef(hidden);
   hiddenRef.current = hidden;
   const shownByFallback = useRef(false);
@@ -74,7 +62,6 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
       listRef.current?.scrollTo({ top: 0 });
     } catch (reason: unknown) {
       if (id !== request.current) return;
-      // a path typed half-way opens home instead of an error
       if (fallbackHome && reason instanceof ApiError && reason.code === "invalid_cwd") {
         fellBack.current = true;
         return void open("", showHidden, false);
@@ -87,8 +74,6 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
     }
   }, [fetchDirectories, listing, onOpenFile, t]);
 
-  // Files opens on a folder the palette picked (lib/paletteFolders.ts) instead of the pane's own,
-  // also when it is open already
   const openRef = useRef(open);
   openRef.current = open;
   useEffect(() => {
@@ -103,11 +88,9 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
     });
   }, []);
 
-  // makes the folder inside the one shown and opens it, so New workspace's Directory follows
   const makeFolder = async () => {
     if (listing === null || naming === null || naming.trim() === "" || creating) return;
     setCreating(true);
-    // the user may open another folder while the folder is made: then the made one is not opened
     const asked = moves.current;
     try {
       const made = await createDirectory(listing.path, naming);
@@ -119,7 +102,6 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
       setNamingError(code === "folder_exists" ? t("Something with that name is already here.")
         : code === "invalid_name" ? t("That name cannot be a folder name.")
         : code === "permission_denied" ? t("No permission to make a folder here.")
-        // a PC on an older version answers the listing's own GET-only refusal
         : code === "method_not_allowed" || (reason instanceof ApiError && reason.status === 404) ? t("This PC's bridge cannot make folders yet.")
         : t("The folder could not be made."));
     } finally {
@@ -129,7 +111,6 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
 
   const path = listing?.path ?? "";
   const homeShown = listing ? homeRelative(listing.path, listing.home) : start || "~";
-  // browsing files reads from the folder opened on; picking a folder keeps the `~/…` form it hands back
   const shown = listing && onPick === undefined ? workspaceRelativePath(listing.path, resolveWorkspaceRoot(start, listing.home), homeShown) : homeShown;
   const normalizedQuery = query.trim().toLowerCase();
   const directories = listing === null || onPick === undefined || normalizedQuery === ""
@@ -197,10 +178,8 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
       </div>}
       {naming !== null && (
         <div className="dir-browser-new">
-          {/* inside New workspace's form: Enter makes the folder rather than starting the workspace,
-              Escape closes this field rather than the dialog, and an IME keeps its own keys */}
           <input className="input" aria-label={t("New folder name")} placeholder={t("New folder name")} autoFocus value={naming} readOnly={creating}
-            autoComplete="off" autoCapitalize="off" spellCheck={false} aria-invalid={namingError !== null}
+            autoComplete="off" autoCapitalize="off" spellCheck={false} enterKeyHint="done" aria-invalid={namingError !== null}
             onChange={(event) => { setNaming(event.target.value); setNamingError(null); }}
             onBlur={() => { if (naming.trim() === "") setNaming(null); }}
             onKeyDown={(event) => {
@@ -246,7 +225,6 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
           {listing !== null && normalizedQuery === "" && listing.directories.length === 0 && (listing.files ?? []).length === 0 && (
             <li className="dir-browser-note">
               {t(onOpenFile ? "Nothing here" : "No folders here")}
-              {/* a file browser says the way on: hidden entries, or another folder */}
               {onOpenFile && <span className="dir-browser-hint">{t(hidden ? "Go to the parent or home folder." : "Turn on Show hidden or go to the parent folder.")}</span>}
             </li>
           )}

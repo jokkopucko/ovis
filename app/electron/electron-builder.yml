@@ -14,13 +14,18 @@ extraResources:
   - from: ../assets/icon-only.png
     to: icon.png
 icon: ../assets/icon-only.png
+# ovis://open?ws=…&pane=…&view=… shows that pane in the window (src/openLink.ts): the Mac's Info.plist
+# and the Linux .desktop file name the scheme; Windows registers it as the app starts (src/main.ts)
+protocols:
+  - name: Ovis
+    schemes:
+      - ovis
 npmRebuild: false
 # the installers' names carry no version (Ovis-linux-x64.AppImage, Ovis-linux-x64.deb, Ovis-mac-arm64.dmg, Ovis-win-x64.exe)
 # so releases/latest/download/<name> always links the newest: scripts/build.ts sets artifactName per build
 toolsets:
   # the static AppImage runtime, which needs no libfuse2 (gone from recent Ubuntu)
   appimage: '1.0.3'
-# notarize and staple the signed macOS app, then the dmg made from it (scripts/notarize-dmg.mjs)
 afterSign: ./scripts/notarize-app.mjs
 artifactBuildCompleted: ./scripts/notarize-dmg.mjs
 linux:
@@ -63,12 +68,12 @@ mac:
   # The afterSign hook notarizes the app: electron-builder's own stapling gives up within seconds.
   notarize: false
   # Signed under the hardened runtime (electron-builder's default): the app takes build/entitlements.mac.plist
-  # and everything else inside build/entitlements.mac.inherit.plist, found by name. Resources holds the server's files too: sign only its programs (hc, Bun, the PTY host)
+  # and everything else inside build/entitlements.mac.inherit.plist, found by name. Resources holds the server's files too: sign only its programs (hc, Bun, the server's binary, the PTY host)
   # and native modules, not every data file in them. A new Mach-O there that this misses fails notarization.
   # signs the PTY host first and brings its record up to the signed bytes (scripts/sign-mac.mjs)
   sign: ./scripts/sign-mac.mjs
   signIgnore:
-    - '/Contents/Resources/(?!ovis/bin/|ovis/server/bin/)(?!.*(\.node|\.dylib|/spawn-helper)$)'
+    - '/Contents/Resources/(?!ovis/bin/|ovis/server/bin/|ovis/server/ovis-server$)(?!.*(\.node|\.dylib|/spawn-helper)$)'
   extendInfo:
     NSMicrophoneUsageDescription: Ovis uses the microphone for dictation.
 dmg:
@@ -77,11 +82,9 @@ dmg:
   writeUpdateInfo: false
 win:
   target: nsis
-  # made by scripts/build.ts from ../assets/icon-only.png
   icon: .cache/icon.ico
 nsis:
   # per user, no administrator prompt: the core and the server run as the user anyway
   oneClick: true
   perMachine: false
-  # replaces the one-file Windows setup app (README.md)
   include: windows/installer.nsh

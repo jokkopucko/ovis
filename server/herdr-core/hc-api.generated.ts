@@ -1,13 +1,15 @@
 /**
  * GENERATED FILE - DO NOT EDIT.
  *
- * Source: herdr-core (hc) OpenRPC schema, hc 0.1.14, Apache-2.0.
+ * Source: herdr-core (hc) OpenRPC schema, hc 0.1.18, Apache-2.0.
  * Regenerate with: bun run generate:types
  * Verify freshness with: bun run generate:types --check
  */
 
 export interface AttachResult {
+  automatic_input: boolean;
   channel: number;
+  resize_notifications: boolean;
   terminal: Terminal;
 }
 
@@ -50,6 +52,16 @@ export interface EventsSubscribeParams {
   terminal?: string | null;
 }
 
+export interface ExecResult {
+  code?: number | null;
+  ms: number;
+  signal?: number | null;
+  stderr: string;
+  stdout: string;
+  timed_out: boolean;
+  truncated: boolean;
+}
+
 export interface FirstMessage {
   reason?: string | null;
   sent: boolean;
@@ -67,6 +79,7 @@ export interface Foreground {
 export interface HelloParams {
   calls_you?: string | null;
   core?: CoreInfo | null;
+  features?: string[];
   framed?: boolean;
   generation?: number | null;
 }
@@ -89,6 +102,11 @@ export interface HolderInfo {
 
 export type IdleOrWorking = "idle" | "working" | (string & {});
 
+export interface InitialSize {
+  cols: number;
+  rows: number;
+}
+
 export interface KeysResult {
   status?: string | null;
   turn: number;
@@ -98,6 +116,16 @@ export interface ListResult {
   hidden_finished: number;
   machines: MachineView[];
   terminals: Terminal[];
+}
+
+export interface MachineExecParams {
+  argv?: string[];
+  cwd?: string | null;
+  env?: Record<string, string>;
+  input?: string | null;
+  line?: string | null;
+  on?: string | null;
+  timeout?: number | null;
 }
 
 export type MachineListParams = Record<string, never>;
@@ -214,6 +242,7 @@ export interface Terminal {
   die_with_parent?: boolean;
   exit_code?: number | null;
   finished_ms?: number | null;
+  first_message?: FirstMessage | null;
   foreground?: Foreground | null;
   identity?: string;
   keep?: boolean;
@@ -246,6 +275,7 @@ export interface TerminalAttachParams {
   display?: Display;
   history?: number;
   observe?: boolean;
+  resize_notifications?: boolean;
   resumed?: boolean;
   rows: number;
   terminal: string;
@@ -293,6 +323,7 @@ export interface TerminalRunParams {
   caller?: string | null;
   cwd?: string | null;
   die_with_parent?: boolean;
+  display?: Display | null;
   env?: Record<string, string>;
   keep?: boolean;
   labels?: Record<string, string>;
@@ -304,6 +335,7 @@ export interface TerminalRunParams {
   outlive_parent?: boolean;
   parent?: string | null;
   rm?: boolean;
+  size?: InitialSize | null;
   timeout?: number | null;
   wait?: boolean;
 }
@@ -336,6 +368,7 @@ export interface HcMethods {
   "doc.set": { params: DocSetParams; result: DocSetResult };
   "events.subscribe": { params: EventsSubscribeParams; result: SubscribeResult };
   "hello": { params: HelloParams; result: HelloResult };
+  "machine.exec": { params: MachineExecParams; result: ExecResult };
   "machine.list": { params: MachineListParams; result: MachineListResult };
   "server.status": { params: ServerStatusParams; result: StatusResult };
   "terminal.attach": { params: TerminalAttachParams; result: AttachResult };

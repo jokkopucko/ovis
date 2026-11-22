@@ -14,29 +14,23 @@ export interface WalkRules {
   readonly skipNames?: (name: string) => boolean;
   /** Look on below a folder whose SKILL.md was loaded, for skills nested in it (Letta's discovery does). */
   readonly belowSkills?: boolean;
-  /** Only when a sibling alias cannot change a skill's name or ignore rules. */
   readonly uniqueFolders?: boolean;
-  /** Work remaining, shared by every walk given the same object. */
   readonly budget?: WalkBudget;
 }
-/** Mutable allowances for one discovery; absent optional ignore files are only probes. */
 export interface WalkBudget {
   folders: number;
   entries: number;
   reads: number;
 }
-// Allows thousands of ordinary skills, including loaders that read metadata and body separately.
 export const createWalkBudget = (): WalkBudget => ({ folders: MAX_WALK_FOLDERS, entries: 32768, reads: 4096 });
 export interface WalkedSkill {
   readonly name: string;
   readonly description: string;
   readonly path: string;
   readonly fields: Readonly<Record<string, unknown>>;
-  /** the file's canonical (real) path: one file reached through a link has the same id; walkSkills always sets it */
   readonly id?: string;
 }
 
-/** The file's real path, links resolved: the `id` of a row read from that file. */
 export function canonicalFile(path: string): string {
   try { return realpathSync(path); } catch { return resolve(path); }
 }
@@ -45,14 +39,13 @@ export function canonicalFile(path: string): string {
 // left unclosed (a file cut at 64 KiB) was retried at every split of them, quadratic in its length.
 const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/;
 
-/** The YAML fields of `markdown`'s frontmatter; null without a well-formed header. */
 function parseFrontmatter(markdown: string): Readonly<Record<string, unknown>> | null {
   const header = markdown.match(FRONTMATTER)?.[1];
   if (!header) return null;
   try {
     const fields: unknown = Bun.YAML.parse(header);
     return typeof fields === "object" && fields !== null && !Array.isArray(fields) ? Object.fromEntries(Object.entries(fields)) : null;
-  } catch { return null; /* malformed YAML */ }
+  } catch { return null; }
 }
 
 // Discovery runs on the server's one thread for every menu: a skill file is read only up to this
@@ -88,7 +81,6 @@ export function readConfigText(path: string, maxBytes = 1024 * 1024): string {
   } finally { closeSync(fd); }
 }
 
-/** The first MAX_SKILL_BYTES of a regular file; throws when `path` is no regular file. */
 export function readSkillText(path: string, budget?: WalkBudget): string {
   if (budget) {
     if (budget.reads <= 0) throw new Error("skill read budget exhausted");
@@ -103,7 +95,6 @@ export function readSkillText(path: string, budget?: WalkBudget): string {
   } finally { closeSync(fd); }
 }
 
-/** Reads only through the closing frontmatter delimiter, without reading the skill body. */
 export function readFrontmatter(path: string, budget?: WalkBudget): Readonly<Record<string, unknown>> | null {
   if (budget) {
     if (budget.reads <= 0) return null;
@@ -113,7 +104,6 @@ export function readFrontmatter(path: string, budget?: WalkBudget): Readonly<Rec
     const fd = openRegular(path);
     let markdown = "";
     try {
-      // one buffer, bounded: a header longer than MAX_SKILL_BYTES is no frontmatter
       const buffer = Buffer.alloc(MAX_SKILL_BYTES);
       let length = 0;
       while (length < buffer.length) {
@@ -126,15 +116,12 @@ export function readFrontmatter(path: string, budget?: WalkBudget): Readonly<Rec
       }
     } finally { closeSync(fd); }
     return parseFrontmatter(markdown);
-  } catch { return null; /* missing or unreadable */ }
+  } catch { return null; }
 }
 
 /**
- * A command's description, whole: the frontmatter's `description` as YAML reads it (a `>-` or `|`
- * block scalar included), else the `description:` line as written, else the body's first non-empty
- * line. Agents read a header that is not strict YAML (an unquoted colon, `argument-hint: [a] [b]`)
- * line by line, so a header YAML refuses still yields its description line. The menu shortens it
- * to one sentence itself and shows the whole text in the row's tooltip, so nothing is cut here.
+ * Agents read a header that is not strict YAML (an unquoted colon, `argument-hint: [a] [b]`)
+ * line by line, so a header YAML refuses still yields its description line.
  */
 export function description(markdown: string): string {
   const frontmatter = markdown.match(FRONTMATTER);
@@ -150,7 +137,6 @@ export function description(markdown: string): string {
   return body.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
 }
 
-/** `name:` from a SKILL.md's frontmatter, else its directory's name. */
 function skillName(markdown: string, directory: string): string {
   const frontmatter = markdown.match(FRONTMATTER);
   const named = frontmatter?.[1]?.match(/^name:\s*(.+?)\s*$/m)?.[1]?.trim().replace(/^(["'])(.*)\1$/, "$2");
@@ -162,7 +148,6 @@ export function walkSkills(root: string, rules: WalkRules): WalkedSkill[] {
   return result;
 }
 
-/** Resumable work checkpoints let multiple roots share one allowance without rescanning. */
 export function* walkSkillSteps(root: string, rules: WalkRules): Generator<WalkedSkill | null> {
   const budget = rules.budget ?? createWalkBudget();
   if (budget.folders <= 0 || budget.entries <= 0 || budget.reads <= 0) return;
@@ -173,13 +158,12 @@ export function* walkSkillSteps(root: string, rules: WalkRules): Generator<Walke
     const fields = readFrontmatter(path, budget) ?? {};
     if (rules.requireDescription && (typeof fields.description !== "string" || !fields.description.trim())) return null;
     try {
-      // The original one-level loaders use their permissive name parser and short body fallback.
       const markdown = rules.requireDescription ? "" : readSkillText(path, budget);
       const name = rules.requireDescription
         ? typeof fields.name === "string" && fields.name ? fields.name : basename(dirname(path))
         : skillName(markdown, basename(dirname(path)));
       return { name, description: rules.requireDescription && typeof fields.description === "string" ? fields.description : description(markdown), path, fields, id: canonicalFile(path) };
-    } catch { return null; /* unreadable skill */ }
+    } catch { return null; }
   };
   if (rules.depth === "one") {
     yield null;
@@ -208,12 +192,11 @@ export function* walkSkillSteps(root: string, rules: WalkRules): Generator<Walke
       try {
         if (statSync(directory).isDirectory() && !ignore.ignores(entry.name + "/")) yield load(join(directory, "SKILL.md"));
         else if (rules.looseMarkdown === "root" && entry.name.endsWith(".md") && statSync(directory).isFile() && !ignore.ignores(entry.name)) yield load(directory);
-      } catch { continue; /* broken links or missing skill */ }
+      } catch { continue; }
     }
     return;
   }
   function* visit(directory: string): Generator<WalkedSkill | null> {
-    // every visit counts, a link back to an ancestor too: each one is a lookup on the server's thread
     yield null;
     if (budget.folders <= 0 || budget.entries <= 0 || budget.reads <= 0) return;
     budget.folders -= 1;
@@ -233,7 +216,6 @@ export function* walkSkillSteps(root: string, rules: WalkRules): Generator<Walke
         }
       }
       if (budget.entries <= 0 || budget.reads <= 0) return;
-      // readdir is atomic: charge its whole array before suspending, even the unprocessed tail.
       const found = readdirSync(directory, { withFileTypes: true });
       const entries = found.slice(0, budget.entries);
       budget.entries -= found.length;
@@ -243,12 +225,11 @@ export function* walkSkillSteps(root: string, rules: WalkRules): Generator<Walke
         try {
           if (statSync(declared).isFile()) {
             const skill = load(declared);
-            // A missing name falls back to this alias's directory, so those rows stay distinct.
             if (rules.requireDescription && skill && typeof skill.fields.name === "string" && skill.fields.name) visited?.add(canonical);
             yield skill;
             if (!rules.belowSkills) return;
           }
-        } catch { /* a broken SKILL.md link does not hide other entries */ }
+        } catch {}
       }
       visited?.add(canonical);
       for (const entry of entries) {
@@ -261,15 +242,13 @@ export function* walkSkillSteps(root: string, rules: WalkRules): Generator<Walke
           if (ignore.ignores(relativePath + (target.isDirectory() ? "/" : ""))) continue;
           if (target.isDirectory()) yield* visit(path);
           else if (target.isFile() && entry.name.endsWith(".md") && (rules.looseMarkdown === "root" ? directory === root : rules.looseMarkdown === "nested" && directory !== root)) yield load(path);
-        } catch { continue; /* broken links and unreadable directories are skipped */ }
+        } catch { continue; }
       }
     } finally { ancestors.delete(canonical); }
   }
   yield* visit(root);
 }
 
-/** Existing one-level command mapping, kept separate from each agent's root selection. */
-/** A process environ block (`NAME=value` lines) as a record; entries without `=` are skipped. */
 export function environRecord(env: readonly string[] | null | undefined): Record<string, string> {
   const result: Record<string, string> = {};
   for (const entry of env ?? []) {
@@ -279,12 +258,10 @@ export function environRecord(env: readonly string[] | null | undefined): Record
   return result;
 }
 
-/** One variable of a process environ block; unset and empty both read as undefined. */
 export function environValue(env: readonly string[] | null | undefined, name: string): string | undefined {
   return env?.find((entry) => entry.startsWith(`${name}=`))?.slice(name.length + 1) || undefined;
 }
 
-/** A parsed config value as a plain record; anything else is empty. */
 export function plainObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : {};
 }
@@ -298,7 +275,6 @@ export function parseJsonc(text: string): unknown {
   return value;
 }
 
-/** `budget`: work remaining, shared across skill and command roots in one discovery. */
 export function customCommands(root: string, source: SlashCommand["source"], budget = createWalkBudget(), include?: (fields: Readonly<Record<string, unknown>>) => boolean): SlashCommand[] {
   const result: SlashCommand[] = [];
   for (const command of customCommandSteps(root, source, budget, include)) if (command) result.push(command);
@@ -308,13 +284,11 @@ export function customCommands(root: string, source: SlashCommand["source"], bud
 /** `sortByName` matches Node's UTF-8-byte-sorted readdir, with the same depth-first traversal. */
 export function* customCommandSteps(root: string, source: SlashCommand["source"], budget = createWalkBudget(), include?: (fields: Readonly<Record<string, unknown>>) => boolean, sortByName = false): Generator<SlashCommand | null> {
   if (budget.folders <= 0 || budget.entries <= 0 || budget.reads <= 0) return;
-  // Guard only the current ancestry: sibling links can expose different command namespaces.
   // A linked folder is followed wherever it points, outside `root` too, on purpose: Command Code's own
   // loader does the same (1.84.0 loadCommandsFromDirectory stats each entry and has no root check), so
   // it runs those commands, and its menu lists what it runs.
   const ancestors = new Set<string>();
   function* visit(directory: string): Generator<SlashCommand | null> {
-    // every visit counts, a link back to an ancestor too: each one is a lookup on the server's thread
     yield null;
     if (budget.folders <= 0 || budget.entries <= 0 || budget.reads <= 0) return;
     budget.folders -= 1;
@@ -342,7 +316,6 @@ export function* customCommandSteps(root: string, source: SlashCommand["source"]
           if (target.isDirectory()) yield* visit(path);
           else if (target.isFile() && entry.name.endsWith(".md")) {
             const markdown = readSkillText(path, budget);
-            // Finish visibility filtering from this read before spending the next allowance.
             if (include && !include(parseFrontmatter(markdown) ?? {})) continue;
             const relativeName = relative(root, path).slice(0, -3).split(sep).join(":");
             yield { name: relativeName, description: description(markdown), source, id: canonicalFile(path) };
@@ -372,8 +345,6 @@ export function piTemplates(root: string, source: SlashCommand["source"]): Slash
     try {
       // the target is what gets read, so the target is what gets asked: a broken link throws here
       // and is skipped, as pi skips it, and a link to a folder fails isFile however it is named.
-      // One path for links and plain files alike — the stat costs less than the read that follows
-      // and keeps the two from being judged by different rules
       markdown = readSkillText(join(root, entry.name));
     } catch {
       continue;

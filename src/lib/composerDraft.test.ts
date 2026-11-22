@@ -23,9 +23,10 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
   ];
   const owner = "edit-unowned", key = `ovis:composer-draft:${owner}`;
   const original = new PendingMessageStore(() => storage);
-  const message = { id: "another-tabs-held-id", request_id: 1, text: "withdraw me", state: "held" as const, created_at: "2026-10-27T00:00:00Z" };
+  const message = { id: "another-tabs-held-id", request_id: 1, text: "withdraw me", state: "held" as const, created_at: "2026-10-27T00:00:00Z", error: { code: "pending_lease_lost", message: "The pane connection changed; send this message explicitly after reviewing it" } };
   try {
     original.accept(owner, message, "original");
+    pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
     composerDrafts.set(key, "existing draft");
     let actions!: ReturnType<typeof useComposerSends>;
@@ -92,8 +93,6 @@ it.each(["sent", "discarded", "dismissed"] as const)("restores an edited row onl
     await actions.actOnPending(message.id, "edit");
     expect(composerDrafts.read(key).text).toBe(outcome === "discarded" ? "existing draft\n\nwithdraw me" : "existing draft");
     expect(pendingMessages.read(owner)).toEqual([]);
-    // The server receipt removes the shared saved ID. The other tab's storage
-    // event follows this same refresh path, leaving no stale Send now row.
     other.refresh(owner);
     expect(other.read(owner)).toEqual([]);
     expect(new PendingMessageStore(() => storage).read(owner)).toEqual([]);
@@ -112,11 +111,12 @@ it("drops a busy saved copy when its delayed resend learns that another tab with
     spyOn(storage, "removeItem").mockImplementation((key) => { data.delete(key); }),
   ];
   const owner = "edit-delayed-resend", original = new PendingMessageStore(() => storage);
-  const message = { id: "withdrawn-during-resend", request_id: 1, text: "withdraw me", state: "held" as const, created_at: "2026-10-27T00:00:00Z" };
+  const message = { id: "withdrawn-during-resend", request_id: 1, text: "withdraw me", state: "held" as const, created_at: "2026-10-27T00:00:00Z", error: { code: "pending_lease_lost", message: "The pane connection changed; send this message explicitly after reviewing it" } };
   const started = Promise.withResolvers<void>(), reply = Promise.withResolvers<SubmitResult>();
   let sending: Promise<void> | undefined;
   try {
     original.accept(owner, message, "original");
+    pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)[0]?.serverOwned).toBe(false);
     let actions!: ReturnType<typeof useComposerSends>;
     function Composer() {
@@ -136,7 +136,6 @@ it("drops a busy saved copy when its delayed resend learns that another tab with
     await started.promise;
     original.publish(owner, [], [{ id: message.id, outcome: "discarded" }], "original");
     pendingMessages.refresh(owner);
-    // The in-flight copy survives storage reconciliation until its exact answer.
     expect(pendingMessages.isBusy(owner, message.id)).toBe(true);
     reply.resolve({ ok: false, code: "pending_discarded", message: "This pending message was withdrawn" });
     await sending;
@@ -167,14 +166,12 @@ it("does not restore an already-editing row after another tab's ambiguous resend
   const item = server.enqueue("original", "p", 1, "ambiguous Enter", null, { agent: "claude", terminalId: "p", session: null }, true);
   let deliveries = 0;
   try {
-    expect(other.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
+    expect(other.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false, heldByRequest: true });
     composerDrafts.set(key, "existing draft");
     const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       pendingAction: async (_pane, _id, _action, _generation, withdrawalOnly) => {
         expect(withdrawalOnly).toBe(true);
-        // Edit has installed its listener, but its frame is delayed. The other
-        // tab's persisted resend marker cannot cancel an already-started Edit.
         expect(other.unconfirm(owner, item.message.id)).toBe(true);
         const reply = await server.resend("p", item.message.id, "fingerprint", async () => {
           deliveries++; return { ok: false, code: "submit_changed", message: "Enter may have reached the terminal" };
@@ -278,7 +275,6 @@ it("keeps a draft cleared and retyped while its send was on its way", () => {
   store.set("a", ""); store.set("a", "ab");
   expect(store.settle("a", "a")).toEqual({ text: "ab", edited: true });
   store.end("a");
-  // a plain append during the next send still loses only the sent prefix
   store.set("a", "x"); store.begin("a", "x");
   store.set("a", "xy");
   expect(store.settle("a", "x")).toEqual({ text: "y", edited: false });
@@ -301,12 +297,10 @@ it("refuses a second tab's send while the first is still on its way", () => {
   }));
   first.set("a", "do the thing");
   first.begin("a", "do the thing");
-  // the other tab reads the same draft and sees the send, so it cannot send it again
   second.read("a");
   second.refresh("a");
   expect(second.read("a")).toEqual({ text: "do the thing", sending: true });
   expect(second.begin("a")).toBe(false);
-  // the first tab's end is what releases it, and the draft text is still there to send
   first.end("a");
   second.refresh("a");
   expect(second.read("a")).toEqual({ text: "do the thing", sending: false });
@@ -355,7 +349,6 @@ it("lets a tab send again once another tab's abandoned lease runs out, and tells
   try {
     setSystemTime(start);
     expect(closed.begin(key, "hello")).toBe(true);
-    // the other tab hears of the lease; the sending tab then closes without ending it
     other.refresh(key);
     expect(other.read(key).sending).toBe(true);
     expect(other.begin(key, "hello")).toBe(false);

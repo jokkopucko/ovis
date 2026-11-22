@@ -27,18 +27,12 @@ function outputRef(id: string, requestAt: number, resultAt: number, request: str
 /**
  * A picture Copilot interned in its session: the CLI writes a picture's bytes once, as base64 in a
  * `session.binary_asset` record named `sha256:<digest of the bytes>`, and a prompt's attachments and a
- * tool's `binaryResultsForLlm` name it by that id (1.0.105). The chat names it `copilot:<digest>`.
+ * tool's `binaryResultsForLlm` name it by that id (1.0.105).
  */
 export const COPILOT_IMAGE_REF = /^copilot:([a-f0-9]{64})$/;
 const ASSET_ID = /^sha256:([a-f0-9]{64})$/;
 const RASTER_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-/**
- * The pictures `values` name by an interned asset, in order and each once: declared a raster the chat
- * shows, within the size the image endpoint serves. Only the name is read here; copilotImage checks
- * the bytes it serves. `kind` holds a tool's results to its images (a prompt's attachments are files
- * or blobs, told apart by their type instead).
- */
 function assetPictures(values: unknown, kind?: "image"): { media_type: string; ref: string }[] {
   if (!Array.isArray(values)) return [];
   const seen = new Set<string>();
@@ -55,22 +49,18 @@ function assetPictures(values: unknown, kind?: "image"): { media_type: string; r
   });
 }
 
-/** The pictures a prompt carries: its attachments Copilot interned as pictures. */
 export function copilotPromptPictures(data: unknown): { media_type: string; ref: string }[] {
   return assetPictures(row(data)?.attachments);
 }
 
-/** Whether a root `user.message`'s data opens a turn: it has words, or pictures (the parser draws either). */
 export function copilotPromptOpens(data: unknown): boolean {
   const content = row(data)?.content;
   return typeof content === "string" && (!!content.trim() || copilotPromptPictures(data).length > 0);
 }
 
-/** The longest record copilotImage reads: a picture of MAX_IMAGE_BYTES as base64, and room for its fields. */
 const ASSET_RECORD_MAX = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 64 * 1024;
 const ASSET_WINDOW = 1024 * 1024;
 
-/** The lines of the file open at `fd`, from its start, the last one too when no newline ends it, each at most ASSET_RECORD_MAX bytes: a longer one is dropped as it is read. */
 async function* boundedLines(fd: number): AsyncGenerator<string> {
   const window = Buffer.alloc(ASSET_WINDOW);
   let pieces: Buffer[] = [];
@@ -100,10 +90,7 @@ async function* boundedLines(fd: number): AsyncGenerator<string> {
 /**
  * The picture `ref` names in the Copilot transcript `path`, from the root `session.binary_asset`
  * record that interned it, and only when its bytes are a raster within MAX_IMAGE_BYTES (inlineImageType,
- * as the other agents' inline pictures) that hash to the digest the ref names. The transcript is opened
- * pinned as the page reads it (openCopilotFile) and read a window at a time, the event loop running
- * between windows; a line longer than the largest picture record it could serve is skipped without
- * being held, and a line that does not name the digest is never parsed. Null for anything else.
+ * as the other agents' inline pictures) that hash to the digest the ref names.
  */
 export async function copilotImage(path: string, ref: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
   const digest = COPILOT_IMAGE_REF.exec(ref)?.[1];
@@ -143,14 +130,11 @@ export function copilotRecords(jsonl: string, strict = false, baseOffset?: numbe
   for (const [index, line] of lines.entries()) {
     const at = offset;
     if (baseOffset !== undefined) offset += Buffer.byteLength(line) + 1;
-    // a checked picture record the newest-turn cache keeps only the length of (copilotSetAside)
     const setAside = SET_ASIDE.exec(line);
     if (setAside !== null) { offset += Number(setAside[1]) - Buffer.byteLength(line); continue; }
     if (!line.trim()) continue;
     let value: unknown;
     try { value = JSON.parse(line); } catch {
-      // An unfinished final append is retried; complete unreadable records are
-      // not proof of an empty conversation.
       if (strict && index < lines.length - 1) throw new ConversationUnavailable("transcript_unreadable");
       continue;
     }
@@ -175,11 +159,6 @@ export function copilotRecords(jsonl: string, strict = false, baseOffset?: numbe
 const SET_ASIDE_MARK = `\u0000copilot-set-aside:${randomBytes(16).toString("hex")}:`;
 const SET_ASIDE = new RegExp(`^${SET_ASIDE_MARK}(\\d{1,10})$`);
 
-/**
- * A picture record (`session.binary_asset`) a page keeps in memory as its length only, once it has been
- * checked whole as the page parser would read it: the parser never reads one, and copilotRecords keeps
- * every later record's offset. Any other line, or one that does not parse, is returned as it is.
- */
 export function copilotSetAside(line: string): string {
   if (!line.startsWith('{"type":"session.binary_asset",')) return line;
   let entry: unknown;
@@ -187,7 +166,6 @@ export function copilotSetAside(line: string): string {
   return row(entry)?.type === "session.binary_asset" && row(row(entry)?.data) !== null ? `${SET_ASIDE_MARK}${Buffer.byteLength(line)}` : line;
 }
 
-/** Convert persisted Copilot CLI turns to the shared, read-only chat shape. */
 export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS, baseOffset?: number): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const pending = new Map<string, { part: Extract<ConversationPart, { kind: "tool" }>; requestAt?: number; request?: string }>();
@@ -219,7 +197,7 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS, base
     const rawArgs = data.arguments;
     let args = row(rawArgs) ?? {};
     if (typeof rawArgs === "string") {
-      try { args = row(JSON.parse(rawArgs)) ?? {}; } catch { /* Preserve raw input even when it cannot summarize a call. */ }
+      try { args = row(JSON.parse(rawArgs)) ?? {}; } catch { }
     }
     const part: Extract<ConversationPart, { kind: "tool" }> = {
       kind: "tool", name, summary: text(data.toolTitle) ?? intention ?? toolSummary(name, args),
@@ -235,7 +213,6 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS, base
       if (typeof data.content !== "string") throw new ConversationUnavailable("transcript_unreadable");
       const content = text(data.content);
       const pictures = copilotPromptPictures(data).map((picture) => ({ kind: "image" as const, ...picture }));
-      // a prompt that is only pictures is a turn too (copilotPromptOpens)
       if (content !== null || pictures.length > 0) {
         flushCompletion();
         turns.push({ role: "user", ts: timestamp, parts: [...content === null ? [] : [{ kind: "text" as const, text: content }], ...pictures] });
@@ -312,7 +289,6 @@ function recordAt(fd: number, position: number): string | null {
   return Buffer.concat(pieces, length).toString("utf8");
 }
 
-/** Read exactly the two root records the page paired, without searching intervening history. */
 export function copilotOffsetOutput(fd: number, ref: string, outputMax: number): string | null {
   const match = OUTPUT_REF.exec(ref);
   if (!match) return null;
@@ -388,7 +364,6 @@ export function copilotOutput(fd: number, ref: string, outputMax: number): strin
       const newline = chunk.indexOf(0x0a, at);
       const end = newline < 0 || newline >= count ? count : newline;
       const segment = chunk.subarray(at, end);
-      // Keep the needle's trailing bytes so a call ID split across reads is still detected.
       const search = overlap.length ? Buffer.concat([overlap, segment]) : segment;
       if (search.includes(needle)) mentionsRef = true;
       overlap = Buffer.from(search.subarray(Math.max(0, search.length - needle.length + 1)));

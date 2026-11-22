@@ -2,8 +2,7 @@
  * Whether a phone's browser tab shows the line that says how to add Ovis to the home screen
  * (components/InstallHint.tsx): installed, the page gets alerts and keeps its storage. Desktop
  * browsers, the desktop app and the phone apps never see it, nor does a page served over plain
- * http, which gets no alerts installed either. Once dismissed, or once this browser saw the app
- * installed, it stays away for good.
+ * http, which gets no alerts installed either.
  */
 
 export type InstallHintKind = "ios" | "android";
@@ -12,11 +11,8 @@ export interface InstallHintEnvironment {
   userAgent: string;
   /** iPadOS reports a Mac user agent; touch points tell the two apart */
   maxTouchPoints: number;
-  /** window.isSecureContext */
   secure: boolean;
-  /** this page runs installed, or the browser says the app is (lib/install.ts) */
   installed: boolean;
-  /** the iOS or Android app's WebView (lib/nativeApp.ts) */
   nativeApp: boolean;
   dismissed: boolean;
 }
@@ -35,5 +31,5 @@ export function readHintDismissed(): boolean {
 }
 
 export function writeHintDismissed(): void {
-  try { window.localStorage.setItem(KEY, "1"); } catch { /* storage blocked: the line comes back on the next load */ }
+  try { window.localStorage.setItem(KEY, "1"); } catch { }
 }

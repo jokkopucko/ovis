@@ -147,7 +147,6 @@ describe("a PC this device reaches directly", () => {
     if (!global || !regional) throw new Error("expected two hubs");
     expect(hubRoutedNodes(global).map((node) => node.name)).toEqual(["Home server", "Lab NUC"]);
     expect(hubRoutedNodes(regional).map((node) => node.name)).toEqual(["Old MacBook"]);
-    // a relay nobody goes through from this device right now has no live wire, however its members answer
     expect(hubWireState(hubRoutedNodes(regional))).toBe("still");
     expect(hubWireState(hubRoutedNodes(global))).toBe("live");
   });
@@ -167,14 +166,12 @@ describe("a PC this device reaches directly", () => {
       expect(Math.abs(Math.hypot(Number(match[1]) - layout.me.x, Number(match[2]) - layout.me.y) - layout.me.r)).toBeLessThanOrEqual(1.5);
     }
     for (const item of behind) expect(item.x).toBeGreaterThan(global.x);
-    // above the hubs, a hub's step below the last of them, nothing overlapping
     const lastDirect = direct[direct.length - 1];
     if (!lastDirect) throw new Error("expected direct PCs");
     expect(global.y - lastDirect.y).toBeGreaterThanOrEqual(76);
     expect(regional.y - global.y).toBeGreaterThanOrEqual(76);
     const all = boxes(layout);
     expect(all.flatMap((a, i) => all.slice(i + 1).filter((b) => overlaps(a, b)).map((b) => `${a.of} / ${b.of}`))).toEqual([]);
-    // with every PC behind its hub the layout is the one it always was
     const plain = requireLayout(modelOf([pc("Desk PC", "paired", GLOBAL, "2026-11-07T00:00:00Z"), pc("Lab box", "paired", REGIONAL, "2026-11-07T00:00:00Z")]));
     expect(plain.pcs.map((item) => item.via)).toEqual(["hub", "hub"]);
   });
@@ -224,7 +221,6 @@ describe("wire, status, and relay RTT helpers", () => {
     expect(nodeStatusDotState(requireNode(nodes, "g-update"))).toBe("needs-you");
     expect(nodeWireState(requireNode(nodes, "h-offline"))).toBe("off");
     expect(nodeStatusDotState(requireNode(nodes, "h-offline"))).toBe("offline");
-    // a live answer beats the directory's stale Offline: reachable now, so live and ready; Needs update keeps its glyph with a live wire
     expect(nodeWireState(requireNode(nodes, "i-offlineAnswered"))).toBe("live");
     expect(nodeStatusDotState(requireNode(nodes, "i-offlineAnswered"))).toBe("ready");
     expect(nodeWireState(requireNode(nodes, "j-updateAnswered"))).toBe("live");

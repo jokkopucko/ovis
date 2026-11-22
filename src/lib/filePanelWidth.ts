@@ -1,14 +1,10 @@
-/** The file panel's width when the user has dragged its edge: per device, like the sidebar's. */
 const KEY = "ovis:file-panel-width";
 
-/** From this window width the file panel docks beside the pane; below it the viewer is a sheet. */
 export const FILE_PANEL_DOCK_QUERY = "(min-width: 980px)";
 export const FILE_PANEL_MIN_WIDTH = 320;
 export const FILE_PANEL_MAX_WIDTH = 900;
-/** one arrow key press on the focused edge */
 export const FILE_PANEL_WIDTH_STEP = 16;
 
-/** The panel yields to the sidebar and a 320px pane, even below its preferred minimum. */
 export function filePanelMaxWidth(viewportWidth: number, sidebarWidth = 0): number {
   return Math.min(
     Math.max(FILE_PANEL_MIN_WIDTH, Math.min(FILE_PANEL_MAX_WIDTH, Math.floor(viewportWidth * 0.6))),
@@ -21,7 +17,6 @@ export function clampFilePanelWidth(width: number, viewportWidth = Number.POSITI
   return Math.round(Math.min(max, Math.max(FILE_PANEL_MIN_WIDTH, width)));
 }
 
-/** Where a key moves the edge from `current`; the edge is the panel's left one, so ArrowLeft widens. Null for a key that is not the edge's. */
 export function keyedFilePanelWidth(current: number, key: string, viewportWidth = Number.POSITIVE_INFINITY, sidebarWidth = 0): number | null {
   if (key === "ArrowLeft") return clampFilePanelWidth(current + FILE_PANEL_WIDTH_STEP, viewportWidth, sidebarWidth);
   if (key === "ArrowRight") return clampFilePanelWidth(current - FILE_PANEL_WIDTH_STEP, viewportWidth, sidebarWidth);
@@ -30,7 +25,6 @@ export function keyedFilePanelWidth(current: number, key: string, viewportWidth 
   return null;
 }
 
-/** The stored value as a width, or null when nothing usable is stored (the default width applies). */
 export function parseFilePanelWidth(stored: string | null): number | null {
   if (stored === null || !/^\d+$/.test(stored)) return null;
   return clampFilePanelWidth(Number(stored));
@@ -44,7 +38,6 @@ export function storedFilePanelWidth(): number | null {
   }
 }
 
-/** null forgets the choice: the panel goes back to its default width. */
 export function storeFilePanelWidth(width: number | null): void {
   try {
     if (width === null) window.localStorage.removeItem(KEY);

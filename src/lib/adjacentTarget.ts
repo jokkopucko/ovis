@@ -1,16 +1,11 @@
-/**
- * The previous/next tab and workspace shortcuts: each step opens the pane a click on that tab or
- * sidebar row opens, so the keys and the pointer land in the same place.
- */
-
 import type { PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import { worktreeGroups } from "../../shared/worktree-groups.ts";
 import { rosterPanes } from "./dagPane.ts";
 import type { ViewedScope } from "./lastViewedPane.ts";
 import { splitPinnedGroups, type WorkspaceGroup } from "./sidebarPins.ts";
-import { splitBackgroundGroups, worktreeGroups } from "./workspaceOrder.ts";
+import { splitBackgroundGroups } from "./workspaceOrder.ts";
 
 type Roster = Pick<SessionSnapshot, "workspaces" | "tabs" | "panes" | "layouts">;
-/** the pane last seen here in a tab or a workspace (lib/lastViewedPane.ts), for the PC stepped on */
 export type ViewedPane = (scope: ViewedScope, id: string) => string | undefined;
 
 function firstPane(panes: readonly PaneInfo[], ...ids: (string | null | undefined)[]): PaneInfo | undefined {
@@ -26,11 +21,6 @@ function step<T>(items: readonly T[], index: number, direction: -1 | 1): T | und
   return items[(index + direction + items.length) % items.length];
 }
 
-/**
- * The pane the tab before or after the selected pane's opens, in the tab strip's order (herdr's),
- * wrapping around: the one last viewed in it here, else herdr's focused one in it, as TabStrip's
- * click. Null without a selected pane or another tab with a pane.
- */
 export function adjacentTabPane(roster: Roster, selectedPaneId: string | null, direction: -1 | 1, viewed: ViewedPane): string | null {
   const strip = tabStrip(roster, selectedPaneId);
   if (!strip || strip.tabs.length < 2) return null;
@@ -38,14 +28,12 @@ export function adjacentTabPane(roster: Roster, selectedPaneId: string | null, d
   return next ? tabPane(roster, strip.panes, next.tab_id, viewed) : null;
 }
 
-/** The pane the tab at `number` (1-based) of the selected pane's tab strip opens, as adjacentTabPane's; null past the last tab. */
 export function numberedTabPane(roster: Roster, selectedPaneId: string | null, number: number, viewed: ViewedPane): string | null {
   const strip = tabStrip(roster, selectedPaneId);
   const tab = strip?.tabs[number - 1];
   return strip && tab ? tabPane(roster, strip.panes, tab.tab_id, viewed) : null;
 }
 
-/** The selected pane's workspace's tabs that have a pane the strip lists, in herdr's order. */
 function tabStrip(roster: Roster, selectedPaneId: string | null) {
   const selected = roster.panes.find((pane) => pane.pane_id === selectedPaneId);
   if (!selected) return null;
@@ -59,10 +47,6 @@ function tabPane(roster: Roster, panes: readonly PaneInfo[], tabId: string, view
   return firstPane(own, viewed("tab", tabId), roster.layouts?.find((layout) => layout.tab_id === tabId)?.focused_pane_id)?.pane_id ?? null;
 }
 
-/**
- * The workspace rows of the sidebar's groups top to bottom, each row with the worktrees under it. A
- * folded group's worktrees are left out, as the sidebar leaves them out, unless the selection is in one.
- */
 export function workspaceRows(groups: readonly WorkspaceGroup<WorkspaceInfo>[], folded: (group: WorkspaceGroup<WorkspaceInfo>) => boolean, selectedWorkspaceId: string | null): string[] {
   return groups.flatMap((group) => {
     const hidden = folded(group);
@@ -70,13 +54,6 @@ export function workspaceRows(groups: readonly WorkspaceGroup<WorkspaceInfo>[], 
   });
 }
 
-/**
- * The rows a PC's sidebar would draw with no filter, from the order it draws (`ordered`, herdr's or a
- * drag's): pinned rows first in pin order, then the rest. For a PC whose roster is not drawn (folded).
- * `backgroundFolded`, with Settings → Background workspaces apart on: the tagged ones come last, and a
- * folded part keeps only the selected one and those with a workspace in `blocked`, as the sidebar
- * draws them; null while the setting is off.
- */
 export function sidebarWorkspaceSteps(ordered: readonly WorkspaceInfo[], pinnedIds: readonly string[], folded: (repoKey: string) => boolean, selectedWorkspaceId: string | null, backgroundFolded: boolean | null = null, blocked: ReadonlySet<string> = new Set()): string[] {
   const tree = worktreeGroups(ordered);
   const { pinned, rest } = splitPinnedGroups(tree, pinnedIds, (workspace) => workspace.workspace_id);
@@ -86,10 +63,8 @@ export function sidebarWorkspaceSteps(ordered: readonly WorkspaceInfo[], pinnedI
   return workspaceRows([...pinned, ...people, ...shown], (group) => folded(group.workspace.worktree?.repo_key ?? ""), selectedWorkspaceId);
 }
 
-/** each drawn sidebar's rows as it last drew them, by PC: its filter and its folds as shown */
 const drawnRows = new Map<string, readonly string[]>();
 
-/** a sidebar's rows, for the workspace steps; the returned function takes them back when it goes */
 export function publishWorkspaceRows(machineId: string, rows: readonly string[]): () => void {
   drawnRows.set(machineId, rows);
   return () => { if (drawnRows.get(machineId) === rows) drawnRows.delete(machineId); };
@@ -99,11 +74,6 @@ export function drawnWorkspaceRows(machineId: string): readonly string[] | null 
   return drawnRows.get(machineId) ?? null;
 }
 
-/**
- * The pane the workspace row before or after the selected pane's opens, along `order`
- * (sidebarWorkspaceSteps), wrapping around; without a selection the first or the last. Its pane is
- * the row's: the one last viewed in it here, else the one in front in its active tab.
- */
 export function adjacentWorkspacePane(roster: Roster, order: readonly string[], selectedPaneId: string | null, direction: -1 | 1, viewed: ViewedPane): string | null {
   const panes = rosterPanes(roster.panes, selectedPaneId);
   const live = order.filter((id) => roster.workspaces.some((workspace) => workspace.workspace_id === id) && panes.some((pane) => pane.workspace_id === id));

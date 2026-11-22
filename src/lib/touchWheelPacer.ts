@@ -1,9 +1,6 @@
-/** Wheel reports a touch swipe sends in one animation frame, the first one included. */
 export const TOUCH_WHEEL_REPORTS_PER_FRAME = 6;
-/** Reports a swipe may have waiting; travel beyond them is dropped and counted. */
 export const TOUCH_WHEEL_QUEUE_LIMIT = 64;
 
-/** The animation-frame clock the pacer runs on: the browser's, or a test's controlled one. */
 export interface FrameClock {
   request(callback: () => void): number;
   cancel(handle: number): void;
@@ -20,17 +17,11 @@ export interface TouchWheelTarget {
 }
 
 export interface TouchWheelPacer {
-  /** Queue `steps` reports (the sign is the direction) for the next animation frames. */
   push(steps: number, target: TouchWheelTarget): void;
-  /** Drop every waiting report: a new touch, a key, a disconnect or an ownership change. */
   cancel(): void;
-  /** Cancel, and stop the frame clock for good (the terminal is gone). */
   dispose(): void;
-  /** Reports waiting now. */
   readonly pending: number;
-  /** The most reports that waited at once. */
   readonly peak: number;
-  /** Reports dropped because the queue was full (never those a cancellation dropped). */
   readonly dropped: number;
 }
 
@@ -40,11 +31,9 @@ const browserFrames: FrameClock = {
 };
 
 /**
- * Touch wheel reports at most {@link TOUCH_WHEEL_REPORTS_PER_FRAME} per animation frame, in order,
- * with at most {@link TOUCH_WHEEL_QUEUE_LIMIT} waiting. Reports go out only from the frame callback:
+ * Reports go out only from the frame callback:
  * the browser runs a frame's touch handlers before its animation-frame callbacks, so a report sent
- * from the handler would land in the same frame as the callback's. A fast swipe's reports are
- * spread over the next frames instead of all landing in one.
+ * from the handler would land in the same frame as the callback's.
  */
 export function createTouchWheelPacer(frames: FrameClock = browserFrames): TouchWheelPacer {
   const queue: Array<{ sign: -1 | 1; target: TouchWheelTarget }> = [];

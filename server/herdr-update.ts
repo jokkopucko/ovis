@@ -1,6 +1,4 @@
 /**
- * Updating herdr from the app.
- *
  * herdr refuses `herdr update` in any process that carries a pane's HERDR_ENV=1 ("run `herdr
  * update` outside herdr after detaching from the session"). Every terminal this app shows is a
  * pane, and the plugin that starts this server inherits a pane's variables too, so someone who
@@ -22,37 +20,27 @@
  */
 import type { HerdrUpdateStatus } from "../shared/update.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
-import { servingCore } from "./herdr-core/runtime.ts";
+import { capabilities } from "./runtime/capabilities.ts";
 import { jsonResponse } from "./http.ts";
 import { updateRequestAllowed } from "./update-api.ts";
 
 /** a download of herdr's binary (about 30 MB) on a slow link, then the handoff */
 const UPDATE_TIMEOUT_MS = 10 * 60_000;
 const STATUS_TIMEOUT_MS = 5_000;
-/** how often, and how far apart, herdr's status is asked again after an update before it counts as unreadable */
 const STATUS_TRIES = 5;
 const STATUS_RETRY_MS = 500;
-/** the versions shown are read from `herdr status`, a process each time: one read serves the polls of this long */
 const STATUS_CACHE_MS = 2_000;
-/** how long a herdr told to stop at its timeout is given before it is killed */
 const KILL_GRACE_MS = 2_000;
-/** how long the output of a herdr that has exited is still read */
 const PIPE_GRACE_MS = 250;
-/** herdr's last words, as much as the app shows */
 const OUTPUT_TAIL = 4_000;
 
 export interface HerdrUpdaterOptions {
-  /** the herdr to run; unset, OVIS_HERDR_BIN or `herdr` from PATH, read at each run */
   bin?: string;
-  /** the herdr this server talks to; unset, herdrSocketPath() */
   socketPath?: string;
   platform?: NodeJS.Platform;
   timeoutMs?: number;
-  /** KILL_GRACE_MS; tests shorten it */
   killGraceMs?: number;
-  /** STATUS_RETRY_MS; tests shorten it */
   statusRetryMs?: number;
-  /** whether this server serves herdr-core instead of herdr's TUI (server/herdr-core/runtime.ts): then there is no herdr of its own to update */
   coreServed?: () => boolean;
 }
 
@@ -64,7 +52,6 @@ interface HerdrVersions {
   handoff: boolean;
 }
 
-/** What `herdr status --json` says of the versions; null when it says nothing usable. */
 export function parseHerdrStatus(text: string): HerdrVersions | null {
   let value: unknown;
   try { value = JSON.parse(text); } catch { return null; }
@@ -104,10 +91,9 @@ export class HerdrUpdater {
 
   private get supported(): boolean {
     // on herdr-core, HERDR_SOCKET names this server's own adapter, and the Herdr app's core updates on its own
-    return (this.options.platform ?? process.platform) !== "win32" && !(this.options.coreServed ?? servingCore)();
+    return (this.options.platform ?? process.platform) !== "win32" && !(this.options.coreServed ?? (() => capabilities().runtime !== "herdr"))();
   }
 
-  /** The update's own environment: nothing of the pane that started this server, and this server's herdr. */
   private env(): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
@@ -117,7 +103,6 @@ export class HerdrUpdater {
     return env;
   }
 
-  /** `output` is everything herdr printed, for the app to show; `stdout` alone is what a command answers with. */
   private async exec(args: string[], timeoutMs: number): Promise<{ code: number | null; output: string; stdout: string }> {
     const bin = this.options.bin ?? (process.env["OVIS_HERDR_BIN"] || "herdr");
     let proc: ReturnType<typeof Bun.spawn>;
@@ -179,8 +164,6 @@ export class HerdrUpdater {
     if (!this.supported) return { supported: false, phase: "idle", ...none, output: null, finished_at: null };
     const versions = await this.readVersions();
     return {
-      // a status that cannot be read hides the controls only before any update: during one
-      // and after it, its progress, what herdr said and the button to try again stay
       supported: versions !== null || this.running || this.finishedAt !== null,
       phase: this.phase,
       ...(versions ? { server_version: versions.server, binary_version: versions.binary, stale: versions.stale } : none),
@@ -189,7 +172,6 @@ export class HerdrUpdater {
     };
   }
 
-  /** Starts an update, unless this PC offers none or one is already running. */
   start(): "started" | "busy" | "unsupported" {
     if (!this.supported) return "unsupported";
     if (this.running) return "busy";
@@ -213,7 +195,6 @@ export class HerdrUpdater {
   private async run(): Promise<{ ok: boolean; output: string }> {
     const update = await this.exec(["update", "--handoff"], this.options.timeoutMs ?? UPDATE_TIMEOUT_MS);
     if (update.code !== 0) return { ok: false, output: update.output };
-    // installed, by this run or an earlier one from a shell, and the server still the old one.
     // The status may not answer for a moment right after a handoff; one that never does is no
     // proof that the server runs the new binary.
     let versions = await this.readVersions(true);
@@ -237,7 +218,6 @@ export async function handleHerdrUpdateRequest(request: Request, updater?: Herdr
   const reply = (body: unknown, code = 200) => jsonResponse(body, code, { "cache-control": "no-store" });
   const fail = (code: string, message: string, http: number) => reply({ error: { code, message } }, http);
   if (request.method === "GET") {
-    // a server started without the updater (tests, an embedding) offers nothing
     return reply(updater ? await updater.status() : { supported: false, phase: "idle", server_version: null, binary_version: null, stale: false, output: null, finished_at: null } satisfies HerdrUpdateStatus);
   }
   if (request.method !== "POST") return fail("method_not_allowed", "Use GET or POST /api/herdr/update", 405);

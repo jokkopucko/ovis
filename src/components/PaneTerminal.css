@@ -1,14 +1,5 @@
-/*
- * Terminal chrome for PaneTerminal.tsx: the xterm mount, the empty placeholder
- * and the status banners. The host background equals --term-bg so the canvas
- * edge is invisible; the banners float over the top-right corner so they never
- * steal rows from the pty. The stack is a column: the mount takes every row the
- * key bar (KeyBar.css) leaves, and clips so a pending refit never paints over it.
- */
-
-/* Nerd Font icons (the FONT_STACK note in PaneTerminal.tsx). The range is the private use
-   area alone, so the browser fetches the file only once a pane prints an icon, and a heart,
-   a lightning bolt or a box line keeps the system font's glyph */
+/* The range is the private use area alone, so the browser fetches the file only once a pane
+   prints an icon, and a heart, a lightning bolt or a box line keeps the system font's glyph */
 @font-face {
   font-family: "Symbols Nerd Font Mono";
   src: url("../fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
@@ -61,19 +52,11 @@
   overscroll-behavior: contain;
 }
 
-/* a grid that is not this browser's own (observing, or mirrored from a PC that cannot attach)
-   can be larger than the mount: it scrolls instead of clipping, so every cell can be reached.
-   A finger pans it through PaneTerminal's touch handlers (touch-action stays none), a mouse
-   by wheel or scrollbar */
 .pane-terminal[data-adopted-grid] {
   overflow: auto;
 }
 
-/* a grid wider than the screen that this browser does not size (a mirror, a watched pane, one held
-   under the keyboard at another device's size), drawn folded to its width (lib/terminalFold.ts). The
-   grid stays under the folded rows for its input and its readers, unseen and clipped to the mount, so
-   only the folded rows pan, up and down (a held grid is not adopted, so its mount scrolls from here).
-   The helper textarea is not hidden: typing still reaches xterm */
+/* The helper textarea is not hidden: typing still reaches xterm */
 .pane-terminal[data-folded] {
   position: relative;
   overflow-x: hidden;
@@ -90,8 +73,6 @@
   visibility: hidden;
 }
 
-/* the font, colours and row height are the grid's own (set by lib/terminalFold.ts); the gutter is
-   .xterm's below, so a row that fits starts where the grid drew it */
 .terminal-fold {
   position: absolute;
   inset: 0 0 auto;
@@ -100,8 +81,6 @@
   padding: var(--space-2) var(--space-2) 0;
   line-height: var(--fold-line);
   white-space: pre-wrap;
-  /* a Korean word folds whole, at a space, as a Latin one does; a token longer than the line still
-     breaks at its edge */
   word-break: keep-all;
   overflow-wrap: anywhere;
   text-spacing-trim: space-all;
@@ -114,8 +93,6 @@
   min-height: var(--fold-line);
 }
 
-/* Find's hits (TerminalViewportTools) are boxes over the grid's cells: over folded rows they would
-   mark other text, so they wait for the grid's own width. Find still steps through the matches */
 .pane-terminal[data-folded] ~ .terminal-viewport-tools .terminal-find-hit {
   display: none;
 }
@@ -132,23 +109,6 @@
   text-autospace: no-autospace;
 }
 
-/* xterm's hidden textarea takes the keyboard: a quiet inset ring inside the terminal box shows where keys go */
-.pane-terminal:focus-within {
-  outline: var(--hairline) solid var(--accent);
-  outline-offset: calc(-1 * var(--hairline));
-}
-.pane-terminal .xterm:focus-within {
-  box-shadow: inset 0 0 0 var(--hairline) var(--accent);
-}
-.pane-terminal .xterm:focus-within .xterm-viewport {
-  box-shadow:
-    inset var(--hairline) var(--hairline) 0 0 var(--accent),
-    inset calc(-1 * var(--hairline)) 0 0 0 var(--accent);
-}
-
-/* the mount's own box: everything that may overlay the pty (the chat lens) is
-   positioned against THIS, never against the stack — the composer and key bar
-   below keep their rows no matter which lens is on */
 .terminal-surface {
   position: relative;
   display: flex;
@@ -157,7 +117,6 @@
   min-height: 0;
 }
 
-/* A pinch's target size floats above xterm, without taking rows or touches. */
 .terminal-font-size {
   position: absolute;
   top: var(--space-3);
@@ -178,16 +137,10 @@
   pointer-events: none;
 }
 
-/* Under the chat lens a prompt card and the held messages can take the stack's whole height (a
-   phone with its keyboard up). The transcript's box then reaches zero, and its scroller, which
-   keeps its own padding, must not paint over what stands under it. The xterm mount is not
-   resized by this. */
 .terminal-stack.is-chat > .terminal-surface {
   overflow: hidden;
 }
 
-/* A phone's glass header lies over the stack's top (styles.css): the transcript reaches up under
-   it (ChatView.css), so the clip opens upward by that height and stays shut below and aside */
 @media (max-width: 768px) {
   .terminal-stack.is-chat > .terminal-surface {
     overflow: visible;
@@ -195,8 +148,6 @@
   }
 }
 
-/* no pane selected: the mount keeps its size (the fit needs it) but never paints, so its
-   cursor cannot show through the placeholder */
 .pane-terminal.is-idle {
   visibility: hidden;
 }
@@ -215,7 +166,7 @@
 .terminal-placeholder {
   position: absolute;
   inset: 0;
-  z-index: var(--z-banner); /* above the xterm mount, like the banners; pointer-events stay off */
+  z-index: var(--z-banner);
   display: grid;
   place-items: center;
   color: var(--text-dim);
@@ -244,23 +195,15 @@
   color: var(--status-blocked);
 }
 
-/* herdr's own words: what failed and what to do about it */
 .terminal-placeholder-detail {
   max-width: 36rem;
   font-size: var(--fs-sm);
 }
 
-/* the banners stack in one top-right column: any state combination (warning XOR
-   review, observe alongside either) renders without collisions, and the column lets
-   clicks pass through to the pty except where the review banner re-enables them */
 .terminal-banners {
   position: absolute;
-  /* below a phone's glass header when it lies over the chat (styles.css) */
   top: calc(var(--space-2) + var(--header-over, 0px));
   right: var(--space-3);
-  /* one above the input line and the masked input, which float at --z-banner from a slot later
-     in the stack (TerminalInput.css): in a short pane a grown line reaches the grid's top, and the
-     banners and their buttons (Send/Discard, Dismiss) must stay over it */
   z-index: calc(var(--z-banner) + 1);
   display: flex;
   flex-direction: column;
@@ -270,11 +213,6 @@
   pointer-events: none;
 }
 
-/* the wait-for-input live region (PaneTerminal.tsx) stays in the column while empty, clipped by the
-   shared primitive (.visually-hidden, styles.css): its 1px box is anchored at the column's top-left
-   corner, not left at its static place at the end of the column, where its negative margin stood it
-   one pixel past the column's edge and widened it (the T14 probe measures scrollWidth against
-   clientWidth). Nothing is drawn either way */
 .terminal-banners > .visually-hidden {
   top: 0;
   left: 0;
@@ -291,19 +229,12 @@
   background: var(--bg-elevated);
   font-size: var(--fs-xs);
   color: var(--text-dim);
-  /* a narrow pane (a phone, or a split on a desktop) wraps a banner's sentences instead of letting
-     it run past the pane's edge; held input (.draft-held, .draft-text) stays on one line instead */
   white-space: normal;
   overflow-wrap: anywhere;
-  /* what does not fit beside the text (held input, actions) goes to the next line */
   flex-wrap: wrap;
-  /* never wider than the column, which the pane caps: while the column measures its content, the
-     held preview's percentage cap cannot act and its unbreakable command would size the banner, and
-     a right-anchored banner wider than a narrow split runs out of the pane's left edge */
   max-width: 100%;
 }
 
-/* a button's label stays whole: it moves to the next line instead of breaking letter by letter */
 .terminal-banner button {
   white-space: nowrap;
   overflow-wrap: normal;
@@ -314,13 +245,10 @@
   color: var(--status-working);
 }
 
-/* a banner's own action takes clicks back from the pass-through column */
 .terminal-banner-action {
   pointer-events: auto;
 }
 
-/* not a fault: a lens herdr does not offer on this PC yet */
-/* the selection's quote button: a banner that is a button */
 .terminal-quote {
   font-family: inherit;
   color: var(--text);
@@ -365,19 +293,12 @@
   pointer-events: auto;
 }
 
-/* view-only state: the neutral pill, a glyph and the word. Nothing is wrong and nothing is asked,
-   so it takes no state color; the glyph is the text's size */
 .terminal-banner-observe svg {
   width: 1em;
   height: 1em;
   flex: none;
 }
 
-/* the held-input row: the command and its two controls (send, discard), no sentence. Wider than
-   a pill because it carries controls, so it takes --radius-md (a control-bearing box, not a chip)
-   and is as tall as its .icon-button pair (--touch-target on a coarse pointer). It only renders
-   while CONNECTED (the reconnecting banner owns the disconnected slot), and it is the one banner
-   that accepts pointer events. */
 .terminal-banner-draft {
   height: auto;
   gap: var(--space-2);
@@ -387,8 +308,6 @@
   pointer-events: auto;
 }
 
-/* a terminal command's peek head (PaneTerminal.tsx): what ran, whether the chat comes back by itself,
-   and the two ways on. The words take what the pane has; the actions move under them when it is narrow */
 .terminal-banner-command {
   gap: var(--space-2);
   padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
@@ -410,7 +329,6 @@
   min-width: 0;
 }
 
-/* the command is cut with an ellipsis (its title holds it whole); the sentence under it wraps */
 .terminal-command-words > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -431,9 +349,6 @@
   flex: none;
 }
 
-/* the held-draft echo inside the reconnecting pill: capped like the review text, on one line and
-   cut with an ellipsis (its title holds the whole text), so a command is never broken inside a
-   word as the wrapping banner around it would; the text itself in mono, as the review banner's */
 .draft-held {
   max-width: min(32ch, 100%);
   white-space: nowrap;
@@ -449,8 +364,6 @@
   font-family: var(--font-mono);
 }
 
-/* the row's held text: one line, cut with an ellipsis (its title holds the whole text), never
-   broken inside a word as the wrapping banner around it would break a command at its hyphens */
 .terminal-banner-draft .draft-text {
   max-width: min(32ch, 100%);
   white-space: nowrap;
@@ -461,8 +374,6 @@
   color: var(--text);
 }
 
-/* what the row has to tell only when it applies (text left out, an Enter left out): a line of its
-   own under the command and its controls, starting at the left */
 .terminal-banner-draft .draft-truncated {
   flex-basis: 100%;
   color: var(--text-dim);
@@ -475,8 +386,6 @@
   gap: var(--space-1);
 }
 
-/* phones: a wrapping box stops being a chip, so it takes padding and --radius-md (the held-input
-   row already does); its lines start at the left as prose does, however the box is anchored */
 @media (max-width: 480px) {
   .terminal-banner-soon,
   .terminal-banner-warning {
@@ -502,9 +411,6 @@
   content-visibility: hidden;
 }
 
-/* A terminal command's peek (lib/terminalPeek.ts): the grid shows over the chat it covered, which stays
-   mounted and keeps its layout and scroll position (hidden, not removed). A hairline in the accent
-   marks the terminal as a passing view; nothing moves in or out */
 .terminal-stack.is-chat.is-peek .pane-terminal {
   content-visibility: visible;
 }
@@ -527,8 +433,6 @@
   pointer-events: none;
 }
 
-/* the composer's column stays under the grid, inert (PaneTerminal.tsx): dimmed, with its draft and
-   its held messages waiting for the chat to come back */
 .terminal-stack.is-peek > .composer,
 .terminal-stack.is-peek > .composer-queue,
 .terminal-stack.is-peek > .pending-messages,
@@ -536,8 +440,6 @@
   opacity: 0.5;
 }
 
-/* where the key bar shows (KeyBar.css), it takes the column's place: the composer stays mounted,
-   its draft kept, and takes no room from the grid */
 @media (pointer: coarse), (max-width: 768px) {
   .terminal-stack.is-peek > .composer,
   .terminal-stack.is-peek > .composer-queue,
@@ -547,11 +449,7 @@
   }
 }
 
-/* Settings > Terminal > Draw with libghostty (lib/ghostty/overlay.ts): xterm keeps its screen, selection,
-   input and link layers; only its text and cursor are hidden under libghostty's own rows and pictures.
-   The layer takes no pointer: every click, drag and wheel still reaches xterm under it. */
 .pane-terminal[data-renderer="ghostty"] .xterm-rows { visibility: hidden; }
-/* a folded mirror draws its own rows over xterm's: the libghostty layer, drawn at the grid's width, steps aside */
 .pane-terminal[data-folded] .ghostty-layer { visibility: hidden; }
 .pane-terminal .ghostty-layer { position: absolute; inset: 0 auto auto 0; pointer-events: none; overflow: hidden; z-index: 1; }
 .pane-terminal .ghostty-layer > * { position: absolute; inset: 0; }

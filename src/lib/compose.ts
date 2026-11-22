@@ -1,20 +1,20 @@
 /**
- * Composer -> pty byte shaping. The composer sends "one message", but the pane's
+ * The composer sends "one message", but the pane's
  * program defines what a safe submission is, so the payload follows the pane's own
  * bracketed-paste mode (term.modes.bracketedPasteMode):
  * - mode on (agent TUIs): the text goes out as ONE bracketed paste - newlines stay
  *   literal inside the message - and a bare CR submits it, exactly like paste+Enter.
  * - mode off (plain shell): classic paste semantics - every newline submits its own
  *   line, and the trailing CR runs the last one.
- * Pure logic, DOM-free, so the policy is unit-testable (see compose.test.ts).
  */
 
+import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import type { AgentStatus, CommandForm, ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { knownStatus, STATUS_WORD } from "./status.ts";
 import { t, type Vars } from "./i18n.ts";
 import type { ActiveTrigger } from "./mentions.ts";
-import { NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, grokQueuedAhead, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 export { submitNotTyped } from "../../shared/submit-outcome.ts";
 
 /** This cap keeps one composer message inside a single WS frame. */
@@ -36,16 +36,14 @@ export function composerMessage(text: string): string {
     const from = kept.length - PASTE_START.length;
     if (from >= 0 && kept[from] === "\u001b" && (kept.slice(from).join("") === PASTE_START || kept.slice(from).join("") === PASTE_END)) kept.length = from;
   }
-  return kept.join("").replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+  return withoutTrailingBreaks(kept.join("")).replace(/\r\n?/g, "\n");
 }
 
-/** The text a composer message types, without its submit (HerdrSocket.submit adds the Enter). */
 export function composerPayload(text: string, bracketedPaste: boolean): string {
   const body = composerMessage(text).replace(/\n/g, "\r");
   return bracketedPaste ? PASTE_START + body + PASTE_END : body;
 }
 
-/** Why an Insert did not go (SubmitResult's code): the draft stays in the line and says this. */
 export function insertNote(code: string, message: string): string {
   if (code === "unsupported") return t("Update this PC to insert without Enter. Nothing was sent.");
   if (code === "read_only") return t("Not inserted: this view only watches the pane.");
@@ -56,7 +54,6 @@ export function insertNote(code: string, message: string): string {
   if (code === "not_transmitted") return t("Not inserted: the connection dropped before the text left. Try again.");
   if (code === "insert_timeout") return t("Not inserted: it waited too long behind earlier input, and nothing was typed. Try again.");
   if (code === "capabilities_unknown") return t("Not inserted: this PC has not said yet what it supports. Insert it again.");
-  // a control character (an escape copied with coloured output) or half a character: the same text is refused every time
   if (code === "invalid_insert_text") return t("Not inserted: the line holds a control character. Remove it, then insert again.");
   if (["input_not_ready", "not_attached", "attach_held", "pane_read_failed"].includes(code)) return t("Not inserted: the terminal is not ready. Nothing was typed.");
   if (code === "disconnected" || code === "timeout" || code === "insert_failed") return t("Not confirmed: the terminal did not confirm the text. Check it before inserting again.");
@@ -64,8 +61,7 @@ export function insertNote(code: string, message: string): string {
 }
 
 /**
- * Whether a failed Send now or Discard of a bridge-owned row leaves it not confirmed. An action whose
- * frame never left (`not_transmitted`) proves only that a held row was not sent: a queued row may still
+ * An action whose frame never left (`not_transmitted`) proves only that a held row was not sent: a queued row may still
  * be typed by its turn's end, since the bridge keeps its lease until it notices the connection is gone.
  */
 export function pendingActionUncertain(code: string, state: string): boolean {
@@ -73,51 +69,30 @@ export function pendingActionUncertain(code: string, state: string): boolean {
   return code === "pending_not_found" || !submitNotTyped(code);
 }
 
-/**
- * A send refused over Claude's terminal input box: the note, and either the one-row draft a send may
- * clear first (`draft`), or, where the server named none but showed the box, a send anyway (`anyway`).
- * `plain`: the note stands without its Send anyway (a screen a terminal peek left open), so a quick
- * reply, which offers none, shows it as it is.
- */
 export type DraftRefusal = { note: string; draft: string } | { note: string; anyway: true; plain?: boolean };
 
-/**
- * submitNote, or a DraftRefusal when the server named a draft it can clear (SubmitResult's `draft`)
- * or showed a box it could not tell empty (`box`; empty when it could not read one whole).
- */
 export function submitRefusal(code: string, message: string, draft?: string, box?: string, agent?: string | null): string | DraftRefusal {
   if (code === "input_draft" && draft) return { note: t("Not sent: Claude Code's input box in the terminal already holds “{draft}”.", { draft }), draft };
   if (code === "input_draft" && box) return { note: t("Not sent: Claude Code's input box in the terminal may not be empty. It shows “{box}”.", { box }), anyway: true };
   return submitNote(code, message, agent);
 }
 
-/**
- * The note after Send it, which sends the terminal's draft as the message, did not go. A refusal over another
- * draft offers that draft's buttons. Any other names the draft on a line under its reason: the server may have
- * cleared it from the terminal before the send failed (submit_partial), and the Chat box never held it.
- */
 export function draftSendNote(result: string | DraftRefusal, draft: string): string | DraftRefusal {
   if (typeof result !== "string" && "draft" in result) return result;
   const note = typeof result === "string" ? result : "plain" in result && result.plain === true ? result.note : submitNote("input_draft", result.note);
   return `${note}\n${t("Draft: “{draft}”", { draft })}`;
 }
 
-/** The same message as typed, however a terminal wrapped or indented it: equal once all whitespace is gone. */
 export function sameMessage(a: string, b: string): boolean {
   const bare = (text: string): string => text.replace(/[\s\u00a0]+/gu, "");
   return bare(a) !== "" && bare(a) === bare(b);
 }
 
-/** A user turn told apart from a later one with the same words: when it was written, and what it said. */
 export type TurnIdentity = { ts: string | null; text: string };
 
 const userText = (turn: ConversationTurn): string => turn.parts
   .filter((part): part is Extract<ConversationTurn["parts"][number], { kind: "text" }> => part.kind === "text").map((part) => part.text).join("\n");
 
-/**
- * The trailing user turn of a send the agent put back in its input box (`restored`, from a prompt
- * read): the chat keeps it out of view while it is the last turn. null: none.
- */
 export function stoppedTurn(turns: readonly ConversationTurn[], restored: string | null): TurnIdentity | null {
   const last = turns.at(-1);
   if (restored === null || last?.role !== "user") return null;
@@ -125,7 +100,6 @@ export function stoppedTurn(turns: readonly ConversationTurn[], restored: string
   return sameMessage(text, restored) ? { ts: last.ts, text } : null;
 }
 
-/** Whether the last turn is still `turn` itself, however the turns before it changed: a newer turn is not. */
 export function endsWithTurn(turns: readonly ConversationTurn[], turn: TurnIdentity | null): boolean {
   const last = turns.at(-1);
   return turn !== null && last?.role === "user" && last.ts === turn.ts && userText(last) === turn.text;
@@ -144,7 +118,6 @@ export function openCodeAgentChange(message: string): { from: string; to: string
   }
 }
 
-/** The note for OpenCode's two Tab refusals (server/opencode-skill-attach.ts), on a composer or an uncertain queued row; null for any other refusal. */
 export function openCodeRefusalNote(code: string, message: string, tt: (text: string, vars?: Vars) => string = t): string | null {
   if (code !== "submit_changed") return null;
   const changed = openCodeAgentChange(message);
@@ -153,24 +126,38 @@ export function openCodeRefusalNote(code: string, message: string, tt: (text: st
   return null;
 }
 
-/** `agent`: the pane's agent, which names the input an input_draft refusal is about (Claude Code's when unknown) */
+/**
+ * The note for a Send now a working Grok kept in its queue (server/core/grok-queue.ts sendGrokQueuedNow), on the row it
+ * leaves uncertain: the message is in Grok's queue, not "not sent", and the row offers no Send now that would queue it
+ * twice.
+ */
+export function grokQueueNote(code: string, message: string, tt: (text: string, vars?: Vars) => string = t): string | null {
+  if (code !== "submit_changed") return null;
+  const ahead = grokQueuedAhead(message);
+  if (ahead !== null) return tt("In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.", { count: ahead });
+  if (message === GROK_QUEUED_MESSAGE) return tt("In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.");
+  return null;
+}
+
 export function submitNote(code: string, message: string, agent?: string | null): string {
   const opencode = openCodeRefusalNote(code, message);
   if (opencode !== null) return opencode;
   if (code === "submit_partial") return t("Not confirmed: the terminal draft was cleared or may have changed. Your message stayed here. Check the terminal before sending again.");
-  // #511: pasted for an agent that left before its Enter: the text may sit in the input line
   if (code === "pasted_not_sent") return t("Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.");
   if (code === "agent_blocked") return t("Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
   if (code === "read_only") return t("Not sent: this view only watches the pane.");
   if (code === "held_input") return t("Not sent: send or discard the held input first.");
   if (code === "input_draft" && agent === "hermes") return t("Not sent: Hermes' input in the terminal is not empty. Send or clear it there, then send this message.");
+  if (code === "input_draft" && message === CLAUDE_FOLDED_DRAFT_MESSAGE) return t("Not sent: Claude Code's input box in the terminal holds a paste or image it folded, whose lines are not shown here, so it cannot be sent over. Send or clear it there, then send this message.");
+  // any other agent's box, refused only over text typed there (server/core/composer.ts freeAgentInput); its message
+  // names it also where the pane is labelled Claude Code (an OmO with its Claude SDK child)
+  if (code === "input_draft" && (message === AGENT_INPUT_DRAFT_MESSAGE || (agent != null && agent !== "claude"))) return t("Not sent: the agent's input box in the terminal holds text typed there. Send or clear it there, then send this message.");
   if (code === "input_draft") return t("Not sent: Claude Code's input box in the terminal is not empty. Send or clear it there, then send this message.");
   if (code === "rewind_dialog_open") return t("Not sent: Claude Code's rewind dialog is open in the terminal. Finish or close it there (Esc), then send this message.");
   if (code === "pending_input_unsupported") return t("Update this PC to send messages in the next turn. Your draft stayed here.");
   if (code === "pending_hold_unsupported") return t("Update this PC to hold messages. Your draft stayed here.");
   // #511: a message with comments on a reply goes only to an agent
   if (code === "agent_only_unsupported") return t("Update this PC to send comments on a reply. Your message and comments stayed here.");
-  // the same code also says an agent's input state is unknown: that keeps the bridge's own words
   if (code === "agent_not_ready" && message === NO_AGENT_MESSAGE) return t("Not sent: no agent is running in this pane. Your message stayed here.");
   if (code === "submit_timeout") return t("Not sent: it waited too long behind an earlier message, and nothing was typed. Send it again.");
   if (code === "not_transmitted") return t("Not sent: the connection dropped before this message left. Send it again.");
@@ -178,6 +165,7 @@ export function submitNote(code: string, message: string, agent?: string | null)
   if (code === "first_message_unattended") return t("Not sent: the page that started this agent left before it was ready. Send it now or discard it.");
   if (code === "first_message_launch_ended") return t("Not sent: the agent started for this message has ended. Review the message before sending it.");
   if (code === "pending_target_changed") return t("Not sent: the pane's terminal or agent session changed. Review the message before sending it again.");
+  if (code === "typed_while_waiting") return t("Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.");
   if (code === "disconnected" || code === "timeout") return t("Not confirmed: the pane did not confirm this message. Check the terminal before sending it again.");
   return t("Not sent: {message}", { message });
 }
@@ -193,9 +181,7 @@ export function imageMention(path: string): string {
 /**
  * Where an attached file's mention goes: at the start of the message, after a leading `/command`
  * (it must stay first to be one), and after the mentions of files picked before it in the same
- * batch that are still there, so a batch reads in pick order however its uploads finish. An upload
- * finishes while the user may be typing, so the mention never goes where the caret is: the caller
- * shifts the caret and selection by `length` when they sit at or after `at`. The mention goes in
+ * batch that are still there, so a batch reads in pick order however its uploads finish. The mention goes in
  * whole, with its separating space, or not at all (`length` 0): a cut `@path` would name a file
  * that does not exist, so the caller keeps the attachment waiting until there is room; `missing`
  * says how many characters the message is short of it.
@@ -221,15 +207,14 @@ export function insertLeadingMention(
 export const QUEUE_READY_STATUS: Readonly<Partial<Record<string, true>>> = { done: true, idle: true };
 
 /**
- * Whether the menu lists a row. The agent's own menu hides an `agent-hidden` row (Claude's agents,
+ * The agent's own menu hides an `agent-hidden` row (Claude's agents,
  * heapdump, setup-bedrock), and this one mirrors it: never listed, and typed by hand it is sent
- * like any other text. A row without the field (an older server) is listed as it always was.
+ * like any other text.
  */
 export function commandListed(command: SlashCommand): boolean {
   return command.visibility !== "agent-hidden";
 }
 
-/** Whether a typed word is, or starts, a command the menu hides: it is a command all the same, never one "no command matches". */
 export function namesHiddenCommand(commands: readonly SlashCommand[], query: string): boolean {
   const word = query.toLowerCase();
   return word !== "" && commands.some((command) => !commandListed(command) && command.name.toLowerCase().startsWith(word));
@@ -238,9 +223,7 @@ export function namesHiddenCommand(commands: readonly SlashCommand[], query: str
 /**
  * A command the agent runs in the terminal, which the chat can start but cannot finish: the
  * catalog says so (`visibility: "terminal"`, or a bare form whose interaction is the terminal,
- * as pi's and omp's `/tree` browser or Claude's `/config` screen). The chat lists these apart and
- * sends them normally, then opens this browser's terminal after confirmed direct delivery.
- * A row the agent's own menu hides is not one of them: it is never listed at all.
+ * as pi's and omp's `/tree` browser or Claude's `/config` screen).
  */
 export function terminalCommand(command: SlashCommand): boolean {
   if (!commandListed(command)) return false;
@@ -248,8 +231,7 @@ export function terminalCommand(command: SlashCommand): boolean {
 }
 
 /**
- * The form `argument` types a command in: the subcommand's own, else the one for any other
- * argument, else the bare one. A stray argument to a command that takes none is still that
+ * A stray argument to a command that takes none is still that
  * command typed (`/tree w13:p2` opens the tree), so the bare form answers for it too.
  */
 function typedForm(command: SlashCommand, argument: string): CommandForm | undefined {
@@ -263,12 +245,8 @@ function typedForm(command: SlashCommand, argument: string): CommandForm | undef
 }
 
 /**
- * The terminal command `text` types, or null. Case and arguments aside, a message only has to
- * *be* the command: prose that merely mentions it, a word that only begins like it (`/configure`
- * for `/config`), or the name behind another trigger (`$config` for a `/` row) is not one. The
- * form it was typed in decides where the catalog tells forms apart: `/model` may open a dialog
- * while `/model sonnet` needs nothing, and only `/resume list` may need the terminal. A row the
- * agent's own menu hides is sent as typed, whatever its forms say.
+ * The form it was typed in decides where the catalog tells forms apart: `/model` may open a dialog
+ * while `/model sonnet` needs nothing, and only `/resume list` may need the terminal.
  */
 export function typedTerminalCommand(commands: readonly SlashCommand[], text: string): SlashCommand | null {
   const match = /^([/$])([^\s/$]\S*)(?:\s+([\s\S]*))?$/u.exec(text.trim());
@@ -291,7 +269,6 @@ export function atSkillReplacement(command: SlashCommand): string {
   return `@${command.name} `;
 }
 
-/** The composer's status word: the shared vocabulary, with a blank state reading as READY (a shell is always ready). */
 export function composerStatusWord(status?: AgentStatus): string {
   const known = knownStatus(status);
   return known === "unknown" ? "READY" : STATUS_WORD[known];
@@ -305,19 +282,22 @@ export function composerStatusWord(status?: AgentStatus): string {
  */
 export const COMPOSER_STATUS_COMPACT_BELOW = 640;
 
-/** Whether the controls row is compact at this card width. An unmeasured card (0) is not: nothing is drawn yet. */
 export function composerStatusCompact(cardWidth: number): boolean {
   return cardWidth > 0 && cardWidth < COMPOSER_STATUS_COMPACT_BELOW;
 }
 
-/** The working agent rests with Stop; writing a message replaces it with Send. */
 export function composerSendShown(state: { working: boolean; text: string }): boolean {
   return !state.working || state.text.trim().length > 0;
 }
 
-/** While an agent works, Send accepts a follow-up for its next turn. A shell sends immediately. */
-export function composerDelivery(agent: string | null, status?: AgentStatus): "queue" | "immediate" {
-  return agent !== null && status === "working" ? "queue" : "immediate";
+/**
+ * `cardWaits`: the PC's server also shows a pane blocked while it reads a card its agent did not report (herdr-core,
+ * server/card-waits.ts). That agent may still be working, and nothing the page gets tells such a wait from the
+ * agent's own blocked: a message for it waits as one for a working agent does. An agent that reports blocked
+ * itself takes no message either way: the server refuses it at once or queued alike.
+ */
+export function composerDelivery(agent: string | null, status?: AgentStatus, cardWaits = false): "queue" | "immediate" {
+  return agent !== null && (status === "working" || (cardWaits && status === "blocked")) ? "queue" : "immediate";
 }
 
 /**
@@ -325,9 +305,7 @@ export function composerDelivery(agent: string | null, status?: AgentStatus): "q
  * braille spinner in the window title (osc_title_working, 1100) and "Waiting for N background agents
  * to finish" (background_agents_working, 965) as working, both above the idle prompt box
  * (live_prompt_box, 950): a main agent that ended its turn while a subagent it started still runs is
- * reported as working, and the composer holds the message. Override only on positive evidence:
- * an empty input box and the waiting line, with no running-turn marker anywhere above the box.
- * `lines` must be logical screen lines (lib/inputRow.ts readScreenLines), not physical rows.
+ * reported as working, and the composer holds the message.
  */
 export function claudeMainAtRest(row: string | null, lines: readonly string[]): boolean {
   if (row !== "ready") return false;
@@ -348,17 +326,8 @@ export function claudeMainAtRest(row: string | null, lines: readonly string[]): 
   return true;
 }
 
-/**
- * The sentence in the status content, if any. The reconnecting sentence is said once: it is the
- * placeholder while the box is empty, and moves here once there is a draft, which hides the
- * placeholder. It is said instead of an upload's, never both: the attachment's own tile says
- * it is uploading, and nothing else in the card would say why Stop and add are off. Otherwise
- * an upload says so while it runs.
- */
-/** Characters left at which the composer starts counting them: further off, a count is noise. */
 export const COMPOSER_CHARS_WARNING = 200;
 
-/** `noRoom`: a finished upload's path waits for the message to be shortened. */
 export function composerStatusHint(state: { uploading: boolean; connected: boolean; text: string; noRoom?: boolean }): "uploading" | "offline" | "no-room" | "near-limit" | null {
   if (!state.connected && state.text.length > 0) return "offline";
   if (state.noRoom) return "no-room";
@@ -366,18 +335,6 @@ export function composerStatusHint(state: { uploading: boolean; connected: boole
   return MAX_COMPOSER_CHARS - state.text.length <= COMPOSER_CHARS_WARNING ? "near-limit" : null;
 }
 
-/**
- * How the model label (the mark, the model's name and the effort word) is drawn in the controls
- * row. Asked of the layout, not of a width: what fits depends on the name's length, the mic, the
- * task chip, the language and the font. `modelClipped` and `effortClipped` are measured with
- * everything drawn.
- * - "full": all of it fits.
- * - "out": while Queue is showing, a label that does not fit steps out whole (read, not drawn),
- *   so Queue keeps its word and no name is cut mid-word. It is back once the draft is sent, held
- *   or cleared.
- * - "no-effort": without Queue the effort word steps out whole before the name gives a letter,
- *   so a sliver of a word is never drawn. A name still too long is ellipsized as the last resort.
- */
 export type ComposerModelDraw = "full" | "no-effort" | "out";
 
 export function composerModelDraw(state: { modelClipped: boolean; effortClipped: boolean }): ComposerModelDraw {
@@ -385,7 +342,6 @@ export function composerModelDraw(state: { modelClipped: boolean; effortClipped:
   return "no-effort";
 }
 
-/** Herdr agent ids are machine-friendly; the composer presents a short human label. */
 export function agentDisplayLabel(agent: string | null): string {
   if (!agent) return "Shell";
   if (agent === "dsh" || agent === "dsh-tui") return "DeepSeek Harness";
@@ -396,12 +352,6 @@ export function agentDisplayLabel(agent: string | null): string {
     .join(" ");
 }
 
-/**
- * How well a command matches what was typed after the `/`; lower is better, null is no match.
- * Plugin and skill names carry a namespace (`superpowers:brainstorming`), so a query is also
- * tried against each word of the name before it falls back to a substring, a run of letters in
- * order (`brst`), and the description.
- */
 function slashMatchTier(command: SlashCommand, needle: string, prefixOnly: boolean): number | null {
   if (needle === "") return 0;
   const name = command.name.toLocaleLowerCase();
@@ -420,7 +370,6 @@ function slashMatchTier(command: SlashCommand, needle: string, prefixOnly: boole
   return needle.length >= 2 && command.description.toLocaleLowerCase().includes(needle) ? 4 : null;
 }
 
-/** Commands the agent can invoke at this position, before query ranking. */
 export function commandsForTrigger(commands: readonly SlashCommand[], agent: string | null, trigger: ActiveTrigger): SlashCommand[] {
   const syntax = skillSyntax(agent);
   const prefix = trigger.prefix ?? "/";
@@ -439,25 +388,13 @@ export function commandsForTrigger(commands: readonly SlashCommand[], agent: str
   });
 }
 
-/**
- * A menu row's description down to its first sentence: a skill's goes on to say when to use it
- * and when not, which is for the agent, and on a phone it ran to five lines a row. A full stop
- * ends a sentence only before a capital (or a letter with no case) or as `\u3002`, so `e.g. foo`
- * and `v1.2` keep their text.
- */
 export function briefDescription(description: string): string {
   const text = description.trim();
   const end = /[.!?](?=\s+[\p{Lu}\p{Lo}"'(])|\u3002/u.exec(text);
   const brief = end ? text.slice(0, end.index) : text;
-  // a last full stop goes, not an ellipsis's (no lookbehind: shared/lookbehind.ts)
   return /[.\u3002]$/.test(brief) && brief[brief.length - 2] !== "." ? brief.slice(0, -1) : brief;
 }
 
-/**
- * Where a bare `/` or `$` lists a command: a skill under where it comes from, yours before the
- * project's, then the ones without a known origin, the agent's own and its plugins'; last, apart
- * from their sources, the commands that run in the terminal.
- */
 export const COMMAND_GROUPS = ["builtin", "user", "project", "skill-user", "skill-project", "skill", "skill-bundled", "skill-plugin", "plugin", "terminal"] as const;
 export type CommandGroup = (typeof COMMAND_GROUPS)[number];
 
@@ -467,15 +404,35 @@ export function commandGroup(command: SlashCommand): CommandGroup {
   return command.source;
 }
 
-/** Multi-trigger skills use the typed prefix; others use the command's wire trigger. */
+/**
+ * OpenCode's TUI built-ins that take no argument, which its own menu runs when picked: v2.2.7's `slash` entries without
+ * `arguments: true` (packages/tui/src: app.tsx, routes/session, component/prompt, feature-plugins) and v1.19.5's
+ * `slashName` entries, which take none. Not here: `cd`, `rename` and `btw`, which v2 types with a space for an argument,
+ * and the server's commands (`init`, `review`, custom, project and plugin ones), which its menu only types.
+ */
+const OPENCODE_BARE_BUILTINS: ReadonlySet<string> = new Set([
+  "agents", "clear", "compact", "connect", "copy", "debug", "diff", "editor", "exit", "export", "fork", "help",
+  "highlights", "mcps", "models", "move", "new", "open", "org", "pair", "plugins", "redo", "reload", "restart",
+  "sessions", "settings", "skills", "stats", "status", "terminal", "themes", "thinking", "timeline", "timestamps",
+  "undo", "update", "usage", "variants", "warp", "workspaces", "worktrees",
+]);
+
+/**
+ * Whether a command picked from the menu and sent unchanged goes without the space the pick put after it. OpenCode runs
+ * a built-in that takes no argument only from its own menu, and sends `/new ` as a prompt (#3813). Its other commands
+ * only type `/name ` from its menu, and that space is what lets Enter send them, so they keep it, as every other
+ * agent's commands do.
+ */
+export function sendsBarePick(command: SlashCommand, agent: string | null): boolean {
+  return agent === "opencode" && command.source === "builtin" && (command.trigger ?? "/") === "/" && OPENCODE_BARE_BUILTINS.has(command.name);
+}
+
 export function slashCommandReplacement(command: SlashCommand, agent: string | null, trigger: ActiveTrigger): string {
   const prefix = skillSyntax(agent).skillTriggers.length > 1 ? trigger.prefix ?? "/" : command.trigger ?? "/";
   return `${prefix}${command.name} `;
 }
 
 /**
- * Filter commands by what was typed - prefix first, then a word of the name, a substring, letters
- * in order, the description - and within a match kind prefer the commands the user selects most.
  * Away from line starts, `prefixOnly` excludes fuzzy matches that could rewrite paths such as `/tmp`.
  */
 export function rankSlashCommands(
@@ -499,14 +456,12 @@ export function rankSlashCommands(
     .map(({ command }) => command);
 }
 
-/** A token count the way a status line reads it: 950, 68k, 1.2M. */
 export function formatTokens(tokens: number): string {
   if (tokens < 1_000) return String(Math.round(tokens));
   if (tokens < 1_000_000) return `${Math.round(tokens / 1_000)}k`;
   return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 }
 
-/** What is left of the context, as the agents' own status lines put it; null when the window is unknown. */
 export function contextLeftPercent(context: { used: number; window: number | null }): number | null {
   if (context.window === null || context.window <= 0) return null;
   return Math.max(0, Math.min(100, Math.round((1 - context.used / context.window) * 100)));

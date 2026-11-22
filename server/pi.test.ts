@@ -174,7 +174,6 @@ describe("pi transcripts render as chat", () => {
       writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: (index + 1) * 100_000 }] } } }));
       return dir;
     });
-    // the answer that states the usage is in a settled turn; the live one has not been answered
     const path = session("two-dirs", [
       { type: "message", id: "u1", parentId: null, timestamp: "2026-09-30T00:00:01.000Z", message: { role: "user", content: "first" } },
       { type: "message", id: "a1", parentId: "u1", timestamp: "2026-09-30T00:00:02.000Z", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "answer" }] } },
@@ -233,7 +232,6 @@ describe("pi transcripts render as chat", () => {
     ];
     const path = session("compacted-then-navigated", body);
     expect(transcriptPage("pi-transcript", path).turns.filter((turn) => turn.parts.some((part) => part.kind === "compact"))).toHaveLength(1);
-    // /tree back to the first prompt: the fold sits above the new answer's branch, unread
     appendFileSync(path, JSON.stringify({
       type: "message", id: "a2", parentId: "u1", timestamp: "2026-09-30T00:10:00.000Z",
       message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "the answer in play" }] },
@@ -278,7 +276,6 @@ describe("a pi tool result's images reach the chat", () => {
     const path = session("image-result", [asked, callingRead("c1"), withImage("c1")]);
     const tool = transcriptPage("pi-transcript", path).turns[1]!.parts[0]!;
     expect(imageOf(tool)).toEqual([{ media_type: "image/png", ref: "pi:c1:0" }]);
-    // the text answer is unchanged: the image is beside it, not instead of it
     expect((tool as Extract<typeof tool, { kind: "tool" }>).output).toBe("read 1 image");
     const image = piTranscriptImage(path, "pi:c1:0");
     expect(image?.mediaType).toBe("image/png");
@@ -322,7 +319,6 @@ describe("a pi tool result's images reach the chat", () => {
   it("keeps an image a /tree navigated away from out of the chat and out of reach", () => {
     const path = session("image-off-branch", [asked, callingRead("c1"), withImage("c1")]);
     expect(imageOf(transcriptPage("pi-transcript", path).turns[1]!.parts[0]!)).toHaveLength(1);
-    // /tree back to the prompt and off in a new direction: the result is no longer in play
     appendFileSync(path, JSON.stringify({
       type: "message", id: "a9", parentId: "u1", timestamp: "2026-09-30T00:20:00.000Z",
       message: { role: "assistant", model: "qwen-test", provider: "test", stopReason: "stop", usage: { input: 5, output: 1 }, content: [{ type: "text", text: "another answer entirely" }] },
@@ -346,7 +342,6 @@ describe("a pi tool result's images reach the chat", () => {
 
   it("serves a tool's picture only from the result the page draws: the first one answering its call", () => {
     const GIF = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-    // a second result for an answered call, which the parser ignores, saying context_clear in its text
     const again = { type: "message", id: "r2", parentId: "r-c1", timestamp: "2026-09-30T00:00:05.000Z", message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "context_clear" }, { type: "image", mimeType: "image/gif", data: GIF }] } };
     const path = session("image-answered-twice", [asked, callingRead("c1"), withImage("c1"), again]);
     expect(imageOf(transcriptPage("pi-transcript", path).turns[1]!.parts[0]!)).toEqual([{ media_type: "image/png", ref: "pi:c1:0" }]);
@@ -356,7 +351,6 @@ describe("a pi tool result's images reach the chat", () => {
     const pathNone = session("image-answered-twice-none", [asked, callingRead("c1"), none, again]);
     expect(imageOf(transcriptPage("pi-transcript", pathNone).turns[1]!.parts[0]!)).toBeUndefined();
     expect(piTranscriptImage(pathNone, "pi:c1:0")).toBeNull();
-    // two results for one call in one entry: only the first one's pictures are named
     const pathNested = session("image-nested-twice", [{ ...asked, parentId: null }, {
       type: "message", id: "a1", parentId: "u1", timestamp: "2026-09-30T00:00:03.000Z", message: {
         role: "assistant", model: "qwen-test", provider: "test", stopReason: "toolUse", usage: { input: 10, output: 1 },
@@ -370,7 +364,6 @@ describe("a pi tool result's images reach the chat", () => {
     expect(imageOf(transcriptPage("pi-transcript", pathNested).turns[1]!.parts[0]!)).toEqual([{ media_type: "image/png", ref: "pi:c1:0" }]);
     expect(piTranscriptImage(pathNested, "pi:c1:0")?.mediaType).toBe("image/png");
     expect(piTranscriptImage(pathNested, "pi:c1:1")).toBeNull();
-    // a call made again after an answer with no picture: the second answer's picture is the one named
     const callAgain = { ...callingRead("c1"), id: "a2", parentId: "r1" };
     const textOnly = { type: "message", id: "r1", parentId: "a1", timestamp: "2026-09-30T00:00:04.000Z", message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "nothing to read" }] } };
     const pathAgain = session("image-called-again", [asked, callingRead("c1"), textOnly, callAgain, { ...withImage("c1"), id: "r2", parentId: "a2" }]);
@@ -409,7 +402,6 @@ describe("the pictures sent to pi reach the chat", () => {
     expect(JSON.stringify(transcriptPage("pi-transcript", path).turns)).not.toContain(PNG.toString("base64"));
     expect(Buffer.from(piTranscriptImage(path, "pi-prompt:u1:0")!.bytes).equals(PNG)).toBe(true);
     expect(piTranscriptImage(path, "pi-prompt:u2:0")?.mediaType).toBe("image/gif");
-    // no picture at that place, another entry, a ref that is no ref
     for (const ref of ["pi-prompt:u2:1", "pi-prompt:a1:0", "pi-prompt:u1", "pi-prompt:../u1:0"]) expect(piTranscriptImage(path, ref)).toBeNull();
   });
 
@@ -425,7 +417,6 @@ describe("the pictures sent to pi reach the chat", () => {
   it("keeps a picture a /tree or a clear left behind out of the chat and out of reach", () => {
     const path = session("prompt-picture-left", [prompt("u1", null, [picture(PNG)]), answer("a1", "u1", "a pixel")]);
     expect(parts(path)).toEqual([["image/png pi-prompt:u1:0"], ["a pixel"]]);
-    // /tree back to before the picture, and on from there
     appendFileSync(path, JSON.stringify(prompt("u9", null, [{ type: "text", text: "start over" }])) + "\n");
     expect(parts(path)).toEqual([["start over"]]);
     expect(piTranscriptImage(path, "pi-prompt:u1:0")).toBeNull();
@@ -548,7 +539,7 @@ it.skipIf(process.platform !== "linux")("recovers Pi argv and process HOME from 
     for (const deadline = Date.now() + 2_000;;) {
       try {
         if (readFileSync(`/proc/${child.pid}/cmdline`, "utf8").startsWith(`pi\0`)) break;
-      } catch { /* wait until the isolated child has exec'd */ }
+      } catch { }
       if (Date.now() > deadline) throw new Error("isolated Pi-shaped process did not exec");
       await Bun.sleep(10);
     }
@@ -669,7 +660,6 @@ it("keeps native default-store reports when process argv is unavailable", async 
   expect(await piTranscriptPath("pane", store, {
     ...options, agent: reported(customTarget),
   })).toBeNull();
-  // the store inside the bridge's own agent dir: the session was written by that profile
   const old = process.env["PI_CODING_AGENT_DIR"];
   process.env["PI_CODING_AGENT_DIR"] = root;
   try {
@@ -787,6 +777,31 @@ it.skipIf(process.platform === "win32")("reads the session the pane's pi names t
     // a process in front that is not pi, and a second pi beside it, are not asked
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processes: [{ pid: 830, argv: ["bash"] }] })).toBeNull();
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processes: [{ pid: 830, argv: ["/usr/bin/pi"] }, { pid: 832, argv: ["/usr/bin/pi"] }] })).toBeNull();
+  } finally {
+    await server.stop(true);
+    rmSync(profile, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform === "win32")("reads the pi a pane herdr labels gentle-shell runs, from gentle-shell's own home (#4198)", async () => {
+  // herdr 0.9.5's answers for a gentle-shell pane: its own agent name, no session (herdr drops a custom source's)
+  const recorded = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "herdr-0.9.5-gentle-shell-pane.json"), "utf8"));
+  const agent = recorded["agent.get"].agent;
+  const processes = recorded["pane.process_info"].process_info.foreground_processes;
+  const pid: number = processes[0].pid;
+  const profile = join(root, "gentle-shell-home");
+  const sessions = join(profile, "sessions", "--home-user-project--");
+  mkdirSync(sessions, { recursive: true });
+  const written = join(sessions, "2026-11-17T14-06-52-131Z_01a1e9d4-fce1-73a2-82b6-11a1ac60faa8.jsonl");
+  writeFileSync(written, "{\"type\":\"session\"}\n");
+  const sockets = join(profile, "herdr-web-ui-ask");
+  mkdirSync(sockets, { mode: 0o700 });
+  const server = Bun.serve({ unix: join(sockets, `${pid}.sock`), fetch: () => Response.json({ version: 1, flows: [], openCalls: [], pid, sessionFile: written }) });
+  const options = { agent, processes, processesAfter: async () => processes, environOf: () => [`PI_CODING_AGENT_DIR=${profile}`], home: root };
+  try {
+    expect(await piTranscriptPath(agent.pane_id, undefined, options)).toEqual({ path: written, agentDir: profile, identity: expect.any(String) });
+    // the name alone is no pi: a process in front that is not pi keeps the terminal
+    expect(await piTranscriptPath(agent.pane_id, undefined, { ...options, processes: [{ pid, argv: ["node", "/home/user/server.js"] }] })).toBeNull();
   } finally {
     await server.stop(true);
     rmSync(profile, { recursive: true, force: true });

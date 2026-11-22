@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
+import { IME_INITIAL_ATTACH_TIMEOUT, resetImeInput, waitForImeTerminal } from "./terminal-ime-ready.ts";
 
-/** Replay candidate picks of an input method with no in-app preedit and assert the bytes the pane gets. */
 export async function checkLinuxIme(browser: Browser, origin: string, pane: string): Promise<void> {
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
@@ -20,11 +20,6 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
   const received = new EventEmitter();
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
-    server.onMessage((raw) => {
-      const frame = JSON.parse(String(raw));
-      if (frame.type === "input-ready" && frame.ready !== false) received.emit("ready");
-      socket.send(raw);
-    });
     socket.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
       if (frame.type === "input") {
@@ -36,10 +31,7 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
   });
   const input = page.locator(".pane-frame.is-current .xterm-helper-textarea");
   const reset = async () => {
-    const ready = once(received, "ready", { signal: AbortSignal.timeout(10_000) });
-    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
-    await ready;
-    await input.focus();
+    await resetImeInput(page, pane);
     sent.length = 0;
   };
   // The input method consumes the pinyin keys: the page sees only their keyup. The key that
@@ -78,6 +70,8 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
   };
 
   try {
+    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`, { waitUntil: "domcontentloaded" });
+    await waitForImeTerminal(page, pane, IME_INITIAL_ATTACH_TIMEOUT);
     await reset(); await pick("2", "Digit2", 50, "地");
     await check("地", "a digit that picks a candidate sends the candidate, not the digit");
 

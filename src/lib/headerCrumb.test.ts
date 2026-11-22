@@ -19,7 +19,6 @@ it("shows the folder as its last name when it tells something the rest does not"
 it("leaves the folder out when the title or the PC already says its name", () => {
   expect(headerCrumb({ ...base, title: "api", cwd: "/home/me/dev/api" }).folder).toBeNull();
   expect(headerCrumb({ ...base, machine: "api", cwd: "/home/me/dev/api" }).folder).toBeNull();
-  // a different spelling is a different name: nothing is guessed
   expect(headerCrumb({ ...base, cwd: "/home/me/dev/Checkout-API" }).folder).toBe("Checkout-API");
 });
 
@@ -31,18 +30,14 @@ it("does not repeat the workspace when the pane title is the workspace", () => {
 
 it("counts the PC name as said only while the line shows it", () => {
   const devbox = { ...base, machine: "devbox", cwd: "/home/me/src/devbox" };
-  // one PC: its name is not on the line, so the folder is the only place that says "devbox"
   const one = headerCrumb({ ...devbox, machineCount: 1 });
   expect(one.showMachine).toBe(false);
   expect(one.folder).toBe("devbox");
-  // two PCs: the PC name is on the line and already says it
   const two = headerCrumb({ ...devbox, machineCount: 2 });
   expect(two.showMachine).toBe(true);
   expect(two.folder).toBeNull();
-  // a folder named otherwise is the same either way
   expect(headerCrumb({ ...devbox, cwd: "/home/me/src/other", machineCount: 1 }).folder).toBe("other");
   expect(headerCrumb({ ...devbox, cwd: "/home/me/src/other", machineCount: 2 }).folder).toBe("other");
-  // the More menu's place keeps the PC name with one PC
   expect(one.place).toBe("devbox › checkout-api");
 });
 
@@ -69,7 +64,6 @@ it("keeps a folder name that ends in a space as it is", () => {
   expect(crumb.folder).toBe("branch ");
   expect(crumb.path).toBe("/repo/branch ");
   expect(crumb.tooltip).toBe("workstation · checkout-api · Idempotent payments · /repo/branch ");
-  // "branch " is not the folder "branch": the title does not say it
   expect(headerCrumb({ ...base, title: "branch", cwd: "/repo/branch " }).folder).toBe("branch ");
 });
 
@@ -78,6 +72,5 @@ it("takes the chat's surface only when the chat is what the pane column draws", 
   expect(showsChat({ restore_error: null }, "chat")).toBe(true);
   expect(showsChat({}, "terminal")).toBe(false);
   expect(showsChat(null, "chat")).toBe(false);
-  // a pane herdr could not restore draws the placeholder on the terminal's surface, not the chat
   expect(showsChat({ restore_error: "no such session" }, "chat")).toBe(false);
 });

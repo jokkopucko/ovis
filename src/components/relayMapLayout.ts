@@ -19,7 +19,6 @@ export interface PlacedPc extends Placed {
   readonly kind: "pc";
   readonly node: RelayMapNode;
   readonly hub: number;
-  /** direct: this device's check reached the PC on the same network or over Tailscale, so its wire comes from this device and passes no relay hub */
   readonly via: "direct" | "hub";
 }
 
@@ -83,17 +82,14 @@ export function relayHandshakeMs(hub: RelayMapHub): number | null {
   return relayHandshake(hub)?.rttMs ?? null;
 }
 
-/** This device's latest check reached the PC without a relay (the same network, or Tailscale). */
 export function isDirectRoute(node: RelayMapNode): boolean {
   return node.check?.kind === "answered" && node.check.route !== "relay";
 }
 
-/** The PCs a hub carries right now: its members this device did not reach directly. */
 export function hubRoutedNodes(hub: RelayMapHub): RelayMapNode[] {
   return hub.nodes.filter((node) => !isDirectRoute(node));
 }
 
-/** A live answer from this device beats the directory's stale Offline: the wire is live, as the PC is reachable now. */
 export function nodeWireState(node: RelayMapNode): WireState {
   if (node.check?.kind === "checking") return "checking";
   if (node.check?.kind === "answered") return "live";
@@ -116,17 +112,13 @@ export function nodeStatusDotState(node: RelayMapNode): StatusDotState {
       return "needs-you";
     case "offline": case "unchecked":
       return "offline";
+    case "unreachable":
+      return "failed";
     case "paired":
       return "ready";
   }
 }
 
-/**
- * Three columns, one per hop: this device, then the relay hubs and the PCs it reaches directly, then
- * the PCs behind each hub. A PC answered on the same network or over Tailscale sits in the hub column
- * with its wire from this device, so no relay is drawn on its way; the hubs centre on the PCs still
- * behind them.
- */
 export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
   const totalPcs = map.hubs.reduce((sum, hub) => sum + hub.nodes.length, 0);
   if (totalPcs === 0 || totalPcs > DIAGRAM_MAX_PCS || map.hubs.length === 0) return null;
@@ -134,7 +126,6 @@ export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
   const direct = map.hubs.flatMap((hub, hubIndex) => hub.nodes.filter(isDirectRoute).map((node) => ({ node, hubIndex })));
   const routed = map.hubs.map(hubRoutedNodes);
   const pcSpan = Math.max(0, routed.reduce((sum, nodes) => sum + nodes.length, 0) - 1) * PC_STEP_Y;
-  // the hub column: the direct PCs in the PC rhythm, then the hubs in theirs
   const hubSpan = (direct.length > 0 ? direct.length * PC_STEP_Y + HUB_MIN_STEP_Y - PC_STEP_Y : 0) + (map.hubs.length - 1) * HUB_MIN_STEP_Y;
   const height = Math.max(152, Math.max(pcSpan, hubSpan) + PAD_Y * 2);
   const centerY = Math.round(height / 2);
@@ -160,12 +151,10 @@ export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
   });
 
   for (let i = 0; i < hubCenters.length; i++) {
-    // below the direct PCs and the hub before it; a hub with nobody behind it right now takes the next slot
     const floor = i === 0 ? (directBottom === null ? -Infinity : directBottom + HUB_MIN_STEP_Y) : (hubCenters[i - 1] ?? centerY) + HUB_MIN_STEP_Y;
     const curr = hubCenters[i] ?? centerY;
     if (curr < floor || (routed[i]?.length === 0 && Number.isFinite(floor))) hubCenters[i] = floor;
   }
-  // the hubs centred on this device when they have the column to themselves; under direct PCs they keep their slots
   const shift = hubCenters.length > 1 && direct.length === 0 ? Math.round(centerY - ((hubCenters[0] ?? centerY) + (hubCenters[hubCenters.length - 1] ?? centerY)) / 2) : 0;
   if (hubCenters.length > 1) {
     for (let i = 0; i < hubCenters.length; i++) {

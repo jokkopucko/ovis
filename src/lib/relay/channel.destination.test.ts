@@ -33,9 +33,7 @@ for (const { field, value } of unsafeDestinations) {
       remove: mock(async () => { throw new Error("Unexpected device-store removal"); }),
     };
     const socket = mock(() => { throw new Error("Unexpected socket creation"); });
-    // When the destination is validated.
     const opening = openRelayChannel(offer, { store, socket });
-    // Then a typed failure precedes every storage or network side effect.
     await expect(opening).rejects.toBeInstanceOf(UnsafeRelayDestinationError);
     await expect(opening).rejects.toMatchObject({ code: "unsafe_relay_destination", field });
     expect(store.get).not.toHaveBeenCalled();
@@ -70,7 +68,6 @@ it("connects through the carrier relay rather than the offer's own", async () =>
   };
   const dialed: string[] = [];
   const socket = mock((url: string) => { dialed.push(url); throw new Error("stop after dialing"); });
-  // When it opens, the socket goes to the carrier
   await expect(openRelayChannel(offer, { store, socket, carrier: "wss://relay.example" })).rejects.toThrow("stop after dialing");
   expect(new URL(dialed[0]!).origin).toBe("wss://relay.example");
 });

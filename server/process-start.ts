@@ -24,11 +24,7 @@ export function processStartedAt(pid: number): number | null {
   return linuxBirth(pid);
 }
 
-/**
- * Linux: /proc/stat's `btime` and the start's ticks after boot. The same on every read, so it is the
- * process's identity (pending input compares it exactly); but `btime` is whole seconds and stays
- * where it was when the clock is stepped later, so it may be up to a second before the real start.
- */
+/** Linux: /proc/stat's `btime` and the start's ticks after boot. */
 function linuxBirth(pid: number): number | null {
   try {
     const ticks = Number(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()!.split(" ")[19]);
@@ -73,10 +69,7 @@ export async function processStartedAtAsync(pid: number): Promise<number | null>
   return processStartedAt(pid);
 }
 
-/**
- * processStartUpperBound for a caller that awaits it; every platform's read is synchronous now.
- * Where no start time is known (Windows), null.
- */
+/** Where no start time is known (Windows), null. */
 export async function processStartUpperBoundAsync(pid: number): Promise<number | null> {
   if (process.platform !== "linux" && process.platform !== "darwin") return null;
   return processStartUpperBound(pid);

@@ -1,7 +1,4 @@
 /**
- * A snapshot of the repository's stars and traffic, for the weekly growth record
- * (.github/workflows/growth-snapshot.yml; docs/development.md, "Growth snapshot").
- *
  *   bun scripts/growth-snapshot.ts --out <dir> [--repo owner/name]
  *
  * Reads, through the gh CLI on PATH (its own sign-in, or GH_TOKEN): the repository's counts,
@@ -10,8 +7,8 @@
  * endpoints need push access to the repository; GitHub keeps them for 14 days only, which is why
  * they are saved every week.
  *
- * Who starred is never kept: only the day of each star. Nothing about the traffic (referrers,
- * paths) goes to the output either, so a workflow log shows only totals.
+ * Who starred is never kept: only the day of each star. The traffic's referrers and paths go to
+ * the snapshot JSON alone: the line printed, which a workflow log shows, has only totals.
  *
  * Exit codes: 0 when counts and star dates were read (a traffic endpoint that failed is recorded as
  * {"error": "<status>"}), 2 when every traffic endpoint failed (a token without access, which
@@ -24,7 +21,6 @@ import { join } from "node:path";
 
 type Answer = { ok: true; body: unknown } | { ok: false; status: string };
 
-/** One gh api call: its JSON body, or the HTTP status (or "failed") it ended with. */
 async function gh(path: string, headers: string[] = []): Promise<Answer> {
   const child = Bun.spawn(["gh", "api", ...headers.flatMap((header) => ["-H", header]), path], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

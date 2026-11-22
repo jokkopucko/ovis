@@ -10,7 +10,7 @@ import * as omo from "./omo.ts";
 import { omoSessionFolder } from "./omo.ts";
 import * as processStart from "./process-start.ts";
 import { paneProcessRoots } from "./conversation.ts";
-import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, openCodeSkillsToType, openCodeVerificationCheckpoint, releaseOpenCodePane, skillsNotAttached, startOpenCodeWatch, trackVerifiedOpenCodePanes } from "./opencode-native.ts";
+import { closeOpenCodeNative, openCodeNativeState, openCodePanePid, openCodePaneService, openCodeSkillsToType, openCodeVerificationCheckpoint, releaseOpenCodePane, skillsNotAttached, startOpenCodeWatch, trackVerifiedOpenCodePanes } from "./opencode-native.ts";
 import { commandOutcome } from "./outcome.ts";
 import * as service from "./opencode-service.ts";
 import * as commands from "./commands.ts";
@@ -19,7 +19,6 @@ import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-servic
 
 const root = mkdtempSync(join(tmpdir(), "opencode-native-test-"));
 const held = new Set<() => void>();
-/** a service that never answers, one that answers 503, and none at all */
 const slow = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Promise<Response>((resolve) => held.add(() => resolve(new Response(null, { status: 503 })))) });
 const failing = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(null, { status: 503 }) });
 afterAll(() => {
@@ -109,7 +108,6 @@ describe("recording a send never waits on OpenCode's service", () => {
       const watch = startOpenCodeWatch(pane, sent);
       expect(watch === null || typeof (watch as { then?: unknown }).then === "undefined").toBe(true);
       expect(watch).not.toBeNull();
-      // registration is in-memory bookkeeping only: by its return, nothing has asked for the service or its file
       expect(lookups.map((lookup) => lookup.mock.calls.length)).toEqual([0, 0, 0]);
       watch!.cancel();
     } finally {
@@ -172,14 +170,12 @@ describe("recording a send never waits on OpenCode's service", () => {
   });
 });
 
-/** A fake OpenCode v2 service whose session lookups and event stream the test steps through. */
 function gatedService(dir: string) {
   const lookups: (() => void)[] = [];
   const lookupSeen = Promise.withResolvers<void>();
   const streamOpened = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
   let holdLookups = false;
-  /** a session lookup held since the last hold() */
   let heldSeen = Promise.withResolvers<void>();
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch(request) {
     const url = new URL(request.url);
@@ -208,7 +204,6 @@ function gatedService(dir: string) {
   };
 }
 const opencodePane = (paneId: string, session: string) => ({ pane_id: paneId, agent: "opencode", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: session } }) as unknown as HerdrPane;
-/** a bounded wait on an event, never a fixed delay */
 const within = <T>(promise: Promise<T>, what: string, ms = 3_000): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not happen`)), ms); })]).finally(() => clearTimeout(timer));
@@ -244,7 +239,6 @@ describe("a verification still in flight is cancelled by a reset or by its pane'
       const verifying = openCodePaneService(opencodePane("p_held", "ses_held"));
       await within(fake.lookupSeen, "the session lookup");
       releaseOpenCodePane("p_held");
-      // enough unrelated releases to evict any bounded record of the first one
       for (let index = 0; index < 2_000; index++) releaseOpenCodePane(`p_other_${index}`);
       fake.release();
       expect(await verifying).toBeNull();
@@ -296,18 +290,14 @@ describe("a re-verification begun after a snapshot was read", () => {
     forgetOpenCodeService();
     closeOpenCodeNative();
     try {
-      // Given a pane verified before a snapshot's read began.
       expect(await openCodePaneService(opencodePane("p_re", "ses_re"))).not.toBeNull();
       await within(fake.streamOpened, "the stream opening");
       const checkpoint = openCodeVerificationCheckpoint();
-      // And its re-verification, begun after that read, held at its session lookup.
       fake.hold();
       const reverifying = openCodePaneService(opencodePane("p_re", "ses_re"));
       await within(fake.heldLookup(), "the re-verification's session lookup");
-      // When the older snapshot releases the pane, then the lookup answers.
       releaseOpenCodePane("p_re", checkpoint);
       fake.release();
-      // Then the re-verification stands, and the pane keeps the stream.
       expect(await reverifying).not.toBeNull();
       expect(openCodeNativeState()).toEqual({ stream: true, panes: ["p_re"] });
     } finally { closeOpenCodeNative(); fake.release(); fake.server.stop(true); }
@@ -322,22 +312,117 @@ describe("collectors track the verified panes", () => {
     closeOpenCodeNative();
     const first: string[] = [];
     const second: string[] = [];
-    const untrackFirst = trackVerifiedOpenCodePanes((paneId) => first.push(paneId));
+    const untrackFirst = trackVerifiedOpenCodePanes((paneId) => first.push(paneId), () => {});
     let untrackSecond = (): void => {};
     try {
       expect(await openCodePaneService(opencodePane("p_t1", "ses_t1"))).not.toBeNull();
       expect(await openCodePaneService(opencodePane("p_t1", "ses_t1"))).not.toBeNull();
       expect(first).toEqual(["p_t1"]);
       untrackFirst();
-      untrackSecond = trackVerifiedOpenCodePanes((paneId) => second.push(paneId));
+      untrackSecond = trackVerifiedOpenCodePanes((paneId) => second.push(paneId), () => {});
       expect(second).toEqual(["p_t1"]);
       expect(await openCodePaneService(opencodePane("p_t2", "ses_t2"))).not.toBeNull();
       expect(first).toEqual(["p_t1"]);
       expect(second).toEqual(["p_t1", "p_t2"]);
-      // released, then verified again: a pane that came back is handed over again
       releaseOpenCodePane("p_t1");
       expect(await openCodePaneService(opencodePane("p_t1", "ses_t1"))).not.toBeNull();
       expect(second).toEqual(["p_t1", "p_t2", "p_t1"]);
     } finally { untrackFirst(); untrackSecond(); closeOpenCodeNative(); fake.server.stop(true); }
+  });
+});
+
+describe("the pid a verified pane keeps", () => {
+  const foreground = (pid: unknown) => ({ process_info: { foreground_processes: pid === undefined ? [] : [{ pid, argv: ["opencode"], cwd: "/" }] } });
+  const verifiedWith = async (paneId: string, answers: unknown[]): Promise<void> => {
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => answers.shift()) as never);
+    try { expect(await openCodePaneService(opencodePane(paneId, `ses_${paneId.replace("p_", "")}`))).not.toBeNull(); } finally { rpc.mockRestore(); }
+  };
+  const fresh = (name: string) => {
+    const fake = gatedService(join(root, name));
+    openCodeServiceOptions.stateDir = join(root, name);
+    forgetOpenCodeService();
+    closeOpenCodeNative();
+    return fake;
+  };
+
+  it("is unknown, not -1, when herdr names the process without a pid", async () => {
+    const fake = fresh("pid-unreported");
+    try {
+      await verifiedWith("p_np", [foreground("4242")]);
+      expect(openCodePanePid("p_np")).toBeNull();
+    } finally { closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("is unknown once a re-verification reads no process", async () => {
+    const fake = fresh("pid-cleared");
+    try {
+      await verifiedWith("p_cl", [foreground(process.pid)]);
+      await verifiedWith("p_cl", [foreground(undefined)]);
+      expect(openCodePanePid("p_cl")).toBeNull();
+    } finally { closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("stays unknown when a newer verification read no process and an older one ends after it", async () => {
+    const fake = fresh("pid-empty-newer");
+    const olderAsked = Promise.withResolvers<void>();
+    const olderRoots = Promise.withResolvers<unknown>();
+    let calls = 0;
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => {
+      calls += 1;
+      if (calls === 1) { olderAsked.resolve(); return olderRoots.promise; }
+      return foreground(undefined);
+    }) as never);
+    try {
+      const older = openCodePaneService(opencodePane("p_en", "ses_en"));
+      await within(olderAsked.promise, "the older verification's process read");
+      expect(await openCodePaneService(opencodePane("p_en", "ses_en"))).not.toBeNull();
+      olderRoots.resolve(foreground(process.pid));
+      expect(await older).not.toBeNull();
+      expect(openCodePanePid("p_en")).toBeNull();
+    } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("is the newer verification's when an older one ends after it", async () => {
+    const fake = fresh("pid-order");
+    const olderAsked = Promise.withResolvers<void>();
+    const olderRoots = Promise.withResolvers<unknown>();
+    let calls = 0;
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => {
+      calls += 1;
+      if (calls === 1) { olderAsked.resolve(); return olderRoots.promise; }
+      return foreground(5151);
+    }) as never);
+    try {
+      const older = openCodePaneService(opencodePane("p_or", "ses_or"));
+      await within(olderAsked.promise, "the older verification's process read");
+      expect(await openCodePaneService(opencodePane("p_or", "ses_or"))).not.toBeNull();
+      olderRoots.resolve(foreground(4242));
+      expect(await older).not.toBeNull();
+      expect(openCodePanePid("p_or")).toBe(5151);
+    } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("is the newest verification's when two older ones end after it, in any order", async () => {
+    const fake = fresh("pid-three");
+    const asked = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const roots = [Promise.withResolvers<unknown>(), Promise.withResolvers<unknown>()];
+    let calls = 0;
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => {
+      const call = calls++;
+      if (call < 2) { asked[call]!.resolve(); return roots[call]!.promise; }
+      return foreground(7373);
+    }) as never);
+    try {
+      const a = openCodePaneService(opencodePane("p_th", "ses_th"));
+      await within(asked[0]!.promise, "A's process read");
+      const b = openCodePaneService(opencodePane("p_th", "ses_th"));
+      await within(asked[1]!.promise, "B's process read");
+      expect(await openCodePaneService(opencodePane("p_th", "ses_th"))).not.toBeNull();
+      roots[0]!.resolve(foreground(7171));
+      expect(await a).not.toBeNull();
+      roots[1]!.resolve(foreground(7272));
+      expect(await b).not.toBeNull();
+      expect(openCodePanePid("p_th")).toBe(7373);
+    } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
   });
 });

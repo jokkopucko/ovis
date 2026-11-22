@@ -1,17 +1,8 @@
 /**
- * The saved theme is on the page from its first painted frame (src/theme-bootstrap.ts): every frame
- * Chromium paints while the stylesheet and then the app are held back, and after the app starts,
- * shows the row loadSettings resolves, never the stylesheet's default first.
- *
  * Two builds, each served with the app's own Content-Security-Policy (server/static.ts): the
- * production build at the root, and the demo's relative build under /herdr-web-ui/demo/app/. Per
- * case: a fresh context with the records seeded before navigation, the stylesheet and the app's
- * entry module held by request gates, the boot script let through, and DevTools screencast frames
- * recorded and sampled through each gate. The root build is also loaded a second time from a
- * warm, installed service worker. No herdr session and no user state: loopback servers on port 0
- * and temporary directories, all removed at the end.
- *
- * UI_EVIDENCE_DIR=<dir>: also writes the frames of the main cases as PNGs and the full report.
+ * production build at the root, and the demo's relative build under /herdr-web-ui/demo/app/.
+ * No herdr session and no user state: loopback servers on port 0 and temporary directories, all
+ * removed at the end.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -25,6 +16,7 @@ import { themeFor } from "../src/lib/themeFor.ts";
 import { rowFor, type ThemeEntry } from "../src/lib/themes.ts";
 import { isReportableWindowError } from "../src/lib/uncaughtErrors.ts";
 import { chromePath } from "./chrome-path.ts";
+import { unlessGone } from "./response-gone.ts";
 import { buildDemoApp } from "./demo-build.ts";
 
 const repo = join(import.meta.dir, "..");
@@ -39,16 +31,11 @@ interface Case {
   main: Stored;
   themes: Stored;
   scheme: "dark" | "light";
-  /** localStorage throws SecurityError on every read */
   blocked?: boolean;
-  /** the stylesheet request fails: the page is painted with the boot script's background alone */
   cssFails?: boolean;
-  /** the row the case must draw, written out so the check does not only compare the code with itself */
   expected: [id: string, mode: "dark" | "light"];
-  /** the cases whose frames are kept as evidence, at both widths unless `widths` names them */
   headline?: string;
   widths?: readonly ("390" | "1440")[];
-  /** a Korean page: the browser's locale is ko-KR (the main record names the language itself) */
   korean?: boolean;
 }
 
@@ -62,8 +49,6 @@ const CASES: Case[] = [
   { name: "Dracula on the light side", main: { theme: "light", lightTheme: "dracula" }, themes: null, scheme: "light", expected: ["dracula", "dark"], headline: "single-mode" },
   { name: "system dark", main: { theme: "system", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" }, themes: null, scheme: "dark", expected: ["tokyo-night", "dark"] },
   { name: "system light", main: { theme: "system", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" }, themes: null, scheme: "light", expected: ["tokyo-night-day", "light"], headline: "system" },
-  // with no theme saved (or none readable) the device follows the system's scheme (src/lib/themeBoot.ts): each such
-  // case runs under a light and a dark system
   { name: "nothing saved, light system", main: null, themes: null, scheme: "light", expected: ["codex", "light"] },
   { name: "nothing saved, dark system", main: null, themes: null, scheme: "dark", expected: ["codex", "dark"] },
   { name: "corrupt main record, protected themes, light system", main: "{not json", themes: { darkTheme: "gruvbox", lightTheme: "gruvbox-light" }, scheme: "light", expected: ["gruvbox-light", "light"] },
@@ -86,7 +71,6 @@ const VIEWPORTS = {
   "1440": { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 } as BrowserContextOptions,
 };
 
-/** The row the app itself would draw for the case, by loadSettings over the same records. */
 function appRow(item: Case): ThemeEntry {
   const records = new Map<string, string>();
   if (item.main !== null) records.set(SETTINGS_KEY, typeof item.main === "string" ? item.main : JSON.stringify(item.main));
@@ -115,7 +99,6 @@ function rgb(hex: string): [number, number, number] {
 }
 const near = (a: readonly number[], b: readonly number[]): boolean => a.every((value, index) => Math.abs(value - b[index]!) <= 2);
 
-/** Seeds the records before any script of the page runs, and records what the page does with them. */
 function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stored; blocked: boolean; keys: [string, string] }): void {
   const [settingsKey, themesKey] = keys;
   const seen = { violations: [] as string[], errors: [] as { thrown: boolean; message: string }[], values: [] as string[], cssAt: -1, bootAt: -1, appAt: -1, bootBackground: "",
@@ -137,8 +120,6 @@ function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stor
   };
   const boot = signal(), css = signal(), app = signal(), parsed = signal();
   Object.assign(window, { __bootApplied: boot.promise, __cssLoaded: css.promise, __appApplied: app.promise, __parsed: parsed.promise });
-  // every value the two theme attributes ever take; the first palette is the boot script's, and
-  // data-density is set only by the app's applyToDocument
   const record = (records: MutationRecord[]): void => {
     for (const change of records) {
       const root = change.target as HTMLElement;
@@ -162,7 +143,6 @@ function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stor
     seen.bootBeforeParse = seen.bootAt >= 0;
     parsed.resolve();
   });
-  // the stylesheet arrived, or failed: either way the page may paint now
   for (const type of ["load", "error"]) {
     document.addEventListener(type, (event) => {
       const link = event.target as HTMLLinkElement;
@@ -177,15 +157,9 @@ interface Run { case: string; base: string; width: string; expected: { id: strin
   bootOrder: { atCommit: BootOrder; afterApp: BootOrder }; lang: string; locale: string;
   boot: Record<string, unknown> | null; documentCsp: string | null; violations: string[]; errors: string[]; values: string[]; finalBackground: string; failures: string[] }
 
-/**
- * Whether the boot script set the theme before the parser finished, read from the order the page
- * latched (pageSetup), so the answer is the same whenever it is asked: before either event, between
- * them, or long after both.
- */
 function bootOrder(page: Page): Promise<BootOrder> {
   return page.evaluate(async () => {
     const signals = window as unknown as { __bootApplied: Promise<void>; __parsed: Promise<void>; __boot: { bootAt: number; parsedAt: number; bootBeforeParse: boolean } };
-    // either one has happened: the boot script ran first, or the parser ended without it
     await Promise.race([signals.__bootApplied, signals.__parsed]);
     const { bootAt, parsedAt, bootBeforeParse } = signals.__boot;
     return { bootAt, parsedAt, booted: bootAt >= 0 && (parsedAt < 0 || bootBeforeParse) };
@@ -201,7 +175,6 @@ const runs: Run[] = [];
 const warm: Record<string, unknown>[] = [];
 let failed = false;
 
-/** A static server for one build at one base, every answer with the app's policy, as server/static.ts sends it. */
 function serve(dir: string, prefix: string): string {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const csp = { "content-security-policy": CONTENT_SECURITY_POLICY };
@@ -219,7 +192,6 @@ function serve(dir: string, prefix: string): string {
   return `http://127.0.0.1:${server.port}${prefix}`;
 }
 
-/** Decodes a screencast frame in a page of its own: its center pixel and its mean luminance. */
 async function sample(decoder: Page, png: string): Promise<{ center: number[]; corner: number[]; luminance: number }> {
   return decoder.evaluate(async (data) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
@@ -236,12 +208,10 @@ async function sample(decoder: Page, png: string): Promise<{ center: number[]; c
         count++;
       }
     }
-    // the bottom-right corner: past the end of an unstyled app, so the page's own surface
     return { center: at(Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2)), corner: at(bitmap.width - 4, bitmap.height - 4), luminance: sum / count };
   }, png);
 }
 
-/** Resolves on the next screencast frame, or fails naming what it waited for. */
 function nextFrame(frames: { count: number; waiters: (() => void)[] }, what: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no frame was painted after ${what}`)), 15_000);
@@ -264,16 +234,19 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     let documentCsp: string | null = null;
     page.on("response", async (response) => {
       const address = new URL(response.url());
-      if (response.request().isNavigationRequest()) documentCsp = (await response.allHeaders())["content-security-policy"] ?? null;
+      if (response.request().isNavigationRequest()) {
+        const headers = await unlessGone(response, (answer) => answer.allHeaders());
+        if (headers) documentCsp = headers["content-security-policy"] ?? null;
+      }
       if (!/\/assets\/theme-bootstrap-[0-9a-f]{10}\.js$/.test(address.pathname)) return;
-      const body = await response.body();
+      const body = await unlessGone(response, (answer) => answer.body());
+      if (body === undefined) return;
       boot = { url: response.url(), sameOrigin: address.origin === origin, status: response.status(), contentType: response.headers()["content-type"],
         resourceType: response.request().resourceType(), fromServiceWorker: response.fromServiceWorker(), bytes: body.length,
         sha256: createHash("sha256").update(body).digest("hex"), csp: response.headers()["content-security-policy"] ?? null };
     });
     const bootFailures: string[] = [];
     page.on("requestfailed", (request) => { if (request.url().includes("theme-bootstrap")) bootFailures.push(`${request.url()} ${request.failure()?.errorText}`); });
-    // the gates: the stylesheet and the app's entry module wait until the check lets each through
     let openCss = (): void => undefined, openApp = (): void => undefined;
     const cssGate = new Promise<void>((resolve) => { openCss = resolve; });
     const appGate = new Promise<void>((resolve) => { openApp = resolve; });
@@ -305,13 +278,11 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     if (preCss.colorScheme !== mode) failures.push(`before the stylesheet color-scheme is ${preCss.colorScheme || "unset"}`);
     if (preCss.background !== `rgb(${bg.join(", ")})`) failures.push(`before the stylesheet the root background is ${preCss.background || "unset"}, expected ${row.bg}`);
     if (preCss.meta !== row.bgPanel) failures.push(`theme-color ${preCss.meta}, expected ${row.bgPanel}`);
-    // the stylesheet: the shell is drawn with it, the app still held
     const styled = nextFrame(frames, "the stylesheet");
     phase = item.cssFails ? "before the stylesheet" : "first styled shell";
     openCss();
     await page.evaluate(() => (window as unknown as { __cssLoaded: Promise<void> }).__cssLoaded);
     await styled;
-    // the app: React starts, applies the settings and hands the background back to the stylesheet
     phase = "first app frame";
     const appFrame = nextFrame(frames, "the app started");
     openApp();
@@ -320,7 +291,6 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     await cdp.send("Page.stopScreencast");
     cdp.removeAllListeners("Page.screencastFrame");
     await cdp.detach();
-    // asked again once the boot signal has long resolved and the document is past parsing: the same answer
     const afterApp = await bootOrder(page);
     if (afterApp.booted !== atCommit.booted || afterApp.bootAt !== atCommit.bootAt) failures.push(`the boot order read late (${JSON.stringify(afterApp)}) differs from the one read at commit (${JSON.stringify(atCommit)})`);
     const lang = await page.evaluate(() => document.documentElement.lang);
@@ -330,7 +300,6 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     const recorded = await page.evaluate(() => (window as unknown as { __boot: { violations: string[]; errors: { thrown: boolean; message: string }[]; values: string[] } }).__boot);
     // the errors main.tsx itself reports: not the browser's benign ResizeObserver notice
     const seen = { ...recorded, errors: recorded.errors.filter((error) => isReportableWindowError(error.thrown ? true : null, error.message)).map((error) => error.message) };
-    // without a stylesheet the root's own background is the page's surface, kept by the app; with one, the theme blocks draw it
     const finalBackground = await page.evaluate((failed) => getComputedStyle(failed ? document.documentElement : document.body).backgroundColor, item.cssFails ?? false);
     const rootInline = await page.evaluate(() => document.documentElement.style.backgroundColor);
     if (item.cssFails && rootInline !== `rgb(${bg.join(", ")})`) failures.push(`with no stylesheet the app left the root background at ${rootInline || "unset"}, expected ${row.bg}`);
@@ -350,8 +319,6 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     for (const frame of raw) {
       const { center, corner, luminance } = await sample(decoder, frame.png);
       const beforeApp = frame.phase === "before the stylesheet" || frame.phase === "first styled shell";
-      // before the app, the page is its surface alone; after, the app's own surfaces in the row's mode,
-      // or, with no stylesheet, the unstyled app on the saved surface
       const ok = beforeApp ? near(center, bg) : item.cssFails ? near(corner, bg) : (mode === "dark" ? luminance < 0.5 : luminance > 0.5);
       sampled.push({ phase: frame.phase, center, corner, luminance: Math.round(luminance * 1000) / 1000, ok, png: frame.png });
     }
@@ -374,11 +341,6 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
   }
 }
 
-/**
- * Waits until a service worker controls the page. The listener goes on before the current state is
- * read, in one evaluation, so a claim that lands between two calls cannot be missed; a page that is
- * already controlled answers at once. Bounded: a worker that never claims fails the check.
- */
 function controlled(page: Page): Promise<"already controlled" | "controllerchange"> {
   return page.evaluate((limit) => new Promise<"already controlled" | "controllerchange">((resolve, reject) => {
     const worker = navigator.serviceWorker;
@@ -397,7 +359,6 @@ function controlled(page: Page): Promise<"already controlled" | "controllerchang
   }), 30_000);
 }
 
-/** The cache public/sw.js keeps this build's shell in: CACHE_NAME, then the BUILD the build stamped. */
 function workerCache(worker: string): string | null {
   const name = /^const CACHE_NAME = "([^"]+)";$/m.exec(worker)?.[1];
   const build = /^const BUILD = "([^"]*)";$/m.exec(worker)?.[1];
@@ -421,7 +382,6 @@ async function warmServiceWorker(url: string): Promise<Record<string, unknown>> 
     const page = await context.newPage();
     await page.goto(url);
     await page.evaluate(async () => { await navigator.serviceWorker.ready; });
-    // the first load registered the worker; the next one is answered by it
     const firstControl = await controlled(page);
     const answered = async (response: Response): Promise<{ url: string; fromServiceWorker: boolean; status: number; sha256: string }> => ({ url: response.url(), fromServiceWorker: response.fromServiceWorker(),
       status: response.status(), sha256: createHash("sha256").update(await response.body()).digest("hex") });
@@ -429,12 +389,10 @@ async function warmServiceWorker(url: string): Promise<Record<string, unknown>> 
     await page.reload({ waitUntil: "commit" });
     const first = await answered(await kept);
     await page.evaluate(() => (window as unknown as { __appApplied: Promise<void> }).__appApplied);
-    // and once more, after the worker kept this shell's files
     const again = page.waitForResponse((response) => /\/assets\/theme-bootstrap-/.test(response.url()));
     await page.reload({ waitUntil: "commit" });
     const second = await answered(await again);
     await page.evaluate(() => (window as unknown as { __appApplied: Promise<void> }).__appApplied);
-    // a page the worker already controls: the same wait answers at once, without an event
     const reloadedControl = await controlled(page);
     const seen = await page.evaluate(() => (window as unknown as { __boot: { values: string[]; violations: string[] } }).__boot);
     const html = readFileSync(join(rootDir, "index.html"), "utf8");
@@ -474,12 +432,10 @@ async function warmServiceWorker(url: string): Promise<Record<string, unknown>> 
         return error instanceof TypeError ? "failed" : String(error);
       }
     }, `/assets/offline-probe-${Date.now()}.js`);
-    // a script the worker could not answer fails rather than answers: either one ends the wait
     const bootUrl = (address: string): boolean => /\/assets\/theme-bootstrap-/.test(address);
     const cutAnswer = page.waitForResponse((response) => bootUrl(response.url())).then(answered);
     const cutFailure = page.waitForEvent("requestfailed", (request) => bootUrl(request.url()))
       .then((request) => ({ url: request.url(), fromServiceWorker: false, status: 0, sha256: `failed: ${request.failure()?.errorText ?? "unknown"}` }));
-    // the one that loses is still pending when the context closes, which rejects it
     cutAnswer.catch(() => undefined);
     cutFailure.catch(() => undefined);
     await page.reload({ waitUntil: "commit" });

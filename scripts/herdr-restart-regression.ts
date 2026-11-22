@@ -1,4 +1,3 @@
-/** A restored pane keeps its ID but gets a new terminal: the open browser must attach to it. */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,7 +76,6 @@ function frame(socket: BrowserSocket, label: string, accepts: (message: ServerMe
 }
 
 try {
-  // Given an attached browser and its own persisted shell pane.
   await startHerdr();
   const made = await workspaceCreate({ cwd: root, label: "restart-regression" }, socketPath);
   const pane = made.root_pane.pane_id;
@@ -100,12 +98,10 @@ try {
   const socket = await opened;
   assert.ok(initial);
   await initial;
-  // Visit the other workspace once: its cached renderer must not acquire a new attachment.
   const otherReady = frame(socket, "other pane ready", (m) => m.type === "input-ready" && m.pane_id === other && m.ready !== false);
   await page.locator(`.pane-select[title^="${other} —"]`).click();
   await otherReady;
   await page.locator(`.pane-select[title^="${pane} —"]`).click();
-  // A warm tab keeps its original attachment, so returning needs no new input-ready receipt.
   await page.locator(`[data-layout-pane="${pane}"] [data-pane-content]`).waitFor();
   const attaches: string[] = [];
   socket.on("framesent", ({ payload }) => {
@@ -117,13 +113,11 @@ try {
   console.log("Before restart", { pane: original.pane_id, terminal: original.terminal_id });
   await page.evaluate(() => { document.documentElement.dataset.restartProof = "same-document"; });
 
-  // When herdr stays down until the bridge ends the old attach, then restores the same pane.
   const ended = frame(socket, "old attachment exited", (m) => m.type === "pty-exit" && m.pane_id === pane);
   await stopHerdr();
   console.log("Old attachment", await ended);
   const recovered = frame(socket, "open pane automatically reattaches after herdr restart",
     (m) => m.type === "input-ready" && m.pane_id === pane && m.ready !== false);
-  // Handle failure immediately while the restored roster is inspected.
   const recovery = recovered.then(() => null, (error: unknown) => error);
   await startHerdr();
   const restored = (await sessionSnapshot(socketPath)).panes.find((p) => p.pane_id === pane);
@@ -136,7 +130,6 @@ try {
     throw failure;
   }
 
-  // Then the original document accepts fresh input, renders it and clears the ended state.
   await page.locator(`[data-layout-pane="${pane}"] .xterm-helper-textarea`).focus();
   const output = frame(socket, "fresh command output", (m) => m.type === "pty-data" && m.pane_id === pane && m.data.includes("REATTACH-OK"));
   // The echoed command does not contain the output sentinel, so only execution satisfies it.

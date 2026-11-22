@@ -6,13 +6,9 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// Settings → Appearance → Interface font on the unmodified app over the demo's fixture transport,
-// at a phone's and a desktop's width: a preset and a typed list go in front of the built-in stack
-// as --font-ui on <html>, what is set in it follows, a reload keeps the choice, Default gives the
-// stylesheet its token back, and code keeps --font-mono. The message box takes the Chat font, as
-// the transcript does (#1904). All files and HTTP traffic stay in this disposable, loopback-only
-// app; no herdr session is opened. Screenshots go to UI_EVIDENCE_DIR when it is set.
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-interface-font-demo-"));
 const BUILT_IN = readFileSync(join(repo, "src/styles.css"), "utf8").match(/--font-ui:\s*([^;]+);/)![1]!.trim();
@@ -20,7 +16,6 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 
 const token = (page: Page): Promise<string> => page.evaluate(() => document.documentElement.style.getPropertyValue("--font-ui"));
 const fontOf = (page: Page, selector: string): Promise<string> => page.locator(selector).first().evaluate((node) => getComputedStyle(node).fontFamily);
-// the interface font is kept in a key of its own (lib/settings.ts), not in ovis:settings
 const stored = (page: Page): Promise<unknown> => page.evaluate(() => {
   const raw = localStorage.getItem("ovis:ui-font");
   return { own: raw === null ? null : JSON.parse(raw), inMain: "uiFontFamily" in JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") };
@@ -47,17 +42,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   origin = `http://127.0.0.1:${server.port}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

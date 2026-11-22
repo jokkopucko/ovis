@@ -3,7 +3,7 @@ import { piAskTabs } from "./pi-ask-tabs.ts";
 import { ANSI_RE, KEY, type AnswerStep, type OmoAsk, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, keySteps, navigationKeys, normalizeText, own } from "./shared.ts";
 
 // rpiv-ask-user-question uses ui.custom, not Pi's native select widget. Its numbered
-// rows are cursor positions, NOT numeric shortcuts. Keep it separate from pi.ts.
+// rows are cursor positions, NOT numeric shortcuts.
 const HINT_RE = /^Enter to select · ↑\/↓ to navigate(?: ·.*|…)?$/;
 const RULE_RE = /^─{8,}$/;
 const ROW_RE = /^(❯ | {2})(\d+)\.\s*(.*)$/;
@@ -17,7 +17,6 @@ function formTabs(frame: Frame) {
   return raw ? piAskTabs(raw) : null;
 }
 
-/** Only the widget's own hint, optionally followed by Pi's folder/context footer, may own input. */
 function frame(screen: string): Frame | null {
   const rawLines = screen.replace(CURSOR_APC_RE, "").split(/\r?\n/).map(line => line.trimEnd());
   const lines = rawLines.map(line => line.replace(ANSI_RE, ""));
@@ -27,7 +26,6 @@ function frame(screen: string): Frame | null {
   if (tail.length) {
     // Standalone overlay: no footer. Inline editor: folder + context directly under the
     // widget's hint; native/older compositions can put a rule before those same two lines.
-    // Never accept a new composer or arbitrary output after a stale copy of the widget.
     const footer = RULE_RE.test(tail[0] ?? "") ? tail.slice(1) : tail;
     if (footer.length !== 2
       || !/^(?:[A-Za-z]:[\\/]|[~\/])/.test(footer[0] ?? "")
@@ -38,7 +36,7 @@ function frame(screen: string): Frame | null {
   const top = findLastIndex(lines.slice(0, bottom), line => RULE_RE.test(line));
   if (top < 0 || bottom < 0) return null;
   // Notes editors add their own rules; side-by-side previews add a second column. Neither
-  // is a complete, unambiguous row list in a plain screen mirror. Leave those to Terminal.
+  // is a complete, unambiguous row list in a plain screen mirror.
   if (lines.slice(top + 1, bottom).some(line => /[│┌┐└┘]|^\s*(?:Notes:|Global note:|Note for this answer:)/.test(line))) return null;
   return { lines, rawLines, hint: lines[hintIndex]!.trim(), top, bottom, hintIndex };
 }
@@ -73,8 +71,7 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
     || (multi !== (next !== null)) || (!multi && /Space to toggle/.test(hint))) return null;
   if (rows.filter(row => row.selected).length + Number(next?.selected ?? false) !== 1) return null;
   const other = rows.at(-1)!;
-  // Focusing Other immediately opens the inline editor: its placeholder disappears. This
-  // variant is identified by the input-specific hint, never by arbitrary numbered prose.
+  // Focusing Other immediately opens the inline editor: its placeholder disappears.
   const typing = other.selected && /Shift\+Enter for newline|Ctrl\+U to clear/.test(hint);
   if (other.label !== OTHER && !typing && !expected) return null;
   if (other.description.length || rows.slice(0, -1).some(row => !row.label || /…$/.test(row.label))) return null;
@@ -122,7 +119,7 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
       can_step_next: navigable && tabs.steps[tabs.index! + 1]?.can_navigate === true } : {}),
   }, {
     ...(navigable ? { piAskForm: { identity: `${expected?.id ?? ""}\0${tabs!.identity}`, index: tabs!.index! } } : {}),
-    ...(typing ? { piAskTyping: true as const } : {}),
+    ...(typing ? { piAskTyping: true as const, piAskDraft: other.label.trim() } : {}),
     responder: "pi-ask-question", menuLabels: [...options.map(option => option.label), OTHER, ...(next ? [next.label] : [])],
     selectedIndex, checkedOptionIndices: checked, customMenuIndex: multi ? null : custom, rejectWithEscapeIndex: null,
     ...(!multi ? { customSteps: (text: string): AnswerStep[] => [
@@ -160,8 +157,6 @@ function review(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
   const missing = questions.filter(step => !step.answered);
   const caption = normalizeText(picker.slice(0, -2).join("\n"));
   if (caption !== (missing.length ? `⚠ Answer remaining questions before submitting: ${missing.map(step => step.label).join(", ")}` : "Ready to submit your answers?")) return null;
-  // Reuse Ovis's review <dl>, not an ASCII/monospace copy of the terminal widget.
-  // Answered headers must appear once in native order; a clipped summary is not complete.
   const answered = questions.filter(step => step.answered);
   const summaries: { question: string; answer: string | null }[] = [];
   for (const line of lines.slice(top + 1, bottom).map(cleanLine).filter(Boolean)) {
