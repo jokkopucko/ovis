@@ -3,6 +3,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList, type ListOffer } from "../account/accountList.ts";
+import { deviceCard, deviceListKeys } from "../account/listKeys.ts";
 import { listReading, pcsByList, allOutside, unreadCopy } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
@@ -597,6 +598,50 @@ export function createAccountController(mount: RelayShellMount, view: {
     await refresh(true, false, registrationJustTried);
   };
   /**
+   * This device's card for the list of the account `session` signed in to, which it waits to be let into, for the key
+   * `key` the join signs with; null for a device that is in a list, or whose claim of that key does not stand. The
+   * claim is resolved for the join by a read of the list made now, which also makes it again where it is due: a view
+   * drawn before the page slept, or before its first read landed, says nothing of a claim that lasts ten minutes.
+   */
+  /** The account each list a join brought this device's card for belongs to: the place a PC hands back is that account's. */
+  const cardAccounts = new Map<string, string>();
+  const cardFor = async (session: AccountSession, key: AccountKey): Promise<{ readonly list: string; readonly enc: string; readonly card: string } | null> => {
+    if (lists === null) return null;
+    try {
+      const view = await lists.sync();
+      if (view.account !== session.account || view.status.at !== "not_in" || view.status.why !== "not_mine" || view.status.claim !== "claimed") return null;
+      // the sign-in and the key the claim was read for are the join's own: one replaced meanwhile gets no card
+      const now = await account.session();
+      const keys = await deviceListKeys(accountStore);
+      if (now === undefined || !sameSignIn(now, session) || keys.key !== key.public_spki) return null;
+      const made = await deviceCard(keys, view.status.list);
+      cardAccounts.set(view.status.list, session.account);
+      return { list: view.status.list, enc: made.enc, card: made.card };
+    } catch (error) {
+      console.warn("Ovis: this device's card for the account's list could not be made", error instanceof Error ? error.name : error);
+      return null;
+    }
+  };
+  /**
+   * The place in the account's list a PC handed this device when it let it in (RelayChannel.listPlace): the device
+   * follows the list from there, by its own read of the log, and its key for it is read with the account's PCs. The
+   * place is the account's the card was made for, and is kept for that account alone, whatever sign-in is stored
+   * when it lands: one that ended meanwhile, or another account's, leaves it for a sign-in to that account again.
+   * True where that account is the one this page shows after the read that follows (the one its list key is for), so
+   * the PC may be opened anew with that key.
+   */
+  const takePlace = async (place: { readonly id: string; readonly seq: number; readonly hash: string }): Promise<boolean> => {
+    const owner = cardAccounts.get(place.id);
+    if (lists === null || owner === undefined) return false;
+    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }, owner).catch((error: unknown) => {
+      if (error instanceof SignedOutError) throw error;
+      console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
+    });
+    await refresh(false, true);
+    // the sign-in this read put in view, which `listKey` answers for: never one read before it
+    return accountView?.kind === "signed-in" && shownFor?.account === owner;
+  };
+  /**
    * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
    * A sign-in: the confirm named its account, and a pairing under any other sign-in, or none, is refused.
    */
@@ -663,7 +708,14 @@ export function createAccountController(mount: RelayShellMount, view: {
       catch (error) { console.warn("Ovis: the account service did not take the join; pairing this PC only", error instanceof Error ? error.name : error); }
     }
     signal.throwIfAborted();
-    return key ? { accountKey: key, intent } : {};
+    // A device that waits to be let into its account's signed list, its claim of its key standing: the join brings its
+    // card, for a PC that lets devices in by that list (docs/account.md, "A PC allows a device into the list"). Any
+    // other PC never sees it.
+    const listCard = intent === "account" && session !== undefined && key !== undefined ? await cardFor(session, key) : null;
+    signal.throwIfAborted();
+    const prepared: { accountKey?: AccountKey; intent?: "pc" | "account"; listCard?: { readonly list: string; readonly enc: string; readonly card: string } } =
+      key ? { accountKey: key, intent, ...(listCard === null ? {} : { listCard }) } : {};
+    return prepared;
   };
   /**
    * `introducible`: the pairing was just made without a code, so a member of the account may have approved it and
@@ -1040,7 +1092,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     const view = lists?.view();
     return copyUnread !== null || (view !== undefined && view.account !== null && view.status.at !== "off");
   };
-  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, get knowsList() { return knowsList(); },
+  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

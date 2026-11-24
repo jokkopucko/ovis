@@ -134,6 +134,23 @@ describe("the Add-a-PC sheet", () => {
     expect([calls.cancels, calls.closes, calls.matches]).toEqual([1, 1, []]);
   });
 
+  it("keeps a join into the account's list on that sheet until this device's person presses The numbers match, then the number alone", async () => {
+    for (const approveOn of [undefined, "mac"] as const) {
+      const state = { kind: "compare", name: "desk2", digits: "123456", challenge: 1, alone: true, ...(approveOn === undefined ? {} : { approveOn }) } as const;
+      await mount(props("join", pcOf(), { ...state, confirmed: false }));
+      expect(renderer!.root.findByProps({ role: "dialog" }).props["data-add-pc-phase"]).toBe("compare");
+      expect(text(renderer!.root.findByProps({ className: "relay-shell-digits" }))).toBe("123 456");
+      expect(renderer!.root.findAll((instance) => instance.type === "p" && instance.props.className === "relay-shell-copy").map(text)).toEqual([translate("en", "Check that this number matches where you approve, then approve.")]);
+      expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Cancel", "The numbers match"]);
+      await click("The numbers match");
+      expect(calls.matches).toEqual([[]]);
+      await update(props("join", pcOf(), { ...state, confirmed: true }));
+      expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Cancel"]);
+      await act(async () => { renderer!.unmount(); });
+      calls.matches = [];
+    }
+  });
+
   it("tells the first phone of a PC with no member to press Allow on that PC, named by its system, in one line under the number", async () => {
     const lines = { mac: "Press [Allow] on your Mac", windows: "Press [Allow] on your PC", linux: "Press [Allow] on your Linux PC", pc: "Press [Allow] on your PC" } as const;
     for (const [approveOn, key] of Object.entries(lines) as [keyof typeof lines, string][]) {
@@ -471,6 +488,17 @@ describe("the Add-a-PC sheet", () => {
       await act(async () => { renderer!.unmount(); jest.runAllTimers(); });
     } finally {
       jest.useRealTimers();
+    }
+  });
+
+  it("says of a join into the list that the PC did not see the device's entry in time, never that the account's list did not take it", () => {
+    const id = (s: string, vars?: Record<string, string | number>) => vars ? s.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "")) : s;
+    for (const flow of [undefined, "new", "join"] as const) {
+      const said = relayFailureText(id, "list-not-in", "desk2", null, flow);
+      expect(said).toMatchObject({ title: "desk2 did not let this device in", retry: true });
+      expect(said.copy).toBe("It was approved, and desk2 did not see it in your account's list in time. Ask to join again, and approve it on a device of your account or on desk2 itself.");
+      expect(`${said.title} ${said.copy}`).not.toContain("did not take it");
+      expect(said.title).not.toContain("not added to your account");
     }
   });
 

@@ -24,7 +24,13 @@ afterEach(() => {
   setTransport(nativeTransport);
 });
 
-async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, listKey = false } = {}) {
+async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, features, listPlace, listKey = false }: {
+  relay?: string; unreachable?: number;
+  /** what the PC selected in its answer to HELLO, and the place in its account's list it handed a device it let in */
+  features?: readonly string[]; listPlace?: { readonly id: string; readonly seq: number; readonly hash: string };
+  /** the device signs in with the key its account's list holds for it */
+  listKey?: boolean;
+} = {}) {
   const app = relayFixture();
   cleanups.push(() => app.close());
   const device = await relayDevice(app);
@@ -75,7 +81,8 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
       carriers.push(carrier);
       return {
         get carrierOpen() { return carrier.open; },
-        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16), server: { version: "0.4.20", relayProtocol: 1 },
+        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16), server: { version: "0.4.20", relayProtocol: 1, ...(features === undefined ? {} : { features }) },
+        ...(listPlace === undefined ? {} : { listPlace }),
         device: { server_id: offer.server_id, device_id: device.id, private_key: device.keys.privateKey,
           public_spki: device.publicKey, label: "Test", server_public_key: "", relay: offer.relay },
         close: () => connection.stop(),
@@ -121,6 +128,14 @@ async function saturated() {
   const responses = await Promise.all(Array.from({ length: 12 }, (_, i) => f.transport.fetch(`/api/held/${i}`)));
   return { ...f, requested, responses };
 }
+
+it("says whether the PC lets its account's devices in by the list, and the place it handed a device it let in", async () => {
+  const place = { id: "5c".repeat(32), seq: 2, hash: "ab".repeat(32) };
+  for (const [features, listPlace, follows] of [[["account", "account-list-1"], place, true], [["account"], undefined, false], [undefined, undefined, false]] as const) {
+    const { transport } = await fixture({}, { ...(features === undefined ? {} : { features }), ...(listPlace === undefined ? {} : { listPlace }) });
+    expect([transport.followsList, transport.listPlace]).toEqual([follows, listPlace]);
+  }
+});
 
 it("queues HTTP behind eight WS and twelve HTTP streams until a receive reservation is released", async () => {
   const f = await saturated();

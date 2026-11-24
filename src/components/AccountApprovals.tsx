@@ -9,9 +9,9 @@ import { createPortal } from "react-dom";
 
 import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
-import { AdmissionChangedError, admitWithList, approveJoin, ListAllowError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
-import type { AllowScope } from "../lib/account/listAllow.ts";
+import { AdmissionChangedError, approveForAccount, ListAllowError, NotConfirmedError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
 import { resendWaiting } from "../lib/account/listWrite.ts";
+import type { AccountList, WaitingRequest } from "../lib/account/accountList.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountServiceOf, AccountService, type Admission } from "../lib/account/service.ts";
@@ -21,7 +21,7 @@ import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
 import { AccountApprovalPrompt } from "./AccountApprovalPrompt.tsx";
-import { keepStalled, ListAllowNotice, NotReadError, useWaitingChange, type Stalled } from "./ListChangeNotice.tsx";
+import { keepStalled, ListAllowNotice, NotReadError, stalledReason, useWaitingChange, type Stalled } from "./ListChangeNotice.tsx";
 import { VouchedPcApproval } from "./VouchedPcApproval.tsx";
 
 /**
@@ -29,6 +29,24 @@ import { VouchedPcApproval } from "./VouchedPcApproval.tsx";
  * (approveJoin): an account join, or another PC of the account vouched for. Any other request is answered on the PC only.
  */
 export const restsOnAdmission = (request: RemotePairingRequest | undefined): boolean => request?.intent === "account" || request?.vouched === true;
+
+/**
+ * The request that waits at this device's head for `account`, the one an approval began under: a sign-in that moved to
+ * another account meanwhile leaves the page's list another account's, whose request is not this card's to send or let go.
+ */
+export async function waitingOf(list: AccountList | null, account: string): Promise<WaitingRequest | null> {
+  const request = list === null ? null : await list.waiting().catch(() => null);
+  return request !== null && request.account === account ? request : null;
+}
+
+/**
+ * What the card says where an approval ended before the PC said that the new device confirmed (NotConfirmedError). A
+ * join that brought its card waits for its person's press. One that brought none is a pairing of that PC's own: no
+ * device is ever told that it confirmed, so it is approved on that PC's own screen.
+ */
+export function unconfirmedReason(t: (key: string, vars?: Record<string, string>) => string, request: RemotePairingRequest, device: string, pc: string): string {
+  return request.list === true ? t("First press “The numbers match” on {device}", { device }) : t("Approve {device} on {pc}'s own screen", { device, pc });
+}
 
 export function AccountApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
   // The devices this PC let in that the account's list did not take, each kept until it is let in or closed. They are
@@ -101,6 +119,10 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
 
   if (request === undefined || serverId === null) return null;
 
+  const known = asker?.id === request.id ? asker : null;
+  // an account join shows the name the device gave the account service; a request for this PC only has no admission
+  const deviceName = known?.admission?.label ?? (accountLabel(request.label) || t("Device"));
+
   const decide = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
     if (decision === "decline" || digits === undefined) { await decideRelayPairing(request.id, "decline"); return; }
     const service = new AccountService({ store: indexedAccountStore });
@@ -112,52 +134,40 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
     try {
       // what the card showed, or null when it showed no admission: approveJoin takes no other
       const shown = asker?.id === request.id ? asker.admission : null;
-      await approveJoin({
+      await approveForAccount({
         request, digits, through: serverId, service, shown,
         decide: (answer, picked) => decideRelayPairing(request.id, answer, picked),
-        admit: async (admission) => {
-          // what this approval is bound to, for the first try and every Try again: the account it began under, and the
-          // list and the member key of its first read
-          const scope: AllowScope = { account: session!.account };
-          const admitted = async (): Promise<void> => {
-            await admitWithList(pageAccountList(), {
-              fetch: (path, init) => transport.fetch(path, init), service, key: await indexedAccountStore.key(), account: session!.account, scope,
-              joining: { key: request.key, label: admission.label, os: admission.os }, through: serverId, paired: await indexedDeviceStore.list(),
-              directory: (await service.listPcs()).map((pc) => pc.server_id), store: indexedAccountStore,
-            });
-          };
-          // This PC let the device in already, and its request is gone from here: where the account's list did not take
-          // it, that is said on a card of its own, which can try again.
-          const attempt = async (): Promise<void> => {
-            try {
-              await admitted();
-              onStalled(request.key, null);
-            } catch (error) {
-              // anything else failed after the list took the device (the introduction, the account's other PCs): the
-              // card, which says that the list did not take it, goes, and the failure is the caller's to say
-              if (!(error instanceof ListAllowError)) { onStalled(request.key, null); throw error; }
-              // A signed request may wait at this device's head: this approval's own, or an earlier change's that holds
-              // it back (`waiting`). The card is the card of that very request: Cancel lets it go and no other, and where
-              // it is the earlier change's, Try again sends that one first.
-              const list = pageAccountList();
-              const waits = error.why === "busy" || error.why === "unknown" || error.why === "stopped" || error.why === "waiting";
-              const kept = waits && list !== null ? await list.waiting().catch(() => null) : null;
-              const retry = error.why === "waiting" && kept !== null && list !== null ? async (): Promise<void> => { await resendWaiting(list, kept); await attempt(); } : attempt;
-              onStalled(request.key, { key: request.key, device: admission.label, pc: where.pcName, why: error.why, retryAfterMs: error.retryAfterMs, retry,
-                // Cancel reads the log first: a request that was placed after all is this approval going through, which
-                // is then finished; one whose outcome cannot be read is not let go, and the card stays
-                ...(kept !== null && list !== null ? { cancel: async () => {
-                  const said = await list.cancel(kept);
-                  if (said === "unread") throw new NotReadError();
-                  if (said === "placed" && kept.for === `allow:${request.key}`) await attempt();
-                } } : {}) });
-            }
-          };
-          await attempt();
+        // a PC that selected the list for this session lets devices in by it alone: the entry is signed right after the approval
+        pc: { fetch: (path, init) => transport.fetch(path, init), followsList: transport.followsList === true },
+        account: session!.account, key: indexedAccountStore.key(), list: pageAccountList(), store: indexedAccountStore,
+        paired: () => indexedDeviceStore.list(), directory: async () => (await service.listPcs()).map((pc) => pc.server_id),
+        // This PC let the device in already, and its request is gone from here: where the account's list did not take
+        // it, that is said on a card of its own, which can try again.
+        onStalled: async (stalled) => {
+          if (stalled === null) { onStalled(request.key, null); return; }
+          // A signed request may wait at this device's head: this approval's own, or an earlier change's that holds
+          // it back (`waiting`). The card is the card of that very request: Cancel lets it go and no other, and where
+          // it is the earlier change's, Try again sends that one first.
+          const list = pageAccountList();
+          const waits = stalled.why === "busy" || stalled.why === "unknown" || stalled.why === "stopped" || stalled.why === "waiting";
+          const kept = waits ? await waitingOf(list, session!.account) : null;
+          const retry = stalled.why === "waiting" && kept !== null && list !== null ? async (): Promise<void> => { await resendWaiting(list, kept); await stalled.retry(); } : stalled.retry;
+          onStalled(request.key, { key: request.key, device: stalled.label, pc: where.pcName, pairedAtPc: stalled.pairedAtPc, placed: stalled.placed, why: stalled.why, retryAfterMs: stalled.retryAfterMs, retry,
+            // Cancel reads the log first: a request that was placed after all is this approval going through, which
+            // is then finished; one whose outcome cannot be read is not let go, and the card stays
+            ...(kept !== null && list !== null ? { cancel: async () => {
+              const said = await list.cancel(kept);
+              if (said === "unread") throw new NotReadError();
+              if (said === "placed" && kept.for === `allow:${request.key}`) await stalled.retry();
+            } } : {}) });
         },
       });
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));
+      // this PC lets devices in by the account's list alone, and this device cannot write that list: nothing was approved
+      if (error instanceof ListAllowError) throw new Error(stalledReason(t, error.why, error.retryAfterMs));
+      // nor where the new device's person has not said yet that the numbers match
+      if (error instanceof NotConfirmedError) throw new Error(unconfirmedReason(t, request, deviceName, where.pcName));
       if (error instanceof AdmissionChangedError) {
         // Approve waits again until the new details are read (and the card's pick is cleared with them)
         setAsker(null);
@@ -168,9 +178,7 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
     }
   };
 
-  const known = asker?.id === request.id ? asker : null;
-  // an account join shows the name the device gave the account service; a request for this PC only has no admission
-  const shown = { ...request, label: known?.admission?.label ?? (accountLabel(request.label) || t("Device")) };
-  return <AccountApprovalPrompt key={request.id} request={shown} pcName={where.pcName} pcCount={where.pcCount}
+  const shown = { ...request, label: deviceName };
+  return <AccountApprovalPrompt key={request.id} request={shown} pcName={where.pcName} pcCount={where.pcCount} followsList={getTransport().followsList === true}
     asker={checked ? known?.asker : null} onDecide={decide} />;
 }

@@ -513,8 +513,10 @@ export interface AccountList {
    * A member that let this device in handed it this place, over the PC the device compared digits with. It is kept
    * as an offer, and a round follows: the device follows that list only once the log shows its own key let in up to
    * that very entry, and until then it follows nothing. A device that follows a list already takes no offer.
+   * `account`: the account the place was handed for (the join's own). A sign-in that ended meanwhile keeps the offer for
+   * that account, and the first round of a sign-in to it takes it up; without it, the offer is the stored sign-in's.
    */
-  adopt(offer: ListOffer): Promise<AccountListView>;
+  adopt(offer: ListOffer, account?: string): Promise<AccountListView>;
   /**
    * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
    * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
@@ -559,7 +561,7 @@ export function accountList(options: AccountListOptions): AccountList {
   /** When the account service last said that it keeps no list for the account in view, in seconds; null otherwise. */
   let offAt: number | null = null;
   /** The list this device last claimed its key for, and when, in seconds. */
-  let claimedAt: { readonly account: string; readonly list: string; readonly at: number } | null = null;
+  let claimedAt: { readonly account: string; readonly list: string; readonly key: string; readonly at: number } | null = null;
   /** The keys and the sign-in of the last round, for a writer. */
   let ctx: { readonly account: string; readonly keys: DeviceListKeys; readonly bound: AccountService } | null = null;
   let running: Promise<AccountListView> | null = null;
@@ -818,7 +820,8 @@ export function accountList(options: AccountListOptions): AccountList {
    */
   const claim = async (bound: AccountService, account: string, keys: DeviceListKeys, list: string, before: ListClaimState, signal: AbortSignal): Promise<ListClaimState> => {
     const at = seconds();
-    if (claimedAt !== null && claimedAt.account === account && claimedAt.list === list && at >= claimedAt.at && at - claimedAt.at < CLAIM_RENEW_SECONDS) return "claimed";
+    // a claim kept for the key it was made for: another page may have put a new key in the store all pages share
+    if (claimedAt !== null && claimedAt.account === account && claimedAt.list === list && claimedAt.key === keys.key && at >= claimedAt.at && at - claimedAt.at < CLAIM_RENEW_SECONDS) return "claimed";
     try {
       await bound.claimListKey(list, await deviceCard(keys, list), signal);
     } catch (error) {
@@ -830,7 +833,7 @@ export function accountList(options: AccountListOptions): AccountList {
       if (said.status === 403 && said.code === "own_sign_in_required") return "not_own_sign_in";
       return said.status === 403 && (said.code === "frozen" || said.code === "session_not_fresh") ? said.code : "refused";
     }
-    claimedAt = { account, list, at };
+    claimedAt = { account, list, key: keys.key, at };
     return "claimed";
   };
 
@@ -1180,15 +1183,16 @@ export function accountList(options: AccountListOptions): AccountList {
       await this.unkeep(now.writer.account, now.kept);
       return "gone";
     },
-    async adopt(offer) {
+    async adopt(offer, account) {
       const session = await service.session();
       const read = readOffer({ v: RECORD_VERSION, ...offer });
-      if (session === undefined || read === null) return shown;
-      await lock(session.account, async () => {
+      const under = account ?? session?.account;
+      if (under === undefined || read === null) return shown;
+      await lock(under, async () => {
         // a device that follows a list keeps to it: a pin is one-way
-        if (await store.get("copy", session.account) === undefined) await store.set("offer", session.account, { v: RECORD_VERSION, ...read });
+        if (await store.get("copy", under) === undefined) await store.set("offer", under, { v: RECORD_VERSION, ...read });
       });
-      return sync();
+      return session !== undefined && session.account === under ? sync() : shown;
     },
     placeAt(seq) {
       const text = held?.copy?.entries[seq];

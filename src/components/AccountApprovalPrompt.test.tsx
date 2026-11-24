@@ -42,7 +42,7 @@ describe("approving a device that asks to join the account", () => {
   const request: RemotePairingRequest = { id: "r1", label: "Hako's iPhone", intent: "account", choices: ["111111", "222222", "333333"], expires_at: "", key: "k" };
 
   type Decision = [decision: "approve" | "decline", digits?: string];
-  async function onCard<T>(asker: Asker | undefined, decided: Decision[], walk: (root: ReturnType<typeof create>["root"]) => Promise<T>, pc?: { name?: string }): Promise<T> {
+  async function onCard<T>(asker: Asker | undefined, decided: Decision[], walk: (root: ReturnType<typeof create>["root"]) => Promise<T>, pc?: { name?: string }, told: { list?: true; confirmed?: true } = {}, followsList = false): Promise<T> {
     const keys = ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"];
     const saved = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     const events = new EventTarget();
@@ -62,7 +62,7 @@ describe("approving a device that asks to join the account", () => {
     let renderer: ReturnType<typeof create> | undefined;
     try {
       await act(async () => {
-        renderer = create(createElement(SettingsProvider, null, createElement(AccountApprovalCard, { request: pc ? { ...request, intent: "pc", vouched: true } : request, vouchedName: pc?.name, pcName: "p620", pcCount: 2, asker, onDecide: async (...decision: Decision) => { decided.push(decision); } })),
+        renderer = create(createElement(SettingsProvider, null, createElement(AccountApprovalCard, { request: pc ? { ...request, intent: "pc", vouched: true } : { ...request, ...told }, vouchedName: pc?.name, pcName: "p620", pcCount: 2, asker, followsList, onDecide: async (...decision: Decision) => { decided.push(decision); } })),
           { createNodeMock: () => ({ focus() {}, contains: () => true, querySelectorAll: () => [] }) });
       });
       return await walk(renderer!.root);
@@ -111,6 +111,28 @@ describe("approving a device that asks to join the account", () => {
       after: { checked: [false, true, false], approveHeld: false },
     });
     expect(decided).toEqual([["approve", "222222"]]);
+  });
+
+  it("holds Approve for a join into the account's list until the new device's person said that the numbers match, and says what to press there", async () => {
+    const held = (told: { list?: true; confirmed?: true }) => onCard({ os: null, country: null, city: null }, [], async (root) => {
+      await act(async () => { radios(root)[1]!.props.onClick(); });
+      return { approveHeld: approveOf(root).props.disabled === true, says: root.findAll((node) => node.props.className === "account-approval-hint" && node.props.role === "status").map((node) => node.children.join("")) };
+    }, undefined, told);
+    expect(await held({ list: true })).toEqual({ approveHeld: true, says: ["First press “The numbers match” on Hako's iPhone"] });
+    expect(await held({ list: true, confirmed: true })).toEqual({ approveHeld: false, says: [] });
+    // any other join is approved as before, whether or not the device confirmed yet
+    expect(await held({})).toEqual({ approveHeld: false, says: [] });
+  });
+
+  it("holds Approve for a join that brought no card on a PC that lets devices in by the list, and says to approve it on that PC's own screen", async () => {
+    const held = (told: { list?: true; confirmed?: true }, followsList: boolean) => onCard({ os: null, country: null, city: null }, [], async (root) => {
+      await act(async () => { radios(root)[1]!.props.onClick(); });
+      return { approveHeld: approveOf(root).props.disabled === true, says: root.findAll((node) => node.props.className === "account-approval-hint" && node.props.role === "status").map((node) => node.children.join("")) };
+    }, undefined, told, followsList);
+    expect(await held({}, true)).toEqual({ approveHeld: true, says: ["Approve Hako's iPhone on p620's own screen"] });
+    // a carded join there waits for the press as before, and on a PC that follows no list nothing changes
+    expect(await held({ list: true, confirmed: true }, true)).toEqual({ approveHeld: false, says: [] });
+    expect(await held({}, false)).toEqual({ approveHeld: false, says: [] });
   });
 
   it("waits to approve until it knows who is asking, then lets a picked number approve", async () => {

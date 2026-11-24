@@ -1,6 +1,6 @@
 import type { MuxClock, WsStream } from "../../../shared/relay-mux-engine.ts";
 import { MuxStreamError } from "../../../shared/relay-mux-engine.ts";
-import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_FEATURE, LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
@@ -520,6 +520,12 @@ export class RelayTransport implements Transport {
 
   /** The PC's row this session signed in, or was admitted, as: the one its channel saved. Undefined while none is open. */
   get deviceId(): string | null | undefined { return this.channel?.device.device_id; }
+
+  /** Whether the PC lets its account's devices in by the account's signed list alone: it selected ACCOUNT_LIST_FEATURE, which only a PC pinned to its list does. */
+  get followsList(): boolean { return this.known?.features?.includes(ACCOUNT_LIST_FEATURE) === true; }
+
+  /** The place in its account's list the PC handed this device when it let it in by a join that brought its card (RelayChannel.listPlace). */
+  get listPlace(): { readonly id: string; readonly seq: number; readonly hash: string } | undefined { return this.channel?.listPlace; }
 
   get route(): "relay" | "direct" | undefined { return this.channel ? this.channel.direct === undefined ? "relay" : "direct" : undefined; }
 

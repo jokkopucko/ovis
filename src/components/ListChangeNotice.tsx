@@ -21,6 +21,10 @@ export const WAITING = "waiting";
 /** A device this PC let in that the account's signed list did not take: who it is (`key`, its account key), why, and what trying again does. */
 export interface Stalled {
   readonly key: string; readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retryAfterMs?: number | null; readonly retry: () => Promise<void>;
+  /** The PC let the device in by a pairing of its own: false on a PC that lets devices in by the list alone, which made none. */
+  readonly pairedAtPc: boolean;
+  /** The list took the device, and what stopped is what was to follow its entry: it is in the list, whatever else is said. */
+  readonly placed?: boolean;
   /**
    * A request signed for it still waits at this device's head: Cancel lets it go, so that another change can be made.
    * It throws where nothing was let go (the log could not be read): the card then stays.
@@ -67,9 +71,12 @@ export function ListAllowNotice({ stalled, onClose }: { stalled: Stalled; onClos
     catch (error) { console.warn("Ovis: the device was not added to the account", error instanceof Error ? error.name : error); }
     finally { setBusy(false); }
   };
-  // "added to this PC only" is said only when it is known: after an answer that never came, it is not
+  // "added to this PC only" is said only when it is known: after an answer that never came, it is not, and a PC that
+  // lets devices in by the list made no pairing for the device at all
   const title = stalled.why === "waiting" ? t("An earlier change is still waiting")
-    : stalled.why === "unknown" ? t("Not known yet: is {device} in your account?", { device: stalled.device }) : t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc });
+    : stalled.why === "unknown" ? t("Not known yet: is {device} in your account?", { device: stalled.device })
+    : stalled.placed === true ? t("{device} was added to your account's list", { device: stalled.device })
+    : stalled.pairedAtPc ? t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc }) : t("{device} is not in your account", { device: stalled.device });
   const cancel = async (): Promise<void> => {
     setBusy(true);
     try { await stalled.cancel?.(); onClose(); }
@@ -127,7 +134,7 @@ export class NotReadError extends Error {
 /** The card for `request`, a request that waits: what its two buttons do, to that request alone. */
 export function waitingCard(request: WaitingRequest, done: () => void): Stalled {
   return {
-    key: WAITING, device: "", pc: "", why: "waiting",
+    key: WAITING, device: "", pc: "", pairedAtPc: false, why: "waiting",
     retry: async () => { const list = pageAccountList(); if (list === null || await resendWaiting(list, request)) done(); },
     cancel: async () => { if (await pageAccountList()?.cancel(request) === "unread") throw new NotReadError(); },
   };

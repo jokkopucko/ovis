@@ -54,6 +54,14 @@ export function relayFailureText(t: Translate, failure: RelayFailure, name: stri
     case "list-time-over": return { title: t("This device's time in your account is over"), copy: t("It was added for a limited time. To go on, add it again from a device of your account."), detail: filtered, retry: false };
     case "account-unreachable": return { title: t("{name} could not reach your Ovis account", { name }), copy: t("{name} lets your account's devices in only after the account service confirms it is still in your account, and the service did not answer. Try again in a moment. A device paired with {name} itself still connects.", { name }), detail: filtered, retry: true };
     case "account-readd": return { title: t("Add {name} to your account again", { name }), copy: t("{name} is no longer in your Ovis account. On {name}, open Settings → Devices and PCs → Add a connection → Ovis relay and add it to your account again, then try again here.", { name }), detail: filtered, retry: true };
+    // a join into the account's list through a PC that lets devices in by it: no entry let this device in
+    case "list-not-claimed": return { title: t("Sign in again on this device"), copy: t("{name} lets a device in only after it signed in to your account in the last ten minutes. Sign out and in again on this device, then ask to join again.", { name }), detail: filtered, retry: false };
+    case "list-not-placed": return { title: t("{name} could not add this device in time", { name }), copy: t("Your account did not take it in time. Ask to join again."), detail: filtered, retry: true };
+    // what the PC saw, and no more: the entry may be placed and have reached it too late
+    case "list-not-in": return { title: t("{name} did not let this device in", { name }), copy: t("It was approved, and {name} did not see it in your account's list in time. Ask to join again, and approve it on a device of your account or on {name} itself.", { name }), detail: filtered, retry: true };
+    case "list-pc-behind": return { title: t("Update Ovis on {name}", { name }), copy: t("{name} runs an older Ovis than your account's other devices, so it cannot add a device by itself. Update Ovis on {name}, or approve this device on another device of your account.", { name }), detail: filtered, retry: true };
+    case "list-refused": return { title: t("This device was not added to your account"), copy: t("{name} could not add it. Ask to join again.", { name }), detail: filtered, retry: true };
+    case "list-other": return { title: t("{name} belongs to another account's list", { name }), copy: t("{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.", { name }), detail: filtered, retry: false };
     case "scan-expired": return { title: t("The QR code ran out while you signed in"), copy: t("Show a new QR code on {name} and scan it.", { name }), detail: filtered, retry: false };
   }
 }

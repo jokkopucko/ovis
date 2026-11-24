@@ -10,7 +10,7 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
 import { newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
-import { AdmissionChangedError, admitToAccount, approveJoin, enrollOnPc, vouchedAdmission, enrollPc, keepRemovals, linkThisDevice, rememberDevice, needsLink, pcAccountStatus, planEnroll, takeIntroduction, UnverifiedJoinError, sendQueuedAdds } from "./join.ts";
+import { AdmissionChangedError, admitToAccount, approveJoin, ListAllowError, enrollOnPc, vouchedAdmission, enrollPc, keepRemovals, linkThisDevice, rememberDevice, needsLink, pcAccountStatus, planEnroll, takeIntroduction, UnverifiedJoinError, sendQueuedAdds } from "./join.ts";
 import { leaveAccount, removeFromAccount } from "./leave.ts";
 import { myPcs } from "./myPcs.ts";
 import { AccountService } from "./service.ts";
@@ -628,6 +628,31 @@ describe("approving a device that asks to join the account", () => {
     });
     expect(decisions).toEqual(["approve:222222"]);
     expect(admitted).toBe(true);
+  });
+
+  it("on a PC that lets devices in by the list, does what the list needs before it approves, and approves nothing where that fails", async () => {
+    const { service, mac, X } = await setUp();
+    const request = { id: "r1", label: "Mac app", intent: "account" as const, choices: ["111111", "222222", "333333"] as [string, string, string], expires_at: "", key: mac.public_spki };
+    const order: string[] = [];
+    await approveJoin({
+      request, digits: "222222", through: X, service,
+      before: async (admission) => { order.push(`before:${admission.label}`); },
+      decide: async (decision) => { order.push(decision); }, admit: async () => { order.push("admit"); },
+    });
+    expect(order).toEqual(["before:Mac app", "approve", "admit"]);
+    // the list did not take the device: the PC would let nobody in, so nothing is approved, and the request stays to be answered again
+    const refused: string[] = [];
+    const outcome = approveJoin({
+      request, digits: "222222", through: X, service,
+      before: async () => { throw new ListAllowError("budget", 60_000); },
+      decide: async (decision) => { refused.push(decision); }, admit: async () => { refused.push("admit"); },
+    });
+    await expect(outcome).rejects.toBeInstanceOf(ListAllowError);
+    expect(refused).toEqual([]);
+    // a request for that PC only, and one vouched for, write nothing to a list
+    const alone: string[] = [];
+    await approveJoin({ request: { ...request, intent: "pc" }, digits: "222222", through: X, service, before: async () => { alone.push("before"); }, decide: async (decision) => { alone.push(decision); }, admit: async () => {} });
+    expect(alone).toEqual(["approve"]);
   });
 
   it("adds the device under the name it gave the account service, not the one the PC shows", async () => {

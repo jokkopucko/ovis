@@ -10,6 +10,7 @@ import type { checkPc } from "./pcStatus.ts";
 import type { offerFromCode } from "./pairCode.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { MuxProtocolError, type PairApprover } from "../../../shared/relay-mux.ts";
+import { ListMismatchError } from "../../../shared/relay-channel.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { decodeOffer, encodeOffer } from "../../../shared/relay-offer.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -69,6 +70,13 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
   | "list-time-over"
   /** the PC could not ask the account service whether it is still in the account, or left the account and must be added to it again */
   | "account-unreachable" | "account-readd"
+  /**
+   * A join that brought this device's card to a PC that lets devices in by its account's signed list, and no entry of
+   * the list let it in: no sign-in of the account claimed its key; the entry could not be placed in time; a device of
+   * the account allowed it and no entry reached the PC; Ovis on the PC is too old to sign for the list; anything
+   * else. `list-other`: the PC follows another list than this device's account's, said before any digits.
+   */
+  | "list-not-claimed" | "list-not-placed" | "list-not-in" | "list-pc-behind" | "list-refused" | "list-other"
   /** the sign-in a marked pairing stopped for took longer than its code is good for: only a new scan pairs */
   | "scan-expired";
 
@@ -174,6 +182,12 @@ export function offerOf(device: RelayDevice): RelayOffer {
 }
 
 /** `code`: the attempt carried a pairing code; `paired`: it signed with a key the PC had admitted before. */
+/** The causes a PC names when a join into its account's list ends with nobody let in (docs/account.md, "A PC allows a device into the list"). */
+const LIST_JOIN_CAUSES: Readonly<Record<string, RelayFailure>> = {
+  list_not_claimed: "list-not-claimed", list_service_away: "list-not-placed", list_head_lost: "list-not-placed",
+  list_not_in: "list-not-in", list_pc_behind: "list-pc-behind", list_refused: "list-refused",
+};
+
 export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean; codeless?: boolean }): RelayFailure {
   if (error instanceof UnsafeRelayDestinationError) return "bad-offer";
   // the relay's own word, whatever the attempt was: the code held or the digits were approved, and the PC's account is past its limits
@@ -182,8 +196,10 @@ export function failureOf(error: unknown, attempt: { code: boolean; paired: bool
   // (pairing paused after failures, three phones already waiting, a serve-only PC)
   if (attempt.codeless && !attempt.code && !attempt.paired && !attempt.compared
     && error instanceof MuxProtocolError && error.code === "auth_failed") return "pair-unavailable";
-  // once digits were shown, only the PC's refusal is a decline; a deadline or a session lost on the way is no answer
-  if (attempt.compared && error instanceof MuxProtocolError && error.code === "auth_failed") return "pair-declined";
+  if (error instanceof ListMismatchError) return "list-other";
+  // once digits were shown, only the PC's refusal is a decline; a deadline or a session lost on the way is no answer.
+  // A PC that lets devices in by its account's list says why no entry let this one in
+  if (attempt.compared && error instanceof MuxProtocolError && error.code === "auth_failed") return Object.hasOwn(LIST_JOIN_CAUSES, error.message) ? LIST_JOIN_CAUSES[error.message]! : "pair-declined";
   if (attempt.compared && (error instanceof RelayAdmissionTimeoutError || error instanceof RelayUnreachableError
     || error instanceof MuxProtocolError && (error.code === "timeout" || error.code === "internal_error"))) return "pair-unanswered";
   if (error instanceof ServerIdentityChangedError) return "identity-changed";

@@ -38,6 +38,8 @@ export interface Transport {
   readonly directVia?: "lan" | "tailscale" | undefined;
   /** While a relay transport reconnects: `pc`, the relay has nobody for the PC; `relay`, no relay was reached. */
   readonly unreached?: "pc" | "relay" | undefined;
+  /** A relay transport: the PC lets its account's devices in by the account's signed list alone (it is pinned to it). */
+  readonly followsList?: boolean | undefined;
   /** Calls `listener` each time the carrier goes up, down or changes, and when `unreached` changes. */
   onRouteChange?(listener: () => void): () => void;
 }

@@ -1473,6 +1473,74 @@ the list holds for it, the account key, and no longer by the key a sign-in regis
   relay identity** on it, and offers no retry. A pairing that was not made for the account alone
   (no mark) is told the same, on its own screen, and stands: nothing of it is forgotten.
 
+### Joining through a pinned PC
+
+A new device that asks to join its account through a pinned PC is let in by an entry of the list,
+never by a pairing of that PC's own ([A PC allows a device into the
+list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
+`shared/relay-channel.ts` (`listCard`, `listPlace`) and `src/lib/relay/shell.tsx`.
+
+- **The device brings its card.** A device that waits to be let into its account's list, its
+  claim of its key standing, offers `account-list-allow-1` with a join of the account. Whether the
+  claim stands is read for that join: the app reads its list first (which makes the claim again
+  where it is due), and brings the card only where that read shows the claim for the sign-in and
+  the key the join signs with. A view drawn before the page slept, or before its first read,
+  decides nothing. To a PC that selects the feature, and to no other, its `PAIR_REQUEST` carries
+  `list_enc` and `list_card`.
+- **It stops early at another list.** The PC's `PAIR_CHALLENGE` names the list it follows. Where
+  that is not the list the card is for, the attempt ends before any digits are shown.
+- **Its person says the numbers match.** A member signs the device in on that word, so such a
+  join is never confirmed by itself: the number waits for **The numbers match**, also on the sheet
+  a PC's own page put up for a join and for a challenge that names who approves (`approve_on`),
+  which confirm any other join at once.
+- **It is handed its place.** The `AUTH_OK` of a join the PC allowed names the list and the place
+  of the entry that let the device in. The device takes a place only from a PC that took its
+  card, and only in the list the card names; it follows the list from there by its own read of
+  the log ([The place handed over](#letting-a-device-in)). A PC that took the card and names no
+  place is refused (`auth_failed`, `list_refused`) before anything is saved. No pairing is saved:
+  that session serves nothing else, so the app closes it at once and opens the PC anew with the
+  key the list holds. The place is the account's the card was made for, and is kept for that account
+  alone, whatever sign-in is stored when the answer lands: a sign-in that ended meanwhile, or one of
+  another account another tab made, leads to the front page, the PC is never opened with another
+  account's key, and a sign-in to the card's account again takes the place up: the device follows
+  the list from there without asking to join again.
+- **How long it waits.** The comparison's 90 seconds, and then as long as the PC keeps the join
+  open for its entry after both sides said yes (90 seconds, the PC's `LIST_ALLOW_MS`: its own
+  window's signing, or the half minute it waits for a member's entry and its last read). That is
+  longer than the relay keeps a socket that sent nothing (two minutes), so while it waits the app
+  sends the relay's own keepalive every minute. The relay answers it itself, and no PC sees it.
+- **When no entry lets it in**, the PC ends the join `auth_failed` and names the cause, which the
+  app says in words of its own: no sign-in of the account claimed the key (sign in again on this
+  device), the entry could not be placed in time (ask again), a device of the account approved
+  and the PC did not see the entry in its copy in time (`list_not_in`: the entry may be placed
+  and have reached the PC too late, so the words say what the PC saw and no more), Ovis on the PC
+  is older than the list (update it, or approve on another device), or anything else.
+- **A member that approves on such a PC signs only for a device that confirmed.** The PC signs
+  nothing on a member's approval and lets the device in only by an entry, which the approver
+  signs. So for a join the PC marks `list` (or on a session for which it selected
+  `account-list-1`), the card holds **Approve** until the PC says that the new device's person
+  pressed **The numbers match** there (`confirmed`), and says so: **First press “The numbers
+  match” on {device}**. A join on such a PC that brought no card is a pairing of that PC's own,
+  which no device is ever told was confirmed: its card says **Approve {device} on {pc}'s own
+  screen**. A device that gives up before that is nobody's member. Nothing is
+  approved either where the approver cannot write its list, and the card says why. Then the
+  approval, and right after it the device's entry: signed, placed, and handed to the PC as a
+  page where the PC takes one from this session; where it takes none it reads the entry from the
+  account service, which it asks every three seconds for half a minute from the approval. Where
+  the list does not take the device after the approval, the request is gone from the PC: a card
+  says why (**{device} is not in your account**: such a PC made no pairing of its own, so the
+  card never says that the device was added to it only), and **Try again** signs it in; a device
+  the PC turned away meanwhile (`list_not_in`) asks again. The introduction is tried once, names
+  the device's place as on any other PC (formats E6; such a PC drops it), and whatever such a PC
+  refuses it for holds back nothing: the `add` for the account's other PCs goes out as ever. On any
+  other PC the approval comes first, and the entry once the PC holds the device's row; the account,
+  list and member key it signs under are fixed by its first read, before the wait for that row.
+- **Nothing more for a device put out meanwhile.** On either PC, before the introduction that
+  names the account's PCs and again before the `add` is signed, the approver's own copy, as it
+  holds it then, must still have the new device in, in the list and under the member key the
+  approval began with. Otherwise nothing more is sent, and the card says why (removed, or the
+  sign-in changed).
+
 ### Which list it follows
 
 Never the one the account service names, on that word alone. A device follows a list only when
