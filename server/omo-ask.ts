@@ -24,14 +24,182 @@ export interface OmoAskCall {
 
 export type OmoAsks = readonly OmoAskCall[];
 
+export type OmoAskState = "open" | "cancelled";
+
 interface Entry {
   type?: unknown;
   customType?: unknown;
+  display?: unknown;
+  inputSource?: unknown;
+  content?: unknown;
   data?: unknown;
-  message?: { role?: unknown; content?: unknown; toolCallId?: unknown; isError?: unknown; details?: unknown };
+  message?: { role?: unknown; content?: unknown; display?: unknown; inputSource?: unknown; toolCallId?: unknown; isError?: unknown; details?: unknown };
 }
 
-const ANSWER_FRAME_RE = /^\[Answer to question ([^\]\r\n]+)\]\r?\n/;
+const ANSWER_FRAME_RE = /^\[Answer to question ([^\]\r\n]+)\]\r?\n([\s\S]*)$/;
+const LABEL_BLOCK_RE = /^\[(.+)\]$/s;
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const isCancelledAnswerBody = (body: string): boolean =>
+  body === "The user dismissed the question."
+  || body.includes("The user cancelled the question after answering part of it.")
+  || body.includes("The question was cancelled after part of it was answered.")
+  || body.includes("No answer: do not take the action it gates.");
+
+/**
+ * Ask ids opened, marked cancelled, or closed by an OmO session record, for matching late
+ * `[Answer to question <id>]` deliveries. A non-cancelled `ask-user:settlement` is written right
+ * before OmO delivers the framed message, so it keeps the id open; a `cancelled` settlement may
+ * deliver no message at all (lifecycle cancel), so it restricts matching to cancellation-shaped
+ * bodies; a non-pending `toolResult` (immediate answer or error) closes the id.
+ */
+export function omoAskUpdates(value: unknown): { open: { id: string; state: OmoAskState }[]; close: string[] } {
+  const entry = typeof value === "object" && value !== null ? value as Entry : null;
+  if (entry === null) return { open: [], close: [] };
+  if (entry.type === "custom") {
+    if (entry.customType === "ask-user:question" || entry.customType === "ask-user:settlement") {
+      const data = entry.data as { requestId?: unknown; status?: unknown } | null;
+      const id = data?.requestId;
+      if (typeof id === "string" && id.length > 0) {
+        const state: OmoAskState = entry.customType === "ask-user:settlement" && data?.status === "cancelled" ? "cancelled" : "open";
+        return { open: [{ id, state }], close: [] };
+      }
+    }
+    return { open: [], close: [] };
+  }
+  const message = entry.type === "message" ? entry.message : undefined;
+  if (!message || typeof message !== "object") return { open: [], close: [] };
+  const open: { id: string; state: OmoAskState }[] = [];
+  const close: string[] = [];
+  if (message.role === "assistant" && Array.isArray(message.content)) {
+    for (const part of message.content as Record<string, unknown>[]) {
+      if (!part || typeof part !== "object") continue;
+      if (part["type"] === "toolCall" && part["incomplete"] !== true) {
+        const name = typeof part["toolName"] === "string" ? part["toolName"] : part["name"];
+        const id = typeof part["toolCallId"] === "string" ? part["toolCallId"]
+          : typeof part["id"] === "string" ? part["id"]
+          : typeof part["callId"] === "string" ? part["callId"] : undefined;
+        if (typeof name === "string" && OMO_ASK_TOOLS.has(name) && id !== undefined && id.length > 0) open.push({ id, state: "open" });
+      } else if (part["type"] === "toolResult") {
+        const id = typeof part["toolCallId"] === "string" ? part["toolCallId"]
+          : typeof part["callId"] === "string" ? part["callId"]
+          : typeof part["id"] === "string" ? part["id"] : undefined;
+        const details = (part["details"] ?? {}) as { accepted?: unknown; status?: unknown };
+        const accepted = part["isError"] !== true && details.accepted === true && details.status === "pending";
+        if (!accepted && id !== undefined && id.length > 0) close.push(id);
+      }
+    }
+    return { open, close };
+  }
+  if (message.role === "toolResult") {
+    const record = message as { toolCallId?: unknown; callId?: unknown; isError?: unknown; details?: unknown };
+    const id = typeof record.toolCallId === "string" ? record.toolCallId
+      : typeof record.callId === "string" ? record.callId : undefined;
+    const details = (record.details ?? {}) as { accepted?: unknown; status?: unknown };
+    const accepted = record.isError !== true && details.accepted === true && details.status === "pending";
+    if (!accepted && id !== undefined && id.length > 0) close.push(id);
+  }
+  return { open, close };
+}
+
+function parseUserWordLabel(label: string, id: string): { kind: "comment" } | { kind: "typed"; header: string } | null {
+  const suffix = ` for question ${id}`;
+  const base = label.replace(/ \(\d+\)$/, "");
+  if (!base.endsWith(suffix)) return null;
+  const prefix = base.slice(0, -suffix.length);
+  if (prefix === "The user's comment") return { kind: "comment" };
+  if (prefix.startsWith("The user's answer to ")) {
+    const header = prefix.slice("The user's answer to ".length);
+    return header.length > 0 ? { kind: "typed", header } : null;
+  }
+  return null;
+}
+
+/**
+ * Display text of an OmO late answer delivered as a user message or held `extension-user-message`,
+ * matching an open ask id in the session. Strips the `[Answer to question <id>]` frame and
+ * resolves OmO 5.1.81's separated `[The user's …]` word blocks into their matching line slots
+ * (single-pass so user words are never re-expanded and another question's selected option cannot
+ * be overwritten). Returns null when not a matched OmO answer frame or stripping leaves it empty.
+ */
+export function omoAnswerText(content: unknown, openAsks: ReadonlyMap<string, OmoAskState>): { id: string; text: string } | null {
+  if (openAsks.size === 0) return null;
+  let blocks: { type: "text"; text: string }[];
+  if (typeof content === "string") blocks = [{ type: "text", text: content }];
+  else if (Array.isArray(content) && content.length > 0) {
+    blocks = [];
+    for (const part of content) {
+      if (!part || typeof part !== "object") return null;
+      const block = part as { type?: unknown; text?: unknown };
+      if (block.type !== "text" || typeof block.text !== "string") return null;
+      blocks.push({ type: "text", text: block.text });
+    }
+  } else return null;
+
+  const framed = ANSWER_FRAME_RE.exec(blocks[0]!.text);
+  if (framed === null) return null;
+  const id = framed[1]!;
+  const body = framed[2]!;
+  const state = openAsks.get(id);
+  if (state === undefined) return null;
+  if (state === "cancelled" && !isCancelledAnswerBody(body)) return null;
+
+  let resolved = body;
+  if (blocks.length > 1) {
+    const rest = blocks.slice(1);
+    if (rest.length % 2 !== 0) return null;
+    const seen = new Set<string>();
+    const words: { ref: string; linePattern: RegExp; text: string }[] = [];
+    for (let index = 0; index < rest.length; index += 2) {
+      const label = LABEL_BLOCK_RE.exec(rest[index]!.text)?.[1];
+      if (label === undefined || seen.has(label)) return null;
+      const parsed = parseUserWordLabel(label, id);
+      if (parsed === null) return null;
+      seen.add(label);
+      const ref = `(see [${label}] below)`;
+      const escapedRef = escapeRegExp(ref);
+      const linePattern = parsed.kind === "comment"
+        ? new RegExp(`^(The user responded: )${escapedRef}$`)
+        : new RegExp(`^((?:Before going idle the user had selected(?: \\(not an answer\\))?: )?${escapeRegExp(parsed.header)}: )${escapedRef}$`);
+      words.push({ ref, linePattern, text: rest[index + 1]!.text });
+    }
+    const lines = body.split("\n");
+    let cursor = 0;
+    for (const word of words) {
+      let matched = -1;
+      for (let lineIndex = cursor; lineIndex < lines.length; lineIndex++) {
+        if (word.linePattern.test(lines[lineIndex]!)) { matched = lineIndex; break; }
+      }
+      if (matched === -1) return null;
+      lines[matched] = lines[matched]!.replace(word.linePattern, (_full, prefix: string) => prefix + word.text);
+      cursor = matched + 1;
+    }
+    resolved = lines.join("\n");
+  }
+  return resolved.length === 0 ? null : { id, text: resolved };
+}
+
+/**
+ * Recognizes an OmO late-answer record — either a regular `user` message (excluding interactive
+ * human typing) or a visible `extension-user-message` custom record written during an engine hold.
+ */
+export function omoAnswerEntry(value: unknown, openAsks: ReadonlyMap<string, OmoAskState>): { id: string; text: string } | null {
+  if (openAsks.size === 0 || value === null || typeof value !== "object") return null;
+  const entry = value as Entry;
+  if (entry.display === false) return null;
+  if (entry.inputSource === "interactive" || entry.inputSource === "person") return null;
+  if (entry.type === "custom_message" && entry.customType === "extension-user-message") {
+    return omoAnswerText(entry.content, openAsks);
+  }
+  if (entry.type === "message" && entry.message && typeof entry.message === "object") {
+    const message = entry.message;
+    if (message.role !== "user" || message.display === false) return null;
+    if (message.inputSource === "interactive" || message.inputSource === "person") return null;
+    return omoAnswerText(message.content, openAsks);
+  }
+  return null;
+}
 
 function waits(args: unknown): boolean {
   const record = typeof args === "object" && args !== null ? args as Record<string, unknown> : {};

@@ -41,7 +41,7 @@ test("Pi variants normalize visible text, tool aliases and nested/string results
   for (const source of ["omp-transcript", "omo-transcript", "gjc-transcript"] as const) {
     expect(transcriptToolOutput(source, path, "a")).toBe("A".repeat(9000));
     expect(transcriptToolOutput(source, path, "b")).toBe("B".repeat(9000));
-    expect(transcriptPage(source, path).turns).toEqual(turns);
+    expect(transcriptPage(source, path).turns).toEqual(parseOmpTranscript(text, Infinity, { callIds: source === "gjc-transcript" }));
     expect(parseConversationMetadata(text, source)).toEqual({ model: null, reasoning_effort: null });
   }
 });

@@ -1870,6 +1870,18 @@ describe("gjc sessions", () => {
     ]);
   });
 
+  it("preserves literal [Answer to question ...] text when the shared parser has no OmO ask context", () => {
+    const user = (content: unknown) => JSON.stringify({ type: "message", timestamp: "2026-10-01T00:00:00.000Z", message: { role: "user", content } });
+    const literal = "[Answer to question sample]\nKeep this heading";
+    const headerOnly = "[Answer to question sample]\n";
+    const twoBlocks = [{ type: "text", text: "[Answer to question sample]" }, { type: "text", text: "Keep this heading" }];
+    expect(parseOmpTranscript([user(literal), user(headerOnly), user(twoBlocks)].join("\n")).map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: literal }],
+      [{ kind: "text", text: headerOnly }],
+      [{ kind: "text", text: "[Answer to question sample]\nKeep this heading" }],
+    ]);
+  });
+
   it("keeps user-attributed IRC records and ordinary notices whose text quotes IRC", () => {
     const content = "[IRC `0-WindowsPaths` → you]\n\nA quoted example, not an internal delivery.";
     const text = [
@@ -2179,6 +2191,232 @@ describe("transcript pages", () => {
     for (const page of [transcriptPage("omo-transcript", path), transcriptPage("omo-transcript", cold)]) {
       expect(page.turns.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "text"]);
     }
+  });
+
+  it("preserves literal [Answer to question ...] lines across non-OmO sources and OmO sessions without a matching open ask", () => {
+    const root = temp();
+    const tree = (rows: Record<string, unknown>[]) => {
+      let parentId: string | null = null;
+      return [
+        JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: "2026-10-01T00:00:00.000Z" }),
+        ...rows.map((row, index) => {
+          const id = `e${index + 1}`;
+          const line = JSON.stringify({ id, parentId, timestamp: "2026-10-01T00:00:00.000Z", ...row });
+          parentId = id;
+          return line;
+        }),
+      ].join("\n") + "\n";
+    };
+    const user = (content: unknown) => ({ type: "message", message: { role: "user", content } });
+    const ask = {
+      type: "message",
+      message: { role: "assistant", content: [{ type: "toolCall", id: "sample", name: "ask_user_question", arguments: { waitForAnswer: false } }], stopReason: "toolUse" },
+    };
+    const literal = "[Answer to question sample]\nKeep this heading";
+    const headerOnly = "[Answer to question sample]\n";
+    const twoBlocks = [{ type: "text", text: "[Answer to question sample]" }, { type: "text", text: "Keep this heading" }];
+    // non-OmO sources ignore even a tool call with the same name and id; OmO without a matching ask also preserves verbatim
+    const nonOmoLines = tree([user("first prompt"), ask, user(literal), user(twoBlocks), user(headerOnly)]);
+    const omoLines = tree([user("first prompt"), user(literal), user(twoBlocks), user(headerOnly)]);
+    for (const source of ["pi-transcript", "omp-transcript", "gjc-transcript", "cmd-transcript", "omo-transcript"] as const) {
+      const path = join(root, `${source}.jsonl`);
+      writeFileSync(path, source === "omo-transcript" ? omoLines : nonOmoLines);
+      const newest = transcriptPage(source, path, { prompts: 1 });
+      expect(newest.turns.map((turn) => turn.parts)).toEqual([[{ kind: "text", text: headerOnly }]]);
+      expect(newest.cursor).not.toBeNull();
+      const older = transcriptPage(source, path, { before: newest.cursor!, prompts: 2 });
+      expect(older.turns.map((turn) => turn.parts)).toEqual([
+        [{ kind: "text", text: literal }],
+        [{ kind: "text", text: "[Answer to question sample]\nKeep this heading" }],
+      ]);
+    }
+  });
+
+  it("strips matched OmO late answer frames and resolves OmO 5.1.81 user-word blocks across live, cold, and older pages", () => {
+    const root = temp();
+    const path = join(root, "omo-answers.jsonl");
+    const ask = (id: string, tool: "ask_user_question" | "request_user_input", waitForAnswer: boolean, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "assistant", content: [{ type: "toolCall", id, name: tool, arguments: { waitForAnswer, questions: [{ id: "q", header: "Next step", question: "What next?" }] } }], stopReason: "toolUse" },
+    });
+    const pendingResult = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "Accepted" }], details: { accepted: true, status: "pending" } },
+    });
+    const doneResult = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "Done" }], details: { status: "answered" } },
+    });
+    const settlement = (id: string, ts: string) => JSON.stringify({ type: "custom", customType: "ask-user:settlement", timestamp: ts, data: { requestId: id, status: "answered" } });
+    const user = (content: unknown, ts: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "user", content } });
+    const reply = (text: string, ts: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } });
+
+    const typedAnswer = user([
+      {
+        type: "text",
+        text: "[Answer to question toolu_01]\nThe user responded: (see [The user's comment for question toolu_01] below)\nNext step: (see [The user's answer to Next step for question toolu_01] below)",
+      },
+      { type: "text", text: "[The user's comment for question toolu_01]" },
+      { type: "text", text: "Keep (see [The user's answer to Next step for question toolu_01] below) literal" },
+      { type: "text", text: "[The user's answer to Next step for question toolu_01]" },
+      { type: "text", text: "Compare on the device" },
+    ], "2026-10-05T00:02:00.000Z");
+    const expectedTyped = "The user responded: Keep (see [The user's answer to Next step for question toolu_01] below) literal\nNext step: Compare on the device";
+
+    const prefix = [
+      user("start", "2026-10-05T00:00:00.000Z"),
+      ask("toolu_01", "ask_user_question", false, "2026-10-05T00:00:01.000Z"),
+      pendingResult("toolu_01", "2026-10-05T00:00:02.000Z"),
+      ask("toolu_done", "ask_user_question", true, "2026-10-05T00:00:03.000Z"),
+      doneResult("toolu_done", "2026-10-05T00:00:04.000Z"),
+      ask("toolu_02", "request_user_input", false, "2026-10-05T00:00:05.000Z"),
+      pendingResult("toolu_02", "2026-10-05T00:00:06.000Z"),
+      ask("toolu_skill", "ask_user_question", false, "2026-10-05T00:00:07.000Z"),
+      pendingResult("toolu_skill", "2026-10-05T00:00:08.000Z"),
+      ask("toolu_empty", "ask_user_question", false, "2026-10-05T00:00:09.000Z"),
+      pendingResult("toolu_empty", "2026-10-05T00:00:10.000Z"),
+      reply("Working while you decide.", "2026-10-05T00:00:11.000Z"),
+      user("intervening prompt", "2026-10-05T00:01:00.000Z"),
+      reply("Still working.", "2026-10-05T00:01:05.000Z"),
+      settlement("toolu_01", "2026-10-05T00:01:59.000Z"),
+    ].join("\n") + "\n";
+
+    // live preview (unterminated tail line without trailing newline) resolves typed answer when ask was on an earlier page
+    writeFileSync(path, prefix);
+    expect(transcriptPage("omo-transcript", path, { prompts: 1 }).turns[0]?.parts).toEqual([{ kind: "text", text: "intervening prompt" }]);
+    appendFileSync(path, typedAnswer);
+    expect(transcriptPage("omo-transcript", path, { prompts: 1 }).turns.map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: expectedTyped }],
+    ]);
+
+    // commit the typed answer plus edge cases: repeated quote of settled id, already-answered toolResult id,
+    // two-block non-frame prompt, simple string answer, skill-shaped answer body, and header-only prompt
+    const quotedSettled = "[Answer to question toolu_01]\nWhy did I answer that?";
+    const quotedDone = "[Answer to question toolu_done]\nLiteral quote";
+    const skillBody = '<skill name="review" location="/skills/review/SKILL.md">\nPRIVATE\n</skill>\n\nkeep raw';
+    appendFileSync(path, `\n${[
+      user(quotedSettled, "2026-10-05T00:02:10.000Z"),
+      user(quotedDone, "2026-10-05T00:02:15.000Z"),
+      user([{ type: "text", text: "[Answer to question toolu_02]" }, { type: "text", text: "ordinary second block" }], "2026-10-05T00:02:20.000Z"),
+      user("[Answer to question toolu_02]\nNext step: compare on the device", "2026-10-05T00:02:25.000Z"),
+      user(`[Answer to question toolu_skill]\n${skillBody}`, "2026-10-05T00:02:30.000Z"),
+      user("[Answer to question toolu_empty]\n", "2026-10-05T00:02:35.000Z"),
+      user("final prompt", "2026-10-05T00:02:40.000Z"),
+    ].join("\n")}\n`);
+
+    const cold = join(root, "omo-answers-cold.jsonl");
+    copyFileSync(path, cold);
+    for (const file of [path, cold]) {
+      const last = transcriptPage("omo-transcript", file, { prompts: 1 });
+      expect(last.turns.map((turn) => turn.parts)).toEqual([[{ kind: "text", text: "final prompt" }]]);
+      const older = transcriptPage("omo-transcript", file, { before: last.cursor!, prompts: 7 });
+      expect(older.turns.map((turn) => turn.parts)).toEqual([
+        [{ kind: "text", text: expectedTyped }],
+        [{ kind: "text", text: quotedSettled }],
+        [{ kind: "text", text: quotedDone }],
+        [{ kind: "text", text: "[Answer to question toolu_02]\nordinary second block" }],
+        [{ kind: "text", text: "Next step: compare on the device" }],
+        [{ kind: "text", text: skillBody }],
+        [{ kind: "text", text: "[Answer to question toolu_empty]\n" }],
+      ]);
+    }
+
+    // context_clear forgets asks opened before the clear
+    const cleared = join(root, "omo-cleared.jsonl");
+    const afterClear = "[Answer to question toolu_before]\nStill literal after clear";
+    writeFileSync(cleared, `${[
+      user("before", "2026-10-05T00:00:00.000Z"),
+      ask("toolu_before", "ask_user_question", false, "2026-10-05T00:00:01.000Z"),
+      JSON.stringify({ type: "custom", customType: "context_clear", timestamp: "2026-10-05T00:01:00.000Z" }),
+      user(afterClear, "2026-10-05T00:02:00.000Z"),
+    ].join("\n")}\n`);
+    expect(transcriptPage("omo-transcript", cleared).turns.map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: afterClear }],
+    ]);
+  });
+
+  it("handles OmO held extension-user-message answers, interactive quotes, cancelled settlements, non-OmO labels, same-path source isolation, and selected-option collisions", () => {
+    const root = temp();
+    const ask = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false } }], stopReason: "toolUse" },
+    });
+    const pendingResult = (id: string, ts: string) => JSON.stringify({
+      type: "message", timestamp: ts,
+      message: { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "Accepted" }], details: { accepted: true, status: "pending" } },
+    });
+    const settlement = (id: string, status: string, ts: string) => JSON.stringify({ type: "custom", customType: "ask-user:settlement", timestamp: ts, data: { requestId: id, status } });
+    const user = (content: unknown, ts: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "message", timestamp: ts, ...extra, message: { role: "user", content } });
+    const held = (content: unknown, ts: string) => JSON.stringify({ type: "custom_message", customType: "extension-user-message", display: true, timestamp: ts, content });
+
+    const path = join(root, "omo-edge.jsonl");
+    const interactiveQuote = "[Answer to question q_open]\nKeep this interactive quote";
+    const appendixPrompt = [
+      { type: "text", text: "[Answer to question q_open]\nSee (see [Appendix A] below)" },
+      { type: "text", text: "[Appendix A]" },
+      { type: "text", text: "Should not resolve" },
+    ];
+    const cancelledQuote = "[Answer to question q_cancel]\nKeep this literal note";
+    const collisionAnswer = [
+      {
+        type: "text",
+        text: "[Answer to question q_open]\nA: (see [The user's answer to B for question q_open] below)\nB: (see [The user's answer to B for question q_open] below)",
+      },
+      { type: "text", text: "[The user's answer to B for question q_open]" },
+      { type: "text", text: "typed" },
+    ];
+    const heldSelected = held("[Answer to question q_held_sel]\nNext: Option A", "2026-10-05T00:01:10.000Z");
+    const heldTyped = held([
+      { type: "text", text: "[Answer to question q_held_txt]\nNext: (see [The user's answer to Next for question q_held_txt] below)" },
+      { type: "text", text: "[The user's answer to Next for question q_held_txt]" },
+      { type: "text", text: "Typed during hold" },
+    ], "2026-10-05T00:01:20.000Z");
+
+    writeFileSync(path, `${[
+      user("start", "2026-10-05T00:00:00.000Z"),
+      ask("q_open", "2026-10-05T00:00:01.000Z"),
+      pendingResult("q_open", "2026-10-05T00:00:02.000Z"),
+      ask("q_cancel", "2026-10-05T00:00:03.000Z"),
+      pendingResult("q_cancel", "2026-10-05T00:00:04.000Z"),
+      settlement("q_cancel", "cancelled", "2026-10-05T00:00:05.000Z"),
+      ask("q_skip", "2026-10-05T00:00:06.000Z"),
+      pendingResult("q_skip", "2026-10-05T00:00:07.000Z"),
+      settlement("q_skip", "cancelled", "2026-10-05T00:00:08.000Z"),
+      ask("q_held_sel", "2026-10-05T00:00:09.000Z"),
+      pendingResult("q_held_sel", "2026-10-05T00:00:10.000Z"),
+      ask("q_held_txt", "2026-10-05T00:00:11.000Z"),
+      pendingResult("q_held_txt", "2026-10-05T00:00:12.000Z"),
+      // interactive prompt and non-OmO [Appendix A] prompt must stay intact and leave q_open unconsumed
+      user(interactiveQuote, "2026-10-05T00:01:00.000Z", { inputSource: "interactive" }),
+      user(appendixPrompt, "2026-10-05T00:01:02.000Z"),
+      // cancelled settlement with no answer leaves ordinary quotes intact, while real dismissal strips
+      user(cancelledQuote, "2026-10-05T00:01:04.000Z"),
+      user("[Answer to question q_skip]\nThe user dismissed the question.", "2026-10-05T00:01:06.000Z"),
+      // real answer for q_open still resolves, without overwriting question A's selected option
+      user(collisionAnswer, "2026-10-05T00:01:08.000Z"),
+      // held extension-user-message deliveries (selected + typed)
+      heldSelected,
+      heldTyped,
+    ].join("\n")}\n`);
+
+    // reading the exact same path as omp first must not starve OmO's ask index, and reading as OmO first must not leak into omp's page cache
+    const ompFirst = transcriptPage("omp-transcript", path, { prompts: 10 });
+    expect(ompFirst.turns.some((turn) => turn.parts[0]?.kind === "text" && turn.parts[0].text.startsWith("[Answer to question q_skip]\n"))).toBe(true);
+    const omoAfterOmp = transcriptPage("omo-transcript", path, { prompts: 10 });
+    expect(omoAfterOmp.turns.slice(2).map((turn) => turn.parts)).toEqual([
+      [{ kind: "text", text: interactiveQuote }],
+      [{ kind: "text", text: "[Answer to question q_open]\nSee (see [Appendix A] below)\n[Appendix A]\nShould not resolve" }],
+      [{ kind: "text", text: cancelledQuote }],
+      [{ kind: "text", text: "The user dismissed the question." }],
+      [{ kind: "text", text: "A: (see [The user's answer to B for question q_open] below)\nB: typed" }],
+      [{ kind: "text", text: "Next: Option A" }],
+      [{ kind: "text", text: "Next: Typed during hold" }],
+    ]);
+    forgetTranscriptState();
+    const omoFirst = transcriptPage("omo-transcript", path, { prompts: 10 });
+    const ompAfterOmo = transcriptPage("omp-transcript", path, { prompts: 10 });
+    expect(omoFirst.turns.slice(2)).toEqual(omoAfterOmp.turns.slice(2));
+    expect(ompAfterOmo.turns).toEqual(ompFirst.turns);
   });
 
   const endedTitles = (page: { turns: ConversationTurn[] }): unknown => {

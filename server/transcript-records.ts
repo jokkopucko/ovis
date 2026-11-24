@@ -4,6 +4,7 @@ import type { SubagentDetail, TaskNotification } from "./claude-subagents.ts";
 import { skillInvocationPrompt, skillPromptMessage } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
 import { inlineImageType, ompBlobDigest, ompBlobImageType } from "./codex-images.ts";
+import { omoAnswerEntry, type OmoAskState, omoAskUpdates } from "./omo-ask.ts";
 
 type Row = Record<string, unknown>;
 export const record = (value: unknown): Row => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
@@ -356,20 +357,23 @@ export interface TranscriptParser {
 
 /** `images`: the pictures of prompts and tool results are named, inline ones (pi) and, with `blobs`,
  * those omp keeps in that blob store. `callIds`: each tool part carries its call's own id (gjc, whose
- * rewrites the chat matches by it) */
-type OmpTranscriptOptions = { images?: boolean; blobs?: string | null; callIds?: boolean; taskTitles?: Map<string, string> };
+ * rewrites the chat matches by it). `omoAskIds`: open OmO ask ids carried across a session, enabling
+ * OmO late-answer frame stripping and user-word resolution only for `omo-transcript` reads. */
+type OmpTranscriptOptions = { images?: boolean; blobs?: string | null; callIds?: boolean; taskTitles?: Map<string, string>; omoAskIds?: Map<string, OmoAskState> };
 
 interface OmpParseState {
   turns: ConversationTurn[];
   pending: Map<string, Extract<ConversationPart, { kind: "tool" }>>;
   /** The caller's map when parsing a page in stretches; previews must never write to it. */
   taskTitles: Map<string, string>;
+  /** Open OmO ask ids when reading an OmO session; null for Pi, omp, GJC and Command Code. */
+  omoAskIds: Map<string, OmoAskState> | null;
   settled: boolean;
   wait: number | null;
 }
 
 function ompParseState(options: OmpTranscriptOptions): OmpParseState {
-  return { turns: [], pending: new Map(), taskTitles: options.taskTitles ?? new Map(), settled: false, wait: null };
+  return { turns: [], pending: new Map(), taskTitles: options.taskTitles ?? new Map(), omoAskIds: options.omoAskIds ?? null, settled: false, wait: null };
 }
 
 /**
@@ -414,7 +418,12 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
         continue; // a torn tail line while omp is mid-append
       }
       if (entry === null || typeof entry !== "object") continue;
-      if (isContextClear(entry, "omp-transcript")) { turns.length = 0; pending.clear(); state.wait = null; continue; }
+      if (isContextClear(entry, "omp-transcript")) { turns.length = 0; pending.clear(); state.wait = null; state.omoAskIds?.clear(); continue; }
+      if (state.omoAskIds !== null) {
+        const updates = omoAskUpdates(entry);
+        for (const item of updates.open) state.omoAskIds.set(item.id, item.state);
+        for (const id of updates.close) state.omoAskIds.delete(id);
+      }
       const timestamp = (entry as { timestamp?: string }).timestamp;
       const goalWait = omoGoalWait(entry);
       if (goalWait !== null) {
@@ -436,6 +445,14 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
       if (skillPrompt !== null) {
         turns.push({ role: "user", ts: timestamp ?? null, parts: [{ kind: "text", text: skillPrompt.request }, ...skillPrompt.skills.map((skill) => ({ kind: "skill" as const, skill }))] });
         continue;
+      }
+      if (state.omoAskIds !== null && record(entry).type === "custom_message") {
+        const heldAnswer = omoAnswerEntry(entry, state.omoAskIds);
+        if (heldAnswer !== null) {
+          state.omoAskIds.delete(heldAnswer.id);
+          turns.push({ role: "user", ts: timestamp ?? null, parts: [{ kind: "text", text: heldAnswer.text }] });
+          continue;
+        }
       }
       const notice = piNotice(entry);
       if (notice !== null) {
@@ -478,6 +495,13 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
       omoTaskTitles(message, taskTitles);
 
       if (message.role === "user") {
+        const pictures = images ? piPromptImages(entry, message, blobs).map(({ media_type, ref }) => ({ kind: "image" as const, media_type, ref })) : [];
+        const omoAnswer = state.omoAskIds !== null ? omoAnswerEntry(entry, state.omoAskIds) : null;
+        if (omoAnswer !== null) {
+          state.omoAskIds!.delete(omoAnswer.id);
+          turns.push({ role: "user", ts: timestamp ?? null, parts: [...pictures, { kind: "text", text: omoAnswer.text }] });
+          continue;
+        }
         const prompt =
           typeof message.content === "string"
             ? message.content
@@ -485,7 +509,6 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
                 .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
                 .filter((part) => part.length > 0)
                 .join("\n");
-        const pictures = images ? piPromptImages(entry, message, blobs).map(({ media_type, ref }) => ({ kind: "image" as const, media_type, ref })) : [];
         if (prompt.length === 0) {
           if (pictures.length > 0) turns.push({ role: "user", ts: timestamp ?? null, parts: pictures });
           continue;

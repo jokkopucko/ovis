@@ -77,6 +77,7 @@ import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotSta
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser, withHcNotes } from "./transcript-records.ts";
+import { omoAnswerEntry, type OmoAskState, omoAskUpdates } from "./omo-ask.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
 import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, entryHostToolResults, isHostHandoff, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
 import { POLL_TOOL, REPL_TOOL, replDeliveries, replDispatched, replOutput, virtualCallOutput } from "./claude-code-mode.ts";
@@ -574,7 +575,8 @@ type SettingType = "model_change" | "thinking_level_change" | "copilot_model" | 
  * `branch.answers` does) and a small line that sets the same value again, shared while it repeats.
  */
 type ClaudeSettings = Record<"model" | "effort", { line: string; start: number; end: number }[]>;
-const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettings; pictures?: PictureIndex; undo?: KimiUndo }>();
+interface OmoAskIndex { open: Map<string, OmoAskState>; events: { at: number; kind: "open" | "cancelled" | "close"; id: string }[] }
+const clearScans = new Map<string, { id: string; source: RecognizedConversation["source"]; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettings; pictures?: PictureIndex; undo?: KimiUndo; omoAsks?: OmoAskIndex }>();
 
 interface PictureIndex { at: Map<string, IndexedPicture>; loose: UuidMarks; blind: number | null; unread: [number, number][]; bytes: PictureBytes; vouched: ({ key: string } & PictureRead) | null }
 interface PictureRead { began: number; wall: number }
@@ -721,6 +723,7 @@ function countBefore<T>(items: readonly T[], value: (item: T) => number, bound: 
   return low;
 }
 const CLAUDE_CARRY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024 * 1024;
+const OMO_CARRY_BYTES = 4 * 1024 * 1024;
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
   finish(applyHistoryBoundarySteps(path, stream, source, false));
 }
@@ -730,8 +733,8 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   const previous = clearScans.get(path);
   const previousScanned = previous?.scanned;
   let scan = fresh ? undefined : previous;
-  if (!scan || scan.id !== stream.id || scan.scanned > stream.length || (yield* bytesBeforeSteps(stream, scan.scanned)) !== scan.tail) {
-    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures(0, stream) } : {}), ...(source === "kimi-transcript" ? { undo: { anchors: [], undone: [] } } : {}) };
+  if (!scan || scan.id !== stream.id || scan.source !== source || scan.scanned > stream.length || (yield* bytesBeforeSteps(stream, scan.scanned)) !== scan.tail) {
+    scan = { id: stream.id, source, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures(0, stream) } : {}), ...(source === "kimi-transcript" ? { undo: { anchors: [], undone: [] } } : {}), ...(source === "omo-transcript" ? { omoAsks: { open: new Map<string, OmoAskState>(), events: [] } } : {}) };
   } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
   let position = scan.scanned;
@@ -757,6 +760,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
         if (scan.claude) scan.claude = { model: [], effort: [] };
         // what lies before the /clear is never judged
         if (scan.pictures) scan.pictures = noPictures(base + offset, stream);
+        if (scan.omoAsks) scan.omoAsks = { open: new Map<string, OmoAskState>(), events: [] };
       }
       else if (!skipping && source !== "claude-transcript" && (source === "copilot-transcript" ? COPILOT_SETTING_TYPES : source === "kimi-transcript" ? KIMI_SETTING_TYPES : SETTING_TYPES).some((type) => line.includes(type))) {
         try {
@@ -791,6 +795,29 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
         }
       }
       if (!skipping && scan.undo) followKimiUndo(scan.undo, line, base + offset, base + newline + 1);
+      if (!skipping && scan.omoAsks) {
+        const mayOpen = line.includes("ask_user_question") || line.includes("request_user_input") || line.includes("ask-user:");
+        const mayClose = scan.omoAsks.open.size > 0 && (line.includes("toolResult") || line.includes("[Answer to question "));
+        if (mayOpen || mayClose) {
+          try {
+            const entry: unknown = JSON.parse(line.toString("utf8"));
+            const { open, close } = omoAskUpdates(entry);
+            for (const item of open) {
+              scan.omoAsks.open.set(item.id, item.state);
+              scan.omoAsks.events.push({ at: base + offset, kind: item.state, id: item.id });
+            }
+            for (const id of close) {
+              if (scan.omoAsks.open.delete(id)) scan.omoAsks.events.push({ at: base + offset, kind: "close", id });
+            }
+            if (scan.omoAsks.open.size > 0) {
+              const answered = omoAnswerEntry(entry, scan.omoAsks.open);
+              if (answered !== null && scan.omoAsks.open.delete(answered.id)) {
+                scan.omoAsks.events.push({ at: base + offset, kind: "close", id: answered.id });
+              }
+            }
+          } catch {}
+        }
+      }
       if (!skipping && scan.pictures && mayBeUnread(line)) scan.pictures.unread.push([base + offset, base + newline]);
       skipping = false;
       offset = newline + 1;
@@ -799,11 +826,18 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
     }
     if (scan.pictures) digestPictureBytes(scan.pictures.bytes, bytes, base);
     carry = bytes.subarray(offset);
-    if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) {
+    if (carry.length > (branch ? CLAUDE_CARRY_BYTES : scan.omoAsks ? OMO_CARRY_BYTES : METADATA_HEAD_BYTES)) {
       if (scan.pictures && scan.pictures.blind === null) scan.pictures.blind = base + offset;
       // a user's message (Kimi names a record's type and a message's role first) may be a prompt: an
       // /undo counting back over it would take back another
       if (scan.undo && carry.subarray(0, 512).includes('"context.append_message"') && carry.subarray(0, 512).includes('"role":"user"')) scan.undo.anchors = [];
+      if (scan.omoAsks && scan.omoAsks.open.size > 0) {
+        const prefix = carry.subarray(0, 1024).toString("utf8");
+        const framed = /\[Answer to question ([^\]\r\n"\\]+)\\n/.exec(prefix)?.[1];
+        if (framed !== undefined && !prefix.includes('"inputSource":"interactive"') && !prefix.includes('"inputSource":"person"') && scan.omoAsks.open.delete(framed)) {
+          scan.omoAsks.events.push({ at: base + offset, kind: "close", id: framed });
+        }
+      }
       carry = Buffer.alloc(0);
       skipping = true;
     }
@@ -879,6 +913,7 @@ interface SettledTurns {
   metadata: ConversationMetadata;
   tail: string;
   taskTitles: Map<string, string>;
+  omoAsks: Map<string, OmoAskState>;
   noticed: Set<string>;
   inherited: Map<string, string>;
   observedEnd: number;
@@ -1041,7 +1076,21 @@ function subagentsOnPage(path: string, text: string): ReadonlyMap<string, Subage
   return ids.size === 0 ? undefined : subagentDetails(path, ids);
 }
 
-function parseTurns(source: RecognizedConversation["source"], path: string, text: string, taskTitles?: Map<string, string>, noticed?: Set<string>, baseOffset?: number): ConversationTurn[] {
+function omoAsksBefore(path: string, stream: TranscriptStream, before: number): Map<string, OmoAskState> {
+  const open = new Map<string, OmoAskState>();
+  const scan = clearScans.get(path);
+  const events = scan?.source === "omo-transcript" ? scan.omoAsks?.events : undefined;
+  if (!events) return open;
+  for (const event of events) {
+    if (event.at < stream.floor) continue;
+    if (event.at >= before) break;
+    if (event.kind === "close") open.delete(event.id);
+    else open.set(event.id, event.kind);
+  }
+  return open;
+}
+
+function parseTurns(source: RecognizedConversation["source"], path: string, text: string, taskTitles?: Map<string, string>, noticed?: Set<string>, baseOffset?: number, omoAskIds?: Map<string, OmoAskState>): ConversationTurn[] {
   if (source === "copilot-transcript") return parseCopilotTranscript(text, Infinity, baseOffset);
   if (source === "grok-transcript") {
     try { return parseGrokTranscript(text, path); } catch (error) {
@@ -1065,15 +1114,15 @@ function parseTurns(source: RecognizedConversation["source"], path: string, text
   }
   return source === "codex-transcript" ? parseCodexTranscript(text, Infinity)
     : source === "claude-transcript" ? parseClaudeTranscript(text, Infinity, { subagents: subagentsOnPage(path, text), noticed })
-      : parseOmpTranscript(text, Infinity, ompReading(source, path, taskTitles));
+      : parseOmpTranscript(text, Infinity, ompReading(source, path, taskTitles, omoAskIds));
 }
 
 /** How the omp record fold reads a source, the same for a one-shot parse and a live one: pi and omo keep a
  * picture inline (an omo tool's display() or image read, #3420) and omp in its blob store, and the image
  * endpoint answers all three; gjc is read the same way but would carry image refs nothing answers, so it
  * names none. */
-function ompReading(source: RecognizedConversation["source"], path: string, taskTitles?: Map<string, string>) {
-  return { images: source === "pi-transcript" || source === "cmd-transcript" || source === "omp-transcript" || source === "omo-transcript", blobs: source === "omp-transcript" ? ompBlobStore(path) : null, callIds: source === "gjc-transcript", taskTitles };
+function ompReading(source: RecognizedConversation["source"], path: string, taskTitles?: Map<string, string>, omoAskIds?: Map<string, OmoAskState>) {
+  return { images: source === "pi-transcript" || source === "cmd-transcript" || source === "omp-transcript" || source === "omo-transcript", blobs: source === "omp-transcript" ? ompBlobStore(path) : null, callIds: source === "gjc-transcript", taskTitles, ...(source === "omo-transcript" ? { omoAskIds: omoAskIds ?? new Map<string, OmoAskState>() } : {}) };
 }
 
 function turnBlobs(stream: TranscriptStream, source: StreamSource): string | null {
@@ -1141,7 +1190,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
     const subagents = source === "claude-transcript" ? { ids: new Set<string>(), details: new Map<string, SubagentDetail>() } : undefined;
     const parser = source === "codex-transcript" ? createCodexTranscriptParser()
       : source === "claude-transcript" ? createClaudeTranscriptParser({ subagents: subagents!.details, noticed: new Set(before.noticed) })
-      : createOmpTranscriptParser(ompReading(source, path, new Map(before.taskTitles)));
+      : createOmpTranscriptParser(ompReading(source, path, new Map(before.taskTitles), source === "omo-transcript" ? new Map(before.omoAsks) : undefined));
     cached = { source, id: stream.id, start, pageStart: before.start, prefixBoundary: before.tail, scanned: start,
       boundary: bytesBefore(stream, start), parser, metadata: before.metadata, fold: { ...before.fold }, piAgentDir: before.piAgentDir, catalogs: before.catalogs, subagents };
   }
@@ -1204,15 +1253,15 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
 
 function liveTurns(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number, starts: number[], piAgentDir?: string | null): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   const last = Math.max(start, starts[starts.length - 1] ?? start);
-  const key = `${path}\0${start}`;
+  const key = `${path}\0${source}\0${start}`;
   const catalogs = source === "pi-transcript" && piAgentDir !== null ? piCatalogVersion(piAgentDir)
     : source === "cmd-transcript" ? catalogVersion(cmdModelCatalogPath()) : undefined;
   let settled = settledTurns.get(key);
-  if (!settled || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir || settled.catalogs !== catalogs) {
+  if (!settled || settled.source !== source || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir || settled.catalogs !== catalogs) {
     const head = start > stream.floor ? metadataHead(path, stream, source, start) : "";
     let kept: SettledTurns | undefined;
     for (const [other, page] of settledTurns) {
-      if (other.startsWith(`${path}\0`) && page.id === stream.id && page.start < start && page.start > (kept?.start ?? -1)) kept = page;
+      if (other.startsWith(`${path}\0${source}\0`) && page.source === source && page.id === stream.id && page.start < start && page.start > (kept?.start ?? -1)) kept = page;
     }
     const inherited = new Map(kept === undefined ? [] : kept.end <= start ? kept.taskTitles : kept.inherited);
     if (kept !== undefined) {
@@ -1222,12 +1271,12 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
     }
     const fold: MetadataFold = { piProvider: null };
     settled = { source, id: stream.id, start, end: start, turns: [], metadata: parseConversationMetadata(`${head}
-`, source, undefined, piAgentDir, fold), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir, catalogs, fold };
+`, source, undefined, piAgentDir, fold), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), omoAsks: source === "omo-transcript" ? omoAsksBefore(path, stream, start) : new Map(), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir, catalogs, fold };
   }
   if (settled.end < last) {
     const text = readStream(stream, settled.end, last).toString("utf8");
     const fold = { ...settled.fold };
-    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed, settled.end)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir, fold), tail: bytesBefore(stream, last), fold };
+    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed, settled.end, source === "omo-transcript" ? settled.omoAsks : undefined)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir, fold), tail: bytesBefore(stream, last), fold };
   }
   settled.observedEnd = stream.length;
   rememberPage(settledTurns, key, settled, 8);
@@ -2657,8 +2706,8 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
     throw new ConversationUnavailable("transcript_missing");
   }
   const key = page.before !== undefined
-    ? `${path}\0before:${page.before}:${page.since ?? ""}:${pagePrompts(page)}`
-    : `${path}\0from:${page.from ?? ""}:${pagePrompts(page)}`;
+    ? `${path}\0${source}\0before:${page.before}:${page.since ?? ""}:${pagePrompts(page)}`
+    : `${path}\0${source}\0from:${page.from ?? ""}:${pagePrompts(page)}`;
   const catalogs = piAgentDir === undefined ? "" : `:${piAgentDir}`;
   const signature = page.before !== undefined ? `${stream.id}${catalogs}` : `${stream.id}:${stream.length}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}${catalogs}`;
   const cached = cache.get(key);
@@ -2708,7 +2757,7 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
     throw new ConversationUnavailable("transcript_missing");
   }
 
-  const parsed = live?.turns ?? parseTurns(source, path, text, undefined, undefined, start);
+  const parsed = live?.turns ?? parseTurns(source, path, text, undefined, undefined, start, source === "omo-transcript" ? omoAsksBefore(path, stream, start) : undefined);
   const turns = parsed.some((turn, index) => turn.parts[0]?.kind === "goal_wait" && (page.before !== undefined || index < parsed.length - 1))
     ? parsed.filter((turn, index) => turn.parts[0]?.kind !== "goal_wait" || (page.before === undefined && index === parsed.length - 1))
     : parsed;
