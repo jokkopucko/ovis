@@ -138,6 +138,7 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
   });
   it("wait and read show only waiting_human at a card, including after restart", async () => {
     const session = await start("ask");
+    expect(await call("wait", { session })).toMatchObject({ state: { state: "waiting_human" } });
     hub.close(); acp.close(); open(); await acp.restore();
     expect(await call("wait", { session })).toMatchObject({ state: { state: "waiting_human" } });
     for (const what of ["transcript","screen","result"]) {
@@ -225,10 +226,10 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     }
     expect(await call("send", args)).toMatchObject({ turn_id: first.turn_id, duplicate: true });
   }, 30000);
-  it("five concurrent starts start four; old children accept no new work but stay alive", async () => {
-    const outputs = await Promise.all(Array.from({ length: 5 }, () => call("start", { harness: "test", cwd: dir })));
-    expect(outputs.filter(v => v.kind === "session")).toHaveLength(4);
-    expect(outputs.find(v => v.kind === "refusal")).toMatchObject({ error: { code: "children_limit" } });
+  it("six concurrent starts from one parent all start; old children accept no new work but stay alive", async () => {
+    const outputs = await Promise.all(Array.from({ length: 6 }, () => call("start", { harness: "test", cwd: dir })));
+    expect(outputs.filter(v => v.kind === "session")).toHaveLength(6);
+    expect(programs.size).toBe(6);
     now += 3_600_000;
     for (const [session, proc] of programs) {
       expect(await call("send", { session, task: "late" })).toMatchObject({ error: { code: "time_limit" } });

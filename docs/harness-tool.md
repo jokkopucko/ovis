@@ -88,7 +88,7 @@ from an extension Ovis adds to that launch with `-e`; an older version without
 | `agent_ask` | Start, send and wait for one task. If still working, wait again rather than polling. |
 | `agent_stop` | Stop a child this run started. |
 
-Depth defaults to 1 and may be set to 2 or 3. Each parent can have four live children. A child
+Depth defaults to 1 and may be set to 2 or 3. A parent may run any number of children. A child
 takes new work for 60 minutes; an ongoing turn is not interrupted. Each run can make 30 calls
 in a sliding minute. There is no PC-wide cap. All replies use `ovis-harness/0`.
 

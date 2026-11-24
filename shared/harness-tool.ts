@@ -5,7 +5,7 @@ export const HARNESS_CONTRACT = "ovis-harness/0";
 export const harnessStopReason = (value: string): string => schema.$defs.TurnResult.properties.stop_reason.enum.includes(value) ? value : "unknown";
 export type HarnessVerb = keyof typeof TOOL_SCHEMAS;
 export const VIEW_VERBS = ["machines", "harnesses", "ls", "read"] as const;
-export const HARNESS_LIMITS = { children: 4, child_minutes: 60, calls_per_minute: 30, wait_seconds: 45 } as const;
+export const HARNESS_LIMITS = { child_minutes: 60, calls_per_minute: 30, wait_seconds: 45 } as const;
 
 export interface HarnessToolSetting {
   readonly level: "off" | "view" | "start";

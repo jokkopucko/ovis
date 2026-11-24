@@ -75,7 +75,7 @@ export interface Refusal {
 
 export type Scope = "send" | "start" | "start_elsewhere" | "view" | (string & {});
 
-export type RefusalCode = "ancestor_target" | "approval_denied" | "approval_required" | "bad_request" | "busy" | "children_limit" | "depth_exceeded" | "not_granted" | "not_owner" | "rate_limited" | "self_target" | "start_failed" | "taken_over" | "time_limit" | "tools_off" | "unavailable" | "unknown_contract" | "unknown_session" | "waiting_human" | (string & {});
+export type RefusalCode = "ancestor_target" | "approval_denied" | "approval_required" | "bad_request" | "busy" | "depth_exceeded" | "not_granted" | "not_owner" | "rate_limited" | "self_target" | "start_failed" | "taken_over" | "time_limit" | "tools_off" | "unavailable" | "unknown_contract" | "unknown_session" | "waiting_human" | (string & {});
 
 export interface Untrusted {
   from: string;

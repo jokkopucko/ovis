@@ -40,7 +40,7 @@ The owner decided the four questions H0 waited on (2026-11-24, in the Dori sessi
 | D18 | Does Ovis own a common harness-layer interface? | (c), as far as H2: this contract, the read-only commands for people (H1) and the harness tool handed to agents on this PC (H2). Another machine (H3) is not part of it yet. Ovis still never decides or hands out work (D22): it runs the one ask the calling agent made. | [Commands](#commands-and-the-code-they-use), the ACP drive path, [the safety rules](#safety-rules-g1g12) |
 | D19 | What may an agent do through the harness tool? | View only by default: list, state, transcript. Starting and sending on this PC once the user turns it on. Starting on another machine only through a person's approval card, every time. Answering a child's approval: never; only a person approves. Machine commands (`exec`, `file`) stay hc's and Ovis does not open them. | The `Scope` values in [the schema](#schema-draft); rules G2, G3 and G8 |
 | D21 | What shape is the contract? | (a): one schema generates the types, and the commands' `--json` output is the stable surface. It survives a Rust port of the inside unchanged (plan 11.3). | [Schema](#schema-draft) |
-| D23 | Default limits of the harness tool | Depth 1, settable up to 3. 4 running children per parent. 60 minutes per child. 30 calls per minute per run. Cost is shown wherever the harness reports it. No further limit. | `Limits`; rules G4, G5 and G7 |
+| D23 | Default limits of the harness tool | Depth 1, settable up to 3. No limit on running children per parent (owner decision 2026-11-24). 60 minutes per child. 30 calls per minute per run. Cost is shown wherever the harness reports it. No further limit. | `Limits`; rules G4, G5 and G7 |
 
 **How agents are run (owner, 2026-11-24).**
 
@@ -230,7 +230,6 @@ interface Grant {                    // what the user turned on, and where
 
 interface Limits {                   // D23, decided 2026-11-24; no other limit
   depth: 1 | 2 | 3;                  // default 1
-  children: number;                  // running at once, per parent; default 4
   child_minutes: number;             // default 60
   calls_per_minute: number;          // per run; default 30
 }
@@ -250,7 +249,7 @@ interface AuditRecord {              // G6: one per start, send and stop
 interface Refusal {
   error: {
     code: "tools_off" | "not_granted" | "approval_required" | "approval_denied" | "waiting_human"
-        | "depth_exceeded" | "children_limit" | "time_limit" | "rate_limited"
+        | "depth_exceeded" | "time_limit" | "rate_limited"
         | "ancestor_target" | "self_target" | "not_owner" | "taken_over"
         | "unknown_session" | "unknown_contract";
     message: string;
@@ -365,7 +364,7 @@ program of the same OS account (as R20).
 | G2 View by default | An agent caller may only view (list, state, transcript). Start and send are turned on by the user per session, project or machine (`Grant`). | view only | Run token → grants check before every verb. Agent callers are a new kind of principal: neither `drive` nor `watch` (read, `shared/access.ts`). | Without a grant, `start` and `send` are refused `not_granted`. |
 | G3 Other machine | Starting on another machine goes through a person's approval card showing who, which machine, which harness and what task. "Always allow" binds to one parent and one machine. | card each time | `start --on`; the card reuses the approval card surface. Touches authentication: owner check and a real review. | Zero starts elsewhere without an approval. |
 | G4 Depth | An agent may start agents only while its depth is below the limit. At the default of 1, a child cannot start agents and gets view-only tools; at 2 or 3, descendants may start agents until the limit. | 1, settable to 3 | Depth carried in the run token, one more for each generation. | Past the depth, `depth_exceeded`, at 1, 2 and 3. |
-| G5 Limits | At most 4 running children per parent; 60 minutes per child; cost shown wherever the harness reports it, with no cost cap. Past a limit no new work is taken and a person is told; a running child is never killed. | 4, 60 min | `start` and `send`. | Past the limit, `children_limit` or `time_limit`, and the running child still runs. |
+| G5 Limits | No limit on running children per parent (owner decision 2026-11-24); 60 minutes per child; cost shown wherever the harness reports it, with no cost cap. Past a limit no new work is taken and a person is told; a running child is never killed. | 60 min | `start` and `send`. | Past the limit, `time_limit`, and the running child still runs. |
 | G6 Record | Each parent → child act is recorded: who, machine, harness, when, turn id, stop reason. What was sent is in the session's own transcript and is not copied. | always | `AuditRecord` on every start, send and stop; a screen for it in H3. | Every start, send and stop leaves exactly one record. |
 | G7 No loops | Sending to an ancestor or to oneself is refused. The same key types once. Calls per minute are limited. | 30/min per run | `send`, using the `parent` chain and the key store. | `ancestor_target`, `self_target`, a repeated key gives `duplicate: true` and types nothing, a burst gets `rate_limited`. |
 | G8 Only people approve | The tool has no approval verb. A child's approval request goes to a person as a card; the parent only sees `waiting_human`. While a child waits on an approval, the parent's `send` is refused (`waiting_human`) before any text is typed, so it cannot answer a dialog by typing, and `read --screen` and `--transcript` return no text, so the dialog's content never reaches the parent. For an ACP child, Ovis is the only ACP client: each `session/request_permission` becomes a card with the agent's options unchanged, and the calling agent never holds the connection or sees the request. Ovis adds no approval of its own, so a child that requests nothing ends with no card. "Always allow" on a child's card holds for that child session only. Exact scope: this covers the requests that reach Ovis; a call the harness's own settings already allow never asks. | always | Schema: no approve scope. The ACP client is Ovis's (server and keeper) and its connection is never handed out. | No verb exists, and the parent's view of a waiting child holds no card content. A `send` to a child with a dialog open types nothing and returns `waiting_human`; a screen read then returns no dialog text. With a fake ACP agent: a permission request shows a card, the turn waits until a person answers, and the parent's tool has no way to answer it. A turn with no request ends with no card. |

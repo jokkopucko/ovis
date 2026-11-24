@@ -202,7 +202,6 @@ export class AgentToolHub {
       }
       return refuse("unknown_session", "This key named a child that is no longer available.");
     }
-    if (own.length + [...this.ledger.launches.values()].filter(i => i.starter === run.id).length >= HARNESS_LIMITS.children) return refuse("children_limit", "Four child slots are in use.");
     const command = (this.options.resolve ?? resolveHarness)(kind);
     if (!command) return refuse("start_failed", "This harness has no supported ACP adapter.");
     if (command.ceiling?.profile !== run.ceiling || !run.ceiling) {
