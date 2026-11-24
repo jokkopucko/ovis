@@ -273,6 +273,21 @@ describe("terminal output credit", () => {
     expect((replay as unknown as { bytes: Buffer }).bytes.length).toBeLessThanOrEqual(4 * 1024);
   });
 
+  it("never restores ?2026h across a cut, and ignores an unmatched ?2026l on a stream that never opened a synchronized block", () => {
+    // cut inside an open ?2026h block restores ?2026l (never ?2026h) so the retained ?2026l cannot settle a partial frame
+    const midBlock = new ReplayBuffer(32);
+    midBlock.append(`\x1b[?2026h${"a".repeat(40)}tail\x1b[?2026l`);
+    expect(midBlock.truncated).toBe(true);
+    expect(midBlock.text().startsWith("\x1b[?2026l")).toBe(true);
+    expect(midBlock.text()).not.toContain("\x1b[?2026h");
+
+    // a herdr-core attach paint starts with ?2026l on a plain stream that never uses ?2026h: truncation must not emit ?2026l
+    const plainCore = new ReplayBuffer(32);
+    plainCore.append(`\x18\x1b[!p\x1b[?2026l${"b".repeat(40)}plain prompt`);
+    expect(plainCore.truncated).toBe(true);
+    expect(plainCore.text()).not.toContain("\x1b[?2026l");
+  });
+
   it("replays byte for byte what re-encoding the whole tail on every append gave", () => {
     // the tail kept as one string, encoded and decoded whole on every append
     class StringTail {

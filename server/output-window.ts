@@ -164,6 +164,15 @@ export class ReplayBuffer {
     const cut = bytes.toString("utf8", this.start, start);
     for (const [, params, state] of cut.matchAll(PRIVATE_MODES)) {
       for (const mode of params!.split(";").filter(Boolean)) {
+        // Never restore ?2026h across a cut (it would pair with a retained ?2026l to settle a partial screen),
+        // and never record an unmatched ?2026l (herdr-core's attach reset) on a stream that never used ?2026h.
+        if (mode === "2026") {
+          if (state === "h") {
+            this.modes.delete(mode);
+            this.modes.set(mode, "l");
+          }
+          continue;
+        }
         this.modes.delete(mode);
         this.modes.set(mode, state as "h" | "l");
       }

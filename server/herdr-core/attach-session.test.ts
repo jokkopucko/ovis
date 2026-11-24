@@ -244,6 +244,18 @@ describe("CoreAttachSession", () => {
     next.hit = Promise.withResolvers<void>();
     core.output("off\x1b[?1004l");
     await next.hit.promise;
+    // re-enabling focus reports inline never splits an escape sequence cut across a 16 KiB frame boundary
+    const marker = "\x1b[?9001l";
+    for (let split = 1; split < marker.length; split++) {
+      const start = seen.length;
+      next.want = `END_${split}`;
+      next.hit = Promise.withResolvers<void>();
+      core.output(`\x18\x1b[!p\x1b[?1004lbody${marker.slice(0, split)}`);
+      core.output(`${marker.slice(split)}END_${split}`);
+      await next.hit.promise;
+      expect(seen.slice(start).join("")).toContain(`${marker}END_${split}`);
+    }
+    session.kill();
   });
 
   it("types a lone cursor key in the cursor mode hc's stream last set, not the one the viewer's terminal still believed in", async () => {

@@ -144,8 +144,9 @@ export class CoreAttachSession {
           first = false;
           text = CLEAR_HISTORY + text;
         }
-        // a program turning focus reports off would leave hc without this viewer's focus
-        if (text) options.onData(text.includes(FOCUS_OFF) ? text + FOCUS_ON : text);
+        // a program turning focus reports off would leave hc without this viewer's focus;
+        // insert right after FOCUS_OFF so a trailing incomplete escape sequence at a 16 KiB chunk boundary stays intact
+        if (text) options.onData(text.includes(FOCUS_OFF) ? text.replaceAll(FOCUS_OFF, FOCUS_OFF + FOCUS_ON) : text);
       },
       onClose: (reason) => this.end(typeof reason?.["exit_code"] === "number" ? reason["exit_code"] : null),
     }).then(({ channel }) => {
