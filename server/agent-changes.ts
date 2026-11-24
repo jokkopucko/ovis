@@ -31,9 +31,10 @@ export class AgentChanges {
       if (disk.kind !== "json" || typeof disk.value !== "object" || disk.value === null) return;
       for (const [key, value] of Object.entries(disk.value as Record<string, unknown>)) {
         if (typeof value !== "object" || value === null) continue;
-        const { seq, status, at } = value as Record<string, unknown>;
+        const { seq, status, at, told } = value as Record<string, unknown>;
         this.seen.set(key, {
           ...(typeof seq === "number" ? { seq } : {}), ...(typeof status === "string" ? { status } : {}), ...(typeof at === "number" ? { at } : {}),
+          ...(told === true ? { told } : {}),
         });
       }
     } catch (error) {
@@ -116,8 +117,9 @@ export class AgentChanges {
     if (!before) return { ...(seq === undefined ? {} : { seq }), status };
     if (seq !== undefined && before.seq !== undefined && seq < before.seq) return { seq, status };
     const raised = seq !== undefined && (before.seq === undefined || seq > before.seq);
-    // a raised counter after a status frame is that frame's change, already dated
-    const fresh = before.status !== status || raised && !before.told;
+    // a raised counter after a status frame is that frame's change, already dated; the first counter
+    // of an agent first seen in a frame is where it starts, not a change
+    const fresh = before.status !== status || before.seq !== undefined && raised && !before.told;
     const next: Seen = { ...(seq === undefined ? {} : { seq }), status, ...(fresh ? { at: this.now() } : before.at === undefined ? {} : { at: before.at }) };
     // the frame's counter may come in a later snapshot than the next one
     if (before.told && !raised && before.status === status) next.told = true;
@@ -134,7 +136,8 @@ export class AgentChanges {
     if (this.path === null) return;
     // the newest first, so a full table drops the agents that changed longest ago
     const entries = [...this.seen].sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0)).slice(0, MAX_ENTRIES)
-      .map(([key, { seq, status, at }]) => [key, { seq, status, at }] as const);
+      // `told` too: a restart between a frame and its counter must not date that change again
+      .map(([key, { seq, status, at, told }]) => [key, { seq, status, at, told }] as const);
     try { writeStateDocument(this.path, JSON.stringify(Object.fromEntries(entries)), false); }
     catch (error) { console.error(`Cannot write ${this.path} (${(error as NodeJS.ErrnoException).code ?? "error"})`); }
   }
