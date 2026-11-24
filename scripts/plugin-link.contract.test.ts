@@ -17,6 +17,7 @@ import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from 
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../shared/relay-pair-sas.ts";
 import { PAIRING_LINK_MS } from "../server/devices.ts";
 import { JOIN_HOLD_MS } from "../server/account/join-hold.ts";
+import { TestList } from "../server/account/list.test-helpers.ts";
 import { ask, ended, linkRecord, pairingPc, phone, sendLink, signedInWith, vouchFor, type Pc, type Phone } from "../server/account/pairing.test-helpers.ts";
 import { bounded, deferred, relayConnection, TestClock } from "../server/relay/test-helpers.ts";
 import { approveJoins, link, type OwnJoin } from "./plugin-link.ts";
@@ -228,6 +229,84 @@ test("ovis add --account, as a script or an agent runs it with no terminal: this
   expect(asked.at(-1)).toBe(200);
   expect(made.devices.account()).toBe(OWNER);
   expect(service.pcs(OWNER).map((entry) => [entry.server_id, entry.listed_by_device])).toEqual([[serverId, false]]);
+});
+
+test("ovis add at a terminal, for an account that keeps a signed list: the PC and the adding device show one number, a yes typed here confirms it, and the PC joins by the list", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true, accountListAddPollMs: 0 } });
+  pcs.push(made);
+  const service = made.account;
+  service.opensAll = true;
+  service.listAccounts = "*";
+  service.completions = true;
+  const account = await TestList.start(service, OWNER);
+  const identity = made.app.context.services.relay.currentIdentity()!;
+  const endpoint = bytesToHex(importPublicKey(identity.public_key));
+  const origin = `http://127.0.0.1:${made.app.port}`;
+  const out: string[] = [];
+  const keys = terminalLines();
+  let at = Date.now();
+  const pressed: string[] = [];
+  let signedIn = false;
+  let phoneShows: string | null = null;
+  let comparing: Promise<void> | null = null;
+  let adding: Promise<unknown> | null = null;
+  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: made.devices.account() === null ? "connecting" : "online", blocked: null });
+    if (path === "/api/account/one-press") pressed.push(await request.clone().text());
+    const response = await globalThis.fetch(request);
+    if (path === "/api/account/list/add" && revealing !== null && phoneShows === null) {
+      phoneShows = await (revealing as { reveal: () => Promise<string | null> }).reveal();
+      if (phoneShows !== null) answered.resolve();
+    }
+    return response;
+  };
+  // the device that adds the PC: it opens the comparison on the PC's card, and shows its number once the PC answered
+  // it reveals once the PC answered its commitment, which the command's next ask of the PC brings about
+  let revealing: { reveal: () => Promise<string | null> } | null = null;
+  const answered = deferred<void>();
+  const compare = async (): Promise<void> => {
+    const number = await account.compare(endpoint);
+    await number.commit();
+    revealing = number;
+    await answered.promise;
+  };
+  const code = await bounded(link([], {
+    origin, headers: {}, fetch, accountService: "https://account.test", serviceFetch: service.fetch, signal: new AbortController().signal,
+    lines: keys.lines, discard: keys.discard, terminal: true, isTty: true, now: () => at,
+    wait: (ms, signal) => new Promise((resolve, reject) => { if (signal.aborted) reject(signal.reason); else setTimeout(() => { at += ms; resolve(); }, 1); }),
+    out: (text) => {
+      out.push(text);
+      const typeLater = (line: string): void => { setTimeout(() => { at += 2_000; keys.type(line); }, 0); };
+      const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
+      if (shown && !signedIn) { signedIn = true; service.approveDevice(shown[1]!, OWNER); }
+      if (text.includes("Is this your account? Type yes")) typeLater("yes");
+      if (text.includes("Your account keeps a signed list")) comparing = compare();
+      const asked = /This PC shows ([0-9]{3}) ([0-9]{3})\. Does the device that adds it show the same number\?/.exec(text);
+      // the person compares the two screens, and says yes only when they agree
+      if (asked) void comparing!.then(() => { if (phoneShows === `${asked[1]}${asked[2]}`) typeLater("yes"); });
+      // then presses Add on the device: the account admits the PC, and the device signs its entry
+      if (text.includes("Confirmed. Press Add for")) {
+        adding = service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}/admit`, { method: "POST",
+          headers: { authorization: `Bearer ${service.issueToken(OWNER, { twoStep: true })}`, "content-type": "application/json" }, body: "{}" }))
+          .then(() => account.addPostedPc(endpoint));
+      }
+      if (text.endsWith("type them here (Enter to finish without): ")) typeLater("");
+    },
+  }), 60_000);
+  await adding;
+  const text = out.join("");
+  expect(text).toContain("Confirmed. Press Add for");
+  expect(code).toBe(0);
+  expect(text).toContain("Added. ");
+  expect(phoneShows).toMatch(/^[0-9]{6}$/);
+  // bound by the list alone: no admission of the account service was asked for, and the binding is pinned from its start
+  expect(pressed).toEqual(["{}"]);
+  expect(made.devices.account()).toBe(OWNER);
+  expect(made.devices.listFollowed()).toBe(true);
+  expect(made.devices.serviceBinding()).toBeNull();
+  expect(made.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in", list: account.id });
 });
 
 /** Lines typed at a terminal when the test types them: one typed while nothing reads waits for the next read. */

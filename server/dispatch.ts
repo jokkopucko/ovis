@@ -64,6 +64,7 @@ import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
+import type { ListAdd } from "./account/list-add.ts";
 import type { ListFollow } from "./account/list-follow.ts";
 import type { AccountWitness } from "./account/witness.ts";
 import { accountDispatchRefusal } from "./account/dispatch-rights.ts";
@@ -125,6 +126,8 @@ export interface RequestServices {
   readonly accountRows: ReturnType<typeof accountRowsFor> | null;
   /** This PC following its account's signed list (server/account/list-follow.ts); null with the release flag off. */
   readonly accountList: ListFollow | null;
+  /** Adding this PC to an account that keeps a signed list (server/account/list-add.ts); null with the release flag off. */
+  readonly listAdd: ListAdd | null;
   /** For how long this PC has let each key of its account in (server/account/witness.ts); null with the release flag off. */
   readonly accountWitness: AccountWitness | null;
   /** On a server that follows no list (Step 2 off): looks whether another Ovis on this folder pinned the PC, and then closes this server's account part. Null on a server that follows its list itself. */
@@ -445,8 +448,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a device that waits to link (it paired with a code made for a PC in no account) has the role with the fewest
   // rights, and sends one mutation: its own link, which makes it a device (server/account/routes.ts). Its relay
   // session refuses it every other call but the read of its own account status (server/relay/session.ts)
-  const ownLink = relayPeer?.provisional === true && request.method === "POST" && pathname === "/api/account/link";
-  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink)) {
+  const ownLink = relayPeer?.provisional === true && request.method === "POST" && (pathname === "/api/account/link" || pathname === "/api/account/list/named");
+  // a member tells this PC where its account's signed list stands and hands it entries it lacks: entries prove
+  // themselves, so a device that only watches may carry them too (server/account/routes.ts)
+  // only on a PC that follows a list a person named: one that follows none answers every caller as before
+  const listGossip = request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page") && (ctx.services.accountList?.peerHead() ?? null) !== null;
+  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink && !listGossip)) {
     setRequestRoute("watch-refusal");
     // A device the account's list holds only to watch, asking for the joins that wait at this pinned PC or deciding one:
     // it is told, in a code of its own, that it is in the list and may not let a device in (relay/routes.ts says the
@@ -499,8 +506,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
   }
   // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
-  // this PC names the list it pins
-  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin") && !ownWindow) {
+  // this PC names the list it pins, by its id, by the number it compares with the phone that adds it, or by the line of an invite
+  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin" || pathname === "/api/account/list/add" || pathname.startsWith("/api/account/list/add/")
+    || pathname === "/api/account/list/join" || pathname.startsWith("/api/account/list/join/")) && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Read this on this PC itself." } }, 403);
   }

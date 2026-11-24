@@ -53,13 +53,14 @@ export function relayHeaders(list: HeaderList): Headers {
 }
 
 /**
- * The two calls a device may make while it waits to link (it paired with a code made for a PC in no account and
- * has not linked; docs/account.md): reading its own account status, and sending its link. This is the whole list.
+ * The calls a device may make while it waits to link (it paired with a code made for a PC in no account and
+ * has not linked; docs/account.md): reading its own account status, sending its link, and, for an account that keeps
+ * a signed list, naming that list in the link's place. This is the whole list.
  * Whatever is not one of the two is refused before any route runs, a path that exists nowhere included.
  */
 function linkStep(request: Request): boolean {
   const { pathname } = new URL(request.url);
-  return (request.method === "GET" && pathname === "/api/account/status") || (request.method === "POST" && pathname === "/api/account/link");
+  return (request.method === "GET" && pathname === "/api/account/status") || (request.method === "POST" && (pathname === "/api/account/link" || pathname === "/api/account/list/named"));
 }
 
 /**

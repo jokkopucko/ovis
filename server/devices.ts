@@ -14,7 +14,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
-import { type ClearReason, LIST_REMOVED, PcAccountState } from "./account/pc-binding.ts";
+import { type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
 import type { ListAuthority } from "./account/list-follow.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
@@ -1484,6 +1484,19 @@ export class DeviceStore {
     this.pc.bindByService(account, listingId);
   }
 
+  /**
+   * Binds this PC, in no account, to `account` by the account's signed list (PcAccountState.bindByList): its own entry
+   * on a list a person at this PC confirmed. Only with the release flag on. An account whose list removed this relay
+   * identity takes it back on no path. Answers the binding the file holds after the write (PcAccountState.bindByList).
+   */
+  bindByList(account: string, list: string, serverId: string): ListBound {
+    this.assertWritable();
+    if (this.pc === null) throw new Error("A signed list needs OVIS_ACCOUNT_OPENS_ALL");
+    if (this.account() !== null) throw new Error("This PC is already in an account");
+    if (this.listRemovedFrom(account)) throw new Error("This PC was removed from that account");
+    return this.pc.bindByList(account, list, serverId);
+  }
+
   /** The id of this PC's binding when it stands on the account service's word alone (bindByService), else null. */
   serviceBinding(): string | null { const binding = this.pc?.binding(); return binding?.service === true ? binding.bind_id : null; }
 
@@ -2278,6 +2291,11 @@ export class DeviceStore {
   /** Whether this PC's relay identity was removed from `account` by that account's list: it joins it again on no path. */
   listRemovedFrom(account: string): boolean { return this.signedList?.removedFrom(account) === true; }
 
+  /** Whether the PC may be reset as the new PC that `account`'s list removed it as `serverId` (PcAccountState.readdReset), read from disk now. */
+  readdReset(account: string, serverId: string): "removed" | "in_account" | "not_removed" {
+    return this.pc === null ? "not_removed" : this.pc.readdReset(account, serverId);
+  }
+
   /** What an account row may do: on a pinned PC what the list says of its key, and to watch for a key the list no longer lets in. */
   private joinedRole(row: AccountRow): DeviceRole {
     const role = this.signedList?.role(row.key);
@@ -2545,10 +2563,12 @@ export class DeviceStore {
    * since is never taken for a device. A waiting row sends WAITING_LINKS links; the next turns it away, and null
    * says so.
    */
-  linkArrived(id: string, wasProvisional = false): LinkArrival | null {
+  linkArrived(id: string, wasProvisional = false, counted = true): LinkArrival | null {
     const row = this.provisional(id);
     const waiting = this.pending?.waiting;
-    if (row && waiting) {
+    // `counted` false: the row asks again where it stands after it named its account's list (listNamedBy), which is no
+    // new try of anything: only its first naming is one of its few
+    if (row && waiting && counted) {
       row.links += 1;
       if (row.links > WAITING_LINKS) { this.dropProvisional(waiting, row, "link_refused"); return null; }
     }

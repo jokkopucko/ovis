@@ -18,8 +18,12 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { accountOsOfPlatform } from "../shared/account-asker.ts";
-import { InviteRedeemError } from "../shared/account-list-invite.ts";
-import { JoinLineError, readJoinLine, type JoinLine } from "../shared/account-list-join.ts";
+import { entryToText, ListEntryError, readBody } from "../shared/account-list-entry.ts";
+import { InviteRedeemError, type LineProof } from "../shared/account-list-invite.ts";
+import { JoinLineError, JoinLineSignError, readJoinLine, type JoinLine } from "../shared/account-list-join.ts";
+import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText } from "../shared/account-list-seal.ts";
+import { isListLabel, namesFields } from "../shared/account-list.ts";
+import { fromBase64Url, toBase64Url } from "../shared/relay-pair-sas.ts";
 import { isLoopbackHost } from "../server/access.ts";
 import { shortAccount } from "./plugin-cli.ts";
 import {
@@ -249,17 +253,13 @@ async function joinRun(args: readonly string[], parsed: ReturnType<typeof parseJ
   try {
     if (line.length > INVITE_READ_MAX) throw new JoinLineError("length", "too long");
     // the reader takes only a line for this PC's own account service, so a pasted line never points this PC's account
-    // traffic, its proof or its listing elsewhere; and, as this command follows no signed list yet, none that names one
-    invite = await readJoinLine(line.trim(), { service: options.accountService, followsLists: false });
+    // traffic, its proof or its listing elsewhere. A line that names the account's signed list is joined by that list
+    invite = await readJoinLine(line.trim(), { service: options.accountService, followsLists: true });
   } catch (error) {
     // a refusal names no part of the line; anything else is a fault of this runtime, not the line's
     if (!(error instanceof JoinLineError)) throw error;
     if (error.reason === "other_service") {
       return failed("invite_invalid", `This invite is for another account service than the one this PC uses (${options.accountService}). Nothing was sent. Ask for an invite on a device signed in to that service, or check OVIS_ACCOUNT_SERVICE_URL here.`);
-    }
-    // a list id says the account keeps a signed member list: joining it on the service's word alone would go around it
-    if (error.reason === "needs_lists") {
-      return failed("not_available", "This invite is for an account with a signed member list, which needs a newer Ovis on this PC. Update it in Settings → Updates, then run this again. Nothing was sent.");
     }
     return failed("invite_invalid", NOT_AN_INVITE);
   }
@@ -278,7 +278,8 @@ async function joinRun(args: readonly string[], parsed: ReturnType<typeof parseJ
   const flow: LinkOptions = { ...options, out: say, terminal };
   const api = localApi(flow);
   try {
-    return await joining(flow, api, undo, { key: invite.key, signRedeem: invite.signRedeem, account, pinned: parsed.account !== undefined, json, platform: options.platform ?? process.platform });
+    return await joining(flow, api, undo, { key: invite.key, signRedeem: invite.signRedeem, account, pinned: parsed.account !== undefined, json, platform: options.platform ?? process.platform,
+      list: invite.list === null ? null : { id: invite.list, signJoin: invite.signJoin, signLineProof: invite.signLineProof, encryptionKey: invite.encryptionKey } });
   } catch (error) {
     if (!(error instanceof LocalError || error instanceof AwayError) || options.signal.aborted) throw error;
     const off = await cleanUp(undo);
@@ -287,7 +288,9 @@ async function joinRun(args: readonly string[], parsed: ReturnType<typeof parseJ
 }
 
 async function joining(options: LinkOptions, api: Api, undo: Undo,
-  invite: { readonly key: string; readonly signRedeem: JoinLine["signRedeem"]; readonly account: string; readonly pinned: boolean; readonly json: boolean; readonly platform: string }): Promise<Outcome> {
+  invite: { readonly key: string; readonly signRedeem: JoinLine["signRedeem"]; readonly account: string; readonly pinned: boolean; readonly json: boolean; readonly platform: string;
+    /** the account's signed list, when the line names one, with what of the line joins it: the PC then joins by that list alone */
+    readonly list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly signLineProof: JoinLine["signLineProof"]; readonly encryptionKey: CryptoKey } | null }): Promise<Outcome> {
   const { out, signal } = options;
   const { account } = invite;
   const now = options.now ?? Date.now;
@@ -295,8 +298,9 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
   const serviceFetch: Fetch = options.serviceFetch ?? fetch;
   const wait = options.wait ?? ((ms: number, abort: AbortSignal) => new Promise<void>((resolve, reject) => {
     // fixed wait: a pause before asking the account service again, as it asked
-    const timer = setTimeout(resolve, ms);
-    abort.addEventListener("abort", () => { clearTimeout(timer); reject(abort.reason); }, { once: true });
+    const stop = () => { clearTimeout(timer); reject(abort.reason); };
+    const timer = setTimeout(() => { abort.removeEventListener("abort", stop); resolve(); }, ms);
+    abort.addEventListener("abort", stop, { once: true });
   }));
   const command = `${cli(options)} join`;
   let status: { account: string | null };
@@ -316,6 +320,14 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
     return failed("not_available", takes === "not-own"
       ? `The Ovis on this PC does not count this terminal as the PC itself (a forwarded port?), so it cannot be added from here. Run ${command} on the PC itself.`
       : `The Ovis on this PC cannot take an invite (its Step 2 is off, or it is older). Update it in Settings → Updates, then run this again.`);
+  }
+  // a line that names the account's signed list is joined by that list alone: an Ovis that follows none is told so
+  // before anything is sent, with the invite unused
+  if (invite.list !== null) {
+    try { await api("GET", "/api/account/list"); } catch (error) {
+      if (!(error instanceof LocalError)) throw error;
+      return failed("not_available", "This invite is for an account with a signed member list, which needs a newer Ovis on this PC. Update it in Settings → Updates, then run this again. Nothing was sent.");
+    }
   }
   // nothing has gone to the account service so far, and nothing goes before the person here said this is the account.
   // Under the fleet preview that is asked at a terminal only, --account or not, as `ovis add` does
@@ -404,7 +416,8 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
   const code = await addByPress({ ...options, ...invite.json ? { terminal: false } : {} }, api, {
     signedIn: account, name: label, listedAt: null, confirmed: redeemed.auto,
     // an auto invite's admission may take a moment to be there; a plain one's card ends when the service says
-    ...redeemed.auto ? { noneTries: 3 } : redeemed.until === null ? {} : { until: redeemed.until },
+    ...redeemed.auto ? { noneTries: invite.list === null ? 3 : 5 } : redeemed.until === null ? {} : { until: redeemed.until },
+    ...invite.list === null ? { admissionOnly: true as const } : { take: byList(invite.list, redeemed.auto) },
     askBeforeUnlist: true, stopFast: true,
     unlist: () => leave(account), named, signOut: async () => undefined,
     words: joinWords(options, account, redeemed.auto), report: (end) => { ended = end; },
@@ -428,6 +441,76 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
   undo.listed = null;
   await putBack();
   return { code: JOIN_EXIT[error], json: { ok: false, error, message, listed: outcome.listed } };
+
+  /**
+   * One ask of a join by the account's signed list, which the line names (docs/account.md, "A PC joins the list with an
+   * invite"). An invite a person adds a PC with: this PC posts its card and joins once a device of the account chose
+   * Add (POST /api/account/list/join). One a PC joins with by itself: the PC builds its `join` from its own keys, this
+   * command signs it with the line's key, which never leaves it, and the PC places it and joins. The names' key, which
+   * the account wrapped for the invite and only the line opens, is wrapped again for the PC, and its name sealed.
+   */
+  function byList(list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly signLineProof: JoinLine["signLineProof"]; readonly encryptionKey: CryptoKey }, auto: boolean) {
+    type State = { readonly state: "added" | "waiting" | "again" } | { readonly state: "body"; readonly body: string } | { readonly state: "prove"; readonly card: LineProof["card"] }
+      | { readonly state: "prepared"; readonly seq: number; readonly enc: string; readonly seal: { readonly epoch: number; readonly opens: string } | null; readonly wraps: readonly { readonly epoch: number; readonly wrap: string }[] };
+    const scope = { account, list: list.id };
+    let wrongKeySaid = false;
+    const itself = async (): Promise<State> => {
+      const prepared = await api<State>("POST", "/api/account/list/join/prepare", { body: { ...scope, invite: invite.key } });
+      // this PC is in the list, or in the account, already: it writes no join, and the line proves its join instead
+      if (prepared.state === "prove") return await plain();
+      if (prepared.state !== "prepared") return prepared;
+      const { seq, enc, seal } = prepared;
+      let sealed: { epoch: number; bytes: string } | undefined;
+      let wraps: { epoch: number; member: string; wrap: string }[] = [];
+      const held = seal === null ? undefined : prepared.wraps.find((wrap) => wrap.epoch === seal.epoch);
+      if (seal !== null && held !== undefined) {
+        try {
+          const opened = await openWrap({ list: list.id, epoch: seal.epoch, commitment: seal.opens, wrap: wrapFromText(held.wrap), member: { key: invite.key, privateKey: list.encryptionKey } });
+          // the list commits to that key: one that does not give its commitment is the account service's doing
+          if (!opened.open && opened.why === "other_key" && !wrongKeySaid) {
+            wrongKeySaid = true;
+            out("The account service gave this PC a key to the list's names that the list does not commit to, so this PC joins without names. Tell the account's owner: the account service did this.\n");
+          }
+          if (opened.open) {
+            const own = await wrapEpochKey({ list: list.id, epoch: opened.value, member: enc });
+            if (own !== null) wraps = [{ epoch: seal.epoch, member: enc, wrap: wrapToText(own) }];
+            if (isListLabel(label)) sealed = { epoch: seal.epoch, bytes: toBase64Url(await sealFields({ place: { list: list.id, seq }, epoch: opened.value, commitment: seal.opens, fields: namesFields({ label, os: null }) })) };
+          }
+        } catch { /* a wrap that does not open gives no names: the PC joins without them */ }
+      }
+      const built = await api<State>("POST", "/api/account/list/join/body", { body: { ...scope, invite: invite.key, seq, ...sealed === undefined ? {} : { sealed } } });
+      if (built.state !== "body") return built;
+      const entry = entryToText(await list.signJoin(readBody(fromBase64Url(built.body))));
+      return await api<State>("POST", "/api/account/list/join/place", { body: { ...scope, invite: invite.key, entry, ...wraps.length === 0 ? {} : { wraps } } });
+    };
+    // An invite a person adds a PC with: the line names the list, so this command shows the PC that it holds the line.
+    // The PC hands over its own card for that list; the line signs its proof for that card, this account and this PC
+    let proof: string | null = null;
+    const plain = async (): Promise<State> => {
+      const named = { ...scope, invite: invite.key };
+      if (proof === null) {
+        const asked = await api<State>("POST", "/api/account/list/join", { body: named });
+        if (asked.state !== "prove") return asked;
+        proof = await list.signLineProof({ server_id: listing.serverId, card: asked.card });
+      }
+      return await api<State>("POST", "/api/account/list/join", { body: { ...named, proof } });
+    };
+    return async (): Promise<"added" | "none" | "slow" | "away" | "joined"> => {
+      try {
+        const state = auto ? await itself() : await plain();
+        return state.state === "added" ? "added" : "none";
+      } catch (error) {
+        if (signal.aborted) throw error;
+        if (error instanceof AwayError) return "away";
+        if (error instanceof JoinLineSignError || error instanceof ListEntryError || error instanceof InviteRedeemError) throw new LocalError("The Ovis on this PC handed this command something that is no join of this invite, so nothing was signed.");
+        if (!(error instanceof LocalError)) throw error;
+        if (error.status === 404 || error.status === 405) throw new LocalError(`This invite is for an account with a signed member list, which the Ovis running on this PC does not follow. Update it in Settings → Updates, then run ${command} again with a new invite.`);
+        if (error.code === "in_account") return "joined";
+        if (error.status === 503) return "slow";
+        throw error;
+      }
+    };
+  }
 
   /**
    * POST /v1/pc-invites/redeem with this PC's listing, a fresh proof of its key and the invite's signature over both. A

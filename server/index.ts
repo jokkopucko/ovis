@@ -72,6 +72,7 @@ import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
 import { ListFollow } from "./account/list-follow.ts";
 import { LIST_REMOVED } from "./account/pc-binding.ts";
+import { ListAdd } from "./account/list-add.ts";
 import { ADMISSION_FILE } from "./account/admission-order.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
 import { AccountWitness } from "./account/witness.ts";
@@ -230,6 +231,8 @@ export function createServer(
     pcUpdateTimings?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number };
     /** how long this PC, added to an account over SSH, waits for its relay to come online before it answers (30 s) */
     accountAddRelayMs?: number;
+    /** The least time between two asks for the phone's next message while this PC is added by its account's list (list-add.ts ADD_POLL_MS). */
+    accountListAddPollMs?: number;
     /** How long a join a member allowed waits for that member's entry in the account's list (list-follow.ts LIST_MEMBER_WAIT_MS). */
     accountListMemberWaitMs?: number;
     tailnetPcs?: TailnetPcsOptions;
@@ -444,6 +447,9 @@ export function createServer(
   const accountList = pcAccount === null ? null : new ListFollow({
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
     binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null, alarmed: binding.list_alarm === true }; },
+    bind: (account, list, serverId) => devices.bindByList(account, list, serverId),
+    joined: (account, bindId) => accountMailbox.listJoined(account, bindId),
+    mono: () => devices.waitClock().now(),
     pin: (bindId, list) => pcAccount.pinToList(bindId, list),
     alarm: (bindId) => pcAccount.alarmList(bindId),
     removedFrom: (account, serverId) => pcAccount.removedByList(account, serverId),
@@ -478,6 +484,17 @@ export function createServer(
     retry: () => { pcAccount.refresh(); },
   });
   devices.attachList(accountList);
+  // adding this PC to an account that keeps a list: the number a person compares with the phone that adds it (list-add.ts)
+  const listAdd = accountList === null ? null : new ListAdd({
+    own: () => accountList.own(),
+    listNamed: (account) => accountMailbox.listNamed(account),
+    call: (path, body) => accountMailbox.listRoute(path, body),
+    join: (given) => accountList.joinList(given),
+    joined: () => accountMailbox.joinedByList(),
+    joinedTo: (account, list) => { const status = accountList.status(); return status.pinned && status.account === account && status.pinned_list === list && status.standing === "in"; },
+    now: () => Date.now(),
+    pollMs: options.accountListAddPollMs,
+  });
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
     pendingPath: join(stateDir, "account-pending.json"), completionPath: join(stateDir, "account-completion.json"), holds: accountHolds,
@@ -841,7 +858,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, pinWatch, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, pinWatch, listAdd, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },

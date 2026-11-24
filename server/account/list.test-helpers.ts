@@ -4,10 +4,12 @@
  */
 import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "../../shared/account-list-entry.ts";
 import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, readStoredEncryptionKey, wrapEpochKey, wrapToText, type EpochKey, type MemberEncryptionKey } from "../../shared/account-list-seal.ts";
-import { kindBody, signCard, type ListKind, type ListRole } from "../../shared/account-list.ts";
+import { newInvite } from "../../shared/account-list-join.ts";
+import { cardBinding, kindBody, signCard, type ListKind, type ListRole } from "../../shared/account-list.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import { exportAccountKey } from "../../shared/account-records.ts";
 import type { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 
 const SERVICE = "https://account.test";
 
@@ -136,6 +138,47 @@ export class TestList {
     // with the key to the names, as a member that adds a PC gives it
     await this.placeTexts([text], [await this.wrapFor(post.enc)]);
     return text;
+  }
+
+  /**
+   * The adder's side of the number it compares with a PC that posted (the account service only carries it): `commit`
+   * opens the attempt with a commitment to a fresh nonce, `reveal` takes the PC's nonce and gives the adder's away, and
+   * answers the six digits the adder's screen shows; null while the PC has not answered.
+   */
+  async compare(endpoint: string, adder: ListMember = this.first): Promise<{ readonly commit: () => Promise<void>; readonly reveal: () => Promise<string | null> }> {
+    const answer = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/posts`, { headers: { authorization: `Bearer ${this.token}` } }));
+    const post = (await answer.json() as { posts: { endpoint: string; key: string; enc: string }[] }).posts.find((candidate) => candidate.endpoint === endpoint);
+    if (!post) throw new Error("The PC posted no keys");
+    const binding = cardBinding({ key: post.key, enc: post.enc, list: this.id, endpoint, invite: null });
+    const nonce = randomPairNonce();
+    const commitment = toBase64Url(pairCommitment(binding, adder.key, nonce));
+    const send = async (reveal?: string): Promise<{ nonce: string | null } | null> => {
+      const sent = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/posts/${endpoint}/attempt`, { method: "POST", headers: { authorization: `Bearer ${this.token}` },
+        body: JSON.stringify({ key: post.key, adder: adder.key, commitment, ...(reveal === undefined ? {} : { reveal }) }) }));
+      if (sent.status === 409) return null;
+      if (!sent.ok) throw new Error(`The attempt was not taken: ${sent.status} ${await sent.text()}`);
+      return (await sent.json() as { attempt: { nonce: string | null } }).attempt;
+    };
+    return {
+      commit: async () => { if (await send() === null) throw new Error("The attempt was not opened"); },
+      reveal: async () => {
+        const open = await send(toBase64Url(nonce));
+        return open === null || open.nonce === null ? null : pairDigits(binding, adder.key, nonce, fromBase64Url(open.nonce));
+      },
+    };
+  }
+
+  /**
+   * A member makes an invite for a PC: its key at the account service (POST /v1/pc-invites), the `invite` entry in the
+   * list with the names' key wrapped to it, and the line that carries its private key, as a PC is handed it.
+   */
+  async invite(options: { auto: boolean; uses?: number; by?: ListMember }): Promise<{ readonly key: string; readonly line: string }> {
+    const made = await newInvite(SERVICE, this.account, this.id);
+    const taken = await this.service.fetch(new Request(`${SERVICE}/v1/pc-invites`, { method: "POST", headers: { authorization: `Bearer ${this.token}` }, body: JSON.stringify({ invite_key: made.key, auto: options.auto }) }));
+    if (!taken.ok) throw new Error(`The invite was not taken: ${taken.status} ${await taken.text()}`);
+    const text = await this.sign({ kind: "invite", key: made.key, exp: this.clock() + 15 * 60, uses: options.uses ?? 1, auto: options.auto, sealed: null }, options.by);
+    await this.placeTexts([text], options.auto ? [await this.wrapFor(made.key)] : []);
+    return made;
   }
 
   /** A member puts a key out. */

@@ -328,6 +328,11 @@ export class RelayPairingApprovals {
     }));
   }
 
+  /** The key of the device a waiting request is of, or null for none waiting. */
+  keyOf(id: string): string | null {
+    return this.waiting.get(id)?.key ?? null;
+  }
+
   /** On this PC's own window: Allow or Decline of a first join. A join a member could approve is typed instead. */
   decideOwn(id: string, approved: boolean): TapDecision {
     const entry = this.waiting.get(id);

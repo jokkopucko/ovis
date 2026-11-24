@@ -4,7 +4,7 @@
  * a real account wrote; the clock, the binding and the disk are the test's.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -76,6 +76,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
     binding: () => world.bound ? { account: ACCOUNT, id: world.bind, list: world.pinned, alarmed: world.alarmed } : null,
     pin: (_bindId, id) => { world.pinned = id; return true; },
     alarm: () => { if (world.alarmFails) return false; world.alarmed = true; return true; },
+    bind: (account, id, _serverId) => { world.bound = true; world.pinned = id; return { id: world.bind, account, list: id, won: true }; },
     removedFrom: () => false,
     rowKey: () => null,
     now: () => world.real === null ? world.seconds * 1000 : world.seconds * 1000 + (Date.now() - world.real),
@@ -790,6 +791,65 @@ describe("an entry this PC signed and does not know to be placed", () => {
     expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
   });
 
+  test("that the PC cannot read holds its Allows only at the head where it found it so: once its verified head moved past that, the file goes and the PC signs again, and meanwhile its status says why", async () => {
+    const { pc, phone, sent, kept } = await twoAsked();
+    writeFileSync(kept, "{ not an entry", { mode: 0o600 });
+    expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "not_written", detail: "kept_unreadable" });
+    expect(pc.list.status().reason).toContain(ACCOUNT_LIST_ALLOW_FILE);
+    expect(pc.list.summary()?.reason).toContain(ACCOUNT_LIST_ALLOW_FILE);
+    // asked again at the same head: still nothing, and the file stays for a person to look at
+    expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "not_written", detail: "kept_unreadable" });
+    expect(existsSync(kept)).toBe(true);
+    expect(sent).toEqual([]);
+    // a member writes: the list moves on past the head at which the file was found unreadable
+    await pc.account.addDevice(await listMember());
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    expect(sent).toHaveLength(1);
+    expect(existsSync(kept)).toBe(false);
+    expect(pc.list.status().reason).toBeNull();
+  });
+
+  test("of a device this PC has come to hold back stops holding other Allows at its head ten minutes after it was kept", async () => {
+    const { pc, phone, tablet, sent, state, kept } = await twoAsked();
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    sent.length = 0;
+    state.away = false;
+    pc.deps.mayAdmit = (key) => key !== phone.key;
+    expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
+    expect(pc.list.status().reason).toContain("waits behind");
+    // kept ten minutes ago and more: it is not sent, and no longer holds the place for another device
+    const then = new Date(Date.now() - 10 * 60_000 - 1_000);
+    utimesSync(kept, then, then);
+    expect(await pc.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    const held = pc.service.accountList(ACCOUNT)!;
+    expect(held.state.signers[phone.key]).toBeUndefined();
+    expect(held.state.signers[tablet.key]).toBeDefined();
+    expect(pc.list.status().reason).toBeNull();
+  });
+
+  test("of a device this PC has come to hold back gives its place up at once when the person at the PC declines that device's join, and no other entry goes so", async () => {
+    const { pc, phone, tablet, sent, state, kept } = await twoAsked();
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    sent.length = 0;
+    state.away = false;
+    pc.deps.mayAdmit = (key) => key !== phone.key;
+    expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
+    // the reason says that an Allow waits behind an earlier one, and until when
+    const until = new Date(Date.now() + 10 * 60_000).toISOString().slice(0, 15);
+    expect(pc.list.status().reason).toContain("waits behind");
+    expect(pc.list.status().reason).toContain(until);
+    // a decline of another device's join drops nothing
+    pc.list.declinedHere(tablet.key);
+    expect(existsSync(kept)).toBe(true);
+    // the person at the PC declines the phone's join, which asked again: its entry goes, and the tablet takes the place
+    pc.list.declinedHere(phone.key);
+    expect(existsSync(kept)).toBe(false);
+    expect(await pc.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+
   test("is not sent once this PC may sign no more: what a member's page brought while the PC proved itself is asked before the entry goes out", async () => {
     const { pc, phone, sent, state } = await twoAsked();
     // a device hands this PC an entry this Ovis is too old to read, while the PC's proof for the placement is made
@@ -1109,5 +1169,31 @@ describe("found in review", () => {
     await pc.pull();
     expect(posts()).toBe(2);
     expect(pc.list.status().posted_until).not.toBeNull();
+  });
+});
+
+describe("a PC in no account joins by the list", () => {
+  test("is not said to have joined while the copy it read is not on disk; the next ask says so once it is", async () => {
+    const pc = await following();
+    pc.world.bound = false;
+    const named = { account: ACCOUNT, list: pc.account.id, by: null };
+    expect(await pc.list.joinList(named)).toEqual({ waiting: "waiting" });
+    await pc.account.addPostedPc(pc.endpoint);
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((_from, to) => {
+      if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    });
+    try {
+      // bound and pinned by now, which is on disk with the binding; the copy is not
+      expect(await pc.list.joinList(named)).toEqual({ waiting: "in" });
+      expect(pc.world.pinned).toBe(pc.account.id);
+      expect(await pc.list.joinList(named)).toEqual({ waiting: "in" });
+    } finally { failing.mockRestore(); }
+    expect(await pc.list.joinList(named)).toMatchObject({ joined: { pinned: true, standing: "in" } });
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.list.start();
+    await again.list.settled();
+    expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", head: pc.account.place });
+    expect(again.world.calls).toEqual([]);
   });
 });

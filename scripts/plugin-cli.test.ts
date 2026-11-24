@@ -9,6 +9,9 @@ describe("the public names", () => {
   it.each([
     [["login"], "link", []],
     [["add", "--approve"], "link", ["--approve"]],
+    // the yes to the number an add by the account's list shows, where nobody can type at that add
+    [["add", "--confirm", "482913"], "link", ["--confirm", "482913"]],
+    [["login", "--confirm=482913"], "link", ["--confirm=482913"]],
     [["link", "--code"], "link", ["--code"]],
     [["login", "--no-browser", "--google"], "link", ["--no-browser", "--google"]],
     [["login", "--device-auth"], "link", ["--device-auth"]],

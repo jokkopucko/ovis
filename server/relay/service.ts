@@ -47,6 +47,18 @@ export class ResetRegistryUnavailableError extends Error {
 }
 
 /**
+ * The reset a person confirmed for a PC its account's list removed, refused: the PC is no longer the one the question
+ * was about (`identity_changed`), it is in an account again (`in_account`), or that list did not remove it (`not_removed`).
+ */
+export class ResetNotAskedError extends Error {
+  constructor(readonly code: "identity_changed" | "in_account" | "not_removed") {
+    super(code === "identity_changed" ? "This PC's relay identity is no longer the one that was to be reset."
+      : code === "in_account" ? "This PC is in an Ovis account now, so it was not reset."
+      : "That account's list did not remove this PC.");
+  }
+}
+
+/**
  * The account service is turned off on this PC (OVIS_ACCOUNT_SERVICE_URL=off), so no code is made that puts it in an
  * account: a device that pairs with one is let in only on its account's word (server/account/records.ts applyLink).
  */
@@ -665,14 +677,28 @@ export class RelayService {
     return { window_id, url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key, relay: this.advertised, ...offerName() }, this.app) };
   }
 
-  async resetIdentity(): Promise<RelayStatus> {
+  /**
+   * `removed`: the reset a person confirmed to add a PC its account's list removed again, as a new PC. It resets the
+   * relay identity it names, of a PC that list removed and that is in no account, and nothing else: asked first, and
+   * again in the turn that resets, with no wait in between (ResetNotAskedError).
+   */
+  async resetIdentity(removed?: { readonly account: string; readonly server_id: string }): Promise<RelayStatus> {
     const services = this.services;
     if (!services || this.shuttingDown) throw new Error("Relay service is not available.");
     if (services.serveOnly) { this.blocked = "serve_only"; return this.status(); }
     // Close old admissions before revoking or replacing the key they authenticated against.
     if (services.devices.error !== null) throw new ResetRegistryUnavailableError();
     if (this.resetting) throw new Error("Relay identity reset is in progress.");
+    const asked = (): ResetNotAskedError | null => {
+      if (removed === undefined) return null;
+      if (this.currentIdentity()?.server_id !== removed.server_id) return new ResetNotAskedError("identity_changed");
+      const stands = services.devices.readdReset(removed.account, removed.server_id);
+      return stands === "removed" ? null : new ResetNotAskedError(stands);
+    };
+    const early = asked();
+    if (early !== null) throw early;
     this.resetting = true;
+    let refused: ResetNotAskedError | null = null;
     try {
       // a window opened for the old key's link does not carry over to the new key
       this.approvals.closeWindow();
@@ -680,15 +706,25 @@ export class RelayService {
       // under the old identity writes no member after the new one
       services.devices.endPairing();
       await this.disconnect();
-      for (const device of services.devices.list(null)) if (device.via_relay) services.devices.revoke(device.id);
-      // a new relay identity is a new PC to the account: the binding of the old one is cleared (P12, T59)
-      services.devices.clearAccountBinding("identity_reset", "pc");
-      this.identity = rotateRelayIdentity(this.options.stateDir);
-      // a new relay identity is a new PC to the account's signed list too: the keys of the old one go with it
-      forgetListKeys(this.options.stateDir);
-      forgetList(this.options.stateDir);
-      this.blocked = null;
+      // the PC may have joined an account while its relay closed: what the reset is for is asked again in this turn
+      refused = asked();
+      if (refused === null) this.resetNow(services);
     } finally { this.resetting = false; }
-    return this.enabled ? this.start() : this.status();
+    // a reset that was not made leaves the relay as it found it: running again
+    const status = this.enabled ? this.start() : this.status();
+    if (refused !== null) throw refused;
+    return status;
+  }
+
+  /** The reset itself, in the turn that asked whether it is still wanted: nothing is awaited here. */
+  private resetNow(services: RequestServices): void {
+    for (const device of services.devices.list(null)) if (device.via_relay) services.devices.revoke(device.id);
+    // a new relay identity is a new PC to the account: the binding of the old one is cleared (P12, T59)
+    services.devices.clearAccountBinding("identity_reset", "pc");
+    this.identity = rotateRelayIdentity(this.options.stateDir);
+    // a new relay identity is a new PC to the account's signed list too: the keys of the old one go with it
+    forgetListKeys(this.options.stateDir);
+    forgetList(this.options.stateDir);
+    this.blocked = null;
   }
 }

@@ -48,6 +48,7 @@ const LOGIN: Spec = {
     ["--qr", "After signing in, show a QR code for a device of your account to scan, instead of waiting for Add"],
     ["--print", "With --qr: write the QR code even where the output is not a terminal"],
     ["--approve", "After signing in, approve here the device that adds this PC, comparing six digits"],
+    ["--confirm <six digits>", "Say yes to the number this PC shows while it is added to an account that keeps a signed list, where nobody can type at the add that shows it"],
     ["--github, --google", "Sign in at GitHub's or Google's own device page"],
   ],
   // `link --code` is `pair --relay`; `--device-auth` is codex's name for --no-browser

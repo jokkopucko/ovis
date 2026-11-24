@@ -1,5 +1,8 @@
+import { canonicalBase64Url, isListHash } from "../../shared/account-list-entry.ts";
+import type { Sealed } from "../../shared/account-list.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
+import { toBase64Url } from "../../shared/relay-pair-sas.ts";
 import type { Access } from "../access.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
@@ -7,14 +10,56 @@ import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedList, parseIntroducedPcs } from "./introductions.ts";
 import { ACCOUNT_HELD_MAX } from "./holds.ts";
 import { AccountAddError } from "../machines.ts";
-import { notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
-import { applyAccountRecords, applyEnrollment, applyLink, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
+import { ListAddAway, type AddState } from "./list-add.ts";
+import type { JoinOutcome } from "./list-follow.ts";
+import { noteListAdd, notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
+import { applyAccountRecords, applyEnrollment, applyLink, listNamedBy, listNamingOf, LIST_NAMED_LINK, LIST_NAMED_OTHER, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
   tombstoned: 409, link_not_owner: 403, key_in_use: 409, account_unavailable: 503, enrolling: 409, removal_pending: 409,
   link_required: 403, unverified_device: 403, pairing_ended: 409, older_device: 403, closed: 409, read_pending: 409,
-  replacement_needs_app: 409, list_followed: 409, list_removed: 409,
+  replacement_needs_app: 409, list_followed: 409, list_removed: 409, list_named: 409,
+};
+
+/**
+ * How long the last read of the list answers a row that asks again where its naming stands (POST /api/account/list/named):
+ * one read at the account service per pairing in this time. Well under the row's own PAIRING_LINK_MS (30 s, from its
+ * pairing on), so the entry that adds the PC is still read while the row that named the list waits: with 30 s here,
+ * every ask after the first was answered `waiting` until the row's own time ended its session (auth_revoked), and the
+ * QR path could never answer `added`.
+ */
+export const NAMED_READ_MS = 5_000;
+
+/** The last read of the list for each row that named it, by device store: asked again within NAMED_READ_MS, it is the answer. */
+const namedReads = new WeakMap<object, Map<string, { readonly at: number; readonly outcome: Promise<JoinOutcome> }>>();
+
+/** The id of one add by the list (ListAdd), as its starter names it. */
+const RUN_ID = /^[0-9a-f]{16}$/;
+
+/** The most entries a member hands this PC in one call (POST /api/account/list/page), and the longest text of one. */
+const LIST_PEER_PAGE_MAX = 256;
+const LIST_PEER_ENTRY_CHARS = 16_384;
+
+/** What `ovis join` is told where this PC joins no list (POST /api/account/list/join…), by the refusal's name. */
+const JOIN_REFUSALS: Readonly<Record<string, string>> = {
+  invalid_list: "Name the account, its list and the invite by their ids.",
+  other_account: "This PC is in another account.",
+  pinned: "This PC already follows another list. Revoke all on this PC to leave its account first.",
+  removed: LIST_REMOVED_FROM,
+  unavailable: "This PC's relay identity, its list or its keys cannot be read or written.",
+  other_adder: "The list holds this PC already, by another entry than this invite's.",
+  line_unproven: "The invite's line did not sign for this PC and this list.",
+  not_read: "The account's list could not be read from the account service.",
+  invite_unknown: "The account's list holds no such invite.",
+  invite_revoked: "This invite was revoked.",
+  invite_void: "This invite no longer counts: the device that made it is out of the account.",
+  invite_spent: "This invite was used already.",
+  invite_expired: "This invite ran out.",
+  invite_plain: "This invite adds a PC only once a device of the account chooses Add.",
+  invite_uses: "This invite lets more than one PC in, so no PC joins with it by itself.",
+  not_written: "This PC's join would not count on the account's list.",
+  behind: "Ovis on this PC is older than what a device wrote into the account's list, so this PC cannot join it by itself. Update Ovis on this PC (Settings → Updates), then run this again. Nothing was written to the list.",
 };
 
 /**
@@ -24,6 +69,12 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
 export async function handleAccountRequest(request: Request, pathname: string, context: ServerContext, access: Access): Promise<Response> {
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const fail = (code: string, message: string, status: number) => reply({ error: { code, message } }, status);
+  // An add by the list that still runs counts as waiting for Add (GET /api/account/status). What was asked of a run that
+  // was replaced tells nothing of the run that stands, which keeps its own
+  const noted = (state: AddState): AddState => {
+    if (state.state !== "replaced") noteListAdd(devices, state.state === "waiting" || state.state === "number" || state.state === "confirmed");
+    return state;
+  };
   const devices = context.services.devices;
   const peer = context.peer;
   // a device that waits to link (it paired with a code made for a PC in no account; docs/account.md, "Who may admit
@@ -45,7 +96,52 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (!devices.provisionalStands(waiting)) return fail("link_required", "This device did not link itself into an account in time. Pair it again.", 403);
     return reply({ account: null, members: 0, unlinked: [waiting], own_word: [], removals: [], adds: [], blocked: [], enrolling: false, blocked_all: false, mailbox: { last_pull_at: null, error: null } });
   }
-  const ownLink = waiting !== null && pathname === "/api/account/link" && request.method === "POST";
+  // A member and this PC say where the account's signed list stands, and the member hands the PC the entries it lacks
+  // (docs/account.md, "What the account service still can"). Any device that is signed in may, one that only watches
+  // too: an entry proves itself, so nothing is taken on the device's word, and a removal the account service
+  // withholds reaches the PC this way. A PC that follows no list a person named answers 404
+  if (waiting === null && access.level === "full" && request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page")) {
+    setRequestRoute(pathname);
+    if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
+    const list = context.services.accountList;
+    const own = list?.peerHead() ?? null;
+    if (list === null || own === null) return fail("not_found", "This PC follows no list", 404);
+    // Each call may cost signature checks: 30 a minute for one caller, charged before its body is read. A caller is the
+    // key the PC let the session in by (a device's sessions share its count), or this PC's own window and direct clients
+    const session = peer.kind === "relay" ? `key ${peer.key}` : "direct";
+    if (!list.peerBudget(session)) {
+      const limited = fail("rate_limited", "Too many calls; try again in a minute", 429);
+      limited.headers.set("retry-after", "60");
+      return limited;
+    }
+    const body = await readJsonObject(request);
+    if (body instanceof Response) return body;
+    const placeOf = (value: unknown): { seq: number; hash: string } | null => {
+      const { seq, hash } = (typeof value === "object" && value !== null ? value : {}) as { seq?: unknown; hash?: unknown };
+      return typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 && typeof hash === "string" && isListHash(hash) ? { seq, hash } : null;
+    };
+    if (pathname === "/api/account/list/head") {
+      // where the device stands: its list and the last entry a member signed in its copy, or null before it read any
+      const theirs = body.place === null ? null : placeOf(body.place);
+      if (typeof body.list !== "string" || !isListHash(body.list) || (body.place !== null && theirs === null)) return fail("invalid_head", "Send the list's id and the place the device stands at", 400);
+      return reply(list.peerHeads({ list: body.list, place: theirs }, session) ?? own);
+    }
+    const { entries, after } = body as { entries?: unknown; after?: unknown };
+    const head = placeOf(body.head);
+    if (body.list !== own.list) return fail("not_my_list", "This PC follows another list", 409);
+    if (!Array.isArray(entries) || entries.length > LIST_PEER_PAGE_MAX || !entries.every((entry) => typeof entry === "string" && entry.length <= LIST_PEER_ENTRY_CHARS)
+      || !(after === null || (typeof after === "number" && Number.isSafeInteger(after) && after >= 0)) || head === null) {
+      return fail("invalid_page", "Send the entries after a place, and the head they lead to", 400);
+    }
+    const taken = await list.takePeerPage({ list: own.list, after, entries: entries as string[], head }, session);
+    if (taken === null) return fail("not_found", "This PC follows no list", 404);
+    // Verified and acted on, and not on disk: the device is not told the page was taken, and hands it again later
+    if (taken.verdict === "not_saved") return fail("not_saved", "This PC could not save the entries it was handed; hand them again later.", 503);
+    // a page nobody asked for whose first entry follows no entry this PC holds: no signature of it was checked
+    if (taken.verdict === "unasked") return fail("not_continued", "Those entries do not follow this PC's copy of the list. Ask where it stands first (POST /api/account/list/head).", 409);
+    return reply({ verdict: taken.verdict, ...(taken.asks ? { asks: taken.asks } : {}), ...list.peerHead() });
+  }
+  const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
@@ -70,6 +166,16 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // this PC's own window and CLI alone (dispatch.ts ownWindow)
     const list = context.services.accountList;
     return list === null ? fail("not_found", "This PC follows no list", 404) : reply(list.status());
+  }
+  if (pathname === "/api/account/list/add" && request.method === "GET") {
+    setRequestRoute(pathname);
+    // this PC's own window and CLI alone (dispatch.ts ownWindow): the number is shown only at this PC
+    const add = context.services.listAdd;
+    if (add === null) return fail("not_found", "This PC follows no list", 404);
+    // `run`: the run the caller started. Another one in its place is answered `replaced`, and nothing of it is told
+    const run = new URL(request.url).searchParams.get("run");
+    if (run !== null && !RUN_ID.test(run)) return fail("invalid_run", "Name the run by its id", 400);
+    return reply(noted(await add.state(run ?? undefined)));
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
@@ -118,6 +224,106 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       } as const;
       const [message, status] = refusals[named.refused];
       return fail(named.refused === "removed" ? "list_removed" : named.refused, message, status);
+    }
+    case "/api/account/list/add": {
+      setRequestRoute(pathname);
+      // a person at this PC adds it to an account that keeps a signed list (dispatch.ts ownWindow): the PC posts its
+      // card, and shows the number to compare with the phone that adds it. `no_list`: the account keeps none
+      const add = context.services.listAdd;
+      if (add === null) return fail("not_found", "This PC follows no list", 404);
+      const account = body.account;
+      if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
+      // as one press: the account named for this PC, a PC in no account, and never one that account's list removed
+      if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
+      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
+      if (devices.listRemovedFrom(account)) return fail("list_removed", LIST_REMOVED_FROM, 409);
+      try { return reply(noted(await add.start(account))); }
+      catch (error) {
+        if (!(error instanceof ListAddAway)) throw error;
+        return fail("account_unavailable", error.message, 503);
+      }
+    }
+    case "/api/account/list/add/confirm": {
+      setRequestRoute(pathname);
+      // the person at this PC says the phone shows the same number, and says which: only that names the list
+      const add = context.services.listAdd;
+      if (add === null) return fail("not_found", "This PC follows no list", 404);
+      if (typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) return fail("invalid_digits", "Send the six digits this PC shows", 400);
+      if (body.run !== undefined && (typeof body.run !== "string" || !RUN_ID.test(body.run))) return fail("invalid_run", "Name the run by its id", 400);
+      const outcome = await add.confirm(body.digits, body.run);
+      // a number that is not the one on this PC's screen confirms nothing and ends that number; the answer names none
+      if ("mismatch" in outcome) return fail("wrong_number", "That is not the number this PC shows now, so nothing was confirmed. A number lasts 2 minutes, and a wrong one ends it: have the device ask again.", 409);
+      return reply("confirmed" in outcome ? noted(outcome.confirmed) : outcome);
+    }
+    case "/api/account/list/add/cancel": {
+      setRequestRoute(pathname);
+      const add = context.services.listAdd;
+      if (add === null) return fail("not_found", "This PC follows no list", 404);
+      if (body.run !== undefined && (typeof body.run !== "string" || !RUN_ID.test(body.run))) return fail("invalid_run", "Name the run by its id", 400);
+      return reply(noted(await add.cancel(body.run)));
+    }
+    case "/api/account/list/join":
+    case "/api/account/list/join/prepare":
+    case "/api/account/list/join/body":
+    case "/api/account/list/join/place": {
+      setRequestRoute(pathname);
+      // `ovis join` at this PC, with the line of an invite that names the account's list (dispatch.ts ownWindow): a
+      // person confirmed the account there, and the line names the list. The line itself stays with the command
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      const { account, list: id } = body;
+      if (typeof account !== "string" || typeof id !== "string") return fail("invalid_list", "Name the account and its list", 400);
+      const inAccount = devices.account();
+      if (inAccount !== null && inAccount !== account) return fail("in_account", "This PC is already in an account", 409);
+      if (inAccount === null && context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
+      if (devices.listRemovedFrom(account)) return fail("list_removed", LIST_REMOVED_FROM, 409);
+      const refusal = (code: string, detail?: string | null) => fail(code === "removed" ? "list_removed" : code, JOIN_REFUSALS[code] ?? `This PC could not join the account's list (${detail ?? code}).`, code === "unavailable" || code === "not_read" ? 503 : 409);
+      const ended = async (outcome: JoinOutcome | { readonly again: true } | { readonly refused: string; readonly detail?: string | null }): Promise<Response> => {
+        if ("again" in outcome) return reply({ state: "again" });
+        if ("refused" in outcome) return refusal(outcome.refused, "detail" in outcome ? outcome.detail : null);
+        if ("waiting" in outcome) return reply({ state: "waiting", standing: outcome.waiting });
+        context.services.accountMailbox.joinedByList();
+        return reply({ state: "added", account });
+      };
+      const invite = body.invite;
+      if (typeof invite !== "string") return fail("invalid_invite", "Name the invite by its key", 400);
+      // An invite a person adds a PC with: the PC joins once the list holds its entry. The line is what names the
+      // list, so the caller shows that it holds the line: first it is handed this PC's own card for that list, which
+      // the line signs its proof for (signLineProof), then it sends that proof with every ask. A list id alone, even
+      // from this PC's own window, names nothing
+      if (pathname === "/api/account/list/join") {
+        if (body.proof === undefined) {
+          const card = await list.lineCard(id);
+          return card === null ? refusal("unavailable") : reply({ state: "prove", card });
+        }
+        if (typeof body.proof !== "string") return fail("invalid_invite", "Send the line's signature", 400);
+        return await ended(await list.joinByLine({ account, list: id, invite, proof: body.proof }));
+      }
+      if (pathname === "/api/account/list/join/prepare") {
+        const prepared = await list.joinPrepare({ account, list: id, invite });
+        if ("prove" in prepared) return reply({ state: "prove", card: prepared.prove });
+        return "prepared" in prepared ? reply({ state: "prepared", ...prepared.prepared }) : await ended(prepared);
+      }
+      if (pathname === "/api/account/list/join/body") {
+        const { seq, sealed } = body as { seq?: unknown; sealed?: unknown };
+        if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return fail("invalid_join", "Name the place the join takes", 400);
+        let names: Sealed | null = null;
+        if (sealed !== undefined && sealed !== null) {
+          const { epoch, bytes } = sealed as { epoch?: unknown; bytes?: unknown };
+          const read = typeof bytes === "string" && bytes.length <= 4096 ? canonicalBase64Url(bytes) : null;
+          if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 0 || read === null) return fail("invalid_join", "The sealed names are an epoch and bytes", 400);
+          names = { epoch, bytes: read };
+        }
+        const built = await list.joinBody({ account, list: id, invite, seq, sealed: names });
+        return "body" in built ? reply({ state: "body", body: toBase64Url(built.body) }) : await ended(built);
+      }
+      const { entry, wraps } = body as { entry?: unknown; wraps?: unknown };
+      const given = wraps === undefined ? [] : Array.isArray(wraps) && wraps.length <= 4 ? wraps.flatMap((wrap: unknown) => {
+        const { epoch, member, wrap: text } = (typeof wrap === "object" && wrap !== null ? wrap : {}) as { epoch?: unknown; member?: unknown; wrap?: unknown };
+        return typeof epoch === "number" && Number.isSafeInteger(epoch) && typeof member === "string" && typeof text === "string" && text.length <= 1024 ? [{ epoch, member, wrap: text }] : [];
+      }) : null;
+      if (typeof entry !== "string" || entry.length > 16_384 || given === null || (Array.isArray(wraps) && given.length !== wraps.length)) return fail("invalid_join", "Send the signed join and its wraps", 400);
+      return await ended(await list.joinPlace({ account, list: id, invite, entry, wraps: given }));
     }
     case "/api/account/one-press": {
       if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);
@@ -168,10 +374,63 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       context.services.accountIntroductions.set(body.key, pcs, devices.listFollowed() ? undefined : list);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
+    case "/api/account/list/named": {
+      setRequestRoute(pathname);
+      // A device that scanned this PC's QR code names its account's signed list over the pairing that code made, in
+      // the place of its link: every rule of a link holds for it (listNamedBy). The PC then joins by that list alone,
+      // once the list holds its entry signed by that device's key; this call writes no member
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      if (peer.kind !== "relay") return fail("link_not_owner", "Name the list from the device's own connection through the relay", 403);
+      const { account, list: id } = body;
+      if (typeof account !== "string" || typeof id !== "string" || !isListHash(id)) return fail("invalid_list", "Name the account and its list", 400);
+      // The first naming is one of the row's few tries, as a link is; asking again where it stands is not, and a naming
+      // of another list is refused before it spends one
+      const before = listNamingOf(devices, peer.device.id);
+      const again = before !== undefined && before.account === account && before.list === id && before.key === peer.key;
+      if (before !== undefined && !again) return fail("pairing_ended", LIST_NAMED_OTHER, LINK_STATUS.pairing_ended);
+      const arrival = devices.linkArrived(peer.device.id, peer.device.provisional === true, !again);
+      if (arrival === null) return fail("link_required", "The list was not named: link_required", LINK_STATUS.link_required);
+      const named = await listNamedBy(devices, { account, list: id }, { deviceId: peer.device.id, sessionKey: peer.key }, arrival, {
+        setUpFor: () => context.services.relay.savedRelayAccount(),
+        vouch: (of, key, firstLink) => context.services.accountMailbox.vouch(of, key, firstLink),
+      });
+      if ("refused" in named) {
+        const refused = fail(named.refused, named.message ?? `The list was not named: ${named.refused}`, LINK_STATUS[named.refused]);
+        if (named.retryAfter !== undefined) refused.headers.set("retry-after", String(named.retryAfter));
+        return refused;
+      }
+      // Each read of the list costs this PC a read at the account service with its own proof: a row that asks again
+      // where its naming stands is answered from the last read for NAMED_READ_MS, one read at a time
+      const reads = namedReads.get(devices) ?? new Map<string, { readonly at: number; readonly outcome: Promise<JoinOutcome> }>();
+      namedReads.set(devices, reads);
+      const now = devices.waitClock().now();
+      const last = again ? reads.get(peer.device.id) : undefined;
+      let reading = last !== undefined && now - last.at >= 0 && now - last.at < NAMED_READ_MS ? last.outcome : null;
+      if (reading === null) {
+        const asked = list.joinList({ account, list: id, by: peer.key });
+        reading = asked;
+        reads.set(peer.device.id, { at: now, outcome: asked });
+        // a read that failed answers nobody after it
+        asked.catch(() => { if (reads.get(peer.device.id)?.outcome === asked) reads.delete(peer.device.id); });
+      }
+      const joined = await reading;
+      if ("joined" in joined) {
+        context.services.accountMailbox.joinedByList();
+        return reply({ state: "added", account });
+      }
+      if ("refused" in joined) return fail(joined.refused === "removed" ? "list_removed" : joined.refused, JOIN_REFUSALS[joined.refused] ?? `This PC could not join the account's list (${joined.refused}).`, joined.refused === "unavailable" ? 503 : 409);
+      // its card, handed over this very pairing: what the device signs into the entry that adds this PC
+      const card = await list.cardFor(id);
+      if (card === null) return fail("unavailable", JOIN_REFUSALS.unavailable!, 503);
+      return reply({ state: "waiting", standing: joined.waiting, ...card });
+    }
     case "/api/account/link": {
       setRequestRoute(pathname);
       // a link proves the key of the row whose session sends it, and only the relay carries a row's key
       if (peer.kind !== "relay") return fail("link_not_owner", "Link a device from its own connection through the relay", 403);
+      // a row that named its account's signed list is added by that list or not at all: its link spends none of its tries
+      if (listNamingOf(devices, peer.device.id) !== undefined) return fail("list_named", LIST_NAMED_LINK, LINK_STATUS.list_named);
       // what stood when the link arrived, before its signature is checked: its checks are held to it. A row that
       // waits to link sends five links, whatever each is answered; the next turned it away
       const arrival = devices.linkArrived(peer.device.id, peer.device.provisional === true);

@@ -8,7 +8,7 @@ import { DeviceStore, type StoredDevice } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
 import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
-import { bindingFs, PcAccountState } from "./pc-binding.ts";
+import { bindingFs, PcAccountState, RemovedOnDiskError } from "./pc-binding.ts";
 import { PendingRedemptions } from "./pending.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
 
@@ -454,6 +454,23 @@ describe("a binding pinned to the account's signed list", () => {
     expect(after.removedByList(ACCOUNT, SERVER_ID)).toBe(true);
     expect(stale.binding()).toBeNull();
     expect(stale.gen()).toBeGreaterThanOrEqual(disk.gen + 2);
+  });
+
+  test("a PC binds itself by a list only while the file holds no removal of it from that account, read under the lock", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    await linked(devices);
+    const pc = PcAccountState.open(dir);
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    const path = join(dir, ADMISSION_FILE);
+    // another server on this folder bound the PC meanwhile, and its list removed it: this server's memory holds neither
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; clears: unknown[] };
+    writeFileSync(path, JSON.stringify({ ...disk, v: 2, gen: disk.gen + 2,
+      clears: [...disk.clears, { bind_id: "cd".repeat(16), reason: "unlisted", by: "list", removed_as: { account: ACCOUNT, server_id: SERVER_ID } }] }));
+    expect(() => pc.bindByList(ACCOUNT, LIST, SERVER_ID)).toThrow(RemovedOnDiskError);
+    expect((JSON.parse(readFileSync(path, "utf8")) as { binding: unknown }).binding).toBeNull();
+    // another relay identity, as a reset makes, is a new PC to that account
+    expect(pc.bindByList(ACCOUNT, LIST, "f".repeat(32))).toMatchObject({ account: ACCOUNT, list: LIST, won: true });
   });
 
   test("a server that read the file before another server changed it learns of the pin, and of a clear, when it looks again", async () => {

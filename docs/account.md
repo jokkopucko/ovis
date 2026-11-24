@@ -597,6 +597,103 @@ entry for the PC's own key, at this call or at a later read. 400 `invalid_list`;
 `list_removed` for an account whose list removed this PC; 503 `unavailable` when the PC's copy or
 its keys cannot be read or written.
 
+`POST /api/account/list/head` `{ "list", "place" }`: a device tells this PC where it stands in the
+account's signed list (`place` is the last entry a member signed in its copy, `{ "seq", "hash" }`, or
+`null` before it read any), and reads where the PC stands: `{ "list", "place", "page"?, "asks"? }`.
+`page` is there when the device stands at an earlier place of the PC's own history: the PC's
+entries after that place, 256 at most, as `{ "list", "after", "entries", "head" }`. `asks` is there
+when the device stands further, or at another entry: `{ "list", "after" }`, the place the PC wants
+the device's entries after. For another list than the PC's: the PC's own `list` and `place` and
+nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
+the PC entries, 256 at most, with the head they lead to; the PC takes them as it takes the account
+service's pages, each entry on its own signature, and answers `{ "verdict", "asks"?, "list",
+"place" }`: what came of them (`caught_up`, `more`, `asks_after` for an entry kept beside the list
+that no member signed, `refused`, `stuck`, `fork`), the place it wants next from that device when
+it needs an earlier one, and where it stands then. Any signed-in device may call both, one that
+only watches and one in its join hold too; nothing is taken on its word. One device makes 30 of
+these calls a minute (429 `rate_limited`, `retry-after`), counted under the key the PC let it in by,
+whatever sessions it opens (this PC's own window and its direct clients share one count), by a clock
+that only moves forward, and charged before the body is read; no caller is refused because others
+called. A page whose first entry follows no entry this PC holds, and that this PC did not ask that
+device for, is refused before any of it is checked (409 `not_continued`): ask where it stands first.
+On a PC that follows no list a person named, both answer every caller as before this list (403
+`read_only` to a device that only watches, `account_route_denied` to an account row). 503 `not_saved`: the entries were
+verified and acted on, and the PC could not save them; hand them again later. 404 `not_found` on a
+PC that follows no list a person named; 409 `not_my_list` for a page of another list; 400
+`invalid_head`, `invalid_page`.
+
+`POST /api/account/list/named` `{ "account", "list" }`: a device that waits to link (it paired with a
+code made for the account) names the account's signed list in the place of its link
+([A device that scans the PC's QR code](#a-device-that-scans-the-pcs-qr-code)). `{ "state":
+"waiting", "standing", "key", "enc", "card" }` with the PC's card for that list, or `{ "state":
+"added", "account" }` once the PC joined by an entry that device's key signed. Refused as a link is
+(403 `link_required`, 409 `account_mismatch`, 403 `unverified_device`, 409 `pairing_ended`, 409
+`list_removed`, 503 `account_unavailable` with `retry-after`), and 409 `other_adder`, 400
+`invalid_list`, 404 on a PC that follows no list. A naming is the row's from the moment it arrives:
+another list named by the same row meanwhile, or after, is refused 409 `pairing_ended` and spends
+none of the row's tries; the same naming asked again waits for the first one's answer, and is
+answered from the PC's last read of the list for 5 seconds (one read at the account service per
+pairing in that time). A row that named a list sends no `link` after it (409 `list_named`): it is
+added by that list or not at all.
+
+`POST /api/account/list/add` `{ "account" }`: a person at this PC adds it to an account that keeps a
+signed list ([A PC is added to the list](#a-pc-is-added-to-the-list)). This PC's own window and CLI
+alone (403 `owner_only` otherwise), for the account named for this PC (409 `account_mismatch`), on a
+PC in no account (409 `in_account`) that the account's list did not remove (409 `list_removed`). It
+posts the PC's card and answers where the add stands; asked again while an add runs, it goes on with
+that one. `GET /api/account/list/add` answers the same, and takes the adding device's next message
+from the account service, every 3 seconds at most. 503 `account_unavailable` while the account
+service does not say whether the account keeps a list: nothing was started.
+
+```json
+{ "state": "number", "run": "0123456789abcdef", "account": "acct_1", "list": "<list id>", "digits": "482913", "until": "2026-11-24T01:04:03.000Z" }
+```
+
+`run` names this add to whoever started it. A poll with `?run=<id>`, and a confirm or a cancel with
+`"run"`, are for that run alone: when another add took its place they answer `{ "state":
+"replaced" }`, tell nothing of the other and change nothing.
+
+`state` is `no_list` (the account keeps none: add the PC in one press), `waiting` (the card is
+posted and no number shows), `number` (`digits` are on this PC's screen until `until`), `confirmed`
+(the person said yes; the PC waits for its entry), `added`, `ended` with `why` (`timeout`,
+`attempts` after three numbers, `cancelled`, or why the PC joins no list), or `none` when no add was
+started since this start. While it is `waiting`, `number` or `confirmed`, `waiting_for_add` in
+`GET /api/account/status` is true.
+
+`POST /api/account/list/add/confirm` `{ "digits", "run"? }`: the person at this PC says the adding
+device shows the same number, and which. It confirms only the number this PC shows at that moment.
+Any other is answered 409 `wrong_number`: that number is shown no more, the answer names none, and
+the device has to ask again. An add that is confirmed answers its state only to the number it was
+confirmed with. `POST /api/account/list/add/cancel` `{ "run"? }`: the numbers differ, or the person
+gave it up; the add ends and joins nothing, also when it was confirmed, and also when its read of
+the list is out at that moment: the cancel, and the add's ten minutes, are asked at the binding's
+write itself.
+
+`POST /api/account/list/join` `{ "account", "list", "invite", "proof"? }`: `ovis join` with an
+invite's line that names the account's list ([A PC joins the list with an invite](#a-pc-joins-the-list-with-an-invite)).
+This PC's own window and CLI alone. `invite` is the invite's public key. Without `proof` it answers
+`{ "state": "prove", "card": { "key", "enc", "endpoint", "list" } }`: this PC's own card for that
+list, unsigned, which the line signs its proof for (`signLineProof`, the message `ovis-list-line/1`
+of [account-list.md](account-list.md): this account, this PC's id, its relay key and the challenge of
+that card). With that proof as `proof` it reads the list once and answers `{ "state": "waiting" }`
+(the PC's card is posted, with `invite` and `invite_proof` beside it, renewals too, so a device of
+the account can check by itself that the line's holder joined this PC) or `{ "state": "added",
+"account" }`; 409 `line_unproven` for anything else, a redeem signature of the line included,
+whatever challenge it signed. A list id alone names no list. For a join the
+PC makes by itself, three calls with `"invite"`, the invite's public key: `…/join/prepare` answers
+`{ "state": "prepared", "list", "seq", "enc", "seal", "wraps" }` (the place the join takes, the PC's
+encryption key, the epoch its names are sealed under, and the wraps the service holds for the
+invite), or `{ "state": "prove", "card" }` on a PC that is in its account or in the list already:
+getting ready binds nothing, and such a PC joins only by the line's proof for its card, through
+`…/join`; `…/join/body` `{ …, "seq", "sealed"? }` answers `{ "state": "body", "body" }`, the body the
+PC built; `…/join/place` `{ …, "entry", "wraps"? }` places the entry of that body and answers as
+`…/join`. `{ "state": "again" }` from any of them: the list moved, so prepare again. 409 with the
+refusal's name where the PC joins no list (`list_removed`, `other_account`, `pinned`, `line_unproven`,
+`invite_unknown`, `invite_revoked`, `invite_void`, `invite_spent`, `invite_expired`,
+`invite_plain`, `invite_uses`, `not_written`, `refused`, or `behind`: Ovis on this PC is older
+than what a member wrote into the list, and a PC that is behind does not write itself in); 503
+`not_read` or `unavailable`.
+
 `POST /api/account/relay-account` `{ "account" }` (or `{ "account": null }`, over a direct connection
 only and only on a PC in no account (409 `in_account` otherwise), which forgets the one named: `ovis
 join` puts back what it found): the account this PC asks its relay pass under while it
@@ -1480,22 +1577,37 @@ still do is said under [what the service still can](#what-the-account-service-st
 
 A PC pins a list when both of these hold, and never on the account service's word:
 
-1. **A person at this PC named the list**: `POST /api/account/list/pin` `{ "list" }`, from this PC's
-   own window or CLI alone. Nothing is pinned by it yet. Until the PC is pinned, naming another list
-   replaces the first.
+1. **A person at this PC named the list.** There are four ways, each begun at this PC's own window
+   or CLI:
+   - a number this PC and the device that adds it both show, which the person says are the same
+     ([A PC is added to the list](#a-pc-is-added-to-the-list));
+   - the line of an invite, which names the list, given to `ovis join` after the person confirmed
+     the account ([A PC joins the list with an invite](#a-pc-joins-the-list-with-an-invite));
+   - the QR code this PC showed, scanned by a device of the account, which names the list over the
+     pairing that code made ([A device that scans the PC's QR
+     code](#a-device-that-scans-the-pcs-qr-code));
+   - the list's id (`POST /api/account/list/pin` `{ "list" }`), on a PC already in the account.
+   Nothing is pinned by naming it. Until the PC is pinned, naming another list replaces the first.
 2. **That list holds an entry that adds this PC's own signing key at its own relay key**: a `pc`
    entry a member signed, or a `join` entry of an invite a member placed.
 
-No screen of the app names a list yet, so no PC pins one in this release without that call. **Do
-not pin a PC that older apps use**: an app from before this one opens a PC through the account with
-the key of its sign-in, which a pinned PC lets in no more
+A PC in no account joins its account by the list: its place in the account is written already
+pinned, once the PC has read the list with its own proof and found its entry. At no moment does
+such a PC let a device in on the account service's word. For an account that keeps a list, one
+press and an add over SSH are refused `list_add`: the account service's admission binds no PC to
+it. Whether an account keeps a list is asked of the account service, so a service that says it
+keeps none still has a PC added in one press, to follow the snapshot as before; the account's
+devices then hold no entry for that PC. A device that pairs with the PC itself (a QR code, digits
+approved at the PC) and sends its `link` still brings the PC into its account as before, with no
+pin; a device that follows its account's list names the list over that pairing instead
+([A device that scans the PC's QR code](#a-device-that-scans-the-pcs-qr-code)).
+
+**Do not pin a PC that older apps use**: an app from before this release opens a PC through the
+account with the key of its sign-in, which a pinned PC lets in no more
 ([How an app signs in](#how-an-app-signs-in-to-a-pinned-pc)), so such an app is shut out of the PC
 until it is updated. The app signs in with its list key from this release on
-([What a pinned PC asks of the app](account-list.md#what-a-pinned-pc-asks-of-the-app)). The call is
-for tests until a screen names a list. Nothing an app released so far does can bring a PC to pin: the
-second condition needs an entry for this PC that a member signed, and no released app writes one.
-A PC must be in the account before it names a list. One press never pins: the list it would follow
-would be the one the service names.
+([What a pinned PC asks of the app](account-list.md#what-a-pinned-pc-asks-of-the-app)). One press
+never pins: the list it would follow would be the one the service names.
 
 The pin is one-way. It ends only by an act at the PC that ends its place in the account (**Revoke
 all**, **Reset relay identity**), or by an entry of the list that removes this PC. Nothing the
@@ -1637,10 +1749,21 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   does.
 - **A PC the list removed leaves its account**, as one its account stopped listing did before: its
   account devices go, and the pairings it made itself stay. What the list removed before it removed
-  the PC is put out first, in the same read: a removed device keeps no pairing of this PC's own. It keeps that it was removed
-  (`account-pc.json`), and joins that account again on no path (a press, an add over SSH and a
-  device's link are refused `list_removed`) until **Reset relay identity** makes it a new PC, which
-  is added as one.
+  the PC is put out first, in the same read: a removed device keeps no pairing of this PC's own. It
+  keeps that it was removed
+  (`account-pc.json`), and joins that account again on no path (a press, an add by the list, an
+  invite, an add over SSH and a device's link are refused `list_removed`) until **Reset relay
+  identity** makes it a new PC, which is added as one. `ovis add` at a terminal offers both as one
+  step: **This PC was removed from this Ovis account. … Add it again as a new PC?** A typed `yes`
+  resets the relay identity, lists the new PC and goes on with the add; anything else changes
+  nothing. The reset names the relay identity the question was about (`POST
+  /api/relay/reset-identity` `{ "removed": { "account", "server_id" } }`), and resets that one
+  alone, while the PC is still in no account (409 `identity_changed`, `not_removed`, `in_account`):
+  a yes to an old question, typed after the PC was reset and added again, or after it joined another
+  account with the same relay identity, resets nothing. It is asked before the reset begins and again
+  in the turn that resets, from the binding's file under its lock, so a join that lands while the
+  relay closes is seen too. Nothing does this by itself, and no run without a terminal does it: a removed PC never
+  comes back unless a person at it says so. The key the list removed stays out for good.
 - **Another PC of the account** ([Adding a PC of your account](#adding-a-pc-of-your-account)) is
   taken as one only when the list holds its relay key, asked when its comparison begins and again
   in the turn that writes its row.
@@ -1666,6 +1789,143 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   acted on and not saved. `GET /api/account/list` carries the same `reason`, and `ovis status
   --json` both (`list`). Null while the PC follows its list as usual.
 
+#### A PC is added to the list
+
+A device of the account adds a PC by signing a `pc` entry for the PC's key. Two things must be
+sure: that the key the device signs is this PC's, and that the list this PC pins is that account's.
+The account service carries the messages between the two, so neither may rest on its word. A number
+that both screens show settles both, each by its own confirmation:
+
+1. **The PC posts its card** (`POST /v2/pc/list/keys`): its two public keys, with its own signature
+   over them, its relay key and the id of the list the account service named to it. That id is only
+   the service's word so far.
+2. **The device commits** (`POST /v2/lists/{list}/posts/{endpoint}/attempt`): it picks a nonce and
+   sends only a commitment to it, with its own key.
+3. **The PC answers with a nonce of its own** (`POST /v2/pc/list/attempt`), picked before it has
+   seen the device's. It answers one commitment once, and at most three commitments in one add.
+4. **The device reveals its nonce.** The PC checks that it opens the commitment; only then is there
+   a number. Both show six digits made from the PC's card, the device's key and the two nonces
+   (`shared/relay-pair-sas.ts`, bound to the hash of the card).
+5. **The person compares them, and says so at the PC**: **The numbers match** in the PC's own
+   window, `yes` at `ovis add` in a terminal, or `ovis add --confirm <the number>` where nobody can
+   type at that command. Only this names the list. The yes carries the number, and confirms only
+   the number on the PC's screen at that moment; a yes to any other number ends the one that shows.
+6. **The person presses Add on the device.** That says the key on the card is this PC's: the device
+   signs the `pc` entry and places it.
+7. **The PC joins** once it reads, in the list the person confirmed, the entry that adds it,
+   signed by the device whose number the person confirmed. An entry another member signed joins
+   nothing (`other_adder`).
+
+A service that stands in the middle cannot make both screens show one number: whatever it changes
+(the card, the list, the device's key) changes the digits on one side, and it had to commit before
+it saw the PC's nonce, so it gets one try in a million, and each try is a number on the PC's screen.
+A service that names the PC a list of its own, and adds the PC there with a key of its own, shows
+the PC a number that no device of the account shows; nobody says yes to it, and the PC joins
+nothing. The person's yes at the PC is what makes this hold: without it the service's own list
+would be as good as the account's.
+
+- A number lasts 120 seconds from the PC's answer. A new commitment replaces it: the PC never shows
+  two, and a yes typed under the old one confirms nothing.
+- An add lasts 10 minutes, confirmed or not: an entry that arrives after them joins nothing. The
+  PC asks the account service for the device's next message every 3 seconds while something asks it
+  (its own window or `ovis add`). Both lifetimes are counted by a clock that only moves forward, so
+  setting the PC's clock back gives neither more time.
+- `ovis add` that stops (Ctrl+C, an error) gives its add up at the PC: a yes confirmed before joins
+  nothing once the command is gone.
+- **No** at the PC (Enter at `ovis add`) ends the add. Nothing is joined, whatever the list then
+  holds.
+- After the yes the PC shows no further number, and reads the list until its entry is there. The
+  ten minutes and a No are asked again at the binding's write itself: a read of the list that was
+  out when either came binds nothing, and a poll that was out answers no commitment. An add whose
+  PC is in by then (its first copy reached the disk late) ends `added`, not `timeout`.
+- A PC that comes into its account another way while its add runs (a device's `link`) is pinned by
+  the add on the same rules: only the entry the confirmed adder signed counts, and nothing of the
+  add is kept as a want once it ended. `ovis add` toward an account with no list makes no list keys.
+- Two Ovis servers on one state folder that join at once: the binding the file holds when the
+  second writes stands. The second goes by that binding and the copy the first saved, writes
+  nothing over it, and says it joined only once that copy shows the PC in.
+- An account with no list is added as before, in one press. A PC asks the account service whether
+  the account keeps a list (`POST /v2/pc/list`); while that goes unanswered it waits, and binds
+  nothing. An account that made its list since the PC last asked takes it in one press no more: the
+  account service refuses the take (`409 list_add`), and the PC forgets what it had heard.
+
+`ovis add` does all of it at a terminal: it lists the PC, shows the number with the question, and
+finishes when the PC is in the account. Where nobody can type (a script, a coding agent) it prints
+the number and the exact command that confirms it, `ovis add --confirm <the number>`, and confirms
+nothing itself; an agent adds a PC in one step with an invite instead.
+
+#### A PC joins the list with an invite
+
+The line of an invite names the account's list (`shared/account-list-join.ts`). The person at the
+PC confirms the account before anything is sent, so the line is what names the list here, and no
+number is compared. The line never leaves `ovis join`: not to this PC's server, not into a file.
+
+- **An invite a person adds a PC with.** The PC redeems the invite. `ovis join` then shows the PC
+  that it holds the line: the PC hands over its own card for the list, and the line signs its proof
+  for that card (`ovis-list-line/1`: this account, this PC, that list, those keys). It is a message
+  of its own, never a redeem signature, whose challenge an account service chooses. Only then does
+  the PC post its card, with the invite and that proof beside it, and wait: a device of the account
+  checks the proof itself before it offers **Add** for a PC that joined with its invite, and **Add**
+  signs the `pc` entry. The PC joins once it reads that entry, in a list that holds the invite
+  (`POST /api/account/list/join`).
+- **An invite a PC joins with by itself.** Nobody else has to be awake. The PC redeems the invite,
+  reads the list, and builds its own `join` entry from its own keys, with a card it signs for this
+  list, its relay key and that invite. `ovis join` signs that body with the line's key, which signs
+  nothing but the join of its own key on its own list, and hands it back; the PC places only the
+  entry whose body it built (`POST /v2/pc/list/entries`, with its proof), then joins once its own
+  copy shows it. The names' key, which the account wrapped for the invite, is opened by the line
+  and wrapped again for the PC, and the PC's name is sealed under it.
+- A PC joins by itself only with an invite the list holds as open, made for that purpose, and for
+  one PC (`uses` 1): one that lets several PCs in is refused `invite_uses`, and one a person adds a
+  PC with `invite_plain`.
+- Getting ready to join binds nothing. A PC the list holds already (an earlier run's join that
+  placed, or a device's Add), or one in its account already, writes no join: `ovis join` has the
+  line sign its proof for the PC's card instead, and the PC joins by that, as with an invite a person
+  adds a PC with.
+- **When it is in.** A PC that joined by its list tells the account service its add is complete
+  (`POST /v1/pc/complete`), once, so the account's page stops showing it as only listed. The listing
+  that names is the one its own mailbox pull names, never an admission: an account with a list takes
+  none. What it owes is on disk from the join on (`account-completion.json`, until a pull names the
+  listing, then as the receipt), so a PC that stops before its first pull sends it after its next
+  start; a binding that ended meanwhile owes nothing. Nothing waits for it. Only a final refusal of
+  it drops it, and nothing else: the list says the PC is in, not the listing. A 429, a lapsed proof
+  (401), a timeout or a 5xx keep it for the next pull.
+- A PC that joined by itself is in the list and signs for nothing: it lets no device in
+  ([A PC allows a device into the list](#a-pc-allows-a-device-into-the-list)).
+- A line that names no list adds a PC nowhere in an account that keeps one (`list_add`): the
+  account service's word is not taken. A line that names a list is refused before anything is sent
+  on an Ovis that follows none.
+- A list that moved between the PC's body and its placement is read again, and the join built and
+  signed again.
+
+#### A device that scans the PC's QR code
+
+`ovis add --qr` shows a QR code that carries a code made for the account. A device that scans it
+pairs with the PC over a channel that code keys, which the account service is no part of. So no
+number is compared: what the device says over that pairing is the device's own word, and the card
+the PC answers with is the PC's own.
+
+- The device sends `POST /api/account/list/named` `{ "account", "list" }` in the place of its
+  `link`. Every rule of a link holds for it: the code was made for that account, the PC is in no
+  account, and the account service vouches for the device's key
+  ([The account's word](#the-accounts-word)). A device that fails one is turned away as its link
+  would be. So scanning the code brings a PC nowhere that a link would not.
+- The PC answers `{ "state": "waiting", "key", "enc", "card" }`, its card for that list, and posts
+  the same card to the account service. The device checks the card, signs the `pc` entry with the
+  key it paired with, and places it.
+- The device calls again. The PC reads the list and joins when the list holds its entry **and the
+  key that paired signed it**: `{ "state": "added" }`. An entry another key signed is refused
+  `other_adder`. The PC writes no member for the pairing: its devices are the list's.
+- A device names one list. A second list from the same pairing is refused `pairing_ended`, also
+  while the first naming is still asked about, and spends none of its tries. Its first naming is
+  one of its five tries, as a link is; asking again where it stands is not.
+- Once it named a list, the pairing has no other way in: a `link` it sends after is refused
+  `list_named`, and it stays a pairing that waits until that list holds the PC by its key. Ending
+  the naming is ending the pairing (scan the code again).
+- Whoever can read the PC's QR code, and is a device the account service vouches for, can add the
+  PC to a list that names that account. That is what the QR code is: keep it to yourself, as
+  before.
+
 #### A PC allows a device into the list
 
 A device joins an account that has a list by an entry a member signed. A PC that a person added to
@@ -1689,7 +1949,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   /api/relay/joins` marks such a join `list`, and `ovis approve` then says that the approval was
   received, not that the device is let in: it is in once its entry is in the list. On a PC whose
   Ovis is behind the list the join is marked `list_behind` too, and `ovis approve` says that the
-  device was not let in and that Ovis on this PC needs an update.
+  device was not let in and that Ovis on this PC needs an update. On a PC that joined by an invite,
+  which signs for nobody, it is marked `list_not_signer`, and `ovis approve` says that the device was
+  not let in and to allow it on another device of the account.
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.
@@ -1736,6 +1998,15 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   entry that cannot be kept is not sent. Any other refusal ends it at once, and the kept request
   with it, since the service itself said that it placed nothing: a budget, a service that changes
   the list for nobody (`list_stopped`), a key this PC itself keeps out.
+- **A kept request that goes wrong heals by itself.** A file that does not read signs nobody new in
+  (`not_written`, `kept_unreadable`) while this PC's copy stands at the head at which it found the
+  file so; once its verified head moved past that, the place whatever it held was signed for is
+  taken, and the file goes. A kept request of a device this PC has since come to hold back is never
+  sent, and holds its place from another device's Allow (`place_kept`) for ten minutes from when it
+  was kept, or until the person at this PC declines a join of that device (its own window's
+  Decline). Meanwhile `reason` of `GET /api/account/list` and the `list` of `GET
+  /api/account/status` (so `ovis status --json`) say why this PC lets no new device in: for a
+  kept entry, that an Allow waits behind an earlier one, and until when.
 - **A join a member device allows** is let in only when an entry of the list lets the device in:
   the PC signs nothing on a member's approval. The member signs only after the new device
   confirmed its digits, so a device that gives up before that is nobody's member: a waiting join
@@ -1795,7 +2066,7 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
 | this PC is not the account's (`not_listed`, a listing replaced or changed) | leaves the account | stays in it |
 | Step 2 is off (`step2_off`) | account devices wait | nothing |
 | nothing, for an hour | account devices wait for a whole read | nothing |
-| the account admitted this PC ([one press](#adding-a-pc), [over SSH](#adding-a-pc-over-ssh)) | joins that account | refused: it is in its account, and one whose list removed it never takes it back |
+| the account admitted this PC ([one press](#adding-a-pc), [over SSH](#adding-a-pc-over-ssh)) | joins that account, unless the account keeps a list (`list_add`) | refused: it is in its account, and one whose list removed it never takes it back |
 | a device asked to join (an admission) | a person may allow it, by its digits | the same |
 | the list has a new head, or names another list | reads | reads its own list, and no other |
 
@@ -1806,9 +2077,12 @@ a signed `remove` and a signed block apply. Where it adds, it does not: a signed
 #### What the account service still can
 
 - **Withhold.** A removal the service does not show reaches the PC only from another source. The PC
-  takes entries any member hands it directly, since entries prove themselves, but no route carries
-  them yet: until one does, a removed device still opens a pinned PC that has not been shown its
-  removal, for as long as the service withholds it.
+  takes entries any device hands it over its session, since entries prove themselves
+  (`POST /api/account/list/head`, `POST /api/account/list/page`): a device says where it stands,
+  the PC says where it stands, and the device hands the PC the entries after that place. So a
+  removal one device holds reaches every PC that device opens, whatever the service shows. Until a
+  device that holds it opens the PC, a removed device still opens a pinned PC that has not been
+  shown its removal.
 - **Deny.** It can answer nothing, and it can keep a new device or a new PC from being added.
 - **See.** It sees how many devices and PCs an account has and when each came and went, and not what
   they are called.
@@ -2250,6 +2524,7 @@ Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "
 | `not_confirmed` | 409 | `POST /api/relay/pairing`: the join brings a card for the account's list and its device has not confirmed its digits yet; the join waits as it did, and is approved once `confirmed` shows |
 | `list_followed` | 409 | this PC lets its account's devices in by the account's signed list alone: a `link` makes no member, and an `add` adds nobody (also a record outcome) |
 | `list_removed` | 409 | the account's signed list removed this PC: it joins that account again only as a new PC, after **Reset relay identity** |
+| `list_add` | 409 | `POST /api/account/one-press`, an add over SSH: the account keeps a signed list, and takes a PC by that list alone (`ovis add` at the PC, or `ovis join` with an invite that names the list) |
 | `in_account` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: this PC is in an account, so it makes no QR code that would put it in one |
 | `listing_expired` | 409 | `POST /api/account/one-press`: the listing a plain invite made is past its card's 10 minutes, so no Add can come for it; a new invite opens it again |
 | `no_account_named` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: no account was named for this PC (`relay-account`), so it makes no QR code yet |

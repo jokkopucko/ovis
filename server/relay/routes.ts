@@ -5,7 +5,7 @@ import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryUnavailableError } from "./service.ts";
+import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetNotAskedError, ResetRegistryUnavailableError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -43,9 +43,11 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   if (pathname === "/api/relay/joins" && request.method === "GET") {
     setRequestRoute("/api/relay/joins");
     if (!own) return fail("own_window_required", "Only this PC's own window lists account joins.", 403);
-    // a join into the list that this PC cannot sign because its Ovis is behind the list says so before anybody approves it
-    const behind = context.services.accountList?.allowRefusal() === "behind";
-    return reply({ joins: service.approvals.ownJoins().map((join) => behind && join.list === true ? { ...join, list_behind: true as const } : join) });
+    // a join into the list that this PC cannot sign says why before anybody approves it here: its Ovis is behind the
+    // list, or it joined by an invite and signs for nobody (a device of the account allows it then)
+    const refusal = context.services.accountList?.allowRefusal();
+    const why = refusal === "behind" ? { list_behind: true as const } : refusal === "not_signer" ? { list_not_signer: true as const } : null;
+    return reply({ joins: service.approvals.ownJoins().map((join) => why !== null && join.list === true ? { ...join, ...why } : join) });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
   if (pathname === RELAY_CONTROLS.pairing && peer.kind === "relay") {
@@ -171,9 +173,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")) {
           return fail("invalid_relay_pairing", "Send the pairing's id and a decision of approve or decline.", 400);
         }
+        const key = service.approvals.keyOf(body.id);
         if (!service.approvals.decide(body.id, body.decision === "approve", own)) {
           return fail("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
         }
+        // the person at this PC declined that device: what this PC signed for it and keeps goes too
+        if (own && body.decision === "decline" && key) context.services.accountList?.declinedHere(key);
         return reply({ ok: true });
       }
       case RELAY_CONTROLS.join: {
@@ -183,9 +188,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (body instanceof Response) return body;
         // a first join (no member could approve it) is allowed or declined by a tap, its digits compared on this screen
         if (typeof body.id === "string" && (body.decision === "approve" || body.decision === "decline")) {
+          const key = service.approvals.keyOf(body.id);
           const tapped = service.approvals.decideOwn(body.id, body.decision === "approve");
           if (tapped === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
           if (tapped === "typed_only") return fail("digits_required", "Type the six digits the new device shows.", 409);
+          // the person at this PC declined that device: what this PC signed for it and keeps goes too
+          if (body.decision === "decline" && key) context.services.accountList?.declinedHere(key);
           return reply({ ok: true });
         }
         if (typeof body.id !== "string" || typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) {
@@ -208,7 +216,20 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         setRequestRoute("/api/relay/reset-identity");
         // Reset ends every relay row: a PC under account policy requires the same local authority as Revoke all.
         if (context.services.devices.accountPolicyActive() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
-        const status = await service.resetIdentity();
+        // `removed`: the reset that makes a PC its account's list removed a new one names the identity the person was
+        // asked about, and the account. It resets that identity alone: an answer to an old question, given after the
+        // PC was reset and added again, must not reset the PC it has become
+        const text = await request.text();
+        let named: unknown;
+        try { named = text === "" ? undefined : (JSON.parse(text) as { removed?: unknown } | null)?.removed; } catch { return fail("invalid_json", "request body must be JSON", 400); }
+        let removed: { account: string; server_id: string } | undefined;
+        if (named !== undefined) {
+          const { account, server_id } = (typeof named === "object" && named !== null ? named : {}) as { account?: unknown; server_id?: unknown };
+          if (typeof account !== "string" || typeof server_id !== "string") return fail("invalid_reset", "Name the account and the relay identity that was removed from it", 400);
+          removed = { account, server_id };
+        }
+        // a PC that is in an account again, or another PC by now, is not reset: asked in the turn that resets (409)
+        const status = await service.resetIdentity(removed);
         return reply(status, status.blocked ? 409 : 200);
       }
       default: return fail("method_not_allowed", "Unknown relay action.", 405);
@@ -227,6 +248,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
     if (error instanceof ResetRegistryUnavailableError) return fail(error.code, error.message, 503);
+    if (error instanceof ResetNotAskedError) return fail(error.code, error.message, 409);
     // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
     if (error instanceof AccountServiceOffError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there

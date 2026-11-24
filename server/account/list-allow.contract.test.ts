@@ -718,6 +718,30 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(entriesPlaced(made)).toBe(0);
   });
 
+  test("the person's Decline at this PC of a waiting join drops what this PC kept signed for that device", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    await join(made, phone, { card: { enc: phone.enc, card } });
+    const declined = spyOn(made.list, "declinedHere");
+    try {
+      const waiting = await ownJoin(made);
+      expect(await decide(made, { id: waiting.id, decision: "decline" })).toBe(200);
+      expect(declined.mock.calls).toEqual([[phone.key]]);
+    } finally { declined.mockRestore(); }
+  });
+
+  test("a PC that cannot sign for its list itself (it joined by an invite) says so of a join into the list before anybody approves it here", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    await join(made, phone, { card: { enc: phone.enc, card } });
+    // as the PC that joined by an invite answers: it is in the list and signs for nobody
+    const refusal = spyOn(made.list, "allowRefusal").mockReturnValue("not_signer");
+    try { expect(await ownJoin(made)).toMatchObject({ list: true, list_not_signer: true }); } finally { refusal.mockRestore(); }
+    expect(await ownJoin(made)).not.toHaveProperty("list_not_signer");
+  });
+
   test("the challenge names the list this PC follows, and a refusal says which cause it was", async () => {
     const made = await allowingPc();
     const phone = await listMember();
