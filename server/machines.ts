@@ -23,6 +23,7 @@ import { parseFoundHerdrSessions, throwawayPath, validHerdrSocket } from "./herd
 import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { AgentChanges } from "./agent-changes.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
 import type { FoundHerdrSession, FoundOvis } from "../shared/machines.ts";
 import { DESKTOP_APP_UPDATES, REVISION, type UpdateStatus } from "../shared/update.ts";
@@ -378,6 +379,7 @@ export class MachineManager {
   private localTimer: ReturnType<typeof setInterval>;
   private saveTimer?: ReturnType<typeof setTimeout>;
   private profileState: HerdrProfileState;
+  private readonly agentChanges: AgentChanges;
   private statePath: string;
   private written: string | undefined;
   private relayStatePath: string;
@@ -448,6 +450,7 @@ export class MachineManager {
     this.now = options.now ?? (() => performance.now());
     if (this.bootId) this.local.source_boot_id = this.bootId;
     this.profileState = new HerdrProfileState(stateDir);
+    this.agentChanges = new AgentChanges(stateDir);
     this.statePath = join(stateDir, "machines.json");
     this.relayStatePath = join(stateDir, "relay-pcs.json");
     this.addressStatePath = join(stateDir, "address-pcs.json");
@@ -545,7 +548,7 @@ export class MachineManager {
             runtime.machine.enabled = false; this.disconnect(runtime);
             for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
             this.dropUpdate(runtime);
-            this.machines.delete(id);
+            this.machines.delete(id); this.agentChanges.forget(id);
             this.emit();
           }
           this.removeKey(id);
@@ -585,7 +588,7 @@ export class MachineManager {
       runtime.machine.enabled = false; this.disconnect(runtime);
       for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
       this.dropUpdate(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -643,7 +646,7 @@ export class MachineManager {
     for (const [id, runtime] of this.machines) {
       if (runtime.machine.kind !== "hc" || wanted.has(id)) continue;
       runtime.machine.enabled = false; this.disconnect(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -671,7 +674,10 @@ export class MachineManager {
       runtime.machine.runtime = runtime.machine.state === "connected" && runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
       if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     }
-    return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+    const machines = [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+    // each agent's last change in this server's clock (HerdrPane.changed_at): only a time from one clock orders PCs together.
+    // Only a connected PC's roster is news: a cached one (machines.json, a PC away) shows the times kept for it.
+    return machines.map((machine) => machine.snapshot ? { ...machine, snapshot: this.agentChanges.snapshot(machine.id, machine.snapshot, machine.state === "connected") } : machine);
   }
   private updateOffer(runtime: Runtime): PcUpdateOffer | null {
     const machine = runtime.machine;
@@ -748,6 +754,12 @@ export class MachineManager {
   }
   private emit(event?: MachineEvent): void {
     if (this.stopped) return;
+    if (event?.type === "machine-message" && event.message.type === "pane-status") {
+      const changedAt = this.agentChanges.status(event.machine_id, event.message.pane_id, event.message.agent_status);
+      // a remote PC's own Ovis may name a time of its clock: only this server's is told
+      const { changed_at: _theirs, ...message } = event.message;
+      if (changedAt !== undefined || _theirs !== undefined) event = { ...event, message: changedAt === undefined ? message : { ...message, changed_at: changedAt } };
+    }
     for (const listener of this.listeners) listener(event ?? { type: "machines", machines: this.list() });
   }
   localMessage(message: ServerMessage): void {
@@ -2401,7 +2413,7 @@ export class MachineManager {
     // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
     if (runtime.machine.kind === "address") removeAddressPcToken(this.addressTokenPath(id));
-    this.machines.delete(id); this.persist();
+    this.machines.delete(id); this.agentChanges.forget(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
     this.emit();
   }
@@ -2667,7 +2679,7 @@ export class MachineManager {
     return runtime.machine;
   }
   stop(): void {
-    this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
+    this.stopped = true; this.agentChanges.flush(); clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }

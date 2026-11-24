@@ -60,7 +60,7 @@ type PaneStatus = Extract<ServerMessage, { type: "pane-status" }>;
 
 function withPaneStatus(machine: Machine, message: PaneStatus): Machine {
   if (!machine.snapshot) return machine;
-  const snapshot = applyPaneStatus(machine.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch, message.context);
+  const snapshot = applyPaneStatus(machine.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch, message.context, message.changed_at);
   return snapshot === machine.snapshot ? machine : { ...machine, snapshot };
 }
 

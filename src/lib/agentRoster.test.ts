@@ -4,6 +4,7 @@ import type { AgentStatus, HerdrPane, SessionSnapshot } from "../../shared/proto
 import fixture from "../../site/demo/fixtures/machines.json";
 import { agentRoster, groupAgentRows, splitBackgroundRows, type AgentRow } from "./agentRoster.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
+import { stateSeqs } from "./sidebarOrder.ts";
 
 const template = fixture.machines[0]!.snapshot as SessionSnapshot;
 const templatePane = template.panes.find((pane) => pane.agent) ?? template.panes[0]!;
@@ -19,13 +20,59 @@ function machine(id: string, state: MachineState, panes: [id: string, status: Ag
 }
 
 describe("agent roster", () => {
-  it("keeps the pinned card first in pin order and each PC's rows in its own Activity order", () => {
+  it("keeps the pinned card first in pin order, then every PC's blocked agents, then each PC's own Activity order", () => {
     const machines = [machine("local", "connected", [["a", "done"], ["b", "blocked"], ["c", "working"]]), machine("remote", "connected", [["d", "idle"], ["e", "blocked"]])];
     const seqs = new Map<string, ReadonlyMap<string, number>>([["local", new Map([["a", 1], ["b", 2], ["c", 3]])], ["remote", new Map([["d", 9], ["e", 1]])]]);
     const split = agentRoster(machines, { byActivity: true, seqs: (id) => seqs.get(id) ?? new Map(), pinned: [sidebarPinKey("remote", "d"), sidebarPinKey("local", "c")] });
     const key = ({ machine, entry }: { machine: Machine; entry: { pane: HerdrPane } }) => `${machine.id}/${entry.pane.pane_id}`;
     expect(split.pinned.map(key)).toEqual(["remote/d", "local/c"]);
-    expect(split.rest.map(key)).toEqual(["local/b", "local/a", "remote/e"]);
+    expect(split.rest.map(key)).toEqual(["local/b", "remote/e", "local/a"]);
+  });
+
+  describe("Activity across PCs", () => {
+    const key = ({ machine, entry }: AgentRow) => `${machine.id}/${entry.pane.pane_id}`;
+    /** the hub's change times (HerdrPane.changed_at) of the named rows */
+    const dated = (pc: Machine, times: Record<string, number>): Machine => ({ ...pc, snapshot: { ...pc.snapshot!, panes: pc.snapshot!.panes.map((pane) => pane.pane_id in times ? { ...pane, changed_at: times[pane.pane_id] } : pane) } });
+    const order = (machines: Machine[], pinned: string[] = [], byActivity = true) => {
+      const split = agentRoster(machines, { byActivity, seqs: (id) => stateSeqs(machines.find((pc) => pc.id === id)?.snapshot), pinned });
+      return [...split.pinned, ...split.rest].map(key);
+    };
+
+    it("puts the agent the hub saw change last first, whichever PC it is on", () => {
+      // the local PC's counters are far higher than the remote one's: only the hub's times are compared
+      const local = machine("local", "connected", [["a", "done"], ["b", "idle"]]);
+      local.snapshot!.agents.forEach((agent) => { agent.state_change_seq = 10_000; });
+      const remote = machine("win", "connected", [["w", "working"]]);
+      expect(order([dated(local, { a: 2_000, b: 1_000 }), dated(remote, { w: 3_000 })])).toEqual(["win/w", "local/a", "local/b"]);
+      // a blocked agent still stands first, and pins keep their pin order
+      const blocked = machine("local", "connected", [["a", "done"], ["b", "blocked"]]);
+      expect(order([dated(blocked, { a: 2_000, b: 1_000 }), dated(remote, { w: 3_000 })], [sidebarPinKey("local", "a")])).toEqual(["local/a", "local/b", "win/w"]);
+    });
+
+    it("keeps each PC's own Activity order after the dated rows, and two PCs' same pane ID apart", () => {
+      const local = machine("local", "connected", [["a", "idle"], ["b", "idle"]]);
+      const remote = machine("win", "connected", [["a", "idle"]]);
+      // b's counter is higher than a's on this PC: per-PC Activity puts it first
+      expect(order([local, dated(remote, { a: 5 })])).toEqual(["win/a", "local/b", "local/a"]);
+    });
+
+    it("leaves one PC's agents in herdr's Activity order, whatever their change times", () => {
+      // b's counter is the higher one, a's change time the later one
+      const local = dated(machine("local", "connected", [["a", "idle"], ["b", "idle"]]), { a: 9, b: 1 });
+      expect(order([local])).toEqual(["local/b", "local/a"]);
+    });
+
+    it("keeps each PC's rows together in the Workspaces order", () => {
+      const local = dated(machine("local", "connected", [["a", "idle"]]), { a: 1 });
+      const remote = dated(machine("win", "connected", [["w", "idle"]]), { w: 2 });
+      expect(order([local, remote], [], false)).toEqual(["local/a", "win/w"]);
+    });
+
+    it("keeps a helper under its agent", () => {
+      const local = dated(machine("local", "connected", [["a", "idle"], ["h", "working", "a"]]), { a: 1, h: 9 });
+      const remote = dated(machine("win", "connected", [["w", "working"]]), { w: 5 });
+      expect(order([local, remote])).toEqual(["local/a", "local/h", "win/w"]);
+    });
   });
 
   it("draws each helper right under the agent that started it, after its earlier helpers, in either order", () => {
