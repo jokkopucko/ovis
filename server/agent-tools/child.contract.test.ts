@@ -29,6 +29,10 @@ const RECORDED: readonly Recorded[] = [
   ...["ask", "own-rule"].map(run => ({ harness: "copilot", fixture: `copilot-1.0.109-${run}`, version: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.", mode: "https://agentclientprotocol.com/protocol/session-modes#agent",
     // the fetch, MCP call, mkdir and file write; the folder's hook allowing the write leaves the other three
     kinds: run === "ask" ? ["fetch", "other", "execute", "edit"] : ["fetch", "other", "execute"] })),
+  // one recorded session per action, as agy ends a turn at the first rejection; its web search never asks, so none is
+  // here. With the workspace hook allowing the write, the same prompt's mkdir and MCP call still came as cards
+  ...([["ask-write", "edit"], ["ask-mkdir", "execute"], ["ask-mcp", "other"], ["own-rule-mkdir", "execute"], ["own-rule-mcp", "other"]] as const)
+    .map(([run, kind]) => ({ harness: "agy", fixture: `agy-1.5.16-${run}`, version: "1.5.16", mode: "default", kinds: [kind] })),
 ];
 
 describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds, opened }) => {

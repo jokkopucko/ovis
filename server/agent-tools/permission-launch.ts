@@ -11,6 +11,10 @@ export const OPEN_REVIEW = "opencode/all-tools-ask/v1";
 export const CLAUDE_REVIEW = "claude/all-tools-ask/v1";
 export const CODEX_REVIEW = "codex/read-only-own-rules/v1";
 export const COPILOT_REVIEW = "copilot/agent-own-rules/v1";
+export const AGY_REVIEW = "agy/strict-own-rules/v1";
+/** agy's strictest settings for one run, over the person's own file: every write, command, URL, read and MCP call asked. */
+const AGY_SETTINGS = { trustedWorkspaces: [], agentMode: "", toolPermission: "strict", enableTerminalSandbox: false, allowNonWorkspaceAccess: false,
+  permissions: { ask: ["write_file(*)", "command(*)", "read_url(*)", "mcp(*)", "read_file(*)", "execute_url(*)", "download_url(*)"], allow: [], deny: [] } };
 
 export type Verified = HarnessCommand & {
   ceiling: { profile: string; mode: string };
@@ -125,6 +129,19 @@ const ASK_RECIPES: Record<string, AskRecipe> = {
       mode: "https://agentclientprotocol.com/protocol/session-modes#agent",
       argv: [...command.argv, "--no-auto-update"],
       env: { COPILOT_ALLOW_ALL: "false" },
+    }),
+  },
+  agy: {
+    profile: AGY_REVIEW,
+    versioned: command => command.argv[0],
+    versions: /^1\.5\.16$/,
+    ownRules: true,
+    // `--settings` comes before `acp`. A workspace `PreToolUse` hook of the person's still answers for them, and its
+    // built-in web search runs unasked whatever the rules say (Settings names both).
+    launch: command => ({
+      mode: "default",
+      argv: [command.argv[0]!, "--settings", JSON.stringify(AGY_SETTINGS), "acp", "--disable-telemetry", "--log-file", "/dev/null", "--include-default-customizations=false"],
+      env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" },
     }),
   },
 };

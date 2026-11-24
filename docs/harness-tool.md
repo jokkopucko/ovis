@@ -8,7 +8,9 @@ only `waiting_human`: ask the person to open Ovis.
 
 When a TUI parent cannot prove its permission ceiling, a child starts only in a launch that was
 seen to ask a person before every write, side-effecting command, web request and MCP call, with
-the user's and the project's own approvals in place. Only the versions those runs used start:
+the user's and the project's own approvals in place, or, for Codex, Copilot and agy, in that harness's
+narrowest asking launch, where only those approvals (and agy's built-in web search) go unasked.
+Only the versions those runs used start:
 
 - **OpenCode 2.2.2.** Before starting it Ovis supplies a private, per-run primary agent named
   `ovis-ask-…`, with an `ask` rule for every action and resource. Project config is disabled for
@@ -42,9 +44,16 @@ the user's and the project's own approvals in place. Only the versions those run
   `.github/hooks` still answers for them. Copilot starts no stdio MCP server from `session/new`, so
   such a child has no `ovis-agent` MCP tool; only the `ovis agent` shell command reaches Ovis from it.
 
-Settings names Codex and Copilot under
+- **agy 1.5.16**, also in its narrowest asking launch: `--settings` for the run (before `acp`) with
+  `toolPermission` `strict`, an `ask` rule for every write, command, URL, file read and MCP call, no
+  allow rule and no trusted workspace of its own, and `--include-default-customizations=false`. Its
+  built-in web search still runs unasked: no setting or session `_meta` tried brings it to a card. The
+  folder's own setup still loads: a workspace `PreToolUse` hook answering `auto_approve` answers for
+  the person, and an MCP server the folder configures starts (its tool calls still ask).
+
+Settings names agy, Codex and Copilot under
 **Agents they may call**: the allow rules a person set in them, a project folder's included,
-apply when they are called too.
+apply when they are called too; and that agy searches the web without asking.
 
 A task that begins with `/` is refused (`bad_request`): a harness may read it as one of its own
 commands, and Copilot's `/allow-all` turns every card off without changing its reported mode.
@@ -73,7 +82,6 @@ through with no card (checked 2026-11-24):
 | Harness | What answers for the person |
 | --- | --- |
 | GJC 0.18.12 | Its prompt mode gates only some tools: file writes, URL reads and MCP calls run unasked. |
-| agy 1.5.16 | Its built-in web search runs unasked in every launch tried, `ask` and `deny` rules and session `_meta` included. (A workspace `PreToolUse` hook answering `auto_approve` is the person's own rule.) |
 
 Claude Code, Codex, Copilot, OmO and pi can still be TUI **parents**. OmO and pi get the server
 from an extension Ovis adds to that launch with `-e`; an older version without

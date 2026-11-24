@@ -12,24 +12,24 @@ export interface HarnessCommand {
    * currentModeId alone proves nothing across harnesses or local user settings. */
   readonly ceiling?: { readonly profile: string; readonly mode: string };
 }
+/** The file a link on PATH names, so the one whose version is checked is the one that runs; null once it is gone. */
+const resolved = (path: string | null): string | null => {
+  try { return path && realpathSync(path); } catch { return null; }
+};
 export function resolveHarness(kind: string): HarnessCommand | null {
   switch (kind) {
     case "gjc": case "opencode": case "agy": {
-      const path = Bun.which(kind, { PATH: process.env["PATH"] });
+      const path = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
       return path ? { argv: [path, ...(kind === "gjc" ? ["--mode", "acp"] : ["acp"])] } : null;
     }
     case "copilot": {
-      // the file whose version is checked is the one that runs, whatever its link points to later
-      const path = Bun.which(kind, { PATH: process.env["PATH"] });
-      return path ? { argv: [realpathSync(path), "--acp", "--stdio"] } : null;
+      const path = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
+      return path ? { argv: [path, "--acp", "--stdio"] } : null;
     }
     case "claude": case "codex": {
       const adapter = adapters[kind];
-      const path = Bun.which(adapter.command, { PATH: process.env["PATH"] }), found = Bun.which(kind, { PATH: process.env["PATH"] });
-      if (!path || !found) return null;
-      // the files whose versions are checked are the ones that run, whatever their links point to later
-      const executable = realpathSync(found);
-      const script = realpathSync(path);
+      const script = resolved(Bun.which(adapter.command, { PATH: process.env["PATH"] })), executable = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
+      if (!script || !executable) return null;
       let dir = dirname(script);
       while (dir !== dirname(dir)) {
         const file = join(dir, "package.json");

@@ -2,7 +2,7 @@ import { expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_REVIEW, CODEX_REVIEW, COPILOT_REVIEW, OPEN_REVIEW, askable, claudeManagedPaths, claudeManagedPolicy, permissionLaunch } from "./permission-launch.ts";
+import { AGY_REVIEW, CLAUDE_REVIEW, CODEX_REVIEW, COPILOT_REVIEW, OPEN_REVIEW, askable, claudeManagedPaths, claudeManagedPolicy, permissionLaunch } from "./permission-launch.ts";
 
 it("an unknown parent can launch only the named all-ask profile, never an adapter default", () => {
   const cmd = { argv: ["/bin/opencode", "acp"] };
@@ -14,7 +14,7 @@ it("an unknown parent can launch only the named all-ask profile, never an adapte
   expect(recipe.ceiling.mode).toBe(config.default_agent);
   expect(recipe.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
   expect(recipe).toMatchObject({ askEveryTime: true, privateFiles: { OPENCODE_DB: "opencode.db" } });
-  for (const kind of ["gjc","agy"]) {
+  for (const kind of ["gjc"]) {
     expect(askable(kind)).toBe(false);
     expect(permissionLaunch(kind, undefined, "abc123", cmd)).toBeNull();
   }
@@ -57,6 +57,16 @@ it("Copilot's launch keeps its asking agent mode, never updates itself, and turn
   const recipe = permissionLaunch("copilot", undefined, "abc123", { argv: ["/bin/copilot", "--acp", "--stdio"] });
   expect(recipe).toMatchObject({ argv: ["/bin/copilot", "--acp", "--stdio", "--no-auto-update"], env: { COPILOT_ALLOW_ALL: "false" }, askEveryTime: true,
     ceiling: { profile: COPILOT_REVIEW, mode: "https://agentclientprotocol.com/protocol/session-modes#agent" } });
+});
+
+it("agy's launch gives its strictest settings for the run before `acp`, asking for every write, command, URL, read and MCP call", () => {
+  const recipe = permissionLaunch("agy", undefined, "abc123", { argv: ["/bin/agy", "acp"] });
+  if (!recipe) throw new Error("No launch for agy");
+  expect(recipe).toMatchObject({ env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" }, askEveryTime: true, ceiling: { profile: AGY_REVIEW, mode: "default" } });
+  expect(recipe.argv.slice(0, 2)).toEqual(["/bin/agy", "--settings"]);
+  expect(recipe.argv.slice(3)).toEqual(["acp", "--disable-telemetry", "--log-file", "/dev/null", "--include-default-customizations=false"]);
+  expect(JSON.parse(recipe.argv[2]!)).toEqual({ trustedWorkspaces: [], agentMode: "", toolPermission: "strict", enableTerminalSandbox: false, allowNonWorkspaceAccess: false,
+    permissions: { ask: ["write_file(*)", "command(*)", "read_url(*)", "mcp(*)", "read_file(*)", "execute_url(*)", "download_url(*)"], allow: [], deny: [] } });
 });
 
 it("a managed Claude Code policy file refuses the Claude launch", () => {
