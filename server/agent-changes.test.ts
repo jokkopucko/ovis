@@ -55,6 +55,32 @@ it("dates a status frame once, and its counter in the next snapshot is the same 
   expect(times(changes.snapshot("win", snapshot(["w", "done", 14]), true))).toEqual({ w: 3_000 });
 });
 
+it("takes the first counter after a status frame of a new agent as its start, not as a change", () => {
+  const time = clock();
+  const changes = new AgentChanges(null, time.now);
+  expect(changes.status("win", "w", "working")).toBeUndefined();
+  time.at(2_000);
+  expect(times(changes.snapshot("win", snapshot(["w", "working", 12]), true))).toEqual({ w: undefined });
+  time.at(3_000);
+  expect(times(changes.snapshot("win", snapshot(["w", "working", 13]), true))).toEqual({ w: 3_000 });
+});
+
+it("keeps a status frame's change over a restart before its counter is seen", () => {
+  const dir = stateDir();
+  const time = clock();
+  const before = new AgentChanges(dir, time.now);
+  before.snapshot("win", snapshot(["w", "working", 12]), true);
+  time.at(2_000);
+  expect(before.status("win", "w", "done")).toBe(2_000);
+  before.flush();
+
+  time.at(9_000);
+  const after = new AgentChanges(dir, time.now);
+  expect(times(after.snapshot("win", snapshot(["w", "done", 13]), true))).toEqual({ w: 2_000 });
+  time.at(10_000);
+  expect(times(after.snapshot("win", snapshot(["w", "done", 14]), true))).toEqual({ w: 10_000 });
+});
+
 it("starts an agent over on a lower counter, a new herdr run", () => {
   const time = clock();
   const changes = new AgentChanges(null, time.now);
