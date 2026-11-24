@@ -51,6 +51,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     shadow: async (account, directory, opens) => { calls.push(`shadow ${account} ${directory.map((pc) => pc.server_id).join(",")} opens:${[...opens ?? []].join(",")}`); return null; },
     dropNames: async (account) => { calls.push(`dropNames ${account}`); },
     forget: async (account) => { calls.push(`forget ${account}`); },
+    pinnedElsewhere: async () => null,
     adopt: async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq}`); return OFF; },
     writer: () => null,
     placeAt: () => null,

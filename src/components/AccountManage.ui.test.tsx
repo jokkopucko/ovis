@@ -153,7 +153,7 @@ describe("Manage account's devices and PCs", () => {
     const listed = (n: string, label: string) => ({ endpoint: n.repeat(64), server_id: n.repeat(32), how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });
     let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [listed("c", "Laptop"), listed("a", "Desk")] };
     const heard: (() => void)[] = [];
-    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" } }) } as unknown as AccountList);
+    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
     inShell = true;
     try {
       // the directory routes Desk (heard from lately) and names Dead box alone; the list holds Laptop with no route
@@ -184,7 +184,7 @@ describe("Manage account's devices and PCs", () => {
     const listed = (n: string, label: string) => ({ endpoint: n.repeat(64), server_id: n.repeat(32), how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });
     let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [listed("c", "Laptop")] };
     const heard: (() => void)[] = [];
-    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" } }) } as unknown as AccountList);
+    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
     inShell = true;
     try {
       // the directory still names Laptop, as it does for a while after the list put it out
@@ -253,8 +253,8 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     expect(left).toBe(1);
   });
 
-  type Leave = () => Promise<{ readonly left: boolean; readonly message: string | null }>;
-  type Everywhere = () => Promise<string | null>;
+  type Leave = (shown?: unknown) => Promise<{ readonly left: boolean; readonly message: string | null }>;
+  type Everywhere = (asked?: unknown) => Promise<string | null>;
   const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere });
   const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
   const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<ReactTestInstance> => {
@@ -282,6 +282,41 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     expect(action(root, "sign-out-everywhere").props["data-confirm"]).toBe("sign-out-everywhere");
     await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
     expect(asked).toBe(1);
+  });
+
+  /** A page list that shows this device in the account's list beside `others`, with what the sheet's rows read of it. */
+  const listShowing = (others: readonly string[]) => {
+    const LIST = "5c".repeat(32);
+    const device = (key: string, self: boolean) => ({ key, self, power: "full" as const, role: "drive" as const, until: null, carried: false, name: { label: key, os: null } });
+    let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [device("member-key", true), ...others.map((key) => device(key, false))], pcs: [] };
+    const heard: (() => void)[] = [];
+    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
+    return { LIST, device, heard, set: (next: AccountListView) => { view = next; }, view: () => view };
+  };
+
+  it("H1: Sign out every device passes the devices its question named and the list it was asked in, not what the list shows at the press", async () => {
+    const shown = listShowing(["Tablet"]);
+    try {
+      let asked: unknown = null;
+      const root = await openSheet(hosted(async () => ({ left: true, message: null }), async (question?: unknown) => { asked = question; return null; }));
+      await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+      // a device comes in after the question was drawn
+      shown.set({ ...shown.view(), devices: [...shown.view().devices, shown.device("Newcomer", false)] });
+      await act(async () => { for (const tell of shown.heard) tell(); });
+      await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+      expect(asked).toEqual({ confirmed: ["Tablet"], shown: { account: "acct", scope: { account: "acct", list: shown.LIST, member: "member-key" } } });
+    } finally { setPageAccountList(null); }
+  });
+
+  it("H1: Disconnect passes the account, the list and the member key its question was drawn for", async () => {
+    const shown = listShowing(["Tablet"]);
+    try {
+      let asked: unknown = null;
+      const root = await openSheet(hosted(async (question?: unknown) => { asked = question; return { left: true, message: null }; }));
+      await act(async () => { action(root, "leave-account").props.onClick(); });
+      await act(async () => { await press(root, "Disconnect"); });
+      expect(asked).toEqual({ account: "acct", scope: { account: "acct", list: shown.LIST, member: "member-key" } });
+    } finally { setPageAccountList(null); }
   });
 
   it("keeps the sheet up with the reason when every device could not be signed out", async () => {

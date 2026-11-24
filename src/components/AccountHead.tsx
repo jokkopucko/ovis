@@ -9,6 +9,9 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AccountManageLists } from "./AccountManage.tsx";
+import { SignOutEverywhereSays } from "./ListDevices.tsx";
+import { otherDevices, shownOf, type EverywhereAsked, type Shown } from "../lib/account/listLeave.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -92,16 +95,18 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [everywhere, setEverywhere] = useState<"asked" | "out" | null>(null);
+  // Sign out every device's question as it was drawn: the press passes on the devices it named and what it was drawn for
+  const [question, setQuestion] = useState<EverywhereAsked | null>(null);
   const [everywhereError, setEverywhereError] = useState<string | null>(null);
   const [leaveNote, setLeaveNote] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const gone = signIn === null && leaveNote === null && !leaving;
   useEffect(() => { if (gone) onClose(); }, [gone, onClose]);
   if (gone) return null;
-  const leave = async (from: HostedSignIn): Promise<void> => {
+  const leave = async (from: HostedSignIn, shown: Shown): Promise<void> => {
     setLeaving(true);
     try {
-      const { left, message } = await from.leave();
+      const { left, message } = await from.leave(shown);
       if (!left && message !== null) throw new Error(message);
       if (message === null) onClose(); else setLeaveNote(message);
     } finally { setLeaving(false); }
@@ -112,16 +117,23 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
     void from.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
   };
   const signOutEverywhere = (from: HostedSignIn): void => {
-    if (everywhere !== "asked") { setEverywhere("asked"); setEverywhereError(null); return; }
+    if (everywhere !== "asked") {
+      // the other devices the question names as it is drawn: on an account with a signed list, these and no others leave it first
+      const list = pageAccountList();
+      setQuestion({ confirmed: list === null ? [] : otherDevices(list.view(), from.account), shown: shownOf(list, from.account) });
+      setEverywhere("asked");
+      setEverywhereError(null);
+      return;
+    }
     setEverywhere("out");
-    void from.signOutEverywhere().then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
+    void from.signOutEverywhere(question ?? undefined).then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
   };
   return (
     <ManageAccountSheet onClose={onClose} account={signIn?.account}>
-      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={() => leave(signIn)} />}
+      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={(shown) => leave(signIn, shown)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
       {signIn !== null && <div className="settings-item account-sign-out-everywhere">
-        {everywhere === "asked" && <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p>}
+        {everywhere === "asked" && <SignOutEverywhereSays account={signIn.account} named={question?.confirmed ?? []}><p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p></SignOutEverywhereSays>}
         <div className="account-delete-actions">
           <button type="button" className={everywhere === "asked" ? "btn btn-danger" : "btn"} data-action="sign-out-everywhere" data-confirm={everywhere === "asked" ? "sign-out-everywhere" : undefined}
             disabled={everywhere === "out"} aria-busy={everywhere === "out" ? "true" : undefined} onClick={() => signOutEverywhere(signIn)}>{everywhere === "asked" ? t("Sign out every device?") : t("Sign out every device")}</button>

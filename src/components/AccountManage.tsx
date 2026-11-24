@@ -17,6 +17,8 @@ import { getTransport } from "../lib/transport.ts";
 import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
 import { signInOfAccount } from "./AccountPcs.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import type { Shown } from "../lib/account/listLeave.ts";
+import { ListDevices, showsListDevices, useListView } from "./ListDevices.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 import { heldRemoval, pcRemovalFailure, usePcRemoval, type HeldRemoval } from "./usePcRemoval.tsx";
 
@@ -44,7 +46,7 @@ export function offlinePc(pc: { readonly last_seen_at: string | null; readonly a
  * throw keeps its confirm up with the error. `pcHere` false: no PC is open on this page (the hosted app's start screen),
  * so no other device is read or offered, only this one's own row.
  */
-export function AccountManageLists({ account, watching, pcHere = true, onLeave }: { readonly account: string; readonly watching: boolean; readonly pcHere?: boolean; readonly onLeave?: () => Promise<void> }) {
+export function AccountManageLists({ account, watching, pcHere = true, onLeave }: { readonly account: string; readonly watching: boolean; readonly pcHere?: boolean; readonly onLeave?: (shown: Shown) => Promise<void> }) {
   return (
     <>
       <AccountDevices account={account} pcHere={pcHere} {...(onLeave ? { onLeave } : {})} />
@@ -53,7 +55,15 @@ export function AccountManageLists({ account, watching, pcHere = true, onLeave }
   );
 }
 
-function AccountDevices({ account, pcHere, onLeave }: { readonly account: string; readonly pcHere: boolean; readonly onLeave?: () => Promise<void> }) {
+/** The account's devices: from its signed list where this device is in one (ListDevices.tsx), otherwise as the PC here pairs them. */
+function AccountDevices({ account, pcHere, onLeave }: { readonly account: string; readonly pcHere: boolean; readonly onLeave?: (shown: Shown) => Promise<void> }) {
+  const list = pageAccountList();
+  const view = useListView(list);
+  if (list !== null && showsListDevices(view, account)) return <ListDevices list={list} view={view} {...(onLeave ? { onLeave } : {})} />;
+  return <PairedAccountDevices account={account} pcHere={pcHere} {...(onLeave ? { onLeave } : {})} />;
+}
+
+function PairedAccountDevices({ account, pcHere, onLeave }: { readonly account: string; readonly pcHere: boolean; readonly onLeave?: (shown: Shown) => Promise<void> }) {
   const t = useT();
   // "failed": the PC did not answer, which says nothing of the account's devices
   const [devices, setDevices] = useState<PairedDevice[] | "failed" | null>(pcHere ? null : []);
@@ -114,7 +124,7 @@ function AccountDevices({ account, pcHere, onLeave }: { readonly account: string
       {note !== null && <p className="settings-condition" role="alert">{note}</p>}
       {asked === "self" && onLeave && (
         <ConfirmDialog title={t("Remove this device?")} body={t("Every PC of the account removes this device. QR pairings outside the account stay.")}
-          confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(); setAsked(null); }} />
+          confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave({ account, scope: null }); setAsked(null); }} />
       )}
       {asked !== null && asked !== "self" && (
         <ConfirmDialog title={t("Disconnect {name}?", { name: asked.label })} body={t("{name} loses access to every PC of your account. Pairings it made outside the account stay.", { name: asked.label })}

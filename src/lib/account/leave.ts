@@ -7,7 +7,7 @@
  */
 import { newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
 import type { RemoveRecord } from "../../../shared/account-records.ts";
-import type { RelayDeviceStore } from "../relay/device.ts";
+import type { RelayDeviceStore, ShellDeviceStore } from "../relay/device.ts";
 import { sameSignIn, SignedOutError, type AccountService } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 import { post, rememberDevice, type PcFetch } from "./join.ts";
@@ -24,7 +24,11 @@ export interface LeaveResult {
  * `session` is the sign-in the person left from, read when they asked: every call is made for it
  * alone, so a sign-in made meanwhile is never sent removals, signed out or forgotten.
  */
-export async function leaveAccount(options: { service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; session: AccountSession; now?: () => number }): Promise<LeaveResult> {
+export async function leaveAccount(options: {
+  service: AccountService; accountStore: AccountStore; relayStore: ShellDeviceStore; session: AccountSession; now?: () => number;
+  /** Whether another account's saved list still holds this account key as this device's: the key then stays, and only this sign-in ends. */
+  keeps?: (key: string) => Promise<boolean>;
+}): Promise<LeaveResult> {
   const { session } = options;
   const service = options.service.forSignIn(session);
   const key = await options.accountStore.key();
@@ -52,9 +56,11 @@ export async function leaveAccount(options: { service: AccountService; accountSt
     for (const device of await options.relayStore.list()) {
       const accountKeyed = device.public_spki === key.public_spki || device.pending_key?.public_spki === key.public_spki;
       if (!accountKeyed) continue;
-      // reached only where the PC confirmed this pairing is a member of this account, and the remove went to it
-      if (listed.has(device.server_id) && device.account === session.account) { await options.relayStore.remove(device.server_id); forgotten.add(device.server_id); }
-      else unconfirmed.push(device.server_id);
+      // reached only where the PC confirmed this pairing is a member of this account, and the remove went to it; forgotten
+      // by its row, so a pairing another tab made with that PC since this read stands
+      if (listed.has(device.server_id) && device.account === session.account && device.device_id !== null) {
+        if (await options.relayStore.removeRow(device.server_id, device.device_id)) forgotten.add(device.server_id);
+      } else unconfirmed.push(device.server_id);
     }
     // a link already on its way may still land on its PC, whatever the pairing says now
     for (const serverId of new Set(linking)) if (!forgotten.has(serverId) && !unconfirmed.includes(serverId)) unconfirmed.push(serverId);
@@ -71,7 +77,15 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
   // the account's PCs tombstone this key: never sign in with it again (a kept pairing holds its own copy of the key)
   // unsent blocks stay: only the service's answer takes one away (S32-1)
-  await options.accountStore.clear((current) => !sameSignIn(current, session), { unsent: () => true });
+  // and only while the store still holds the key that left: a key another tab made since, for a sign-in of its own, stays.
+  // Where another account's list still holds the key (one key serves every account of this device), it stays too
+  if (await (options.keeps?.(key.public_spki) ?? Promise.resolve(false)).catch(() => true)) {
+    await options.accountStore.update("session", (current) => current !== undefined && sameSignIn(current, session) ? undefined : current);
+  } else await options.accountStore.clear((current) => !sameSignIn(current, session), {
+    unsent: () => true,
+    // one key may serve a sign-in another tab made since: its records stay whole, with the key
+    only: (stored, held) => (stored === undefined || sameSignIn(stored, session)) && (held === undefined || held.public_spki === key.public_spki),
+  });
   return { remove, unconfirmed };
 }
 

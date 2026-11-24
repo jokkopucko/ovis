@@ -137,7 +137,7 @@ describe("account enrollment ownership", () => {
     let listRead = options.list !== "unread";
     const accountList: AccountList | undefined = options.list === undefined ? undefined : {
       sync: async () => { listRead = true; return options.list === "unanswered" ? unanswered : listView; }, follows: async () => true, view: () => options.list === "unanswered" ? unanswered : listRead ? listView : unread, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
-      shown: () => Math.floor(Date.now() / 1000), shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView, writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
+      shown: () => Math.floor(Date.now() / 1000), shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async () => listView, writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
     };
     const open = async (target: RelayOffer = offer) => { const transport = target.server_id === offer.server_id ? new Admitted(offer) : new Peer(target); transports.push(transport); return transport; };
     const controller = () => createAccountController({

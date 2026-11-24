@@ -127,7 +127,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
     sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
     view: listView, subscribe: (listener) => { listHeard.push(() => listener(listView())); return () => {}; }, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
-    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null, placeAt: () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
     kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
     shown: () => listed.shown?.() ?? Math.floor(Date.now() / 1000),

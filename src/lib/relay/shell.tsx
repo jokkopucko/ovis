@@ -380,7 +380,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   keepShellAccount(account.enabled ? {
     signOut: account.signOut, leave: account.leave,
     signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
-    signOutEverywhere: () => account.signOutEverywhere(entry.serverId ?? undefined),
+    signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
     deleteAccount: async () => {
       await account.deleteAccount();

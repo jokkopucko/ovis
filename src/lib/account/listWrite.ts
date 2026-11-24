@@ -189,6 +189,16 @@ export interface WriteOptions {
   readonly trustPlaced?: boolean;
 }
 
+/**
+ * The clean-up's change (the devices lane's quiet tidy-up): nobody's own. A request kept for it never refuses a
+ * person's change: whatever change comes next sends those very bytes again, waits for their outcome, and then signs
+ * its own on the head that follows (the lead's ruling, round 2).
+ */
+export const TIDY_OPERATION = "tidy";
+
+/** Whether `kept` goes again as signed for a write of `operation`: its own change's request, or the clean-up's. */
+const sentFor = (kept: KeptRequest, operation: string | null): boolean => kept.for === operation || kept.for === TIDY_OPERATION;
+
 /** The account service's own refusal of a request, as against no answer or a refresh that failed. */
 const refusalOf = (error: unknown): AccountServiceError | null => (error instanceof AccountServiceError && !(error instanceof AccountRefreshError) ? error : null);
 
@@ -321,7 +331,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       console.warn("Ovis: the request kept for this place of the account's list could not be read", error instanceof Error ? error.name : error);
       return refused("blocked");
     }
-    if (kept !== null && kept.for !== (options.operation ?? null)) {
+    if (kept !== null && !sentFor(kept, options.operation ?? null)) {
       // Another change's request waits at this head. It is that change's to send again, never this one's: a stalled
       // Allow must not be placed, later, by an unrelated Remove. The log says first whether it is over.
       const read = await list.sync({ read: true });
@@ -366,7 +376,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         // one signature for the place, and this call's is never sent. It is not this call's result either: for another
         // change it is that change's to send, and the next round says so (`waiting`); for this very change it goes
         // again as a request kept from before, and the list then says whether the change is in.
-        if (kept.for !== (options.operation ?? null)) continue;
+        if (!sentFor(kept, options.operation ?? null)) continue;
         resent = true;
       }
     }
@@ -399,7 +409,8 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       }
       try {
         await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal));
-        if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
+        // a write over once the service took it is over for its own request only, never for the clean-up's it sent first
+        if (options.trustPlaced === true && kept.for === (options.operation ?? null)) return { written: true, list: writer.list, place: request.place };
       } catch (error) {
         if (error instanceof SignedOutError) throw error;
         const said = refusalOf(error);

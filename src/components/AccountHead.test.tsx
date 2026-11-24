@@ -76,6 +76,8 @@ it("Settings shows the hosted sign-in with Manage account and Sign out, which ru
   expect(button?.children).toEqual(["Sign out"]);
   await act(async () => { button?.props.onClick(); });
   expect(signOut).toHaveBeenCalledTimes(1);
+  // it names the account it shows: a sign-in another tab stored meanwhile is not the one ended
+  expect(signOut).toHaveBeenCalledWith({ account: "acct", scope: null });
 });
 
 it("the phone More lists the account, which opens it, then Sign out, which runs the hosted app's own Sign out", async () => {

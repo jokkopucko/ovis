@@ -32,6 +32,8 @@ export interface ListStore {
    * text, so what goes is what the caller read; false, with nothing forgotten, where it is another.
    */
   drop(account: string, copy?: string): Promise<boolean>;
+  /** The accounts this device keeps a copy of a list for. */
+  accounts(): Promise<string[]>;
 }
 
 /** Runs `work` alone among this origin's pages for one account's list (Web Locks), where the browser has them. */
@@ -52,6 +54,7 @@ export function memoryListLock(): ListLock {
 }
 
 const nameOf = (record: ListRecord, account: string): string => `${record}:${account}`;
+const accountsOf = (names: Iterable<unknown>): string[] => [...names].flatMap((name) => (typeof name === "string" && name.startsWith("copy:") ? [name.slice("copy:".length)] : []));
 
 /** What IndexedDB does with a value: a copy that shares nothing with the one handed over. */
 export function memoryListStore(): ListStore {
@@ -72,6 +75,7 @@ export function memoryListStore(): ListStore {
       for (const record of LIST_RECORDS) records.delete(nameOf(record, account));
       return true;
     },
+    async accounts() { return accountsOf(records.keys()); },
   };
 }
 
@@ -135,6 +139,12 @@ export const indexedListStore: ListStore = {
         held.onsuccess = () => { if (held.result === copy) forget(); };
       }
       return () => dropped;
+    });
+  },
+  accounts() {
+    return transact("readonly", (store) => {
+      const request = store.getAllKeys();
+      return () => accountsOf(request.result);
     });
   },
 };

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { shownOf, type EverywhereAsked, type Shown } from "./listLeave.ts";
+import { pageAccountList } from "./pageList.ts";
 import { ACCOUNT_SIGN_OUT_EVENT } from "./service.ts";
 import { ACCOUNT_SESSION_EVENT, indexedAccountStore, type AccountProvider, type AccountSession } from "./store.ts";
 
@@ -21,10 +23,13 @@ export interface LeaveOutcome {
  * out every device, which answers the same way.
  */
 export interface ShellAccount {
-  readonly signOut: () => void;
-  readonly leave: () => Promise<LeaveOutcome>;
+  /** `shown`: the account (and its list and this device's key in it) the person signed out of, as the page showed it. */
+  readonly signOut: (shown?: Shown) => void;
+  /** `shown`: what the Disconnect question was drawn for. */
+  readonly leave: (shown?: Shown) => Promise<LeaveOutcome>;
   readonly deleteAccount: () => Promise<string | null>;
-  readonly signOutEverywhere: () => Promise<string | null>;
+  /** `asked`: on an account with a signed list, the other devices the question named, which leave the list first, and what it was drawn for. */
+  readonly signOutEverywhere: (asked?: EverywhereAsked) => Promise<string | null>;
   /** a fresh own sign-in with `provider`, whose return comes back to the PC page that asked for it */
   readonly signInAgain?: (provider: AccountProvider) => void;
   /** the phone app's fresh own sign-in in place (accountController); a browser has none, it signs in by leaving the page */
@@ -76,5 +81,6 @@ export function useHostedSignIn(): HostedSignIn | null {
       for (const name of [ACCOUNT_SESSION_EVENT, ACCOUNT_SIGN_OUT_EVENT, "focus"]) window.removeEventListener(name, read);
     };
   }, [actions]);
-  return actions === null || signedIn === null ? null : { ...actions, ...signedIn };
+  // its Sign out names the account it shows, so a sign-in another tab stored meanwhile is not the one ended
+  return actions === null || signedIn === null ? null : { ...actions, ...signedIn, signOut: () => actions.signOut(shownOf(pageAccountList(), signedIn.account)) };
 }

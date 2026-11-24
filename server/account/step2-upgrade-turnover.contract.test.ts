@@ -8,7 +8,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { leaveAccount } from "../../src/lib/account/leave.ts";
 import { AccountService } from "../../src/lib/account/service.ts";
 import { beginSignIn, finishOwnSignIn } from "../../src/lib/account/signin.ts";
-import type { RelayDevice, RelayDeviceStore } from "../../src/lib/relay/device.ts";
+import type { RelayDevice, ShellDeviceStore } from "../../src/lib/relay/device.ts";
 import { memoryAccountStore } from "../../src/lib/account/store.ts";
 import { createServer } from "../index.ts";
 import { readDeviceRegistry } from "../devices.ts";
@@ -108,8 +108,9 @@ test.skipIf(!available).each(["sign-out", "leave"] as const)("released phone acc
     const saved = new Map<string, RelayDevice>([[pc.identity.server_id, { server_id: pc.identity.server_id,
       server_public_key: pc.identity.public_key, relay: "wss://relay.ovis.sh", device_id: pc.memberId,
       private_key: pc.key.private_key, public_spki: pc.key.public_spki, label: "Account phone", account: ACCOUNT }]]);
-    const phone: RelayDeviceStore = {
+    const phone: ShellDeviceStore = {
       get: async id => saved.get(id), list: async () => [...saved.values()], remove: async id => { saved.delete(id); },
+      removeRow: async (id, deviceId) => saved.get(id)?.device_id === deviceId && saved.delete(id),
       update: async (id, change) => { const next = change(saved.get(id)); saved.set(id, next); return next; },
     };
     if (action === "sign-out") await account.signOut();

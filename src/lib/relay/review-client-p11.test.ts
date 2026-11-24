@@ -91,6 +91,7 @@ const full = (inner: ListStore): ListStore => ({
   set: async () => { throw new DOMException("The quota has been exceeded.", "QuotaExceededError"); },
   swap: async () => { throw new DOMException("The quota has been exceeded.", "QuotaExceededError"); },
   drop: (account, copy) => inner.drop(account, copy),
+  accounts: () => inner.accounts(),
 });
 
 const noPairings: ShellDeviceStore = { get: async () => undefined, list: async () => [], remove: async () => {}, removeRow: async () => false, update: async () => { throw new Error("No pairing is made here"); } };

@@ -6,9 +6,9 @@ import { DeviceStore } from "../../../server/devices.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { getDevice, ServerIdentityChangedError, sign } from "./device.ts";
-import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 
-export class MemoryDeviceStore implements RelayDeviceStore {
+export class MemoryDeviceStore implements ShellDeviceStore {
   readonly devices = new Map<string, RelayDevice>();
   async get(id: string): Promise<RelayDevice | undefined> { return this.devices.get(id); }
   async update(id: string, change: (device: RelayDevice | undefined) => RelayDevice): Promise<RelayDevice> {
@@ -18,6 +18,11 @@ export class MemoryDeviceStore implements RelayDeviceStore {
   }
   async list(): Promise<RelayDevice[]> { return [...this.devices.values()]; }
   async remove(id: string): Promise<void> { this.devices.delete(id); }
+  async removeRow(id: string, deviceId: string): Promise<boolean> {
+    if (this.devices.get(id)?.device_id !== deviceId) return false;
+    this.devices.delete(id);
+    return true;
+  }
 }
 
 export function testOffer(): RelayOffer {

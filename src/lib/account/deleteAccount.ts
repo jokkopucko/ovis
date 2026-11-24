@@ -11,8 +11,27 @@ import type { AccountSession, AccountStore } from "./store.ts";
  * `session` is the sign-in the person deleted from, read when they asked: only that account is
  * deleted, and a sign-in made meanwhile is neither deleted nor forgotten (SignedOutError).
  */
-export async function deleteAccount(options: { service: AccountService; accountStore: AccountStore; session: AccountSession }): Promise<void> {
+export async function deleteAccount(options: {
+  service: AccountService; accountStore: AccountStore; session: AccountSession;
+  /**
+   * Whether another account's saved list still holds this account key as this device's (one key serves every account
+   * of this device): the key and the encryption key then stay, and only the deleted account's sign-in goes.
+   */
+  keeps?: (key: string) => Promise<boolean>;
+}): Promise<void> {
   await options.service.forSignIn(options.session).deleteAccount();
+  // a look that fails keeps the key: a key another account's list may hold is never cleared on a guess, and the
+  // deletion the service confirmed is finished here all the same (only this sign-in and its unsent blocks go)
+  const key = await options.accountStore.key().then((held) => held.public_spki, () => null);
+  if (key === null || await (options.keeps?.(key) ?? Promise.resolve(false)).catch(() => true)) {
+    await options.accountStore.update("session", (current) => current !== undefined && sameSignIn(current, options.session) ? undefined : current);
+    await options.accountStore.update("unsent_blocks", (current) => {
+      if (current === undefined) return undefined;
+      const kept = Object.fromEntries(Object.entries(current).filter(([, entry]) => entry.account !== options.session.account));
+      return Object.keys(kept).length === 0 ? undefined : kept;
+    });
+    return;
+  }
   // the sign-in, the key and the records were the deleted account's: a later sign-in gets a new key (a kept pairing
   // holds its own copy). A sign-in that took its place while the delete was out keeps all of it, the session included,
   // and a sign-in another tab began (its `pending` state) is no account's: it stays to finish.

@@ -15,7 +15,11 @@ import { useT } from "../lib/i18n.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
 import { itsMeAnswer } from "../lib/relay/joinHold.ts";
 import { useDeviceNotices, type NoticeSocket } from "../lib/useDeviceNotices.ts";
+import { inList } from "../lib/account/listLeave.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { BlockOutcomes, NotMeButton } from "./BlockOutcomes.tsx";
+import { ListDeviceNotices } from "./ListDeviceNotices.tsx";
+import { useListView } from "./ListDevices.tsx";
 import { DeviceNotices } from "./DevicePairedNotice.tsx";
 import { ItsMeButton } from "./JoinWait.tsx";
 
@@ -405,9 +409,14 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
       (error: unknown) => console.warn("Ovis: a shown refusal could not be cleared", error instanceof Error ? error.name : error));
   };
 
+  // on an account whose signed list this device is in, the list says which devices came in (ListDeviceNotices.tsx),
+  // and a PC's notice of an admission is not told as well
+  const listed = useListView(pageAccountList());
+  const listNotices = <ListDeviceNotices key="list" />;
+
   const pc = machines.find((machine) => machine.id === selectedMachineId);
   const socket = sockets.find(({ id }) => id === selectedMachineId)?.socket;
-  if (pc === undefined) return null;
+  if (pc === undefined) return listNotices;
   const notices = new Map(shown?.notices.map((notice) => [notice.id, notice]));
   const detachedRetries: [string, BlockResult][] = [];
   for (const [id, result] of results) {
@@ -418,8 +427,11 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   }
   // this device's own admission, told to another row it holds on that PC: the notice is for the account's other devices
   const ownSpki = own?.key?.public_spki;
+  // a notice a person acted on keeps its outcome (a retry, a refusal to acknowledge), also once the list tells of admissions
+  const acted = new Set([...results.values()].filter((result) => result.pc === pc.id && result.signer === ownSpki).map((result) => result.notice.id));
   for (const [id, notice] of notices) {
     if (hidden.has(noticeKey(pc.id, id)) || (ownSpki !== undefined && notice.key === ownSpki)) notices.delete(id);
+    else if (notice.kind === "admit" && !acted.has(id) && listed !== null && notice.account !== null && inList(listed, notice.account)) notices.delete(id);
   }
   const renderOutcomes = (id: string, result: BlockResult, dismissed = false) => {
     const { retryService, ...delivered } = result.fleet;
@@ -436,8 +448,9 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
       },
     })} />;
   };
-  if (notices.size === 0 && feed.cut === 0 && detachedRetries.length === 0 && (unsent.size === 0 || !capable)) return null;
+  if (notices.size === 0 && feed.cut === 0 && detachedRetries.length === 0 && (unsent.size === 0 || !capable)) return listNotices;
   return <>
+    {listNotices}
     <DeviceNotices key={pc.id} pc={pc.name} notices={[...notices.values()]} cut={feed.cut}
       onDismiss={(notice) => feed.dismiss(pc.id, notice)}
       onHide={(notice) => setHidden((current) => new Set([...current, noticeKey(pc.id, notice.id)]))}
