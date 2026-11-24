@@ -13,7 +13,9 @@ export interface HarnessToolSetting {
   readonly harnesses: readonly string[];
 }
 /** What a parent that cannot prove its permission ceiling may start, at the one version each has an ask-every-time launch for (server/agent-tools/permission-launch.ts, hub.ts's version check). */
-export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { claude: "2.1.330", opencode: "2.2.2" };
+export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { claude: "2.1.330", codex: "0.171.0", copilot: "1.0.109", opencode: "2.2.2" };
+/** Of those, the ones whose own allow rules (the person's, or a project folder's) still let an action through unasked. */
+export const OWN_RULES_HARNESSES: readonly string[] = ["codex", "copilot"];
 export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "view", depth: 1, harnesses: [] };
 export const HARNESS_TOOL_OFF: HarnessToolSetting = { ...HARNESS_TOOL_DEFAULT, level: "off" };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {

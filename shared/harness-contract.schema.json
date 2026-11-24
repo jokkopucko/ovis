@@ -26,11 +26,11 @@
     "harnesses":{"type":"object","properties":{},"additionalProperties":false},
     "ls":{"type":"object","properties":{},"additionalProperties":false},
     "read":{"type":"object","required":["session","what"],"properties":{"session":{"type":"string"},"what":{"enum":["state","transcript","result","screen"]},"cursor":{"type":"string"}},"additionalProperties":false},
-    "start":{"type":"object","required":["harness"],"properties":{"harness":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string"},"key":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"},"on":{"type":"string"}},"additionalProperties":false},
-    "send":{"type":"object","required":["session","task"],"properties":{"session":{"type":"string"},"task":{"type":"string"},"key":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}},"additionalProperties":false},
+    "start":{"type":"object","required":["harness"],"properties":{"harness":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string","pattern":"^(?!\\s*/)"},"key":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"},"on":{"type":"string"}},"additionalProperties":false},
+    "send":{"type":"object","required":["session","task"],"properties":{"session":{"type":"string"},"task":{"type":"string","pattern":"^(?!\\s*/)"},"key":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}},"additionalProperties":false},
     "wait":{"type":"object","required":["session"],"properties":{"session":{"type":"string"},"turn":{"type":"string"},"timeout_s":{"type":"integer","minimum":1,"maximum":45}},"additionalProperties":false},
     "result":{"type":"object","required":["session"],"properties":{"session":{"type":"string"},"turn":{"type":"string"}},"additionalProperties":false},
-    "ask":{"type":"object","required":["harness","task"],"properties":{"harness":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string"},"key":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"},"timeout_s":{"type":"integer","minimum":1,"maximum":45},"on":{"type":"string"}},"additionalProperties":false},
+    "ask":{"type":"object","required":["harness","task"],"properties":{"harness":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string","pattern":"^(?!\\s*/)"},"key":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"},"timeout_s":{"type":"integer","minimum":1,"maximum":45},"on":{"type":"string"}},"additionalProperties":false},
     "stop":{"type":"object","required":["session"],"properties":{"session":{"type":"string"}},"additionalProperties":false}
   }
 }

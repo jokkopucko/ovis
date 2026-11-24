@@ -87,6 +87,16 @@ describe("Settings > Agents > Let agents call other agents", () => {
     expect(chips().map((chip) => chip.children.join(""))).toEqual(["Claude Code"]);
   });
 
+  it("names the agents whose own allow rules still apply to them when called, and only those", async () => {
+    mount(false, [agent("claude", "Claude Code", true, "2.1.330"), agent("codex", "Codex", true, "0.171.0"), agent("copilot", "GitHub Copilot", true, "1.0.109")]);
+    await act(async () => { toggle().props.onClick(); });
+    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot"] }]);
+    const note = () => renderer!.root.findAll((node) => node.type === "span" && node.props.className === "settings-condition");
+    expect(note().map((span) => span.children.join(""))).toEqual(["The allow rules you set in Codex, GitHub Copilot, a project folder's included, apply when they are called too."]);
+    act(() => { renderer!.update(createElement(SettingsProvider, null, createElement(AgentCallsRows, { agents: [agent("claude", "Claude Code", true, "2.1.330")], watching: false }))); });
+    expect(note()).toHaveLength(0);
+  });
+
   it("cannot be turned on from a watching device", () => {
     mount(true);
     expect(toggle().props.disabled).toBe(true);

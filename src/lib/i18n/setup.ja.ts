@@ -90,5 +90,6 @@ export const SETUP_JA: Record<string, string> = {
   "Let agents call other agents": "ほかのエージェントを呼び出す",
   "On this PC only. You still answer every permission request.": "この PC のみ。許可のリクエストには常にあなたが答えます。",
   "Agents they may call": "呼び出せるエージェント",
+  "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "{agents} に自分で設定した許可ルール（プロジェクトフォルダーのものを含む）は、呼び出されたときにも適用されます。",
   "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
 };

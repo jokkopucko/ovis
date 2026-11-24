@@ -28,8 +28,29 @@ the user's and the project's own approvals in place. Only the versions those run
   `--hide-claude-auth` refuses a claude.ai Free, Pro, Max or Team sign-in, so such a child needs
   an API key, a Console sign-in or another provider.
 
-A child in one of these launches may start a child in either of them, depth allowing: each asks for
-everything. Cards offer only one-time choices. The child must report its mode over ACP before receiving a
+- **Codex 0.171.0 through `codex-acp` 2.10.0 or 2.11.0**, in its narrowest asking launch rather than one
+  that asks for everything. The adapter takes no arguments, so Ovis sets its environment: the
+  `read-only` mode (`INITIAL_AGENT_MODE`), whose approval and sandbox go with every turn over any
+  config, and in `CODEX_CONFIG` approvals answered by the person (not Codex's own reviewer), web
+  search off and hooks off. A command first runs in the read-only sandbox and fails without network;
+  only Codex's request to run it outside comes as a card. What no launch turns off stays: `allow`
+  rules in the person's or the project's `rules/*.rules` (the adapter treats the folder as trusted),
+  and an MCP server the person or the project set to `approve`.
+- **Copilot CLI 1.0.109**, also in its narrowest asking launch: its `agent` mode with `--no-auto-update`
+  and `COPILOT_ALLOW_ALL=false`, and none of its `--allow-*` switches. Writes, side-effecting commands,
+  web fetches and MCP calls each come as a card. A `preToolUse` hook of the person's or in the folder's
+  `.github/hooks` still answers for them. Copilot starts no stdio MCP server from `session/new`, so
+  such a child has no `ovis-agent` MCP tool; only the `ovis agent` shell command reaches Ovis from it.
+
+Settings names Codex and Copilot under
+**Agents they may call**: the allow rules a person set in them, a project folder's included,
+apply when they are called too.
+
+A task that begins with `/` is refused (`bad_request`): a harness may read it as one of its own
+commands, and Copilot's `/allow-all` turns every card off without changing its reported mode.
+
+A child in one of these launches may start a child in any of them, depth allowing: each asks as
+above. Cards offer only one-time choices. The child must report its mode over ACP before receiving a
 task, and the keeper checks the mode again at every prompt. A changed mode is refused, not reset
 behind the person's back. With an independently verified parent profile, the child's profile must
 match instead.
@@ -51,10 +72,8 @@ through with no card (checked 2026-11-24):
 
 | Harness | What answers for the person |
 | --- | --- |
-| Codex 0.171.0 through `codex-acp` 2.10.0 and 2.11.0 | `allow` rules in the user's or the project's `rules/*.rules` (the adapter marks the folder trusted); the ACP path has no switch to ignore them. |
 | GJC 0.18.12 | Its prompt mode gates only some tools: file writes, URL reads and MCP calls run unasked. |
-| agy 1.5.16 | A workspace `PreToolUse` hook answering `auto_approve`; web search runs unasked. |
-| Copilot CLI 1.0.109 | A `.github/hooks` `preToolUse` hook in the folder, even with `disableAllHooks`; it also starts no stdio MCP server. |
+| agy 1.5.16 | Its built-in web search runs unasked in every launch tried, `ask` and `deny` rules and session `_meta` included. (A workspace `PreToolUse` hook answering `auto_approve` is the person's own rule.) |
 
 Claude Code, Codex, Copilot, OmO and pi can still be TUI **parents**. OmO and pi get the server
 from an extension Ovis adds to that launch with `-e`; an older version without

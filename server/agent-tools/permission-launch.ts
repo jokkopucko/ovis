@@ -9,6 +9,8 @@ export const AGENT_MCP_SERVER = "ovis-agent";
 const CLAUDE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch"];
 export const OPEN_REVIEW = "opencode/all-tools-ask/v1";
 export const CLAUDE_REVIEW = "claude/all-tools-ask/v1";
+export const CODEX_REVIEW = "codex/read-only-own-rules/v1";
+export const COPILOT_REVIEW = "copilot/agent-own-rules/v1";
 
 export type Verified = HarnessCommand & {
   ceiling: { profile: string; mode: string };
@@ -28,6 +30,8 @@ interface AskRecipe {
   versions: RegExp;
   /** a reason this PC's own setup could answer for the person, which the launch cannot override */
   blocked?: () => string | null;
+  /** the allow rules a person set in the harness itself (theirs or a project folder's) still apply: no launch turns them off */
+  ownRules?: true;
   launch: (command: HarnessCommand, runId: string) => Omit<Verified, "ceiling" | keyof HarnessCommand> & { mode: string; env?: Record<string, string>; argv?: readonly string[] };
 }
 
@@ -46,7 +50,9 @@ export const claudeManagedPolicy = (paths: readonly string[] = claudeManagedPath
 /**
  * Launches whose every write, side-effecting command, web request and MCP call was seen to reach the
  * ACP client as a permission request, with the user's and the project's own approvals in place
- * (docs/harness-tool.md). Only the versions those runs used are accepted.
+ * (docs/harness-tool.md). An `ownRules` launch is the harness's narrowest asking one: there, only the
+ * allow rules the person set in that harness let an action through unasked. Only the versions those
+ * runs used are accepted.
  */
 const ASK_RECIPES: Record<string, AskRecipe> = {
   opencode: {
@@ -92,10 +98,40 @@ const ASK_RECIPES: Record<string, AskRecipe> = {
       } } },
     }),
   },
+  codex: {
+    profile: CODEX_REVIEW,
+    versioned: command => command.env?.["CODEX_PATH"],
+    versions: /^codex-cli 0\.171\.0$/,
+    ownRules: true,
+    // codex-acp takes no argv: its environment is the only way in. The mode's approval and sandbox go with every
+    // turn, over any config layer; `rules/*.rules` allow rules (the person's and the folder's) have no switch here.
+    launch: () => ({
+      mode: "read-only",
+      env: {
+        INITIAL_AGENT_MODE: "read-only",
+        CODEX_CONFIG: JSON.stringify({ approval_policy: "on-request", approvals_reviewer: "user", sandbox_mode: "read-only", web_search: "disabled", features: { hooks: false } }),
+      },
+    }),
+  },
+  copilot: {
+    profile: COPILOT_REVIEW,
+    versioned: command => command.argv[0],
+    versions: /^GitHub Copilot CLI 1\.0\.109\.(?:\n|$)/,
+    ownRules: true,
+    // Its `agent` mode asks for each write, command, fetch and MCP call; nothing here grants more. A `preToolUse` hook
+    // of the person's or the folder's (`.github/hooks`) still answers for them. It starts no stdio MCP server from
+    // `session/new`, so the child has no ovis-agent MCP tool (the `ovis agent` shell command still reaches Ovis).
+    launch: command => ({
+      mode: "https://agentclientprotocol.com/protocol/session-modes#agent",
+      argv: [...command.argv, "--no-auto-update"],
+      env: { COPILOT_ALLOW_ALL: "false" },
+    }),
+  },
 };
 const ASK_PROFILES = new Set(Object.values(ASK_RECIPES).map(recipe => recipe.profile));
 
 export const askable = (kind: string): boolean => Object.hasOwn(ASK_RECIPES, kind);
+export const keepsOwnRules = (kind: string): boolean => askable(kind) && ASK_RECIPES[kind]!.ownRules === true;
 
 /** Why this harness cannot get its ask-for-everything launch here: an untested version or a setup it cannot override. */
 export async function askRefusal(kind: string, command: HarnessCommand): Promise<string | null> {

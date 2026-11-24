@@ -2,7 +2,7 @@ import { expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_REVIEW, OPEN_REVIEW, askable, claudeManagedPaths, claudeManagedPolicy, permissionLaunch } from "./permission-launch.ts";
+import { CLAUDE_REVIEW, CODEX_REVIEW, COPILOT_REVIEW, OPEN_REVIEW, askable, claudeManagedPaths, claudeManagedPolicy, permissionLaunch } from "./permission-launch.ts";
 
 it("an unknown parent can launch only the named all-ask profile, never an adapter default", () => {
   const cmd = { argv: ["/bin/opencode", "acp"] };
@@ -14,7 +14,7 @@ it("an unknown parent can launch only the named all-ask profile, never an adapte
   expect(recipe.ceiling.mode).toBe(config.default_agent);
   expect(recipe.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
   expect(recipe).toMatchObject({ askEveryTime: true, privateFiles: { OPENCODE_DB: "opencode.db" } });
-  for (const kind of ["codex","gjc","agy","copilot"]) {
+  for (const kind of ["gjc","agy"]) {
     expect(askable(kind)).toBe(false);
     expect(permissionLaunch(kind, undefined, "abc123", cmd)).toBeNull();
   }
@@ -41,6 +41,22 @@ it("Claude's all-ask launch sets its mode before the session answers and loads n
   expect(permissionLaunch("claude", OPEN_REVIEW, "abc123", cmd)?.ceiling.profile).toBe(CLAUDE_REVIEW);
   expect(permissionLaunch("opencode", CLAUDE_REVIEW, "abc123", { argv: ["/bin/opencode"] })?.ceiling.profile).toBe(OPEN_REVIEW);
   expect(permissionLaunch("claude", "readonly", "abc123", cmd)).toBeNull();
+});
+
+it("Codex's launch is read-only with approvals asked of the person, no web search and no hooks, through the adapter's environment", () => {
+  const cmd = { argv: ["/bin/codex-acp"], env: { CODEX_PATH: "/bin/codex" } };
+  const recipe = permissionLaunch("codex", undefined, "abc123", cmd);
+  if (!recipe?.env?.CODEX_CONFIG) throw new Error("No launch for Codex");
+  expect(recipe).toMatchObject({ argv: cmd.argv, askEveryTime: true, ceiling: { profile: CODEX_REVIEW, mode: "read-only" }, env: { CODEX_PATH: "/bin/codex", INITIAL_AGENT_MODE: "read-only" } });
+  expect(JSON.parse(recipe.env.CODEX_CONFIG)).toEqual({ approval_policy: "on-request", approvals_reviewer: "user", sandbox_mode: "read-only", web_search: "disabled", features: { hooks: false } });
+  expect(permissionLaunch("codex", CLAUDE_REVIEW, "abc123", cmd)?.ceiling.profile).toBe(CODEX_REVIEW);
+  expect(permissionLaunch("codex", "readonly", "abc123", cmd)).toBeNull();
+});
+
+it("Copilot's launch keeps its asking agent mode, never updates itself, and turns off an inherited allow-all", () => {
+  const recipe = permissionLaunch("copilot", undefined, "abc123", { argv: ["/bin/copilot", "--acp", "--stdio"] });
+  expect(recipe).toMatchObject({ argv: ["/bin/copilot", "--acp", "--stdio", "--no-auto-update"], env: { COPILOT_ALLOW_ALL: "false" }, askEveryTime: true,
+    ceiling: { profile: COPILOT_REVIEW, mode: "https://agentclientprotocol.com/protocol/session-modes#agent" } });
 });
 
 it("a managed Claude Code policy file refuses the Claude launch", () => {

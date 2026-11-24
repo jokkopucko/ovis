@@ -90,5 +90,6 @@ export const SETUP_KO: Record<string, string> = {
   "Let agents call other agents": "다른 에이전트 부르기",
   "On this PC only. You still answer every permission request.": "이 PC에서만. 승인은 항상 직접 합니다.",
   "Agents they may call": "부를 수 있는 에이전트",
+  "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "{agents}에 직접 정해 둔 허용 규칙(프로젝트 폴더 것 포함)은 불려 나올 때도 적용돼요.",
   "Not saved: this PC did not answer. Try again.": "저장하지 못했습니다: 이 PC가 답하지 않았습니다. 다시 시도하세요.",
 };

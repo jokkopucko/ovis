@@ -32,7 +32,7 @@ async function turn(id: unknown, text: string) {
     const ours = `replay-${++asked}`;
     const answered = new Promise(resolve => waiting.set(ours, resolve));
     send({ id: ours, method: ask.method, params: { ...ask.params, sessionId } });
-    note({ answered: ask.params.toolCall.name, answer: await answered });
+    note({ answered: ask.params.toolCall.toolCallId, answer: await answered });
   }
   send({ method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "all asked" } } } });
   send({ id, result: ended.result });
