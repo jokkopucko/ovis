@@ -1,4 +1,5 @@
 /** The dispatcher in index.ts runs the access gate first. */
+import { withDataRoutes } from "./command-data-send.ts";
 import type { AgentRenameRequest, PaneDirection, PaneMoved, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, ReadFormat, ReadSource } from "../shared/protocol.ts";
 import { mergeCatalogSources } from "./catalog-sources.ts";
 import { rememberPaneCommands, scanPaneCommands } from "./commands.ts";
@@ -148,7 +149,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         const version = stored ?? (agent === "opencode" && !context.pane.agent_session ? openCodeInstalledVersion(options.openCodeStateDir) ?? openCodeFlagVersion(argv) : null);
         // on a file thread: a skill folder on a slow mount stalls only this request (#2254)
         const scanned = await scanPaneCommands(agent, context.cwd, { ...roots.omo, environ: roots.environ }, version, request.signal, began);
-        const commands = await mergeCatalogSources(agent, context.pane, context.cwd, scanned, undefined, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir });
+        const commands = withDataRoutes(agent, paneId, await mergeCatalogSources(agent, context.pane, context.cwd, scanned, undefined, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir }));
         rememberPaneCommands(context.pane, agent, commands);
         return jsonResponse({ commands });
       }

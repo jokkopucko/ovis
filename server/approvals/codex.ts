@@ -42,6 +42,8 @@ export function supportsCodexServer(version: string): boolean {
 
 /** How long the server may take to come up before Ovis stops waiting for it (the launcher waits 8 s). */
 const CONNECT_MS = 30_000;
+/** How long a command sent as data waits for the server's answer before it counts as unknown. */
+const COMMAND_MS = 5_000;
 /** How often a socket that is there but not yet up is looked at again. */
 const SOCKET_LOOK_MS = 50;
 const SOCKET_NAME = "codex.sock";
@@ -329,6 +331,10 @@ class Connection {
   private turnId: string | null = null;
   private context: PaneContext | null = null;
   private rerouted: { turnId: string; model: string } | null = null;
+  /** The model the pane's own thread runs, as the server said on resume or in its settings. */
+  private model: string | null = null;
+  /** Whether the pane's own thread is known to run no turn: what the server said of it last, never assumed. */
+  private idle = false;
   closed = false;
 
   /**
@@ -350,6 +356,47 @@ class Connection {
       this.calls.set(id, resolve);
       this.send({ id, method, params });
     });
+  }
+
+  /**
+   * The TUI's bare `/plan` for the pane's own thread `threadId`: Plan mode with Plan's own effort (Codex's
+   * `plan_mode_reasoning_effort` where its config sets one, else the mode's preset, measured medium on 0.171.0) and the
+   * thread's model as it is when the request goes. Only while that thread is the pane's, the only one loaded, and idle, as Codex's own
+   * dispatcher allows `/plan` only between tasks. `unsent` when nothing went (any of that not known, a refusal, or
+   * `mayWrite` saying no right before the request), `unknown` when it went and no answer came in time.
+   */
+  async plan(threadId: string, mayWrite: () => boolean): Promise<"unsent" | "applied" | "unknown"> {
+    const ready = (): boolean => !this.closed && this.thread === threadId && this.idle && this.model !== null;
+    if (!ready()) return "unsent";
+    const [modes, config] = await Promise.all([this.within("collaborationMode/list", {}), this.within("config/read", {})]);
+    const plan = modes !== "unknown" && isObject(modes["result"]) && Array.isArray(modes["result"]["data"])
+      ? modes["result"]["data"].find((mode): mode is Json => isObject(mode) && mode["mode"] === "plan") : undefined;
+    // a config that could not be read may set Plan's effort: the TUI would use it, so nothing goes
+    const settings = config !== "unknown" && isObject(config["result"]) && isObject(config["result"]["config"]) ? config["result"]["config"] : null;
+    if (plan === undefined || settings === null || !ready()) return "unsent";
+    // last, right before the request: the TUI's thread is the only one loaded besides subagents (a /resume or /new in
+    // the TUI loads another without telling Ovis which one it shows)
+    const loaded = await this.within("thread/loaded/list", {});
+    const ids = loaded !== "unknown" && isObject(loaded["result"]) && Array.isArray(loaded["result"]["data"]) ? loaded["result"]["data"] : null;
+    const alone = ids !== null && ids.includes(threadId) && ids.every((id) => id === threadId || (typeof id === "string" && this.subagents.has(id)));
+    // read again after the lookups: the thread, its state or its model may have moved meanwhile
+    if (!alone || !ready() || !mayWrite()) return "unsent";
+    const configured = text(settings["plan_mode_reasoning_effort"]);
+    const answer = await this.within("thread/settings/update", { threadId, collaborationMode: { mode: "plan", settings: {
+      model: this.model, reasoning_effort: configured ?? text(plan["reasoning_effort"]), developer_instructions: null,
+    } } });
+    if (answer === "unknown") return "unknown";
+    return answer["error"] === undefined ? "applied" : "unsent";
+  }
+
+  /** A call answered within COMMAND_MS, or `unknown` when the connection ended or the time ran out after it went. */
+  private async within(method: string, params: Json): Promise<Json | "unknown"> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<"unknown">((resolve) => { timer = setTimeout(() => resolve("unknown"), COMMAND_MS); });
+    try {
+      const answer = await Promise.race([this.call(method, params), late]);
+      return answer === "unknown" || answer["closed"] === true ? "unknown" : answer;
+    } finally { clearTimeout(timer); }
   }
 
   private send(message: Json): void {
@@ -378,6 +425,10 @@ class Connection {
     // a thread already running as Ovis connects is known by what the server answers of it
     const thread = isObject(answer["result"]) && isObject(answer["result"]["thread"]) ? answer["result"]["thread"] : null;
     if (thread !== null) this.started(thread, false);
+    if (thread !== null && thread["id"] === this.thread && isObject(answer["result"])) {
+      this.model = text(answer["result"]["model"]) ?? this.model;
+      this.idle = isObject(thread["status"]) && thread["status"]["type"] === "idle";
+    }
   }
 
   /**
@@ -401,6 +452,8 @@ class Connection {
     this.turnId = null;
     this.context = null;
     this.rerouted = null;
+    this.model = null;
+    this.idle = false;
     changed(this.paneId);
   }
 
@@ -462,6 +515,7 @@ class Connection {
         break;
       case "thread/status/changed": {
         const status = isObject(params["status"]) ? params["status"] : {};
+        if (threadId !== null && threadId === this.thread) this.idle = status["type"] === "idle";
         if (threadId === null || status["type"] !== "active") break;
         if (this.ownTurn(threadId) && this.turn !== "running") this.turn = "running";
         void this.subscribe(threadId);
@@ -474,8 +528,14 @@ class Connection {
         if (threadId === null || this.subagents.has(threadId)) break;
         this.own(threadId, true);
         this.turn = "running";
+        this.idle = false;
         this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
         if (this.rerouted !== null && this.rerouted.turnId !== this.turnId) { this.rerouted = null; changed(this.paneId); }
+        break;
+      }
+      case "thread/settings/updated": {
+        const settings = isObject(params["threadSettings"]) ? params["threadSettings"] : {};
+        if (threadId === this.thread) this.model = text(settings["model"]) ?? this.model;
         break;
       }
       case "thread/tokenUsage/updated": {
@@ -495,6 +555,7 @@ class Connection {
       case "turn/completed": {
         const turn = isObject(params["turn"]) ? params["turn"] : {};
         if (this.ownTurn(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
+        if (threadId !== null && threadId === this.thread) this.idle = true;
         break;
       }
       case "item/started": {
@@ -561,7 +622,7 @@ class Connection {
     this.held.clear();
     this.asks.clear();
     if (this.thread !== null) changed(this.paneId);
-    for (const resolve of this.calls.values()) resolve({ error: { message: "closed" } });
+    for (const resolve of this.calls.values()) resolve({ error: { message: "closed" }, closed: true });
     this.calls.clear();
     this.onClose();
   }
@@ -640,6 +701,27 @@ export function servedWaitsOnNone(paneId: string): boolean {
     const connection = servers.connection(paneId);
     if (connection) return connection.waitsOnNone();
   }
+  return false;
+}
+
+/**
+ * Runs the bare `/plan` for thread `threadId` through the Codex server Ovis started in `paneId` (Connection.plan):
+ * `unsent` where Ovis has no connection there.
+ */
+export async function servedPlan(paneId: string, threadId: string, mayWrite: () => boolean): Promise<"unsent" | "applied" | "unknown"> {
+  for (const servers of instances) {
+    const connection = servers.connection(paneId);
+    if (connection) return await connection.plan(threadId, mayWrite);
+  }
+  return "unsent";
+}
+
+/**
+ * Whether Ovis started Codex on its own server in `paneId`, connected or still coming up: the pane whose `/plan` can go
+ * as data (until the connection knows the thread, it is typed).
+ */
+export function servesCommands(paneId: string): boolean {
+  for (const servers of instances) if (servers.launchedHere(paneId)) return true;
   return false;
 }
 
@@ -736,6 +818,10 @@ export class CodexServers {
     } catch {
       return finish(false);
     }
+  }
+
+  launchedHere(paneId: string): boolean {
+    return this.panes.has(paneId);
   }
 
   turnEnd(paneId: string): TurnEnd | null {

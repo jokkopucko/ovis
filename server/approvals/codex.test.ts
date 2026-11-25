@@ -6,7 +6,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
-import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, servedPlan, servesCommands, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
 import { parsePrompt } from "../dialogs/live.ts";
 import { ApprovalHub } from "./hub.ts";
 
@@ -576,6 +576,117 @@ describe("Ovis on the pane's Codex server", () => {
     expect(await told).toBe("w1:p1");
     expect(servedStatus("w1:p1")).toBeNull();
     expect(servedQuestions("w1:p1")).toEqual([]);
+  });
+
+  const request = (codex: ReturnType<typeof codexServer>, method: string) => codex.next((message) => message["method"] === method);
+  const idle = (codex: ReturnType<typeof codexServer>) => codex.send({ method: "thread/status/changed", params: { threadId: "t1", status: { type: "idle" } } });
+
+  it("runs a bare /plan as the TUI does: Plan mode with Plan's own effort and the thread's model as it is then", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "gpt-6.2-astra", effort: "low" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    const modes = await request(codex, "collaborationMode/list");
+    const config = await request(codex, "config/read");
+    // the user switched models while Ovis looked Plan up: the update keeps the new one
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "gpt-6.2-sol" } } });
+    await read(codex);
+    codex.send({ id: modes["id"], result: { data: [{ name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" }, { name: "Default", mode: "default", model: null, reasoning_effort: null }] } });
+    codex.send({ id: config["id"], result: { config: {} } });
+    const update = await request(codex, "thread/settings/update");
+    expect(update["params"]).toEqual({ threadId: "t1", collaborationMode: { mode: "plan", settings: { model: "gpt-6.2-sol", reasoning_effort: "medium", developer_instructions: null } } });
+    codex.send({ id: update["id"], result: {} });
+    expect(await sent).toBe("applied");
+  });
+
+  it("takes Plan's effort from Codex's config where it sets one", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], result: { config: { plan_mode_reasoning_effort: "high" } } });
+    const update = await request(codex, "thread/settings/update");
+    expect((update["params"] as { collaborationMode: { settings: { reasoning_effort: string } } }).collaborationMode.settings.reasoning_effort).toBe("high");
+    codex.send({ id: update["id"], result: {} });
+    expect(await sent).toBe("applied");
+  });
+
+  it("sends no /plan while a turn runs or may run, for another thread, before the model is known, or once the sender is revoked", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    // running(): the thread is active, so not idle
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    await read(codex);
+    expect(await servedPlan("w1:p1", "t1", () => true)).toBe("unsent");
+    idle(codex);
+    await read(codex);
+    expect(await servedPlan("w1:p1", "t2", () => true)).toBe("unsent");
+    expect(await servedPlan("w9:p9", "t1", () => true)).toBe("unsent");
+    const revoked = servedPlan("w1:p1", "t1", () => false);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], result: { config: {} } });
+    expect(await revoked).toBe("unsent");
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1" } } });
+    await read(codex);
+    expect(await servedPlan("w1:p1", "t1", () => true)).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
+    expect(servesCommands("w1:p1")).toBe(true);
+    expect(servesCommands("w9:p9")).toBe(false);
+  });
+
+  it("calls a /plan whose server went before it answered unknown, and one it refused unsent", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const answerLookups = async () => {
+      codex.send({ id: (await codex.next((message) => message["method"] === "collaborationMode/list" && !answered.has(message)))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+      codex.send({ id: (await codex.next((message) => message["method"] === "config/read" && !answered.has(message)))["id"], result: { config: {} } });
+      for (const message of codex.received) if (message["method"] === "collaborationMode/list" || message["method"] === "config/read") answered.add(message);
+    };
+    const answered = new Set<Record<string, unknown>>();
+    const refused = servedPlan("w1:p1", "t1", () => true);
+    await answerLookups();
+    const first = await request(codex, "thread/settings/update");
+    codex.send({ id: first["id"], error: { code: -32600, message: "no" } });
+    expect(await refused).toBe("unsent");
+    const dropped = servedPlan("w1:p1", "t1", () => true);
+    await answerLookups();
+    await codex.next((message) => message["method"] === "thread/settings/update" && message !== first);
+    codex.drop();
+    expect(await dropped).toBe("unknown");
+  });
+
+  it("sends no /plan when Codex's config cannot be read, which may set Plan's effort", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], error: { code: -32603, message: "unreadable" } });
+    expect(await sent).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
+  });
+
+  it("sends no /plan while another thread is loaded, which the TUI may show after a /resume or /new", async () => {
+    const { codex } = launched("0.171.0", ["t1", "t9"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], result: { config: {} } });
+    expect(await sent).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
   });
 
   it("leaves a server of a version not measured to the TUI and the screen", async () => {

@@ -3,7 +3,8 @@
  * command and the pane's own session can be reached (docs/agent-commands.md, "The three contracts"). Everything else
  * is typed as before. Once a request may have reached the agent, the command is never typed as well.
  */
-import type { HerdrPane } from "../shared/protocol.ts";
+import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
+import { servedPlan, servedStatus, servesCommands } from "./approvals/codex.ts";
 import { paneProcessRoots } from "./conversation.ts";
 import { HerdrError, paneGet } from "./herdr/client.ts";
 import { omoControlCall, omoControlSocket } from "./omo-control.ts";
@@ -13,13 +14,21 @@ import { compactOpenCodeSession, openCodePermissionsRead, runOpenCodeCommand } f
 import type { CommandSend } from "./outcome.ts";
 import { openCodeTuiCommand } from "./skills/opencode.ts";
 
-/** A command a data route can carry: OpenCode 2's `/compact` or one of its server commands by name, or OmO's `/efforts <level>` on its control socket. */
+/**
+ * A command a data route can carry: OpenCode 2's `/compact` or one of its server commands by name, the bare `/plan`
+ * of a Codex on the server Ovis started for it, or OmO's `/efforts <level>` on its control socket.
+ */
 export type CommandDataRoute = { agent: "opencode"; kind: "compact" } | { agent: "opencode"; kind: "command"; name: string; text: string }
-  | { agent: "omo"; kind: "effort"; level: string };
+  | { agent: "codex"; kind: "plan" } | { agent: "omo"; kind: "effort"; level: string };
 
 /** The data route for a chat send that is exactly one command, or null to type it. */
 export function commandDataRoute(command: CommandSend, text: string): CommandDataRoute | null {
-  if ((command.agent !== "opencode" && command.agent !== "omo" && command.agent !== "pi") || command.invocations.length !== 1) return null;
+  if (!["codex", "opencode", "omo", "pi"].includes(command.agent) || command.invocations.length !== 1) return null;
+  if (command.agent === "codex") {
+    // the slash first, as Codex's composer reads a command
+    // Codex's /compact stays typed: compacting through its server aborts a turn Ovis may not have heard of yet
+    return /^\/plan\s*$/u.test(text) && command.invocations[0]!.name === "plan" ? { agent: "codex", kind: "plan" } : null;
+  }
   if (command.agent === "omo" || command.agent === "pi") {
     // herdr names an OmO pane `pi`; a plain pi has no control socket, so it is typed. OmO's own parse: the name, a
     // space, then a single argument (reasoning extension parseSingleArgument)
@@ -36,7 +45,20 @@ export function commandDataRoute(command: CommandSend, text: string): CommandDat
   return openCodeTuiCommand(name) ? null : { agent: "opencode", kind: "command", name, text: argument };
 }
 
-/** A command sent by data: when it went, and whether the answer itself shows it ran (an OpenCode command's callback, OmO's control answer). */
+/**
+ * A pane's catalog with the rows Chat leaves out of its palette for want of a result (`chatPaletteHidden`) offered again
+ * where their command goes as data and its answer is the result: `/plan` of a Codex on Ovis's own server.
+ */
+export function withDataRoutes(agent: string | null, paneId: string, commands: SlashCommand[]): SlashCommand[] {
+  if (agent !== "codex" || !servesCommands(paneId)) return commands;
+  return commands.map((command) => {
+    if (!command.chatPaletteHidden || command.source !== "builtin" || command.name !== "plan") return command;
+    const { chatPaletteHidden: _, ...offered } = command;
+    return offered;
+  });
+}
+
+/** A command sent by data: when it went, and whether the answer itself shows it ran (an OpenCode command's callback, Codex's settings, OmO's control answer). */
 export interface DataSent { at: number; ran: boolean }
 
 /**
@@ -46,6 +68,16 @@ export interface DataSent { at: number; ran: boolean }
  * `mayWrite` asks the sender once more right before the request's bytes leave; false sends nothing (null).
  */
 export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute, mayWrite: () => boolean, openCodeStateDir?: string): Promise<DataSent | null> {
+  if (route.agent === "codex") {
+    const threadId = servedStatus(pane.pane_id)?.threadId;
+    // never a thread herdr says the pane does not show, read again right before the request (herdr-core reports none)
+    if (threadId === undefined || codexDisagrees(pane, threadId) || codexDisagrees(await paneGet(pane.pane_id), threadId)) return null;
+    const at = Date.now();
+    const answer = await servedPlan(pane.pane_id, threadId, mayWrite);
+    if (answer === "unsent") return null;
+    if (answer === "unknown") throw new HerdrError("timeout", "Codex did not answer the command sent to its server; check the terminal before sending it again");
+    return { at, ran: true };
+  }
   if (route.agent === "omo") return await omoEffort(pane, route.level, mayWrite);
   if (process.platform === "win32") return null;
   const bound = await openCodePaneService(pane, undefined, openCodeStateDir);
@@ -64,6 +96,13 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
     throw new HerdrError("command_failed", `OpenCode could not run ${route.kind === "compact" ? "/compact" : `/${route.name}`} (HTTP ${answer.status})`);
   }
   return { at, ran: route.kind === "command" };
+}
+
+/** Whether herdr reports a Codex session in `pane` other than `threadId` (by its id, or by its rollout file's name). */
+function codexDisagrees(pane: Pick<HerdrPane, "agent_session">, threadId: string): boolean {
+  const session = pane.agent_session;
+  if (session?.agent !== "codex" || !session.value) return false;
+  return session.kind === "id" ? session.value !== threadId : !(session.kind === "path" && session.value.endsWith(`-${threadId}.jsonl`));
 }
 
 /**
