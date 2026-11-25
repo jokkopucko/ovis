@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, type KnownPc, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
+import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, standsFor, type KnownPc, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
 import { listView, readKind } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { readSave, writeSave } from "../../../shared/account-list-follower.ts";
 import { askingPc, listWorld, postPcKeys } from "./accountList.test-helpers.ts";
 import { inUse, moved, movingWorld } from "./listMigrate.test-helpers.ts";
 import { keysForCarriedPc } from "./listCarriedPc.ts";
+import { leaveList, removeOthers } from "./listLeave.ts";
 import type { ListStore } from "./listStore.ts";
 import { AccountServiceError } from "./service.ts";
 import { newKey } from "./store.ts";
@@ -173,6 +174,54 @@ describe("a device that was carried in", () => {
     expect(rows.sort()).toEqual([phone.member, laptop.member].sort());
     const notice = readNotice(await laptop.device.lists.get("notice" as never, world.account));
     expect(notice).toMatchObject({ first: phone.signIn, pcs: [pc.endpoint], seen: false });
+  });
+
+  test("after its hand-over, its copy is its own by the member key it handed to: forgetting by that key drops it, and another account sees the key held", async () => {
+    const { laptop, world } = await moved();
+    await laptop.device.list.sync();
+    await laptop.device.list.sync({ read: true });
+    const copy = await laptop.device.lists.get("copy", world.account);
+    const read = await readSave(copy as string);
+    // the copy stays pinned under the sign-in key it was carried in by, which the list shows handed to the member key
+    expect(read.read && read.copy.me.key).toBe(laptop.signIn);
+    expect(await laptop.device.list.pinnedElsewhere("acct_other", laptop.member)).toBe(world.account);
+    // another key's forget keeps it
+    await laptop.device.list.forget(world.account, (await newKey()).public_spki);
+    expect(await laptop.device.lists.get("copy", world.account)).toBe(copy);
+    await laptop.device.list.forget(world.account, laptop.member);
+    expect(await laptop.device.lists.get("copy", world.account)).toBeUndefined();
+  });
+
+  test("once it has put itself out of the list, its copy goes with the member key it left by, though no read showed the removal", async () => {
+    const { laptop, world } = await moved();
+    await laptop.device.list.sync();
+    await laptop.device.list.sync({ read: true });
+    // the removal is placed and the sign-in ends with it: no read follows, so whether it counted is not known
+    expect(await leaveList(laptop.device.list, world.account, { wait: async () => {} })).toMatchObject({ removed: false, why: "unknown" });
+    expect(readBody(entryFromText(world.held().entries.at(-1)!).body).kind).toBe("remove");
+    expect(await laptop.device.lists.get("copy", world.account)).toBeDefined();
+    await laptop.device.list.forget(world.account, laptop.member);
+    expect(await laptop.device.lists.get("copy", world.account)).toBeUndefined();
+  });
+
+  test("put out by another member after its hand-over, and shown so by a read: its copy goes with the member key that was put out", async () => {
+    const { laptop, phone, world } = await moved();
+    await laptop.device.list.sync();
+    await laptop.device.list.sync({ read: true });
+    await phone.device.list.sync({ read: true });
+    expect(await removeOthers(phone.device.list, world.account, [laptop.member], { wait: async () => {} })).toEqual({ removed: true });
+    // the service signs the laptop out with its removal: it learns of it from a peer, as a copy that shows it out
+    await phone.device.list.sync({ read: true });
+    const shown = await readSave((await phone.device.lists.get("copy", world.account)) as string);
+    const own = await readSave((await laptop.device.lists.get("copy", world.account)) as string);
+    if (!shown.read || !own.read) throw new Error("a copy did not read");
+    // nothing stands for its sign-in key any more: only the hand-over ties the copy to the member key put out
+    expect(own.copy.me.key).toBe(laptop.signIn);
+    expect(shown.copy.state!.signers[laptop.member]?.ended).not.toBeNull();
+    expect(standsFor(shown.copy.state!, laptop.signIn)).toBeNull();
+    await laptop.device.lists.set("copy", world.account, writeSave({ ...shown.copy, me: own.copy.me, pin: own.copy.pin }));
+    await laptop.device.list.forget(world.account, laptop.member);
+    expect(await laptop.device.lists.get("copy", world.account)).toBeUndefined();
   });
 
   test("a list the account service made with a key of its own is refused: the PCs never let that key in", async () => {
