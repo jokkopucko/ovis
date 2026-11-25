@@ -67,10 +67,96 @@ export function parseProcessTable(json: string): ProcessRow[] {
 
 const TABLE_SCRIPT = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, @{n='Started';e={([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}} | ConvertTo-Json -Compress";
 
-export async function windowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[]> {
+export async function tryWindowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[] | null> {
   try {
     const probe = Bun.spawn(command, { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: timeoutMs, killSignal: "SIGKILL" });
     const [code, out] = await Promise.all([probe.exited, new Response(probe.stdout).text()]);
-    return code === 0 ? parseProcessTable(out) : [];
-  } catch { return []; }
+    if (code !== 0 || out.trim().length === 0) return null;
+    let value: unknown;
+    try { value = JSON.parse(out); } catch { return null; }
+    const entries = Array.isArray(value) ? value : [value];
+    const valid = entries.every((entry) => entry !== null && typeof entry === "object" && typeof (entry as Record<string, unknown>).ProcessId === "number" && typeof (entry as Record<string, unknown>).ParentProcessId === "number");
+    return valid ? parseProcessTable(out) : null;
+  } catch { return null; }
+}
+
+export async function windowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[]> {
+  return await tryWindowsProcessTable(timeoutMs, command) ?? [];
+}
+
+const SHARED_TABLE_RECENT_MS = 5_000;
+let sharedReads = 0;
+let sharedRecentFloor = 0;
+let sharedRecent: { at: number; started: number; settled: boolean; rows: Promise<ProcessRow[] | null> } | null = null;
+let sharedFresh: { started: number; rows: Promise<ProcessRow[] | null> } | null = null;
+
+export function windowsTableWatermark(): number {
+  return sharedReads;
+}
+
+export function forgetWindowsProcessTable(): void {
+  sharedRecent = null;
+  sharedFresh = null;
+  sharedRecentFloor = 0;
+}
+
+export function recentWindowsProcessTable(
+  read: () => Promise<ProcessRow[] | null>,
+  now = Date.now(),
+  shared = true,
+): { rows: Promise<ProcessRow[] | null>; cached: boolean; started: number } {
+  if (shared && sharedRecent && now - sharedRecent.at < SHARED_TABLE_RECENT_MS) {
+    return { rows: sharedRecent.rows, cached: sharedRecent.settled, started: sharedRecent.started };
+  }
+  const entry = { at: now, started: ++sharedReads, settled: false, rows: Promise.resolve().then(read) };
+  if (shared) {
+    sharedRecent = entry;
+    void entry.rows.then((rows) => {
+      entry.settled = true;
+      if (rows === null || rows.length === 0) {
+        sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+        if (sharedRecent === entry) sharedRecent = null;
+      }
+    }, () => {
+      sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+      if (sharedRecent === entry) sharedRecent = null;
+    });
+  }
+  return { rows: entry.rows, cached: false, started: entry.started };
+}
+
+export function freshWindowsProcessTableEntry(
+  read: () => Promise<ProcessRow[] | null>,
+  after = -1,
+  shared = true,
+): { rows: Promise<ProcessRow[] | null>; started: number } {
+  if (shared && sharedFresh && sharedFresh.started > after) return sharedFresh;
+  const entry = { started: ++sharedReads, rows: Promise.resolve().then(read) };
+  if (shared) {
+    sharedFresh = entry;
+    const clear = () => { if (sharedFresh === entry) sharedFresh = null; };
+    void entry.rows.then((rows) => {
+      clear();
+      if (rows !== null && rows.length > 0) {
+        if (entry.started >= sharedRecentFloor && (!sharedRecent || entry.started >= sharedRecent.started)) {
+          sharedRecent = { at: Date.now(), started: entry.started, settled: true, rows: Promise.resolve(rows) };
+        }
+      } else {
+        sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+        if (sharedRecent && entry.started >= sharedRecent.started) sharedRecent = null;
+      }
+    }, () => {
+      clear();
+      sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+    });
+  }
+  return entry;
+}
+
+export function freshWindowsProcessTable(
+  read: () => Promise<ProcessRow[] | null>,
+  after = -1,
+  shared = true,
+): Promise<ProcessRow[] | null> {
+  return freshWindowsProcessTableEntry(read, after, shared).rows;
 }

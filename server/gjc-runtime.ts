@@ -8,7 +8,7 @@ import { darwinTerminal } from "./darwin-process.ts";
 import { herdrRpc } from "./herdr/client.ts";
 import { processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { userHome } from "./user-home.ts";
-import { descendantArgv, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
+import { descendantArgv, forgetWindowsProcessTable, recentWindowsProcessTable, tryWindowsProcessTable, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
 export interface GjcTerminal { id: string; startedAt: number }
 
@@ -36,6 +36,9 @@ let processTable: { at: number; rows: Promise<ProcessRow[]> } | null = null;
  * few seconds share one; a gjc that left its pane can still count as running for that long.
  */
 export function recentProcessTable(read: () => Promise<ProcessRow[]> = windowsProcessTable, now = Date.now()): Promise<ProcessRow[]> {
+  if (read === windowsProcessTable) {
+    return recentWindowsProcessTable(() => tryWindowsProcessTable(), now, true).rows.then((rows) => rows ?? []);
+  }
   if (processTable && now - processTable.at < PROCESS_TABLE_MS) return processTable.rows;
   const entry = { at: now, rows: read() };
   processTable = entry;
@@ -101,6 +104,7 @@ export function forgetGjcState(): void {
   lookupsInFlight.clear();
   processTable = null;
   freshTable = null;
+  forgetWindowsProcessTable();
 }
 
 export function forgetGjcPane(paneId: string): void {

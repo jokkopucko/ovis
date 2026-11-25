@@ -66,7 +66,8 @@ import { MuseLogUnreadable, resolveMuseSession } from "./muse-store.ts";
 import { LettaUnavailable, lettaToolOutputOffThread, parseLettaTranscript } from "./letta.ts";
 import { programName } from "./agent-identity.ts";
 import { lettaLocalSettings, resolveLettaTranscript } from "./letta-store.ts";
-import { followKimiUndo, kimiToolOutput, kimiTranscriptPathForPane, parseKimiTranscript, type KimiUndo } from "./kimi.ts";
+import { followKimiUndo, forgetKimiWindowsTable, kimiToolOutput, kimiTranscriptForPane, parseKimiTranscript, type KimiUndo } from "./kimi.ts";
+import { windowsTableWatermark } from "./windows-processes.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
@@ -1337,6 +1338,7 @@ export function forgetTranscriptState(): void {
   writtenSessions.clear();
   forgetClaudeSessions();
   forgetGjcState();
+  forgetKimiWindowsTable();
   forgetSubagents();
   forgetOpencodeState();
   forgetOmpBlobTypes();
@@ -1957,7 +1959,7 @@ type ResolvedTranscript =
     gjcFile?: string;
     omoFile?: string;
     claudeFile?: string;
-    codexFile?: string; letta?: { store: string; agent: string; conversation: string } } & (
+    codexFile?: string; kimiOwner?: string; letta?: { store: string; agent: string; conversation: string } } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -1990,7 +1992,7 @@ async function dshForeground(known: KnownProcesses): Promise<{ foreground_proces
  * label: omo's own store is read only when omo is really running
  * in that pane, never on a matching cwd alone.
  */
-async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, agyHistoryId?: string): Promise<ResolvedTranscript> {
+async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, agyHistoryId?: string, freshKimi = false, kimiFreshAfter?: number): Promise<ResolvedTranscript> {
   const paneId = pane.pane_id;
   let agent = resolveAgent(pane).agent ?? "";
   // herdr names no agent for this pane: a session report an earlier agent left behind says
@@ -2111,9 +2113,9 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       return { source: "hermes-transcript", path: resolved.dbPath, sessionId: resolved.sessionId };
     }
     if ((agent === "kimi" || agent === "kimi-code") && pane.agent === "kimi") {
-      const path = await kimiTranscriptPathForPane(pane);
-      if (path === null) throw new ConversationUnavailable("no_session_path");
-      return { source: "kimi-transcript", path };
+      const found = await kimiTranscriptForPane(pane, undefined, { fresh: freshKimi, freshAfter: kimiFreshAfter });
+      if (found === null) throw new ConversationUnavailable("no_session_path");
+      return { source: "kimi-transcript", path: found.path, ...(found.owner === null ? {} : { kimiOwner: found.owner }) };
     }
     throw new ConversationUnavailable("no_recognized_transcript");
   } catch (error) {
@@ -2131,7 +2133,7 @@ async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[
   return { path: session.path, ...(session.identity === undefined ? {} : { identity: session.identity }) };
 }
 
-export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, agyHistoryId?: string): Promise<NativeTranscript> {
+export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, agyHistoryId?: string, freshKimi = false, kimiFreshAfter?: number): Promise<NativeTranscript> {
   const socket = herdrSocketPath();
   const panes = (snapshot ?? await sessionSnapshot()).panes;
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
@@ -2173,7 +2175,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId));
+  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId, freshKimi, kimiFreshAfter));
 }
 
 const AGY_WRITE_RACE_MS = 5000;
@@ -2428,12 +2430,16 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   if (transcript.source !== "copilot-transcript") {
     if (!live() || rebound(paneId, transcript)) throw new ConversationUnavailable("no_session_id");
     let fresh: NativeTranscript;
-    try { fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData); }
+    const kimiFreshAfter = transcript.source === "kimi-transcript" ? windowsTableWatermark() : undefined;
+    try { fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData, undefined, undefined, true, kimiFreshAfter); }
     catch (error) {
       if (error instanceof ConversationNotStarted) return await onNotStarted(error);
       throw error;
     }
     if (fresh.source !== transcript.source || fresh.path !== transcript.path || !live()) throw new ConversationUnavailable("no_session_id");
+    if (transcript.source === "kimi-transcript" && fresh.source === "kimi-transcript" && transcript.kimiOwner !== fresh.kimiOwner) {
+      throw new ConversationUnavailable("no_session_id");
+    }
   }
   const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
@@ -3367,7 +3373,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
   let resolved: ResolvedTranscript;
-  try { resolved = noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData)); }
+  try { resolved = noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData, undefined, undefined, true, windowsTableWatermark())); }
   catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
   if (resolved.source === "opencode-transcript") {
     const output = opencodeToolOutput(resolved.path, resolved.session, ref);
@@ -3421,6 +3427,13 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       if (fresh.source !== transcript.source || fresh.path !== transcript.path || rebound(paneId, transcript)) return null;
     }
   } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
+  if (resolved.source === "kimi-transcript" && output !== null) {
+    if (rebound(paneId, transcript)) return null;
+    let fresh: NativeTranscript;
+    try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData, undefined, undefined, true, windowsTableWatermark()); }
+    catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
+    if (fresh.source !== transcript.source || fresh.path !== transcript.path || fresh.kimiOwner !== transcript.kimiOwner || rebound(paneId, transcript)) return null;
+  }
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
   if (resolved.source === "copilot-transcript") {
     const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims).catch(() => null);
