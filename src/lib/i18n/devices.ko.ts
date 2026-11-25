@@ -352,7 +352,6 @@ export const DEVICES_KO: Record<string, string> = {
   "The devices you choose get nothing by your Tailscale login until you allow them again on this PC.": "고른 기기는 이 PC에서 다시 허용할 때까지 Tailscale 로그인으로 들어오지 못합니다.",
   "It loses its pairing access, and the Tailscale devices it came from are kept out too.": "페어링 접근이 끝나고, 이 기기가 쓰던 Tailscale 기기도 들어오지 못합니다.",
   "Keep out": "막기",
-  "Revoke": "폐기",
   "Kept out over Tailscale too: {names}": "Tailscale로도 막음: {names}",
   "Also keep out a Tailscale device of yours:": "함께 막을 내 Tailscale 기기:",
   "A Tailscale device this PC has not seen yet still gets in by your login. To keep it out of your tailnet too, remove it in Tailscale's admin console.": "이 PC가 아직 보지 못한 Tailscale 기기는 내 로그인으로 계속 들어옵니다. tailnet에서도 막으려면 Tailscale 관리 콘솔에서 그 기기를 제거하세요.",

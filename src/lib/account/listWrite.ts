@@ -79,6 +79,8 @@ export interface Written {
   readonly entries: readonly string[];
   readonly wraps: readonly PlacedWrap[];
   readonly place: ListPlace;
+  /** The invite this request places, if it places one: the account service asks the sign-in's age, or a key proof, for it. */
+  readonly invite?: { readonly key: string; readonly auto: boolean };
 }
 
 /**
@@ -89,7 +91,7 @@ export type WriteStep<Why extends string> = { readonly request: Written } | { re
 
 export type WriteOutcome<Why extends string> =
   | { readonly written: true; readonly list: string; readonly place: ListPlace }
-  | { readonly written: false; readonly why: WriteRefusal | Why; readonly retryAfterMs: number | null };
+  | { readonly written: false; readonly why: WriteRefusal | Why; readonly retryAfterMs: number | null; /** The account service's own code, for a `refused` it gave. */ readonly code?: string };
 
 export const placeOf = (state: ListState): ListPlace => ({ seq: state.footing.seq, hash: state.footing.hash });
 
@@ -309,7 +311,7 @@ export function holdsList(view: AccountListView): boolean {
  */
 export async function writeToList<Why extends string = never>(list: AccountList, step: (writer: ListWriter) => Promise<WriteStep<Why>>, options: WriteOptions = {}): Promise<WriteOutcome<Why>> {
   const wait = options.wait ?? pause;
-  const refused = (why: WriteRefusal | Why, retryAfterMs: number | null = null): WriteOutcome<Why> => ({ written: false, why, retryAfterMs });
+  const refused = (why: WriteRefusal | Why, retryAfterMs: number | null = null, code?: string): WriteOutcome<Why> => ({ written: false, why, retryAfterMs, ...(code === undefined ? {} : { code }) });
   // what the write is bound to: what the caller named, and for what it left out, what the first read shows
   let bound: WriteScope | undefined = options.expect;
   for (let tries = 0; tries < WRITE_TRIES; tries += 1) {
@@ -380,7 +382,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         resent = true;
       }
     }
-    const request: Written = { entries: kept.entries, wraps: kept.wraps, place: kept.place };
+    const request: Written = { entries: kept.entries, wraps: kept.wraps, place: kept.place, ...(kept.invite === undefined ? {} : { invite: kept.invite }) };
     const letGo = async (): Promise<void> => { await list.unkeep(writer.account, kept).catch(() => undefined); };
     // One signature per place: the request as signed goes again while this device's own copy shows the head it was
     // signed on, and another is signed only after the copy shows a new head.
@@ -408,7 +410,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         }
       }
       try {
-        await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal));
+        await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal, request.invite));
         // a write over once the service took it is over for its own request only, never for the clean-up's it sent first
         if (options.trustPlaced === true && kept.for === (options.operation ?? null)) return { written: true, list: writer.list, place: request.place };
       } catch (error) {
@@ -441,9 +443,9 @@ export async function writeToList<Why extends string = never>(list: AccountList,
           // The account service's clock says otherwise of an epoch, or of the entry's time, than this device's did. The
           // device signs nothing by the service's clock, and no second entry on a head that did not move: it says so
           if (said.status === 400 && said.code === "entry_refused"
-            && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use" || said.reason === "issued_at_ahead")) return refused("clock");
+            && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use" || said.reason === "issued_at_ahead" || said.reason === "exp_too_late")) return refused("clock");
           // any other refusal of the service's own says that it placed nothing; a 5xx may be a gateway's, after a commit
-          if (!unplaced && said.status < 500) return refused("refused");
+          if (!unplaced && said.status < 500) return refused("refused", null, said.code);
         }
       }
       // Placed, refused for a head that moved, or no answer to rely on: this device's own copy says which, from the

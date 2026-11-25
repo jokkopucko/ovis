@@ -185,6 +185,18 @@ describe("Add, beside the number", () => {
     expect([admitted, w.held().entries.length]).toEqual([[pc.server_id], before]);
   });
 
+  it("is not done for a card of the same key with another encryption key than the one the list holds for that PC", async () => {
+    const { w, phone, pc, play } = await asking();
+    const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => {} })).toEqual({ added: true });
+    // the same key signs another card for the same relay key, with another encryption key
+    const other = await askingPc();
+    const card = await signCard({ key: pc.key, enc: other.enc, list: w.held().id, endpoint: pc.endpoint, invite: null }, pc.signs);
+    const outcome = await addPostedPc(phone.list, { ...number.post, enc: other.enc, card }, null, { wait: async () => {}, admit: async () => {} });
+    expect(outcome.added).toBe(false);
+    expect(w.held().state.pcs[pc.endpoint]).toMatchObject({ enc: pc.enc });
+  });
+
   it("signs nothing where the account service does not admit the PC, and says what it said", async () => {
     const { w, phone, play } = await asking();
     const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));

@@ -28,6 +28,13 @@ describe("what a device keeps of the PCs it held sessions with", () => {
     // an act with no session yet: the row says what was done, and has no time until the PC lets this device in
     const added = didFor(empty(), B, "added");
     expect(added.pcs[B]).toEqual({ how: "added" });
+    // a PC that joined with this account's invite, proved by the line's own key, and the person's Add: a value of its own, kept like the others
+    const invitedPc = didFor(empty(), B, "invited");
+    expect(invitedPc.pcs[B]).toEqual({ how: "invited" });
+    expect(seenInSession(invitedPc, B, 9_000, "none").pcs[B]).toEqual({ since: 9_000, last: 9_000, how: "invited" });
+    // and it reads back from storage as it was written
+    const kept = new Map<string, string>([["ovis:seen-pcs:" + invitedPc.account, JSON.stringify(invitedPc)]]);
+    expect(readSeenPcs(invitedPc.account, { getItem: (name: string) => kept.get(name) ?? null } as unknown as Storage).pcs[B]).toEqual({ how: "invited" });
     expect(seenInSession(added, B, 9_000, "none").pcs[B]).toEqual({ since: 9_000, last: 9_000, how: "added" });
   });
 

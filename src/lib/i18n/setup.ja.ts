@@ -54,7 +54,6 @@ export const SETUP_JA: Record<string, string> = {
   "Copy the command for {name}": "{name} のコマンドをコピー",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "この PC のブリッジはまだエージェント連携に対応していません。次のランタイム更新後に利用できます。",
   "Open setup guide": "ガイドを開く",
-  "Expired": "期限切れ",
   "Edit": "編集",
   "Remove hub?": "ハブを削除しますか？",
   "Its accounts disappear from this list. The hub itself is not changed.": "一覧からハブのアカウントが消えます。ハブ自体は変わりません。",

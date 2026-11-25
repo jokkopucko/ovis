@@ -11,12 +11,16 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
-import { signCard } from "../../shared/account-list.ts";
+import { listView, signCard } from "../../shared/account-list.ts";
+import { readJoinLine } from "../../shared/account-list-join.ts";
 import { accountList, type AccountList } from "../lib/account/accountList.ts";
-import { addListPc, askingPc, listWorld, pcComparing, postPcKeys, type AskingPc } from "../lib/account/accountList.test-helpers.ts";
+import { addListPc, askingPc, listWorld, pcComparing, postPcKeys, type AskingPc, type WorldDevice } from "../lib/account/accountList.test-helpers.ts";
 import type { PcFetch } from "../lib/account/join.ts";
+import type { ListPost } from "../lib/account/listAnswers.ts";
 import { addPostedPc, numberWith, postedPcs } from "../lib/account/listAdd.ts";
+import { addInvitedPc, invitedPcs } from "../lib/account/listInvited.ts";
 import { randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
+import { invitesOf, makeInvite, revokeInvite, type MadeInvite } from "../lib/account/listInvite.ts";
 import { nameListToPc } from "../lib/account/listNamed.ts";
 import { memoryListLock, memoryListStore, type ListStore } from "../lib/account/listStore.ts";
 import { setPageAccountList } from "../lib/account/pageList.ts";
@@ -25,6 +29,7 @@ import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.t
 import { memoryAccountStore, memoryLock, newKey, type AccountStore } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AddPcByNumber } from "./AddPcByNumber.tsx";
+import { InvitePc } from "./InvitePc.tsx";
 import { deviceListKeys } from "../lib/account/listKeys.ts";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../shared/relay-mux.ts";
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
@@ -153,6 +158,32 @@ async function listAccount(lies: { entries?: () => Response | null; /** the PC l
   return { pc, list, held, carried, postNow };
 }
 
+/** A device in its list that made a plain invite, and a PC that holds the line. */
+async function invited() {
+  const w = listWorld();
+  const first = await w.device({ label: "Dana's Mac" });
+  await first.list.sync();
+  const made = await makeInvite(first.list, { auto: false, ...noWait });
+  if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+  return { w, first, invite: made.invite, pc: await askingPc() };
+}
+
+/** The PC's post as it reaches the device, with the line's proof for `signedFor`'s card (the PC's own by default). */
+async function posted(w: World, first: WorldDevice, invite: MadeInvite, pc: AskingPc, signedFor: AskingPc = pc): Promise<ListPost> {
+  const list = first.list.writer()!.list;
+  const card = await signCard({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null }, pc.signs);
+  const line = await readJoinLine(invite.line, { service: w.origin, followsLists: true });
+  const proof = await line.signLineProof({ server_id: signedFor.server_id, card: { key: signedFor.key, enc: signedFor.enc, endpoint: signedFor.endpoint } });
+  return { endpoint: pc.endpoint, server_id: pc.server_id, key: pc.key, enc: pc.enc, card, attempt: null, invite: invite.key, invite_proof: proof };
+}
+
+/** The PC used the invite at the account service: it is listed and posted its keys. */
+async function listedAndPosted(w: World, first: WorldDevice, pc: AskingPc): Promise<void> {
+  const token = w.fake.issueToken(w.account, { device: true });
+  await w.fake.fetch(`${w.origin}/v1/pcs/${pc.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ label: "PC", public_key: pc.endpoint, relay: "wss://relay.test" }) });
+  await postPcKeys(w.fake.fetch, w.origin, token, pc, first.list.writer()!.list);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Findings: each test fails on 1cb5f8afa
 // ---------------------------------------------------------------------------------------------------------------
@@ -261,6 +292,95 @@ describe("RED findings", () => {
     }
   });
 
+  it("RED P12b-F4: Revoke on a page that did not make the invite (a reload) ends the account service's invite too", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Mac" });
+    await first.list.sync();
+    const made = await makeInvite(first.list, { auto: false, ...noWait });
+    if (!made.made) throw new Error("no invite");
+    // the page reloads: the module that made the invite, and its memory, are gone. What a reloaded page has of the
+    // service's id is what this device stored beside its pages (the invite's public key and the id, never the line)
+    expect(localStorage.getItem(`ovis:invite-ids:${w.account}`)).toContain(made.invite.key);
+    expect(localStorage.getItem(`ovis:invite-ids:${w.account}`)).not.toContain(made.invite.line);
+    expect(await revokeInvite(first.list, made.invite.key, noWait)).toEqual({ revoked: true });
+    expect(listView(w.held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
+    const open = await (await w.fake.fetch(`${w.origin}/v1/pc-invites`, { headers: { authorization: `Bearer ${first.session.access_token}` } })).json() as { invites: unknown[] };
+    // on 1cb5f8afa: no DELETE went, and the service's invite is still open (a line holder can still redeem it)
+    expect(open.invites).toEqual([]);
+  });
+
+  it("RED P12b-F5: an invite is never reported made where the list holds it expired from its first second (this device's clock reads behind the list's own time)", async () => {
+    const w = listWorld();
+    const clock = { label: "Mac", skew: 0 };
+    const first = await w.device(clock);
+    await first.list.sync();
+    // the device's clock is set back twenty minutes after the list's last entry
+    w.clock.now += 60_000;
+    clock.skew = -20 * 60_000;
+    // the account service makes its invite (the fake refuses the key proof the device's clock calls for)
+    first.wire.answer = (request) => new URL(request.url).pathname === "/v1/pc-invites" && request.method === "POST"
+      ? Response.json({ id: "ab".repeat(16), account: w.account, expires_at: new Date(w.clock.now + 900_000).toISOString(), auto: false }) : null;
+    const made = await makeInvite(first.list, { auto: false, ...noWait });
+    const state = made.made ? invitesOf(first.list, w.clock.now + clock.skew).find((row) => row.key === made.invite.key)?.state : null;
+    // on 1cb5f8afa: made, with an `exp` under the list's own time: the list calls it `invite_expired`, InvitePc shows no
+    // line and no reason, and the service's invite is not ended
+    expect(made.made && state !== "open").toBe(false);
+  });
+
+  it("RED P12b-F6: the plain invite a PC joined with does not stay open after that PC was added (here by the number, the post's proof read at the press)", async () => {
+    const { pc, list, held, carried } = await listAccount();
+    const made = await makeInvite(list, { auto: false });
+    if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+    await mountCard();
+    // the line's proof reaches the account service after the card was drawn; the press reads the posts with it
+    const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+    carried.value = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
+    await press("Add");
+    if (text().includes("Check that the PC shows this number")) await press("Add");
+    expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+    // on 1cb5f8afa: the invite is still open (refusal null) and listed with Revoke, so the same line gets a second
+    // PC a one-tap card for the rest of its fourteen minutes
+    expect(listView(held().state).invites.map((row) => row.refusal)).not.toEqual([null]);
+  });
+
+  it("RED P12b-F7: a line whose placement is not known survives the invites panel leaving the screen, and the next Make an invite settles it", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's Mac" });
+    await first.list.sync();
+    const id = w.held().id;
+    let reads = true;
+    let placements = 0;
+    first.wire.answer = async (request) => {
+      const path = new URL(request.url).pathname;
+      // the first placement goes through, and the log cannot be read right after it
+      if (request.method === "POST" && path.endsWith("/entries") && placements++ === 0) { const answer = await w.fake.fetch(request); reads = false; return answer; }
+      return !reads && request.method === "GET" && path.startsWith(`/v2/lists/${id}`) ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : null;
+    };
+    const mountPanel = async (): Promise<void> => {
+      if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(InvitePc, { list: first.list, now: () => w.clock.now }) })); });
+      await settle();
+    };
+    await mountPanel();
+    await pressWhere((node) => node.props["data-action"] === "make-invite");
+    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "invite-pc").map(textOf).join(" ")).toContain("It is not known yet whether the invite was made.");
+    // the person goes to another tab of Add PC and comes back: the panel is drawn anew
+    reads = true;
+    await mountPanel();
+    await pressWhere((node) => node.props["data-action"] === "make-invite");
+    const shownLine = renderer!.root.findAll((node) => node.props["data-invite-line"] === "").map(textOf)[0];
+    const key = (await readJoinLine(shownLine!, { service: w.origin, followsLists: true })).key;
+    // on 1cb5f8afa: the first invite is in the list with a line nobody holds any more, and a second one is made
+    expect(listView(w.held().state).invites.map((row) => row.key)).toEqual([key]);
+  });
+
+  it("RED P12b-F10: a Revoke placed right after another PC's entry is said as Revoked, not Used", async () => {
+    const { w, first, invite } = await invited();
+    await addListPc(w, first, "Desk");
+    expect(await revokeInvite(first.list, invite.key, noWait)).toEqual({ revoked: true });
+    // on 1cb5f8afa: "used" (endOf reads only that a `pc` entry sits right before the removal)
+    expect(invitesOf(first.list, w.clock.now).find((row) => row.key === invite.key)?.state).toBe("revoked");
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -349,6 +469,44 @@ describe("PIN guards", () => {
     expect(reveals).toBe(3);
   });
 
+  it("PIN (kills M22) offers no one-tap Add for an invite past its time by the floor this device saved, after its clock was set back", async () => {
+    const w = listWorld();
+    const clock = { label: "Dana's Mac", skew: 0 };
+    const first = await w.device(clock);
+    await first.list.sync();
+    const made = await makeInvite(first.list, { auto: false, ...noWait });
+    if (!made.made) throw new Error("no invite");
+    const pc = await askingPc();
+    const post = await posted(w, first, made.invite, pc);
+    // a read past the invite's end saves that time as the floor; then the clock is set back inside the invite's time
+    w.clock.now = (made.invite.exp + 120) * 1000;
+    await first.list.sync({ read: true });
+    clock.skew = -600_000;
+    expect(Math.floor((w.clock.now + clock.skew) / 1000)).toBeLessThan(made.invite.exp);
+    expect(await invitedPcs(first.list, [post], w.clock.now + clock.skew)).toEqual([]);
+  });
+
+  it("PIN (kills M24) offers no one-tap Add where the post names another PC's id than its relay key gives, even with the line's proof for that pairing", async () => {
+    const { w, first, invite, pc } = await invited();
+    const other = await askingPc();
+    const list = first.list.writer()!.list;
+    const card = await signCard({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null }, pc.signs);
+    const line = await readJoinLine(invite.line, { service: w.origin, followsLists: true });
+    // the line holder signs for its relay key under the id of the person's own PC that asks, so the card would be drawn on that PC's row
+    const proof = await line.signLineProof({ server_id: other.server_id, card: { key: pc.key, enc: pc.enc, endpoint: pc.endpoint } });
+    const post: ListPost = { endpoint: pc.endpoint, server_id: other.server_id, key: pc.key, enc: pc.enc, card, attempt: null, invite: invite.key, invite_proof: proof };
+    expect(await invitedPcs(first.list, [post], w.clock.now)).toEqual([]);
+  });
+
+  it("PIN (kills M25) offers no one-tap Add for a post whose card is not its key's own, whatever the line signed", async () => {
+    const { w, first, invite, pc } = await invited();
+    const other = await askingPc();
+    const good = await posted(w, first, invite, pc);
+    const list = first.list.writer()!.list;
+    const forged = await signCard({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null }, other.signs);
+    expect(await invitedPcs(first.list, [{ ...good, card: forged }], w.clock.now)).toEqual([]);
+  });
+
   it("PIN (kills M30) names nothing to a PC whose scan was for another account than the one this device's list is of", async () => {
     const w = listWorld();
     const phone = await w.device({ label: "Dana's phone" });
@@ -399,6 +557,17 @@ describe("PIN guards", () => {
     expect(w.held().entries.length).toBe(1);
   });
 
+  it("PIN (kills M42) keeps the line, and ends nothing at the service, where the account service kept asking for the request again (busy)", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's Mac" });
+    await first.list.sync();
+    first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "try_again", message: "again" } }, { status: 409 }) : null;
+    const outcome = await makeInvite(first.list, { auto: false, ...noWait });
+    expect(outcome).toMatchObject({ made: false, why: "unknown" });
+    expect(outcome.made === false && outcome.pending !== undefined).toBe(true);
+    expect(first.sent.filter((sent) => sent.route.startsWith("DELETE /v1/pc-invites/"))).toEqual([]);
+  });
+
   it("PIN (kills M60) a device whose copy of the list does not read says it cannot change the list, and admits nothing", async () => {
     await signIn();
     await registerKey();
@@ -447,6 +616,26 @@ describe("PIN guards", () => {
     expect(list.view().pcs.map((row) => row.endpoint)).not.toContain(pc.endpoint);
   });
 
+  it("PIN (kills M70) the card is drawn again at the invite's end by its own timer, with no focus or list change", async () => {
+    const { pc, list, carried, postNow } = await listAccount({ deferPost: true });
+    const made = await makeInvite(list, { auto: false });
+    if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+    // the PC listed itself and posted with the line's proof a minute before the invite ends
+    now = (made.invite.exp - 60) * 1000;
+    await postNow();
+    const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+    carried.value = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
+    now = made.invite.exp * 1000 - 10;
+    await mountCard();
+    const title = (): string => textOf(renderer!.root.find((node) => node.props["data-unconfirmed-pc"] !== undefined).findAll((node) => node.type === "span")[1]!);
+    expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+    now = (made.invite.exp + 5) * 1000;
+    // the card's own timer, armed for the invite's end and a second after it: waited for by the title, within a deadline
+    const deadline = Date.now() + 5_000;
+    while (title() !== "Add this PC to your account?" && Date.now() < deadline) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    expect(title()).toBe("Add this PC to your account?");
+  });
+
   it("PIN (kills M71) an account with no list: a press after the request's ten minutes admits nothing, whatever the timer did not draw yet", async () => {
     await signIn();
     await registerKey();
@@ -462,6 +651,16 @@ describe("PIN guards", () => {
     expect(fake.accountList(ACCOUNT)).toBeNull();
   });
 
+  it("PIN (kills M9) a one-tap Add for an invite that is over asks the account service to admit nothing", async () => {
+    const { w, first, invite, pc } = await invited();
+    await listedAndPosted(w, first, pc);
+    const [found] = await invitedPcs(first.list, [await posted(w, first, invite, pc)], w.clock.now);
+    if (found === undefined) throw new Error("not offered");
+    w.clock.now = (invite.exp + 60) * 1000;
+    let admitted = 0;
+    const outcome = await addInvitedPc(first.list, found, null, { ...noWait, admit: async () => { admitted += 1; } });
+    expect([outcome, admitted]).toEqual([{ added: false, why: "invite_ended", retryAfterMs: null }, 0]);
+  });
 });
 
 describe("PIN the QR naming is only for a code made for the account", () => {

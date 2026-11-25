@@ -352,7 +352,6 @@ export const DEVICES_JA: Record<string, string> = {
   "The devices you choose get nothing by your Tailscale login until you allow them again on this PC.": "選んだデバイスは、この PC で再び許可するまで Tailscale のログインでは入れません。",
   "It loses its pairing access, and the Tailscale devices it came from are kept out too.": "ペアリングによるアクセスが終わり、このデバイスが使っていた Tailscale デバイスも入れなくなります。",
   "Keep out": "締め出す",
-  "Revoke": "取り消す",
   "Kept out over Tailscale too: {names}": "Tailscale でも締め出し: {names}",
   "Also keep out a Tailscale device of yours:": "一緒に締め出す自分の Tailscale デバイス:",
   "A Tailscale device this PC has not seen yet still gets in by your login. To keep it out of your tailnet too, remove it in Tailscale's admin console.": "この PC がまだ見ていない Tailscale デバイスは、あなたのログインで引き続き入れます。tailnet からも締め出すには、Tailscale の管理コンソールでそのデバイスを削除してください。",

@@ -196,7 +196,7 @@ describe("the admission before a first link", () => {
       kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
       // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
       writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki },
-        state: { footing: { seq: 2, hash: "ab".repeat(32) }, pcs: pcKeys === null ? {} : { [endpoint]: { key: pcKeys.key, removed: null } } } }) as unknown as ListWriter,
+        state: { footing: { seq: 2, hash: "ab".repeat(32) }, pcs: pcKeys === null ? {} : { [endpoint]: { key: pcKeys.key, enc: pcKeys.enc, removed: null } } } }) as unknown as ListWriter,
     };
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;

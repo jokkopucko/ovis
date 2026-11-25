@@ -2,7 +2,8 @@ import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type Reac
 import { ChevronDown, ChevronLeft, ChevronRight, Plus, QrCode } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
-import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
+import { callNative, hasNativeMethod, hasNativePlugin, inMacApp } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import type { KnownPc } from "../lib/account/knownPcs.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
@@ -12,6 +13,7 @@ import { StartScreenAccountMenu } from "./AccountHead.tsx";
 import { deviceOffline, useOffline } from "../lib/useOffline.ts";
 import { AddressForm, atDots, canScanQr, clearOutcome, offlineOpenText, OpenError, OpenStatus, OtherWayButton, scanQr, sshHandoff, TailscaleOff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
+import { InvitePc } from "./InvitePc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
@@ -624,14 +626,19 @@ export function SignedOutRelayPanel({ signIn, signingIn, code }: { readonly sign
 
 /**
  * The relay tab signed in: a PC joins the account from its own Ovis, signed in with the same account, so this says so; a
- * PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser.
+ * PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser. The Mac app also
+ * makes invites here.
  */
 export function AccountRelayPanel({ code }: { readonly code: CodeWays }) {
   const t = useT();
+  // In the Mac app, where a person sets a PC up through an agent: invites for a PC, on a device that may write its
+  // account's signed list (InvitePc draws nothing for any other)
+  const list = inMacApp() ? pageAccountList() : null;
   return (
     <>
       <p className="relay-shell-copy">{t("Turn on Ovis on the PC and sign in with the same account.")}</p>
       <QrOrCode code={code} />
+      {list !== null && <InvitePc list={list} />}
     </>
   );
 }

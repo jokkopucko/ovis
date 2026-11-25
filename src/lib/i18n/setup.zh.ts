@@ -54,7 +54,6 @@ export const SETUP_ZH: Record<string, string> = {
   "Copy the command for {name}": "复制 {name} 的命令",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "这台 PC 的桥接服务暂不提供代理集成。下次运行时更新后即可使用。",
   "Open setup guide": "打开向导",
-  "Expired": "已过期",
   "Edit": "编辑",
   "Remove hub?": "移除中心？",
   "Its accounts disappear from this list. The hub itself is not changed.": "中心账号将从列表中消失，中心本身不变。",

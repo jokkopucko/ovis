@@ -14,10 +14,12 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 
 /**
  * What this device did itself for a PC: paired with it at the PC (`paired`: a QR, a code, the digits), added it to the
- * account on this device (`added`), added it over SSH (`ssh`), or is that PC's own window (`window`); `none` where it
- * only opened a PC it was shown. It moves from `none` to one of the others, never back and never between them.
+ * account on this device (`added`), added it over SSH (`ssh`), or is that PC's own window (`window`); `invited`: the
+ * PC joined with an invite of the account, which the line's own key proved for that PC, and the person pressed Add;
+ * `none` where it only opened a PC it was shown. It moves from `none` to one of the others, never back and never
+ * between them.
  */
-export type SeenHow = "paired" | "added" | "ssh" | "window" | "none";
+export type SeenHow = "paired" | "added" | "ssh" | "window" | "invited" | "none";
 
 /**
  * A value of `how` this build does not know: a later build wrote it. The row is kept as it is, through every write,
@@ -35,7 +37,7 @@ export interface SeenPcs { readonly v: 1; readonly account: string; readonly pcs
 export const SEEN_PCS_MAX = 256;
 
 const ENDPOINT = /^[0-9a-f]{64}$/;
-const HOWS: readonly SeenHow[] = ["paired", "added", "ssh", "window", "none"];
+const HOWS: readonly SeenHow[] = ["paired", "added", "ssh", "window", "invited", "none"];
 /** The form a value of `how` takes, known to this build or not. */
 const HOW = /^[a-z][a-z0-9_]{0,31}$/;
 

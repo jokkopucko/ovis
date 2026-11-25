@@ -54,7 +54,6 @@ export const SETUP_KO: Record<string, string> = {
   "Copy the command for {name}": "{name} 명령 복사",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "이 PC의 브리지는 아직 에이전트 통합을 제공하지 않습니다. 다음 런타임 업데이트 후에 사용할 수 있습니다.",
   "Open setup guide": "안내 열기",
-  "Expired": "만료됨",
   "Edit": "수정",
   "Remove hub?": "허브를 제거할까요?",
   "Its accounts disappear from this list. The hub itself is not changed.": "허브 계정이 목록에서 사라져요. 허브 자체는 그대로예요.",

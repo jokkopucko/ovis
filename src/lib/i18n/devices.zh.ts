@@ -352,7 +352,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "The devices you choose get nothing by your Tailscale login until you allow them again on this PC.": "你选择的设备将无法通过你的 Tailscale 登录进入，直到你在此 PC 上再次允许。",
   "It loses its pairing access, and the Tailscale devices it came from are kept out too.": "它将失去配对访问权限，它使用过的 Tailscale 设备也将被挡在外面。",
   "Keep out": "挡住",
-  "Revoke": "撤销",
   "Kept out over Tailscale too: {names}": "通过 Tailscale 也已挡住：{names}",
   "Also keep out a Tailscale device of yours:": "同时挡住你的 Tailscale 设备：",
   "A Tailscale device this PC has not seen yet still gets in by your login. To keep it out of your tailnet too, remove it in Tailscale's admin console.": "此 PC 尚未见过的 Tailscale 设备仍可通过你的登录进入。要把它也挡在你的 tailnet 之外，请在 Tailscale 管理控制台中移除它。",

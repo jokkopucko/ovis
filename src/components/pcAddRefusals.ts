@@ -33,6 +33,8 @@ export function addRefusal(t: Translate, outcome: Extract<AddPcOutcome, { readon
       if (typeof window !== "undefined") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
       return { text: t("An earlier change is still waiting: try it again or cancel it first."), signInAgain: false };
     case "behind": return { text: t("Update Ovis on this device, then try again."), signInAgain: false };
+    // the invite the PC joined with is over, used or revoked: the PC starts again
+    case "invite_ended": return { text: t("This request ran out. To add this PC, start again on the PC."), signInAgain: false };
     default: return { text: t("The PC could not be added. Try again."), signInAgain: false };
   }
 }
