@@ -1306,8 +1306,12 @@ export type ClientMessage =
    * `agent_only` (feature "agent-only"): the message is for an agent alone (a chat message carrying comments on
    * a reply, #511, whose `> quote` lines a shell would read as redirects). The server refuses it with
    * agent_not_ready, typing nothing, when no agent is in front of the pane as it would type it; a queued or held
-   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery. */
-  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true }
+   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery.
+   * `command_key`: UUID of a draft send, kept across manual retries until edited or acknowledged.
+   * The WebSocket upgrade's optional `receipt_resume_id` identifies the browser even before attach.
+   * A recent acceptance for this pane, device and browser answers `replayed`; an uncertain result
+   * repeats its refusal. Neither writes again. A replayed pending item is a copy, not a lease. */
+  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true; command_key?: string }
   /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
    * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore
    * this optional field and retain their existing discard behaviour, without this protection.
@@ -1452,7 +1456,7 @@ export type ServerMessage =
    * `sending_at`: on an ok for a message this request typed (an immediate send, or one with
    * `typed_now`), the PC's clock (ISO 8601) before it typed anything, as a queued row's `sending_at`:
    * the message's turn is written after it on that clock. An older server never sends it. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; replayed?: true; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes

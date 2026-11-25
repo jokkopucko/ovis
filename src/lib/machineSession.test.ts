@@ -63,6 +63,18 @@ function withStorage(run: () => void): void {
 }
 
 describe("PC connection ownership", () => {
+  it("recovers a queued draft's lost acceptance as a copy, never as the new socket's input", () => {
+    const { session, socket, store } = setup("retry-queue");
+    start(session, socket);
+    const owner = paneStorageId(session.machineId, "w1:p1");
+    session.acceptPending("w1:p1", message("before-disconnect"), session.epoch, true);
+    expect(store.read(owner)).toMatchObject([{ id: "before-disconnect", serverOwned: false, state: "uncertain" }]);
+    const now = Date.now();
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["before-disconnect"],
+      held_ms: { "before-disconnect": 60_000 }, held_until: { "before-disconnect": now + 60_000 }, server_time: now });
+    expect(store.read(owner)).toMatchObject([{ id: "before-disconnect", serverOwned: false, state: "held" }]);
+    session.close();
+  });
   it("keeps the upload folder each PC's features frame names, and forgets it when one names none (#2771)", () => {
     const { session, socket } = setup("paste-folder-pc");
     session.connect();

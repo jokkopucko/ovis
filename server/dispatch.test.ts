@@ -158,14 +158,31 @@ it("uses only the relay principal, even with valid driving cookies, bridge token
   }
 });
 
+it("recognizes a managed bridge bearer for submit receipts without granting bridge privileges", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-managed-receipts-"));
+  const token = "fixture-managed-token", app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token, bridgeOnly: true, machines: false, sidecar: false });
+  const browser = crypto.randomUUID(), origin = `http://127.0.0.1:${app.port}`;
+  try {
+    const ctx: ServerContext = { ...app.context, requestIP: () => ({ address: "127.0.0.1" }), timeout() {},
+      upgrade(_request, { data }) {
+        expect(data).toMatchObject({ managedReceipts: true, commandBrowser: browser, bridge: false });
+        expect(data.deviceId).toBeUndefined();
+        return true;
+      } };
+    expect(await handleRequest(new Request(`${origin}/ws?receipt_resume_id=${browser}`,
+      { headers: { host: new URL(origin).host, origin, authorization: `Bearer ${token}` } }), ctx)).toBeUndefined();
+  } finally { app.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
 it("scopes a remote PC's receipt identity to the Portal user, not only to a browser two sign-ins share", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-portal-receipts-"));
   const portal = new PortalService({ stateDir });
   const forwarded: Array<string | undefined> = [];
+  const handshakes: Array<string | null> = [];
   let heard: (() => void) | undefined;
   const upstream = Bun.serve({
     port: 0, hostname: "127.0.0.1",
-    fetch(request, instance) { return instance.upgrade(request) ? undefined : new Response(null, { status: 426 }); },
+    fetch(request, instance) { handshakes.push(new URL(request.url).searchParams.get("receipt_resume_id")); return instance.upgrade(request) ? undefined : new Response(null, { status: 426 }); },
     websocket: { message(_socket, raw) { forwarded.push(JSON.parse(String(raw)).receipt_resume_id); heard?.(); } },
   });
   const endpoint = spyOn(MachineManager.prototype, "endpoint").mockImplementation((id) =>
@@ -180,7 +197,7 @@ it("scopes a remote PC's receipt identity to the Portal user, not only to a brow
   };
   const browser = crypto.randomUUID();
   const attachAs = async (user: string) => {
-    const response = await handleRequest(new Request(`http://127.0.0.1:${app.port}/ws?machine_id=remote`, { headers: {
+    const response = await handleRequest(new Request(`http://127.0.0.1:${app.port}/ws?machine_id=remote&receipt_resume_id=${browser}`, { headers: {
       host: `127.0.0.1:${app.port}`, origin: `http://127.0.0.1:${app.port}`, "x-forwarded-for": "100.64.0.1",
       "x-portal-proof": "valid-portal-proof", "x-portal-user": user, "x-portal-auth": "credential",
     } }), ctx);
@@ -196,6 +213,7 @@ it("scopes a remote PC's receipt identity to the Portal user, not only to a brow
     expect(aliceAgain).toBe(alice);
     expect(bob).toBeString();
     expect(bob).not.toBe(alice);
+    expect(handshakes).toEqual(forwarded.map((id) => id ?? null));
   } finally {
     for (const relay of relays) relay.close();
     proof.mockRestore(); role.mockRestore(); endpoint.mockRestore();

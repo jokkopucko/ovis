@@ -11,6 +11,18 @@ import { HerdrSocket } from "../lib/ws.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountService } from "../lib/account/service.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
 
+function noticeSockets(...wires: DeviceNoticeWire[]) {
+  return class {
+    constructor(url: string) {
+      const route = new URL(url);
+      route.searchParams.delete("receipt_resume_id"); // identifies the browser, not the destination PC
+      const wire = wires.find((candidate) => candidate.url === route.href);
+      if (!wire) throw new Error(`Unexpected WebSocket: ${url}`);
+      return wire;
+    }
+  };
+}
+
 it.each([
   ["T51, T60: retry the exact signed block after a lost response", "lost response"],
   ["T51, T60: retry the exact signed block after a 503 after dismissal", "503 after dismissal"],
@@ -60,13 +72,7 @@ it.each([
     document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class {
-      constructor(url: string) {
-        const connection = wires.get(url);
-        if (connection === undefined) throw new Error(`Unexpected WebSocket: ${url}`);
-        return connection;
-      }
-    },
+    WebSocket: noticeSockets(...wires.values()),
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -242,7 +248,7 @@ async function setupItsMe({
     document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class { constructor(url: string) { return url === desk.url ? desk : lab; } },
+    WebSocket: noticeSockets(desk, lab),
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -549,7 +555,7 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
     document: page,
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class { constructor() { return wire; } },
+    WebSocket: noticeSockets(wire),
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));

@@ -485,7 +485,9 @@ it("never replays a queued submit after disconnecting, including before its capa
     socket.open();
     client.attach("w1:p1", 80, 24);
     if (known) socket.receive(snapshot(["submit", "pending-input"]));
-    const result = client.submit("w1:p1", "do not replay", "do not replay", false, "queue");
+    const key = crypto.randomUUID();
+    const press = () => client.submit("w1:p1", "do not replay", "do not replay", false, "queue", undefined, false, undefined, undefined, false, false, key);
+    const result = press();
     for (let turn = 0; turn < 10 && known && submissions(socket).length === 0; turn++) await Promise.resolve();
     socket.disconnect();
     expect(await result).toMatchObject({ ok: false, code: known ? "disconnected" : "not_transmitted" });
@@ -498,6 +500,16 @@ it("never replays a queued submit after disconnecting, including before its capa
     await Promise.resolve();
     expect(reconnect.sent.map((frame) => frame.type)).toEqual(["role", "attach"]);
     expect(submissions(socket).length).toBe(known ? 1 : 0);
+    if (known) {
+      const first = submissions(socket)[0]!;
+      expect(reconnect.sent.find((frame) => frame.type === "attach")).toMatchObject({ receipt_resume_id: new URL(socket.url).searchParams.get("receipt_resume_id") });
+      expect(first.command_key).toBe(key);
+      const next = reconnect.nextSubmission(), retry = press(), frame = await next;
+      expect(frame).toMatchObject({ command_key: key });
+      expect(frame.id).not.toBe(first.id);
+      reconnect.receive({ type: "submit-result", id: frame.id, pane_id: "w1:p1", ok: true, replayed: true });
+      expect(await retry).toEqual({ ok: true, replayed: true });
+    }
     client.close();
   }
 });

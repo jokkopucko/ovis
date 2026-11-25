@@ -6,7 +6,7 @@ import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import { pendingMessages, UNCONFIRMED_SEND } from "./pendingMessages.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { rememberWaitingSend, stampedBaseline, waitingBaseline, waitingKey } from "./sentWaiting.ts";
-import { composerDrafts } from "./composerDraft.ts";
+import { composerDraftKey, composerDrafts } from "./composerDraft.ts";
 import type { AgentStatus, InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import { plainError } from "./paneTerminalShared.ts";
@@ -46,7 +46,7 @@ export interface ComposerSendsDeps {
   stillOpenNote: (open: { pane: string; agent: string; command: string; named: boolean; history: string | undefined }) => string;
   stillOpenNotedRef: MutableRefObject<boolean>;
   stillOpenRef: MutableRefObject<{ pane: string; agent: string; command: string; named: boolean; history: string | undefined } | null>;
-  submitComposerMessage: (text: string, delivery: SubmitDelivery, clearDraft?: string, sendAnyway?: boolean, pendingId?: string, resendGeneration?: number, agentOnly?: boolean, holdOnly?: boolean) => Promise<SubmitResult> | null;
+  submitComposerMessage: (text: string, delivery: SubmitDelivery, clearDraft?: string, sendAnyway?: boolean, pendingId?: string, resendGeneration?: number, agentOnly?: boolean, holdOnly?: boolean, commandKey?: string) => Promise<SubmitResult> | null;
   submitRetention: PaneSubmitRetention | null;
   t: Translate;
 }
@@ -132,7 +132,8 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       const sentAt = Date.now();
       const sentAfter = pane === null ? null : waitingBaseline(waitingKey(machineId, pane));
       // a PC that cannot hold refuses a hold rather than queuing it to go on its own (HerdrSocket `holdOnly`)
-      const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly, hold);
+      const command = pane === null ? undefined : composerDrafts.commandKey(composerDraftKey(paneStorageId(machineId, pane)), text);
+      const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly, hold, command);
       return result === null ? false : result.then((answer) => {
         // Neither a dropped connection nor a cleared old draft proves this message was typed.
         // Without a receipt, leave the retryable composer text and report the uncertainty.
@@ -140,7 +141,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         if (answer.unconfirmed && pane !== null) pendingMessages.keepUnconfirmed(paneStorageId(machineId, pane), text);
         // A queued follow-up was typed now only when its receipt says so: an ok with no `pending` also
         // answers a replayed id, or a row sent or discarded since
-        const typedNow = answer.pending === undefined && !answer.unconfirmed && (delivery === "immediate" || answer.typedNow === true);
+        const typedNow = answer.pending === undefined && !answer.unconfirmed && !answer.replayed && (delivery === "immediate" || answer.typedNow === true);
         if (typedNow) {
           if (paneRef.current === pane && socketRef.current === socket && sessionRef.current === session) {
             setChatLocalSend((current) => ({ key: current.key + 1, navigationGeneration: navigation }));
@@ -148,7 +149,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           if (pane !== null) rememberWaitingSend(waitingKey(machineId, pane), text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt));
         }
         if (pane !== null && typedNow) showSentCommand(pane, text, known, seen);
-        if (now && answer.pending !== undefined) void sendNowRef.current(answer.pending.id);
+        if (now && !answer.replayed && answer.pending !== undefined) void sendNowRef.current(answer.pending.id);
         return true;
       });
     },

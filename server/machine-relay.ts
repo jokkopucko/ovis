@@ -74,10 +74,13 @@ export class MachineRelay {
    * server's sidebar rows hide (#2160). Other frames pass as they came.
    */
   constructor(manager: MachineManager, id: string, private readonly readOnly: boolean, private readonly browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot,
-    private readonly receiptId?: (browser: string) => string | undefined) {
+    private readonly receiptId?: (browser: string) => string | undefined, browser?: string) {
     const endpoint = manager.endpoint(id);
     if (!endpoint) throw new Error("This PC is disconnected");
-    this.upstream = authenticatedWebSocket(endpoint.url.replace("http:", "ws:") + "/ws", endpoint.token);
+    const target = new URL(endpoint.url.replace("http:", "ws:") + "/ws");
+    const scoped = !readOnly && browser ? receiptId?.(browser) : undefined;
+    if (scoped) target.searchParams.set("receipt_resume_id", scoped);
+    this.upstream = authenticatedWebSocket(target.href, endpoint.token);
     this.untrack = manager.trackTerminal(id, () => this.close(SERVICE_RESTART_CLOSE_CODE, "PC disconnected"));
     this.ready = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => { this.close(); reject(new Error("Remote websocket timed out")); }, 15_000);

@@ -17,7 +17,7 @@
  * pane after, so another session or process of the same kind gets none.
  */
 import type { AcpChildren } from "../acp/children.ts";
-import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
+import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, refusedFirstWrite, submitFraming, untilOmpReported } from "./composer.ts";
 import { grokEcho, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
@@ -39,6 +39,7 @@ import { isShellAgentKind, SHELL_AGENTS } from "../shell-agent.ts";
 import { capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, piRecordText, type PiDeliveryAnchor, type PiReceiptReservation } from "../pi-delivery.ts";
 import { isPiProcess, piTranscriptPath, piUnwrittenHeaderId } from "../pi.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
+import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
 import { heldOmoProcess } from "../omo.ts";
@@ -205,6 +206,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   // Presentation only, bound to both the authenticated device and an opaque browser
   // correlator. Retaining a receipt never retains permission to send input.
   const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
+  // A command receipt holds neither text nor its old socket/lease. Queue text comes
+  // from the matching retry; only the existing held-copy receipts prove it sendable.
+  type CommandReceipt = { hash: string; at: number; fault?: { code: string; message?: string };
+    pending?: Pick<PendingMessage, "id" | "created_at" | "request_id" | "agent_only" | "state"> };
+  const commands = new Map<string, CommandReceipt>();
+  const submitting = new Set<string>();
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
   /**
@@ -220,11 +227,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    */
   const endedPanes = new Map<string, number>();
   const receiptKeys = new WeakMap<Client, Map<string, string>>();
-  const resumeKey = (client: Client, paneId: string): string | undefined => {
-    const id = client.data.attached.get(paneId)?.receiptResumeId;
+  const resumeKey = (client: Client, paneId: string, id = client.data.attached.get(paneId)?.receiptResumeId): string | undefined => {
     return id ? JSON.stringify([client.data.deviceId ?? null, id]) : undefined;
   };
   const prunePi = (): void => {
+    for (const [key, receipt] of commands) {
+      if (elapsed() - receipt.at < PI_RESUME_MS) break;
+      commands.delete(key);
+    }
     const cutoff = Date.now() - PI_RESUME_MS;
     while (piCompleted.length && (piCompleted[0]!.at < cutoff || piCompleted.length > PI_RESUME_LIMIT)) piCompleted.shift();
     // A sent or uncertain one stays its whole window (their number is bounded by the
@@ -667,7 +677,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   async function dispatchPendingText(owner: Client, paneId: string, text: string, lease: PendingLease, identity: PendingIdentity,
     automatic: boolean, arrivedAt: number, committing: (working: boolean, restarting?: boolean, readMark?: number) => void = () => {}, interruptWorkingCodex = false,
     requestId = 0, agentOnly = false, queued = false,
-    row: { withdrawn?: () => boolean; waiting?: (waits: boolean) => void } = {}): Promise<SubmitReply> {
+    row: { withdrawn?: () => boolean; waiting?: (waits: boolean) => void; uncertain?: () => void } = {}): Promise<SubmitReply> {
     let wrote = false;
     // a message for an agent alone pasted and then refused its Enter (#511): its text may sit in the input line, so it is
     // held for the user and never pasted again automatically
@@ -773,20 +783,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       };
       // Pending input is a guarded literal paste + Enter, never Codex's native Tab queue.
       // Keep the final key here so a disconnect, pane switch or new menu can cancel it.
-      wrote = true;
       if (command && skills.length > 0) {
-        let typed = false;
-        const typing = (): boolean => allowed() && (typed || inTime());
+        const typing = (): boolean => allowed() && (wrote || inTime());
         // typed once a write's guard lets it go, as composer.ts counts it: typeWithSkills also asks `typing` before any write
         const io = herdrSkillAttachIo(paneId);
         const writes: SkillAttachIo = {
           ...io,
-          sendText: (piece, guard) => io.sendText(piece, () => guard() && (typed = true)),
-          sendKeys: (keys, guard) => io.sendKeys(keys, () => guard() && (typed = true)),
+          sendText: (piece, guard) => io.sendText(piece, () => guard() && (wrote = true)),
+          sendKeys: (keys, guard) => io.sendKeys(keys, () => guard() && (wrote = true)),
         };
         const revalidate = async (): Promise<void> => {
-          const current = await pendingContext(owner, paneId, lease, identity, typed);
-          if (automatic && !typed && (current.working || queueHeld(paneId, false))) throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
+          const current = await pendingContext(owner, paneId, lease, identity, wrote);
+          if (automatic && !wrote && (current.working || queueHeld(paneId, false))) throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
           // and the screen last, as before the plain paste: no skill key goes into a masked prompt that came up meanwhile
           await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
         };
@@ -798,20 +806,19 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
         };
         const result = await typeWithSkills(text, skills, typing, writes, revalidate, beforeKey).catch((error: unknown) => {
-          if (!typed) {
-            wrote = false;
-            if (error instanceof HerdrError && error.code === "cancelled") notTyped();
-          }
+          if (!wrote && error instanceof HerdrError && error.code === "cancelled") notTyped();
           throw error;
         });
         attached = result.attached;
         prompt = result.prompt;
         command = skillsNotAttached(command, result.missed);
       } else {
-        await paneSendText(paneId, `\u001b[200~${closeMention(sent)}\u001b[201~`, undefined, () => allowed() && inTime()).catch((error: unknown) => {
+        await paneSendText(paneId, `\u001b[200~${closeMention(sent)}\u001b[201~`, undefined, () => allowed() && inTime() && (wrote = true)).catch((error: unknown) => {
+          if (refusedFirstWrite(error)) wrote = false;
           if (error instanceof HerdrError && error.code === "cancelled") { wrote = false; notTyped(); }
           throw error;
         });
+        wrote = true;
       }
       // fixed wait: the TUI takes the paste before its Enter, which arriving with it could read as a newline
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
@@ -908,6 +915,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       return { ok: true };
     } catch (error) {
       watch?.cancel();
+      if (wrote) row.uncertain?.();
       if (stranded) return { ok: false, code: "pasted_not_sent", message: PASTED_NOT_SENT_MESSAGE };
       const fault = error instanceof HerdrError && error.code === "submit_changed" ? pendingFault(error, options.herdrFailure)
         : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error, options.herdrFailure);
@@ -1353,17 +1361,34 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
 
   const pendingFrames = {
     async submit(client: Client, message: Frame<"submit">): Promise<void> {
-      const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null, typedNow = false, sendingAt?: string) => send(client, {
-        type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(typedNow ? { typed_now: true as const } : {}), ...(code ? { code, message: text } : {}),
-        ...(ok && sendingAt ? { sending_at: sendingAt } : {}),
-        ...(draft ? { draft } : {}), ...(!draft && typeof box === "string" ? { box } : {}),
-      });
+      let claim: { key: string; hash: string } | undefined;
+      let uncertain = false;
+      const afterWriteFailure = (): void => { uncertain = true; };
+      const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null, typedNow = false, sendingAt?: string) => {
+        const fault = !ok && code && uncertain ? { code, message: text } : undefined;
+        if ((ok || fault) && claim) {
+          if (commands.size >= PI_RESUME_LIMIT) commands.delete(commands.keys().next().value!);
+          const pending = accepted && { id: accepted.id, created_at: accepted.created_at, request_id: accepted.request_id, agent_only: accepted.agent_only,
+            state: message.delivery === "hold" ? "held" as const : "queued" as const };
+          commands.set(claim.key, { hash: claim.hash, at: elapsed(), pending, fault });
+        }
+        send(client, {
+          type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(typedNow ? { typed_now: true as const } : {}), ...(code ? { code, message: text } : {}),
+          ...(ok && sendingAt ? { sending_at: sendingAt } : {}),
+          ...(draft ? { draft } : {}), ...(!draft && typeof box === "string" ? { box } : {}),
+        });
+      };
       if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id
         || typeof message.text !== "string" || typeof message.payload !== "string") {
         send(client, { type: "error", code: "invalid_submit", message: "id must be an integer, pane_id, text and payload strings" });
         return;
       }
       const waits = message.delivery === "queue" || message.delivery === "hold";
+      if (message.command_key !== undefined && (typeof message.command_key !== "string" || !RECEIPT_RESUME_ID.test(message.command_key)
+        || message.typed === true || message.resend_id !== undefined)) {
+        result(false, "invalid_delivery", "Use a command key only for a chat draft, as a UUID");
+        return;
+      }
       if ((message.delivery !== undefined && message.delivery !== "immediate" && !waits)
         || (waits && message.typed !== undefined && message.typed !== false)) {
         result(false, "invalid_delivery", "Use immediate delivery, or queue or hold a chat message");
@@ -1412,6 +1437,35 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       }
       const arrivedAt = Date.now();
       try {
+        // An authenticated machine bridge has already scoped the correlator to its
+        // downstream principal (RelayReceiptIds); a bare unpaired socket has not.
+        const scopedCommand = message.command_key && (client.data.deviceId || client.data.bridge || client.data.managedReceipts);
+        const scope = scopedCommand && resumeKey(client, message.pane_id, client.data.commandBrowser);
+        if (scopedCommand && !scope && !client.data.attached.has(message.pane_id)) {
+          throw new HerdrError("input_not_ready", "The pane is not attached yet; nothing was typed");
+        }
+        if (scope) {
+          authorizeSocket(client);
+          const key = JSON.stringify([scope, message.pane_id, message.command_key]);
+          const hash = new Bun.CryptoHasher("sha256").update(message.text).digest("hex");
+          const receipt = commands.get(key);
+          if (receipt && elapsed() - receipt.at < PI_RESUME_MS) {
+            if (receipt.hash !== hash) throw new HerdrError("invalid_submit_id", "This command key belongs to another draft");
+            if (receipt.fault) { result(false, receipt.fault.code, receipt.fault.message); return; }
+            const copy = receipt.pending;
+            const disposition = copy && completed.find((item) => item.id === copy.id && item.key === scope && item.paneId === message.pane_id)?.outcome;
+            const settled = disposition === "sent" || disposition === "discarded";
+            const held = copy?.state === "held" && (disposition === "held" || pending.get(client, message.pane_id, copy.id)?.message.state === "held");
+            send(client, { type: "submit-result", pane_id: message.pane_id, id: message.id, ok: true, replayed: true,
+              ...(copy && !settled ? { pending: { ...copy, text: pendingText(message.text), state: held ? "held" : "queued" } } : {}) });
+            return;
+          }
+          if (receipt) commands.delete(key);
+          if (submitting.has(key)) throw new HerdrError("pending_busy", "This draft is already being submitted");
+          if (submitting.size >= PI_RESUME_LIMIT) throw new HerdrError("pending_limit", "Too many drafts are being submitted");
+          submitting.add(key);
+          claim = { key, hash };
+        }
         const child = message.typed === true ? undefined : options.acp?.forPane(message.pane_id);
         if (child && (message.clear_draft !== undefined || message.send_anyway)) throw new HerdrError("pending_target_changed", "The terminal draft no longer belongs to this session");
         if (waits || (child && !message.resend_id)) {
@@ -1438,7 +1492,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               if (message.delivery !== "hold" && !pending.waiting(message.pane_id) && !typedWhileOmpStarted(message.pane_id)) {
                 const sendingAt = new Date().toISOString();
                 const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt,
-                  (working) => pending.typedAtOnce(message.pane_id, working), false, message.id, agentOnly, true);
+                  (working) => pending.typedAtOnce(message.pane_id, working), false, message.id, agentOnly, true, { uncertain: afterWriteFailure });
                 if (typed.ok || typed.code !== "pending_wait") return typed.ok ? { ...typed, sending_at: sendingAt } : typed;
                 waited = true;
               }
@@ -1513,7 +1567,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const piAnchor = identity === null ? null : await preparePiReceipt(message.pane_id, identity).catch(() => null);
             sendingAt = new Date().toISOString();
             await submitText(message.pane_id, framed.text, framed.payload, arrivedAt, message.typed === true, () => authorizeSocket(client), message.clear_draft,
-              draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true, agentOnly, message.resend_id !== undefined);
+              draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true, agentOnly, message.resend_id !== undefined, afterWriteFailure);
             if (identity !== null && receiptText !== undefined) {
               try { recordPiTyped(client, message.pane_id, message.id, receiptText, identity, piAnchor, reservation, current !== null && piListsTemplate(current.pane, framed.text)); } catch { /* The send succeeded; receipt tracking cannot make it retryable. */ }
             }
@@ -1591,6 +1645,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         const fault = pendingFault(error, options.herdrFailure);
         result(false, fault.code, fault.message, undefined, error instanceof InputDraftError ? error.draft : null,
           error instanceof InputDraftError && error.identity && error.box !== null ? shownInputBox(error.box) : null);
+      } finally {
+        if (claim) submitting.delete(claim.key);
       }
       return;
     },

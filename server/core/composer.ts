@@ -2,7 +2,7 @@ import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo, faultOf, type HerdrFailureView } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
@@ -70,6 +70,9 @@ export const closeMention = (text: string): string => {
 const TYPED_LINE_MAX = 200;
 
 const PROMPT_REFUSED = new Set(["agent_not_found", "agent_not_ready", "agent_blocked"]);
+/** A reply from herdr refusing the first input, not a missing reply or a refusal after a paste. */
+export const refusedFirstWrite = (error: unknown): boolean => error instanceof HerdrError && error.fromReply
+  && (error.code === "agent_not_found" || submitNotTyped(error.code));
 
 export const modelSwitchText = (agent: string | null, text: string): string =>
   agent === "omp" && text.trim() === "/model" ? "/switch" : text;
@@ -407,9 +410,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    */
   async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {},
     clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false, agentOnly = false,
-    sendNow = false): Promise<void> {
+    sendNow = false, afterWriteFailure?: () => void): Promise<void> {
     ({ text, payload } = submitFraming(text, payload, fromTerminal));
     let clearedDraft = false;
+    let writeStarted = false;
     let sentText = text;
     let command: ReturnType<typeof prepareCommandSend>;
     let beforeScreen: string | undefined;
@@ -433,9 +437,13 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     // to watching, while the connection opens. Its refusal sends nothing, and nothing is typed instead.
     let refused: unknown;
     const mayType = (): boolean => {
-      try { authorize(); return true; } catch (error) { refused = error; return false; }
+      try { authorize(); writeStarted = true; return true; } catch (error) { refused = error; return false; }
     };
     const refusal = (error: unknown): never => { throw refused ?? error; };
+    const firstWriteFailure = (error: unknown): never => {
+      if (refusedFirstWrite(error)) writeStarted = false;
+      return refusal(error);
+    };
     /**
      * Send now's one more Enter for a Grok that queued the message (sendGrokQueuedNow), only on a fresh read of the
      * Grok terminal and session the send began in. The queue Enter already landed, so a failure here is submit_changed,
@@ -672,6 +680,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           } catch (error) {
             watch?.cancel();
             if (!typed) throw refused ?? error;
+            writeStarted = true;
             if (error instanceof HerdrError && error.code === "submit_changed") throw error;
             throw new HerdrError("submit_partial", "Part of the message was typed into OpenCode's input, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
           }
@@ -702,7 +711,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         try {
           inTime();
           const sentAt = Date.now();
-          const delivery = agentPrompt(paneId, closeMention(sent), undefined, mayType);
+          const delivery = agentPrompt(paneId, closeMention(sent), undefined, mayType).catch(firstWriteFailure);
           bindCommandProcess(paneId, command, seen, pane);
           await delivery;
           // herdr's prompt already sent the Enter that queues a working Grok's follow-up. A failure
@@ -729,7 +738,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         try {
           inTime();
           const sentAt = Date.now();
-          await agentPrompt(paneId, closeMention(sentText), undefined, mayType);
+          await agentPrompt(paneId, closeMention(sentText), undefined, mayType).catch(firstWriteFailure);
           noteSubmitted(paneId, sentText, recorded(command), sentAt);
           return;
         } catch (error) {
@@ -741,7 +750,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       const shaped = await mirrorInput(closeMention(payload), async () => await terminalAttach() ? null : await paneAgentOf(paneId));
       if (pickerAgent !== undefined) await freeAgentPicker(paneId, pickerAgent);
       inTime();
-      await paneSendText(paneId, shaped, undefined, mayType).catch(refusal);
+      await paneSendText(paneId, shaped, undefined, mayType).catch(firstWriteFailure);
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
       authorize();
@@ -750,6 +759,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       if (!fromTerminal) await confirmGrokQueue(closeMention(sentText));
       noteSubmitted(paneId, sentText, recorded(command), sentAt);
     } catch (error) {
+      if (clearedDraft || writeStarted) afterWriteFailure?.();
       if (clearedDraft) {
         throw new HerdrError("submit_partial", "Claude Code's terminal draft was cleared or may have changed, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
       }

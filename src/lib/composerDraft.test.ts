@@ -11,8 +11,68 @@ import { PendingInputs } from "../../server/pending-input.ts";
 function fixture() {
   const data = new Map<string, string>();
   const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
-  return { data, store: new ComposerDraftStore(() => storage) };
+  return { data, storage, store: new ComposerDraftStore(() => storage) };
 }
+it("can claim and key a draft on HTTP without crypto.randomUUID", () => {
+  const { store } = fixture();
+  store.set("p", "continue");
+  expect(store.claim("p", "continue")).toBe(true);
+  const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+  Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+  try { expect(store.commandKey("p", "continue")).toMatch(/^[a-f0-9-]{36}$/); }
+  finally {
+    if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+    else Reflect.deleteProperty(crypto, "randomUUID");
+  }
+});
+
+it.each(["continue", "> reply\ncontinue"])("another tab retries the unchanged draft with the original key: %s", (message) => {
+  const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  const sent = store.commandKey(key, message);
+  expect(sent).toBeString();
+  store.end(key); // no acknowledgement
+  expect(other.claim(key, "continue")).toBe(true);
+  expect(other.commandKey(key, message)).toBe(sent);
+  expect(other.commandKey(key, "> a different reply\ncontinue")).not.toBe(sent);
+});
+
+it("recognizes an identical draft replaced by another tab before storage events run", () => {
+  const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  const sent = store.commandKey(key, "continue");
+  store.end(key);
+  other.set(key, "");
+  other.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  expect(store.commandKey(key, "continue")).not.toBe(sent);
+});
+
+it("keeps the command key for a manual retry, not for edited or acknowledged drafts", () => {
+  const { store } = fixture(), key = "pane", text = "echo once";
+  const claim = () => {
+    expect(store.claim(key, text)).toBe(true);
+    const id = store.commandKey(key, text);
+    expect(id).toBeString();
+    store.end(key);
+    return id;
+  };
+  store.set(key, text);
+  const first = claim();
+  expect(claim()).toBe(first);
+  store.set(key, "echo edited");
+  store.set(key, text);
+  const edited = claim();
+  expect(edited).not.toBe(first);
+  store.settle(key, text);
+  store.set(key, text);
+  expect(claim()).not.toBe(edited);
+});
+
 it("does not edit another tab's saved held copy without authoritative withdrawal", async () => {
   const data = new Map<string, string>();
   const storage = paneLifetimes.paneStorage;

@@ -10,10 +10,12 @@ let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
 let calls: { method: string; params: Record<string, unknown> }[];
+let failWrite: "reject paste" | "lose paste reply" | "reject Enter" | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "herdr-web-ui-submit-framing-"));
   calls = [];
+  failWrite = undefined;
   socketBefore = process.env["HERDR_SOCKET"];
   const socket = join(root, "herdr.sock");
   process.env["HERDR_SOCKET"] = socket;
@@ -26,6 +28,11 @@ beforeEach(() => {
         if (!socket.data.buffer.includes("\n")) return;
         const request = JSON.parse(socket.data.buffer) as { id: string; method: string; params?: Record<string, unknown> };
         calls.push({ method: request.method, params: request.params ?? {} });
+        if (request.method === "pane.send_text" && failWrite === "lose paste reply") { socket.end(); return; }
+        if ((request.method === "pane.send_text" && failWrite === "reject paste") || (request.method === "pane.send_keys" && failWrite === "reject Enter")) {
+          socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: "pane no longer exists" } })}\n`);
+          return;
+        }
         if (request.method === "agent.prompt") {
           socket.end(`${JSON.stringify({ id: request.id, error: { code: "agent_not_found", message: "no agent" } })}\n`);
           return;
@@ -62,6 +69,12 @@ const refusal = async (send: Promise<void>): Promise<string> => {
 };
 
 describe("an immediate submit's paste framing", () => {
+  it.each(["reject paste", "lose paste reply", "reject Enter"] as const)("recognizes a possibly written submit: %s", async (fault) => {
+    failWrite = fault;
+    let uncertain = false;
+    await refusal(submitter()("w:p1", "hi", "hi", Date.now(), false, undefined, undefined, undefined, false, false, false, () => { uncertain = true; }));
+    expect(uncertain).toBe(fault !== "reject paste");
+  });
   it("accepts bare and exactly once wrapped canonical submits", async () => {
     const text = "첫 줄\tcolumn\r\nsecond ✓\rthird 🙂\n\n";
     const body = "첫 줄\tcolumn\rsecond ✓\rthird 🙂";

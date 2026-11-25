@@ -9,7 +9,7 @@ import { abandonNativeReads, getTransport, type Transport, type WebSocketLike } 
 type Handler = (message: ServerMessage) => void;
 
 export type SubmitDelivery = "immediate" | "queue" | "hold";
-export type SubmitResult = { ok: true; pending?: PendingMessage; unconfirmed?: true; typedNow?: true; sendingAt?: string } | { ok: false; code: string; message: string; draft?: string; box?: string };
+export type SubmitResult = { ok: true; pending?: PendingMessage; unconfirmed?: true; replayed?: true; typedNow?: true; sendingAt?: string } | { ok: false; code: string; message: string; draft?: string; box?: string };
 
 const FEATURES_WAIT_MS = 2000;
 /**
@@ -352,7 +352,9 @@ export class HerdrSocket {
     this.reconnectTimer = null;
     const transport = getTransport();
     this.watchRoute(transport);
-    const socket = transport.openSocket(this.url);
+    const target = new URL(this.url);
+    target.searchParams.set("receipt_resume_id", receiptResumeId());
+    const socket = transport.openSocket(target.href);
     const epoch = ++this.connectionEpoch;
     const started = Date.now();
     this.socket = socket;
@@ -505,7 +507,7 @@ export class HerdrSocket {
       if ((message.type === "input-ready" && message.ready === false) || message.type === "pty-exit" || (message.type === "error" && message.pane_id && ["attach_held", "input_not_ready"].includes(message.code))) this.inputReady.delete(message.pane_id!);
       if (readyPane !== null && (message.type === "input-ready" || wasReady !== this.inputReady.has(readyPane))) this.changeLease(readyPane);
       if (message.type === "submit-result" && this.matchesRequest(message.id, "submit", message.pane_id)) {
-        this.resolveRequest(message.id, message.ok ? { ok: true, ...(message.pending ? { pending: message.pending } : {}), ...(message.typed_now === true ? { typedNow: true as const } : {}), ...(typeof message.sending_at === "string" ? { sendingAt: message.sending_at } : {}) }
+        this.resolveRequest(message.id, message.ok ? { ok: true, ...(message.pending ? { pending: message.pending } : {}), ...(message.replayed === true ? { replayed: true as const } : {}), ...(message.typed_now === true ? { typedNow: true as const } : {}), ...(typeof message.sending_at === "string" ? { sendingAt: message.sending_at } : {}) }
           : { ok: false, code: message.code ?? "submit_failed", message: message.message ?? "the pane did not take the message", ...(message.draft ? { draft: message.draft } : {}),
             ...(!message.draft && typeof message.box === "string" ? { box: message.box } : {}) });
       }
@@ -1205,7 +1207,7 @@ export class HerdrSocket {
    * `clearDraft`: an immediate send over the draft an input_draft refusal named (ClientMessage `clear_draft`)
    * `sendAnyway`: an immediate send after a refusal that showed the box (ClientMessage `send_anyway`)
    * `holdOnly`: a hold that must never go on its own (the composer's Alt+Enter): refused, not queued, where the bridge cannot hold */
-  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false): Promise<SubmitResult> | null {
+  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     if (resendId !== undefined && sendAnyway) return Promise.resolve({ ok: false, code: "invalid_delivery", message: "Use a held-copy resend id only for an immediate chat message" });
@@ -1231,6 +1233,7 @@ export class HerdrSocket {
       }
       const id = this.nextSubmit++;
       return this.submitRequest({ type: "submit", id, pane_id: paneId, text, payload, ...(typed ? { typed: true } : {}), ...(delivery !== "immediate" ? { delivery } : {}),
+        ...(commandKey !== undefined ? { command_key: commandKey } : {}),
         ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) });
     })();
   }
