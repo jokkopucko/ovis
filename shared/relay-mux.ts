@@ -164,7 +164,9 @@ type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };
 type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
-  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
+  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true;
+    /** ACCOUNT_LIST_FEATURE selected: the id of the list the PC is pinned to, which the app signs in by the key it holds for (R-E). */
+    readonly list?: string };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
   readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[];
     /** ACCOUNT_LIST_ALLOW: the list the PC let the device into, and the place of the entry that did. */
@@ -451,7 +453,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       requireProtocol(v.protocol === "ovis-mux" && v.version === 1, "Invalid welcome protocol");
       return { ...common, type, payload: { protocol: "ovis-mux", version: 1, features: list(v.features, 16, feature), limits: limits(v.limits),
         nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64),
-        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })) } };
+        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })),
+        ...(v.list === undefined ? {} : { list: hex(v.list, 64) }) } };
     case FrameType.AUTH:
       requireProtocol(v.scheme === "device-key", "Invalid auth scheme");
       return { ...common, type, payload: { scheme: "device-key", device_id: hex(v.device_id, 16), signature: base64url(v.signature, 64) } };

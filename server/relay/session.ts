@@ -284,7 +284,7 @@ export class RelaySession {
     if (!options.services.relay.approvals.windowOpen()) this.welcome([], true);
   }
 
-  private welcome(features: readonly string[], provisional: boolean): void {
+  private welcome(features: readonly string[], provisional: boolean, list?: string | null): void {
     this.welcomed = true;
     this.mux.sendSession({
       type: FrameType.WELCOME, flags: 0, stream_id: 0,
@@ -293,6 +293,8 @@ export class RelaySession {
         nonce: this.nonce.toString("base64url"), server_version: this.options.serverVersion,
         relay_protocol: RELAY_PROTOCOL, min_supported_client: this.options.minSupportedClient,
         ...(provisional ? { provisional: true as const } : {}),
+        // a PC pinned to its account's list says which, to a client that knows of lists: it signs in by the key that list holds for it
+        ...(list == null ? {} : { list }),
       },
     });
   }
@@ -432,7 +434,7 @@ export class RelaySession {
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
         if (this.sasBinding && intents[0] === PAIR_INTENT_VOUCHED) this.intent = "vouched";
-        if (!this.welcomed || selected.length > 0) this.welcome(selected, false);
+        if (!this.welcomed || selected.length > 0) this.welcome(selected, false, this.listOffered ? this.options.services.accountList?.pinnedList() : null);
         return;
       case FrameType.AUTH: case FrameType.PAIR: {
         if (this.state !== "auth") { this.close("protocol_error"); return; }

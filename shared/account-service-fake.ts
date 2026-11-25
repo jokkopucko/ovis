@@ -229,6 +229,8 @@ export interface ListTamper {
   readonly answerList?: string;
   /** This id is reported as the account's list (GET /v2/lists/mine, POST /v2/pc/list, the mailbox's with_list), the log unchanged: the id is a hint, pinned only from a member. */
   readonly listId?: string;
+  /** The links of these member keys are not served to a PC (POST /v2/pc/list/links): a service can withhold a link, never forge one. */
+  readonly withholdLinks?: readonly string[];
   /** One byte of the body of the entry at this seq is flipped as served: it no longer holds (`signature_invalid`, or `entry_malformed`). */
   readonly flipEntry?: { readonly seq: number; readonly byte?: number };
   /** One byte of this member's wrap of this epoch is flipped as served: it does not open (`refused`), which is no evidence. */
@@ -309,6 +311,8 @@ interface FakeList {
   readonly additions: number[];
   /** by member key: the registered sign-in key its link names (D11.2); one per member key, and one per registered key */
   readonly links: Map<string, string>;
+  /** every link taken, oldest first, with its two signatures, kept when it gives way (POST /v2/pc/list/links serves them) */
+  linkLog?: { readonly key: string; readonly device: string; readonly link: { readonly member: string; readonly device: string }; readonly linked_at: number }[];
   readonly tamper: { readonly rule: ListTamper; readonly family: string | null; readonly server_id: string | null }[];
 }
 
@@ -1629,7 +1633,20 @@ export class FakeAccountService {
       if (error instanceof ListKindError) return invalid;
       throw error;
     }
-    return await verifySignature(bytes, byMember, key) && await verifySignature(bytes, byDevice, own) ? own : invalid;
+    if (!(await verifySignature(bytes, byMember, key) && await verifySignature(bytes, byDevice, own))) return invalid;
+    // kept beside the link it proves, for the link's log once the link is written
+    this.linkProofs.set(`${list} ${key} ${own}`, { member, device });
+    return own;
+  }
+
+  /** The two signatures of each link a sign-in proved, by list, member key and registered key: what the link's log keeps. */
+  private readonly linkProofs = new Map<string, { readonly member: string; readonly device: string }>();
+
+  /** The link of `key` to `own` goes into the list's log of links, with its two signatures, when it is written. */
+  private logLink(list: FakeList, key: string, own: string): void {
+    const link = this.linkProofs.get(`${list.id} ${key} ${own}`);
+    if (link === undefined) return;
+    (list.linkLog ??= []).push({ key, device: own, link, linked_at: Math.floor(this.now() / 1000) });
   }
 
   /**
@@ -1642,6 +1659,7 @@ export class FakeAccountService {
     const others = [...list.links].filter(([member, registered]) => registered === own && member !== key).map(([member]) => member);
     for (const member of others) list.links.delete(member);
     list.links.set(key, own);
+    this.logLink(list, key, own);
     return true;
   }
 
@@ -1931,6 +1949,21 @@ export class FakeAccountService {
     return lie;
   }
 
+  /**
+   * POST /v2/pc/list/links: every link the list's log of links holds, oldest first, each with its two signatures
+   * (`seq` counts from 1), after `after`, at most `limit`; `more` while more follow. A link a tamper rule withholds is
+   * left out: a PC that verifies each pair can be denied a link, never shown a false one.
+   */
+  private linksPage(list: FakeList, caller: ListCaller, after: number | null, limit: number): Response {
+    const lie = this.tamperFor(list, caller);
+    const withheld = new Set(lie.withholdLinks ?? []);
+    const all = (list.linkLog ?? []).map((one, index) => ({ seq: index + 1, ...one })).filter((one) => !withheld.has(one.key));
+    const after0 = after ?? 0;
+    const rest = all.filter((one) => one.seq > after0);
+    const links = rest.slice(0, limit);
+    return this.v2Json({ list: list.id, after, links, more: rest.length > links.length });
+  }
+
   /** One page of the log after `after` (from entry 0 for null), as served to `caller`. */
   private logPage(list: FakeList, caller: ListCaller, after: number | null, limit: number): Response {
     const served = this.servedLog(list, caller);
@@ -2050,6 +2083,7 @@ export class FakeAccountService {
     if (raced !== null) return raced;
     const list: FakeList = { id: first.hash, account: session.account, texts: [body.entry], hashes: [first.hash], last: first, state, wraps: new Map(), claims: new Map(), posts: new Map(), additions: [],
       links: new Map(linked === null ? [] : [[first.body.signer, linked]]), tamper: [] };
+    if (linked !== null) this.logLink(list, first.body.signer, linked);
     for (const wrap of wraps) storeWrap(list, wrap);
     this.lists.set(list.id, list);
     this.accountLists.set(session.account, list.id);
@@ -2141,6 +2175,7 @@ export class FakeAccountService {
     if (fell !== undefined) return notCarried(fell.index);
     const list: FakeList = { id: first.hash, account, texts: [entry, ...texts as string[]], hashes: held.map(({ hash }) => hash), last, state, wraps: new Map(), claims: new Map(), posts: new Map(),
       additions: [], links: new Map(linked === null || handOver === null ? [] : [[handOver, linked]]), tamper: [] };
+    if (linked !== null && handOver !== null) this.logLink(list, handOver, linked);
     for (const wrap of wraps) storeWrap(list, wrap);
     this.lists.set(list.id, list);
     this.accountLists.set(account, list.id);
@@ -2403,13 +2438,14 @@ export class FakeAccountService {
     const list = this.lists.get(body.list as string);
     if (list === undefined || !this.listsOn(list.account)) return this.v2Unknown();
     const listing = this.directories.get(list.account)?.get(serverId);
-    if (path === "/v2/pc/list/log" || path === "/v2/pc/list/wraps") {
+    if (path === "/v2/pc/list/log" || path === "/v2/pc/list/wraps" || path === "/v2/pc/list/links") {
       // a listing the account confirmed, or a row in the list, removed or not: a removed PC reads its removal
       const confirmed = listing !== undefined && this.confirmed(listing);
       if (!confirmed && rowOf(list.state.pcs, endpoint) === null) return this.v2Unknown();
       const halted = confirmed ? null : this.halted(list, caller);
       if (halted !== null) return halted;
       if (path === "/v2/pc/list/log") return this.logPage(list, caller, body.after === undefined ? null : body.after as number, body.limit === undefined ? LIST_PAGE_MAX : body.limit as number);
+      if (path === "/v2/pc/list/links") return this.linksPage(list, caller, body.after === undefined ? null : body.after as number, body.limit === undefined ? LIST_PAGE_MAX : body.limit as number);
       if (!isListKeyEncoding(body.member as string)) return this.v2Invalid();
       return this.v2Json({ wraps: this.servedWraps(list, caller, body.member as string) });
     }
@@ -2836,6 +2872,7 @@ const PC_PROOF: readonly string[] = ["server_id", "public_key", "challenge_id", 
 const PC_SHAPES: Readonly<Record<string, { readonly size: number; readonly members: readonly string[]; readonly optional?: readonly string[] }>> = {
   "/v2/pc/list": { size: LIST_BODY.small, members: ["account"] },
   "/v2/pc/list/log": { size: LIST_BODY.small, members: ["list"], optional: ["after", "limit"] },
+  "/v2/pc/list/links": { size: LIST_BODY.small, members: ["list"], optional: ["after", "limit"] },
   "/v2/pc/list/wraps": { size: LIST_BODY.small, members: ["list", "member"] },
   "/v2/pc/list/wraps/put": { size: LIST_BODY.entries, members: ["list", "wraps"] },
   "/v2/pc/list/entries": { size: LIST_BODY.entries, members: ["list", "entries"], optional: ["wraps"] },
@@ -2854,7 +2891,7 @@ function pcBodyFormed(path: string, body: Record<string, unknown>): boolean {
   if (path === "/v2/pc/list") return typeof body.account === "string" && ACCOUNT_ID.test(body.account);
   if (typeof body.list !== "string" || !isListHash(body.list)) return false;
   switch (path) {
-    case "/v2/pc/list/log": return (body.after === undefined || isPlace(body.after)) && (body.limit === undefined || (isPlace(body.limit) && body.limit >= 1 && body.limit <= LIST_PAGE_MAX));
+    case "/v2/pc/list/log": case "/v2/pc/list/links": return (body.after === undefined || isPlace(body.after)) && (body.limit === undefined || (isPlace(body.limit) && body.limit >= 1 && body.limit <= LIST_PAGE_MAX));
     case "/v2/pc/list/wraps": return typeof body.member === "string";
     case "/v2/pc/list/entries": return entriesOf(body.entries) !== null && wrapsOf(body.wraps) !== null;
     case "/v2/pc/list/wraps/put": return (wrapsOf(body.wraps)?.length ?? 0) >= 1;

@@ -363,3 +363,24 @@ describe("a key a person at this PC has just let in", () => {
     expect(store.rows().map((row) => [nameOf(row.key), row.state])).toEqual([["k-1", "hold"], ["k-2", "live"]]);
   });
 });
+
+describe("a row that moves with its device's hand-over (a list's `moved`)", () => {
+  test("a held row that waits for a whole read keeps waiting under its new key, and gets a fresh hold when the read comes, as it would have under the old", () => {
+    const dir = stateDir();
+    const { ports: p } = ports(dir);
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    store.commitList(list(["k-old"]));
+    const [held] = store.rows();
+    expect(held).toMatchObject({ state: "hold" });
+    // no whole read for an hour: every row waits for one (T56), and the hold's deadline passes meanwhile
+    store.waitForRead();
+    clock.now += 2 * JOIN_HOLD_MS;
+    const moved = { ...list(["k-new"]), moved: [{ from: keyOf("k-old"), to: keyOf("k-new") }] };
+    store.commitList(moved);
+    const row = store.rows().find((candidate) => candidate.key === keyOf("k-new"))!;
+    expect(row).toMatchObject({ no: held!.no, state: "hold" });
+    // the read that ended its wait starts its hold again: it is not let in at once
+    expect(Date.parse(row.hold_until!)).toBe(clock.now + JOIN_HOLD_MS);
+    expect(store.access(row.id)).toMatchObject({ refused: "join_hold" });
+  });
+});

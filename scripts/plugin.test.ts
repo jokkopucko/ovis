@@ -954,6 +954,10 @@ describe("the devices status lists apart", () => {
     try {
       const pinned = JSON.parse((await run("status", env, { args: ["--json"] })).out) as Record<string, unknown>;
       expect(pinned).toMatchObject({ account: "acct_1a2b3c4d5e6f", account_known: true, list: { pinned_list: "ab".repeat(32), standing: null, reason }, problem: null });
+      expect("migrate_time_scale" in pinned).toBe(false);
+      // a staging run that turned the waits of a move onto the list down says so
+      answers.status = () => Response.json({ account: "acct_1a2b3c4d5e6f", members: 1, waiting_for_add: false, migrate_time_scale: 60 });
+      expect(JSON.parse((await run("status", env, { args: ["--json"] })).out)).toMatchObject({ migrate_time_scale: 60 });
       // closed altogether: the PC says what it cannot read, and nothing else of its account
       const why = "This PC is pinned to a signed list in /home/me/.herdr, and /home/me/.herdr/account-list-keys.json could not be brought beside it (ENOENT)";
       strict = true;

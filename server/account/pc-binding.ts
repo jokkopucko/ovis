@@ -167,7 +167,7 @@ const wallNow = (): number => performance.timeOrigin + performance.now();
  * what `work` reads of the file it then writes is what is there. A lock another server holds is waited for, briefly;
  * a write that cannot have it fails, with nothing written.
  */
-function withFileLock<T>(path: string, work: () => T): T {
+export function withFileLock<T>(path: string, work: () => T): T {
   const lock = `${path}.lock`;
   const deadline = performance.now() + LOCK_WAIT_MS;
   let held = false;

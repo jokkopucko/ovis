@@ -1369,17 +1369,18 @@ const listSummaryOf = (value: unknown): ListSummary | null => {
  * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
  * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
  */
-async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null } | { readonly problem: string } | null> {
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
   try {
     const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
     if (!response.ok) {
       const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
       return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
     }
-    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown };
+    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown; migrate_time_scale?: unknown };
     if (!(typeof body.account === "string" || body.account === null) || !Number.isSafeInteger(body.members)) return null;
     // null from a server from before the field
-    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list) };
+    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list),
+      scale: Number.isSafeInteger(body.migrate_time_scale) && (body.migrate_time_scale as number) > 1 ? body.migrate_time_scale as number : null };
   } catch { return null; }
 }
 
@@ -1420,6 +1421,8 @@ async function statusJson(): Promise<number> {
     list: account?.list ?? null,
     // the PC cannot read its own account state, and lets only itself in: what it cannot read
     problem: told !== null && "problem" in told ? told.problem : null,
+    // a staging run that turned the waits of a move onto the account's list down (OVIS_LIST_MIGRATE_TIME_SCALE)
+    ...(account?.scale ? { migrate_time_scale: account.scale } : {}),
   })}\n`);
   return 0;
 }

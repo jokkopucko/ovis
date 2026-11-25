@@ -2123,6 +2123,48 @@ the one that started the list is no reason not to follow: that device stays out 
 the pin, by whichever key it is in and whichever sign-in key vouches for it (`heldOut`), so
 neither a hand-over nor the pin undoes a removal.
 
+### On the PC (as built)
+
+- **The witness.** A device asks each PC it knows `GET /api/account/list/witness` in its own
+  session and gets the PC's `{ account, pinned, admits, removed }` (docs/account.md, "How long a key
+  has been let in").
+- **The naming.** `POST /api/account/list/name { naming: { list, key, signature }, vouches? }` from
+  the device's own session, signed in with its key (at most 16 vouches, and 30 calls a minute for
+  a key with the other session calls of the list). The PC keeps a vouch only between a device of
+  that list and a key it lets in through its account or holds a removal against, so links between
+  made-up keys take no place (`account-list-vouches.json`, at most 4 lists and 64 vouches a list;
+  the other lists' go at the pin, and the file goes with the binding and at an identity reset).
+  The cap never refuses a link whose sign-in key the PC holds a removal against: such a link keeps
+  a device out, and there are no more of them than the PC's own removals. Any other link past the
+  cap only says who is known here: a naming that would rest on one is refused (`lists_full`), and
+  after the pin it is left out with a line in the log, never dropped unsaid. It
+  reads that list's log with its own proof, at most once a list each 30 seconds, and follows only
+  on a read that reached the head the service shows. It asks `pinVerdict` with its own record and
+  the vouches it kept and was handed now. It answers `{ pinned: true, list }` or `{ pinned: false,
+  why, wait }`, `why` one of the refusals above or `naming_invalid`, `named_here`, `not_read`,
+  `lists_full`, `unavailable`, `wait` in seconds of its own clock. A PC that follows a list answers
+  `{ pinned: true, list }` with the list it follows, whatever was named: the device compares it.
+- **The account service's links.** Before it pins, the PC reads every link the account service
+  keeps for that list (`POST /v2/pc/list/links`, page after page), checks both signatures of each
+  itself, and keeps those that say something here, beside the vouches: no links read, no pin yet.
+  After the pin it reads them again at each read of the log while it holds a removal of its own,
+  so a device it put out by a sign-in key stays out by its member key whether or not it ever
+  handed that link. What is left: a service that withholds a link. On a yes it saves its copy, pinned
+  as `migrated`, and pins once the answer is out: the pin ends every session of the account's rows
+  with `auth_changed`, the naming one among them, and its final `WELCOME` then names the list.
+- **After the pin** a device that hands its place on keeps its row, a removal of the PC's own
+  follows the device (`heldOut`), and a carried key that never handed over is let in only while the
+  account service's snapshot names it (docs/account.md, "What a pinned PC does").
+- **Keys for a PC carried in as an endpoint.** It follows the list and lets its devices in, and
+  lets nobody in itself. A device the list holds to drive with full power asks it in its session,
+  `POST /api/account/list/card`, for `{ key, enc, card, endpoint, list }`; the PC posts its keys at
+  the account service in that call, and takes for itself only the `pc` entry that very device signs
+  (handed over `POST /api/account/list/page`, or read from the service). A device signs one with no
+  question only when it did something itself for that PC (`addedItself`). With nobody's evidence,
+  `ovis add` at the PC gives it its keys by the number, from the adder the person confirmed. An entry
+  with its keys that another device signed, and another key at its relay key, give it nothing to
+  sign with, and it says so.
+
 ### What is left
 
 - **A key that stood for a day, unnoticed, on one PC the first device asks can be carried in, and
