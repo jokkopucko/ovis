@@ -4,6 +4,7 @@ import com.trilead.ssh2.crypto.PEMDecoder;
 import com.trilead.ssh2.crypto.PEMStructure;
 import com.trilead.ssh2.crypto.PublicKeyUtils;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.interfaces.DSAPublicKey;
@@ -78,10 +79,11 @@ final class SshKeys {
         SshFailure early = precheck(text);
         if (early != null) throw early;
         String pass = passphrase == null || passphrase.isEmpty() ? null : passphrase;
+        char[] key = text.trim().toCharArray();
         PEMStructure pem;
         boolean encrypted;
         try {
-            pem = PEMDecoder.parsePEM(text.trim().toCharArray());
+            pem = PEMDecoder.parsePEM(key);
             encrypted = PEMDecoder.isPEMEncrypted(pem);
         } catch (IOException | RuntimeException damaged) {
             throw new SshFailure("key-not-a-key", SshFailure.rootMessage(damaged));
@@ -89,7 +91,7 @@ final class SshKeys {
         if (encrypted && pass == null) throw new SshFailure("key-needs-passphrase", "The key is protected by a passphrase");
         KeyPair pair;
         try {
-            pair = PEMDecoder.decode(pem, pass);
+            pair = decode(pem, key, pass);
         } catch (IOException | RuntimeException failed) {
             String why = SshFailure.rootMessage(failed);
             if (why.toLowerCase(Locale.ROOT).contains("unknown key type") || why.contains("Unsupported encryption") || why.contains("Only one key")) {
@@ -104,6 +106,23 @@ final class SshKeys {
         if (pub instanceof DSAPublicKey) throw new SshFailure("key-unsupported", "DSA keys are no longer accepted by OpenSSH");
         if (PublicKeyUtils.isEd25519Key(pub)) return new Read(pair, "ed25519", 256, encrypted);
         throw new SshFailure("key-unsupported", pub.getAlgorithm());
+    }
+
+    private static KeyPair decode(PEMStructure pem, char[] key, String pass) throws IOException {
+        if (pass == null || pem.pemType == PEMDecoder.PEM_OPENSSH_PRIVATE_KEY
+                || StandardCharsets.US_ASCII.newEncoder().canEncode(pass)) {
+            return PEMDecoder.decode(pem, pass);
+        }
+        // sshlib 2.2.51 takes a String and encodes traditional PEM passwords as Latin-1.
+        // Carry the UTF-8 bytes through that conversion without changing them.
+        String utf8Bytes = new String(pass.getBytes(StandardCharsets.UTF_8), StandardCharsets.ISO_8859_1);
+        try {
+            return PEMDecoder.decode(pem, utf8Bytes);
+        } catch (IOException | RuntimeException failed) {
+            if (!StandardCharsets.ISO_8859_1.newEncoder().canEncode(pass)) throw failed;
+            // Decoding can modify the PEM in place, so retry the original bytes.
+            return PEMDecoder.decode(key, pass);
+        }
     }
 
     /** `public` as a line for authorized_keys. */
