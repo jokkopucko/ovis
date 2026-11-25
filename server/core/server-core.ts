@@ -142,7 +142,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
       }, 100);
       outputTimer.unref();
     },
-    stop(beforeTerminals: () => void): void {
+    stop(beforeTerminals: () => void): Promise<void> | undefined {
       stopped = true;
       stopAcp?.();
       conversations.stop();
@@ -156,10 +156,11 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
       opencodeAgents.stop();
       clearInterval(waitTimer);
       plans.stop();
-      machines?.stop();
+      const stoppingMachines = machines?.stop();
       beforeTerminals();
       for (const client of clients) killWatches(client);
       closeAttachments();
+      return stoppingMachines;
     },
   };
 }

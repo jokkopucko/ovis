@@ -4998,10 +4998,12 @@ describe("GET /api/sessions/history", () => {
           if (phase === "server creation") throw failure;
           const app = createApp(...args);
           stop = app.stop;
+          const appStop = app.stop;
           const stopping = spyOn(app, "stop").mockImplementation(() => {
-            stop!();
+            const drained = appStop();
             stopped = true;
             if (phase === "server stop") throw failure;
+            return drained;
           });
           restores.push(() => stopping.mockRestore());
           return app;
