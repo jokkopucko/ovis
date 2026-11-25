@@ -2361,6 +2361,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               ]);
               if (!read || !asks() || request.signal.aborted || Date.now() >= deadline) return false;
               if (inlineEditorMatches(null, read.text, draft)) return true;
+              if (agyCustomEditorMatches(read.text, parsed, ticks, draft, true)) {
+                await Bun.sleep(50);
+                continue;
+              }
               const before = parseAgyQuestion(read.text);
               if (!agySameQuestion(before, parsed) || before.selectedIndex !== parsed.customMenuIndex || !ticked(before)) return false;
               await Bun.sleep(50);

@@ -1,4 +1,5 @@
 import type { DialogReader } from "./registry.ts";
+import { startScreenMetadata } from "../start-screen.ts";
 import {
   ANSI_RE,
   KEY,
@@ -39,6 +40,7 @@ import {
 export const AGY_ASK_HINT_RE = /↑\/↓\s+Navigate\b[\s\S]*?\benter\s+(?:Submit(?:\s+All)?|Select|Write-in)\b[\s\S]*?\besc\s+Skip\b/i;
 
 const AGY_WRITE_IN_HINT_RE = /\benter\s+Submit(?:\s+All)?\s*·\s*esc\s+Back\b/i;
+const AGY_FOOTER_RE = /^(?:esc to cancel {2,}| {20,})(?:[a-z][\w-]* · )?[\p{L}\p{N}][\p{L}\p{N} ._()+/-]* · [a-z-]+ *$/u;
 
 /**
  * Whether the key hint found at `hintIndex` ends the screen: under it Antigravity draws one row at most, its status row
@@ -50,7 +52,11 @@ function agyHintEndsScreen(lines: string[], hintIndex: number, hint: RegExp): bo
   // a narrow pane wraps the hint: its rows are the fewest from hintIndex on that hold all of it
   const span = [1, 2, 3].find((rows) => hint.test(lines.slice(hintIndex, hintIndex + rows).join(" "))) ?? 1;
   const below = lines.slice(hintIndex + span).filter((line) => cleanLine(line) !== "");
-  return below.length === 0 || (below.length === 1 && /^(?:esc to cancel\b|\s{20,}\S)/.test(below[0]!.replace(ANSI_RE, "")));
+  if (below.length === 0) return true;
+  if (below.length !== 1) return false;
+  const row = below[0]!.replace(ANSI_RE, "");
+  return /^esc to cancel *$/.test(row)
+    || (AGY_FOOTER_RE.test(row) && startScreenMetadata("agy-transcript", row).model !== null);
 }
 const AGY_QUESTION_RE = /^Question\s+(\d+)\/(\d+):\s*(.+)$/;
 const AGY_ROW_RE = /^\s*([▸❯›>])?\s*(\d+)\.\s+(.+)$/;
@@ -67,9 +73,9 @@ export function agyWriteInWaits(screen: string): boolean {
 
 /**
  * The open `Write-in...` editor: its `Your answer:` label (the nearest above the hint, however many rows a long answer
- * wraps onto) and the text it holds, the rows under the label joined with their `> ` taken off.
+ * wraps onto) and its input rows, with the first row's `> ` taken off.
  */
-function agyWriteInEditor(screen: string): { lines: string[]; answerIndex: number; text: string } | null {
+function agyWriteInEditor(screen: string): { lines: string[]; answerIndex: number; rows: string[] } | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const shown = lines.map(cleanLine).filter(Boolean);
   if (!shown.slice(-6).some((_, at, tail) => AGY_WRITE_IN_HINT_RE.test(tail.slice(at, at + 3).join(" ")))) return null;
@@ -77,18 +83,37 @@ function agyWriteInEditor(screen: string): { lines: string[]; answerIndex: numbe
   if (hintIndex < 0 || !agyHintEndsScreen(lines, hintIndex, AGY_WRITE_IN_HINT_RE)) return null;
   const answerIndex = findLastIndex(lines.slice(0, hintIndex), (line) => cleanLine(line) === "Your answer:");
   if (answerIndex < 0) return null;
-  const rows = lines.slice(answerIndex + 1, hintIndex).map(cleanLine).filter(Boolean);
-  if (rows.length === 0 || !rows[0]!.startsWith(">")) return null;
-  return { lines, answerIndex, text: [rows[0]!.slice(1), ...rows.slice(1)].join(" ") };
+  const rows = lines.slice(answerIndex + 1, hintIndex);
+  while (rows.at(-1)?.match(/^ *$/)) rows.pop();
+  const first = rows[0];
+  if (first === undefined || !/^\s*>/.test(first)) return null;
+  rows[0] = first.replace(/^\s*> ?/, "");
+  // The last row can be padded with spaces. A row that wraps still carries its trailing text.
+  const last = rows.at(-1);
+  if (last !== undefined) rows[rows.length - 1] = last.replace(/ +$/, "");
+  return { lines, answerIndex, rows };
 }
 
-/**
- * The editor wraps a long answer onto rows of its own, so the two are compared without their whitespace.
- */
-export function agyCustomEditorMatches(screen: string, expected: ParsedPrompt, checked: ReadonlySet<number>, draft: string): boolean {
+/** The text a write-in types: Antigravity's one-line field takes each line break as a space (customSteps). */
+const agyTypedWriteIn = (text: string): string => text.replace(/\s*\r?\n\s*/g, " ").trim();
+
+export function agyCustomEditorMatches(screen: string, expected: ParsedPrompt, checked: ReadonlySet<number>, answer: string, partial = false): boolean {
   if (expected.responder !== "agy-question" || expected.customMenuIndex === null) return false;
   const editor = agyWriteInEditor(screen);
-  if (!editor || editor.text.replace(/\s/g, "") !== draft.replace(/\s/g, "")) return false;
+  if (!editor) return false;
+  const draft = agyTypedWriteIn(answer);
+  // A soft wrap can split a word or hide one separating space; whitespace within a row is still exact.
+  let positions = new Set([0]);
+  for (const [index, row] of editor.rows.entries()) {
+    const next = new Set<number>();
+    for (const at of positions) {
+      if (draft.startsWith(row, at)) next.add(at + row.length);
+      if (index > 0 && draft[at] === " " && draft.startsWith(row, at + 1)) next.add(at + 1 + row.length);
+    }
+    if (next.size === 0) return false;
+    positions = next;
+  }
+  if (!partial && !positions.has(draft.length)) return false;
   const { lines, answerIndex } = editor;
   const syntheticHint = [
     "↑/↓ Navigate",
@@ -214,7 +239,7 @@ export function parseAgyQuestion(screen: string): ParsedPrompt | null {
     customMenuIndex: choices.length,
     rejectWithEscapeIndex: null,
     customSteps: (text: string, picked?: number[]) => {
-      const normalized = text.replace(/\s*\r?\n\s*/g, " ").trim();
+      const normalized = agyTypedWriteIn(text);
       const keys: string[] = [];
       let cursor = selectedIndex;
       if (multi && picked !== undefined) {

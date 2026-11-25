@@ -488,6 +488,25 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
   }
 });
 
+it.skipIf(process.platform !== "linux")("does not greet Agy while its deleted presence lock is still open", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-agy-deleted-lock-"));
+  const lock = join(root, "presence", "00000000-0000-4000-8000-000000000003.lock");
+  mkdirSync(join(root, "presence"));
+  const fd = fs.openSync(lock, "w");
+  const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
+  const { names, answers, restore } = processInfoAnswers();
+  try {
+    rmSync(lock);
+    expect(fs.readlinkSync(`/proc/${process.pid}/fd/${fd}`)).toEndWith(".lock (deleted)");
+    answers(names([process.pid]), names([process.pid]));
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+  } finally {
+    restore();
+    fs.closeSync(fd);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane still names the process that holds no lock", async () => {
   const screen = UNUSED_START_SCREEN;
   const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;

@@ -5041,23 +5041,37 @@ ${omoRule}
     });
   });
 
-  test.each(["editor stays open", "editor closes during the look"])("Antigravity submits a write-in only if the %s", async (state) => {
+  test.each([
+    ["editor stays open", "notes.txt", "notes.txt", true],
+    ["editor closes during the look", "notes.txt", "notes.txt", false],
+    ["editor redraws a read late", "notes.txt", "", true],
+    ["editor redraws a prefix first", "notes.txt", "not", true],
+    ["editor changes whitespace", "notes.txt", "notes .txt", false],
+    ["editor adds a nonbreaking space at a wrap", "notes.txt", "notes.\u00a0\ntxt", false],
+    ["editor adds plain spaces at a wrap", "notes.txt", "notes.  \ntxt", false],
+    ["editor wraps at a word", "new notes.txt", "new\nnotes.txt", true],
+    ["editor wraps inside a word", "notes.txt", "notes.\ntxt", true],
+  ] as const)("Antigravity write-in: %s", async (state, draft, drawn, submits) => {
     const initial = readFileSync(new URL("./fixtures/agy-1.5.6-ask.txt", import.meta.url), "utf8");
     const selected = initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  3. Write-in...", "> 3. Write-in...");
     const editor = (text: string) => selected.replace(/  ↑\/↓ Navigate[\s\S]*$/, `  Your answer:\n  > ${text}\n\nenter Submit · esc Back\n`);
     await withPane("agy", "blocked", initial, async (pane) => {
       const prompt = (await card())!;
+      const text = `text:${draft}`;
+      let reads = 0;
+      if (state.startsWith("editor redraws")) {
+        pane.onRead = () => { if (pane.sent.at(-1) === text && ++reads === 3) pane.screen = editor(draft); };
+      }
       pane.onSent = (sent) => {
         if (sent === "down") pane.screen = pane.sent.length === 1
           ? initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  2. bye.txt", "> 2. bye.txt") : selected;
         if (sent === "enter" && pane.sent.length === 3) pane.screen = editor("");
-        if (sent === "text:notes.txt") pane.screen = editor("notes.txt");
+        if (sent === text) pane.screen = editor(drawn);
       };
-      const closes = state === "editor closes during the look";
-      const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:notes.txt") pane.screen = "❯ unsent draft"; };
-      expect(await answer(prompt.id, { custom_text: "notes.txt" }, { beforeKey })).toEqual(closes
-        ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
-      expect(pane.sent).toEqual(["down", "down", "enter", "text:notes.txt", ...(closes ? [] : ["enter"])]);
+      const beforeKey = async () => { if (state === "editor closes during the look" && pane.sent.at(-1) === text) pane.screen = "❯ unsent draft"; };
+      expect(await answer(prompt.id, { custom_text: draft }, { beforeKey })).toEqual(submits
+        ? { status: 200, code: undefined } : { status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter", text, ...(submits ? ["enter"] : [])]);
     });
   });
 
