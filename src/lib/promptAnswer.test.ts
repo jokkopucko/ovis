@@ -71,6 +71,25 @@ describe("answering a prompt from the chat", () => {
     const question = { ...prompt(["Use `local` socket", "Go through **[the relay](https://example.com)**"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(question, "use local socket")).toEqual({ option_index: 0 });
     expect(answerFromText(question, "Go through the relay")).toEqual({ option_index: 1 });
+    const gjc = {
+      ...prompt(["Keep `local` socket", "Remote relay", "Literal (Recommended)"], 3),
+      agent: "gjc",
+      text_format: "markdown" as const,
+      options: [
+        { label: "Keep `local` socket", description: null, recommended: true as const },
+        { label: "Remote relay", description: null },
+        { label: "Literal (Recommended)", description: null },
+        { label: "Other (type your own)", description: null },
+      ],
+    };
+    expect(answerFromText(gjc, "Keep local socket")).toEqual({ option_index: 0 });
+    expect(answerFromText(gjc, "Keep local socket (Recommended)")).toEqual({ option_index: 0 });
+    expect(answerFromText(gjc, "Remote relay (Recommended)")).toEqual({ custom_text: "Remote relay (Recommended)" });
+    expect(answerFromText(gjc, "Literal")).toEqual({ custom_text: "Literal" });
+    expect(answerFromText(gjc, "Literal (Recommended)")).toEqual({ option_index: 2 });
+    const ompLiteral = { ...prompt(["Use local socket (Recommended)", "Remote relay"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(ompLiteral, "Use local socket")).toEqual({ custom_text: "Use local socket" });
+    expect(answerFromText(ompLiteral, "Use local socket (Recommended)")).toEqual({ option_index: 0 });
     expect(answerFromText(question, "use a local socket")).toEqual({ custom_text: "use a local socket" });
     const twins = { ...prompt(["*main*", "`*main*`"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(twins, "*main*")).toEqual({ custom_text: "*main*" });
@@ -194,6 +213,18 @@ describe("answering a prompt from the chat", () => {
       };
       expect(answerFromText(card, typed), name).toEqual(expected);
     }
+    const ambiguousRecommended: InteractivePrompt = {
+      ...prompt(["Deploy", "Deploy (Recommended)", "Other"], 2),
+      agent: "gjc",
+      text_format: "markdown",
+      options: [
+        { label: "Deploy", description: null, recommended: true },
+        { label: "Deploy (Recommended)", description: null },
+        { label: "Other", description: null },
+      ],
+    };
+    expect(answerFromText(ambiguousRecommended, "Deploy (Recommended)")).toEqual({ custom_text: "Deploy (Recommended)" });
+    expect(answerFromText(ambiguousRecommended, "Deploy")).toEqual({ option_index: 0 });
   });
   it("gives every case-folded letter, alone or under marks, a skeleton that is its own skeleton (#2220 review)", () => {
     const letters = CASE_FOLDING_DATA.split(";").flatMap((entry) => entry.split("=")[0]!.split(" ").concat(entry.split("=")[1]!.split(" ")))

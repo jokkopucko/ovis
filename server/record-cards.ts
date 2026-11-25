@@ -145,3 +145,25 @@ export async function withAgentRecord(paneId: string, agent: string, card: Inter
   const shown = withRecord(parsed, await recordRequest(paneId, agent), screen, source.record);
   return shown === parsed ? card : publicPrompt(shown);
 }
+
+/** Same as `withAgentRecord`, reusing an already-resolved gjc session file path so callers avoid a second transcript lookup. */
+export async function withGjcRecordAt(paneId: string, card: InteractivePrompt, screen: string, path: string | null): Promise<InteractivePrompt | null> {
+  const parsed = parsedByPublicPrompt.get(card);
+  if (parsed === undefined || !parsed.responder.startsWith("fallback")) return card;
+  if (commandCut(screen, gjcRecord)) return null;
+  if (path === null) return card;
+  let request: RecordRequest | null = null;
+  try {
+    request = within(path, gjcRecord.pending(await tail(path)));
+  } catch (error) {
+    if (!(error instanceof FileBusyError) && (error as NodeJS.ErrnoException).code !== "ENOENT") {
+      const kind = `gjc\0${error instanceof Error ? error.name : typeof error}`;
+      if (!unreadable.has(kind)) {
+        unreadable.add(kind);
+        console.warn(`prompt: gjc's record could not be read for pane ${paneId}; its card stays the screen's (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
+  }
+  const shown = withRecord(parsed, request, screen, gjcRecord);
+  return shown === parsed ? card : publicPrompt(shown);
+}

@@ -84,7 +84,19 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     // an option's own words first: a translated label never takes the words another option shows
     // an omp card in Markdown is named by the words it shows alone (optionName, as the card draws them):
     // its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
-    if (prompt.text_format === "markdown") return only((index) => optionName(prompt, prompt.options[index]!.label).words, (shown) => spaced(shown) === lower);
+    if (prompt.text_format === "markdown") {
+      const exact = (shown: string): boolean => spaced(shown) === lower;
+      const terminalName = (index: number): string => {
+        const name = optionName(prompt, prompt.options[index]!);
+        return name.recommended ? `${name.words} (Recommended)` : name.words;
+      };
+      const ambiguous = valid.filter((index) => exact(optionName(prompt, prompt.options[index]!).words) || exact(terminalName(index)));
+      if (ambiguous.length > 1) return null;
+      const shown = only((index) => optionName(prompt, prompt.options[index]!).words, exact);
+      if (shown !== undefined) return shown;
+      // gjc's recommended row as its terminal draws it, with the ` (Recommended)` the card shows as a tag (server/gjc-ask.ts)
+      return only(terminalName, exact);
+    }
     const own = only((index) => prompt.options[index]!.label);
     return own !== undefined ? own : only((index) => words.label(index));
   };

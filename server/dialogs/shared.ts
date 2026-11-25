@@ -149,6 +149,12 @@ export type ParsedPrompt = InteractivePrompt & {
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
   ompCall?: string;
+  /** gjc's selector: its title's rows as drawn, top to bottom, which the card splits into a question and a body (server/gjc-ask.ts) */
+  gjcTitleRows?: string[];
+  /** gjc's selector: the width of its outer border rule, when framed, for width-consistent soft-wrap checks (server/gjc-ask.ts) */
+  gjcTitleWidth?: number;
+  /** gjc: the pane's one open ask call and question index this card was bound to (server/gjc-ask.ts), rechecked before committing keys */
+  gjcCall?: string;
   claudeUltracode?: boolean | null;
   /**
    * the shell command of an approval dialog the approval hub binds a held request to (server/approvals/hub.ts): Claude's

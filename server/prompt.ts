@@ -15,6 +15,7 @@ import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
+import { gjcCallStillOpen, gjcCallStillOpenInFile, withGjcFallback } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
@@ -617,7 +618,7 @@ const queueFronts = new Map<string, QueueFront & { rollout: string }>();
  * `picked`: a Letta picker answered with its Enter (a model, a level), by what it says: Letta redraws a moment after
  * the key, and until a read shows anything else that drawing is the asking just answered, never a new one
  */
-interface Asking { content: string | null; n: number; queued: boolean; call?: string; picked?: string }
+interface Asking { content: string | null; n: number; queued: boolean; call?: string; gjcCall?: string; picked?: string }
 const askings = new Map<string, Asking>();
 let askingCount = 0;
 const SERVER_RUN = randomBytes(6).toString("hex");
@@ -638,16 +639,24 @@ function asked(paneId: string, prompt: InteractivePrompt | null, turns: number):
       if (asking) asking.content = null;
       return null;
     }
-    const call = parsedByPublicPrompt.get(prompt)?.ompCall;
-    // the same drawing under another ask call is another asking: omp asked again with the same questions
-    if (asking?.content !== prompt.id || call !== undefined && asking.call !== undefined && asking.call !== call) {
-      asking = { content: prompt.id, n: askingCount += 1, queued: prompt.queued !== undefined };
+    const parsed = parsedByPublicPrompt.get(prompt);
+    const call = parsed?.ompCall;
+    const gjcCall = parsed?.gjcCall;
+    // the same drawing under another ask call is another asking: omp/gjc asked again with the same questions;
+    // a bound gjc ask card never shares an asking or public id with an unbound screen read
+    if (asking?.content !== prompt.id
+      || (call !== undefined && asking.call !== undefined && asking.call !== call)
+      || asking.gjcCall !== gjcCall) {
+      asking = { content: prompt.id, n: askingCount += 1, queued: prompt.queued !== undefined, ...(gjcCall === undefined ? {} : { gjcCall }) };
       askings.set(paneId, asking);
     }
     if (call !== undefined) asking.call = call;
   }
   if (prompt === null) return null;
-  prompt.id = createHash("sha256").update(JSON.stringify([prompt.id, SERVER_RUN, asking?.n ?? 0])).digest("hex").slice(0, 12);
+  const gjcBound = parsedByPublicPrompt.get(prompt)?.gjcCall;
+  prompt.id = createHash("sha256").update(JSON.stringify(
+    gjcBound === undefined ? [prompt.id, SERVER_RUN, asking?.n ?? 0] : [prompt.id, SERVER_RUN, asking?.n ?? 0, gjcBound],
+  )).digest("hex").slice(0, 12);
   return prompt;
 }
 
@@ -782,7 +791,12 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
-  return { prompt: await withAgentRecord(paneId, agent, parseFallbackPrompt(agent, screen), screen), screen };
+  const fallback = parseFallbackPrompt(agent, screen);
+  if (agent === "gjc" && parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
+    return { prompt: await withGjcFallback(paneId, fallback, screen, true), screen };
+  }
+  const card = await withAgentRecord(paneId, agent, fallback, screen);
+  return { prompt: card, screen };
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
@@ -971,7 +985,7 @@ async function readKnownPrompt(
   openCodeStateDir?: string,
   openCodeState = defaultOpenCodeState,
   signal?: AbortSignal,
-  markdown = false,
+  markdown: boolean | "record" | "screen" = false,
   /**
    * for a key's verifying read: once every other look of this read is done, the screen is read again as it was
    * read before and parsed with what this read found; a card the screen no longer draws so authorizes no key
@@ -1232,7 +1246,7 @@ async function readKnownPrompt(
   if ((agent === "letta" || agent === "agy") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
   let rebind = (card: InteractivePrompt): InteractivePrompt => card;
   if (prompt && agent === "omp") {
-    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown, ompBindings);
+    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown === true, ompBindings);
     prompt = read.prompt;
     rebind = read.rebind;
     if (read.unverified) inputUnverified = true;
@@ -1287,9 +1301,12 @@ async function readKnownPrompt(
   // a command approval stays: its held request is answered through the approval hub with no key, and a key for it is
   // still refused before it goes (beforeKey)
   if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
-  if (!prompt && agent === "gjc" && settle !== "editor") {
+  if (!prompt && agent === "gjc" && markdown !== false && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
-    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: await withAgentRecord(paneId, agent, fallback, screen), screen };
+    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
+      if (markdown === "screen") return { prompt: fallback, screen };
+      return { prompt: await withGjcFallback(paneId, fallback, screen, markdown === true), screen };
+    }
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
   let settled: InteractivePrompt | undefined;
@@ -1720,8 +1737,16 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const guarded = guardUntil === null ? await guarding.then(() => true)
           : await Promise.race([guarding.then(() => true), Bun.sleep(Math.max(0, guardUntil - Date.now())).then(() => false)]);
         if (!guarded) throw new KeyRefused();
+        if (parsedPrompt?.gjcCall !== undefined && screenOnly === "editor") {
+          const checking = gjcCallStillOpen(body.pane_id, parsedPrompt.gjcCall);
+          checking.catch(() => undefined);
+          const open = await Promise.race([checking, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => false)]);
+          if (!open || Date.now() > readUntil) throw new KeyRefused();
+        }
         const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, openCodeState,
-          AbortSignal.timeout(Math.max(1, readUntil - Date.now())), true, screenOnly === "editor" ? "editor" : !screenOnly);
+          AbortSignal.timeout(Math.max(1, readUntil - Date.now())),
+          agent === "gjc" ? parsedPrompt?.gjcCall !== undefined : true,
+          screenOnly === "editor" ? "editor" : !screenOnly);
         reading.catch(() => undefined);
         const read = await Promise.race([reading, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
         const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
@@ -1729,12 +1754,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // a stale read (an OpenCode lookup another session overtook) authorizes nothing: it is refused before any
         // comparison, as an empty screen could make the same generic card as the one the answer was read for
         if (read?.stale) throw new KeyRefused();
-        const readsLive = read?.screen === undefined && screenOnly === true && parsedPrompt?.responder.startsWith("fallback") === true;
-        const screen = read?.screen ?? (read && readsLive
+        const refreshGjcScreen = read !== null && parsedPrompt?.gjcCall !== undefined && screenOnly === true;
+        const readsLive = refreshGjcScreen || (read?.screen === undefined && screenOnly === true && parsedPrompt?.responder.startsWith("fallback") === true);
+        const screen = refreshGjcScreen
           ? await Promise.race([liveScreen(body.pane_id).catch(() => null), Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)])
-          : null);
+          : (read?.screen ?? (read && readsLive
+            ? await Promise.race([liveScreen(body.pane_id).catch(() => null), Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)])
+            : null));
         if (readsLive && request.signal.aborted) throw new KeyRefused();
-        if (!read || read.inputUnverified || (screenOnly === "editor" && (!screen || read.suppressFallback))
+        if (!read || read.inputUnverified || ((screenOnly === "editor" || refreshGjcScreen) && (!screen || read.suppressFallback))
           || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
         // a card showing its record's command goes to that request only: after the screen's last read, the record must
         // still hold it open, so another request that opened meanwhile with the same command takes none of its keys
@@ -1742,8 +1770,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
-        // the reads above yield: a Codex question its server said meanwhile is answered takes no key
+        // the reads above yield: a Codex question its server said meanwhile is answered takes no key,
+        // and a gjc ask call replaced in its session file during the final screen read takes no key or paste
         if (agent === "codex" && parsedPrompt !== undefined && questionClosed(body.pane_id, parsedPrompt)) throw new KeyRefused();
+        if (parsedPrompt?.gjcCall !== undefined && !gjcCallStillOpenInFile(parsedPrompt.gjcCall)) throw new KeyRefused();
         return write();
       };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
@@ -2201,7 +2231,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             if (!asks() || request.signal.aborted) return false;
             const left = deadline - Date.now();
             if (left <= 0) return false;
-            const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
+            const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir,
+              openCodeState, undefined, agent === "gjc" ? (parsed.record !== undefined ? "record" : "screen") : false);
             reading.catch(() => undefined);
             const read = await Promise.race([reading, Bun.sleep(left).then(() => null)]);
             if (!read || Date.now() > deadline) return false;
@@ -2225,7 +2256,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             // a card with its record's command is that request's: the screen must still show it, with nothing else changed
             const record = parsed.record === undefined ? undefined : recordFor(agent);
             const card = drawn && record ? withRecord(drawn, parsed.record!, screen, record) : drawn;
-            return card?.id === parsed.id && (!onCursor || card.selectedIndex === cursor);
+            return card?.id === parsed.id
+              && (parsed.gjcCall === undefined || shown?.gjcCall === parsed.gjcCall)
+              && (!onCursor || card.selectedIndex === cursor);
           }
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
           return shown.question === parsed.question && shown.ompCall === parsed.ompCall
@@ -2261,7 +2294,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             if (!move) committed = true;
             // asked again right before herdr writes: a question known to have ended since the last read takes no committing
             // key (a move keeps its own cancellation boundaries)
-            const asked = (): boolean => asks() && !request.signal.aborted;
+            const asked = (): boolean => asks() && !request.signal.aborted
+              && (parsed.gjcCall === undefined || gjcCallStillOpenInFile(parsed.gjcCall));
             const guard = move ? undefined : asked;
             try {
               if (step.keys) await paneSendKeys(body.pane_id, step.keys, undefined, guard);
@@ -2278,11 +2312,16 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const guardUntil = agent === "pi" ? null : Date.now() + SETTLE_MS;
           const lettaTyping = committed && responder === "letta-model" && body.custom_text !== undefined;
           const claudeDown = responder === "claude-question" && parsed.multi_select && step.keys?.[0] === KEY.down;
+          const gjcEditorPaste = committed && !customTyped && responder === "fallback-gjc-menu" && step.text !== undefined && parsed.gjcCall !== undefined;
           const typedEditor = customTyped && step.keys?.length === 1 && (step.keys[0] === KEY.enter || claudeDown) ? editorAnswer : undefined;
-          if (!committed || togglesInPlace() || lettaTyping || typedEditor) {
+          if (!committed || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste) {
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
               (shown, screen, settled) => {
+                if (gjcEditorPaste) {
+                  if (!asks() || request.signal.aborted) return false;
+                  return inlineEditorMatches(shown, screen, "");
+                }
                 if (typedEditor) {
                   if (!asks() || request.signal.aborted) return false;
                   if (checkBeforeText) return inlineEditorMatches(shown, screen, typedEditor.text);
@@ -2293,7 +2332,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                 }
                 return lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch) : sameQuestion(shown, screen, onCursor, settled);
               }, () => ({ written: write() }),
-              typedEditor ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
+              typedEditor || gjcEditorPaste ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
             const guarding = guardKey(body.pane_id, agent, look);

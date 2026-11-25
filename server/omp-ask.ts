@@ -114,7 +114,7 @@ function questionShown(prompt: InteractivePrompt, asked: AskedQuestion): boolean
     && shows(prompt.question, drawn(asked.question, true));
 }
 
-const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
+export const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
 
 /** omp adds ` (Recommended)` to the recommended option's label; the card read off the screen drops it (dialogs/omp.ts), and so does this one */
 const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
@@ -128,7 +128,7 @@ const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
  * and every mark, so a call that differs from the menu by one `/`, `*`, `_` or letter is another call. Only a question omp says it cut (`cut`, dialogs/omp.ts)
  * may show just the start of the call's question, followed by omp's `…`.
  */
-function shows(screen: string, drawn: string | null, cut = false): boolean {
+export function shows(screen: string, drawn: string | null, cut = false): boolean {
   if (drawn === null) return false;
   const shown = flat(screen);
   const asked = flat(drawn);
@@ -143,13 +143,13 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
  * a backslash before an escaped mark, so the card would show other words than omp, and an option could
  * read as another one. Where they part, null: the card stays as drawn.
  */
-function drawn(markdown: string, question: boolean): string | null {
+export function drawn(markdown: string, question: boolean): string | null {
   const omp = ompDrawn(markdown, question);
   const card = cardDrawn(markdown, question);
   return omp !== null && card !== null && flat(omp) === flat(card) ? omp : null;
 }
 
-function cardDrawn(markdown: string, question: boolean): string | null {
+export function cardDrawn(markdown: string, question: boolean): string | null {
   try {
     return question ? parseMarkdown(markdown, 0, false).map(cardBlock).join("\n") : cardInline(parseInline(markdown, false), false);
   } catch (error) {

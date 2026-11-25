@@ -1167,6 +1167,8 @@ export interface InteractivePromptAnswer {
 export interface InteractivePromptOption {
   label: string;
   description: string | null;
+  /** true when the agent explicitly marked this option as its recommended pick. */
+  recommended?: true;
 }
 
 /** POST /api/pane/prompt/answer body. One answer or navigation action; native OpenCode multiselect may combine option_indices and custom_text. */

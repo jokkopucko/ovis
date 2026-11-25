@@ -146,7 +146,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
 
   const scopeIdBase = useId();
   // Claude renders the menu's own pick as "Redis (Recommended)": a tag reads better than the suffix (optionName)
-  const labelOf = (label: string): { text: string; recommended: boolean } => optionName(prompt, label);
+  const labelOf = (option: string | InteractivePrompt["options"][number]): { text: string; recommended: boolean } => optionName(prompt, option);
   const hasChoices = prompt.options.some((_, index) => index !== prompt.custom_option_index);
   const words = promptWords(prompt, t);
   const markdown = prompt.text_format === "markdown";
@@ -288,7 +288,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
         <div className={`prompt-card-options${watching ? " is-unavailable" : ""}`} role={prompt.multi_select ? "group" : undefined} aria-label={prompt.multi_select ? words.question : undefined} aria-busy={pending}>
           {prompt.options.map((option, index) => {
             if (index === prompt.custom_option_index) return null;
-            const { text, recommended } = labelOf(words.label(index));
+            const { text, recommended } = labelOf({ ...option, label: words.label(index) });
             const description = words.description(index);
             // The same words, as text, are the option's description: in a hidden span beside the option
             // (inside it they would join its name), which its aria-describedby names

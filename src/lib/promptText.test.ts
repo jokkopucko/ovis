@@ -30,6 +30,31 @@ describe("a polled prompt card (#2220 review)", () => {
     expect(fallen).toMatchObject({ question: plain.question, options: plain.options });
   });
 
+  it("takes the body that goes with the words of the same card: gjc's whole question takes the rows its screen read put in the body", () => {
+    const screen = { ...plain, agent: "gjc", question: "Which one?", body: "First paragraph.\n- item" };
+    const rebound = { ...screen, question: "First paragraph.\n\n- item\n\nWhich one?", body: null, text_format: "markdown" as const };
+    expect(polledPrompt(screen, rebound)).toMatchObject({ question: rebound.question, body: null, text_format: "markdown" });
+    const fallen = polledPrompt(rebound, screen)!;
+    expect(fallen).toMatchObject({ question: "Which one?", body: "First paragraph.\n- item" });
+    expect(fallen.text_format).toBeUndefined();
+  });
+
+  it("uses the explicit recommended flag on Markdown options and keeps literal (Recommended) text untouched", () => {
+    const card = {
+      ...markdown,
+      agent: "gjc",
+      options: [
+        { label: "Keep `local` socket", description: null, recommended: true as const },
+        { label: "Literal (Recommended)", description: null },
+      ],
+    };
+    expect(optionName(card, card.options[0]!)).toEqual({ text: "Keep `local` socket", recommended: true, words: "Keep local socket" });
+    expect(optionName(card, card.options[1]!)).toEqual({ text: "Literal (Recommended)", recommended: false, words: "Literal (Recommended)" });
+    expect(optionName(card, "[x](recommended)")).toMatchObject({ recommended: false, words: "x" });
+    const ompCard = { ...markdown, agent: "omp", options: [{ label: "Use local socket (Recommended)", description: null }] };
+    expect(optionName(ompCard, ompCard.options[0]!)).toEqual({ text: "Use local socket (Recommended)", recommended: false, words: "Use local socket (Recommended)" });
+  });
+
   it("takes the words read off the screen over the same card as they change (#2088)", () => {
     const worded = polledPrompt(plain, { ...plain, screen_words: "There are two ways to fix it." })!;
     expect(worded.screen_words).toBe("There are two ways to fix it.");
