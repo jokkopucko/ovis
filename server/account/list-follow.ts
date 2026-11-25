@@ -120,6 +120,11 @@ const LIST_MEMBER_READ_MS = 3_000;
 const LIST_MEMBER_LOOK_MS = 100;
 /** The longest one try waits because the account service asked it to (its `retry-after`). */
 const LIST_ALLOW_RETRY_MAX_MS = 10_000;
+/**
+ * The longest one try waits for a PC that spent its list calls (429 `rate_limited`): the service counts them by the
+ * minute, so the next minute takes the entry. Under LIST_ALLOW_MS.
+ */
+const LIST_ALLOW_LIMITED_MAX_MS = 60_000;
 /** How long after a round of naming the account service could not answer the next one may start (nameDevices). */
 const NAMES_RETRY_MS = 60_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
@@ -1708,7 +1713,9 @@ export class ListFollow implements ListAuthority {
     };
     // A member's entry is waited for outside the queue: half a minute of waiting holds back no read, and no page
     const newcomer: Newcomer = { key: device.key, enc: device.enc, device: true, placeOf: (copy) => placeOf(copy, device), write: (copy, state, keys) => this.writeAllow(copy, state, device, keys) };
-    return sign ? this.enqueue(() => decided(this.allow(newcomer, no))) : decided(this.awaitMember(device, no));
+    // the device's session waits LIST_ALLOW_MS from here (allowIntoList): no try starts that could place the entry after it
+    const by = this.deps.now() + LIST_ALLOW_MS;
+    return sign ? this.enqueue(() => decided(this.allow(newcomer, no, by))) : decided(this.awaitMember(device, no));
   }
 
   /**
@@ -1757,7 +1764,7 @@ export class ListFollow implements ListAuthority {
     }
   }
 
-  private async allow(device: Newcomer, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+  private async allow(device: Newcomer, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome, by: number | null = null): Promise<AllowOutcome> {
     {
       const scope = this.bound();
       if (scope === null || !this.isPinned) return no("not_pinned");
@@ -1774,9 +1781,19 @@ export class ListFollow implements ListAuthority {
       let last: AllowRefusal = "head_lost";
       // how long the next try waits; nothing waits after the last one
       let wait = 0;
+      // the wait is one a 429 named: the service placed nothing, so an Allow that stops there keeps no entry for later
+      let limited = false;
       for (let tries = 0; tries < LIST_ALLOW_TRIES; tries++) {
-        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        if (wait > 0) {
+          // a wait the service asked for that would leave less than one try's time before the device stops waiting ends it here
+          if (by !== null && this.deps.now() + wait + LIST_ALLOW_RETRY_MAX_MS > by) {
+            if (limited) this.dropAllow();
+            return no(last);
+          }
+          await new Promise((resolve) => setTimeout(resolve, wait));
+        }
         wait = 0;
+        limited = false;
         if (!this.live(scope)) return no("unavailable");
         const copy = this.copy;
         if (copy === null || copy.state === null) return no("unavailable");
@@ -1819,6 +1836,8 @@ export class ListFollow implements ListAuthority {
         const stopped = (): AllowOutcome | null => {
           const now = this.copy;
           if (!this.live(scope) || !this.isPinned || now === null || now.state === null) return no("unavailable");
+          // past the device's wait nothing goes out: a late timer or a slow read does not place what it gave up on
+          if (by !== null && this.deps.now() > by) return no(last);
           const cannot = keys.key !== now.me.key ? "unavailable" : this.cannotSign(now);
           if (cannot !== null) return no(cannot);
           if (device.device && this.deps.mayAdmit?.(device.key) === false) return no("held_here");
@@ -1859,6 +1878,14 @@ export class ListFollow implements ListAuthority {
           }
           if (error.status === 409 && error.code === "try_again") { last = "head_lost"; wait = asked; continue; }
           if (error.status === 503 && error.code === "list_rebuilding") { last = "service_away"; wait = asked; continue; }
+          // a PC that spent its calls of the minute (a number check waited on reads every few seconds): the service
+          // counted the request before it read it, so nothing was placed, and the same entry goes again when it says
+          if (error.status === 429 && error.code === "rate_limited") {
+            last = "service_away";
+            limited = true;
+            wait = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_LIMITED_MAX_MS);
+            continue;
+          }
           // the service's own word that it did not place the entry: nothing is kept of it
           this.dropAllow();
           request = null;
