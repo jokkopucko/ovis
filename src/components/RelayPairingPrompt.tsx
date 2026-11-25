@@ -38,9 +38,12 @@ export type TailnetPrompt = RelayPairingRequest & { readonly own_window: "tailne
 export type KeyPrompt = RelayPairingRequest & { readonly own_window: "key" };
 export type PromptPairing = DecidedPrompt | KeyPrompt;
 
-/** This PC's own window's account joins that come with their digits (first joins), as prompts of this layer. */
+/**
+ * This PC's own window's account joins that come with their digits (first joins), as prompts of this layer. Never one
+ * this PC cannot let in (`list_unknown`): nothing allows it, and its card says why (OwnJoins.tsx OwnJoinCard).
+ */
 export function firstJoinPrompts(joins: readonly OwnJoinRequest[], now = Date.now()): PromptPairing[] {
-  return joins.flatMap((join) => join.digits === undefined ? [] : [{
+  return joins.flatMap((join) => join.digits === undefined || join.list_unknown === true ? [] : [{
     id: join.id, label: join.label, digits: join.digits, expires_at: new Date(now + join.left_ms).toISOString(), left_ms: join.left_ms, intent: "account" as const, own_window: "join" as const,
   }]);
 }

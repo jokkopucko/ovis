@@ -384,3 +384,20 @@ describe("a row that moves with its device's hand-over (a list's `moved`)", () =
     expect(store.access(row.id)).toMatchObject({ refused: "join_hold" });
   });
 });
+
+describe("the names of the rows", () => {
+  test("a row still named by the placeholder takes the list's name for it, from the list's commits alone: a snapshot's leaves it as it is", () => {
+    const dir = stateDir();
+    const store = new AccountDeviceStore(dir, SERVER, ports(dir).ports);
+    const named = (label: string) => ({ ...list(["k-1"]), devices: list(["k-1"]).devices.map((entry) => ({ ...entry, label })) });
+    store.commitList(named("Device"));
+    expect(store.rows()[0]?.label).toBe("Device");
+    // a whole read of the account service's snapshot (a PC that follows no list) names nothing anew
+    store.commitList(named("Dana's tablet"));
+    expect(store.rows()[0]?.label).toBe("Device");
+    // the list's own commit (names: true) does
+    store.commitList({ ...named("Dana's tablet"), names: true });
+    expect(store.rows()[0]?.label).toBe("Dana's tablet");
+  });
+});
+

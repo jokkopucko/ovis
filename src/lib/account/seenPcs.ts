@@ -1,8 +1,9 @@
 /**
  * This device's own record of the PCs it has held end-to-end sessions with, for each account it was signed in to
  * (docs/account.md, "What a device remembers of its PCs"): since when, when last, and what the device did itself for
- * that PC. It only records. Nothing in the app decides by it yet; it is written now so that it has a history when
- * something does.
+ * that PC. It decides one thing: whether a PC that refuses this device's sign-in by the account's key outright removed
+ * it (it let it in before) or never let it in (relay/shell.tsx letInBefore). Otherwise it only records, so that it has
+ * a history when something else decides by it.
  *
  * A PC is named by the relay key its end-to-end channel is bound to (64 hex), never by what the account service's
  * directory says: a PC whose relay identity was reset is another row. It is kept in this browser's storage, per

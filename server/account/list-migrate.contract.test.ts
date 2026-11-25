@@ -462,8 +462,11 @@ describe("the naming's bounds, and what the PC does not take for a list", () => 
 describe("keys for a PC the list carried in as an endpoint", () => {
   test("a device that may add devices asks for the PC's card in its session, signs its pc entry and hands it over: the PC signs with its keys from then on", async () => {
     const pc = await followsByMove();
-    // it follows the list and lets its devices in, and lets nobody in itself
-    expect(pc.list.allowRefusal()).toBe("not_signer");
+    // it follows the list and lets its devices in, and lets nobody in itself: it has no key of its own there, which is
+    // not the case of a PC that joined by an invite, and says so, with what gives it one
+    expect(pc.list.allowRefusal()).toBe("needs_keys");
+    expect(pc.list.summary()).toMatchObject({ needs_keys: true });
+    expect(pc.list.status().reason).toContain("ovis add");
     const phone = await sessionOf(pc, pc.phone, "member");
     const asked = await ask(phone, "/api/account/list/card", { method: "POST", body: {} });
     expect(asked.status).toBe(200);
@@ -476,6 +479,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect([handed.status, (handed.body as { verdict: string }).verdict]).toEqual([200, "caught_up"]);
     expect(pc.list.allowRefusal()).toBeNull();
     expect(pc.list.status().reason).toBeNull();
+    expect(pc.list.summary()).not.toHaveProperty("needs_keys");
     // once it holds its keys, nobody asks for its card again
     expect((await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).status).toBe(409);
   }, SLOW);
@@ -489,7 +493,8 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.tablet.signIn, "hold");
     expect((await pc.hand(tablet, [entry])).status).toBe(200);
     expect(pc.list.status().pcs).toBe(1);
-    expect(pc.list.allowRefusal()).toBe("not_signer");
+    expect(pc.list.allowRefusal()).toBe("needs_keys");
+    expect(pc.list.summary()).toMatchObject({ needs_keys: true });
     expect(pc.list.status().reason).toContain("ovis add");
     // its devices are let in all the same
     expect(await pc.signsIn(pc.phone, "member")).toBe("drive");
@@ -522,6 +527,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     const entry = await pc.born.append({ kind: "pc", key: other.member.key, endpoint: pc.endpoint, enc: other.enc, card, sealed: null }, pc.phone.member, "hold");
     expect((await pc.hand(phone, [entry])).status).toBe(200);
     expect(pc.list.allowRefusal()).toBe("not_signer");
+    expect(pc.list.summary()).not.toHaveProperty("needs_keys");
     expect(pc.list.status().reason).toContain("another key");
     expect(await pc.signsIn(pc.tablet)).toBe("drive");
   }, SLOW);
@@ -561,6 +567,27 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     await pc.born.append({ kind: "pc", key: post.key, endpoint: pc.endpoint, enc: post.enc, card: post.card, sealed: null }, pc.phone.member);
     expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "added", list: pc.born.id });
     expect(pc.list.allowRefusal()).toBeNull();
+  }, SLOW);
+
+  test("a confirmed add for its keys whose entry never comes ends as a timeout at its ten minutes, never added: the PC still lets nobody in", async () => {
+    const pc = await followsByMove();
+    expect(pc.services.relay.setRelayAccount(ACCOUNT)).toBe(true);
+    const started = await pc.local("/api/account/list/add", { account: ACCOUNT });
+    expect(started).toMatchObject({ status: 200, body: { state: "waiting", list: pc.born.id } });
+    const number = await pc.born.compare(pc.endpoint, pc.phone.member);
+    await number.commit();
+    await pc.local("/api/account/list/add");
+    const digits = await number.reveal();
+    expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "number", digits });
+    expect((await pc.local("/api/account/list/add/confirm", { digits })).body).toMatchObject({ state: "confirmed" });
+    // the phone never signs the entry (its write failed, its person gave up); the add's ten minutes run out
+    const real = performance.now.bind(performance);
+    const later = spyOn(performance, "now").mockImplementation(() => real() + 11 * 60_000);
+    let state: unknown;
+    try { state = (await pc.local("/api/account/list/add")).body; } finally { later.mockRestore(); }
+    expect(state).toMatchObject({ state: "ended", why: "timeout" });
+    expect(pc.list.allowRefusal()).toBe("needs_keys");
+    expect(pc.list.summary()).toMatchObject({ needs_keys: true });
   }, SLOW);
 
   test("a PC that follows its list with no key of its own and lost its copy lets nobody in, and says to run ovis add", async () => {

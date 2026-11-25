@@ -265,6 +265,32 @@ it("S32-1: a later sign-in to the same account takes the queue on with the same 
   expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual([record.id]);
 });
 
+it("S32-1: a block kept by one sign-in and sent by a later sign-in of the account is refused for good: the account service takes a signer only on the sign-in that registered its key", async () => {
+  const fake = new FakeAccountService();
+  fake.opensAll = true;
+  const first = fake.issueToken("acct");
+  const [own, stranger] = [await newKey(), await newKey()];
+  // the phone first, then the device it does not know: the phone is the older one, so only the sign-in can refuse it
+  const signerNo = fake.registerSessionKey(first, own.public_spki, "Phone");
+  const targetNo = fake.registerDevice("acct", stranger.public_spki, "Stranger");
+  const record = await signSafetyRecord({
+    v: 1, kind: "block", account: "acct", target: stranger.public_spki, target_no: targetNo, signer: own.public_spki, signer_no: signerNo,
+    signed_at: new Date().toISOString(), nonce: newRecordId(),
+  }, own.private_key);
+  const store = memoryAccountStore();
+  const before = { ...session, access_token: first };
+  await store.set("session", before);
+  await keepUnsent(store, before, [record]);
+  // that sign-in ended before the block went out; the next sign-in to the account takes the queue on and sends it
+  const later = { ...session, sign_in_id: "a-later-sign-in", access_token: fake.issueToken("acct") };
+  await store.set("session", later);
+  const service = new AccountService({ store, fetch: fake.fetch });
+  const refusal = await service.postSafetyRecord(record).catch((error: unknown) => error);
+  expect(refusal).toMatchObject({ status: 403, code: "signer_not_member" });
+  expect(await postKept(store, later, [record], (kept) => service.postSafetyRecord(kept))).toBe("refused");
+  expect(Object.values(await store.get("unsent_blocks") ?? {}).map((entry) => entry.refused)).toEqual([true]);
+});
+
 it("S32-1: leaving the account keeps every unsent block: only the service's answer takes one away", async () => {
   const service = new FakeAccountService();
   const store = memoryAccountStore();

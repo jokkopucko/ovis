@@ -31,6 +31,11 @@ const APPROVER_OF: Partial<Record<NodeJS.Platform, PairApprover>> = { darwin: "m
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
 /** How long a sign-in waits for the account service's word on this PC's listing: with a refused sign-in's pull before it, still inside the device's ADMISSION_MS. */
 export const LISTING_WAIT_MS = 4_000;
+/**
+ * How long a join waits for the account service's word on its admission (accountJoin). Past it the service did not
+ * answer in time, and the join hears that while the person still looks at it; the read goes on for the next try.
+ */
+export const JOIN_ADMISSION_WAIT_MS = 8_000;
 const SOURCE_LIMIT = 3 * 1024 * 1024;
 const SESSION_LIMIT = 32 * 1024 * 1024;
 export const relayClock: MuxClock = {
@@ -87,11 +92,18 @@ function listSignInRequired(): Response {
  * Why the list did not take a join that brought its card, as SESSION_ERROR `auth_failed` says it in its message
  * (docs/account.md, "A PC allows a device into the list"). `list_not_claimed`: no sign-in of the account claimed the
  * key, so the device signs in again. `list_service_away`, `list_head_lost`: the entry could not be placed in time, and
- * asking again may work. `list_not_in`: a member allowed the device and no entry for it reached this PC. Anything
- * else is `list_refused`.
+ * asking again may work. `list_not_in`: a member allowed the device and no entry for it reached this PC.
+ * `list_needs_keys`: this PC came in as its account moved and has no key of its own in the list. `list_held_here`:
+ * this PC itself keeps that key out, whatever the list holds. Anything else is `list_refused`.
  */
 const LIST_ALLOW_CAUSES: Partial<Record<AllowRefusal, string>> = {
   not_claimed: "list_not_claimed", service_away: "list_service_away", head_lost: "list_head_lost", not_in_list: "list_not_in", behind: "list_pc_behind",
+  // a PC that joined by an invite signs nobody into the list: the device is pointed to another device of the account
+  not_signer: "list_not_signer",
+  // a PC the account's move carried in with no key of its own: the same, and `ovis add` there gives it its keys
+  needs_keys: "list_needs_keys",
+  // this PC itself keeps the key out (a block here): the list may hold the device, and this PC lets it in once that ends
+  held_here: "list_held_here",
 };
 
 export interface RelaySessionOptions {
@@ -176,6 +188,8 @@ export class RelaySession {
   private tailnet = false;
   /** ACCOUNT_LIST_ALLOW was selected: a join's PAIR_REQUEST may carry the device's card, and it is then let in by the list or not at all */
   private listAllow = false;
+  /** the client offered ACCOUNT_LIST_ALLOW: it knows a join into a signed list, whether or not this PC takes its card */
+  private knowsListJoin = false;
   /** The list a card is taken for, as it stood at HELLO (ListFollow.takesCardsFor). */
   private listFor: string | null = null;
   /** the card of the device that asks to join, from its PAIR_REQUEST */
@@ -201,6 +215,8 @@ export class RelaySession {
   /** The row went before it linked (leave): set while the answers on their way go out, to what calls off their deadline; then the session ends. */
   private leaving: (() => void) | undefined;
   private chosen = false;
+  /** The channel under this session closed: the device's side went away (a reload, the app put away, the network gone). */
+  private carrierGone = false;
 
   constructor(private readonly options: RelaySessionOptions) {
     if (!options.channel.isOpen() || options.channel.securityMode() !== "protected") {
@@ -225,7 +241,9 @@ export class RelaySession {
       filterRequestHeaders: true,
       close: (code) => options.channel.close(code),
       onClose: (error) => {
-        logAccess({ event: "relay.session.closed", reason: this.closingReason ?? this.mux.failureCode ?? error.code });
+        // a session nobody ended, whose channel went away, is no error of this PC's: logged as `carrier_lost`, never as the
+        // `internal_error` the mux stands in with for it (MuxEngine.carrierLost)
+        logAccess({ event: "relay.session.closed", reason: this.closingReason ?? this.mux.failureCode ?? (this.carrierGone ? "carrier_lost" : error.code) });
         this.state = "closed";
         this.leaveKeyProof();
         this.endPairing(false);
@@ -235,8 +253,10 @@ export class RelaySession {
       },
       onSession: (frame) => {
         void this.admit(frame).catch((error: unknown) => {
-          if (error instanceof PairingRateLimitedError) this.mux.fail("auth_failed", error.message);
-          else this.close("internal_error");
+          if (error instanceof PairingRateLimitedError) { this.mux.fail("auth_failed", error.message); return; }
+          // the device hears only internal_error: what it was is said here, on this PC
+          console.error(`[relay] a session ended on an error of this PC's: ${error instanceof Error ? error.message : String(error)}`);
+          this.close("internal_error");
         });
       },
       onHttp: (stream) => { this.choose(); void this.http(stream); },
@@ -276,7 +296,8 @@ export class RelaySession {
         else void this.websocket(stream, exchange);
       },
     });
-    options.channel.onClose(() => this.mux.carrierLost());
+    // only while the session stands: an end the device or this PC made closes the carrier too, and keeps its own reason
+    options.channel.onClose(() => { if (this.mux.active) this.carrierGone = true; this.mux.carrierLost(); });
     // A WELCOME with no feature rides right behind the protected handshake's answer, so a phone signing in
     // gets its nonce one round trip sooner. It is provisional: HELLO is still required, and checked, before
     // AUTH or PAIR, and a HELLO that offers pairing by comparing digits gets the final WELCOME. Only while no
@@ -427,6 +448,7 @@ export class RelaySession {
         if (this.listOffered) selected.push(ACCOUNT_LIST_FEATURE);
         // and only a PC that can sign for its list right now takes a new device's card with a join (docs/account.md, "A
         // PC allows a device into the list"): any other PC lets nobody into the list, and says so by not selecting this
+        this.knowsListJoin = frame.payload.features.includes(ACCOUNT_LIST_ALLOW);
         this.listAllow = !!this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT && frame.payload.features.includes(ACCOUNT_LIST_ALLOW)
           && !this.options.signInOnly && (this.listFor = this.options.services.accountList?.takesCardsFor() ?? null) !== null;
         if (this.listAllow) selected.push(ACCOUNT_LIST_ALLOW);
@@ -509,6 +531,18 @@ export class RelaySession {
         }
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
           const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
+          if (!this.mux.active) return;
+          // A sign-in this PC refuses with no receipt, on a PC that follows no list and does not fail closed, while no read
+          // of the account that began after its id first asked here has finished (the read its sign-in started was slow,
+          // failed, or could not start yet): it may be a device the account let in that this PC has not read. A client that
+          // knows the account codes is told to wait, and asks again; it gets in only by the row a read brings. An id with a
+          // row and a proof that does not hold is answered the same, so the answer tells nobody which ids have a row here
+          if (receipts.length === 0 && !devices.failsClosed && devices.accountError === null && !devices.listFollowed()
+            && this.options.services.accountMailbox.unreadKey(frame.payload.device_id)) {
+            const refusal = accountSignInRefusal({ refused: "catching_up" }, null, true);
+            this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
+            return;
+          }
           this.close("auth_failed", receipts.slice(-AUTH_RECEIPTS_MAX));
           return;
         }
@@ -553,6 +587,8 @@ export class RelaySession {
         if (this.intent === "vouched" || !this.options.services.relay.approvals.windowOpen()) {
           this.state = "verifying";
           const joined = await this.accountJoin(frame.payload.public_key);
+          // the account service did not answer: refused as before, saying why to a client that reads it (as an outage at a sign-in)
+          if (joined === "unanswered") { if (this.mux.active) this.close(this.listingErrors ? "account_unreachable" : "auth_failed", undefined, "account_unreachable"); return; }
           if (joined === null) { this.close("auth_failed"); return; }
           if (!this.mux.active) return;
           // the one vouched join at a time is taken only once its admission held: a request the account never saw holds no
@@ -602,7 +638,10 @@ export class RelaySession {
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
           // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
           // marked vouched, so that app shows who is asking and checks the admission, as for an account join
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin, list: this.listCard !== undefined });
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin, list: this.listCard !== undefined,
+            // a join into the account, on a PC pinned to its list, from an app that knows no join into a list (an Ovis
+            // older than 0.5.10): this PC lets it in by nothing, so its window and terminal say so rather than let it in
+            listUnknown: this.intent === "account" && !this.knowsListJoin && this.options.services.accountList?.pinned() === true });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
@@ -815,7 +854,7 @@ export class RelaySession {
    * failed pairing: nobody was asked. On a PC with no member yet (added in one press), an account join is a first
    * join, which this PC's own window alone allows; a PC vouched for still needs a member.
    */
-  private async accountJoin(key: string): Promise<"members" | "first" | null> {
+  private async accountJoin(key: string): Promise<"members" | "first" | "unanswered" | null> {
     const { devices, relay, accountMailbox } = this.options.services;
     const allowed = (): "members" | "first" | null => {
       if ((this.intent !== "account" && this.intent !== "vouched") || devices.account() === null) return null;
@@ -824,11 +863,27 @@ export class RelaySession {
     };
     if (allowed() === null) return null;
     this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
-    if (!await accountMailbox.admitted(key)) return null;
+    // only a client that can hear why (account-listing-errors-1) is cut off at the bound; any other waits as it always did
+    const admitted = this.listingErrors ? await this.joinAdmission(key) : await accountMailbox.admitted(key);
+    if (admitted !== true) return admitted === "unanswered" ? "unanswered" : null;
     // decided again once admitted: a member who joined meanwhile approves it as ever
     const joined = allowed();
     // counted only once admitted, so refused strangers cannot spend the PC's joins
     return joined !== null && (this.intent === "vouched" || relay.approvals.takeAccountJoin()) ? joined : null;
+  }
+
+  /**
+   * The account's word on the join of `key`, within JOIN_ADMISSION_WAIT_MS: an answer that comes later serves the next try.
+   * At the bound it answers by what the PC has read so far: the mailbox records the admission before the rest of its read.
+   */
+  private async joinAdmission(key: string): Promise<boolean | "unanswered"> {
+    const { accountMailbox } = this.options.services;
+    let cancel = (): void => {};
+    const late = new Promise<boolean | "unanswered">((resolve) => {
+      cancel = this.clock.setTimeout(() => resolve(accountMailbox.currentAdmission(key) ? true : "unanswered"), JOIN_ADMISSION_WAIT_MS);
+    });
+    try { return await Promise.race([accountMailbox.joinAdmitted(key), late]); }
+    finally { cancel(); }
   }
 
   /**

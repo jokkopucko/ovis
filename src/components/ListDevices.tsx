@@ -206,9 +206,10 @@ export function useNotMe(list: AccountList | null = pageAccountList()): { readon
 
 /**
  * Sign out every device's question, for an account whose list this device is in: every other device leaves the
- * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs. `named`: the
- * devices the question was drawn with, which the press passes on, and no others. `children`: what the question says
- * for any other account.
+ * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs. This device
+ * keeps its place in the list (docs/account-list.md, "Sign out every device"), which the question says, with the
+ * row's Disconnect that takes it out too. `named`: the devices the question was drawn with, which the press passes
+ * on, and no others. `children`: what the question says for any other account.
  */
 export function SignOutEverywhereSays({ account, named, children }: { readonly account: string; readonly named: readonly string[]; readonly children: ReactNode }) {
   const t = useT();
@@ -216,9 +217,12 @@ export function SignOutEverywhereSays({ account, named, children }: { readonly a
   if (view === null || !inList(view, account)) return <>{children}</>;
   const others = named.map((key) => view.devices.find((device) => device.key === key)?.name?.label ?? t("Unnamed device"));
   return (
-    <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">
-      {others.length === 0 ? t("Every browser and app is signed out of the account.")
-        : t("These devices leave your account for good, then every browser and app is signed out: {names}", { names: others.join(", ") })}
-    </p>
+    <>
+      <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">
+        {others.length === 0 ? t("Every browser and app is signed out of the account.")
+          : t("These devices leave your account for good, then every browser and app is signed out: {names}", { names: others.join(", ") })}
+      </p>
+      <p className="settings-description" data-testid="sign-out-everywhere-stays">{t("This device keeps its place in your account's list: signed in again here, it opens your PCs with no Allow. To take it out too, use Disconnect on its own row.")}</p>
+    </>
   );
 }

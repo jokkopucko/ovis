@@ -3,9 +3,9 @@
  * the service's own routes, so a PC under test reads what a real account would hold.
  */
 import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "../../shared/account-list-entry.ts";
-import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, readStoredEncryptionKey, wrapEpochKey, wrapToText, type EpochKey, type MemberEncryptionKey } from "../../shared/account-list-seal.ts";
+import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, readStoredEncryptionKey, sealFields, wrapEpochKey, wrapToText, type EpochKey, type MemberEncryptionKey } from "../../shared/account-list-seal.ts";
 import { newInvite } from "../../shared/account-list-join.ts";
-import { cardBinding, kindBody, signCard, type ListKind, type ListRole } from "../../shared/account-list.ts";
+import { cardBinding, kindBody, namesFields, signCard, type ListKind, type ListNames, type ListRole } from "../../shared/account-list.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import { exportAccountKey } from "../../shared/account-records.ts";
 import type { FakeAccountService } from "../../shared/account-service-fake.ts";
@@ -120,10 +120,15 @@ export class TestList {
     if (!answer.ok) throw new Error(`The entries were not placed: ${answer.status} ${await answer.text()}`);
   }
 
-  /** A member lets a device in: the device claims its key with a sign-in of its own (the second lock), the member signs and places. */
-  async addDevice(device: ListMember, options: { role?: ListRole; until?: number | null; by?: ListMember; power?: "full" | "bound" } = {}): Promise<string> {
+  /**
+   * A member lets a device in: the device claims its key with a sign-in of its own (the second lock), the member signs and
+   * places. `names`: sealed into the entry under epoch 0's key, as a member that holds it seals a device's name.
+   */
+  async addDevice(device: ListMember, options: { role?: ListRole; until?: number | null; by?: ListMember; power?: "full" | "bound"; names?: ListNames } = {}): Promise<string> {
     const card = await claimKey(this.service, this.account, this.id, device);
-    const text = await this.sign({ kind: "device", key: device.key, power: options.power ?? "full", role: options.role ?? "drive", until: options.until ?? null, enc: device.enc, card, sealed: null, rotates: false }, options.by);
+    const sealed = options.names === undefined ? null : { epoch: 0, bytes: await sealFields({ place: { list: this.id, seq: this.head.seq + 1 }, epoch: this.epochKey,
+      commitment: epochKeyCommitment({ list: this.id, epoch: this.epochKey }), fields: namesFields(options.names) }) };
+    const text = await this.sign({ kind: "device", key: device.key, power: options.power ?? "full", role: options.role ?? "drive", until: options.until ?? null, enc: device.enc, card, sealed, rotates: false }, options.by);
     await this.placeTexts([text]);
     return text;
   }

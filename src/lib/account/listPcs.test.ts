@@ -3,12 +3,13 @@ import type { AccountListView, ListedPc } from "./accountList.ts";
 import { accountList } from "./accountList.ts";
 import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice } from "./listAllow.ts";
-import { NEW_LIST_PC_MS, listReading, pcsByList } from "./listPcs.ts";
+import { NEW_LIST_PC_MS, listReading, pcsByList, postedFor } from "./listPcs.ts";
 import { memoryListLock } from "./listStore.ts";
 import { myPcs } from "./myPcs.ts";
 import type { DirectoryPc } from "./service.ts";
 import { accountOpenablePcs } from "../relay/pcPick.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import type { ListState } from "../../../shared/account-list.ts";
 
 type World = ReturnType<typeof listWorld>;
 
@@ -67,6 +68,11 @@ describe("My PCs of an account with a signed list", () => {
     account: "acct", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 9, read_at: 1, trouble: null },
     devices: [{ key: "device-key", self: false, power: "full", role: "drive", until: null, carried: false, name: { label: "Dana's phone", os: "ios" } }, { key: "own-key", self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
     pcs, ...given,
+  });
+
+  it("marks a PC the move carried in with no key of its own, and no other", () => {
+    const rows = pcsByList(view([pc(1, { how: "carried", allows: false }), pc(2, { how: "carried", allows: true }), pc(3, { how: "joined", allows: false })]), "acct", [row(pc(1)), row(pc(2)), row(pc(3))], NOW)!;
+    expect(rows.map((one) => one.needs_keys ?? false)).toEqual([true, false, false]);
   });
 
   it("is the account service's directory as it is for a device that is in no list", () => {
@@ -152,5 +158,22 @@ describe("My PCs of an account with a signed list", () => {
     expect(outside.byList).toBeUndefined();
     // by the directory alone, a PC the account service never saw opens nothing by itself
     expect(accountOpenablePcs(myPcs(directory, [], { now: NOW, registered: true }), { account: "acct", devices: [], now: NOW }).map((each) => each.server_id)).toEqual([fresh.server_id, pc(9).server_id]);
+  });
+});
+
+describe("what an Add with the number does for a PC that posted its keys", () => {
+  const row = (key: string | null, removed: number | null = null) => ({ how: key === null ? "carried" as const : "added" as const, key, enc: key === null ? null : "enc", seq: 1, invite: null, removed });
+  const state = (pcs: Record<string, ReturnType<typeof row>>, signers: Record<string, { by: string | null }> = {}) =>
+    ({ pcs, signers: Object.fromEntries(Object.entries(signers).map(([key, { by }]) => [key, { power: "full", seq: 1, by, ended: null, as: "pc" }])) }) as unknown as ListState;
+  const post = { endpoint: "e".repeat(64), key: "pc-key" };
+  it("adds a PC the list does not hold, gives its keys to one the move carried in with none, and leaves to its signer one the list holds by these keys", () => {
+    expect(postedFor(state({}), "me", post)).toEqual({ kind: "add" });
+    expect(postedFor(state({ [post.endpoint]: row(null) }), "me", post)).toEqual({ kind: "keys" });
+    expect(postedFor(state({ [post.endpoint]: row("pc-key") }, { "pc-key": { by: "me" } }), "me", post)).toEqual({ kind: "keys" });
+    expect(postedFor(state({ [post.endpoint]: row("pc-key") }, { "pc-key": { by: "tablet" } }), "me", post)).toEqual({ kind: "signer", signer: "tablet" });
+  });
+  it("offers nothing for a PC the list put out, or one whose relay key the list holds another key at", () => {
+    expect(postedFor(state({ [post.endpoint]: row(null, 7) }), "me", post)).toBeNull();
+    expect(postedFor(state({ [post.endpoint]: row("other-key") }), "me", post)).toBeNull();
   });
 });

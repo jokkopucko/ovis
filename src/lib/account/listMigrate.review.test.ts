@@ -16,6 +16,7 @@ import { askingPc, listWorld, type AskingPc, type WorldDevice } from "./accountL
 import { rememberDevice } from "./join.ts";
 import { MOVE_AGAIN_SECONDS, ownRemovals, pcAnswers, readBirth, type MoveNoticeView } from "./listMigrate.ts";
 import type { SeenPcs } from "./seenPcs.ts";
+import { AccountServiceError } from "./service.ts";
 import { keepUnsent, postKept } from "./unsentBlocks.ts";
 
 const DAY = 86400;
@@ -123,6 +124,17 @@ describe("H1: R-F, a key this device blocked itself is never carried, sent or no
     await keepUnsent(phone.device.store, phone.device.session, [block]);
     await postKept(phone.device.store, phone.device.session, [block], async () => {});
     expect(await ownRemovals(phone.device.store, world.account)).toContain(laptop.signIn);
+  });
+
+  test("F6: a block the account service refused for good holds no move: the birth goes at once, without the blocked key", async () => {
+    const { phone, laptop, world, carriedSent, birthsSent } = await inUse(movingWorld(), { ownRemovals: true });
+    const block = { v: 1, kind: "block", id: "a".repeat(64), account: world.account, target: laptop.signIn, target_no: 2, signer: phone.signIn, signer_no: 1, signed_at: "2026-11-25T00:00:00Z", nonce: "n", signature: "s" } as never;
+    await keepUnsent(phone.device.store, phone.device.session, [block]);
+    expect(await postKept(phone.device.store, phone.device.session, [block], async () => { throw new AccountServiceError(403, "unknown_target", "x"); })).toBe("refused");
+    expect(Object.values(await phone.device.store.get("unsent_blocks") ?? {}).map((entry) => entry.refused)).toEqual([true]);
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in", list: world.held().id });
+    expect(birthsSent(phone.device)).toHaveLength(1);
+    expect(carriedSent(phone.device)).not.toContain(laptop.signIn);
   });
 
   test("H1: an unsent block is never carried (the half that holds)", async () => {

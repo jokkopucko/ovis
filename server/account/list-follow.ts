@@ -24,13 +24,13 @@ import { dirname, join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { verifyLineProof } from "../../shared/account-list-invite.ts";
 import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writeBody } from "../../shared/account-list-entry.ts";
-import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
+import { openSealed, openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import { signerPower, type ListPlace } from "../../shared/account-list-signers.ts";
 import {
   admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS, READ_PAGES_MAX,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
-import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
+import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, readKind, readNames, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
 import { heirOf, heldNaming, heldOut, heldVouches, pinVerdict, standsFor, type LetIn, type PinRefusal, type SignedNaming, type SignedVouch } from "../../shared/account-list-migrate.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
@@ -119,6 +119,8 @@ const LIST_MEMBER_READ_MS = 3_000;
 const LIST_MEMBER_LOOK_MS = 100;
 /** The longest one try waits because the account service asked it to (its `retry-after`). */
 const LIST_ALLOW_RETRY_MAX_MS = 10_000;
+/** How long after a round of naming the account service could not answer the next one may start (nameDevices). */
+const NAMES_RETRY_MS = 60_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
 export const LIST_DEVICE_LABEL = "Device";
 /** The name a PC added over SSH is sealed under when the one it gave is no name. */
@@ -209,19 +211,24 @@ export interface ListStatus {
   readonly behind: boolean;
 }
 
-/** What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the PC stands in it, and ListStatus.reason. */
-export interface ListSummary { readonly pinned_list: string; readonly standing: Standing | null; readonly reason: string | null }
+/**
+ * What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the
+ * PC stands in it, and ListStatus.reason. `needs_keys`: the PC came into the list as its account moved and holds no key
+ * of its own in it to sign with; `ovis add` on it gives it one by the number.
+ */
+export interface ListSummary { readonly pinned_list: string; readonly standing: Standing | null; readonly reason: string | null; readonly needs_keys?: true }
 
 /**
  * Why this PC did not let a device into its list. `not_pinned`, `not_signer` (it joined by an invite, or its key no
- * longer signs), `alarm`, `stopped`, `unavailable` (its keys or its copy): the PC cannot allow anyone now.
+ * longer signs), `needs_keys` (it came in as its account moved, and holds no key of its own in the list yet: `ovis add`
+ * here gives it one), `alarm`, `stopped`, `unavailable` (its keys or its copy): the PC cannot allow anyone now.
  * `held_here`: this PC itself keeps that key out. `not_written`: the entry would not count (a card that is not that
  * key's for this list, a key that was a signer before). `refused`: the account service refused it (no claim of the
  * key by a sign-in of the account, a budget). `list_stopped`: the service changes this list for nobody now.
  * `service_away`, `head_lost`: it could not be placed in LIST_ALLOW_TRIES tries. `not_in_list`: nobody at this PC
  * decided, and no entry lets the device in.
  */
-export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "behind" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
+export type AllowRefusal = "not_pinned" | "not_signer" | "needs_keys" | "alarm" | "stopped" | "behind" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
 
 /** The device a PC is asked to let into its list: its member key, its encryption key, its card for the list, and the name it gave. */
 export interface AllowedDevice { readonly key: string; readonly enc: string; readonly card: string; readonly label: string }
@@ -440,6 +447,20 @@ export class ListFollow implements ListAuthority {
   private dirty = false;
   /** The keys to the list's names this PC opened, by list and epoch. */
   private readonly epochKeys = new Map<string, EpochKey>();
+  /**
+   * The names of the list's devices this PC opened, by key, for the list they are of: what its rows are named by
+   * (listCommit). `tried`: the entries decided, opened or not; one that does not open is not asked again.
+   * `unwrapped`: those whose epoch this PC held no wrap of when asked (a PC just added gets its wrap a moment after its
+   * first round), asked again after a later read (`unwrappedAt`, reads) and NAMES_RETRY_MS on (`unwrappedUntil`).
+   */
+  private deviceNames: { readonly list: string; readonly byKey: Map<string, string>; readonly tried: Set<number>; unwrapped: Set<number>; unwrappedAt: number; unwrappedUntil: number } | null = null;
+  /** The reads of the log taken so far (read): what an entry with no wrap yet waits for before it is asked again. */
+  private reads = 0;
+  /** The round of naming under way (nameDevices), or the last one, over: one at a time. */
+  private naming: Promise<void> = Promise.resolve();
+  private namingNow = false;
+  /** No round of naming starts before this time (deps.now) after one the account service could not answer. */
+  private namesRetryAt = 0;
   /** The list a person at this PC confirmed for an account the PC is not in yet, as far as it has read it. In memory only. */
   private candidate: { readonly account: string; readonly copy: FollowerCopy } | null = null;
   /** The PC has just joined by its list: the devices the list holds come in with no join hold, as at any pin. */
@@ -526,13 +547,16 @@ export class ListFollow implements ListAuthority {
     this.untilTimer = undefined;
   }
 
-  /** Everything asked of the list so far has been done. */
+  /** Everything asked of the list so far has been done, the naming of its rows (nameDevices) too. */
   async settled(): Promise<void> {
-    for (let turn: Promise<unknown> | null = null, page: Promise<unknown> | null = null; turn !== this.turn || page !== this.applying;) {
+    for (let turn: Promise<unknown> | null = null, page: Promise<unknown> | null = null, names: Promise<unknown> | null = null;
+      turn !== this.turn || page !== this.applying || names !== this.naming;) {
       turn = this.turn;
       page = this.applying;
+      names = this.naming;
       await turn;
       await page;
+      await names;
     }
   }
 
@@ -894,7 +918,7 @@ export class ListFollow implements ListAuthority {
   summary(): ListSummary | null {
     const scope = this.sync();
     if (scope === null || scope.list === null || !this.isPinned) return null;
-    return { pinned_list: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
+    return { pinned_list: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy), ...(this.copy !== null && this.keyless(this.copy) ? { needs_keys: true as const } : {}) };
   }
 
   /** ListStatus.reason: each case in which a pinned PC is closed to its account's devices, or to new ones, with what ends it. */
@@ -919,6 +943,7 @@ export class ListFollow implements ListAuthority {
     }
     if (copy.pin.how === "migrated" && own !== null && own.key !== null && own.key !== copy.me.key) return "Your account's list holds another key for this PC, so it lets your account's devices in but cannot let a new one in. Remove this PC from your account and add it again, or run `ovis add` on this PC after its relay identity is reset.";
     if (copy.pin.how === "migrated" && own?.key === copy.me.key && !this.keysTaken(copy)) return "Your account's list holds this PC's keys by an entry of a device that did not ask this PC for them, so it lets your account's devices in but cannot let a new one in. Run `ovis add` on this PC and compare the number with the device that added this PC to the list.";
+    if (copy.pin.how === "migrated" && stands === "in" && (own === null || own.key === null)) return "This PC came into your account's list as your account moved, with no key of its own in it yet, so it lets your account's devices in but cannot let a new one in. Run `ovis add` on this PC and compare the number with a device of your account.";
     return null;
   }
 
@@ -1580,8 +1605,27 @@ export class ListFollow implements ListAuthority {
    */
   private cannotSign(copy: FollowerCopy): AllowRefusal | null {
     const cannot = cannotAllow(copy);
+    if (cannot !== null && cannot !== "not_signer") return cannot;
+    // one that joined by an invite holds its key and signs for nobody; one with no key of its own gets one by `ovis add`
+    if (this.keyless(copy)) return "needs_keys";
     if (cannot !== null || copy.pin.how !== "migrated") return cannot;
     return this.keysTaken(copy) ? null : "not_signer";
+  }
+
+  /**
+   * Whether this PC is in its list with no key of its own in it to sign with: the list holds no key at its relay key
+   * (a move carried it in as an endpoint), or holds its key by an entry of a device that did not ask this PC for it.
+   * `ovis add` here gives it its keys by the number (needsKeys). Not one whose relay key the list holds another key at.
+   */
+  private keyless(copy: FollowerCopy): boolean {
+    if (copy.state === null || copy.pin.how !== "migrated" || standing(copy) === "out") return false;
+    const own = ownPcRow(copy);
+    return own === null || own.key === null || (own.key === copy.me.key && !this.keysTaken(copy));
+  }
+
+  /** Whether this PC itself keeps `key` out now (a block or a removal here, its own holds): no entry of the list lets it in here then. */
+  holdsBack(key: string): boolean {
+    return this.deps.mayAdmit?.(key) === false;
   }
 
   /** Whether this migrated PC took the `pc` entry its list holds for its own key (cannotSign). */
@@ -1879,18 +1923,33 @@ export class ListFollow implements ListAuthority {
    * commitment the list holds; null otherwise. A key that does not give it is the service's doing, and is said.
    */
   private async epochKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | null> {
+    const got = await this.epochKeyOf(copy, state, epoch, keys);
+    if (got === "unwrapped") return null;
+    if (got !== null && "failed" in got) { this.error = this.words(got.failed); return null; }
+    return got;
+  }
+
+  /**
+   * epochKey, with a service that could not be asked kept apart (`failed`), and a service that holds no wrap of that
+   * epoch for this PC YET (`unwrapped`: it holds none at all, a PC just added, or none of an epoch that late) from a wrap
+   * that does not open or never comes (null: an epoch before this PC's own wraps, sealed before it joined).
+   */
+  private async epochKeyOf(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | { readonly failed: unknown } | "unwrapped" | null> {
     const id = `${copy.list} ${epoch}`;
     const kept = this.epochKeys.get(id);
     if (kept !== undefined) return kept;
     const opens = state.epochs[epoch]?.opens;
     if (opens === undefined) return null;
     let wraps: unknown;
-    try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) {
-      this.error = this.words(error);
-      return null;
-    }
+    try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) { return { failed: error }; }
     const mine = Array.isArray(wraps) ? wraps.find((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null && (wrap as { epoch?: unknown }).epoch === epoch && typeof (wrap as { wrap?: unknown }).wrap === "string") : undefined;
-    if (mine === undefined) return null;
+    if (mine === undefined) {
+      // A wrap of an epoch this PC was not yet a member in never comes (a newcomer is given the epoch it comes in at,
+      // and later ones): an epoch before the last one it holds a wrap of is final. Only one past all of them, or any
+      // while it holds none yet (a PC just added), may still be given
+      const held = Array.isArray(wraps) ? wraps.flatMap((wrap) => typeof wrap === "object" && wrap !== null && Number.isSafeInteger((wrap as { epoch?: unknown }).epoch) ? [(wrap as { epoch: number }).epoch] : []) : [];
+      return held.length === 0 || epoch > Math.max(...held) ? "unwrapped" : null;
+    }
     const opened = await openWrap({ list: copy.list, epoch, commitment: opens, wrap: wrapFromText(mine.wrap), member: { key: keys.enc, privateKey: keys.encPrivateKey } });
     if (!opened.open) {
       if (opened.why === "other_key") this.error = "The account service gave this PC a wrong key to the list's names";
@@ -2393,6 +2452,9 @@ export class ListFollow implements ListAuthority {
     // refused, a tail the service withholds and a read that ran out of its requests are none
     if (this.live(scope) && this.lastVerdict === "caught_up") this.readWhole();
     await this.keepServiceLinks(scope);
+    // a wrap of the names' key may have come since a round found none, with the list as it was: asked again, once a read
+    this.reads++;
+    if (this.live(scope) && (this.deviceNames?.unwrapped.size ?? 0) > 0) this.nameDevices(scope);
   }
 
   /**
@@ -2555,7 +2617,7 @@ export class ListFollow implements ListAuthority {
     try {
       // what the list put out first, so that nothing the commit lets in stands beside a key that is out
       this.keepRemovals(copy);
-      const rows = listCommit(copy, now);
+      const rows = listCommit(copy, now, this.namesOf(copy));
       // nobody while the copy does not show whom the PC lets in (a lost alarm, a removal it has not read again), and never a key the mark names
       const closed = this.alarmLost || this.mustRead;
       const out = this.keptOut(copy, false);
@@ -2570,6 +2632,98 @@ export class ListFollow implements ListAuthority {
     this.untilAt = nextUntil(copy, now);
     this.armUntil(now);
     try { this.deps.recheck?.(); } catch { /* the rows say it again at their next use */ }
+    this.nameDevices(scope);
+  }
+
+  /** The names this PC opened for the devices of `copy`'s list, by key (deviceNames). */
+  private namesOf(copy: FollowerCopy): ReadonlyMap<string, string> {
+    return this.deviceNames?.list === copy.list ? this.deviceNames.byKey : new Map();
+  }
+
+  /**
+   * Opens the names the list sealed for its devices that this PC has not decided yet, with the key to the names it was
+   * given (epochKeyOf), one round at a time. The account service's calls and the opens run OUTSIDE the follower's turn,
+   * so a read (a removal before a session opens) never waits behind them; the turn is taken only to keep the names and
+   * write the rows again. An entry is decided once its name opened, or it seals none, or its wrap does not open; one the
+   * service could not be asked about is asked again in a later round (NAMES_RETRY_MS on), and one whose epoch the service
+   * holds no wrap of for this PC yet (`unwrapped`: a PC just added gets its wrap a moment after its first round) after the
+   * next read of the log and NAMES_RETRY_MS on, so at most once a minute. A PC with no key of its own in the list asks
+   * nothing. A round asks the service once per epoch at most. A list other than the one the round began on keeps
+   * nothing of it.
+   * Names decide nothing: whom the PC lets in is the list's.
+   */
+  private nameDevices(scope: Scope): void {
+    const copy = this.copy;
+    const state = copy?.state ?? null;
+    // a PC with no key of its own in the list (carried in as an endpoint) is given no wrap: nothing to ask for yet
+    if (copy === null || state === null || this.stopped || this.namingNow || this.deps.now() < this.namesRetryAt || this.needsKeys()) return;
+    if (this.deviceNames?.list !== copy.list) this.deviceNames = { list: copy.list, byKey: new Map(), tried: new Set(), unwrapped: new Set(), unwrappedAt: this.reads, unwrappedUntil: 0 };
+    const names = this.deviceNames;
+    const reads = this.reads;
+    const waits = names.unwrappedAt === reads || this.deps.now() < names.unwrappedUntil;
+    const asked = listView(state).devices.filter((row) => row.ended === null && !names.tried.has(row.seq) && !(waits && names.unwrapped.has(row.seq)));
+    if (asked.length === 0) return;
+    this.namingNow = true;
+    let again = false;
+    this.naming = (async () => {
+      const keys = await this.keysOf(scope);
+      if (keys === null) return;
+      const epochs = new Map<number, EpochKey | "failed" | "unwrapped" | null>();
+      const decided: number[] = [];
+      const unwrapped: number[] = [];
+      const opened = new Map<string, string>();
+      let failed = false;
+      for (const row of asked) {
+        const got = await this.nameAt(copy, state, row.seq, keys, epochs);
+        if (got === "failed") { failed = true; continue; }
+        if (got === "unwrapped") { unwrapped.push(row.seq); continue; }
+        decided.push(row.seq);
+        if (got !== null) opened.set(row.key, got.label);
+      }
+      if (failed) this.namesRetryAt = this.deps.now() + NAMES_RETRY_MS;
+      await this.enqueue(() => {
+        if (this.stopped || this.deviceNames !== names || this.copy?.list !== names.list) return;
+        for (const seq of decided) { names.tried.add(seq); names.unwrapped.delete(seq); }
+        for (const seq of unwrapped) names.unwrapped.add(seq);
+        if (unwrapped.length > 0) { names.unwrappedAt = reads; names.unwrappedUntil = this.deps.now() + NAMES_RETRY_MS; }
+        let changed = false;
+        for (const [key, label] of opened) if (names.byKey.get(key) !== label) { names.byKey.set(key, label); changed = true; }
+        if (changed) this.settle();
+        // rows a read brought while this round ran wait for no later read
+        again = !failed && decided.length > 0;
+      });
+    })().catch(() => undefined).finally(() => {
+      this.namingNow = false;
+      if (again) this.nameDevices(scope);
+    });
+  }
+
+  /**
+   * The label the entry at `seq` seals, opened with the key to its epoch's names this PC holds (inside `{ label }`, so
+   * no label is ever read as the failure); null where it seals none or its key does not open; `unwrapped` where the
+   * service holds no wrap of its epoch for this PC yet; `failed` where the service could not be asked. `epochs`: what
+   * this round learnt of each epoch, so it asks the service once per epoch.
+   */
+  private async nameAt(copy: FollowerCopy, state: ListState, seq: number, keys: PcListKeys, epochs: Map<number, EpochKey | "failed" | "unwrapped" | null>): Promise<{ readonly label: string } | "failed" | "unwrapped" | null> {
+    const text = copy.entries[seq];
+    if (text === undefined) return null;
+    let sealed: Sealed | null;
+    try {
+      const kind = readKind(readBody(entryFromText(text).body));
+      sealed = kind !== null && "sealed" in kind ? kind.sealed : null;
+    } catch { return null; }
+    if (sealed === null) return null;
+    let epoch = epochs.get(sealed.epoch);
+    if (epoch === undefined) {
+      const got = await this.epochKeyOf(copy, state, sealed.epoch, keys);
+      epoch = got !== null && got !== "unwrapped" && "failed" in got ? "failed" : got;
+      epochs.set(sealed.epoch, epoch);
+    }
+    if (epoch === "failed" || epoch === "unwrapped") return epoch;
+    if (epoch === null) return null;
+    const opened = await openSealed({ place: { list: seq === 0 ? "" : copy.list, seq }, epoch, sealed: sealed.bytes });
+    const label = opened.open ? readNames(opened.value)?.label ?? null : null;
+    return label !== null && isListLabel(label) ? { label } : null;
   }
 
   /**
@@ -2757,9 +2911,10 @@ function changed(before: FollowerCopy, after: FollowerCopy): boolean {
 
 /**
  * What a pinned PC's account rows are made from: every device the list lets in now, and every device it put out. A
- * device's place is that of the entry that let it in, so an older device is one the list let in before.
+ * device's place is that of the entry that let it in, so an older device is one the list let in before. `names`: the
+ * names this PC opened for them, by key; a device with none is named LIST_DEVICE_LABEL.
  */
-export function listCommit(copy: FollowerCopy, now: number): ListCommit {
+export function listCommit(copy: FollowerCopy, now: number, names: ReadonlyMap<string, string> = new Map()): ListCommit {
   const state = copy.state;
   const devices: SnapshotDevice[] = [];
   const removed: SnapshotRemoved[] = [];
@@ -2767,14 +2922,14 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
   for (const row of state === null ? [] : listView(state).devices) {
     const no = row.seq + 1;
     if (row.ended !== null) removed.push({ key: row.key, no });
-    else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: LIST_DEVICE_LABEL });
+    else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: names.get(row.key) ?? LIST_DEVICE_LABEL });
   }
   // a device that handed its place on keeps its row under the key it is in by now
   const moved = state === null ? [] : Object.keys(state.signers).flatMap((from) => {
     const to = heirOf(state, from) === null ? null : standsFor(state, from);
     return to === null ? [] : [{ from, to }];
   });
-  return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed, moved };
+  return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed, moved, names: true };
 }
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */

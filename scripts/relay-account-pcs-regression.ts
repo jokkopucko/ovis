@@ -218,11 +218,11 @@ try {
   const adding = await accountWindow(browser, pageErrors);
   // signed in, with nothing opened: the sidebar lists the account's PCs that are not in this app yet
   const away = accountRow(adding.page, "Away");
-  await away.getByText("Switched off", { exact: true }).waitFor({ timeout: 30_000 });
+  await away.getByText("Can't reach the PC: it may be off", { exact: true }).waitFor({ timeout: 30_000 });
   const deskRow = accountRow(adding.page, "Desk");
   const request = await remotePrompt(); // the sidebar starts the ready PC once, without an Add button
   assert.equal(await deskRow.getByRole("button").count(), 0);
-  assert.equal(await away.locator('.machine-dot[title="Switched off"]').count(), 1);
+  assert.equal(await away.locator(`.machine-dot[title="Can't reach the PC: it may be off"]`).count(), 1);
   assert.equal(await adding.page.locator(".settings-dialog, .connect-phone-dialog").count(), 0, "the sidebar starts without opening settings");
   await shot(adding.page, "sidebar");
   const approve = await approver();

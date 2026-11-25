@@ -591,6 +591,24 @@ describe("the fake's snapshot wire (device table P6, G1, P16)", () => {
     expect(parseSnapshotPage((await read(service, machine, {})).body).freezes.map((line) => line.block)).toEqual([block.id]);
   });
 
+  test("as the service, a signer signs only on the sign-in that registered its key: another sign-in of the account is refused, a kept record too", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const [first, later] = [service.issueToken("acct_1"), service.issueToken("acct_1")];
+    const [phone, stranger] = [await client(), await client()];
+    const phoneNo = service.registerSessionKey(first, phone.spki, "Phone");
+    const strangerNo = service.registerDevice("acct_1", stranger.spki, "Stranger");
+    const block = await signSafetyRecord({ v: 1, account: "acct_1", signed_at: new Date().toISOString(), kind: "block", target: stranger.spki, target_no: strangerNo,
+      signer: phone.spki, signer_no: phoneNo, nonce: newRecordId() }, phone.pair.privateKey);
+    const sent = async (token: string) => {
+      const response = await service.fetch(post("/v1/safety-records", { record: block }, token));
+      return { status: response.status, code: ((await response.json()) as { error?: { code: string } }).error?.code };
+    };
+    expect(await sent(later)).toEqual({ status: 403, code: "signer_not_member" });
+    expect(await sent(first)).toEqual({ status: 200, code: undefined });
+    expect(await sent(later)).toEqual({ status: 403, code: "signer_not_member" });
+  });
+
   test("a block from an older device commits whole and a lift ends its freeze line", async () => {
     const service = new FakeAccountService();
     service.opensAll = true;

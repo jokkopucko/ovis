@@ -869,7 +869,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect(buttons()).toEqual(["Add", "Not the same"]);
       late = true;
       await press("Add");
-      expect(text()).toContain("That number ran out. Press Add for a new one.");
+      expect(text()).toContain("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.");
       expect([pcAdmits(), held().entries.length, readSeenPcs(ACCOUNT).pcs[pc.endpoint]]).toEqual([0, 1, undefined]);
     } finally { setPageAccountList(null); }
   });
@@ -913,7 +913,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect(buttons()).toEqual(["Add", "Not the same"]);
       now += 121_000;
       await press("Add");
-      expect(text()).toContain("That number ran out. Press Add for a new one.");
+      expect(text()).toContain("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.");
       expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
     } finally { setPageAccountList(null); }
   });

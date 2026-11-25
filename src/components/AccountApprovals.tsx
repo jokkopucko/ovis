@@ -16,7 +16,7 @@ import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountServiceOf, AccountService, type Admission } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
-import { decideRelayPairing } from "../lib/api.ts";
+import { ApiError, decideRelayPairing } from "../lib/api.ts";
 import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
@@ -46,6 +46,14 @@ export async function waitingOf(list: AccountList | null, account: string): Prom
  */
 export function unconfirmedReason(t: (key: string, vars?: Record<string, string>) => string, request: RemotePairingRequest, device: string, pc: string): string {
   return request.list === true ? t("First press “The numbers match” on {device}", { device }) : t("Approve {device} on {pc}'s own screen", { device, pc });
+}
+
+/**
+ * The name an approval card gives the PC the request came through: this device's pairing's name for it, else the
+ * account's (a PC this device opens through its account, or its list, has no pairing here), else the start of its id.
+ */
+export function approvalPcName(serverId: string, paired: readonly { readonly server_id: string; readonly name?: string | undefined }[], listed: readonly { readonly server_id: string; readonly label: string }[]): string {
+  return paired.find((device) => device.server_id === serverId)?.name ?? listed.find((pc) => pc.server_id === serverId)?.label ?? serverId.slice(0, 8);
 }
 
 export function AccountApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
@@ -103,16 +111,17 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
     if (serverId === null || !asking) return;
     let live = true;
     void (async () => {
-      // a store that does not read leaves the card with the PC's id for a name and one PC: nothing here throws into nothing
+      // a store that does not read, and an account that cannot be read, leave the card with the PC's id for a name and
+      // one PC: nothing here throws into nothing
       const paired = await indexedDeviceStore.list().catch((error: unknown) => { console.warn("Ovis: this device's pairings could not be read for the approval", error instanceof Error ? error.name : error); return []; });
-      const here = paired.find((device) => device.server_id === serverId);
       const service = accountServiceOf(document);
       let count = paired.filter((device) => device.device_id !== null).length;
+      let listed: Awaited<ReturnType<AccountService["listPcs"]>> = [];
       if (service !== null) {
-        try { count = Math.max(count, (await new AccountService({ store: indexedAccountStore }).listPcs()).length); }
+        try { listed = await new AccountService({ store: indexedAccountStore }).listPcs(); count = Math.max(count, listed.length); }
         catch (error) { console.warn("Ovis: the account's PCs could not be counted", error instanceof Error ? error.name : error); }
       }
-      if (live) setWhere({ pcName: here?.name ?? serverId.slice(0, 8), pcCount: Math.max(count, 1) });
+      if (live) setWhere({ pcName: approvalPcName(serverId, paired, listed), pcCount: Math.max(count, 1) });
     })();
     return () => { live = false; };
   }, [serverId, asking]);
@@ -124,6 +133,13 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
   const deviceName = known?.admission?.label ?? (accountLabel(request.label) || t("Device"));
 
   const decide = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
+    try { await approveOrDecline(decision, digits); } catch (error) {
+      // the PC cannot let this device in (an app that knows no join into a list): nothing was approved or written
+      if (error instanceof ApiError && error.code === "list_unknown") throw new Error(t("{pc} cannot let {device} in: {pc} lets devices into your account by its signed list, and {device} asked as an Ovis older than 0.5.10 does. Update Ovis on {device}, then have it ask to join again.", { device: deviceName, pc: where.pcName }));
+      throw error;
+    }
+  };
+  const approveOrDecline = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
     if (decision === "decline" || digits === undefined) { await decideRelayPairing(request.id, "decline"); return; }
     const service = new AccountService({ store: indexedAccountStore });
     const session = await service.session();

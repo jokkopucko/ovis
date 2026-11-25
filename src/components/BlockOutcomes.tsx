@@ -43,7 +43,7 @@ export function BlockOutcomes({ outcomes, names, accountRetry, accountFailed = f
           : t("{pc}: needs an Ovis update to block", { pc });
         return <li key={outcome.server_id} className="settings-hint" data-state={outcome.state}>{line}</li>;
       })}
-      {accountRetry === undefined && accountFailed && <li className="settings-hint" data-account-delivery="failed">{t("The block was refused. Block it again from this device.")}
+      {accountRetry === undefined && accountFailed && <li className="settings-hint" data-account-delivery="failed">{t("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.")}
         {onRefusalShown !== undefined && <>{" "}<button type="button" className="btn" onClick={onRefusalShown}>{t("OK")}</button></>}</li>}
       {accountRetry !== undefined && (
         <li className="settings-hint" data-account-delivery="failed">

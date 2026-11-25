@@ -80,7 +80,10 @@ export async function postKept(store: AccountStore, session: AccountSession, rec
   const retry = answers.find((settled): settled is PromiseRejectedResult => settled.status === "rejected" && answeredBy(settled.reason) === undefined);
   if (retry !== undefined) throw retry.reason;
   const codes = answers.flatMap((settled) => settled.status === "rejected" ? [answeredBy(settled.reason)] : []);
-  if (codes.some((code) => code !== MOOT)) return "refused";
+  if (codes.some((code) => code !== MOOT)) {
+    console.warn("Ovis: the account service refused the block for good", codes.filter((code) => code !== MOOT).join(", "));
+    return "refused";
+  }
   return codes.length > 0 ? "done" : "sent";
 }
 

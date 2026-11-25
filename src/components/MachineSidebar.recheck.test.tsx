@@ -149,8 +149,9 @@ it("offers no Check again for a connected PC or an off PC of the relay, and to a
   await mount([local, relayPc({})]);
   expect(recheckButtons()).toHaveLength(0);
   expect(renderer!.root.findAll((element) => element.props.className === "machine-off")).toHaveLength(0);
-  expect(renderer!.root.find((element) => typeof element.props.className === "string" && element.props.className.startsWith("machine-dot")).props.title).toBe("Switched off");
-  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-state visually-hidden"))).toBe("Switched off");
+  // the relay took the connection and nothing answered in time: it cannot be reached, and may be off, no more
+  expect(renderer!.root.find((element) => typeof element.props.className === "string" && element.props.className.startsWith("machine-dot")).props.title).toBe("Can't reach the PC: it may be off");
+  expect(textOf(renderer!.root.find((element) => element.props.className === "machine-state visually-hidden"))).toBe("Can't reach the PC: it may be off");
   await act(async () => renderer?.unmount());
   await mount([local, sshPc({})], true);
   expect(recheckButtons()).toHaveLength(0);

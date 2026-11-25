@@ -526,6 +526,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
       { id: "j1", label: "Android · Chrome", asked_at: asked, left_ms: 60_000, digits: "725403" },
       // a join a member could approve is typed in Settings, never tapped here
       { id: "j2", label: "Tablet", asked_at: asked, left_ms: 60_000 },
+      // and one this PC cannot let in (an app that knows no signed list) is allowed nowhere: its card says why
+      { id: "j3", label: "Old phone", asked_at: asked, left_ms: 60_000, digits: "111222", list_unknown: true },
     ]));
     const [prompt, ...more] = prompts(root);
     expect(more).toEqual([]);

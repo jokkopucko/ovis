@@ -1360,6 +1360,8 @@ describe("the relay tab's QR code behind a press", () => {
   let offerAccount: string | null | undefined;
   /** "refused": the account service refuses to list this PC (PUT /v1/pcs/:id); "silent": it never answers its list */
   let listing: "ok" | "refused" | "silent";
+  /** the signed list of its account this PC follows (`list` of GET /api/account/status); null: none */
+  let pcList: string | null;
 
   const device = (extra: Partial<PairedDevice>): PairedDevice => ({ id: "a", label: "Laptop · Chrome", role: "drive", created_at: "2026-10-01T00:00:00Z", last_seen_at: null, current: false, ...extra });
   const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
@@ -1382,6 +1384,7 @@ describe("the relay tab's QR code behind a press", () => {
     removable = true;
     offerMarks = [];
     offerAnswer = null;
+    pcList = null;
     offerAccount = undefined;
     listing = "ok";
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -1415,7 +1418,7 @@ describe("the relay tab's QR code behind a press", () => {
       if (init?.keepalive === true) keptAlive.push(path);
       const expires_at = new Date(Date.now() + 600_000).toISOString();
       if (path === "/api/account/status") await statusGate;
-      if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [], ...(pcList === null ? {} : { list: { pinned_list: pcList, standing: "in", reason: null } }) });
       if (path === "/api/relay") return Response.json(ONLINE);
       if (path === "/api/devices") return Response.json({ devices });
       if (path.startsWith("/api/devices/") && init?.method === "DELETE") {
@@ -1487,6 +1490,30 @@ describe("the relay tab's QR code behind a press", () => {
     await flush();
   };
   const qrCodes = () => renderer!.root.findAllByType(QrCode);
+  it("signed in to the account of a PC that follows its signed list, says where an invite for another PC is made: a PC's page makes none", async () => {
+    const WHERE = "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.";
+    pcAccount = ACCOUNT_ID;
+    pcList = "f".repeat(64);
+    await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
+    expect(renderer!.root.findAllByProps({ "data-testid": "invite-elsewhere" }).map(text)).toEqual([WHERE]);
+    expect(renderer!.root.findAllByProps({ "data-testid": "invite-pc" })).toHaveLength(0);
+    await act(async () => { renderer!.unmount(); });
+    // an account with no list has no invites: nothing is said of them
+    pcList = null;
+    await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
+    expect(text(renderer!.root)).not.toContain(WHERE);
+    await act(async () => { renderer!.unmount(); });
+    // a PC in no account, and a PC that follows another account's list than the one signed in to, say nothing of it either
+    pcAccount = null;
+    pcList = "f".repeat(64);
+    await mount();
+    expect(text(renderer!.root)).not.toContain(WHERE);
+    await act(async () => { renderer!.unmount(); });
+    pcAccount = "acct_otheraccount000000";
+    await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
+    expect(text(renderer!.root)).not.toContain(WHERE);
+  });
+
   it("signed in to a bound PC's own account, the tab is the signed-in line and the phone's QR code: no list of the account's PCs, no prompt", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });

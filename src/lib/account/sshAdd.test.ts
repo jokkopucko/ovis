@@ -215,6 +215,16 @@ describe("adding another PC over SSH, on the account service since key proofs", 
     expect(challenges()).toBe(0);
   });
 
+  it("a sign-in older than an add takes, with no key of its own to prove it by, asks to sign in again before anything is sent", async () => {
+    // this window's own sign-in, 17 minutes old: the account service would refuse the admission (session_not_fresh), and
+    // each call before that refusal can take long on a slow service, so the person is asked at once
+    const { fake, service, take, takes } = await signedIn(17 * 60_000);
+    const before = fake.requests.length;
+    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("sign-in-again");
+    expect(fake.requests.slice(before)).toEqual([]);
+    expect(takes).toEqual([]);
+  });
+
   it("a sign-in days old asks to sign in again, and nothing is handed over", async () => {
     const { fake, service, take, takes } = await signedIn(3 * 86_400_000);
     expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("sign-in-again");

@@ -1435,7 +1435,9 @@ is sent. A list store that cannot be read stops it too. Where the list does not 
 nobody is signed out and the question says so; where only part of it went, it says how much.
 (Holding the sign-out itself to the head that was read needs the account service: a follow-up.) This device stays in the list with its key and its copy,
 signed out as before; signed out, the list opens no PC with that key, and signed in again on it,
-it is in the list at once, with no Allow.
+it is in the list at once, with no Allow. The question says so, under what it names, whether other
+devices go or none: "This device keeps its place in your account's list: signed in again here, it
+opens your PCs with no Allow. To take it out too, use Disconnect on its own row."
 
 **Signing out and leaving.** Disconnect, Sign out and Sign out every device carry what their
 question showed (the account, and the list and this device's key in it): where the sign-in stored by
@@ -1676,9 +1678,11 @@ from before this call lets only the status and the link through that session).
 **A PC the account names that the list does not hold yet.** Such a PC keeps its row, marked **Not
 in your account's list yet** ([PCs of a list account](#pcs-of-a-list-account)). In Settings, on a
 device that may write the list, the row offers **Add** when the PC posted its keys for the list,
-which a PC that runs a build with lists does by itself: the same number, confirmed at the PC, then
-**Add**, with no admission asked for, since the account lists the PC already. A PC that posted
-nothing runs a build from before lists, and its row says **Update Ovis on this PC**. A device that
+which a PC that runs a build with lists does once it is added from itself (`ovis add`, or **Add this
+PC to my account** in its window): the same number, confirmed at the PC, then **Add**, with no
+admission asked for, since the account lists the PC already. A PC that posted nothing was not added
+from itself yet, or runs a build from before lists, and its row says both: **Add it from that PC
+(ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first**. A device that
 only watches, or one that may not write the list, is offered neither.
 
 Either way the entry is signed through the one write loop of
@@ -1687,8 +1691,13 @@ Either way the entry is signed through the one write loop of
 ### Invites
 
 A device that may write the list makes an invite for one PC
-([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)), in the Mac app under **Add
-PC → Ovis relay → Invite a PC**. By default the PC that joins with the invite asks, and a device
+([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)) under **Add PC → Ovis relay →
+Invite a PC**: in the phone apps and in the hosted app in a browser alike, wherever the page holds
+the account's list. A device that may not write it is shown no such section. A PC's own page (the
+Mac and desktop apps, a browser on the PC's address) holds no copy of the list and makes no invite:
+on a PC that follows its account's list, signed in to that account, its **Add a connection → Ovis
+relay** says where one is made (**To give an agent an invite that adds a PC, make one in the Ovis
+phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.**). By default the PC that joins with the invite asks, and a device
 of the account presses **Add** for it. With **Let the PC join by itself** on, the PC joins with
 nobody asked, for a PC an agent sets up; the line under the switch then says so: **Anyone who gets
 this line in the next 15 minutes can add a PC to your account without asking you.**
@@ -2304,6 +2313,24 @@ neither a hand-over nor the pin undoes a removal.
 
 ### On the PC (as built)
 
+- **The names of its rows.** A pinned PC makes its account rows from the list's devices, and names
+  each as the list sealed its name: it opens the `sealed` field of the entry that let the device in
+  with the epoch key it holds (the wrap a member gave it when it added the PC), once per entry, and
+  writes the rows again when one opened. It asks the account service for a wrap once per epoch in a
+  round, outside the follower's turn, so a read (a removal before a session opens) never waits for
+  the names; an entry the service could not be asked about is asked again a minute later, and one
+  whose epoch it holds no wrap of for this PC yet (a PC just added gets its wrap a moment later) after
+  the next read of the log, at most once a minute; a PC with no key of its own in the list asks for
+  none. A newcomer is given the key of the epoch it comes in at and of later ones only (signedNamed
+  wraps the current epoch; the account service takes wraps of the current epoch alone), so a name
+  sealed in an epoch before this PC's own wraps stays unopened here for good: a PC added to the list
+  later shows the devices named before it came as `Device` (not solved yet: it would take wraps of
+  earlier epochs for a newcomer, which the account service does not take). A name it cannot open (a
+  wrap that does not open, none sealed) leaves the row named `Device`; a name a person gave a row
+  at the PC is kept, but a row a person named `Device` or cleared takes the list's name,
+  since the PC tells it from the placeholder by the label alone. Only the list's commits name rows:
+  a PC that follows no list keeps the labels its rows came in with. The names decide nothing, and
+  stay on the PC.
 - **The witness.** A device asks each PC it knows `GET /api/account/list/witness` in its own
   session and gets the PC's `{ account, pinned, admits, removed }` (docs/account.md, "How long a key
   has been let in").
@@ -2342,7 +2369,21 @@ neither a hand-over nor the pin undoes a removal.
   question only when it did something itself for that PC (`addedItself`). With nobody's evidence,
   `ovis add` at the PC gives it its keys by the number, from the adder the person confirmed. An entry
   with its keys that another device signed, and another key at its relay key, give it nothing to
-  sign with, and it says so.
+  sign with, and it says so. Such a PC (with no key at all, or keys from an entry another device
+  signed) says `needs_keys` in the list of `GET /api/account/status`, and `ovis add` there goes on to
+  that add instead of saying the PC is in an account already: it lists nothing and signs in to
+  nothing, and ends once the PC holds its keys. Its own window offers the same add as **Add this PC
+  to my account's list**, which opens no pairing window and lists nothing. Asked to approve a join, it
+  says that it came in as its account moved, never that it joined by an invite.
+- **The device's side of that number.** A device that may write the list reads the PCs that posted
+  their keys (`postedFor` in `src/lib/account/listPcs.ts`, which Manage account, My PCs and the join
+  card share) and tells three apart: a PC the list does not hold (Add adds it), a PC the move carried
+  in with no key (Add gives it its keys: any device that may write signs that `pc` entry once the
+  number was compared at the PC, as for any add by the number), and a PC the list holds by these very
+  keys under an entry another device signed. That PC takes its keys from that device alone, so the
+  others offer no Add and Manage account names the device that can finish it. Manage account marks a
+  keyless carried PC "No key of its own in your account's list yet", and says to run `ovis add` there
+  until it posts.
 
 ### What is left
 
@@ -2382,8 +2423,11 @@ move is never named to any PC.
   app only. While the device waits on its PCs, every session the app opens to one asks it, and the
   PCs its record knows that have not answered are asked over a session of their own (a saved
   pairing, or through the account with this sign-in's key, and once more with the key its list holds
-  where the PC lets the account's devices in by the list alone), each at most once in ten minutes. A
-  PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
+  where the PC lets the account's devices in by the list alone), each at most once in ten minutes.
+  This goes on while a PC's app is open, and on a clock as long as the device waits: after ten
+  minutes, or after the wait the plan told where that is longer. A plan that comes out the same each
+  round still asks again. The QA twin turns the ten minutes down with its waits, to 30 seconds at the
+  least. A PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
 - **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, a device whose
   storage lasts (as for a genesis) plans from `GET /v1/devices`, the directory's PCs that are listed
   as let in (a PC outside it is left out, as the service would refuse it), its record, this run's
@@ -2430,7 +2474,12 @@ move is never named to any PC.
 - **Sessions.** A device that follows its moved list names it (`POST /api/account/list/name`, the
   naming by the key the list holds it by, with the vouch of the sign-in key the session signed in
   with) to every PC of the account that takes no `account-list-1`: one its directory lists, or one
-  its own record knows. It says nothing of the move to any other PC. On a PC that does, a PC the
+  its own record knows. A PC this device is paired with opens by that pairing, whose naming the PC
+  does not take, so the device also names its list over a session of its own through the account
+  (this sign-in's key, where the directory lists the PC) to each PC its record knows that has not
+  said it follows the list, once in ten minutes at most, never over a pairing; a PC it reaches only
+  by a pairing learns the list from another device it knows, or from Add at the PC. It says
+  nothing of the move to any other PC. On a PC that does, a PC the
   move left with no keys gets them from a member that did something itself for that PC: it takes the
   PC's card over the session (`POST /api/account/list/card`), checks it for this list and that relay
   key, signs the `pc` entry and hands the PC the page. Any other member leaves it to the number at

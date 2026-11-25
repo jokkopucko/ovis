@@ -62,6 +62,8 @@ export interface PcAccountStatus {
   readonly blockedAll?: boolean;
   /** it waits for its first member's enrollment; absent from an Ovis from before enrollments */
   readonly enrolling?: boolean;
+  /** it follows its account's list with no key of its own in it (it came in as the account moved): its add by the list gives it one */
+  readonly needsKeys?: true;
   /** its account stopped listing it: only an add made at the PC brings it into one again, so a device sends it no link */
   readonly pcAddRequired?: true;
 }
@@ -83,6 +85,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
     ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
     ...((body as { pc_add_required?: unknown }).pc_add_required === true ? { pcAddRequired: true as const } : {}),
+    ...((body as { list?: { needs_keys?: unknown } | null }).list?.needs_keys === true ? { needsKeys: true as const } : {}),
   };
 }
 

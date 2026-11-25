@@ -54,7 +54,6 @@ import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAd
 const RELAY_FOUND_MS = 10 * 60_000;
 /** the account service keeps an admission for 10 minutes: a key made for another PC of the account waits no longer */
 const ACCOUNT_PC_MS = 10 * 60_000;
-const ACCOUNT_PC_ANSWER_MS = 10_000;
 
 export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
@@ -2567,8 +2566,9 @@ export class MachineManager {
     if (this.stopped) throw new Error("Server stopping");
     if (!Array.isArray(pcs) || pcs.length > 32) throw new AccountPcError("invalid", "Expected the account's PCs");
     const offers = pcs.map((pc) => this.accountPcOffer(pc).offer);
+    // as long as a device waits for a PC (PC_ANSWER_MS): a busy PC answers late, and a PC that does not answer is not known to be off
     return Promise.all(offers.map(async (offer) => ({ server_id: offer.server_id,
-      state: await vouchedSupport(offer, { ...(this.relaySocket ? { socket: this.relaySocket } : {}), pcAnswerMs: ACCOUNT_PC_ANSWER_MS }) })));
+      state: await vouchedSupport(offer, this.relaySocket ? { socket: this.relaySocket } : {}) })));
   }
 
   /**
@@ -2584,6 +2584,7 @@ export class MachineManager {
     const support = await vouchedSupport(offer, this.relaySocket ? { socket: this.relaySocket } : {});
     if (support === "outdated") throw new AccountPcError("outdated", "Update Ovis on that PC first.");
     if (support === "offline") throw new AccountPcError("offline", "That PC is not on the relay now.");
+    if (support === "unreachable") throw new AccountPcError("offline", "That PC could not be reached just now. Try again.");
     if (this.stopped) throw new Error("Server stopping");
     const now = this.now();
     for (const [serverId, held] of this.accountPcs) if (now - held.at > ACCOUNT_PC_MS && !held.running) this.accountPcs.delete(serverId);
@@ -2759,7 +2760,9 @@ export function accountPcFailure(error: unknown, { shown, aborted }: { shown: bo
     }
     return new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
   }
-  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
+  // most often a PC of the account that no device of the account was paired at: nobody there may approve another PC
+  // (server/relay/session.ts accountJoin), however often it is asked
+  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.", { cause: error });
   return new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
 }
 

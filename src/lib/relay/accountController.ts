@@ -26,7 +26,8 @@ import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS,
 import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
-import { askWitness, asksAgain, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
+import type { PcAnswer } from "../../../shared/account-list-migrate.ts";
+import { asksAgain, nameListTo, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs, witnessOf, type NamingAnswer } from "../account/listMigrate.ts";
 import { callNative, hasNativeMethod } from "../nativeApp.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
@@ -55,6 +56,11 @@ const LINK_SENDS = 5;
 export const LINK_RETRY_MAX_MS = 15_000;
 /** A PC this device asks in the background for the move of its account onto its list is asked again after this long at the soonest. */
 const ASK_AGAIN_MS = 10 * 60_000;
+/** A PC's refusal of a naming that no wait changes (docs/account-list.md, "Naming the list to a PC"): it is named nothing more in this run of the page. */
+const NAMING_FINAL: ReadonlySet<string> = new Set(["stopped", "other_account", "other_list", "carried_off_curve", "removed", "not_member",
+  "session_other_device", "first_signer_removed", "first_signer_unknown", "naming_invalid", "named_here", "lists_full"]);
+/** However far the QA twin turns the move's waits down (pageScale), a PC is asked again no sooner than this. */
+const ASK_AGAIN_MIN_MS = 30_000;
 /** How long such an ask waits for the PC's session to open: a PC that is off is silent, which the move waits out. */
 const ASK_OPEN_MS = 20_000;
 /**
@@ -324,6 +330,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     })().finally(() => { if (reading?.read === read) reading = undefined; });
     reading = { epoch, read };
     await read;
+    void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
     // read whatever screen is up: a confirm drawn meanwhile waits for this sign-in's directory, and a Pair press that
     // found another sign-in reads that one's before anything is paired
     if (replaced) await refresh(initial, true);
@@ -383,31 +390,104 @@ export function createAccountController(mount: RelayShellMount, view: {
       },
     });
   };
-  /** When each PC was last asked in the background for the move, by relay key, in ms: once in ASK_AGAIN_MS at most. */
+  /** When each PC was last asked in the background for the move, by relay key, in ms: once in askGap() at most. */
   const askedPcs = new Map<string, number>();
   let askingPcs = false;
+  /** ASK_AGAIN_MS, turned down with the QA twin's waits as far as ASK_AGAIN_MIN_MS. */
+  const askGap = (): number => Math.max(ASK_AGAIN_MIN_MS, ASK_AGAIN_MS / pageScale());
+  /** The wait a `too_new` plan told, in ms: what it rests on is not asked for again before it, whatever asks. */
+  const toldMs = (status: AccountListView["status"]): number => status.at === "none" && status.move?.why === "too_new" && status.move.wait !== null ? status.move.wait * 1000 : 0;
+  let askTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The session the asker holds open now: a dispose closes it, so nothing more is asked or named over it. */
+  let askOpened: RelayTransport | null = null;
+  let disposed = false;
+  /**
+   * While this device waits on its PCs, the asking runs again on a clock too: a plan that comes out the same every
+   * round (`no_witness`, or `too_new` on an answer heard earlier) changes no view, so no listener would run it. Due
+   * after the gap, or after the wait the plan told where that is longer; not while the page is hidden.
+   */
+  const armAsk = (): void => {
+    if (askTimer !== undefined) clearTimeout(askTimer);
+    askTimer = undefined;
+    const status = lists?.view().status;
+    // a page signed out asks nobody: its list may show the move until it reads that the sign-in is gone
+    if (disposed || accountView?.kind !== "signed-in" || status === undefined || (!waitsOnPcs(status) && unnamed().length === 0)) return;
+    const told = toldMs(status);
+    askTimer = setTimeout(() => {
+      askTimer = undefined;
+      if (document.visibilityState === "hidden") { armAsk(); return; }
+      void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
+    }, Math.max(askGap(), told));
+  };
   /**
    * While this device waits on its PCs for the move onto its list, the PCs it knows by its own record that have not
    * answered in this run are asked over a session of their own, one at a time: by a pairing this device saved with
    * that PC, or through the account with this sign-in's key where the directory names the PC. A PC that cannot be
-   * reached is silent, which the move waits out (three days at most).
+   * reached is silent, which the move waits out (three days at most). Also while a PC's app is open: the session that
+   * app holds was opened before the device waited on its PCs, or is a pairing's, which a PC answers nothing.
    */
   const askPcs = async (): Promise<void> => {
-    if (lists === null || askingPcs || !view.active()) return;
+    // a read that ends after a dispose asks nobody: a disposed controller opens no session
+    if (lists === null || askingPcs || disposed) return;
+    try { await askDuePcs(); } finally { armAsk(); }
+  };
+  /**
+   * A device that follows its moved list names it to the PCs it knows by its own record that do not follow it yet, as
+   * far as this run heard (F10). The shell opens a PC this device is paired with by that pairing, whose naming the PC does
+   * not take (docs/account-list.md, "Naming the list to a PC"): so the asker names it over a session through the account.
+   */
+  const unnamed = (): string[] => {
+    const view = lists?.view();
+    const session = shownFor;
+    if (view === undefined || lists?.naming === undefined || session === undefined || view.account !== session.account) return [];
+    const { status } = view;
+    if (status.at !== "following" || status.standing !== "in") return [];
+    return pcsToAsk({ account: session.account, record: readSeenPcs(session.account), answers: pageAnswers, now: Math.floor(Date.now() / 1000), scale: pageScale(), again: true })
+      .filter((endpoint) => pageAnswers.get(session.account, endpoint)?.pinned !== status.list && namingNotBefore.get(namingKey(session.account, endpoint)) !== Infinity);
+  };
+  /** By account and relay key: from when the device may name its list to that PC again in this run of the page, in ms; Infinity for never. */
+  const namingNotBefore = new Map<string, number>();
+  const namingKey = (account: string, endpoint: string): string => `${account} ${endpoint}`;
+  /**
+   * What the device does next about naming its list to a PC, by what that PC said in this run: nothing more where no wait
+   * changes it (it follows another list, it holds a removal, it does not know who started the list, it wants another
+   * list, ...; or it has no witness to give this session), not before the wait it named where it named one, else on the
+   * gap (a witness that did not answer now is asked again then).
+   */
+  const namingAnswered = (account: string, endpoint: string, list: string, said: PcAnswer | "final" | null, answer: NamingAnswer | null | "unasked"): void => {
+    const key = namingKey(account, endpoint);
+    if (said === null) return;
+    const never = said === "final" || said.account !== account || (said.pinned !== null && said.pinned !== list)
+      // a PC that says it follows a list, this one or another, is done with
+      || (answer !== null && answer !== "unasked" && (answer.pinned || NAMING_FINAL.has(answer.why)));
+    if (never) namingNotBefore.set(key, Infinity);
+    else if (answer !== null && answer !== "unasked" && !answer.pinned && answer.wait !== null) namingNotBefore.set(key, Date.now() + answer.wait * 1000);
+  };
+  const askDuePcs = async (): Promise<void> => {
+    if (lists === null || accountView?.kind !== "signed-in") return;
     const listed = lists.view();
     const session = shownFor;
-    if (session === undefined || listed.account !== session.account || !waitsOnPcs(listed.status)) return;
+    if (session === undefined || listed.account !== session.account) return;
+    const naming = waitsOnPcs(listed.status) ? null : unnamed();
+    if (naming !== null && naming.length === 0) return;
+    // the way to each PC is chosen from this sign-in's directory: while its read is under way (the list's first round
+    // runs inside it), nothing is asked, and the read asks once it ends (refresh)
+    if (listedFor?.epoch !== generation && reading?.epoch === generation) return;
     askingPcs = true;
     try {
       const now = Date.now();
       const record = readSeenPcs(session.account);
       // a carried device that follows its list without a doubt on it asks only the PCs that have not agreed with it yet
       const { status } = listed;
-      const only = status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
-      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) })
-        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
+      const only = naming === null && status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
+      const due = (naming ?? pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) }))
+        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= Math.max(askGap(), toldMs(status))
+          && (naming === null || now >= (namingNotBefore.get(namingKey(session.account, endpoint)) ?? 0)));
       if (due.length === 0) return;
+      // the run is this controller's for this sign-in: a dispose, a sign-out or another sign-in meanwhile ends it after any wait
+      const owned = (): boolean => !disposed && shownFor === session && accountView?.kind === "signed-in";
       const saved = await store.list();
+      if (!owned()) return;
       const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       let heard = false;
       for (const endpoint of due) {
@@ -420,8 +500,14 @@ export function createAccountController(mount: RelayShellMount, view: {
         const way = row !== undefined && row.relay !== null && openKey !== null ? (() => {
           const offer = { v: 1 as const, server_id: row.server_id, server_public_key: exportPublicKey(hexToBytes(endpoint)), relay: row.relay, name: row.label };
           return { offer, options: { store: withAccountDevice(store, accountDevice(offer, openKey.key)), accountOpensAll: true } };
-        })() : paired !== undefined ? { offer: offerOf(paired), options: { store } } : null;
+        })() : paired !== undefined && naming === null ? { offer: offerOf(paired), options: { store } } : null;
         if (way === null) continue;
+        // the naming, signed for the key the account way signs in with; a list this device may not name to anybody (one
+        // not born by a move, say) opens no session for it
+        const named = naming === null || openKey === null || lists.naming === undefined ? null
+          : await lists.naming({ account: session.account, session: openKey.key.public_spki, endpoint, signIn: openKey.key.public_spki });
+        if (!owned()) return;
+        if (naming !== null && named === null) continue;
         let opened: RelayTransport | null = null;
         const openBy = (options: RelayTransportOptions) => open(way.offer, { ...options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
         try {
@@ -434,16 +520,27 @@ export function createAccountController(mount: RelayShellMount, view: {
             if (held === null) throw error;
             opened = await openBy({ store: withAccountDevice(store, accountDevice(way.offer, held)), accountListKey: true });
           }
-          const said = await askWitness((path, init) => opened!.fetch(path, init));
+          askOpened = opened;
+          if (!owned()) return;
+          const fetch = (path: string, init?: RequestInit): Promise<Response> => opened!.fetch(path, init);
+          const witness = await witnessOf(fetch);
+          if (!owned()) return;
+          const said = witness === "final" ? null : witness;
           // no answer here takes no answer heard meanwhile (a session of this page's own may have heard one)
           if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);
-          heard ||= said !== null;
+          heard ||= said !== null && naming === null;
+          // a PC of this account that follows no list is named the list, over this session through the account alone
+          if (named !== null && status.at === "following") {
+            const answer = said !== null && said.account === session.account && said.pinned === null && opened.deviceKey === openKey?.key.public_spki ? await nameListTo(fetch, named) : "unasked";
+            namingAnswered(session.account, endpoint, status.list, witness, answer);
+          }
         } catch (error) {
           console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);
         } finally {
           opened?.close();
+          if (askOpened === opened) askOpened = null;
         }
-        if (shownFor !== session) return;
+        if (!owned()) return;
       }
       if (heard) await lists.sync().catch(() => undefined);
     } finally {
@@ -529,7 +626,11 @@ export function createAccountController(mount: RelayShellMount, view: {
   const unwatch = lists === null ? undefined : watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
   /** Ends what this controller armed for itself: its refresh timer, its listener for the page coming back, and its place among the list's listeners. */
   const dispose = (): void => {
+    disposed = true;
     if (refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
+    if (askTimer !== undefined) { clearTimeout(askTimer); askTimer = undefined; }
+    askOpened?.close();
+    askOpened = null;
     document.removeEventListener("visibilitychange", seen);
     unfollow?.();
     untidy?.();
@@ -543,7 +644,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     // the removal may have counted, and no read of this device's could show it (its sign-in may have ended with it)
     : outcome.why === "unknown" ? t("This device signed out. Whether your account still lists it is not known yet: check its devices from another device.")
     : t("This device signed out, but your account still lists it. Remove it from another device.");
-  const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
+  const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); armAsk(); };
   /**
    * Signs out. `shown`: the account the person signed out of, and its list and this device's key in it, as the page
    * showed them (hostedSignIn.ts): where the sign-in stored by the time it is read is another account's, or the list

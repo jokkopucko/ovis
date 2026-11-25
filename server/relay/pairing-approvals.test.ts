@@ -412,6 +412,43 @@ describe("an account join on this PC's own window", () => {
     expect(approvals.decideTyped(id, "654321")).toBe("gone");
   });
 
+  it("never approves a join marked list_unknown, by a tap or by its digits: it waits, and a decline still ends it", async () => {
+    const f = fixture();
+    const approvals = f.open();
+    const first = approvals.ask("Old phone", "654321", f.clock.at + 90_000, { intent: "account", key: "k3", deviceId: "d3", membersOnly: true, firstJoin: true, listUnknown: true })!;
+    const id = approvals.ownJoins()[0]!.id;
+    expect(approvals.decideOwn(id, true)).toBe("list_unknown");
+    expect(approvals.decideTyped(id, "654321")).toBe("list_unknown");
+    expect(approvals.ownJoins().map((join) => join.id)).toEqual([id]);
+    expect(approvals.decideOwn(id, false)).toBe("decided");
+    expect(await first.decision).toEqual({ approved: false });
+  });
+
+  it("lets a join marked list_unknown that is not a first join be declined on the own window, and approved by nothing", async () => {
+    const f = fixture();
+    const approvals = f.open();
+    const later = approvals.ask("Old phone", "654321", f.clock.at + 90_000, { intent: "account", key: "k3", deviceId: "d3", membersOnly: true, listUnknown: true })!;
+    const id = approvals.ownJoins()[0]!.id;
+    expect(approvals.decideOwn(id, true)).toBe("list_unknown");
+    expect(approvals.decideTyped(id, "654321")).toBe("list_unknown");
+    expect(approvals.decideOwn(id, false)).toBe("decided");
+    expect(await later.decision).toEqual({ approved: false });
+    expect(approvals.ownJoins()).toEqual([]);
+  });
+
+  it("is never approved by a member from afar when marked list_unknown, the right digits included: it waits, and a decline ends it", async () => {
+    const f = fixture();
+    const approvals = f.open();
+    const member = { id: "aaaaaaaaaaaaaaaa", label: "Phone", role: "drive" } as const;
+    const asked = approvals.ask("Old phone", "654321", f.clock.at + 90_000, { intent: "account", key: "k3", deviceId: "d3", membersOnly: true, listUnknown: true })!;
+    const [listed] = approvals.remoteList();
+    expect(listed).toMatchObject({ list_unknown: true });
+    expect(approvals.decideRemote(listed!.id, true, "654321", member)).toEqual({ outcome: "list_unknown" });
+    expect(approvals.remoteList().map((join) => join.id)).toEqual([listed!.id]);
+    expect(approvals.decideRemote(listed!.id, false, "", member)).toEqual({ outcome: "decided", device_id: "d3" });
+    expect(await asked.decision).toEqual({ approved: false });
+  });
+
   it("never decides a comparison the window itself shows", () => {
     const f = fixture();
     const approvals = f.open();

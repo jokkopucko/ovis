@@ -194,17 +194,24 @@ describe("the signed-in relay tab of Add PC", () => {
     } finally { setPageAccountList(null); }
   };
 
-  it("offers invites in the Mac app on a device that may write the list, and nowhere else", async () => {
+  it("offers invites on every device that may write the list, whatever app or browser it is, and nowhere else", async () => {
     const w = listWorld();
-    const first = await w.device({ label: "Dana's Mac" });
+    const first = await w.device({ label: "Dana's phone" });
     await first.list.sync();
     const second = await w.device({ label: "Dana's tablet" });
     await second.list.sync();
-    const mac = "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 OvisMac/1.0";
-    expect(await drawn(mac, first.list)).toBe(1);
-    // a device that waits to be let in, a page with no list, and a browser or a phone
-    expect(await drawn(mac, second.list)).toBe(0);
-    expect(await drawn(mac, null)).toBe(0);
-    expect(await drawn("Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Safari/605.1.15", first.list)).toBe(0);
+    // the hosted app in a browser, the phone apps' WebViews, and the Mac app's marker: none of them is asked about
+    for (const agent of [
+      "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Safari/605.1.15",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      "Mozilla/5.0 (Linux; Android 15; Pixel 8; wv) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36",
+      "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 OvisMac/1.0",
+    ]) {
+      expect(await drawn(agent, first.list)).toBe(1);
+      // a device that waits to be let in, and a page with no list (a PC's own page)
+      expect(await drawn(agent, second.list)).toBe(0);
+      expect(await drawn(agent, null)).toBe(0);
+    }
   });
 });

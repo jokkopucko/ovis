@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { exportAccountKey, newRecordId, verifySafetyRecord } from "../../../shared/account-records.ts";
 import type { DeviceNotice } from "../../../shared/account-devices-api.ts";
 import { notMeBlocks, sendBlocks, withBlockReceipt, type BlockSend, type FleetBlock } from "./fleet-block.ts";
@@ -29,6 +29,36 @@ describe("Not me", () => {
     expect(await notMeBlocks({ ...admitted("", 3), key: null, no: null }, own)).toEqual([]);
     expect(await notMeBlocks(admitted((await heldKey(3)).public_spki, 3), own)).toEqual([]);
     expect(await notMeBlocks(admitted(own.public_spki, 8), own)).toEqual([]);
+  });
+});
+
+describe("Not me's claim of the target's number (F6)", () => {
+  it("claims the number the account service gives the target, not its PC's own admission number", async () => {
+    const own = await heldKey(1);
+    const target = await heldKey(5);
+    const asked: string[] = [];
+    const [block] = await notMeBlocks(admitted(target.public_spki, 5), own, { accountNo: async (key) => { asked.push(key); return 4; } });
+    expect(asked).toEqual([target.public_spki]);
+    expect([block?.signer_no, block?.target_no]).toEqual([1, 4]);
+    expect(await verifySafetyRecord(block!)).toBe(true);
+  });
+
+  it("a lookup that fails or names nothing still signs the block, with the notice's number", async () => {
+    const own = await heldKey(1);
+    const target = (await heldKey(5)).public_spki;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const accountNo of [async () => null, async () => { throw new TypeError("no answer"); }]) {
+        expect((await notMeBlocks(admitted(target, 5), own, { accountNo })).map((block) => block.target_no)).toEqual([5]);
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  it("never decides whether to sign: a notice not newer than this device signs nothing, whatever the account says", async () => {
+    const own = await heldKey(8);
+    let asked = 0;
+    expect(await notMeBlocks(admitted((await heldKey(3)).public_spki, 3), own, { accountNo: async () => { asked++; return 9; } })).toEqual([]);
+    expect(asked).toBe(0);
   });
 });
 

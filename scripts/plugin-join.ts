@@ -139,6 +139,8 @@ const USAGE_HINT = (command: string): string => `Run ${command} --invite-file <p
 const NOT_AN_INVITE = "That is not an Ovis invite: an invite is one line that starts with ovis-join:1:, made on a device signed in to your account. Nothing was sent.";
 
 const INVITE_DEAD = "This invite does not work: it is mistyped, used or expired (an invite works once, for 15 minutes). Ask for a new one.";
+/** An account that keeps a signed list redeems only an invite its list holds as open (`invite_not_in_list`). */
+const INVITE_NOT_IN_LIST = "This invite does not work: your account's signed list does not hold it as open (it was revoked, used or ran out, or made before the account had its list). Ask for a new one.";
 
 /** Seconds from a retry-after header, as a person reads them. */
 function inTime(seconds: number | null): string {
@@ -420,7 +422,7 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
     ...invite.list === null ? { admissionOnly: true as const } : { take: byList(invite.list, redeemed.auto) },
     askBeforeUnlist: true, stopFast: true,
     unlist: () => leave(account), named, signOut: async () => undefined,
-    words: joinWords(options, account, redeemed.auto), report: (end) => { ended = end; },
+    words: joinWords(options, account, redeemed.auto, invite.list !== null), report: (end) => { ended = end; },
   });
   const outcome = (ended as PressEnd | null) ?? (code === 0 ? { kind: "added", online: false } as const : { kind: "not_added", why: "failed", listed: null } as const);
   if (outcome.kind === "added") {
@@ -579,6 +581,7 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
       const header = response.headers.get("retry-after")?.trim() ?? "";
       const retryAfter = /^[0-9]{1,9}$/.test(header) ? Number(header) : null;
       if (response.status === 400 && code === "invite_invalid") return failed("invite_invalid", INVITE_DEAD);
+      if (response.status === 409 && code === "invite_not_in_list") return failed("invite_invalid", INVITE_NOT_IN_LIST);
       if (response.status === 429 && code === "pc_add_cap") return failed("pc_add_cap", `Your Ovis account has added as many PCs as it may for now: try again in ${inTime(retryAfter)}. The invite was not used.`, { retry_after: retryAfter });
       if (response.status === 429) return failed("rate_limited", `The account service asks this PC to wait: try again in ${inTime(retryAfter)}.`, { retry_after: retryAfter });
       if (response.status === 409 && code === "directory_full") return failed("directory_full", `Your account holds as many PCs as it can. Remove one in the Ovis app, then run ${command} again (with a new invite once this one ran out).`);
@@ -589,7 +592,7 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
 }
 
 /** `ovis join`'s words for the press: an invite chose the account, and nothing was signed in to. */
-function joinWords(options: LinkOptions, account: string, auto: boolean): PressWords {
+function joinWords(options: LinkOptions, account: string, auto: boolean, byList: boolean): PressWords {
   const command = `${cli(options)} join`;
   return {
     command, anew: "Ask for a new invite to try again.", chosen: "the invite is for",
@@ -598,5 +601,7 @@ function joinWords(options: LinkOptions, account: string, auto: boolean): PressW
       ? `This PC is listed in Ovis account ${account} as ${name}, and the invite adds it with no Add to press.\n`
       : `This PC is listed in Ovis account ${account} as ${name}. Open Ovis on your phone or another device signed in to that account and press Add for ${name} (its card shows for 10 minutes).\nWaiting… (up to ${lasts}, Ctrl+C to stop)\n`,
     noneWaiting: `The invite's add is no longer there to take: it lasts 10 minutes from the invite's first use. Ask for a new invite, then run ${command} again.\n`,
+    // a PC that joined its account's list by an invite signs nobody into that list (ovis approve says so): another device does
+    ...byList ? { allowsNobody: true as const } : {},
   };
 }

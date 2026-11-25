@@ -147,7 +147,8 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
       if (session === undefined) return;
       const current = await noticeIdentity(session);
       if (current === null || current.key === null || current.account !== notice.account || !socket.accountOpensAll()) return;
-      const blocks = await notMeBlocks(notice, current.key);
+      const service = indexedAccountService.forSignIn(session);
+      const blocks = await notMeBlocks(notice, current.key, { accountNo: (key) => service.deviceNo(key, AbortSignal.timeout(ANSWER_TIMEOUT_MS)) });
       if (blocks.length === 0) return;
       // kept before any PC or the service gets one, so a closed tab loses none (S32-1)
       setUnstored(false);
@@ -199,7 +200,6 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
         if (answer !== undefined) routes.relayed = new Map([[ownId, answer], ...routes.relayed]);
         routes.pcs.delete(ownId);
       }
-      const service = indexedAccountService.forSignIn(session);
       // Every route to a skipped PC: one that is open and reports no capability decides its line, whatever the order.
       const skipped = new Map<string, Machine[]>();
       for (const machine of fleet.machines) {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { Machine } from "../../../shared/machines.ts";
-import { AccountService } from "./service.ts";
+import { AccountService, SignedOutError } from "./service.ts";
 import { indexedAccountStore } from "./store.ts";
 import { pagePcs, readPageList } from "./listPcs.ts";
 import { pageAccountList } from "./pageList.ts";
@@ -32,9 +32,10 @@ export interface AccountPcsSource {
 }
 
 /** The page's own sign-in (docs/account.md): the directory nobody vouches for, each entry's key checked against its id (myPcs). */
-export function signedInAccount(): AccountPcsSource {
-  const service = new AccountService({ store: indexedAccountStore });
+export function signedInAccount(service: Pick<AccountService, "session" | "forSignIn"> = new AccountService({ store: indexedAccountStore })): AccountPcsSource {
   let bound: AccountService | null = null;
+  /** the account the list was last read for */
+  let listedFor: string | null = null;
   return {
     async account() {
       return (await service.session())?.account ?? null;
@@ -43,6 +44,7 @@ export function signedInAccount(): AccountPcsSource {
       const session = await service.session();
       if (session === undefined) return null;
       bound = service.forSignIn(session);
+      listedFor = session.account;
       // a device that holds a copy of its account's list draws by it from the first row on: the page's read of that
       // copy is waited for, and where none ends every row is marked, so the sidebar adds none by itself
       const listed = await bound.listPcs();
@@ -53,8 +55,11 @@ export function signedInAccount(): AccountPcsSource {
       return { account: session.account, pcs };
     },
     async admit(serverId, label, key) {
-      if (bound === null) throw new Error("Not signed in");
-      await bound.postAdmission(serverId, label.slice(0, 48), key, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0));
+      // under the sign-in stored now, while it is of the account the list was read for: one made again since (signed out
+      // and in) admits as the one the list was read with would; another account, or none, admits nothing
+      const session = await service.session();
+      if (listedFor === null || session === undefined || session.account !== listedFor) throw new SignedOutError();
+      await service.forSignIn(session).postAdmission(serverId, label.slice(0, 48), key, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0));
     },
   };
 }
@@ -74,9 +79,22 @@ export interface AccountPcs {
   /** what the PC answered when asked whether it would pair; undefined while it is asked */
   stateOf(serverId: string): AccountPcState | undefined;
   pairing: Pairing | null;
-  /** `code`: the server's refusal (ApiError.code), absent for one this page decided */
-  failure: { server_id: string; message: string; code?: string } | null;
+  /** `code`: the server's refusal (ApiError.code), absent for one this page decided; `signIn`: nothing was asked, as this page was not signed in to the account */
+  failure: AccountPcFailure | null;
   add(pc: AccountPcEntry): Promise<void>;
+}
+
+type AccountPcFailure = { server_id: string; message: string; code?: string; signIn?: true };
+
+/** What a row says of an add that failed, in the page's language: the PC's server says it in English only. */
+function failureWords(error: unknown, t: ReturnType<typeof useT>): string {
+  switch (error instanceof ApiError ? error.code : null) {
+    case "account_pc_refused": return t("That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.");
+    case "account_pc_declined": case "account_pc_unanswered": return t("Not approved");
+    case "account_pc_outdated": return t("Update Ovis on that PC");
+    case "account_pc_offline": return t("Can't reach the PC");
+    default: return t("That PC could not be added. Try again.");
+  }
 }
 
 /**
@@ -103,7 +121,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   }, []);
   const [states, setStates] = useState<ReadonlyMap<string, AccountPcState>>(new Map());
   const [pairing, setPairing] = useState<Pairing | null>(null);
-  const [failure, setFailure] = useState<{ server_id: string; message: string; code?: string } | null>(null);
+  const [failure, setFailure] = useState<AccountPcFailure | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
   const listed = useRef<Round>({ asked: new Set(), invalid: new Set(), failed: new Set(), scope: null });
@@ -170,10 +188,10 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
         setPcs(null);
         return;
       }
-      // anything else is that PC not answering: its row says so, and the others stay. It is asked again on the next
-      // refresh, never because the roster changed
+      // anything else kept that PC's answer away (nothing says it is off): its row says so, and the others stay. It is
+      // asked again on the next refresh, never because the roster changed
       round.failed.add(pc.server_id);
-      setStates((current) => new Map(current).set(pc.server_id, "offline"));
+      setStates((current) => new Map(current).set(pc.server_id, "unreachable"));
     });
   };
   useEffect(() => {
@@ -195,7 +213,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     try {
       // signed out, or into another account, since the list was read: nothing is asked of that PC
       if (!await stillOurs()) {
-        if (!abort.signal.aborted) { setPairing(null); setFailure({ server_id: pc.server_id, message: t("Sign in again") }); }
+        if (!abort.signal.aborted) { setPairing(null); setFailure({ server_id: pc.server_id, message: t("Sign in again"), signIn: true }); }
         return;
       }
       abort.signal.throwIfAborted();
@@ -214,7 +232,9 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       // roster shows it added once that one ends
       if (error instanceof ApiError && error.code === "account_pc_busy") return;
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));
-      setFailure(error instanceof ApiError ? { server_id: pc.server_id, message: error.detail, ...(error.code === null ? {} : { code: error.code }) } : { server_id: pc.server_id, message: t("That PC could not be added. Try again.") });
+      // the page's sign-in went (or is another account's) on the way: the row asks to sign in again, and is tried once it is
+      if (error instanceof SignedOutError) { setFailure({ server_id: pc.server_id, message: t("Sign in again"), signIn: true }); return; }
+      setFailure({ server_id: pc.server_id, message: failureWords(error, t), ...(error instanceof ApiError && error.code !== null ? { code: error.code } : {}) });
     }
   };
   return { pcs, added, stateOf: (serverId) => pcs?.find((pc) => pc.server_id === serverId)?.unreachable === true ? "offline" : states.get(serverId), pairing, failure, add };

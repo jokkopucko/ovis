@@ -6,6 +6,7 @@ import type { RelayPairingRequest } from "../../shared/machines.ts";
 import { TAILNET_NODE_ROUTES } from "../../shared/tailnet-nodes.ts";
 import type { PromptPairing } from "../components/RelayPairingPrompt.tsx";
 import { nativeTransport, setTransport } from "./transport.ts";
+import { holdListNumber } from "./account/addThisPc.ts";
 import { useOwnWindowPrompts } from "./useOwnWindowPrompts.ts";
 
 const JOINS = [{ id: "join-1", label: "Phone", digits: "123456", left_ms: 60_000 }, { id: "join-2", label: "Galaxy", left_ms: 60_000 }];
@@ -105,6 +106,25 @@ it("shows this PC's own window the number of an add by its account's list, and r
   await settle();
   expect(addReads).toBe(reads);
   expect(prompts.filter((prompt) => prompt.own_window === "add")).toEqual([]);
+});
+
+it("leaves the number of an add to the wait that shows it in a dialog, so one place alone takes the yes, and shows it again once that wait lets it go", async () => {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  const number = { state: "number", run: "0123456789abcdef", account: "acct_1", list: "ab".repeat(32), digits: "482913", until: "2026-11-21T00:02:00.000Z" };
+  listAdd = () => Response.json(number);
+  const release = holdListNumber(number.run);
+  await act(async () => { renderer = create(createElement(Probe, { pairings: [] })); });
+  await settle();
+  expect(prompts.filter((prompt) => prompt.own_window === "add")).toEqual([]);
+  // the dialog closed: the window's own prompt takes the number again
+  await act(async () => { release(); });
+  await settle();
+  expect(prompts.filter((prompt) => prompt.own_window === "add").map((prompt) => prompt.digits)).toEqual(["482913"]);
+  // a hold of another run leaves this one's number where it is
+  const other = holdListNumber("fedcba9876543210");
+  await settle();
+  expect(prompts.filter((prompt) => prompt.own_window === "add").map((prompt) => prompt.digits)).toEqual(["482913"]);
+  other();
 });
 
 it("keeps the newest read of the add when an older one answers after it", async () => {

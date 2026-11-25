@@ -46,6 +46,7 @@ const AFTER_PLACED_WAIT_MS = 1_000;
 const CANNOT_ADD: Readonly<Record<AllowRefusal, string>> = {
   not_pinned: "This PC does not follow your account's signed list, so it cannot add another PC to it. Run ovis add on that PC and add it with the number it shows.",
   not_signer: "This PC joined your account with an invite, so it cannot add other PCs to your account's signed list. Run ovis add on that PC and add it with the number it shows.",
+  needs_keys: "This PC came into your account's signed list as your account moved, with no key of its own in it yet, so it cannot add other PCs to it. Run ovis add on this PC to give it its keys, or run ovis add on that PC and add it with the number it shows.",
   alarm: "This PC was shown two different lists of your account, so it adds nobody until that is resolved.",
   stopped: "Your account's list holds what this Ovis is too old to read. Update Ovis on this PC first.",
   behind: "Your account's list holds what this Ovis is too old to read. Update Ovis on this PC first.",
@@ -60,7 +61,7 @@ const CANNOT_ADD: Readonly<Record<AllowRefusal, string>> = {
   not_in_list: "The entry that adds that PC is not in your account's list.",
 };
 /** What stops this PC from signing anyone, as against what stopped this one entry. */
-const CANNOT_SIGN: ReadonlySet<AllowRefusal> = new Set(["not_pinned", "not_signer", "alarm", "stopped", "behind", "unavailable"]);
+const CANNOT_SIGN: ReadonlySet<AllowRefusal> = new Set(["not_pinned", "not_signer", "needs_keys", "alarm", "stopped", "behind", "unavailable"]);
 
 /** The pause between two takes after the entry is placed: inside a loop bounded by its tries. */
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

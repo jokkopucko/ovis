@@ -226,12 +226,12 @@ test("a line that names no list, for an account that keeps one, adds this PC now
   const { made } = await listed();
   const line = await inviteFor(made, true);
   const run = await joining(made, line);
-  expect(run.code).toBe(JOIN_EXIT.not_added);
+  expect(run.code).toBe(JOIN_EXIT.invite_invalid);
   // The account service itself redeems no invite its list does not hold (Part D11.5), so it ends there. A service that
   // took the redeem all the same would meet this PC's own refusal at the take: an account with a list takes no PC on
   // its word (`list_add`, list-join.contract.test.ts "without the person's yes at the PC nothing is joined…")
-  expect(run.err).toContain("invite_not_in_list");
-  expect(run.err).toContain("This PC was not added.");
+  expect(run.err).toContain("your account's signed list does not hold it as open");
+  expect(run.err).not.toContain("invite_not_in_list");
   expect(made.devices.account()).toBeNull();
 });
 

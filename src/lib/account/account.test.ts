@@ -110,6 +110,23 @@ describe("signing in", () => {
   });
 });
 
+it("F6: the account service's number of a key, the one it holds a block's target_no to; null for a key it does not name", async () => {
+  const service = serviceWithSignIn();
+  service.fake.opensAll = true;
+  const { store, session } = await signIn(service);
+  const [older, newer, stranger] = await Promise.all([newKey(), newKey(), newKey()]);
+  const signerNo = service.fake.registerDevice(session.account, older.public_spki, "Phone");
+  const targetNo = service.fake.registerDevice(session.account, newer.public_spki, "Laptop");
+  const client = new AccountService({ store, fetch: service.fetch });
+  expect([await client.deviceNo(older.public_spki), await client.deviceNo(newer.public_spki), await client.deviceNo(stranger.public_spki)]).toEqual([signerNo, targetNo, null]);
+  // a block claiming another number for its target (a PC's own admission number, say) is refused for good
+  const block = await signSafetyRecord({ v: 1, account: session.account, signer: older.public_spki, signer_no: signerNo, signed_at: new Date().toISOString(),
+    kind: "block", target: newer.public_spki, target_no: targetNo + 1, nonce: newRecordId() }, older.private_key);
+  const refused = await client.postSafetyRecord(block).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(AccountServiceError);
+  expect([(refused as AccountServiceError).status, (refused as AccountServiceError).code]).toEqual([403, "unknown_target"]);
+});
+
 it("T60: posts a safety record to the account service that retains the signed block", async () => {
   const service = serviceWithSignIn();
   service.fake.opensAll = true;

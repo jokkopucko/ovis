@@ -8,7 +8,7 @@ import { OwnJoinCard, OwnJoins } from "./OwnJoins.tsx";
 describe("account joins on the PC's own window", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
-  let joins: { id: string; label: string; asked_at: string; left_ms: number; digits?: string }[];
+  let joins: { id: string; label: string; asked_at: string; left_ms: number; digits?: string; list_unknown?: true }[];
   let listAnswer: number;
   let lists: number;
   let typed: string[];
@@ -137,6 +137,14 @@ describe("account joins on the PC's own window", () => {
     expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(0);
   });
 
+  it("offers no number to a join from an app that knows no signed list: it says to update that app", async () => {
+    joins = [{ ...joins[0]!, list_unknown: true }];
+    await mount();
+    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Type the number")).toEqual([]);
+    expect(renderer!.root.findAllByType("form")).toEqual([]);
+    expect(text(renderer!.root)).toContain("Galaxy S25 cannot be let in here: this PC lets devices into your account by its signed list, and Galaxy S25 asked as an Ovis older than 0.5.10 does. Update Ovis on Galaxy S25, then have it ask to join again.");
+  });
+
   it("says a wrong number ended the join", async () => {
     await mount();
     await press("Type the number");
@@ -161,6 +169,16 @@ describe("account joins on the PC's own window", () => {
       await submit("482913");
       expect(typed).toEqual(["482913"]);
       expect(decided).toBe(1);
+    });
+
+    it("pops for a join from an app that knows no signed list, a first join too, with no field: it says to update that app", async () => {
+      await card([{ ...joins[0]!, digits: "482913", list_unknown: true }]);
+      expect(cards()).toHaveLength(1);
+      expect(renderer!.root.findAllByType("input")).toEqual([]);
+      expect(text(renderer!.root)).toContain("Galaxy S25 cannot be let in here: this PC lets devices into your account by its signed list, and Galaxy S25 asked as an Ovis older than 0.5.10 does. Update Ovis on Galaxy S25, then have it ask to join again.");
+      await press("Not now");
+      expect(cards()).toHaveLength(0);
+      expect(typed).toEqual([]);
     });
 
     it("one wrong number ends that join and says so", async () => {

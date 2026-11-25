@@ -455,10 +455,18 @@ for it before they show or ask anything.
   **An account that keeps a signed list** ([A PC is added to the
   list](account.md#a-pc-is-added-to-the-list)) takes this PC by that list alone, so the command
   asks this PC to start that add first (`POST /api/account/list/add`), and asks for the admission
-  only where the PC says the account keeps no list. With a list it says so (**Your account keeps a
-  signed list of its devices: the device that adds this PC shows a number, and this PC shows it
-  here. They must be the same before you press Add.**) and asks the PC every 2 seconds where the add
-  stands. When a device chooses Add for this PC, both show six digits, and the terminal asks:
+  only where the PC says the account keeps no list. Until the PC answers, the command says only that
+  it asks (**Asking your account how it adds this PC…**), and its step 2 comes with that answer:
+  **Press Add on a device of your account** where the account keeps no list, so nobody is told to
+  press Add where Add alone would not add the PC. That answer waits for the PC's round trips to the
+  account service, one after another (whether the account keeps a list, then its card and the
+  device's first message), so it takes a few seconds where the service is slow; one the service did
+  not answer is said (**The account service did not answer this PC just now. Still waiting…**).
+  With a list the step is **Compare a number with a device of your account**, and says why (**Your
+  account keeps a signed list of its devices: the device that adds this PC shows a number, and this
+  PC shows it here. They must be the same before you press Add.**); the command asks the PC every
+  2 seconds where the add stands. When a device chooses Add for this PC, both show six digits, and
+  the terminal asks:
   **This PC shows 482 913. Does the device that adds it show the same number? Type yes if it does,
   or press Enter if it does not**. `yes` (or `y`) confirms that number and nothing else, and the
   command says **Confirmed. Press Add for (this PC) on that device now.**; the PC joins once that
@@ -616,9 +624,12 @@ for it before they show or ask anything.
   waits for the relay first, which Ovis's own account service lets come online for such a listing only
   once a device of the account pressed **Add** on its card. On a device
   already signed in to this account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the
-  terminal shows the request with its six digits
-  (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to
-  approve, or press Enter to decline**). Only the request's own digits approve it: all six, with
+  terminal shows the request with its six digits, which that device asks you to type there
+  (**… wants to add this PC to your account. Type 123 456 on that device, or check that it shows
+  the same number, then type 456 here to approve, or press Enter to decline**). A request that
+  did not come from that add screen is asked as before (**… wants to join your account. Approve
+  it only if its screen shows 123 456. Type 456 to approve, or press Enter to decline**). Only
+  the request's own digits approve it: all six, with
   or without the space, or the last three, so a line begun for another request, or typed ahead of
   any, cannot approve this one. Full-width digits, as an input method types them, are the same
   digits. When the last three are also those of another request (one asked about earlier in the
@@ -750,9 +761,11 @@ for it before they show or ask anything.
   it does once a device of the account chose **Add**. With an **auto** invite the PC builds its own entry,
   the command signs it with the line's key and hands it back, and the PC places it and joins
   (`…/join/prepare`, `…/join/body`, `…/join/place`); a list that moved meanwhile is tried again, a
-  few times. A line that names no list, for an account that keeps one, ends the run with the PC's
-  refusal (**This account keeps a signed list of its devices, and takes a PC only by that list**):
-  ask for a new invite.
+  few times. A PC that joined the list by an invite signs nobody into it, so after **Added.** the
+  command asks for no first device's digits: it says to allow a device that asks to join this PC
+  on another device of the account. A line that names no list, for an account that keeps one, is
+  refused by the account service (`invite_invalid`: the list does not hold that invite as open, as
+  for one that was revoked, used or ran out): ask for a new invite.
 
   A run that ends with this PC in no account (Ctrl+C, the card's time, an auto admission that is not
   there, a refusal, an error of its own) takes this PC off that account's list by its own proof
@@ -785,7 +798,7 @@ for it before they show or ask anything.
   | 0 | | Added, or in that account already |
   | 1 | `not_added`, `stopped` | Not added: the PC or the account service refused, or Ctrl+C |
   | 2 | `usage` | No invite, two ways at once, an unknown flag, a file that could not be read |
-  | 3 | `invite_invalid` | Not an invite line, one for another account service, or one the service does not take: mistyped, used or expired |
+  | 3 | `invite_invalid` | Not an invite line, one for another account service, or one the service does not take: mistyped, used or expired, or one an account's signed list does not hold as open (revoked, used, run out, or made before the list) |
   | 4 | `not_confirmed` | Not `yes` at the question, or nobody to ask (no terminal, `--json`) and no `--account` |
   | 5 | `account_mismatch` | `--account` names another account than the invite's |
   | 6 | `other_account` | This PC is in another account (`ovis logout` first) |
@@ -1121,7 +1134,7 @@ The relay service has limits of its own (frame size, phones per PC, connections 
 | `resource_exhausted` | too many new streams or frames a second, or a queue over its limit |
 | `timeout` | admission or a keepalive took too long, or a comparison of digits was not finished in 90 seconds |
 | `internal_error` | something failed on the other side |
-| `account_unreachable` | the PC could not ask the account service whether its account still lists it, so it lets no device of the account in; only to a client that offered `account-listing-errors-1` ([account.md](account.md#adding-a-pc)) |
+| `account_unreachable` | the PC could not ask the account service whether its account still lists it, so it lets no device of the account in; or, at a join of the account (`pair-intent-account`) whose client offered `account-listing-errors-1`, it could not learn within 8 seconds whether the account asked for this device, so it refuses the join (a join that did not offer it waits as before and hears `auth_failed`); only to a client that offered `account-listing-errors-1`, which a join of the account now offers too ([account.md](account.md#adding-a-pc)) |
 | `account_readd_required` | the PC left its account (the account stopped listing it, or its binding named no listing) and waits to be added again at the PC; only to a client that offered `account-listing-errors-1`, after it proved a key the PC knew for that account. The client keeps its key |
 | `account_list_required` | the PC lets its account's devices in by the account's signed list alone, and has no row for this sign-in: the client signs in again with the key the list holds for it ([account.md](account.md#how-an-app-signs-in-to-a-pinned-pc)); only to a client that offered `account-list-1` and did not require it |
 

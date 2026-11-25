@@ -21,12 +21,12 @@ import { canScanQr } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 /** Why the plain screen is up (#16): what the person does next on the PC, or why nothing goes on. */
-export type PlainReason = "allow" | "type" | "off" | "declined" | "unanswered" | "removed";
+export type PlainReason = "allow" | "type" | "off" | "declined" | "refused" | "unanswered" | "removed";
 
 /**
  * #16: the one plain screen a signed-in device waits on while the join a launch asked by itself goes on, or after this
  * device was removed from a PC, app and browser alike: the PC's name, one line with what to do there (press Allow, type
- * this number, turn Ovis on, ask again after a decline or a removal), the number when the join shows one, and under it
+ * this number, turn Ovis on, ask again after a decline, a refusal or a removal), the number when the join shows one, and under it
  * the PC screen's QR way in (a code in a browser). No tabs, no banner, no list.
  */
 export function PcApprovalWait({ reason, name, digits = null, onQr, onCheck, onAskAgain }: {
@@ -40,6 +40,8 @@ export function PcApprovalWait({ reason, name, digits = null, onQr, onCheck, onA
       case "type": return t("Type this number on {name}", { name: name ?? t("this PC") });
       case "off": return name === null ? t("Turn on Ovis on the PC") : t("{name} is off. Turn on Ovis on it.", { name });
       case "declined": return t("Not allowed. Ask again, then press [Allow] on {name}.", { name: name ?? t("this PC") });
+      // the PC turned the request down before anybody was asked (in no account yet, paused after too many tries): nobody declined it
+      case "refused": return t("{name} cannot take this device yet", { name: name ?? t("this PC") });
       case "unanswered": return t("No answer from {name}", { name: name ?? t("this PC") });
       case "removed": return t("This device was removed from {name}. Ask again to join it.", { name: name ?? t("this PC") });
       default: {
@@ -49,10 +51,11 @@ export function PcApprovalWait({ reason, name, digits = null, onQr, onCheck, onA
     }
   })();
   const waiting = reason === "allow" || reason === "type";
+  const problem = reason === "declined" || reason === "refused" || reason === "unanswered" || reason === "removed";
   return (
     <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null && reason === "off" ? "no-pc" : reason === "allow" || reason === "type" ? "pc" : reason}>
       {name !== null && <h1 className="relay-shell-title">{name}</h1>}
-      <p className={reason === "declined" || reason === "unanswered" || reason === "removed" ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={reason === "declined" || reason === "unanswered" || reason === "removed" ? "alert" : "status"}>{line}</p>
+      <p className={problem ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={problem ? "alert" : "status"}>{line}</p>
       {digits !== null && digits !== "" && <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>}
       {waiting && <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>}
       {onAskAgain && <button type="button" className="btn btn-primary" data-action="ask-again" onClick={onAskAgain}>{t("Ask again")}</button>}

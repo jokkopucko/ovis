@@ -6,6 +6,7 @@ import "./SidebarAccountPcs.css";
 
 import type { Machine } from "../../shared/machines.ts";
 import { pcAccountStatus } from "../lib/account/join.ts";
+import { ACCOUNT_SESSION_EVENT } from "../lib/account/store.ts";
 import { isNewAccountPc } from "../lib/account/myPcs.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { fetchRelay } from "../lib/api.ts";
@@ -19,8 +20,9 @@ import { signedInAccount, useAccountPcs, type AccountPcRow as ListedAccountPc, t
  * are not in this app yet, under the PCs the sidebar lists, each added to this PC on its own as soon as it answers, one
  * at a time (the relay tab's Add, and the same approval on another device), so every PC of the account lists every
  * other whichever one a device opens. Each row only says where it is, with nothing to press: Connecting… while it is
- * added, why it was not once a pairing failed (asked again once the account lists something new), Switched off where it did not
- * answer, or that its Ovis needs an update. The approval itself is asked on the account's devices, never here. A PC once
+ * added, why it was not once a pairing failed (asked again once the account lists something new), that it cannot be
+ * reached and may be off where nothing answered in time (all such a check knows: never that it is switched off), or that
+ * its Ovis needs an update. The approval itself is asked on the account's devices, never here. A PC once
  * added is the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
 export function SidebarAccountPcs({ machines, onAdded, onListed, openable, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the PCs being added, empty when none are (the hosted app's own list leaves those out) */ onListed?: (serverIds: readonly string[]) => void; /** the PCs this device keeps its own link to (the hosted app's list): a row of one opens it as that link would */ openable?: ReadonlySet<string>; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
@@ -109,6 +111,38 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     try { localStorage.setItem(declineKey(pc.server_id), pc.new_until ?? ""); } catch { /* not kept: asked again on the next load */ }
     noteDecline((count) => count + 1);
   }, [failure]);
+  // a PC asked nothing because this page was not signed in to the account says so only until it is again: a sign-in
+  // written in this window, or the window coming back, reads it, and the PC gets its turn
+  const signedOut = useRef(new Set<string>());
+  const [signIns, noteSignIn] = useState(0);
+  // the PCs tried again right as their failure came, since the last sign-in written or return of the window: each is
+  // tried so once (a sign-in that finished as the failure came), and then only by the next of those
+  const triedOnFailure = useRef(new Set<string>());
+  useEffect(() => {
+    if (failure?.signIn !== true) return;
+    signedOut.current.add(failure.server_id);
+    if (triedOnFailure.current.has(failure.server_id)) return;
+    triedOnFailure.current.add(failure.server_id);
+    noteSignIn((count) => count + 1);
+  }, [failure]);
+  useEffect(() => {
+    const again = () => { triedOnFailure.current.clear(); noteSignIn((count) => count + 1); };
+    window.addEventListener(ACCOUNT_SESSION_EVENT, again);
+    return () => window.removeEventListener(ACCOUNT_SESSION_EVENT, again);
+  }, []);
+  useEffect(() => { triedOnFailure.current.clear(); }, [reads]);
+  useEffect(() => {
+    if (signedOut.current.size === 0) return;
+    let live = true;
+    source.account().then((read) => {
+      if (!live || read !== account) return;
+      const back = [...signedOut.current];
+      signedOut.current.clear();
+      setTried((current) => new Set([...current].filter((serverId) => !back.includes(serverId))));
+      setFailures((current) => new Map([...current].filter(([serverId]) => !back.includes(serverId))));
+    }, () => undefined);
+    return () => { live = false; };
+  }, [signIns, reads]);
   useEffect(() => {
     if (passing.current.size === 0) return;
     const again = [...passing.current];
@@ -178,10 +212,10 @@ function AccountPcRow({ pc, hidden, declined, failedWith, opens, pcs: { stateOf,
   const refused = !adding && !failed && declined;
   // a PC the account's list does not hold is added by nothing here, and one with no way to it cannot be: each says so
   const outside = pc.outside === true && !adding && !failed && state === "ready";
-  const away = state === "offline" || state === "outdated" || failed || refused || outside;
+  const away = state === "offline" || state === "unreachable" || state === "outdated" || failed || refused || outside;
   // where it is, beside its name only: the words are the dot's tooltip and what a screen reader hears
-  const words = failed ? failedWith : refused ? t("Not approved") : pc.unreachable === true ? t("Can't reach the PC") : outside ? t("Not in your account's list yet")
-    : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
+  const words = failed ? failedWith : refused ? t("Not approved") : pc.unreachable === true || state === "unreachable" ? t("Can't reach the PC") : outside ? t("Not in your account's list yet")
+    : state === undefined ? t("Checking…") : state === "offline" ? t("Can't reach the PC: it may be off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
   return (
     <section hidden={hidden && !adding} className={`machine-group account-pc-group${away ? " is-offline" : ""}`} aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
       <header className="machine-header">

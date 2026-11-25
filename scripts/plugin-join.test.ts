@@ -370,6 +370,15 @@ describe("ovis join: the invite", () => {
       expectNoInvite(run);
     });
 
+    it("says where a device that asks to join is let in: on another device of the account, since a PC that joined by an invite lets nobody into the list itself", async () => {
+      const pc = following((count) => Response.json(count < 2 ? { state: "waiting", standing: "waiting" } : { state: "added", account: "acct_1" }));
+      const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer, beforeRun: (endpoint) => pc.endpointIs(endpoint) });
+      expect(run.code).toBe(0);
+      // ovis approve on such a PC lets nobody in (plugin-link.ts approvedWords, not_signer): it is not offered
+      expect(run.out).not.toContain("ovis approve");
+      expect(run.out).toContain("If your phone asks to join when you open old-desktop, allow it on another device of your account: this PC joined by an invite, and lets nobody into your account's list itself.\n");
+    });
+
     it("an invite a PC joins with by itself, on a PC the list holds already: the line proves the join for this PC's own card, and signs no join", async () => {
       const pc: ReturnType<typeof following> = following(() => Response.json({ state: "added", account: "acct_1" }), async () => Response.json({ state: "prove", card: await pc.card() }));
       const run = await joining({ auto: true, inviteList: LIST, localAnswer: pc.localAnswer, beforeRun: (endpoint) => pc.endpointIs(endpoint) });
@@ -621,6 +630,15 @@ describe("ovis join: what the account service says", () => {
   const UNCLEAR = "The account service did not say whether it took this PC. Try again in a moment. This PC was taken off that account's list again; the invite may be spent.";
   const answered = (code: string, status: number, headers: Record<string, string> = {}) => (path: string) =>
     path === "/v1/pc-invites/redeem" ? Response.json({ error: { code, message: `the service's own words ${code}` } }, { status, headers }) : undefined;
+
+  it("an invite the account's signed list does not hold as open (revoked, used, run out, or made before the list) is invite_invalid, in words of its own", async () => {
+    const run = await plainly({ serviceAnswer: answered("invite_not_in_list", 409) });
+    expect(run.code).toBe(JOIN_EXIT.invite_invalid);
+    expect(JSON.parse(run.out)).toEqual({ ok: false, error: "invite_invalid", message: "This invite does not work: your account's signed list does not hold it as open (it was revoked, used or ran out, or made before the account had its list). Ask for a new one." });
+    expect(run.err).not.toContain("invite_not_in_list");
+    expect(run.listed()).toEqual([]);
+    expectNoInvite(run);
+  });
 
   it("an invite another PC used is the one invite_invalid, in its own words", async () => {
     const time = clock();

@@ -14,7 +14,7 @@ import { decodeOffer } from "../../shared/relay-offer.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AddConnectionTab } from "../lib/addConnectionRequest.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
-import { addAddressPc, ApiError, endPairing, fetchDevices, fetchRemoteAccess, findSshCandidates, findTailnetPcs, openTailscaleApp, requestRelayOffer, revokeAllDevices, revokeDevice, serveOnTailscale, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
+import { addAddressPc, ApiError, endPairing, fetchDevices, fetchListAccount, fetchRemoteAccess, findSshCandidates, findTailnetPcs, openTailscaleApp, requestRelayOffer, revokeAllDevices, revokeDevice, serveOnTailscale, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -946,10 +946,30 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
             <AddThisPc relayOn={on} gateNote={false} signedInHere={takeSignedInNow} signInAgain={signInAgain} {...(account.opensAll === undefined ? {} : { opensAll: account.opensAll })} />
           </>
         )}
+        {pcIn !== null && <InviteElsewhere account={pcIn} />}
       </div>
       {qr(false)}
     </>
   );
+}
+
+/**
+ * Where an invite for another PC is made, said on the page of a PC that follows the signed list of `account`, the
+ * account signed in to here (docs/account-list.md, "Invites"). Only a device in that list signs one, in the phone apps
+ * or the hosted app (ConnectStart's AccountRelayPanel): a PC's page holds no copy of the list, and the PC signs none.
+ * An account with no list has no invites, so nothing is said of them there.
+ */
+function InviteElsewhere({ account }: { readonly account: string }) {
+  const t = useT();
+  const [follows, setFollows] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetchListAccount().then((listed) => { if (live) setFollows(listed === account); }, (error: unknown) => {
+      console.warn("Ovis: whether this PC follows its account's list could not be read", error instanceof Error ? error.name : error);
+    });
+    return () => { live = false; };
+  }, [account]);
+  return follows ? <p className="settings-hint" data-testid="invite-elsewhere">{t("To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.")}</p> : null;
 }
 
 export const ACCOUNT_QR_MAX_MS = 30 * 60_000;

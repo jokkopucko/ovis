@@ -258,6 +258,50 @@ it("aborts an in-flight request and closes with auth_revoked when the device is 
   expect(await outcome).toBeInstanceOf(Error);
 });
 
+it("logs a session whose device went away as carrier_lost, not as an error of this PC's, and one it ended by its own reason", async () => {
+  const f = fixture();
+  const device = await relayDevice(f);
+  using audit = spyOn(console, "info").mockImplementation(() => {});
+  const closedReasons = (): string[] => audit.mock.calls.map(([line]) => JSON.parse(String(line)) as { event: string; reason?: string })
+    .filter((line) => line.event === "relay.session.closed").map((line) => line.reason!);
+  const logged = async (count: number): Promise<void> => {
+    const deadline = Date.now() + 10_000;
+    while (closedReasons().length < count) {
+      if (Date.now() > deadline) throw new Error("the session's end was not logged");
+      await Bun.sleep(25);
+    }
+  };
+  // a device's check whether the PC is on (pcStatus.ts probePc, once a minute while My PCs is up): the handshake, then gone
+  const probe = await relayConnection(f);
+  probe.channel.close();
+  await bounded(probe.closed);
+  await logged(1);
+  // the app closed its channel (a reload, the app sent to the background, the network gone)
+  const gone = await relayConnection(f);
+  await gone.auth(device);
+  gone.channel.close();
+  await bounded(gone.closed);
+  await logged(2);
+  // the PC ended it, and says why
+  const revoked = await relayConnection(f);
+  await revoked.auth(device);
+  f.app.context.services.devices.revoke(device.id);
+  expect(await bounded(revoked.serverError)).toBe("auth_revoked");
+  await logged(3);
+  // the device's client failed the session itself: its reason, not the carrier's (another device: that one was revoked)
+  const other = await relayDevice(f);
+  const failing = await relayConnection(f);
+  await failing.auth(other);
+  failing.mux.fail("protocol_error", "client gave up");
+  await logged(4);
+  // this PC's own GOAWAY, drained: the drain's reason
+  const drained = await relayConnection(f);
+  await drained.auth(other);
+  drained.session.mux.goAway("shutdown", 50);
+  await logged(5);
+  expect(closedReasons()).toEqual(["carrier_lost", "carrier_lost", "auth_revoked", "protocol_error", "timeout"]);
+});
+
 it("rejects OPEN before AUTH_OK without invoking the dispatcher", async () => {
   const f = fixture();
   let calls = 0;

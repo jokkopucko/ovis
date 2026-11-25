@@ -468,7 +468,7 @@ describe("demo transport", () => {
     "/api/account/list/witness": "a device asks a PC whom it lets in before its account moves onto a signed list: the demo's account never moves",
     "/api/account/list/name": "a device names its account's signed list to a PC that follows none: the demo's account has no list",
     "/api/account/list/card": "a device asks a PC its list carried in for its card: the demo's PC follows no list, and refuses it as such a PC does",
-    "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` on the PC, and the demo's PC is in its account",
+    "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` and by Add this PC in the PC's own window, and the demo's PC is in its account",
     "/api/account/list/add/confirm": "the person at the PC says the adding device shows the same number: asked by `ovis add` on the PC",
     "/api/account/list/add/cancel": "the person at the PC says the numbers differ: asked by `ovis add` on the PC",
     "/api/account/list/join": "`ovis join` with an invite's line that names the account's list: the CLI on the PC alone",

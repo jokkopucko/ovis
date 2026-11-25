@@ -21,10 +21,12 @@ import "./RelayShell.css";
  * `waitMs`: how long it waits for the PC's answer before it says the PC did not answer; a test's own. `now`: this
  * device's clock, in ms; a test's own. It asks for NUMBER_TRIES numbers at most (Try again, and Add after one ran out).
  */
-export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.now, onClose, onAdded }: {
+export function AddPcByNumber({ list, account, post, name, keys = false, waitMs, now = Date.now, onClose, onAdded }: {
   readonly list: AccountList; readonly account: string; readonly post: PostedPc;
   /** The PC's name as the account has it. */
   readonly name: string;
+  /** The list holds the PC already, carried in by the account's move with no key of its own: this Add gives it its keys (listPcs.ts postedFor). */
+  readonly keys?: boolean;
   readonly waitMs?: number | undefined;
   readonly now?: () => number;
   readonly onClose: () => void; readonly onAdded: () => void;
@@ -46,13 +48,19 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
   // Back closes it, as Close does, unless the entry is being signed
   usePhoneSheetBack(() => { if (busy) return false; onClose(); });
 
+  // The comparison is the PC's post's as it stands (its list, relay key, keys and card), never the object a parent hands
+  // in: Add on the PC's row pressed again, or a read of the posts again, hands an equal post, and the number shown stays.
+  // A new comparison would throw away a number the PC may have said yes to, and a PC that did answers no new one
+  const postKey = `${post.list}\n${post.endpoint}\n${post.key}\n${post.enc}\n${post.card}`;
+  const posted = useRef(post);
+  posted.current = post;
   useEffect(() => {
     const ask = new AbortController();
     asking.current = ask;
     setNumber(null);
     setProblem(null);
     setRanOut(false);
-    void numberWith(list, post, { signal: ask.signal, now, ...(waitMs === undefined ? {} : { waitMs }) }).then((outcome) => {
+    void numberWith(list, posted.current, { signal: ask.signal, now, ...(waitMs === undefined ? {} : { waitMs }) }).then((outcome) => {
       if (ask.signal.aborted) return;
       if (outcome.shown) setNumber(outcome.number);
       else setProblem(numberRefusal(words.current, asks + 1 >= NUMBER_TRIES ? "spent" : outcome.why));
@@ -62,12 +70,12 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
       setProblem(words.current("The PC could not be added. Try again."));
     });
     return () => { ask.abort(new DOMException("The number is no longer asked for", "AbortError")); };
-  }, [list, post, waitMs, asks, now]);
+  }, [list, postKey, waitMs, asks, now]);
 
   const ranOutNow = (): void => {
     setNumber(null);
     setRanOut(true);
-    setProblem(lastTry ? numberRefusal(words.current, "spent") : words.current("That number ran out. Press Add for a new one."));
+    setProblem(lastTry ? numberRefusal(words.current, "spent") : words.current("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC."));
   };
   useEffect(() => {
     if (number === null || busy) return;
@@ -101,7 +109,7 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
     setDiffered(true);
     setProblem(t("The numbers did not match. This PC was not added."));
   };
-  const title = t("Add this PC to your account?");
+  const title = keys ? t("Give this PC its keys in your account's list?") : t("Add this PC to your account?");
   return (
     <div className="modal-scrim">
       <div className="modal account-approval" role="dialog" aria-modal="true" aria-label={title} data-testid="add-pc-number" data-pc-id={post.server_id}>

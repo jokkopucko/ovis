@@ -16,14 +16,21 @@ export const pairingWindowFs = { rmSync, truncateSync };
 export type PairingDecision = { approved: true; by?: DeviceMatch; pcLabel?: string; own?: true } | { approved: false };
 
 /** What a remote approval came to: done, nothing waiting under that id, or the wrong digits picked (which ends it). */
-/** `not_confirmed`: a join into the list whose new device has not said yet that the digits match; nothing was decided, and the request waits as it did. */
-export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" | "not_confirmed" };
+/**
+ * `not_confirmed`: a join into the list whose new device has not said yet that the digits match; nothing was decided, and
+ * the request waits as it did. `list_unknown`: an approval of a join this PC cannot let in (an app that knows no join into
+ * a list, on a pinned PC); nothing was decided either, and the request waits until it is declined or ends.
+ */
+export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" | "not_confirmed" | "list_unknown" };
 
-/** What the owner's typed digits came to on this PC's own window: approved, nothing such waiting, or wrong (which ends it). */
-export type TypedDecision = "decided" | "gone" | "wrong_digits";
+/**
+ * What the owner's typed digits came to on this PC's own window: approved, nothing such waiting, wrong (which ends it), or
+ * a join this PC cannot let in (`list_unknown`), which no approval decides: it waits until it is declined or ends.
+ */
+export type TypedDecision = "decided" | "gone" | "wrong_digits" | "list_unknown";
 
-/** What a tap on this PC's own window came to: decided, nothing such waiting, or a join a member could approve, which is typed. */
-export type TapDecision = "decided" | "gone" | "typed_only";
+/** What a tap on this PC's own window came to: decided, nothing such waiting, a join a member could approve, which is typed, or one no approval decides (`list_unknown`). */
+export type TapDecision = "decided" | "gone" | "typed_only" | "list_unknown";
 
 interface Waiting {
   request: RelayPairingRequest & { intent: PairingIntent };
@@ -45,6 +52,8 @@ interface Waiting {
   firstJoin: boolean;
   /** the join brought the device's card for the account's signed list (session.ts listCard) */
   list: boolean;
+  /** a join into the account on a PC pinned to its list, from an app that knows no join into a list: nothing lets it in here */
+  listUnknown: boolean;
   /** such a join that a device of the list may decide from afar (listJoins): not one asked under this PC's own add-me screen */
   listRemote: boolean;
   /** the new device's person said the digits match */
@@ -273,12 +282,14 @@ export class RelayPairingApprovals {
   }
 
   remoteList(): RemotePairingRequest[] {
-    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched, provenServerId, list, confirmed }) => ({
+    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched, provenServerId, list, confirmed, listUnknown }) => ({
       id: request.id, label: request.label, intent: request.intent, choices: vouched ? [] : choices, expires_at: request.expires_at, key,
       ...(vouched ? { vouched: true as const, ...(provenServerId ? { proven_server_id: provenServerId } : {}) } : {}),
       // the join brought the device's card for the account's list: it is let in by an entry of the list, which its approver signs
       ...(list ? { list: true as const } : {}),
       ...(list && confirmed ? { confirmed: true as const } : {}),
+      // one this PC cannot let in: no approval decides it (decideRemote), and the approver's card says to update that app
+      ...(listUnknown ? { list_unknown: true as const } : {}),
     }));
   }
 
@@ -322,9 +333,9 @@ export class RelayPairingApprovals {
    * owner compares them and taps (`decideOwn`).
    */
   ownJoins(now = this.now()): OwnJoinRequest[] {
-    return [...this.waiting.values()].filter(ownJoin).map(({ request, askedAt, expiresAt, firstJoin, list }) => ({
+    return [...this.waiting.values()].filter(ownJoin).map(({ request, askedAt, expiresAt, firstJoin, list, listUnknown }) => ({
       id: request.id, label: request.label, asked_at: new Date(askedAt).toISOString(), left_ms: Math.max(0, expiresAt - now),
-      ...(firstJoin ? { digits: request.digits } : {}), ...(list ? { list: true as const } : {}),
+      ...(firstJoin ? { digits: request.digits } : {}), ...(list ? { list: true as const } : {}), ...(listUnknown ? { list_unknown: true as const } : {}),
     }));
   }
 
@@ -333,10 +344,17 @@ export class RelayPairingApprovals {
     return this.waiting.get(id)?.key ?? null;
   }
 
-  /** On this PC's own window: Allow or Decline of a first join. A join a member could approve is typed instead. */
+  /** On this PC's own window: Allow or Decline of a first join, and Decline of a join marked list_unknown. A join a member could approve is typed instead. */
   decideOwn(id: string, approved: boolean): TapDecision {
     const entry = this.waiting.get(id);
     if (!entry || !ownJoin(entry)) return "gone";
+    // an app that knows no join into the list: this PC lets it in by nothing, so an Allow approves nothing; a Decline
+    // ends it, first join or not (nothing of it is typed)
+    if (entry.listUnknown) {
+      if (approved) return "list_unknown";
+      entry.finish({ approved: false });
+      return "decided";
+    }
     if (!entry.firstJoin) return "typed_only";
     entry.finish(approved ? { approved: true, own: true } : { approved: false });
     return "decided";
@@ -346,6 +364,7 @@ export class RelayPairingApprovals {
   decideTyped(id: string, digits: string): TypedDecision {
     const entry = this.waiting.get(id);
     if (!entry || !ownJoin(entry)) return "gone";
+    if (entry.listUnknown) return "list_unknown";
     const typed = Buffer.from(digits), shown = Buffer.from(entry.request.digits);
     if (typed.length !== shown.length || !timingSafeEqual(typed, shown)) { entry.finish({ approved: false }); return "wrong_digits"; }
     entry.finish({ approved: true, own: true });
@@ -366,7 +385,7 @@ export class RelayPairingApprovals {
   }
 
   /** Null when MAX_PENDING_APPROVALS are already waiting. `withdraw` ends it unapproved (the phone left, or time ran out). */
-  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean; provenServerId?: string; firstJoin?: boolean; list?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void; confirm: () => void } | null {
+  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean; provenServerId?: string; firstJoin?: boolean; list?: boolean; listUnknown?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void; confirm: () => void } | null {
     if (this.waiting.size >= MAX_PENDING_APPROVALS) return null;
     const id = randomBytes(8).toString("hex");
     const decided = Promise.withResolvers<PairingDecision>();
@@ -382,7 +401,7 @@ export class RelayPairingApprovals {
     const ownOnly = !(device.membersOnly ?? false) && ownScreen;
     const localOnly = firstJoin || ownOnly;
     this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
-      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listRemote: (device.list ?? false) && !ownScreen, confirmed: false, choices: decoys(digits), finish });
+      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listUnknown: device.listUnknown ?? false, listRemote: (device.list ?? false) && !ownScreen, confirmed: false, choices: decoys(digits), finish });
     this.changed();
     return {
       decision: decided.promise, withdraw: () => finish({ approved: false }),
@@ -419,6 +438,8 @@ export class RelayPairingApprovals {
     const entry = this.waiting.get(id);
     if (!entry || entry.localOnly) return { outcome: "gone" };
     if (!approved) { entry.finish({ approved: false }); return { outcome: "decided", device_id: entry.deviceId }; }
+    // an app that knows no join into the list, on a pinned PC: no approval lets it in, the right digits included
+    if (entry.listUnknown) return { outcome: "list_unknown" };
     // a join into the list: the member signs the device's entry, and only once its person said the digits match. The
     // request stays as it was, for the approval that comes after the confirmation
     if (entry.list && !entry.confirmed) return { outcome: "not_confirmed" };

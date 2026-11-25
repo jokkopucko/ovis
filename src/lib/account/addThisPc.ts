@@ -3,11 +3,13 @@
  * own screen, the PC lists itself in the account's directory with its relay key, and opens a
  * pairing window whose comparisons only this PC approves. A device already in the account then
  * adds it with one approval: it types the number this PC shows, and the owner approves here.
+ * An account that keeps a signed list takes the PC by that list alone (`addByList`).
  */
 import type { AccountOs } from "../../../shared/account-asker.ts";
+import type { ListAddState } from "../../../shared/machines.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
-import { closeRelayLink, fetchHealth, requestRelayLink } from "../api.ts";
+import { ApiError, closeRelayLink, fetchHealth, requestRelayLink, startListAdd } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
 import { deviceOs, isLoopbackHost } from "../phone.ts";
 import { serverIdOfPath } from "../shellMode.ts";
@@ -35,9 +37,10 @@ export async function thisPcAccount(): Promise<string | null> {
  * The account this PC belongs to (null while it is in none), and whether it still waits for its first member's
  * enrollment (docs/account.md, "Enrolling a PC"): until that ends, the account's other devices are not let in.
  */
-export async function thisPcMembership(): Promise<{ readonly account: string | null; readonly enrolling: boolean }> {
+/** `needsKeys`: in its account, and in the account's list with no key of its own (it came in as the account moved). */
+export async function thisPcMembership(): Promise<{ readonly account: string | null; readonly enrolling: boolean; readonly needsKeys: boolean }> {
   const status = await pcAccountStatus(apiFetch);
-  return { account: status.account, enrolling: status.account !== null && status.enrolling === true };
+  return { account: status.account, enrolling: status.account !== null && status.enrolling === true, needsKeys: status.account !== null && status.needsKeys === true };
 }
 
 /** Whether this PC belongs to no account yet: only such a PC offers to be added. */
@@ -104,7 +107,11 @@ export interface AddPcWaiting {
   readonly serverId: string;
   readonly account: string;
   readonly listedAt: number;
+  /** the PC's add by the account's list that this wait started (`addByList`), which Stop waiting gives up */
+  readonly run?: string;
 }
+
+const RUN_ID = /^[0-9a-f]{16}$/;
 
 function tabStorage(): Storage | null {
   try { return typeof window === "undefined" ? null : window.sessionStorage ?? null; } catch { return null; }
@@ -134,8 +141,9 @@ export function readAddPcWaiting(): AddPcWaiting | null {
   try {
     const kept = JSON.parse(tabStorage()?.getItem(WAITING_KEY) ?? "null") as Partial<Record<keyof AddPcWaiting, unknown>> | null;
     if (kept === null || typeof kept !== "object") return null;
-    const { name, until, serverId, account, listedAt } = kept;
-    return typeof name === "string" && time(until) && text(serverId) && text(account) && time(listedAt) ? { name: name.slice(0, 48), until, serverId, account, listedAt } : null;
+    const { name, until, serverId, account, listedAt, run } = kept;
+    if (run !== undefined && (typeof run !== "string" || !RUN_ID.test(run))) return null;
+    return typeof name === "string" && time(until) && text(serverId) && text(account) && time(listedAt) ? { name: name.slice(0, 48), until, serverId, account, listedAt, ...(run === undefined ? {} : { run }) } : null;
   } catch { return null; }
 }
 
@@ -158,7 +166,7 @@ export interface ListedPc {
   readonly name: string;
   readonly serverId: string;
   readonly account: string | null;
-  readonly membership?: { readonly account: string; readonly enrolling: boolean };
+  readonly membership?: { readonly account: string; readonly enrolling: boolean; readonly needsKeys?: boolean };
 }
 
 export class AddPcWaitOver extends Error {
@@ -222,9 +230,9 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const result = { name, serverId: offer.server_id, account: session?.account ?? null };
   const readMembership = async (): Promise<ListedPc["membership"]> => {
     if (!runs()) throw new AddPcWaitOver("ended");
-    const { account, enrolling } = await thisPcMembership();
+    const { account, enrolling, needsKeys } = await thisPcMembership();
     if (!runs()) throw new AddPcWaitOver("ended");
-    return account === null ? undefined : { account, enrolling };
+    return account === null ? undefined : { account, enrolling, needsKeys };
   };
   // A first link or one-press bind can finish while the listing is being read. A refresh must not remove it.
   const membership = await readMembership();
@@ -279,6 +287,77 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
     );
   }
   return result;
+}
+
+/**
+ * The runs of an add by the list whose number a wait of this page shows (AccountSection, inside the dialog it was
+ * pressed in), each with how many waits hold it: the window's own prompt (useOwnWindowPrompts) leaves those numbers to
+ * the wait, so one place alone takes the yes, and shows them again once no wait holds them (the dialog closed).
+ */
+const numbersHeld = new Map<string, number>();
+const heldWatchers = new Set<() => void>();
+
+/** A wait shows the number of `run`: until the answer it gives back is called, the window's own prompt leaves it alone. */
+export function holdListNumber(run: string): () => void {
+  numbersHeld.set(run, (numbersHeld.get(run) ?? 0) + 1);
+  for (const heard of [...heldWatchers]) heard();
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    const left = (numbersHeld.get(run) ?? 1) - 1;
+    if (left > 0) numbersHeld.set(run, left); else numbersHeld.delete(run);
+    for (const heard of [...heldWatchers]) heard();
+  };
+}
+
+/** Whether a wait of this page shows the number of `run` now. */
+export function listNumberHeld(run: string): boolean {
+  return numbersHeld.has(run);
+}
+
+/** Hears every change of which numbers waits hold, until the answer is called. */
+export function onListNumbersHeld(heard: () => void): () => void {
+  heldWatchers.add(heard);
+  return () => { heldWatchers.delete(heard); };
+}
+
+/** How long `addByList` waits for the PC to take the account's name before it asks for the add all the same. */
+export const NAMING_MS = 10_000;
+
+/**
+ * What this PC said when asked to add itself by the account's signed list: `none` where the account keeps no list, or
+ * this PC has no such add for this window (it follows no list, the window is not its own, or its Ovis has no such route:
+ * 403, 404, 405), and the one press goes on as before; `run`: the add under way; `added`: the PC is in the account by
+ * its list; `refused`: the PC's refusal code, or why its add ended at once.
+ */
+export type ByList = { readonly kind: "none" } | { readonly kind: "run"; readonly run: string } | { readonly kind: "added" } | { readonly kind: "refused"; readonly why: string };
+
+/**
+ * Asks the PC, just listed under `account`, to add itself by the account's signed list (docs/account.md, "A PC is added
+ * to the list"), as `ovis add` asks before any one press: the PC is named that account first, which it adds itself to
+ * alone (409 `account_mismatch` otherwise); then it posts its card, and the device that adds it and this PC show one
+ * number. Only `none` lets the one press be tried: a 503 `account_unavailable` started nothing, and is no answer
+ * that the account keeps no list.
+ */
+export async function addByList(account: string): Promise<ByList> {
+  const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
+  // a naming that fails, or gets no answer within NAMING_MS, is not the end of it: the PC's answer to the add says what it lacks
+  await within(NAMING_MS, post("/api/account/relay-account")).catch((error: unknown) => console.warn("Ovis: this PC was not named the account for its add", error instanceof Error ? error.name : error));
+  let state: ListAddState;
+  try { state = await startListAdd(account); } catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    if (error.status === 403 || error.status === 404 || error.status === 405) return { kind: "none" };
+    return { kind: "refused", why: error.code ?? `http_${error.status}` };
+  }
+  switch (state.state) {
+    case "no_list": return { kind: "none" };
+    case "waiting": case "number": case "confirmed": return { kind: "run", run: state.run };
+    case "added": return { kind: "added" };
+    case "ended": return { kind: "refused", why: state.why };
+    // a start answers neither: a PC that does is not one to add this way
+    case "none": case "replaced": return { kind: "refused", why: state.state };
+  }
 }
 
 /**

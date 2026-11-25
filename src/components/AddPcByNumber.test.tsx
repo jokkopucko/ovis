@@ -133,6 +133,29 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
   });
 
+  it("keeps the number the PC confirmed when Add for that PC is pressed again or its post is read again: no second comparison, and Add then places the entry", async () => {
+    // the order of the real presses: Add on the PC's row (the number shows), yes at the PC, then Add on the row again (as
+    // Manage account's row button and My PCs' row each set the card again) or a read of the posts hands an equal post
+    const { pc, play, list, post, held, opened } = await listedPc();
+    const told = await mount(list, post);
+    const digits = await play.digits();
+    if (digits === null || digits === "mismatch") throw new Error("the PC shows no number");
+    expect(digitsShown()).toBe(digits);
+    expect(opened()).toBe(1);
+    // the PC said yes to that number: it answers no new comparison from now on
+    play.answer = async () => false;
+    await act(async () => {
+      renderer!.update(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post: { ...post }, name: "Desk", onClose: () => {}, onAdded: () => {} }) }));
+    });
+    await settle();
+    expect([opened(), digitsShown()]).toEqual([1, digits]);
+    expect(text()).not.toContain("Waiting for the PC");
+    await press("Add");
+    expect(held().entries.length).toBe(2);
+    expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+    expect(told.closed()).toBe(0);
+  });
+
   it("closes at Cancel while the number is shown, and adds nothing", async () => {
     const { list, post, held } = await listedPc();
     const told = await mount(list, post);
@@ -211,7 +234,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(buttons()).toEqual(["Cancel", "Not the same", "Add"]);
     clock += 121_000;
     await press("Add");
-    expect(text()).toContain("That number ran out. Press Add for a new one.");
+    expect(text()).toContain("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.");
     expect([held().entries.length, readSeenPcs(ACCOUNT).pcs]).toEqual([1, {}]);
   });
 });

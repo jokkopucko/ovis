@@ -295,7 +295,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     const offered: readonly string[] = comparing
       ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC, ...(options.intent === "vouched" ? [PAIR_PC_PROOF] : []),
         // a join of the account brings the device's card for the account's list, to a PC that takes one
-        ...(options.intent === "account" && options.listCard !== undefined ? [ACCOUNT_LIST_ALLOW] : [])]
+        ...(options.intent === "account" && options.listCard !== undefined ? [ACCOUNT_LIST_ALLOW] : []),
+        // and reads why a PC refused it when the account service did not answer that PC (account_unreachable)
+        ...(options.intent === "account" ? [ACCOUNT_LISTING_ERRORS] : [])]
       : [ACCOUNT_FEATURE,
         // a sign-in by the list key offers the account open too, never requires it: a PC tells the ten-second hold of a device its list let in only to a client that offered it
         ...options.accountOpensAll === true || (options.accountListKey === true && offer.code === undefined) ? [ACCOUNT_OPENS_ALL_FEATURE] : [],

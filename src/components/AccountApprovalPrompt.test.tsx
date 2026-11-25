@@ -42,7 +42,7 @@ describe("approving a device that asks to join the account", () => {
   const request: RemotePairingRequest = { id: "r1", label: "Hako's iPhone", intent: "account", choices: ["111111", "222222", "333333"], expires_at: "", key: "k" };
 
   type Decision = [decision: "approve" | "decline", digits?: string];
-  async function onCard<T>(asker: Asker | undefined, decided: Decision[], walk: (root: ReturnType<typeof create>["root"]) => Promise<T>, pc?: { name?: string }, told: { list?: true; confirmed?: true } = {}, followsList = false): Promise<T> {
+  async function onCard<T>(asker: Asker | undefined, decided: Decision[], walk: (root: ReturnType<typeof create>["root"]) => Promise<T>, pc?: { name?: string }, told: { list?: true; confirmed?: true; list_unknown?: true } = {}, followsList = false): Promise<T> {
     const keys = ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"];
     const saved = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     const events = new EventTarget();
@@ -122,6 +122,16 @@ describe("approving a device that asks to join the account", () => {
     expect(await held({ list: true, confirmed: true })).toEqual({ approveHeld: false, says: [] });
     // any other join is approved as before, whether or not the device confirmed yet
     expect(await held({})).toEqual({ approveHeld: false, says: [] });
+  });
+
+  it("holds Approve for a join the PC cannot let in (an app older than lists), and says to update that app, never to approve it on the PC", async () => {
+    const held = (followsList: boolean) => onCard({ os: null, country: null, city: null }, [], async (root) => {
+      await act(async () => { radios(root)[1]!.props.onClick(); });
+      return { approveHeld: approveOf(root).props.disabled === true, says: root.findAll((node) => node.props.className === "account-approval-hint" && node.props.role === "status").map((node) => node.children.join("")) };
+    }, undefined, { list_unknown: true }, followsList);
+    const words = "p620 cannot let Hako's iPhone in: p620 lets devices into your account by its signed list, and Hako's iPhone asked as an Ovis older than 0.5.10 does. Update Ovis on Hako's iPhone, then have it ask to join again.";
+    expect(await held(true)).toEqual({ approveHeld: true, says: [words] });
+    expect(await held(false)).toEqual({ approveHeld: true, says: [words] });
   });
 
   it("holds Approve for a join that brought no card on a PC that lets devices in by the list, and says to approve it on that PC's own screen", async () => {

@@ -365,9 +365,24 @@ export type PcFetch = (input: string, init?: RequestInit) => Promise<Response>;
  * cannot answer (an Ovis from before this release, one in no account) or did not, which a move counts as silent.
  */
 export async function askWitness(fetch: PcFetch): Promise<PcAnswer | null> {
+  const said = await witnessOf(fetch);
+  return said === "final" ? null : said;
+}
+
+/**
+ * `askWitness`, telling a PC that will never answer this session apart from one that did not answer now: "final" for a
+ * PC with no such route (404, an Ovis from before this release) or one that takes this session for no account's (403
+ * `account_required`); null for anything a later ask may change (503 `witness_unavailable` as the PC starts, its 429,
+ * a carrier lost on the way, an answer out of form).
+ */
+export async function witnessOf(fetch: PcFetch): Promise<PcAnswer | "final" | null> {
   try {
     const answer = await fetch("/api/account/list/witness", { method: "GET", headers: { "x-herdr-machine": "1" } });
-    return answer.ok ? pcAnswerOf(await answer.json()) : null;
+    if (answer.ok) return pcAnswerOf(await answer.json());
+    if (answer.status === 404) return "final";
+    if (answer.status !== 403) return null;
+    const body: unknown = await answer.json().catch(() => null);
+    return isRecord(body) && isRecord(body.error) && body.error.code === "account_required" ? "final" : null;
   } catch {
     return null;
   }
@@ -427,13 +442,28 @@ export async function onPcSession(given: {
   if (given.session === null || list.naming === undefined) return;
   const named = await list.naming({ account, session: given.session, endpoint, signIn: given.signIn });
   if (named === null) return;
+  await nameListTo(given.fetch, named);
+}
+
+/** What a PC answered a naming (docs/account-list.md, "On the PC"): the list it follows, or why it follows none and for how long, in seconds. */
+export type NamingAnswer = { readonly pinned: true; readonly list: string } | { readonly pinned: false; readonly why: string; readonly wait: number | null };
+
+/**
+ * Hands a PC the naming of the list, with its vouches, over the session `fetch` is of (POST /api/account/list/name), and
+ * reads its answer: null for none that reads (a PC from before this release, one away), which is named again later.
+ */
+export async function nameListTo(fetch: PcFetch, named: NonNullable<Awaited<ReturnType<NonNullable<AccountList["naming"]>>>>): Promise<NamingAnswer | null> {
   try {
-    await given.fetch("/api/account/list/name", {
+    const answer = await fetch("/api/account/list/name", {
       method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
       body: JSON.stringify({ naming: named.naming, ...(named.vouches.length === 0 ? {} : { vouches: named.vouches }) }),
     });
+    const body: unknown = answer.ok ? await answer.json() : null;
+    if (!isRecord(body)) return null;
+    if (body.pinned === true && typeof body.list === "string") return { pinned: true, list: body.list };
+    return body.pinned === false && typeof body.why === "string" ? { pinned: false, why: body.why, wait: isSpan(body.wait) ? body.wait : null } : null;
   } catch {
-    // a PC that follows no list, from before this release or away: it is named again at the next session
+    return null;
   }
 }
 

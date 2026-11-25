@@ -389,6 +389,17 @@ export async function approveOwnJoin(id: string, digits: string): Promise<void> 
 }
 
 /**
+ * GET /api/account/status: the account whose signed list this PC follows (it names one in `list` only once it is pinned
+ * to it), or null for none, and where this browser may not read the PC's account.
+ */
+export async function fetchListAccount(): Promise<string | null> {
+  const response = await apiFetch("/api/account/status", { cache: "no-store" });
+  if (!response.ok) return null;
+  const body = await response.json().catch(() => null) as { account?: unknown; list?: { pinned_list?: unknown } | null } | null;
+  return typeof body?.list?.pinned_list === "string" && typeof body.account === "string" ? body.account : null;
+}
+
+/**
  * GET /api/account/status, for why this PC lets nobody of its account in by its signed list: the `reason` of the list it
  * is pinned to, or what a PC that cannot read its own account state says (403 `strict`). Null for none.
  */
@@ -399,9 +410,20 @@ export async function fetchListReason(): Promise<string | null> {
   return typeof said === "string" && said !== "" ? said : null;
 }
 
-/** GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). */
-export async function fetchListAdd(): Promise<ListAddState> {
-  return await getJson<ListAddState>("/api/account/list/add", { cache: "no-store" });
+/**
+ * GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). `run`:
+ * the add the caller started; another one in its place is answered `replaced`.
+ */
+export async function fetchListAdd(run?: string): Promise<ListAddState> {
+  return await getJson<ListAddState>(run === undefined ? "/api/account/list/add" : `/api/account/list/add?run=${encodeURIComponent(run)}`, { cache: "no-store" });
+}
+
+/**
+ * POST /api/account/list/add: a person at this PC starts adding it to `account` by the account's list, or goes on with
+ * the add under way for it; `no_list` where the account keeps none (this PC's own window alone).
+ */
+export async function startListAdd(account: string): Promise<ListAddState> {
+  return await getJson<ListAddState>("/api/account/list/add", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
 }
 
 /** POST /api/account/list/add/confirm: the person at this PC says the device adding it shows these digits; 409 `wrong_number` confirms nothing. */
@@ -1598,7 +1620,8 @@ export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailn
 export const addAddressPc = (address: string, code: string) => machineRequest<{ machine: Machine }>("/address", "POST", { address, code });
 /** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */
 export interface AccountPcEntry { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }
-export type AccountPcState = "ready" | "outdated" | "offline";
+/** `offline`: the relay said no PC answered; `unreachable`: anything else kept its answer away (server/relay-pc.ts VouchedSupport). */
+export type AccountPcState = "ready" | "outdated" | "offline" | "unreachable";
 export const checkAccountPcs = (pcs: readonly AccountPcEntry[]) => machineRequest<{ pcs: { server_id: string; state: AccountPcState }[] }>("/relay/account/check", "POST", { pcs });
 /** POST /api/machines/relay/account/start: the key this PC would hold for that PC, for the admission to name; ApiError `account_pc_outdated` for an older one. */
 export const startAccountPc = (pc: AccountPcEntry) => machineRequest<{ ticket: string; key: string; label: string }>("/relay/account/start", "POST", { pc });

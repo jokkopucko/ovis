@@ -69,11 +69,17 @@ export interface ListAddDeps {
   joined?(account: string): void;
   /** Whether this PC is in `account` pinned to `list` now (its follower's own word): an add that ends finds out how it ended. */
   joinedTo?(account: string, list: string): boolean;
+  /** Whether this PC is in an account now: an add it starts then is for its keys (it came into the list as the account moved). */
+  inAccount?(): boolean;
+  /** Whether this PC follows its list with no key of its own in it to sign with (ListFollow.needsKeys): an add for its keys is done only once it has one. */
+  needsKeys?(): boolean;
   now(): number;
   /** A clock that only moves forward, in milliseconds, which every lifetime here is counted by (performance.now when unset): setting the PC's clock back gives a number, or an add, no more time. */
   mono?(): number;
   /** The least time between two asks of the account service for the phone's next message: ADD_POLL_MS when unset. */
   readonly pollMs?: number | undefined;
+  /** Runs `work` once, `ms` from now, and answers what calls it off (setTimeout, unref'd, when unset); a test's own. */
+  schedule?(work: () => void, ms: number): () => void;
 }
 
 interface Attempt { readonly adder: string; readonly commitment: string; readonly nonce: Uint8Array; readonly sentAt: number; readonly digits: string | null }
@@ -88,6 +94,8 @@ interface Run {
   readonly keys: PcListKeys;
   readonly card: string;
   readonly binding: Uint8Array;
+  /** the PC was in an account when this add began: it adds only its keys, and is in only once it holds them */
+  readonly forKeys: boolean;
   /** by the clock that only moves forward */
   readonly startedAt: number;
   /** when the add ends, by the PC's own clock: only for showing */
@@ -112,8 +120,33 @@ export class ListAdd {
   private run: Run | null = null;
   private none: { readonly account: string } | null = null;
   private turn: Promise<unknown> = Promise.resolve();
+  /** what calls off the next step this PC takes by itself; null while none is due */
+  private following: (() => void) | null = null;
+  private stopped = false;
 
   constructor(private readonly deps: ListAddDeps) {}
+
+  /** Ends the steps this PC takes by itself (the server stops): an add is then only what is asked of it. */
+  stop(): void {
+    this.stopped = true;
+    this.following?.();
+    this.following = null;
+  }
+
+  /**
+   * While `run` runs, this PC takes its next step by itself a poll's time on, whether or not anything asks it: the
+   * device's next message, and after the yes its entry in the list. A window that confirmed and was then hidden or
+   * closed, or a terminal gone, does not hold the add up. It ends with the run, or once another took its place.
+   */
+  private follow(run: Run): void {
+    if (this.stopped || this.following !== null || this.run !== run || run.end !== null) return;
+    const schedule = this.deps.schedule ?? ((work: () => void, ms: number) => { const timer = setTimeout(work, ms); timer.unref?.(); return () => clearTimeout(timer); });
+    this.following = schedule(() => {
+      this.following = null;
+      if (this.stopped || this.run !== run || run.end !== null) return;
+      void this.inTurn(() => this.step(run)).catch(() => undefined).finally(() => this.follow(run));
+    }, this.deps.pollMs ?? ADD_POLL_MS);
+  }
 
   /** A person at this PC starts adding it to `account` (its own window, `ovis add`). An Add under way for that account goes on. */
   start(account: string): Promise<AddState> {
@@ -121,7 +154,10 @@ export class ListAdd {
       const running = this.run;
       // an add of the relay identity this PC had before a reset was another PC's
       if (running !== null && running.account === account && running.end === null && this.mono() - running.startedAt < ADD_WINDOW_MS
-        && running.serverId === (await this.deps.own())?.serverId) return await this.step(running);
+        && running.serverId === (await this.deps.own())?.serverId) { this.follow(running); return await this.step(running); }
+      // the steps the run before took by itself end with it: this one's are its own
+      this.following?.();
+      this.following = null;
       this.run = null;
       this.none = null;
       // not asked: nothing says whether the account keeps a list, and the caller asks again (ListAddAway)
@@ -135,10 +171,11 @@ export class ListAdd {
       const { keys } = identity;
       const card = { key: keys.key, enc: keys.enc, list, endpoint: identity.endpoint, invite: null };
       const run: Run = {
-        id, account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card),
+        id, account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card), forKeys: this.deps.inAccount?.() === true,
         startedAt: this.mono(), until: this.deps.now() + ADD_WINDOW_MS, postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: null, cancelled: false, end: null,
       };
       this.run = run;
+      this.follow(run);
       return await this.step(run);
     });
   }
@@ -188,7 +225,12 @@ export class ListAdd {
    */
   cancel(runId?: string): Promise<AddState> {
     const asked = this.run;
-    if (asked !== null && (runId === undefined || runId === asked.id)) asked.cancelled = true;
+    if (asked !== null && (runId === undefined || runId === asked.id)) {
+      asked.cancelled = true;
+      // the steps it took by itself end at once: a cancelled add asks the account service nothing more
+      this.following?.();
+      this.following = null;
+    }
     return this.inTurn(async () => {
       const run = this.run;
       if (run === null) return { state: "none" };
@@ -202,12 +244,20 @@ export class ListAdd {
 
   private mono(): number { return this.deps.mono?.() ?? performance.now(); }
 
-  /** A confirmed run whose PC is in its account by its list now ends `added` (told once, as a join is); null otherwise. */
+  /**
+   * A confirmed run whose PC is in its account by its list now ends `added` (told once, as a join is); null otherwise.
+   * A PC in its account at the run's start is in it all along: its run is added only once it holds its own key.
+   */
   private inBy(run: Run): AddState | null {
-    if (run.confirmed === null || run.cancelled || this.deps.joinedTo?.(run.account, run.list) !== true) return null;
+    if (run.confirmed === null || run.cancelled || this.deps.joinedTo?.(run.account, run.list) !== true || !this.keyed(run)) return null;
     run.end = { state: "added", run: run.id, account: run.account, list: run.list };
     this.deps.joined?.(run.account);
     return run.end;
+  }
+
+  /** For a run for this PC's keys, whether it holds them now; true for any other run. */
+  private keyed(run: Run): boolean {
+    return !run.forKeys || this.deps.needsKeys?.() === false;
   }
 
   private inTurn<T>(work: () => Promise<T>): Promise<T> {
@@ -252,7 +302,8 @@ export class ListAdd {
       run.polledAt = now;
       // The yes named the list and the device whose number it was: only an entry that device signed adds this PC. The
       // binding is written only while this add stands, asked at the write itself: its ten minutes, and the person's No
-      const live = () => this.run === run && run.end === null && !run.cancelled && this.mono() - run.startedAt < ADD_WINDOW_MS;
+      // a server that stopped meanwhile binds nothing either: a step already in its turn is no add that stands
+      const live = () => !this.stopped && this.run === run && run.end === null && !run.cancelled && this.mono() - run.startedAt < ADD_WINDOW_MS;
       const joined = await this.deps.join({ account: run.account, list: run.list, by: run.confirmed.adder, live });
       // the time ran out, or the person gave it up, while the list was read: that read joins nothing
       if (run.end !== null) return run.end;
@@ -260,7 +311,7 @@ export class ListAdd {
         if (run.cancelled) return ended("cancelled");
         if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return this.inBy(run) ?? ended("timeout");
       }
-      if ("joined" in joined) {
+      if ("joined" in joined && this.keyed(run)) {
         run.end = { state: "added", run: run.id, account: run.account, list: run.list };
         this.deps.joined?.(run.account);
         return run.end;

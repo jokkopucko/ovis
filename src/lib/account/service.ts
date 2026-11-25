@@ -242,6 +242,11 @@ export interface DirectoryPc {
    * list does not hold the PC (listPcs.ts). The row is the directory's; nothing opens it by itself.
    */
   readonly not_in_list?: true;
+  /**
+   * Never from the account service: the list holds this PC, carried in by the account's move, with no key of its own
+   * in it, so a person at it lets nobody in (listPcs.ts). `ovis add` there gives it its keys by the number.
+   */
+  readonly needs_keys?: true;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
@@ -566,6 +571,18 @@ export class AccountService {
    * registered no key; else pcAddProof over the listing `listing` names, read only then (null: this call adds nothing, and
    * proves nothing). One proof per call.
    */
+  /**
+   * Whether an add with the sign-in this service acts for is refused as too old before it is sent (`session_not_fresh`):
+   * one made more than PC_ADD_FRESH_MS ago, with no registered key to prove it by (addProof). False where its age is not
+   * known: the service decides. A caller asks this first, so the person is asked to sign in again before any call.
+   */
+  async addAsksSignIn(): Promise<boolean> {
+    const session = await this.bound();
+    if (session.signed_in_at === undefined) return false;
+    const age = this.now() - session.signed_in_at;
+    return !(age >= 0 && age <= PC_ADD_FRESH_MS) && await this.registeredKey(session) === null;
+  }
+
   private async addProof(purpose: PcAddPurpose, serverId: string, listing: () => Promise<string | null>, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
     const session = await this.bound();
     const age = session.signed_in_at === undefined ? Number.NaN : this.now() - session.signed_in_at;
@@ -820,6 +837,17 @@ export class AccountService {
     if (!isRecord(body) || !Array.isArray(body.devices)) throw new AccountServiceError(502, "invalid_answer", "The account service sent no devices");
     return (body.devices as readonly unknown[]).flatMap((row) => isRecord(row) && typeof row.key === "string" && typeof row.eligible === "boolean" && typeof row.removed === "boolean"
       ? [{ key: row.key, eligible: row.eligible && !row.removed, removed: row.removed, ...(typeof row.label === "string" && row.label.length >= 1 && row.label.length <= 48 ? { label: row.label } : {}) }] : []);
+  }
+
+  /**
+   * `key`'s number in the account's order as the account service gives it (`GET /v1/devices`), the number it holds a
+   * block's `target_no` to; null when it names no such key. A PC numbers its own admissions apart from this.
+   */
+  async deviceNo(key: string, signal?: AbortSignal): Promise<number | null> {
+    const body = await this.call("GET", "/v1/devices", undefined, signal);
+    if (!isRecord(body) || !Array.isArray(body.devices)) throw new AccountServiceError(502, "invalid_answer", "The account service sent no devices");
+    const row = (body.devices as readonly unknown[]).find((device) => isRecord(device) && device.key === key);
+    return isRecord(row) && typeof row.no === "number" && Number.isSafeInteger(row.no) && row.no > 0 ? row.no : null;
   }
 
   /**

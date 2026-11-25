@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import type { RelayOffer } from "../shared/relay-offer.ts";
-import { RelayUnreachableError } from "../shared/relay-channel.ts";
+import { RelayUnreachableError, type RelaySocket } from "../shared/relay-channel.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../shared/relay-regions.ts";
-import { openRelayPcTunnel, RelayPcKey, serverDialable } from "./relay-pc.ts";
+import { openRelayPcTunnel, RelayPcKey, serverDialable, vouchedSupport } from "./relay-pc.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -103,4 +103,31 @@ it.each([
   ["a private address on another low port", "ws://10.0.0.1:8080", false],
 ] as const)("dials %s: %s", (_name, carrier, expected) => {
   expect(serverDialable(carrier)).toBe(expected);
+});
+
+/** A relay socket the test drives: it assigns the connection, closes, or says nothing. */
+class DrivenSocket {
+  binaryType: BinaryType = "arraybuffer";
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  closed: number | null = null;
+  get readyState(): number { return this.closed === null ? 1 : 3; }
+  send(): void {}
+  close(code = 1000): void { if (this.closed === null) this.closed = code; }
+}
+
+it("says a PC of the account is offline only on the relay's word that no PC answered, and unreachable for anything else", async () => {
+  const offer: RelayOffer = { v: 1, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const probed = (act: (socket: DrivenSocket) => void) => vouchedSupport(offer, { pcAnswerMs: 50, socket: () => {
+    const socket = new DrivenSocket();
+    queueMicrotask(() => act(socket));
+    return socket as unknown as RelaySocket;
+  } });
+  // the relay assigned the connection, and no PC came within the time
+  const assigned = (socket: DrivenSocket): void => socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "assigned", connection_id: "ef".repeat(16) }) }));
+  expect(await probed(assigned)).toBe("offline");
+  // the relay turned this PC away before it assigned anything, or the socket failed saying nothing: nothing is known of that PC
+  expect(await probed((socket) => socket.onclose?.(new CloseEvent("close", { code: 1013 })))).toBe("unreachable");
+  expect(await probed((socket) => socket.onclose?.(new CloseEvent("close", { code: 1006 })))).toBe("unreachable");
 });

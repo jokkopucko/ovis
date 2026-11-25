@@ -166,6 +166,9 @@ async function adding(service: AccountService, job: { readonly id: string; reado
   // for an account that keeps a list, may put it in that list)
   if (target.account === options.account) return await kept(await taken(take, job.id, target.server_id, true));
   const directory = service.forSignIn(session);
+  // a sign-in the account service would refuse as too old asks for a fresh one at once: the calls before that refusal
+  // (the account's PCs, the listing, its proof) may each take long on a slow service, with the dialog saying it adds
+  if (options.signIn === undefined && await directory.addAsksSignIn()) return "sign-in-again";
   try {
     const listed = (await directory.listPcs()).some((pc) => pc.server_id === target.server_id);
     if (!options.running()) return "refused";

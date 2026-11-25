@@ -135,7 +135,7 @@ async function menuGeometry(page: Page, manage: Locator, scenario: Scenario): Pr
 
 const OFF_ERROR = "ssh: connect to host a-long-fixture-hostname.tail1234.ts.net port 22: Connection refused";
 
-// a PC it keeps failing to reach: Switched off with why, whole and beside or under Check again, which asks once
+// a PC it keeps failing to reach: that it cannot be reached, with why, whole and beside or under Check again, which asks once
 async function offRow(page: Page, group: Locator, scenario: Scenario): Promise<void> {
   const setRemote = (patch: Record<string, unknown>) => page.evaluate((fields) => (window as unknown as { machineControlsFixture: { setRemote(patch: unknown): void } }).machineControlsFixture.setRemote(fields), patch);
   await setRemote({ state: "reconnecting", error: OFF_ERROR });

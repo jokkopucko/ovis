@@ -2,12 +2,11 @@ import { Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "../../shared/account-asker.ts";
 import { addPostedPc, NUMBER_TRIES, numberWith, postedPcs, type AddNumber, type AddPcOutcome, type NumberRefusal } from "../lib/account/listAdd.ts";
-import { holdsList } from "../lib/account/listWrite.ts";
 import { listNames } from "../lib/account/listGenesis.ts";
 import { inviteLetsIn, invitedPcs, type InvitedPc } from "../lib/account/listInvited.ts";
 import { endInviteAtService, serviceInviteId } from "../lib/account/listInvite.ts";
-import { pageListReading, readPageList, unreadCopy } from "../lib/account/listPcs.ts";
-import type { AccountList, ListWriter } from "../lib/account/accountList.ts";
+import { accountHasList, pageListReading, readPageList } from "../lib/account/listPcs.ts";
+import type { ListWriter } from "../lib/account/accountList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { noteAct } from "../lib/account/seenPcs.ts";
@@ -70,17 +69,7 @@ function askerLine(asker: AccountAsker | undefined, language: string): string | 
 }
 
 /** What the card says when its number ran out: a new one at Add, while the card has tries left. */
-const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one."), signInAgain: false });
-
-/**
- * Whether `account` has a list, by this device's own knowledge, never by the directory: a copy it holds, read or not
- * read yet on this page (listPcs.ts unreadCopy), or a list the account service names that this device is not in yet.
- */
-async function hasList(list: AccountList, account: string): Promise<boolean> {
-  const view = list.view();
-  if (view.account === account) return holdsList(view) || view.status.at === "not_in";
-  return unreadCopy(list, account);
-}
+const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC."), signInAgain: false });
 
 /** What a card places, and goes on placing at Try again: the very post the number came from, by the member key it was worked out with. */
 type Placing = {
@@ -320,7 +309,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     // number, and nothing else (no admission of the directory's alone, whatever became of the post or of this
     // device's standing). A page that has not read its list yet says so, and reads it for the next press
     const page = pageAccountList();
-    const known = page !== null && await hasList(page, session.account);
+    const known = page !== null && await accountHasList(page, session.account);
     const list = known && pageListReading(session.account) === "in" ? page : null;
     if (known && (list === null || list.writer() === null)) {
       if (page.view().account !== session.account) void readPageList(session.account);

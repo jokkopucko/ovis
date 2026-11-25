@@ -421,7 +421,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   // a PC of the relay (one of the account's) says where it is by the dot beside its name alone, its words a tooltip:
   // the server keeps trying it, so there is nothing to read or press under it
   const quiet = machine.kind === "relay" && !noticed;
-  const dotWords = away === "off" ? t("Switched off") : away !== null ? awayReason ?? machineErrorText(machine.error!, t) : t(STATE_WORD[machine.state]);
+  const dotWords = away === "off" ? t("Can't reach the PC: it may be off") : away !== null ? awayReason ?? machineErrorText(machine.error!, t) : t(STATE_WORD[machine.state]);
   const closeMenu = useCallback(() => setMenu(null), []);
   const endRename = (save: boolean) => {
     setRenaming(false);

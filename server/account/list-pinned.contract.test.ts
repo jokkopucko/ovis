@@ -56,9 +56,12 @@ async function listedPc() {
   const service = new FakeAccountService();
   service.opensAll = true;
   service.listAccounts = "*";
-  /** The account service as this PC reaches it: `away` makes every call fail, as a service that is down. */
-  const reach = { away: false };
-  const fetchService = async (request: Request) => { if (reach.away) throw new Error("The account service is away"); return await service.fetch(request); };
+  /** The account service as this PC reaches it: `away` makes every call fail, as a service that is down; `hook` answers a call first. */
+  const reach: { away: boolean; hook?: ((request: Request) => Promise<Response | undefined>) | undefined } = { away: false };
+  const fetchService = async (request: Request) => {
+    if (reach.away) throw new Error("The account service is away");
+    return await reach.hook?.(request) ?? await service.fetch(request);
+  };
   const accountService = { url: "https://account.test", fetch: fetchService };
   // as createListedPc: a bound PC with a member in devices.json, whose whole read has admitted one account row
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService });
@@ -192,6 +195,136 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
     expect(await pc.signsIn(pc.idOf(watcher))).toBe("watch");
     expect(pc.services.devices.sessionRow(pc.idOf(watcher).id)?.role).toBe("watch");
+  });
+
+  test("its rows are named as the list seals each device's name, which this PC opens with the key it was given; one it cannot open stays Device", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    const unnamed = await listMember();
+    await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+    await pc.account.addDevice(unnamed);
+    await pc.pull();
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+    expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    expect(labelOf(unnamed.key)).toBe("Device");
+    // what a person at this PC named a row stays: only the list's placeholder is replaced
+    const renamed = pc.services.accountRows!.rows().find((row) => row.key === unnamed.key)!;
+    pc.services.accountRows!.store()!.rename(renamed.id, "My laptop");
+    await pc.pull();
+    expect(labelOf(unnamed.key)).toBe("My laptop");
+  });
+
+  test("a device the list names \"failed\" is named so: no name is mistaken for a service that could not answer", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    await pc.account.addDevice(tablet, { names: { label: "failed", os: "android" } });
+    await pc.pull();
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "failed"; turn++) await pc.list.settled();
+    expect(labelOf(tablet.key)).toBe("failed");
+  });
+
+  test("a name whose key this PC was not given yet is opened once a later read finds the wrap, with no restart", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let given = false;
+    // the account service holds no wrap of the names' key for this PC yet (a PC just added gets it a moment later)
+    pc.reach.hook = async (request) => !given && new URL(request.url).pathname === "/v2/pc/list/wraps" ? Response.json({ wraps: [] }) : undefined;
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      // the wrap is there now; the list did not move, and a pull a minute later reads it
+      given = true;
+      pc.time.wall(2 * 60_000);
+      await pc.pull();
+      for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    } finally { pc.reach.hook = undefined; }
+  });
+
+  test("a name sealed in an epoch before this PC's own wraps is final (sealed before it joined): it is not asked for again", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let wraps = 0;
+    // the service holds this PC's wrap of a later epoch only: the PC came into the list after the tablet's name was sealed
+    pc.reach.hook = async (request) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/wraps") return undefined;
+      wraps++;
+      return Response.json({ wraps: [{ epoch: 99, wrap: "A".repeat(10) }] });
+    };
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      const asked = wraps;
+      expect(asked).toBeGreaterThan(0);
+      pc.time.wall(2 * 60_000);
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(wraps).toBe(asked);
+      expect(labelOf(tablet.key)).toBe("Device");
+    } finally { pc.reach.hook = undefined; }
+  });
+
+  test("opening names never holds up a read: with names to open and the wraps route held, then failing, a removal is read before a session opens", async () => {
+    const pc = await pinnedPc();
+    const victim = await listMember();
+    await pc.account.addDevice(victim);
+    await pc.pull();
+    expect(pc.list.role(victim.key)).toBe("drive");
+    const named = [await listMember(), await listMember(), await listMember(), await listMember()];
+    for (const [at, device] of named.entries()) await pc.account.addDevice(device, { names: { label: `Phone ${at}`, os: "android" } });
+    let wraps = 0;
+    let answer = (): void => undefined;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    // the account service holds the wraps route until the test lets it answer, then fails it (a service under load)
+    pc.reach.hook = async (request) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/wraps") return undefined;
+      wraps++;
+      await answered;
+      return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+    };
+    try {
+      await pc.services.accountMailbox.pull();
+      const deadline = Date.now() + 10_000;
+      while (wraps === 0) { if (Date.now() > deadline) throw new Error("no name was asked for"); await Bun.sleep(20); }
+      // a member removes the victim at the account service; the victim signs in well after the PC's last read
+      await pc.account.remove(victim.key);
+      pc.time.wall(10 * 60_000);
+      await pc.list.beforeSession(5_000);
+      expect(pc.list.role(victim.key)).toBeNull();
+      answer();
+      await pc.list.settled();
+      // one call for the epoch, however many names it seals
+      expect(wraps).toBe(1);
+    } finally { answer(); pc.reach.hook = undefined; }
+  });
+
+  test("a name the service could not give yet is asked for again, and a copy of the same list read meanwhile keeps the names opened", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let failing = true;
+    pc.reach.hook = async (request) => failing && new URL(request.url).pathname === "/v2/pc/list/wraps" ? Response.json({ error: { code: "unavailable" } }, { status: 503 }) : undefined;
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      // the service answers again; a sign-in a second later reads a new copy of the same list
+      failing = false;
+      pc.time.wall(2 * 60_000);
+      pc.list.role(tablet.key);
+      await pc.pull();
+      for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    } finally { pc.reach.hook = undefined; }
   });
 
   test("a device the snapshot let in and the list does not hold goes at the pin, its session closed", async () => {

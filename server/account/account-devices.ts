@@ -16,6 +16,8 @@ export type { AccountRow, AccountRowPorts, AccountRowSource, AccessAnswer, DropR
 export { accountRowsFor } from "./account-row-source.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
+/** The name a row of the list's devices has while this PC has not opened the name the list sealed for it (list-follow.ts LIST_DEVICE_LABEL). */
+const PLACEHOLDER_LABEL = "Device";
 export const ACCOUNT_DEVICES_MAX = 100;
 /** Section 5: a row this PC saw no sign-in of for this many days expires here, whatever the service says. */
 /** T56: with no whole read for this long, every account-joined row waits for one again. */
@@ -297,8 +299,12 @@ export class AccountDeviceStore implements AccountRowSource {
       this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === row.id ? { ...candidate, hold_until: candidate.hold_until === null ? null : until } : candidate) });
     }
 
-    // rows admitted from here on belong to this read's account and snapshot
-    this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
+    // rows admitted from here on belong to this read's account and snapshot. A row still named by the list's placeholder
+    // (its name was not open to this PC when it came in) takes the name the list gives it now; one a person named stays
+    // (the list's commits alone: a PC that follows no list keeps the labels its rows came in with)
+    const named = new Map(list.names === true ? list.devices.filter((entry) => entry.label !== PLACEHOLDER_LABEL).map((entry) => [entry.key, entry.label]) : []);
+    const devices = this.file.devices.map((row) => row.label === PLACEHOLDER_LABEL && named.has(row.key) ? { ...row, label: named.get(row.key)! } : row);
+    this.write({ ...this.file, devices, account: list.account, snapshot: list.snapshot, version: list.version });
 
     const admitted: string[] = [];
     this.republish();

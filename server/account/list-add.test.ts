@@ -33,7 +33,9 @@ async function adding(options: { list?: string | null } = {}) {
     /** What happens while a call to the account service is out. */
     calling: null as ((path: string, body: Record<string, unknown>) => void) | null,
     /** The account and list this PC is pinned to, as its follower says. */
-    pinnedTo: null as { account: string; list: string } | null };
+    pinnedTo: null as { account: string; list: string } | null,
+    /** What the add left to run by itself, a poll's time on: the test runs it, after moving the clock. */
+    ticks: [] as (() => void)[] };
   const add = new ListAdd({
     own: async () => ({ serverId: world.serverId, endpoint: ENDPOINT, keys }),
     listNamed: async () => options.list === undefined ? LIST : options.list,
@@ -52,6 +54,7 @@ async function adding(options: { list?: string | null } = {}) {
     joinedTo: (account, list) => world.pinnedTo !== null && world.pinnedTo.account === account && world.pinnedTo.list === list,
     now: () => world.now,
     mono: () => world.now,
+    schedule: (work) => { world.ticks.push(work); return () => { world.ticks = world.ticks.filter((each) => each !== work); }; },
   });
   /** The phone opens an attempt; `reveal` gives its nonce away once the PC answered, and says the number the phone shows. */
   const commits = (adder = phone.key) => {
@@ -77,7 +80,13 @@ async function adding(options: { list?: string | null } = {}) {
     expect(await next()).toMatchObject({ state: "number", digits });
     return digits;
   };
-  return { add, world, phone, commits, next, number };
+  /** A poll's time passes with nothing asking the PC: what the add left to run by itself runs. */
+  const alone = async () => {
+    world.now += ADD_POLL_MS;
+    for (const work of world.ticks.splice(0)) work();
+    for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+  };
+  return { add, world, phone, commits, next, number, alone };
 }
 
 test("the PC posts its card, answers the phone's commitment once, and shows the phone's number only after the reveal holds", async () => {
@@ -195,6 +204,72 @@ test("after the yes the PC asks for no further number and joins once its entry i
   expect(world.told).toBe(1);
   expect(await next()).toMatchObject({ state: "added", account: ACCOUNT, list: LIST });
   expect(world.told).toBe(1);
+});
+
+test("after the yes the PC reads its list by itself, a poll's time apart, and joins once its entry is there with nothing asking it", async () => {
+  const { add, world, number, alone } = await adding();
+  await add.start(ACCOUNT);
+  const digits = await number();
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
+  const read = world.joins;
+  // the device places the entry; the window that confirmed is hidden or closed, and nothing asks the PC
+  world.joined = { joined: {} as never };
+  await alone();
+  expect(world.joins).toBe(read + 1);
+  expect(world.told).toBe(1);
+  expect(await add.state()).toMatchObject({ state: "added", account: ACCOUNT, list: LIST });
+  // and it stops there: an add that ended leaves nothing to run
+  expect(world.ticks).toEqual([]);
+});
+
+test("while it waits, the PC takes the device's next message by itself, a poll's time apart, with nothing asking it", async () => {
+  const { add, world, commits, alone } = await adding();
+  await add.start(ACCOUNT);
+  const attempt = commits();
+  await alone();
+  // the commitment was answered with no ask of the PC
+  expect(world.open?.nonce).not.toBeNull();
+  const digits = attempt.reveal();
+  await alone();
+  expect(await add.state()).toMatchObject({ state: "number", digits });
+});
+
+test("an add started anew in the place of one whose step was due takes its own steps by itself", async () => {
+  const { add, world, commits, alone } = await adding();
+  await add.start(ACCOUNT);
+  await add.cancel();
+  // the cancelled run's step is still due when the new one starts
+  await add.start(ACCOUNT);
+  commits();
+  await alone();
+  expect(world.open?.nonce).not.toBeNull();
+});
+
+test("a cancel calls off at once the step the PC was to take by itself", async () => {
+  const { add, world } = await adding();
+  await add.start(ACCOUNT);
+  expect(world.ticks).toHaveLength(1);
+  await add.cancel();
+  expect(world.ticks).toEqual([]);
+});
+
+test("a step under way when the server stops binds nothing: the join is told the add no longer stands", async () => {
+  const { add, world, number } = await adding();
+  await add.start(ACCOUNT);
+  const digits = await number();
+  let standing = null as boolean | null;
+  // the server stops while the PC reads its list for the entry
+  world.during = (given) => { add.stop(); standing = given.live(); };
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
+  expect(standing).toBe(false);
+});
+
+test("a server that stops leaves nothing of an add to run by itself", async () => {
+  const { add, world } = await adding();
+  await add.start(ACCOUNT);
+  expect(world.ticks).toHaveLength(1);
+  add.stop();
+  expect(world.ticks).toEqual([]);
 });
 
 test("the add ends ten minutes after it began, confirmed or not, and with a refusal of the list", async () => {

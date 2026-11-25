@@ -33,6 +33,7 @@ export function pcRemovalFailure(error: unknown, t: ReturnType<typeof useT>, oth
   if (error.why === "stopped") return t("The account service cannot change the list right now.");
   // a request signed for an earlier change still waits: that one is tried again or cancelled first, on its own card
   if (error.why === "waiting") return t("An earlier change is still waiting: try it again or cancel it first.");
+  if (error.why === "not_following") return t("This device cannot use your account's list right now, so the PC was not removed. Try again in a moment.");
   return otherwise;
 }
 
@@ -73,8 +74,12 @@ export function heldRemoval(account: string, serverId: string): HeldRemoval | nu
  * (listRemove.ts): the account service removes nothing for it, and asks for no sign-in.
  */
 export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string, how: "list" | "directory") => void | Promise<void>): {
-  /** `held`: what the question was asked for (heldRemoval), where one was asked first; absent, the row is read at the press */
-  readonly remove: (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null) => Promise<boolean>;
+  /**
+   * `held`: what the question was asked for (heldRemoval), where one was asked first; absent, the row is read at the
+   * press. `byList`: the row the question was asked on was drawn as one the list holds: it leaves by the list or not at
+   * all, never by the account service's directory (ListPcRemovalError `not_following` where no list row is found now).
+   */
+  readonly remove: (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null, byList?: boolean) => Promise<boolean>;
   readonly prompt: ReactNode;
   /** the PC \`prompt\` speaks of, for a surface that draws one row per PC; null with no prompt */
   readonly promptFor: string | null;
@@ -87,7 +92,7 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     : here === undefined ? undefined : (from, blocked) => here(from, { signal: new AbortController().signal, wanted: () => true, blocked });
   const leaving = shell?.signInAgain;
 
-  const remove = async (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null): Promise<boolean> => {
+  const remove = async (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null, byList = false): Promise<boolean> => {
     setAsked(null);
     // A device that holds a copy of its account's list goes by it also on a page that has not read it yet: the read
     // is waited for. Where none ends, nothing is removed: not by an entry it cannot sign on, and never by the account
@@ -108,6 +113,9 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
       await removed(serverId, "list");
       return true;
     }
+    // the list holds this PC as far as the row said, and this device no longer goes by it: the directory would drop the
+    // PC from the account's PCs and leave it in the list, which the question said it leaves
+    if (byList) throw new ListPcRemovalError("not_following");
     try { await service.forSignIn(session).deletePc(serverId, listingId); }
     catch (error) {
       if (listingChanged(error)) { window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT)); return false; }

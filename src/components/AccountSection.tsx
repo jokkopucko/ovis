@@ -7,11 +7,12 @@
 import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } from "react";
 import { Check, Plus, X } from "lucide-react";
 
+import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, holdListNumber, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
-import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
+import { ApiError, cancelListAdd, confirmListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { pagePcs } from "../lib/account/listPcs.ts";
@@ -30,6 +31,7 @@ import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark, providerCho
 import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
 import { AccountManageLists } from "./AccountManage.tsx";
 import { QrCode } from "./QrCode.tsx";
+import { aroundDigits } from "./RelayPairingPrompt.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
 
@@ -137,6 +139,11 @@ type AddThisPcState =
   /** `enrolling`: the device that added the PC has not let the account's other devices in yet */
   | { kind: "done"; account: string; enrolling: boolean }
   /**
+   * In `account`, and in its list with no key of its own (it came in as the account moved): its add by the list gives
+   * it one, by the number, with nothing listed and no window opened. `run`: that add, under way; `note`: why the last ended
+   */
+  | { kind: "keys"; account: string; run: string | null; note: string | null; starting?: true }
+  /**
    * `again`: the listing was refused for the sign-in itself (an old one with no key to prove): this page's own sign-in
    * again, offered in place for `from` (the sign-in stored then), under way (`link`: the page a browser would not open), and
    * then the same press with the fresh one
@@ -220,6 +227,22 @@ function onePressRefusal(t: Translate, pressed: Exclude<OnePress, "added">): str
     : `${t("This PC was not added in one press.")} ${otherWays}`;
 }
 
+/**
+ * Why an add of this PC by its account's list started nothing, or ended, by the PC's code (POST /api/account/list/add's
+ * refusals, and the `why` of an add that ended: server/account/list-add.ts), in the words `ovis add` uses for it.
+ */
+function listAddRefusal(t: Translate, why: string): string {
+  switch (why) {
+    case "account_unavailable": return t("The account service could not be reached, so this PC was not added. Try again.");
+    case "account_mismatch": return t("This PC was set up for another account. Sign in to that one, or add this PC again.");
+    case "list_removed": case "removed": return t("This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again.");
+    case "cancelled": return t("The numbers were not the same, so nothing was added. If the device that adds this PC showed another number, something stood between the two: try once more, and if they differ again, do not add it.");
+    case "attempts": return t("Too many tries for this PC. Start again on the PC in a few minutes.");
+    case "list_late": return t("This PC could not be added by your account's list in time. Try again.");
+    default: return t("This PC could not join the account's list ({why}).", { why });
+  }
+}
+
 let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
 
 /**
@@ -267,9 +290,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   useEffect(() => () => { againRun.current?.abort(); againRun.current = null; }, [waitingUntil]);
   const accountService = useCallback((): AccountService => service?.() ?? indexedAccountService, [service]);
   /** What the screen shows of a PC that has an account: "in your account" only when it is the one signed in to now, else nothing here is true of it. */
-  const joinedAs = useCallback(async (account: string, enrolling: boolean): Promise<AddThisPcState> => {
+  const joinedAs = useCallback(async (account: string, enrolling: boolean, needsKeys = false): Promise<AddThisPcState> => {
     const session = await accountService().session();
-    return session?.account === account ? { kind: "done", account, enrolling } : { kind: "hidden" };
+    if (session?.account !== account) return { kind: "hidden" };
+    return needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling };
   }, [accountService]);
   const afterSignIn = useEffectEvent((fresh: SignedInHere) => { if (fresh.adds) add(fresh.account); else offerAfterSignIn(fresh.account); });
   useEffect(() => {
@@ -291,7 +315,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     const justSignedIn = (): SignedInHere | null => { const signedIn = takeFresh(); return Date.now() < began + SIGNED_IN_RETRY_MS ? signedIn : null; };
     const read = (): void => {
       again = null;
-      within(ANSWER_MS, thisPcMembership()).then(async ({ account, enrolling }) => {
+      within(ANSWER_MS, thisPcMembership()).then(async ({ account, enrolling, needsKeys }) => {
         if (!live) return;
         const signedIn = justSignedIn();
         const stored = readAddPcWaiting();
@@ -301,7 +325,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           if (account !== null) {
             const page = pagePc();
             if (stored !== null && page !== null && page !== stored.serverId) return;
-            const next = await joinedAs(account, enrolling);
+            const next = await joinedAs(account, enrolling, needsKeys);
             if (live) setState(next);
             return;
           }
@@ -331,7 +355,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           const added = kept.account === account && session?.account === account && await within(ANSWER_MS, pcAnswers(kept.serverId));
           if (!live) return;
           keepAddPcWaiting(null);
-          if (added) setState({ kind: "done", account, enrolling });
+          if (added) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling });
           return;
         }
         const now = readAddPcWaiting();
@@ -389,11 +413,37 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   const begun = state.kind === "waiting" ? state : null;
   const listed = useEffectEvent(() => onListed?.());
   useEffect(() => { if (begun !== null) listed(); }, [begun !== null]);
+  /** the run of the PC's add by the account's list that the wait under way follows now, which its Stop waiting gives up */
+  const listRun = useRef<(() => string | undefined) | null>(null);
+  const listEnded = useEffectEvent((why: string) => setState({ kind: "error", message: listAddRefusal(t, why) }));
+  /**
+   * The number the PC shows for its add by the list, for the wait that ends `until`: drawn in the wait itself, where the
+   * person just pressed Add this PC (the window's own prompt of it may sit behind the dialog this screen is in), with
+   * its yes and its No. `refused`: why the last yes confirmed nothing.
+   */
+  const [listNumber, setListNumber] = useState<{ readonly until: number; readonly run: string; readonly digits: string; readonly refused: string | null } | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const listShown = useEffectEvent((until: number, now: ListAddState) => setListNumber((prior) => now.state !== "number" ? null
+    : { until, run: now.run, digits: now.digits, refused: prior !== null && prior.run === now.run && prior.digits === now.digits ? prior.refused : null }));
+  const answerNumber = (shown: { readonly run: string; readonly digits: string }, yes: boolean): void => {
+    if (answering) return;
+    setAnswering(true);
+    (yes ? confirmListAdd(shown.run, shown.digits) : cancelListAdd(shown.run)).then(() => setListNumber(null), (error: unknown) => {
+      console.warn("Ovis: the answer to this PC's number was not taken", error instanceof Error ? error.name : error);
+      const refused = error instanceof ApiError && error.code === "wrong_number" ? t("That is no longer the number this PC shows, so nothing was confirmed. Have the device ask again.") : t("This PC did not take the request. Try again.");
+      setListNumber((prior) => prior === null ? null : { ...prior, refused });
+    }).finally(() => setAnswering(false));
+  };
+  // while this wait shows a run's number, the window's own prompt leaves it to the wait (one place takes the yes)
+  const heldRun = state.kind === "waiting" && listNumber?.until === state.until ? listNumber.run : null;
+  useEffect(() => heldRun === null ? undefined : holdListNumber(heldRun), [heldRun]);
   useEffect(() => {
     if (begun === null) return;
     const until = begun.until;
     let live = true;
     let mark = begun.mark;
+    const follows = (): string | undefined => mark?.run;
+    listRun.current = follows;
     const shared = mark !== null && readAddPcWaiting()?.until === until;
     /** Another copy of this screen ended this wait: nothing more is opened, listed or kept for it. */
     const withdrawn = (): boolean => shared && readAddPcWaiting()?.until !== until;
@@ -429,19 +479,29 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       closeWindow(windowId);
       return true;
     };
+    /**
+     * A wait begun by the account's list keeps to the list (`mark.run` stays, so it opens no window): where a restart of its
+     * add got no run (the PC answered no_list, which is no word that the account keeps none, or its account service did not
+     * answer), it is `missed`, and asked again a round later (`retryAt`), until the thirty minutes end.
+     */
+    let missed = false;
+    let retryAt = 0;
     const expired = (): boolean => {
       if (Date.now() < until) return false;
       forget();
-      setState({ kind: "expired" });
+      // its add by the list was not under way at its end: said as such, never as the one press or the old window
+      if (missed) listEnded("list_late");
+      else setState({ kind: "expired" });
       return true;
     };
     /** Whether the sign-in stored now is the one the press was made under: another tab may have signed out, or in as someone else. */
     const stillSignedIn = async (): Promise<boolean> => mark === null || (await accountService().session())?.account === mark.account;
     /** The PC has an account: the screen says so, or shows nothing when it is not the one signed in to. */
-    const joined = async (account: string, enrolling: boolean): Promise<void> => {
+    const joined = async (account: string, enrolling: boolean, needsKeys = false): Promise<void> => {
       // believed only of the PC that waited: this address may answer for another PC now, one that has an account
-      // already, and of that one the screen says nothing, as on a page that kept no wait
-      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling) : { kind: "hidden" };
+      // already, and of that one the screen says nothing, as on a page that kept no wait. One in the account with no
+      // key of its own in its list (it came in as the account moved) is offered its keys, never said to be added
+      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling, needsKeys) : { kind: "hidden" };
       if (!live) return;
       joinedWait = true;
       keepAddPcWaiting(null);
@@ -460,7 +520,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
         if (await deniedElsewhere()) { if (live && !withdrawn()) declined(); return; }
-        if (!live || withdrawn()) return;
+        // a wait whose PC is added by the account's list opens no window: nobody comes in the old way beside the number
+        if (!live || withdrawn() || mark?.run !== undefined) return;
         const { serverId: pc, windowId } = await reopenAddWindow();
         const closed = windowId !== undefined && closeLate(windowId);
         // it changed PC between that question and the window: the wait is not this one's
@@ -470,15 +531,54 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (!closed && windowId !== undefined && starts.current === startsThen && !waitKept()) closeWindow(windowId);
       })()).catch(warned("Ovis: this PC's pairing window was not reopened")).finally(() => { reopening = false; });
     };
+    /**
+     * The PC's add by the account's list that this wait started, as the PC says it stands. One whose ten minutes ran out
+     * while the wait runs, or that another add took the place of (the PC restarted), is started again under the wait's
+     * account alone; one that ended otherwise ends the wait, which says why. Its number, and the person's yes to it,
+     * are the window's own prompts (useOwnWindowPrompts); that the PC joined, the read of its account says.
+     */
+    const followList = async (): Promise<void> => {
+      const run = mark?.run;
+      if (mark === null || run === undefined) return;
+      const now = await fetchListAdd(run);
+      if (!live || withdrawn() || mark?.run !== run) return;
+      listShown(until, now);
+      if (now.state === "ended" && now.why !== "timeout") { forget(); listEnded(now.why); return; }
+      if (now.state !== "ended" && now.state !== "replaced") return;
+      if (expired() || Date.now() < retryAt) return;
+      if (!await stillSignedIn()) { if (live) stopped(); return; }
+      if (!live || withdrawn()) return;
+      // asked before the add, as before a reopen: the address may answer for another PC now, and nothing is started on it
+      if (!await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
+      if (!live || withdrawn() || mark === null) return;
+      const again = await addByList(mark.account);
+      if (!live || withdrawn() || mark === null) {
+        // the wait ended (Stop waiting gave up the run it knew) while this one started: nobody waits for it, unless a
+        // newer listing or a wait the tab keeps goes on with it (the PC hands it the same run)
+        if (again.kind === "run" && starts.current === startsThen && !waitKept()) cancelListAdd(again.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return;
+      }
+      switch (again.kind) {
+        case "run": missed = false; retryAt = 0; mark = { ...mark, run: again.run }; keepAddPcWaiting(mark); return;
+        // a wait begun by the list never falls back to the old way (the window, the one press): no run now is asked again a
+        // round later, and a refusal for good ends the wait in its own words
+        case "none": missed = true; retryAt = Date.now() + REOPEN_MS; return;
+        case "added": return;
+        case "refused":
+          if (again.why === "account_unavailable") { missed = true; retryAt = Date.now() + REOPEN_MS; return; }
+          forget(); listEnded(again.why); return;
+      }
+    };
     let asking = false;
     const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, (async (): Promise<void> => {
-        const { account, enrolling } = await thisPcMembership();
+        const { account, enrolling, needsKeys } = await thisPcMembership();
         if (!live) return;
-        if (account !== null) await joined(account, enrolling);
+        if (account !== null) await joined(account, enrolling, needsKeys);
         else if (withdrawn()) left();
+        else await followList().catch(warned("Ovis: this PC's add by the account's list could not be read"));
       })()).catch(warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
     };
     let relisting: ReturnType<typeof setTimeout> | null = null;
@@ -496,9 +596,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       let windowId: string | undefined;
       const closeAsked = (): void => { if (windowId !== undefined && closeLate(windowId)) windowId = undefined; };
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
-        const { account, enrolling } = await thisPcMembership();
+        const { account, enrolling, needsKeys } = await thisPcMembership();
         if (!live) return true;
-        if (account !== null) { await joined(account, enrolling); return true; }
+        if (account !== null) { await joined(account, enrolling, needsKeys); return true; }
         if (withdrawn()) { left(); return true; }
         // listed only under the account the press was made in: another sign-in since then ends the wait
         if (!await stillSignedIn()) { if (live) stopped(); return true; }
@@ -523,15 +623,23 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         const { membership } = await listed;
         // Only the caller that opened the window has its ID, even when another screen shares the result.
-        if (membership !== undefined && windowId !== undefined) {
+        // and a wait whose PC is added by the account's list closes at once the window its listing had to open
+        if ((membership !== undefined || mark?.run !== undefined) && windowId !== undefined) {
           closeWindow(windowId);
           windowId = undefined;
         }
         if (!live) return true;
         // another copy stopped the wait while the PC was being listed: what it forgot is not kept again
         if (withdrawn()) { left(); return true; }
-        if (membership !== undefined) { await joined(membership.account, membership.enrolling); return true; }
-        if (mark !== null) { mark = { ...mark, listedAt: Date.now() }; keepAddPcWaiting(mark); }
+        if (membership !== undefined) { await joined(membership.account, membership.enrolling, membership.needsKeys === true); return true; }
+        if (mark !== null) {
+          // the add by the list it follows is the one the tab keeps for this wait: another copy may have started it again
+          // since (followList), and this copy's older run is never written back over it, so Stop gives up the one that runs
+          const held = shared ? readAddPcWaiting() : null;
+          const run = held !== null && held.until === until ? held.run : mark.run;
+          mark = { name: mark.name, until: mark.until, serverId: mark.serverId, account: mark.account, listedAt: Date.now(), ...(run === undefined ? {} : { run }) };
+          keepAddPcWaiting(mark);
+        }
         return true;
       })()).catch((error: unknown) => {
         if (error instanceof AddPcWaitOver) {
@@ -559,6 +667,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (begun.resumed) reopen();
     return () => {
       live = false;
+      if (listRun.current === follows) listRun.current = null;
       for (const timer of timers) clearInterval(timer);
       if (relisting !== null) clearTimeout(relisting);
       clearTimeout(end);
@@ -574,11 +683,11 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     const timer = setInterval(() => {
       if (pageHidden() || asking) return;
       asking = true;
-      within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling }) => {
+      within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling, needsKeys }) => {
         if (!live) return;
         // its first member left before enrolling it: the PC is in no account again
         if (account !== settling) setState(account === null ? { kind: "offer" } : { kind: "hidden" });
-        else if (!enrolling) setState({ kind: "done", account, enrolling: false });
+        else if (!enrolling) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling: false });
       }, warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
     }, ADDED_POLL_MS);
     return () => { live = false; clearInterval(timer); };
@@ -591,6 +700,67 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    */
   const dropped = useRef<(() => void) | null>(null);
   useEffect(() => () => { dropped.current?.(); dropped.current = null; }, []);
+  /**
+   * A PC in its account and in its list with no key of its own: its add by the list, which gives it one by the number a
+   * device of the account and this PC show. Nothing is listed in the account and no pairing window is opened: the PC
+   * is in the account all along, and only the number lets the key in (docs/account-list.md, "Keys for a PC carried in
+   * as an endpoint").
+   */
+  const keysStarting = useRef(false);
+  const addKeys = (account: string): void => {
+    // one start at a time: a second press would join the same run on the PC, and the first's end would give it up
+    if (keysStarting.current) return;
+    keysStarting.current = true;
+    const mine = ++attempt.current;
+    setState({ kind: "keys", account, run: null, note: null, starting: true });
+    void addByList(account).finally(() => { keysStarting.current = false; }).then(async (byList) => {
+      if (attempt.current !== mine) {
+        if (byList.kind === "run") cancelListAdd(byList.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return;
+      }
+      if (byList.kind === "run") { setState({ kind: "keys", account, run: byList.run, note: null }); return; }
+      // it holds its keys by now (another device gave them, or this add was done already): what it lacked is there
+      if (byList.kind === "added" || (byList.kind === "refused" && byList.why === "in_account")) {
+        const { account: now, enrolling, needsKeys } = await thisPcMembership();
+        if (attempt.current === mine) setState(now === null ? { kind: "offer" } : await joinedAs(now, enrolling, needsKeys));
+        return;
+      }
+      setState({ kind: "keys", account, run: null, note: byList.kind === "none" ? t("Your account's list could not be found just now. Try again.") : listAddRefusal(t, byList.why) });
+    }, (error: unknown) => {
+      warned("Ovis: this PC's add by the account's list was not started")(error);
+      if (attempt.current === mine) setState({ kind: "keys", account, run: null, note: t("Could not reach this PC. Try again.") });
+    });
+  };
+  const keysRun = state.kind === "keys" ? state.run : null;
+  const keysAccount = state.kind === "keys" ? state.account : null;
+  useEffect(() => {
+    if (keysRun === null || keysAccount === null) return;
+    let live = true;
+    let asking = false;
+    const timer = setInterval(() => {
+      if (pageHidden() || asking) return;
+      asking = true;
+      within(ANSWER_MS, fetchListAdd(keysRun)).then(async (now) => {
+        if (!live) return;
+        if (now.state === "added") {
+          const { account, enrolling, needsKeys } = await thisPcMembership();
+          if (live) setState(account === null ? { kind: "offer" } : await joinedAs(account, enrolling, needsKeys));
+          return;
+        }
+        if (now.state === "ended") {
+          setState({ kind: "keys", account: keysAccount, run: null, note: now.why === "timeout" ? t("No device of your account compared a number with this PC in time. Try again.") : listAddRefusal(t, now.why) });
+          return;
+        }
+        if (now.state === "none" || now.state === "replaced") setState({ kind: "keys", account: keysAccount, run: null, note: null });
+      }, warned("Ovis: this PC's add by the account's list could not be read")).finally(() => { asking = false; });
+    }, ADDED_POLL_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [keysRun, keysAccount, joinedAs]);
+  const stopKeys = (account: string, run: string): void => {
+    attempt.current++;
+    cancelListAdd(run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+    setState({ kind: "keys", account, run: null, note: null });
+  };
   /**
    * Lists this PC and waits, thirty minutes from this press, or from the sign-in that just finished here
    * (`as`, its account): that one says what it is doing, lists under that account alone, is given up after
@@ -615,9 +785,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     const over = (): void => { if (dropped.current === drop) dropped.current = null; };
     const listing = (async (): Promise<AddThisPcState | null> => {
       // the window outlives a wait that stopped by up to ten minutes: a device may have added this PC through it, and then nothing is listed again
-      const { account: joined, enrolling } = await thisPcMembership();
+      const { account: joined, enrolling, needsKeys } = await thisPcMembership();
       if (!current()) return null;
-      if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling); }
+      if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling, needsKeys); }
       const { name, serverId, account, membership } = await listThisPc(accountService(), {
         relistMs: RELIST_MS,
         opened: (id) => { windowId = id; },
@@ -627,7 +797,40 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (membership !== undefined) {
         closeOpened();
         keepAddPcWaiting(null);
-        return await joinedAs(membership.account, membership.enrolling);
+        return await joinedAs(membership.account, membership.enrolling, membership.needsKeys === true);
+      }
+      // an account that keeps a signed list takes this PC by that list alone: the PC is asked to start that add first,
+      // as `ovis add` asks it, and the one press below is tried only where it says the account keeps none
+      const byList = account === null ? null : await addByList(account);
+      if (!current()) {
+        // an add nobody waits for is given up, unless a newer attempt goes on with it (the PC hands it the same run)
+        if (byList?.kind === "run" && starts.current === began && !waitKept()) cancelListAdd(byList.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return null;
+      }
+      if (account !== null && byList !== null && byList.kind !== "none") {
+        if (byList.kind === "run") {
+          // the PC is added by the list alone: the pairing window the listing opened is closed, as `ovis add` closes it,
+          // so nobody is let in the old way (the digits a device types, approved here) beside the number
+          closeOpened();
+          const now = Date.now();
+          const mark = { name, until: now + WAITING_MS, serverId, account, listedAt: now, run: byList.run };
+          pressedUntil.current = mark.until;
+          keepAddPcWaiting(mark);
+          return { kind: "waiting", name, until: mark.until, mark, resumed: false, signedIn: as !== null };
+        }
+        closeOpened();
+        if (byList.kind === "added") {
+          listed();
+          keepAddPcWaiting(null);
+          return await joinedAs(account, false);
+        }
+        // in an account by now (a device added it meanwhile): said as any join is
+        if (byList.why === "in_account") {
+          const now = await thisPcMembership();
+          if (!current()) return null;
+          if (now.account !== null) { keepAddPcWaiting(null); return await joinedAs(now.account, now.enrolling, now.needsKeys); }
+        }
+        return { kind: "error", message: listAddRefusal(t, byList.why) };
       }
       // in one press when the account service admits it; the window this listing opened is then needed no more
       const pressed = account === null ? "refused" : await addInOnePress(accountService(), serverId, account, current, opensAll());
@@ -747,7 +950,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       const membership = await thisPcMembership();
       if (!current()) return;
       if (membership.account !== null) {
-        const next = await joinedAs(membership.account, membership.enrolling);
+        const next = await joinedAs(membership.account, membership.enrolling, membership.needsKeys);
         if (current()) setState(next);
         return;
       }
@@ -770,13 +973,18 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * Stops waiting, in every copy of this screen, and closes the window on the PC so nothing more is taken;
    * an older Ovis has no such route and lets it run out. A reopen or a listing still on its way to the PC may
    * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`),
-   * also a listing that was given up for getting no answer in time.
+   * also a listing that was given up for getting no answer in time. The PC's add by the account's list that the wait
+   * follows is given up with it, by its run as the tab keeps the wait (another copy may have started it again), else as
+   * this copy knows it: an add that took its place is not this wait's.
    */
   const stop = (): void => {
+    const kept = readAddPcWaiting();
+    const run = state.kind === "waiting" && kept !== null && kept.until === state.until ? kept.run : listRun.current?.();
     stops.current++;
     keepAddPcWaiting(null);
     setState({ kind: "offer" });
     closeWindow();
+    if (run !== undefined) cancelListAdd(run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
   };
   /**
    * The wait's one sign-in again, with the provider of the sign-in it began under. It runs only while its wait does, in
@@ -866,6 +1074,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   };
   if (state.kind === "hidden") return null;
   const againShown = state.kind === "waiting" && again?.until === state.until ? again : null;
+  const shownNumber = state.kind === "waiting" && listNumber?.until === state.until ? listNumber : null;
   return (
     <div className="settings-item account-add-pc">
       {state.kind === "adding" ? (
@@ -881,6 +1090,20 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       ) : state.kind === "waiting" ? (
         <>
           <p className="settings-description" role="status">{t("On another device of your account, choose Add on {name}.", { name: state.name })}</p>
+          {shownNumber !== null && (() => {
+            const [before, after] = aroundDigits(t("This PC is being added to your account. Does the device adding it show {digits}?"), state.name);
+            return (
+              <>
+                <p className="settings-description" role="status" data-testid="list-add-number">{before}<strong className="relay-pairing-digits">{`${shownNumber.digits.slice(0, 3)} ${shownNumber.digits.slice(3)}`}</strong>{after}</p>
+                <p className="settings-hint">{t("Confirm only if that device shows the same number")}</p>
+                <div className="account-device-actions">
+                  <button type="button" className="btn btn-primary" disabled={answering} onClick={() => answerNumber(shownNumber, true)}>{t("The numbers match")}</button>
+                  <button type="button" className="btn" disabled={answering} onClick={() => answerNumber(shownNumber, false)}>{t("Cancel")}</button>
+                </div>
+                {shownNumber.refused !== null && <p className="settings-condition" role="alert">{shownNumber.refused}</p>}
+              </>
+            );
+          })()}
           {againShown !== null && againShown.step !== "failed" ? (
             <>
               {againShown.step === "offered" ? <p className="settings-description">{t("Sign in again now to add it right away.")}</p>
@@ -897,6 +1120,22 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
             </>
           ) : <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>}
           {againShown?.step === "failed" && <p className="settings-condition" role="alert">{againShown.message}</p>}
+        </>
+      ) : state.kind === "keys" ? (
+        <>
+          <p className="settings-description">{t("This PC is in your account, but holds no key of its own in your account's list yet: it came in as your account moved, so it cannot let a new device in.")}</p>
+          {state.run === null ? (
+            <>
+              <p className="settings-description">{t("Compare a number with a device of your account to give it one.")}</p>
+              <button type="button" className="btn btn-primary account-add-pc-button" disabled={state.starting === true} onClick={() => addKeys(state.account)}>{t("Add this PC to my account's list")}</button>
+            </>
+          ) : (
+            <>
+              <p className="settings-description" role="status">{t("On another device of your account, open Manage account → PCs and choose Add for this PC, then compare the number it shows with the one here.")}</p>
+              <button type="button" className="btn" onClick={() => stopKeys(state.account, state.run!)}>{t("Stop waiting")}</button>
+            </>
+          )}
+          {state.note !== null && <p className="settings-condition" role="alert">{state.note}</p>}
         </>
       ) : state.kind === "done" ? (
         state.enrolling
@@ -1630,7 +1869,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
             <div className="settings-item" role="status">
               <p className="settings-hint">{unsentAsked.state === "unknown" ? t("Could not check whether a block still waits to reach the account.")
                 : unsentAsked.state === "waiting" ? t("A block has not reached the account yet.")
-                : unsentAsked.state === "refused" ? t("The block was refused. Block it again from this device.") : t("The block did not go through yet.")}</p>
+                : unsentAsked.state === "refused" ? t("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.") : t("The block did not go through yet.")}</p>
               {unsentAsked.state === "unknown" && <button type="button" className="btn" onClick={() => { void checkAgain(); }}>{t("Check again")}</button>}
               {unsentAsked.state === "waiting" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Send it now")}</button>}
               {unsentAsked.state === "retry" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Try again")}</button>}

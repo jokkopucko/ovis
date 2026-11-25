@@ -6,7 +6,7 @@ import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { translate, type Language } from "../lib/i18n.ts";
 import type { AccountList, WaitingRequest } from "../lib/account/accountList.ts";
-import { unconfirmedReason, waitingOf } from "./AccountApprovals.tsx";
+import { approvalPcName, unconfirmedReason, waitingOf } from "./AccountApprovals.tsx";
 import { keepStalled, ListAllowNotice } from "./ListChangeNotice.tsx";
 
 /** `pairedAtPc`: the PC let the device in by a pairing of its own (one that does not follow the list), as every case here but the last */
@@ -151,5 +151,16 @@ describe("the request a stalled approval's card acts on", () => {
     expect(await waitingOf(listOf(waits("acct_b")), "acct_a")).toBeNull();
     expect(await waitingOf(listOf(null), "acct_a")).toBeNull();
     expect(await waitingOf(null, "acct_a")).toBeNull();
+  });
+});
+
+describe("the PC an approval card says the request came through", () => {
+  const id = "57011c1f".padEnd(32, "0");
+  it("is named as this device's pairing names it, else as the account names it, and by the start of its id only when neither does", () => {
+    expect(approvalPcName(id, [{ server_id: id, name: "Desk" }], [{ server_id: id, label: "slqa-pc1" }])).toBe("Desk");
+    // a PC this device opens through the account (or its list) has no pairing here: the account's name for it
+    expect(approvalPcName(id, [], [{ server_id: "f".repeat(32), label: "other" }, { server_id: id, label: "slqa-pc1" }])).toBe("slqa-pc1");
+    expect(approvalPcName(id, [{ server_id: id }], [{ server_id: id, label: "slqa-pc1" }])).toBe("slqa-pc1");
+    expect(approvalPcName(id, [], [])).toBe("57011c1f");
   });
 });

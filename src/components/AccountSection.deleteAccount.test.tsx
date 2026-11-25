@@ -254,7 +254,7 @@ describe("deleting the account from Settings", () => {
     await press("Sign out");
     await until(() => buttons().includes("Send it now"));
     await press("Send it now");
-    await until(() => shown().includes(retry ? "The block did not go through yet." : "The block was refused. Block it again from this device."));
+    await until(() => shown().includes(retry ? "The block did not go through yet." : "The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device."));
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     expect(buttons().includes("Try again")).toBe(retry);
     expect(buttons()).toContain("Sign out anyway");
@@ -275,13 +275,13 @@ describe("deleting the account from Settings", () => {
     busy = 200;
     await press("Try again");
     await until(() => !buttons().includes("Try again"));
-    expect(shown()).toContain("The block was refused. Block it again from this device.");
+    expect(shown()).toContain("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.");
     expect(buttons()).toContain("Sign out anyway");
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     // the refusal stays queued until its owner presses OK
     expect(Object.keys(await indexedAccountStore.get("unsent_blocks") ?? {})).toEqual(["refused-1"]);
     await press("OK");
-    await until(() => !shown().includes("The block was refused. Block it again from this device."));
+    await until(() => !shown().includes("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device."));
     expect(await indexedAccountStore.get("unsent_blocks")).toBeUndefined();
   });
 
@@ -316,7 +316,7 @@ describe("deleting the account from Settings", () => {
       await checked.promise;
     });
     await act(async () => {});
-    expect(shown()).not.toContain("The block was refused. Block it again from this device.");
+    expect(shown()).not.toContain("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.");
     expect(Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).map((entry) => [entry.records[0]?.id, entry.refused])).toEqual([["late-1", true]]);
   });
 

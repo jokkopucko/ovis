@@ -1125,7 +1125,7 @@ export class FakeAccountService {
       }
       return json({ queued: new Set(body.server_ids).size });
     }
-    if (path === "/v1/safety-records" && request.method === "POST" && this.opensAll) return await this.safetyRecord(account, await request.json());
+    if (path === "/v1/safety-records" && request.method === "POST" && this.opensAll) return await this.safetyRecord(account, session.family, await request.json());
     if (path === "/v1/admissions" && request.method === "GET") {
       // what the approving client checks the key PC X shows it against, before it signs an add
       const admissions = this.admissionList
@@ -1489,7 +1489,7 @@ export class FakeAccountService {
     return registry.freezes.some((line) => no > line.after);
   }
 
-  private async safetyRecord(account: string, body: { record?: unknown }): Promise<Response> {
+  private async safetyRecord(account: string, family: string, body: { record?: unknown }): Promise<Response> {
     let record: SafetyRecord;
     try {
       record = parseSafetyRecord(body.record);
@@ -1502,8 +1502,13 @@ export class FakeAccountService {
     if (record.account !== account) return problem(403, "account_mismatch", "The record is for another account");
     const registry = this.registry(account);
     const signer = registry.devices.get(record.signer);
-    if (signer && this.frozen(registry, signer.no)) return problem(403, "frozen", "A key a block freezes signs nothing");
-    if (!signer || signer.removed || signer.no !== record.signer_no) return problem(403, "signer_not_member", "The signer is not a device of this account");
+    // as the service (its ownSigner), first: the signer is the key THIS sign-in registered, still unremoved, at the
+    // number it claims. A key another sign-in registered (registerSessionKey), a later sign-in of the same device
+    // included, signs nothing here, and a record kept already is no exception. A key registerDevice made, which no
+    // sign-in registered, stands for one the posting sign-in did: the tests that need no sign-in of their own
+    const registeredBy = this.keyFamily.get(record.signer);
+    if (!signer || signer.removed || signer.no !== record.signer_no || (registeredBy !== undefined && registeredBy !== family)) return problem(403, "signer_not_member", "The signer is not this sign-in's device");
+    if (this.frozen(registry, signer.no)) return problem(403, "frozen", "A key a block freezes signs nothing");
     if (record.kind === "block") {
       const target = registry.devices.get(record.target);
       if (!target || target.no !== record.target_no) return problem(403, "unknown_target", "The target is not where the block says");

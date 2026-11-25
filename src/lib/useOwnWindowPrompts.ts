@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { OwnJoinRequest, PendingKey, RelayPairingRequest } from "../../shared/machines.ts";
 import { useOwnJoins } from "../components/OwnJoins.tsx";
 import { firstJoinPrompts, listAddPrompts, pendingKeyPrompts, tailnetPrompts, type PromptPairing } from "../components/RelayPairingPrompt.tsx";
+import { listNumberHeld, onListNumbersHeld } from "./account/addThisPc.ts";
 import { useListAdd } from "./useListAdd.ts";
 import { useTailnetNodes } from "./useTailnetNodes.ts";
 
@@ -23,7 +24,10 @@ export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[
   const tailnet = useTailnetNodes(ownWindow)?.pending ?? null;
   const tailnetAsks = useMemo(() => tailnetPrompts(tailnet), [tailnet?.id, tailnet?.asked_at]); // eslint-disable-line react-hooks/exhaustive-deps
   const listAdd = useListAdd(ownWindow && unlocked, reads);
-  const addAsks = useMemo(() => listAddPrompts(listAdd), [listAdd?.state, listAdd !== null && listAdd.state === "number" ? `${listAdd.run} ${listAdd.digits} ${listAdd.until}` : null]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a number a wait shows in the dialog it was pressed in is that wait's to answer: one place alone takes the yes
+  const [holds, setHolds] = useState(0);
+  useEffect(() => onListNumbersHeld(() => setHolds((count) => count + 1)), []);
+  const addAsks = useMemo(() => listAddPrompts(listAdd).filter((ask) => !listNumberHeld(ask.run)), [listAdd?.state, listAdd !== null && listAdd.state === "number" ? `${listAdd.run} ${listAdd.digits} ${listAdd.until}` : null, holds]); // eslint-disable-line react-hooks/exhaustive-deps
   const prompts = useMemo(() => [...relayPairings, ...firstJoins, ...(ownWindow ? [...addAsks, ...pendingKeyPrompts(pendingKeys), ...tailnetAsks] : [])], [relayPairings, firstJoins, ownWindow, addAsks, pendingKeys, tailnetAsks]);
   const reread = useMemo(() => () => setReads((count) => count + 1), []);
   return { prompts, joins, reread };

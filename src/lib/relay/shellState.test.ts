@@ -292,7 +292,8 @@ describe("a link without a code that the PC refused before any digits", () => {
     expect(failureOf(new MuxProtocolError("auth_failed", "declined"), compared)).toBe("pair-declined");
     // a join that brought this device's card, which no entry of the account's list let in: the PC says which cause it was
     for (const [cause, failure] of [["list_not_claimed", "list-not-claimed"], ["list_service_away", "list-not-placed"], ["list_head_lost", "list-not-placed"],
-      ["list_not_in", "list-not-in"], ["list_pc_behind", "list-pc-behind"], ["list_refused", "list-refused"]] as const) {
+      ["list_not_in", "list-not-in"], ["list_pc_behind", "list-pc-behind"], ["list_not_signer", "list-pc-invited"],
+      ["list_needs_keys", "list-pc-needs-keys"], ["list_held_here", "list-pc-held"], ["list_refused", "list-refused"]] as const) {
       expect(failureOf(new MuxProtocolError("auth_failed", cause), compared)).toBe(failure);
     }
     // any other word of the PC's is a decline, as before

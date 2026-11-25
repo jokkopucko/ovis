@@ -8,11 +8,12 @@ import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "../lib/account/accountList.test-helpers.ts";
 import { allowDevice } from "../lib/account/listAllow.ts";
 import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ListDevices, showsListDevices, useNotMe } = await import("./ListDevices.tsx");
+const { ListDevices, showsListDevices, SignOutEverywhereSays, useNotMe } = await import("./ListDevices.tsx");
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 const kinds = (texts: readonly string[]): string[] => texts.map((text) => readBody(entryFromText(text).body).kind);
@@ -104,6 +105,30 @@ describe("Manage account's devices from the account's signed list", () => {
       return open.length === 0 || open[0]!.findAll((node) => node.props.role === "alert").length > 0;
     });
   };
+
+  it("Sign out every device's question says that this device keeps its place in the list, and how to take it out too, alone or with others", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const STAYS = "This device keeps its place in your account's list: signed in again here, it opens your PCs with no Allow. To take it out too, use Disconnect on its own row.";
+    /** what the question says, by its parts: the devices that go, then what stays */
+    const says = async (named: readonly string[]): Promise<string[]> => {
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(SignOutEverywhereSays, { account: w.account, named, children: "the plain question" }) })); });
+      const parts = ["sign-out-everywhere-says", "sign-out-everywhere-stays"].flatMap((id) => renderer!.root.findAll((node) => node.props["data-testid"] === id).map(textOf));
+      await act(async () => { renderer!.unmount(); });
+      renderer = undefined;
+      return parts;
+    };
+    setPageAccountList(first.list);
+    try {
+      expect(await says([])).toEqual(["Every browser and app is signed out of the account.", STAYS]);
+      const second = await letIn(w, first, "Dana's tablet");
+      await first.list.sync();
+      expect(await says([(await second.keys()).key])).toEqual(["These devices leave your account for good, then every browser and app is signed out: Dana's tablet", STAYS]);
+    } finally { setPageAccountList(null); }
+    // an account whose list this device is not in keeps its plain question, with nothing of a list
+    expect(await says([])).toEqual([]);
+  });
 
   it("lists each device by its name, this device as such, and offers Remove on the others", async () => {
     const w = listWorld();

@@ -4,7 +4,7 @@
  * side, a real PC with its account, its relay session, its own window's approval and its copy of the list on the
  * other, and the account service in memory.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { claimKey, listMember, memberCard, TestList, type ListMember } from "../../../server/account/list.test-helpers.ts";
 import { pairingPc, vouchFor, type Pc } from "../../../server/account/pairing.test-helpers.ts";
@@ -71,8 +71,13 @@ class Carrier implements RelaySocket {
  * A PC a person added to the account and to its list, pinned to that list: its own key signs for it. `before`: what
  * the account's first device does to the list before the PC pins it (a device let in then waits no join hold there).
  */
+/** What the PC's calls to the account service meet first, where a test sets it: a service that is away, say. */
+const serviceWire: { answer: ((request: Request, forward: () => Promise<Response>) => Promise<Response>) | null } = { answer: null };
+afterEach(() => { serviceWire.answer = null; });
+
 async function pinnedPc(before?: (account: TestList) => Promise<void>) {
-  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux", token: TOKEN }, startRelay: false });
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux", token: TOKEN }, startRelay: false,
+    accountFetch: (request, service) => serviceWire.answer?.(request, () => service.fetch(request)) ?? service.fetch(request) });
   made.account.opensAll = true;
   made.account.listAccounts = "*";
   pcs.push(made);
@@ -149,7 +154,9 @@ async function pinnedPc(before?: (account: TestList) => Promise<void>) {
       ...(card === null ? {} : { listCard: { list: account.id, enc: device.enc, card } }),
       compare: async (digits) => { shown.resolve(digits); await matched.promise; },
     });
-    return { opening, store, digits: bounded(shown.promise, 10_000), match: () => matched.resolve() };
+    const digits = bounded(shown.promise, 10_000);
+    void digits.catch(() => {});
+    return { opening, store, digits, match: () => matched.resolve() };
   };
   return { made, services, serverId, offer, account, open, ownJoin, allowHere, join, pull };
 }
@@ -322,3 +329,63 @@ test("a device whose card is for another list stops before any digits are shown"
   }).then(() => null, (error: unknown) => error), 10_000);
   expect([refused instanceof ListMismatchError, shown]).toEqual([true, false]);
 }, 30_000);
+
+/**
+ * QA E5 (a PC pinned to its list, cut off from the account service): the PC cannot learn whether the account asked for
+ * this join, so it refuses it, as before. It says why, in a few seconds, and the device tells the person that the PC is
+ * on and could not reach the account, never that the PC is off or takes no devices.
+ */
+describe("a join to a pinned PC whose account service does not answer", () => {
+  test("a service that cannot be reached: the join is refused account_unreachable, and the device says the PC could not reach the account", async () => {
+    const { made, account, join } = await pinnedPc();
+    const phone = await listMember();
+    const card = await claimKey(made.account, ACCOUNT, account.id, phone);
+    serviceWire.answer = async () => { throw new TypeError("fetch failed"); };
+    const asked = await join(phone, card);
+    const refusal = await bounded(asked.opening.then(() => null, (error: unknown) => error), 15_000);
+    expect(refusal).toBeInstanceOf(MuxProtocolError);
+    expect((refusal as MuxProtocolError).code).toBe("account_unreachable");
+    expect(failureOf(refusal, { code: false, paired: false, codeless: true })).toBe("account-unreachable");
+    // nobody was let in or written down for it
+    expect(made.devices.hasKey(phone.key)).toBe(false);
+  }, 30_000);
+
+  test("#4720 review J1: a join whose admission the PC has read is not refused when the rest of the read is slow", async () => {
+    const { made, services, account, join } = await pinnedPc();
+    const phone = await listMember();
+    const card = await claimKey(made.account, ACCOUNT, account.id, phone);
+    // the mailbox answers at once, so the admission is read; the snapshot read after it waits until the test lets it go
+    const snapshot = deferred<void>();
+    serviceWire.answer = async (request, forward) => {
+      if (new URL(request.url).pathname === "/v1/pc/snapshot") await snapshot.promise;
+      return await forward();
+    };
+    try {
+      const asked = await join(phone, card);
+      let refused: unknown = null;
+      void asked.opening.catch((error: unknown) => { refused = error; });
+      const shown = deferred<void>();
+      const stop = services.relay.approvals.subscribe(() => { if (services.relay.approvals.ownJoins().length > 0) shown.resolve(); });
+      try { await bounded(shown.promise, 15_000); } finally { stop(); }
+      expect(refused).toBeNull();
+      expect(services.accountMailbox.currentAdmission(phone.key)).toBe(true);
+    } finally { snapshot.resolve(); }
+  }, 40_000);
+
+  test("a service that does not answer at all (its host black-holed): the PC says so within seconds, not after its calls time out", async () => {
+    const { made, account, join } = await pinnedPc();
+    const phone = await listMember();
+    const card = await claimKey(made.account, ACCOUNT, account.id, phone);
+    // each call hangs until the PC's own deadline for it ends it, as a connection to a black-holed host does
+    serviceWire.answer = (request) => new Promise<Response>((_answer, fail) => {
+      if (request.signal.aborted) { fail(request.signal.reason); return; }
+      request.signal.addEventListener("abort", () => fail(request.signal.reason), { once: true });
+    });
+    const began = Date.now();
+    const asked = await join(phone, card);
+    const refusal = await bounded(asked.opening.then(() => null, (error: unknown) => error), 25_000);
+    expect((refusal as MuxProtocolError).code).toBe("account_unreachable");
+    expect(Date.now() - began).toBeLessThan(14_000);
+    expect(made.devices.hasKey(phone.key)).toBe(false);
+  }, 40_000);
+});

@@ -55,12 +55,20 @@ function fixture(options: { refusal?: AllowRefusal | null; answers: (SshListTake
 }
 
 test("a PC that cannot sign names no list to the other PC: no take goes, nothing is signed", async () => {
-  for (const refusal of ["not_pinned", "not_signer", "alarm", "behind", "stopped", "unavailable"] as const) {
+  for (const refusal of ["not_pinned", "not_signer", "needs_keys", "alarm", "behind", "stopped", "unavailable"] as const) {
     const made = fixture({ refusal, answers: [] });
     expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_cannot_add", status: 409 } });
     expect(made.takes).toEqual([]);
     expect(made.signed).toEqual([]);
   }
+});
+
+test("a PC that came in as its account moved says that, not an invite, and that ovis add here gives it its keys", async () => {
+  const made = fixture({ refusal: "needs_keys", answers: [] });
+  const outcome = await addOverSshByList(made.deps) as { refused: { message: string } };
+  expect(outcome.refused.message).toContain("as your account moved");
+  expect(outcome.refused.message).toContain("Run ovis add on this PC to give it its keys");
+  expect(outcome.refused.message).not.toContain("invite");
 });
 
 test("the take names this PC's list and its own key; the card that comes back is signed with the name and relay key the inspect read", async () => {
