@@ -14,7 +14,9 @@
  * releases the card's held request, and a later answer is ignored (measured on 0.169.0 and 0.171.0). The held request
  * goes through the approval hub (hub.ts `hold`): its card is the dialog the screen reader finds (dialogs/codex.ts),
  * with the command as Codex runs it, its `/bin/bash -lc` taken off, where the screen may have cut or wrapped it.
- * A turn's end comes from `turn/completed` (servedTurnEnd).
+ * A turn's end comes from `turn/completed` (servedTurnEnd), a subagent's aside. What the server says of the pane's own
+ * thread as it runs, its context, a model it moved a turn to and the questions it waits on, is kept read only
+ * (codex-status.ts, servedStatus).
  *
  * Whatever is not sure goes the old way, the plain TUI and the screen reader: a Codex version not measured, arguments
  * the launcher does not know, a server that does not come up (the launcher then starts plain `codex`), a connection
@@ -25,7 +27,9 @@ import { lstatSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
+import type { PaneContext } from "../../shared/protocol.ts";
 import { shellCommandLine } from "../shell-agent.ts";
+import { askOf, tokenContext, type CodexAsk, type ServedStatus } from "./codex-status.ts";
 import type { ApprovalDecision, ApprovalHub, ApprovalRequest, ApprovalSource } from "./hub.ts";
 
 /** The Codex versions measured with a TUI on its own server; any other runs as before. */
@@ -98,7 +102,7 @@ export function shellScript(command: string): string {
   return words !== null && words.length === 3 && SHELL.test(words[0]!) && (words[1] === "-lc" || words[1] === "-c") ? words[2]! : command;
 }
 
-export const APPROVAL_METHODS = new Set([
+const APPROVAL_METHODS = new Set([
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
   "item/permissions/requestApproval",
@@ -308,9 +312,21 @@ class Connection {
   private readonly calls = new Map<number, (message: Json) => void>();
   private readonly held = new Map<string, () => void>();
   private readonly subscribed = new Set<string>();
+  /** Threads that are not the pane's own: subagents, and the ephemeral ones Codex runs aside (it titles a thread in one). */
   private readonly subagents = new Set<string>();
   private readonly changes = new Map<string, FileChange[]>();
+  private readonly asks = new Map<string, CodexAsk>();
   turn: TurnEnd | null = null;
+  /**
+   * The pane's own thread, the last one Codex started or ran a turn in that is no subagent's; `sure` once Codex said so,
+   * not when only guessed from the threads loaded as Ovis connected.
+   */
+  private thread: string | null = null;
+  private sure = false;
+  /** The turn the pane's own thread runs or ran last. */
+  private turnId: string | null = null;
+  private context: PaneContext | null = null;
+  private rerouted: { turnId: string; model: string } | null = null;
   closed = false;
 
   constructor(path: string, private readonly paneId: string, private readonly hub: ApprovalHub, private readonly onClose: () => void) {
@@ -351,6 +367,46 @@ class Connection {
     this.subscribed.add(threadId);
     const answer = await this.call("thread/resume", { threadId, excludeTurns: true });
     if (answer["error"] !== undefined) this.subscribed.delete(threadId);
+    // a thread already running as Ovis connects is known by what the server answers of it
+    const thread = isObject(answer["result"]) && isObject(answer["result"]["thread"]) ? answer["result"]["thread"] : null;
+    if (thread !== null) this.started(thread, false);
+  }
+
+  /**
+   * A thread Codex started (`announced`) or Ovis subscribed to. One started anew becomes the pane's own; of the threads
+   * loaded as Ovis connected, the first, or one that runs over one only guessed.
+   */
+  private started(thread: Json, announced: boolean): void {
+    if (typeof thread["id"] !== "string") return;
+    if (typeof thread["parentThreadId"] === "string" || thread["ephemeral"] === true) this.subagents.add(thread["id"]);
+    else if (announced) this.own(thread["id"], true);
+    else if (this.thread === null || (!this.sure && isObject(thread["status"]) && thread["status"]["type"] === "active")) this.own(thread["id"], false);
+  }
+
+  /** `threadId` is the pane's own thread: what was known of another, its turn's end too, goes. */
+  private own(threadId: string, sure: boolean): void {
+    if (this.subagents.has(threadId)) return;
+    if (this.thread === threadId) { this.sure ||= sure; return; }
+    this.thread = threadId;
+    this.sure = sure;
+    this.turn = null;
+    this.turnId = null;
+    this.context = null;
+    this.rerouted = null;
+    changed(this.paneId);
+  }
+
+  /** Whether a turn of `threadId` is the pane's: its own thread's, or any but a subagent's before Codex named one. */
+  private ownTurn(threadId: string | null): threadId is string {
+    return threadId !== null && !this.subagents.has(threadId) && (this.thread === null || threadId === this.thread);
+  }
+
+  status(): ServedStatus | null {
+    return this.thread === null ? null : { threadId: this.thread, context: this.context, model: this.rerouted?.model ?? null };
+  }
+
+  questions(): CodexAsk[] {
+    return [...this.asks.values()].filter((ask) => ask.threadId === this.thread);
   }
 
   private receive(data: string): void {
@@ -370,28 +426,55 @@ class Connection {
     if (message["id"] !== undefined) return this.request(message["id"], method, params);
     const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
     switch (method) {
-      case "thread/started": {
-        const thread = isObject(params["thread"]) ? params["thread"] : {};
-        if (typeof thread["id"] === "string" && typeof thread["parentThreadId"] === "string") this.subagents.add(thread["id"]);
+      case "thread/started":
+        if (isObject(params["thread"])) this.started(params["thread"], true);
         break;
-      }
       case "thread/status/changed": {
         const status = isObject(params["status"]) ? params["status"] : {};
         if (threadId === null || status["type"] !== "active") break;
-        if (!this.subagents.has(threadId) && this.turn !== "running") this.turn = "running";
+        if (this.ownTurn(threadId) && this.turn !== "running") this.turn = "running";
         void this.subscribe(threadId);
         break;
       }
-      case "turn/started":
-        if (threadId !== null && !this.subagents.has(threadId)) this.turn = "running";
+      case "turn/started": {
+        const turn = isObject(params["turn"]) ? params["turn"] : {};
+        // a subagent's turn names the parent's turn it runs under as its root (0.171.0)
+        if (threadId !== null && typeof turn["rootTurnId"] === "string" && turn["rootTurnId"] !== turn["id"]) this.subagents.add(threadId);
+        if (threadId === null || this.subagents.has(threadId)) break;
+        this.own(threadId, true);
+        this.turn = "running";
+        this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
+        if (this.rerouted !== null && this.rerouted.turnId !== this.turnId) { this.rerouted = null; changed(this.paneId); }
+        break;
+      }
+      case "thread/tokenUsage/updated": {
+        const context = threadId === this.thread ? tokenContext(params) : null;
+        if (context === null || JSON.stringify(context) === JSON.stringify(this.context)) break;
+        this.context = context;
+        changed(this.paneId);
+        break;
+      }
+      case "model/rerouted":
+        // only the turn the pane's thread runs now: a late one for a turn before it names no model of this one
+        if (threadId !== this.thread || typeof params["turnId"] !== "string" || (this.turnId !== null && params["turnId"] !== this.turnId)
+          || typeof params["toModel"] !== "string" || params["toModel"].trim() === "") break;
+        this.rerouted = { turnId: params["turnId"], model: params["toModel"] };
+        changed(this.paneId);
         break;
       case "turn/completed": {
         const turn = isObject(params["turn"]) ? params["turn"] : {};
-        if (threadId !== null && !this.subagents.has(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
+        if (this.ownTurn(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
         break;
       }
       case "item/started": {
         const item = isObject(params["item"]) ? params["item"] : {};
+        // a subagent Codex starts is told on the parent's thread before its own thread runs; a client that did not
+        // start it gets no thread/started for it (0.171.0)
+        if (item["type"] === "subAgentActivity" && typeof item["agentThreadId"] === "string" && item["agentThreadId"] !== threadId) {
+          this.subagents.add(item["agentThreadId"]);
+          // its turn came first and was taken for the pane's: the parent, which runs a turn now, is
+          if (this.thread === item["agentThreadId"] && threadId !== null) { this.own(threadId, true); this.turn = "running"; }
+        }
         if (item["type"] !== "fileChange" || typeof item["id"] !== "string" || !Array.isArray(item["changes"])) break;
         const edits = item["changes"].flatMap((change): FileChange[] => {
           if (!isObject(change) || typeof change["path"] !== "string" || typeof change["diff"] !== "string") return [];
@@ -407,17 +490,28 @@ class Connection {
         if (typeof item["id"] === "string") this.changes.delete(item["id"]);
         break;
       }
-      case "serverRequest/resolved":
-        this.held.get(JSON.stringify(params["requestId"]))?.();
-        this.held.delete(JSON.stringify(params["requestId"]));
+      case "serverRequest/resolved": {
+        const key = JSON.stringify(params["requestId"]);
+        this.held.get(key)?.();
+        this.held.delete(key);
+        this.asks.delete(key);
         break;
+      }
     }
   }
 
-  /** An approval goes to the hub as a card; any other request is the TUI's to answer. */
+  /**
+   * An approval goes to the hub as a card; a question of the pane's own thread is kept by its id until the server says
+   * it was answered; any other request is the TUI's to answer.
+   */
   private request(id: unknown, method: string, params: Json): void {
-    if (!APPROVAL_METHODS.has(method)) return;
     const key = JSON.stringify(id);
+    if (method === "item/tool/requestUserInput") {
+      const ask = params["threadId"] === this.thread ? askOf(key, params) : null;
+      if (ask !== null) this.asks.set(key, ask);
+      return;
+    }
+    if (!APPROVAL_METHODS.has(method)) return;
     if (this.held.has(key)) return;
     const card = codexCard(method, params, this.changes);
     if (card === null) return;
@@ -434,6 +528,8 @@ class Connection {
     this.closed = true;
     for (const release of this.held.values()) release();
     this.held.clear();
+    this.asks.clear();
+    if (this.thread !== null) changed(this.paneId);
     for (const resolve of this.calls.values()) resolve({ error: { message: "closed" } });
     this.calls.clear();
     this.onClose();
@@ -459,6 +555,39 @@ export function servedTurnEnd(paneId: string): TurnEnd | null {
     if (end !== null) return end;
   }
   return null;
+}
+
+/**
+ * What the Codex server Ovis started in `paneId` said of the pane's own thread (codex-status.ts): null where Ovis has
+ * no connection to one there, or the server has named no thread yet.
+ */
+export function servedStatus(paneId: string): ServedStatus | null {
+  for (const servers of instances) {
+    const status = servers.connection(paneId)?.status() ?? null;
+    if (status !== null) return status;
+  }
+  return null;
+}
+
+/** The questions the Codex server Ovis started in `paneId` waits on for the pane's own thread, oldest first. */
+export function servedQuestions(paneId: string): CodexAsk[] {
+  for (const servers of instances) {
+    const connection = servers.connection(paneId);
+    if (connection) return connection.questions();
+  }
+  return [];
+}
+
+const listeners = new Set<(paneId: string) => void>();
+
+/** Calls `listener` with a pane whose servedStatus changed; the returned function stops that. */
+export function onServedStatus(listener: (paneId: string) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function changed(paneId: string): void {
+  for (const listener of listeners) listener(paneId);
 }
 
 /** The Codex servers of the panes Ovis started Codex in, and its connection to each. */
@@ -537,6 +666,11 @@ export class CodexServers {
 
   turnEnd(paneId: string): TurnEnd | null {
     return this.panes.get(paneId)?.connection?.turn ?? null;
+  }
+
+  connection(paneId: string): Connection | null {
+    const connection = this.panes.get(paneId)?.connection;
+    return connection && !connection.closed ? connection : null;
   }
 
   /** `paneId` no longer runs that Codex (it moved, ended or closed, or another agent starts there): its connection goes. */

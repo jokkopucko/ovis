@@ -603,6 +603,11 @@ function rolloutHeader(path: string): RecordValue | null {
  */
 const ROLLOUT_NAME = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\.jsonl$/i;
 
+/** The thread a rollout file's name carries (ROLLOUT_NAME), in lower case, or null for another name. */
+export function rolloutThread(path: string): string | null {
+  return ROLLOUT_NAME.exec(nodePath.basename(path))?.[1]?.toLowerCase() ?? null;
+}
+
 /**
  * Whether a rollout's session_meta payload makes it an interactive conversation of its own: the
  * one rule the live chat (codexRolloutPath) and the session history apply. Interactive is a TUI's

@@ -15,7 +15,7 @@ import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../deskt
 import { ClaudeSubagentStatus, plain } from "../claude-subagents.ts";
 import { claudeLastTurnEnd, claudeTranscriptStart, type ClaudeTurnEnd } from "../claude-transcript.ts";
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
-import { servedTurnEnd } from "../approvals/codex.ts";
+import { onServedStatus, servedStatus, servedTurnEnd } from "../approvals/codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import type { TurnEvent } from "../approvals/hub.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
@@ -332,10 +332,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     claudePath: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null,
     omoPath: (paneId) => omo.pathOf(paneId),
     codexPath: async (pane) => codexOpenRollout(pane.pane_id, pane.cwd, await paneCodexHome(pane.pane_id, options.codexHome)),
+    codexServed: servedStatus,
     onChange: (paneId, summary) => planChanged(paneId, summary),
     onContext: (paneId, context) => contextChanged(paneId, context),
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
   });
+  const stopServed = onServedStatus((paneId) => plans.servedChanged(paneId));
   const CODEX_LOOK_MS = 1000;
   const CODEX_RETRY_MS = 2000;
   const codexFailed = new Set<string>();
@@ -1105,7 +1107,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); stopServed(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up

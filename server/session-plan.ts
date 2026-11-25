@@ -1,4 +1,6 @@
 import type { ConversationMetadata, HerdrPane, PaneContext, PlanStep, PlanSummary } from "../shared/protocol.ts";
+import type { ServedStatus } from "./approvals/codex-status.ts";
+import { rolloutThread } from "./codex.ts";
 import { planSummary } from "../shared/plans.ts";
 import { plain } from "./claude-subagents.ts";
 import { PLAN_BUDGET, planState, readPlan, type PlanSource } from "./session-plan-reader.ts";
@@ -10,6 +12,8 @@ export interface SessionPlanDeps {
   claudePath: (paneId: string) => string | null;
   omoPath?: (paneId: string) => string | null;
   codexPath: (pane: HerdrPane) => Promise<string | null>;
+  /** What the Codex server Ovis started in a pane says of its thread (approvals/codex.ts servedStatus). */
+  codexServed?: (paneId: string) => ServedStatus | null;
   onChange: (paneId: string, summary: PlanSummary | null) => void;
   onContext?: (paneId: string, context: PaneContext | null) => void;
   claudeWindow?: (transcriptPath: string, model: string | null) => number | null;
@@ -145,13 +149,26 @@ export class SessionPlans {
     this.deps.onChange(paneId, summary);
   }
 
+  /** The Codex server of `paneId` said something new of its thread: its context is told at once. */
+  servedChanged(paneId: string): void {
+    const tracked = this.panes.get(paneId);
+    if (tracked !== undefined) this.tellContext(paneId, tracked);
+  }
+
   private tellContext(paneId: string, tracked: Tracked): void {
     const read = tracked.metadata?.context ?? null;
     const window = read !== null && tracked.where?.source === "claude-transcript" ? this.deps.claudeWindow?.(tracked.where.path, tracked.metadata?.model ?? null) ?? null : null;
-    const context = read === null ? null : window === null ? read : { ...read, window };
+    const context = this.servedContext(paneId, tracked) ?? (read === null ? null : window === null ? read : { ...read, window });
     if (JSON.stringify(context) === JSON.stringify(tracked.context)) return;
     tracked.context = context;
     this.deps.onContext?.(paneId, context);
+  }
+
+  /** The context the pane's Codex server said, while the rollout read is that thread's (its name carries the thread). */
+  private servedContext(paneId: string, tracked: Tracked): PaneContext | null {
+    if (tracked.where?.source !== "codex-transcript") return null;
+    const served = this.deps.codexServed?.(paneId) ?? null;
+    return served !== null && rolloutThread(tracked.where.path) === served.threadId.toLowerCase() ? served.context : null;
   }
 }
 

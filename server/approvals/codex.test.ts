@@ -6,7 +6,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
-import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, privateChain, privateFolder, serverArgs, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
 import { parsePrompt } from "../dialogs/live.ts";
 import { ApprovalHub } from "./hub.ts";
 
@@ -20,6 +20,14 @@ const RECORDED = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures",
  */
 const COMMANDS = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-commands-0.171.0.json"), "utf8")) as
   { shape: string; request: { method: string; params: Record<string, unknown> }; executed: string; screen: string }[];
+
+/**
+ * What Codex 0.171.0's server sent Ovis's connection while its real TUI, on the same server, asked a question, ran a
+ * subagent and titled the thread aside: the question as resuming the thread brought it back to a client that connected
+ * while it waited, then the subagent's turn inside the pane's own. Recorded in an isolated CODEX_HOME.
+ */
+const STATUS = readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-status-0.171.0.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+const MAIN = "01a210a7-62bd-79a2-9c7b-0c09d625d336";
 
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
@@ -326,13 +334,14 @@ describe("Ovis on the pane's Codex server", () => {
   type Message = Record<string, unknown>;
 
   /** A Codex app server of `version` on the launch's socket: what Ovis sends comes in order, and the test sends as Codex. */
-  function codexServer(program: string, version = "0.171.0") {
+  function codexServer(program: string, version = "0.171.0", loaded: string[] = []) {
     const received: Message[] = [];
     const waiting: { match: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
     let client: ServerWebSocket<undefined> | null = null;
     const connected = Promise.withResolvers<void>();
     const closed = Promise.withResolvers<void>();
     const resumeErrors = new Set<string>();
+    const resumed = new Map<string, Message>();
     const server: Server<undefined> = Bun.serve({
       unix: join(dirname(program), "codex.sock"),
       fetch: (request, bun) => bun.upgrade(request) ? undefined : new Response("no", { status: 400 }),
@@ -345,10 +354,10 @@ describe("Ovis on the pane's Codex server", () => {
           for (const wait of [...waiting]) if (wait.match(message)) { waiting.splice(waiting.indexOf(wait), 1); wait.resolve(message); }
           const params = (message["params"] ?? {}) as Message;
           if (message["method"] === "initialize") socket.send(JSON.stringify({ id: message["id"], result: { userAgent: `ovis/${version} (Ubuntu; x86_64) xterm (ovis; 0)` } }));
-          if (message["method"] === "thread/loaded/list") socket.send(JSON.stringify({ id: message["id"], result: { data: [], nextCursor: null } }));
+          if (message["method"] === "thread/loaded/list") socket.send(JSON.stringify({ id: message["id"], result: { data: loaded, nextCursor: null } }));
           if (message["method"] === "thread/resume") {
             const refused = resumeErrors.delete(String(params["threadId"]));
-            socket.send(JSON.stringify(refused ? { id: message["id"], error: { code: -32600, message: "no rollout found" } } : { id: message["id"], result: {} }));
+            socket.send(JSON.stringify(refused ? { id: message["id"], error: { code: -32600, message: "no rollout found" } } : { id: message["id"], result: resumed.get(String(params["threadId"])) ?? {} }));
           }
         },
       },
@@ -363,18 +372,20 @@ describe("Ovis on the pane's Codex server", () => {
         else waiting.push({ match, resolve });
       }),
       refuseResume: (threadId: string) => resumeErrors.add(threadId),
+      /** What resuming `threadId` answers: the thread as Codex describes it. */
+      resumeWith: (threadId: string, thread: Message) => resumed.set(threadId, { thread }),
       drop: () => client!.close(),
     };
   }
 
-  function launched(version = "0.171.0") {
+  function launched(version = "0.171.0", loaded: string[] = []) {
     const waiting: (() => void)[] = [];
     const settling: (() => void)[] = [];
     const hub = new ApprovalHub(join(root(), "h"), [], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
     const servers = new CodexServers(hub, { tmp: root() });
     cleanups.push(() => { servers.stop(); hub.stop(); });
     const program = servers.launch("w1:p1", ["--model", "m"], "0.171.0")!;
-    const codex = codexServer(program, version);
+    const codex = codexServer(program, version, loaded);
     const held = () => new Promise<void>((resolve) => waiting.push(resolve));
     const settled = () => new Promise<void>((resolve) => settling.push(resolve));
     return { hub, servers, codex, held, settled };
@@ -478,6 +489,93 @@ describe("Ovis on the pane's Codex server", () => {
     codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u2", status: "completed", error: null } } });
     await subagentRuns();
     expect(servedTurnEnd("w1:p1")).toBe("answered");
+  });
+
+  /** Resolves once Ovis has read everything sent before: it subscribes to a subagent's thread only after reading it. */
+  let barriers = 0;
+  async function read(codex: ReturnType<typeof codexServer>) {
+    const id = `b${++barriers}`;
+    codex.send({ method: "thread/started", params: { thread: { id, parentThreadId: "x", ephemeral: false } } });
+    codex.send({ method: "thread/status/changed", params: { threadId: id, status: { type: "active", activeFlags: [] } } });
+    await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
+  }
+
+  it("follows the pane's own thread as its server tells it, the side threads and a subagent's turn aside", async () => {
+    const { codex } = launched();
+    await codex.next((message) => message["method"] === "thread/loaded/list");
+    const subagentEnds = STATUS.findIndex((message) => message["method"] === "turn/completed" && (message["params"] as Message)["threadId"] !== MAIN);
+    const asked = STATUS.findIndex((message) => message["method"] === "item/tool/requestUserInput");
+    for (const message of STATUS.slice(0, asked + 1)) codex.send(message);
+    await read(codex);
+    expect(servedQuestions("w1:p1")).toMatchObject([{ key: "1", threadId: MAIN, questions: [{ id: "size", header: "Size", question: "Pick a size", isOther: true, isSecret: false, options: [{ label: "Small (Recommended)" }, { label: "Large" }] }] }]);
+    for (const message of STATUS.slice(asked + 1, subagentEnds + 1)) codex.send(message);
+    await read(codex);
+    expect(servedQuestions("w1:p1")).toEqual([]);
+    expect(servedTurnEnd("w1:p1")).toBe("running");
+    expect(servedStatus("w1:p1")).toEqual({ threadId: MAIN, context: { used: 12_844, window: 475_000 }, model: null });
+    for (const message of STATUS.slice(subagentEnds + 1)) codex.send(message);
+    await read(codex);
+    expect(servedTurnEnd("w1:p1")).toBe("answered");
+    expect(servedStatus("w1:p1")).toEqual({ threadId: MAIN, context: { used: 12_955, window: 475_000 }, model: null });
+  });
+
+  it("forgets a thread's turn end, questions and figures when the pane runs another thread", async () => {
+    const { codex } = launched();
+    await running(codex);
+    codex.send({ id: 4, method: "item/tool/requestUserInput", params: { threadId: "t1", turnId: "u1", itemId: "i", isBlocking: false, questions: [{ id: "q", header: "Q", question: "Which?", options: null }] } });
+    codex.send({ method: "thread/tokenUsage/updated", params: { threadId: "t1", turnId: "u1", tokenUsage: { last: { totalTokens: 500 }, total: { totalTokens: 900 }, modelContextWindow: 1000 } } });
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u1", status: "failed", error: null } } });
+    await read(codex);
+    expect(servedTurnEnd("w1:p1")).toBe("failed");
+    expect(servedQuestions("w1:p1")).toHaveLength(1);
+    codex.send({ method: "thread/started", params: { thread: { id: "t2", parentThreadId: null, ephemeral: false } } });
+    await read(codex);
+    expect([servedTurnEnd("w1:p1"), servedQuestions("w1:p1"), servedStatus("w1:p1")]).toEqual([null, [], { threadId: "t2", context: null, model: null }]);
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u1", status: "completed", error: null } } });
+    codex.send({ method: "thread/tokenUsage/updated", params: { threadId: "t1", turnId: "u1", tokenUsage: { last: { totalTokens: 600 }, total: { totalTokens: 900 }, modelContextWindow: 1000 } } });
+    await read(codex);
+    expect([servedTurnEnd("w1:p1"), servedStatus("w1:p1")?.context]).toEqual([null, null]);
+  });
+
+  it("takes no subagent's turn for the pane's own, also when it starts before the parent tells of it", async () => {
+    const { codex } = launched();
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1", rootTurnId: "u1" } } });
+    codex.send({ method: "turn/started", params: { threadId: "s1", turn: { id: "v1", rootTurnId: "u1" } } });
+    codex.send({ method: "turn/completed", params: { threadId: "s1", turn: { id: "v1", status: "completed", error: null } } });
+    await read(codex);
+    expect([servedTurnEnd("w1:p1"), servedStatus("w1:p1")?.threadId]).toEqual(["running", "t1"]);
+  });
+
+  it("takes, of the threads loaded as it connects, one that runs over an idle one", async () => {
+    const { codex } = launched("0.171.0", ["a", "b"]);
+    codex.resumeWith("a", { id: "a", parentThreadId: null, ephemeral: false, status: { type: "idle" } });
+    codex.resumeWith("b", { id: "b", parentThreadId: null, ephemeral: false, status: { type: "active", activeFlags: [] } });
+    await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === "b");
+    await read(codex);
+    expect(servedStatus("w1:p1")?.threadId).toBe("b");
+  });
+
+  it("names the model Codex moved a turn to until the next turn, and forgets all with the server", async () => {
+    const { codex } = launched();
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1" } } });
+    codex.send({ method: "model/rerouted", params: { threadId: "t1", turnId: "u1", fromModel: "m", toModel: "m-safe", reason: "highRiskCyberActivity" } });
+    codex.send({ method: "model/rerouted", params: { threadId: "t2", turnId: "v1", fromModel: "m", toModel: "other", reason: "highRiskCyberActivity" } });
+    codex.send({ id: 3, method: "item/tool/requestUserInput", params: { threadId: "t1", turnId: "u1", itemId: "i", isBlocking: true, questions: [{ id: "q", header: "Q", question: "Which?", options: null }] } });
+    await read(codex);
+    expect(servedStatus("w1:p1")).toEqual({ threadId: "t1", context: null, model: "m-safe" });
+    expect(servedQuestions("w1:p1")).toHaveLength(1);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u2" } } });
+    // a late reroute of the turn before names no model of this one
+    codex.send({ method: "model/rerouted", params: { threadId: "t1", turnId: "u1", fromModel: "m", toModel: "m-safe", reason: "highRiskCyberActivity" } });
+    await read(codex);
+    expect(servedStatus("w1:p1")?.model).toBeNull();
+    const told = new Promise<string>((resolve) => { const stop = onServedStatus((paneId) => { stop(); resolve(paneId); }); });
+    codex.drop();
+    expect(await told).toBe("w1:p1");
+    expect(servedStatus("w1:p1")).toBeNull();
+    expect(servedQuestions("w1:p1")).toEqual([]);
   });
 
   it("leaves a server of a version not measured to the TUI and the screen", async () => {
