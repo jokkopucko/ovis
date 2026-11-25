@@ -75,6 +75,9 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   }, []);
   // one terminal serves the pane it is switched to: a pending Escape must not follow it there
   useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
+  useEffect(() => {
+    if (agentStatus !== "working" && agentStatus !== "blocked") dropSecondEscape();
+  }, [agentStatus, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
     const socket = socketRef.current;
@@ -122,5 +125,5 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     }, DOUBLE_ESCAPE_GAP_MS);
   }, [agent, paneId, dropSecondEscape]);
 
-  return { pressKey, toggleModifier, abortTurn };
+  return { pressKey, toggleModifier, abortTurn, dropSecondEscape };
 }

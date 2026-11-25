@@ -156,7 +156,7 @@ it("another tab's dismissal of its uncertain copy leaves this tab's live row wit
     expect(pendingMessages.read(owner)).toMatchObject([{ id: live.id, state: "queued", serverOwned: true }]);
     const actions = sends(pane, { ok: true }, [], { socketRef: { current: socket } });
     for (const action of ["edit", "steer", "discard"] as const) await actions.actOnPending(live.id, action);
-    expect(wire).toEqual([[pane, live.id, "discard", 0, true], [pane, live.id, "steer", 0, false], [pane, live.id, "discard", 0, false]]);
+    expect(wire).toEqual([[pane, live.id, "discard", 0, true], [pane, live.id, "steer", 0, false, expect.any(Function)], [pane, live.id, "discard", 0, false]]);
     pendingMessages.publish(owner, [{ ...live, state: "held", error: { code: "agent_blocked", message: "waits for Send now" } }], [], "scope");
     expect(pendingMessages.read(owner)).toMatchObject([{ id: live.id, state: "held", serverOwned: true }]);
     otherTab.refresh(owner);

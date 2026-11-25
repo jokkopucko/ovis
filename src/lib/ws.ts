@@ -1209,7 +1209,7 @@ export class HerdrSocket {
    * `clearDraft`: an immediate send over the draft an input_draft refusal named (ClientMessage `clear_draft`)
    * `sendAnyway`: an immediate send after a refusal that showed the box (ClientMessage `send_anyway`)
    * `holdOnly`: a hold that must never go on its own (the composer's Alt+Enter): refused, not queued, where the bridge cannot hold */
-  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string): Promise<SubmitResult> | null {
+  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     if (resendId !== undefined && sendAnyway) return Promise.resolve({ ok: false, code: "invalid_delivery", message: "Use a held-copy resend id only for an immediate chat message" });
@@ -1231,17 +1231,18 @@ export class HerdrSocket {
       if (!this.features.has("submit")) {
         if (clearDraft !== undefined || sendAnyway) return { ok: false, code: "unsupported", message: "Update this PC to clear a terminal draft before sending. Nothing was sent." };
         this.rawSend({ type: "input", pane_id: paneId, text: `${payload}\r` });
+        onSent?.();
         return { ok: true, unconfirmed: true };
       }
       const id = this.nextSubmit++;
       return this.submitRequest({ type: "submit", id, pane_id: paneId, text, payload, ...(typed ? { typed: true } : {}), ...(delivery !== "immediate" ? { delivery } : {}),
         ...(commandKey !== undefined ? { command_key: commandKey } : {}),
-        ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) });
+        ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) }, onSent);
     })();
   }
 
   /** Explicitly steer or discard one server-owned pending item. Never queued or replayed. */
-  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false): Promise<SubmitResult> | null {
+  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     return (async (): Promise<SubmitResult> => {
@@ -1250,7 +1251,7 @@ export class HerdrSocket {
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot change pending messages." };
       if (!this.canQueueMessages()) return { ok: false, code: "pending_input_unsupported", message: "Update this PC to manage pending messages." };
       return this.submitRequest({ type: "pending-action", id: this.nextSubmit++, pane_id: paneId, pending_id: pendingId, action,
-        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) });
+        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) }, onSent);
     })();
   }
 
@@ -1284,7 +1285,7 @@ export class HerdrSocket {
   }
 
   /** Only an acknowledgement callback is retained, never a frame to resend. */
-  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>): Promise<SubmitResult> {
+  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>, onSent?: () => void): Promise<SubmitResult> {
     const id = message.id;
     this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" || message.delivery === "hold" } : message.type === "pending-action" ? { pendingId: message.pending_id } : {}) });
     const result = new Promise<SubmitResult>((resolve) => {
@@ -1311,7 +1312,9 @@ export class HerdrSocket {
       this.submits.get(id)?.(NOT_TRANSMITTED);
       this.submits.delete(id);
       this.requests.delete(id);
+      return result;
     }
+    onSent?.();
     return result;
   }
 

@@ -20,6 +20,7 @@ export interface ComposerSendsDeps {
   answering: InteractivePrompt | null;
   answerPending: boolean;
   draftHeldForRef: MutableRefObject<string | null>;
+  dropSecondEscape: () => void;
   ended: boolean;
   heldByOpenQueue: boolean;
   heldRef: MutableRefObject<boolean>;
@@ -52,7 +53,7 @@ export interface ComposerSendsDeps {
 }
 
 export function useComposerSends(deps: ComposerSendsDeps) {
-  const { agent, agentStatus, answerPanePrompt, answering, answerPending, chatNavigation, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
+  const { agent, agentStatus, answerPanePrompt, answering, answerPending, chatNavigation, draftHeldForRef, dropSecondEscape, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
 
   const sendAnswer = useCallback((pane: string, prompt: InteractivePrompt, choice: TypedAnswer): Promise<boolean | string> => {
     setPendingAnswer(null);
@@ -212,7 +213,12 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           try {
             const known = knownOutcomes(pane);
             const seen = inputRowNow() === "ready";
-            const result = socket?.pendingAction(pane, id, action === "steer" ? "steer" : "discard", message.resendGeneration ?? 0, action === "edit");
+            const generation = message.resendGeneration ?? 0;
+            const result = action === "steer"
+              ? socket?.pendingAction(pane, id, "steer", generation, false, () => {
+                if (paneRef.current === pane && socketRef.current === socket) dropSecondEscape();
+              })
+              : socket?.pendingAction(pane, id, "discard", generation, action === "edit");
             if (!result && dismiss) { hideLocally = true; return; }
             if (!result) {
               pendingMessages.fail(owner, id, { code: "not_transmitted", message: "the connection dropped before this message was sent" }, pendingActionUncertain("not_transmitted", message.state));
@@ -271,7 +277,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
     // authority on LAN HTTP and when two tabs have already read the same held copy.
     if (navigator.locks) await navigator.locks.request(`pending:${queueOwner}:${id}`, perform);
     else await perform();
-  }, [answering, ended, heldByOpenQueue, paneId, queueOwner, submitComposerMessage, submitRetention, showSentCommand, inputRowNow, stillOpenNote]);
+  }, [answering, dropSecondEscape, ended, heldByOpenQueue, paneId, queueOwner, submitComposerMessage, submitRetention, showSentCommand, inputRowNow, stillOpenNote]);
 
   sendNowRef.current = (id) => actOnPending(id, "steer");
 

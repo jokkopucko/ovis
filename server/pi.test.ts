@@ -774,6 +774,15 @@ it.skipIf(process.platform === "win32")("reads the session the pane's pi names t
     state = { pid: 830, sessionFile: written };
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processesAfter: async () => [{ pid: 833, argv: ["bash"] }] })).toBeNull();
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processesAfter: async () => null })).toBeNull();
+    const switched = join(dirname(written), "2026-11-17T14-06-52-131Z_01a1e9d4-fce1-73a2-82b6-11a1ac60faa9.jsonl");
+    writeFileSync(switched, "{\"type\":\"session\"}\n");
+    expect(await piTranscriptPath("core-pane", undefined, {
+      ...options, confirmExtensionSession: true,
+      processesAfter: async () => {
+        state = { pid: 830, sessionFile: switched };
+        return options.processes;
+      },
+    })).toBeNull();
     // a process in front that is not pi, and a second pi beside it, are not asked
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processes: [{ pid: 830, argv: ["bash"] }] })).toBeNull();
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processes: [{ pid: 830, argv: ["/usr/bin/pi"] }, { pid: 832, argv: ["/usr/bin/pi"] }] })).toBeNull();

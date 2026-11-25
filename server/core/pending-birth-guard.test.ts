@@ -64,7 +64,10 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   });
 
   const agent = mode === "skill" || mode === "missing" ? "gjc" : mode === "codex-queued" ? "codex" : mode === "devin-queued" ? "devin" : mode;
-  const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
+  const pane = {
+    pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0,
+    ...(mode === "pi" ? { agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: "/fixture/session-a.jsonl" } } : {}),
+  } as HerdrPane;
   const frames: ServerMessage[] = [];
   told = frames;
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;

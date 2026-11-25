@@ -6,6 +6,7 @@ import { useTypedKeys, type TypedKeysDeps } from "./useTypedKeys.ts";
 
 function mount(agent: string) {
   const sent: string[] = [];
+  let status: TypedKeysDeps["agentStatus"] = "working";
   const marks: (number | null)[] = [];
   let pane: string | null = "p1";
   let lease = "1:0:0";
@@ -19,7 +20,7 @@ function mount(agent: string) {
   };
   let hook: ReturnType<typeof useTypedKeys> | null = null;
   function Probe() {
-    hook = useTypedKeys({ ...refs, agent, agentStatus: "working", commitPendingText: () => {}, setLatch: () => {}, consumeModifiers: () => {},
+    hook = useTypedKeys({ ...refs, agent, agentStatus: status, commitPendingText: () => {}, setLatch: () => {}, consumeModifiers: () => {},
       paneId: pane, setInputError: () => {} } as unknown as TypedKeysDeps);
     return null;
   }
@@ -31,6 +32,7 @@ function mount(agent: string) {
     stop: () => act(() => { hook!.abortTurn(); }),
     wait: () => act(() => { jest.advanceTimersByTime(DOUBLE_ESCAPE_GAP_MS); }),
     switchPane: (next: string) => { pane = next; act(() => { renderer!.update(createElement(Probe)); }); },
+    status: (next: TypedKeysDeps["agentStatus"]) => { status = next; act(() => { renderer!.update(createElement(Probe)); }); },
     reconnect: () => { lease = "2:0:0"; },
     drop: () => { socket.connected = false; },
     unmount: () => act(() => { renderer!.unmount(); }),
@@ -64,6 +66,15 @@ describe("the second Escape of a two-Escape Stop", () => {
     const h = mount("devin");
     h.stop();
     h.switchPane("p2");
+    h.wait();
+    expect(h.sent).toEqual(["\u001b"]);
+  });
+
+  it("does not follow a stop into the next observed turn", () => {
+    const h = mount("devin");
+    h.stop();
+    h.status("idle");
+    h.status("working");
     h.wait();
     expect(h.sent).toEqual(["\u001b"]);
   });

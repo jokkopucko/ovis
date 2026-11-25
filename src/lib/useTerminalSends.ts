@@ -39,6 +39,7 @@ export interface TerminalSendsDeps {
   modifiersRef: RefObject<StickyModifiers>;
   consumeModifiers: () => void;
   onChatSuggestion: (pane: string, value: string | null) => void;
+  onImmediateSubmit: () => void;
   paneId: string | null;
   paneRef: RefObject<string | null>;
   pendingEpochRef: RefObject<number>;
@@ -63,6 +64,7 @@ export interface TerminalSendsDeps {
 }
 
 export function useTerminalSends(deps: TerminalSendsDeps) {
+  const { onImmediateSubmit } = deps;
   const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, lineFocus, machineId, modifiersRef, consumeModifiers, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
   const sendDraft = useCallback(() => {
     const socket = socketRef.current;
@@ -91,7 +93,10 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     // its Enter would run the pty's line without the start a held draft keeps
     if (draftHeldForRef.current === pane) return Promise.resolve({ ok: false, code: "held_input", message: "send or discard the held input first" });
     const epoch = session.epoch;
-    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly, commandKey);
+    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly, commandKey,
+      delivery === "immediate" && !holdOnly ? () => {
+        if (paneRef.current === pane && socketRef.current === socket && sessionRef.current?.epoch === epoch) onImmediateSubmit();
+      } : undefined);
     if (sent === null) return null;
     const releaseSubmit = submitRetention?.retain(pane);
     const submission = delivery !== "immediate" ? { pane, socket, epoch } : null;
@@ -128,7 +133,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
       releaseSubmit?.();
       if (paneRef.current === pane && socketRef.current === socket && pendingEpochRef.current === epoch) releaseRef.current();
     });
-  }, [onChatSuggestion, machineId, submitRetention]);
+  }, [onChatSuggestion, onImmediateSubmit, machineId, submitRetention]);
 
   const sendComposerText = useCallback((text: string, delivery: "queue" | "immediate" = "immediate"): false | Promise<true | string> => {
     const pane = paneRef.current;

@@ -461,16 +461,15 @@ const geminiInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^\
  * agent and model, the ones above it the editor (its command list too, drawn there once `/` is typed).
  */
 const kiloInputRow: InputRowRecognizer = (screen, typed) => {
-  const rows = filled(screen);
   const text = (index: number): string => screen.rows[index]!.text;
-  let end = rows.length - 1;
-  while (end >= 0 && !/^\s*╹▀+$/.test(text(rows[end]!))) end--;
+  let end = screen.rows.length - 1;
+  while (end >= 0 && !/^\s*╹▀+$/.test(text(end))) end--;
   if (end < 2) return "gone";
   let start = end;
-  while (start > 0 && /^\s*┃/.test(text(rows[start - 1]!))) start--;
-  const editor = rows.slice(start, end - 1);
+  while (start > 0 && /^\s*┃/.test(text(start - 1))) start--;
+  const editor = screen.rows.slice(start, end - 1);
   if (editor.length === 0) return "gone";
-  const cells = editor.flatMap((index) => cellsFrom(screen.rows[index]!, text(index).indexOf("┃") + 1));
+  const cells = editor.flatMap((row) => cellsFrom(row, row.text.indexOf("┃") + 1));
   if (cells.every(blank)) return "ready";
   typed?.push(...cells);
   return "draft";
@@ -530,9 +529,10 @@ export function readsTypedDraft(agent: string | null | undefined): boolean {
  * Whether `agent`'s input box on this screen holds text a person typed, which a pasted chat message would
  * join and its Enter send along. Only positive evidence counts: the recognizer found the box, answered
  * "draft" and reported its cells (InputRowRecognizer `typed`), and one of them is drawn as typed text is,
- * in the terminal's own colour or one TYPED_COLOURS lists for that agent, neither dim nor italic nor
- * inverse. A placeholder or a suggestion (dim, grey, italic), a drawn cursor, a box not found, a screen a
- * recognizer cannot read, and an agent without one all answer false: a send there goes as it always did,
+ * in the terminal's own colour or one TYPED_COLOURS lists for that agent, neither dim nor italic.
+ * Letta can draw a lone real character in inverse under its cursor. A placeholder or a suggestion (dim,
+ * grey, italic), a drawn cursor, a box not found, a screen a recognizer cannot read, and an agent without
+ * one all answer false: a send there goes as it always did,
  * never refused for good on a misreading.
  */
 export function typedDraft(agent: string | null | undefined, screen: ScreenSnapshot): boolean {
@@ -540,8 +540,10 @@ export function typedDraft(agent: string | null | undefined, screen: ScreenSnaps
   const typed: ScreenCell[] = [];
   if (DRAFT_RECOGNIZERS[agent!]!(screen, typed) !== "draft") return false;
   const colours = TYPED_COLOURS[agent!] ?? [];
-  // a character that draws nothing (a zero-width space an agent pads its box with) is no evidence either
-  return typed.some((cell) => /[^\p{Z}\p{C}]/u.test(cell.char) && !cell.dim && !cell.italic && !cell.inverse
+  const visible = typed.filter((cell) => /[^\p{Z}\p{C}]|\p{Co}/u.test(cell.char));
+  // Letta also inverts the first letter of its grey placeholder, which has more visible cells.
+  const loneLettaCell = agent === "letta" && visible.length === 1;
+  return visible.some((cell) => !cell.dim && !cell.italic && (!cell.inverse || loneLettaCell)
     && (cell.fgDefault || (cell.fg !== undefined && colours.includes(cell.fg))));
 }
 

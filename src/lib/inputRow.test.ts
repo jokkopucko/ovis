@@ -748,6 +748,22 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typed("kilo", "kilo/draft-session-slash-119.ansi")).toBeTrue();
   });
 
+  test("Kilo's empty editor does not include the previous message across blank screen rows", () => {
+    const rows = readFileSync(join(FIXTURES, "kilo/draft-session-empty-119.ansi"), "utf8").split("\n");
+    rows.fill("", 4, 33);
+    expect(typedDraft("kilo", screenFromAnsi(rows.join("\n")))).toBeFalse();
+  });
+
+  test("a Pi draft can consist of a single private-use glyph", () => {
+    const screen = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("pi", screenFromAnsi(screen.replace("leftover draft", "\uE0B0")))).toBeTrue();
+  });
+
+  test("Letta's inverse cursor cell can contain the only typed character", () => {
+    const screen = readFileSync(join(FIXTURES, "letta/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("letta", screenFromAnsi(screen.replace("leftover draft", "\u001b[7mx\u001b[27m")))).toBeTrue();
+  });
+
   test("a character that draws nothing (Letta pads its empty box with zero-width spaces) is no typed text", () => {
     const rule = "\u2500".repeat(60);
     expect(typedDraft("letta", screenFromAnsi([rule, "\u203a \u001b[7m \u001b[0m\u200b\u200b\u200b", rule].join("\n")))).toBeFalse();
