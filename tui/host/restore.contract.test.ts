@@ -366,12 +366,13 @@ describe("the launcher and the screen together", () => {
     expect(run.output().endsWith(`${ESC}[?2031l${LEAVE}`)).toBe(true);
   }, TEST_MS);
 
-  it.skipIf(process.platform === "win32")("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again", async () => {
+  // `ovis tui` hands itself over to the shell waiter; the launcher stays itself where it cannot
+  it.skipIf(process.platform === "win32").each(["waiter", "launcher"])("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again (the %s waits)", async (via) => {
     const env = { ...scratch(), PS1: "$ ", SHELL: "/bin/bash" };
     // the shell leads the pty's session with every stream on it, so its prompt shows and its job control works
     const run = runOnPty({ command: ["bash", "--norc", "--noprofile", "-i"], env, cols: 80, rows: 24 });
     await run.until("$ ");
-    run.type(`${process.execPath} ${LAUNCHER} job\r`);
+    run.type(`${process.execPath} ${LAUNCHER} job ${via === "waiter" ? "waiter" : ""}\r`);
     await run.until(PROBE);
     run.type(ANSWER);
     await run.until("READY\r");
@@ -393,6 +394,39 @@ describe("the launcher and the screen together", () => {
       run.type("x");
       await fresh(run, from, "INPUT 1 78\r");
     }
+    await run.stop();
+  }, TEST_MS);
+
+  // The fixture holds still on a FIFO at the point named (host-fixture.ts), and `fg` is typed while it does: `leave`,
+  // once the screen gave the terminal back and before it stops; `stop`, once the job's SIGTSTP was sent and before the
+  // screen's handler ran. Either way the shell continued the job before the screen could stop, and it takes keys again.
+  it.skipIf(process.platform === "win32").each([
+    ["waiter", "leave"], ["launcher", "leave"], ["waiter", "stop"], ["launcher", "stop"],
+  ] as const)("takes keys again when `fg` comes before the screen could stop (the %s waits; `fg` at %s)", async (via, at) => {
+    const base = scratch();
+    const gate = join(base.TMPDIR, "gate");
+    expect(await Bun.spawn(["mkfifo", gate]).exited).toBe(0);
+    const env = { ...base, PS1: "$ ", SHELL: "/bin/bash", HOST_FIXTURE_GATE: gate, HOST_FIXTURE_GATE_AT: at };
+    const run = runOnPty({ command: ["bash", "--norc", "--noprofile", "-i"], env, cols: 80, rows: 24 });
+    await run.until("$ ");
+    run.type(`${process.execPath} ${LAUNCHER} job ${via === "waiter" ? "waiter" : ""}\r`);
+    await run.until(PROBE);
+    run.type(ANSWER);
+    await run.until("READY\r");
+    let from = run.output().length;
+    run.type("\x1a");
+    await fresh(run, from, "Stopped");
+    await fresh(run, from, "$ ");
+    if (at === "leave") await fresh(run, from, LEAVE);
+    from = run.output().length;
+    run.type("fg\r");
+    // the shell says the job's command when it continues it
+    await fresh(run, from, `${LAUNCHER} job`);
+    expect(await Bun.spawn(["sh", "-c", 'printf go > "$1"', "sh", gate]).exited).toBe(0);
+    // the screen enters again, without stopping first; held still before its handler, it gives the terminal back then
+    await fresh(run, from, ENTER);
+    run.type("x");
+    await fresh(run, from, "INPUT 1 78\r");
     await run.stop();
   }, TEST_MS);
 });

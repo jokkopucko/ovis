@@ -61,8 +61,14 @@ export interface TerminalPort {
   /** installs the hooks; returns their removal */
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
-  /** stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action) */
-  suspend(): void;
+  /**
+   * Stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action), once
+   * `giveBack` has given the terminal back. A continue that comes from the moment it is called cancels the stop, so a
+   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called (the
+   * process that started this one, and stopped at the same signal, runs again), it gives the terminal back and does not
+   * stop. Either way the continue is heard next (`cont`).
+   */
+  suspend(giveBack: () => void): void;
   /**
    * Told which modes the screen holds: before it turns them on, and once it has undone them (at a stop from outside,
    * just before it undoes them). Whoever started the screen reads it after the screen died without giving the terminal
@@ -239,22 +245,23 @@ export function guardedHost(port: TerminalPort): Host {
   let suspended = false;
   const stopped = () => {
     if (state !== "entered" || ending || suspended) return;
-    port.stopReading();
-    // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the terminal
-    // back, and a continue that comes before this process stops itself is lost, so the stop would last. Nothing new may
-    // stand between those bytes and the stop.
-    const held = modesOn;
-    modesOn = false;
-    holding();
-    if (held) {
-      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
-    }
-    if (rawOn) {
-      rawOn = false;
-      try { port.setRaw(false); } catch { /* the terminal is gone */ }
-    }
-    suspended = true;
-    port.suspend();
+    port.suspend(() => {
+      port.stopReading();
+      // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the
+      // terminal back, before this process may have stopped.
+      const held = modesOn;
+      modesOn = false;
+      holding();
+      if (held) {
+        try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+      }
+      if (rawOn) {
+        rawOn = false;
+        try { port.setRaw(false); } catch { /* the terminal is gone */ }
+      }
+      // a stop cancelled by a continue still hears that continue next, and enters again then
+      suspended = true;
+    });
   };
   const continued = () => {
     if (!suspended || state !== "entered" || ending) return;
