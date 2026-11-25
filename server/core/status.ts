@@ -1058,7 +1058,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       options.paneVacated?.(paneId);
       push.closed(paneId);
     },
-    onPaneMoved: (from, to) => {
+    onPaneMoved: (from, to, status) => {
       options.paneVacated?.(from);
       const renumber = finishes.moved(from, to);
       for (const state of [codexFailedAt, codexTurns, codexLooked] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
@@ -1073,7 +1073,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
       broadcastAll({ type: "pane-moved", from, to });
-      push.moved(from, to);
+      // A provider's work is not a tracked agent resuming, nor does it answer a card managed here.
+      const ownsQuestion = omo.tracks(from) || gjc.tracks(from) || letta.tracks(from) || cards.waiting(from);
+      push.moved(from, to, ownsQuestion ? "unknown" : status);
       paneMoved?.(from, to);
     },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),

@@ -17,6 +17,7 @@ function fakeBrowser() {
   const activation = { isActive: false };
   /** the browser drops the next traversal asked for by key, as when another one overtakes it */
   let dropping = false;
+  let silentBack = false;
   type Pop = { state: unknown; stopImmediatePropagation: () => void };
   const listeners = new Map<string, Array<(event: Pop) => void>>();
   const land = (next: number): void => {
@@ -33,7 +34,10 @@ function fakeBrowser() {
     get state() { return entries[index]!.state; },
     pushState(state: unknown, _title: string, url?: string | null) { entries.splice(index + 1); keys += 1; entries.push({ state, href: url ?? entries[index]!.href, key: `k${keys}` }); index += 1; },
     replaceState(state: unknown, _title: string, url?: string | null) { entries[index] = { state, href: url ?? entries[index]!.href, key: entries[index]!.key }; },
-    back() { land(index - 1); },
+    back() {
+      if (silentBack) { silentBack = false; index -= 1; return; }
+      land(index - 1);
+    },
     forward() { land(index + 1); },
     // a step by count is what the browser drops with a way by key: `back` and `forward` are the user's own here
     go(by: number) { if (!dropping) land(index + by); },
@@ -57,6 +61,7 @@ function fakeBrowser() {
     at: () => index,
     key: () => entries[index]!.key,
     drop: (on: boolean) => { dropping = on; },
+    muteNextBack: () => { silentBack = true; },
     /** an entry the browser makes by itself, as for a #fragment: none of the page's writers sees it */
     fragment: (href: string) => { entries.splice(index + 1); keys += 1; entries.push({ state: null, href, key: `k${keys}` }); index += 1; },
     first: (listener: (event: Pop) => void) => { listeners.set("popstate", [listener, ...(listeners.get("popstate") ?? [])]); },
@@ -114,6 +119,70 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     fake.tap();
     expect(fake.at()).toBe(start + 1);
     leaveSecond(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("steps off a later sheet after Chromium committed a Back without firing any events", async () => {
+    const start = fake.at();
+    fake.tap();
+    const leaveFirst = enter(() => {});
+    fake.muteNextBack();
+    leaveFirst(); await settled();
+    expect(fake.at()).toBe(start);
+    fake.tap();
+    const leaveNext = enter(() => {});
+    expect(fake.at()).toBe(start + 1);
+    leaveNext(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("does not strand the entry of an automatic approval that opens after a silent Back", async () => {
+    const start = fake.at();
+    fake.tap();
+    fake.muteNextBack();
+    enter(() => {})(); await settled();
+    fake.activation.isActive = false;
+    const leaveApproval = enter(() => false);
+    fake.tap();
+    leaveApproval(); await settled();
+    enter(() => {})(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it.each(["/?", "/#"])("steps off the confirmation after widening restores the sidebar preference in its %s URL", async (base) => {
+    const start = fake.at();
+    const history = fake.window.history;
+    const before = fake.window.location.href;
+    const document = Object.getOwnPropertyDescriptor(globalThis, "document");
+    if (base === "/#") Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: () => ({ getAttribute: () => "relay" }) } });
+    try {
+      history.replaceState(history.state, "", `${base}pane=a&settings=devices`);
+      fake.tap();
+      const leave = enter(() => {});
+      history.replaceState(history.state, "", `${fake.window.location.href}&sidebar=hidden`);
+      leave(); await settled();
+      expect(fake.at()).toBe(start);
+    } finally {
+      history.replaceState(history.state, "", before);
+      if (document) Object.defineProperty(globalThis, "document", document); else Reflect.deleteProperty(globalThis, "document");
+    }
+  });
+
+  it("rebuilds Settings levels when dismissing a confirmation lands without a popstate", async () => {
+    const settingsPath = "./settingsHistory.ts?sheet-history-skips-test";
+    const settings: typeof import("./settingsHistory.ts") = await import(settingsPath);
+    const start = fake.at();
+    fake.tap();
+    settings.recordSettings(settings.settingsLevels(true, "devices", false));
+    const leave = enter(() => {});
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    fake.muteNextBack();
+    leave(); await settled();
+    jest.advanceTimersByTime(1000);
+    await settled();
+    expect(settings.settingsEntry(h.state)).toEqual({ page: "devices", keyBar: false, depth: 1 });
+    settings.recordSettings([]);
+    await settled();
     expect(fake.at()).toBe(start);
   });
 

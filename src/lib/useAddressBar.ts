@@ -24,6 +24,14 @@ export function popUnread(dispatching: Event | undefined, read: Event | null): b
   return dispatching !== undefined && dispatching.type === "popstate" && dispatching !== read;
 }
 
+function otherPane(under: Pick<AppLink, "machine" | "pane"> | null, shown: Pick<AppLink, "machine" | "pane">): boolean {
+  return under !== null && (under.machine !== shown.machine || under.pane !== shown.pane);
+}
+
+function entryKey(): string | undefined {
+  return (window as Window & { navigation?: { currentEntry?: { key: string } | null } }).navigation?.currentEntry?.key;
+}
+
 export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, newSessionPending, setHeaderNote, selectionRef }: {
   inbox: Pick<ReturnType<typeof useInbox>, "shown" | "enabled" | "show" | "leave">;
   mode?: { on: boolean; lands(): boolean };
@@ -93,6 +101,13 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   // the write is held back until then (heldWrite) and made right after (released).
   const readPop = useRef<Event | null>(null);
   const heldWrite = useRef(false);
+  // Refusing a sheet Back may leave the browser on another pane's entry if the return is lost.
+  // A later render still owns the pane shown, not the entry where that Back stopped.
+  const refusedEntry = useRef<{ link: Pick<AppLink, "machine" | "pane">; key: string | undefined } | null>(null);
+  const wouldOverwriteRefused = (shown: Pick<AppLink, "machine" | "pane">): boolean => {
+    const refused = refusedEntry.current;
+    return refused !== null && (refused.key === undefined || refused.key === entryKey()) && otherPane(refused.link, shown);
+  };
   const [released, setReleased] = useState(0);
   const filePop = fileFromPop();
   const entryLink = fileLeft && filePop !== 0 && popStill.current !== filePop ? readLink(pageSearch()) : null;
@@ -121,6 +136,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       const written = writtenLink.current;
       if (listWritten.current && !newSessionOpen && written?.create && !popUnread(window.event, readPop.current)) {
         const link: AppLink = { ...written, create: null, machine: LOCAL_MACHINE };
+        if (wouldOverwriteRefused(link)) { heldWrite.current = true; return; }
         writtenLink.current = link;
         const search = linkSearch(link, pageSearch());
         if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
@@ -138,23 +154,26 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       create: newSessionOpen ? { kind: newTab ? "tab" : "workspace", cwd: newFields?.cwd ?? null, name: newFields?.name ?? null, agent: newFields?.agent ?? null } : null,
     };
     const previous = writtenLink.current;
-    writtenLink.current = link;
     const leftInbox = listWritten.current && !inboxShown;
-    listWritten.current = inboxShown;
     const search = linkSearch(link, pageSearch());
     const popped = poppedTo.current;
+    const kept = fileKept.current;
+    const moved = leftInbox ? inboxEnabled && link.pane !== null : previous !== null && !autoSelected && isNavigation(previous, link);
+    const navigate = !popped && !settingsOpen && !newSessionOpen && moved;
+    const replaces = !navigate || (!leftInbox && (modeOn || (fileLeft && !kept)));
+    if (replaces && wouldOverwriteRefused(link)) { heldWrite.current = true; return; }
+    writtenLink.current = link;
+    listWritten.current = inboxShown;
     poppedTo.current = false;
     // a kept file is this run's alone, written or not: left set, a later replace would take the file off another entry
-    const kept = fileKept.current;
     fileKept.current = false;
     if (search === pageSearch()) return;
     const url = pageAddress(window.location.pathname, search, window.location.hash);
-    const moved = leftInbox ? inboxEnabled && link.pane !== null : previous !== null && !autoSelected && isNavigation(previous, link);
-    if (!popped && !settingsOpen && !newSessionOpen && moved) {
+    if (navigate) {
       const state = leftInbox ? { [NAV_KEY]: true, [INBOX_FROM_KEY]: true } : { [NAV_KEY]: true };
       if (modeOn && !leftInbox) window.history.replaceState(fileLeft ? withoutFile(window.history.state) : window.history.state, "", url);
       else if (fileLeft && !kept && !leftInbox) window.history.replaceState(state, "", url);
-      else window.history.pushState(state, "", url);
+      else { window.history.pushState(state, "", url); refusedEntry.current = null; }
       if (selectedPaneId !== null) restoreFileRef.current(selectedMachineId, selectedPaneId);
     } else window.history.replaceState(kept && !popped ? withoutFile(window.history.state) : window.history.state, "", url);
   }, [locked, machines.length, snapshot, linkLanded, selectedMachine?.state, selectedMachineId, selectedPaneId, linkWorkspaceId, linkSlug, linkFile, fileLeft, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, newSessionOpen, newSessionMachineId, newTab, newFields, wideScreen, sidebarCollapsed, autoSelected, released, inboxShown, inboxEnabled, modeOn]);
@@ -176,9 +195,10 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   useEffect(() => {
     const listHere = (): boolean => modeRef.current?.lands() ?? inboxRef.current.enabled;
     const onPop = (event: PopStateEvent): void => {
+      if (sheetSteppedOff()) { refusedEntry.current = { link: readLink(pageSearch()), key: entryKey() }; return; }
       if (settingsEntry(event.state) !== null) return;
-      if (sheetSteppedOff()) return;
       if (settingsSteppedOff()) { sayShown(); return; }
+      refusedEntry.current = null;
       if (newSessionPending.current && newSessionOpenRef.current && inboxRef.current.shown) { sayShown(); return; }
       const link = readLink(pageSearch());
       if (machinesRef.current.length === 0) {
@@ -224,6 +244,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
     const sayShown = (): void => {
       if (heldWrite.current) { poppedTo.current = true; return; }
       const shown = writtenLink.current;
+      if (shown !== null && wouldOverwriteRefused(shown)) { heldWrite.current = true; return; }
       const search = shown ? linkSearch(shown, pageSearch()) : pageSearch();
       if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
     };
@@ -236,7 +257,10 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       if (pop !== 0 && !popMoving.current) { popStill.current = pop; setPopSettled((count) => count + 1); }
     };
     window.addEventListener("popstate", decidePop);
-    const leaveTraversal = onSheetTraversalOver(() => { if (heldWrite.current) { heldWrite.current = false; setReleased((count) => count + 1); } });
+    const leaveTraversal = onSheetTraversalOver(() => {
+      refusedEntry.current = null;
+      if (heldWrite.current) { heldWrite.current = false; setReleased((count) => count + 1); }
+    });
     return () => { window.removeEventListener("popstate", decidePop); leaveTraversal(); };
   }, []);
 }

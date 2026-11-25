@@ -2,7 +2,7 @@
  * Nothing is stored past the page; a row that leaves the list leaves its summary behind.
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus } from "./agentInbox.ts";
 import type { AgentRow } from "./agentRoster.ts";
@@ -12,6 +12,7 @@ import type { SidebarActivity } from "./sidebarActivity.tsx";
 export const SUMMARY_ROWS = 60;
 export const SUMMARY_RETRY_MS = 2000;
 export const SUMMARY_RETRIES = 3;
+const RETRY_BATCH = Math.min(PANE_SUMMARY_MAX_IDS, Math.max(1, Math.floor(PANE_SUMMARY_DEADLINE_MS / PANE_SUMMARY_PANE_MS)));
 
 export interface RowSummary {
   role: "assistant" | "user";
@@ -142,8 +143,11 @@ export class SummaryReads {
   private pump(machineId: string): void {
     if (this.busy.has(machineId) || this.missing.has(machineId)) return;
     const queue = (this.queues.get(machineId) ?? []).filter((target) => this.isCurrent(target));
-    const batch = queue.splice(0, PANE_SUMMARY_MAX_IDS);
-    this.queues.set(machineId, queue);
+    // Retry before the server's cached answer expires, without shortening unrelated first reads.
+    const retries = queue.filter((target) => this.retries.has(readOf(target))).slice(0, RETRY_BATCH);
+    const batch = retries.length === 0 ? queue.slice(0, PANE_SUMMARY_MAX_IDS) : retries;
+    const sent = new Set(batch);
+    this.queues.set(machineId, queue.filter((target) => !sent.has(target)));
     if (batch.length === 0) return;
     this.busy.add(machineId);
     const failed = () => {

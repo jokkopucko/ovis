@@ -68,16 +68,7 @@ const endPressProbe = (page: Page, failed: boolean) => page.evaluate((failed) =>
 }, failed);
 
 async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number }, to: { x: number; y: number }, holdMs: number, during?: () => Promise<void>): Promise<void> {
-  // the demo's timeline raises a finish droplet over the top of a phone's screen at its own moment, where the first
-  // row sits: a person dismisses it before pressing the row under it
-  if (holdMs > 0) {
-    const dismiss = page.locator(".droplet-close");
-    if (await dismiss.isVisible()) {
-      await dismiss.tap();
-      await page.locator(".droplet").waitFor({ state: "detached" });
-    }
-    await armPressProbe(page, from);
-  }
+  if (holdMs > 0) await armPressProbe(page, from);
   await touch(cdp, "touchStart", from);
   if (holdMs > 0) {
     const missed = await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 }).then(() => null, (error: unknown) => error);
@@ -271,7 +262,10 @@ async function openOrderPage(browser: Browser, url: string) {
 async function checkEdgeHoldGrowth(browser: Browser, url: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
   try {
-    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+    await context.addInitScript(() => {
+      Reflect.set(window, "__ovisDemoHoldTurn", true);
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+    });
     const page = await context.newPage();
     await page.goto(url);
     await page.locator(".conn-live").waitFor({ state: "attached" });
@@ -739,7 +733,11 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
-      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+      await context.addInitScript(() => {
+        // The demo's finish droplet can cover a pinned row between measuring it and pressing it.
+        Reflect.set(window, "__ovisDemoHoldTurn", true);
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+      });
       await context.addInitScript(() => {
         const original = Element.prototype.getBoundingClientRect;
         (window as unknown as { __rowBoxReads: number }).__rowBoxReads = 0;

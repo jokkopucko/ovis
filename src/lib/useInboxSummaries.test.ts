@@ -44,6 +44,40 @@ describe("summaryTargets", () => {
 });
 
 describe("SummaryReads", () => {
+  it("retries a timed-out row without shrinking the fresh batches queued ahead of it", async () => {
+    const { reads, calls, waits } = harness();
+    const missed = target("missed");
+    const fresh = Array.from({ length: 59 }, (_, index) => target(`fresh${index}`));
+    reads.sync([missed]);
+    calls[0]?.resolve(answer({}));
+    await settled();
+
+    reads.sync([missed, ...fresh]);
+    waits[0]?.run();
+    const first = calls[1];
+    first?.resolve(answer(Object.fromEntries((first?.paneIds ?? []).map((id) => [id, said(id)]))));
+    await settled();
+
+    expect(calls[2]?.paneIds).toEqual([missed.paneId]);
+    calls[2]?.resolve(answer({ [missed.paneId]: said("Recovered") }));
+    await settled();
+    expect(reads.summaries().get(missed.key)?.text).toBe("Recovered");
+    expect(calls[3]?.paneIds).toEqual(fresh.slice(24, 48).map((row) => row.paneId));
+  });
+
+  it("fills every row when a large batch runs out of time after making progress", async () => {
+    const { reads, calls, waits } = harness();
+    const rows = Array.from({ length: 24 }, (_, index) => target(`slow${index}`));
+    reads.sync(rows);
+    for (let turn = 0, next = 0; turn < rows.length && (next < calls.length || waits.length > 0); turn++) {
+      for (const wait of waits.splice(0)) if (!wait.cancelled) wait.run();
+      const call = calls[next++];
+      if (!call) break;
+      call.resolve(answer(Object.fromEntries(call.paneIds.slice(0, 5).map((id) => [id, said(id)]))));
+      await settled();
+    }
+    expect(reads.summaries().size).toBe(rows.length);
+  });
   it("asks each PC in batches of at most 24, one request in flight per PC", async () => {
     const { reads, calls } = harness();
     const many = Array.from({ length: 30 }, (_, index) => target(`a${index}`));

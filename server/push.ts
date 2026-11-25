@@ -199,8 +199,8 @@ export interface PushService {
   gone(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
   /** a pane closed with no exit of its own: its alerts are called off, silently (an exit's alert is `onEnded`'s) */
   closed(paneId: string, machineId?: string): void;
-  /** herdr gave a pane a new ID (moved to another workspace): its status and an alert waiting or under way go with it */
-  moved(from: string, to: string, machineId?: string): void;
+  /** herdr gave a pane a new ID: carry its alert unless the move says it resumed work after a question */
+  moved(from: string, to: string, status: AgentStatus, machineId?: string): void;
   /**
    * A pane created while the server ran, first read at `status` by a snapshot, where nothing was heard of it yet: told
    * as a change from what it was `created` as, so a question or finish it reached before anyone listened alerts. Not
@@ -1041,7 +1041,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       forget(paneStorageId(machineId, paneId));
     },
 
-    moved(from, to, machineId = "local") {
+    moved(from, to, status, machineId = "local") {
       const before = paneStorageId(machineId, from);
       const after = paneStorageId(machineId, to);
       forget(after);
@@ -1055,6 +1055,12 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (entry.key !== before) continue;
         entry.key = after;
         entry.paneId = to;
+      }
+      // The collector has already taken the move's working status as its baseline.
+      if (status === "working" && lastStatus.get(after) === "blocked") {
+        lastStatus.set(after, status);
+        bump(before); // A queued webhook still checks the old ID.
+        callOff(after);
       }
     },
 

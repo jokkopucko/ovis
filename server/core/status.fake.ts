@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HerdrPane } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import * as collector from "../collector.ts";
 import * as conversation from "../conversation.ts";
 import * as herdr from "../herdr/client.ts";
@@ -13,7 +13,7 @@ import { PendingInputs } from "../pending-input.ts";
 import type { AlertTiming } from "../push.ts";
 import { connectionData, type Client } from "./connections.ts";
 
-type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
+type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string, status?: AgentStatus) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
 export const originalCollector = collector.startStatusCollector;

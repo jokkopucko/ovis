@@ -337,6 +337,39 @@ it("writes at once what a listener after the handler changes: the entry is read 
   expect(writes).toEqual(during);
 });
 
+it("keeps the other pane's entry intact when a sheet's refused Back does not return", async () => {
+  Object.defineProperty(window, "navigation", { value: { get currentEntry() { return { key: String(index) }; } } });
+  await mount([P1, P2]);
+  sheetStep = true;
+  await back();
+  sheetStep = false;
+  expect(asked).toEqual([]);
+  expect(window.location.search).toBe(P1);
+
+  await act(async () => { place.snapshot = roster(); draw(); });
+
+  expect(writes).toEqual([]);
+  expect(addresses()).toEqual([P1, P2]);
+  await forward();
+  expect(addresses()).toEqual([P1, P2]);
+});
+
+it("writes the file URL on a new entry after a sheet's refused Back does not return", async () => {
+  Object.defineProperty(window, "navigation", { value: { get currentEntry() { return { key: String(index) }; } } });
+  await mount([P1, P2]);
+  sheetStep = true;
+  await back();
+  sheetStep = false;
+  expect(window.location.search).toBe(P1);
+  const preview = { path: "README.md", paneId: "p2", machineId: "local" };
+  await act(async () => {
+    window.history.pushState({ [FILE_PREVIEW_KEY]: preview }, "");
+    place.viewing = preview;
+    draw();
+  });
+  expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
+});
+
 it("holds nothing once the dispatch is over, though the handler never heard the pop", async () => {
   await mount([P1, P2]);
   waiting = () => { place.snapshot = roster(); };
