@@ -275,6 +275,9 @@ async function carriedPcGetsKeys(by: "ovis add" | "window"): Promise<void> {
   service.opensAll = true;
   service.listAccounts = "*";
   service.listMigrateAccounts = ACCOUNT;
+  // the clock stands still while the PC steps its add with no pause, so how many list calls it makes in the service's
+  // "minute" depends only on how the two sides interleave (24 to 32 in a run): the per-PC budget is not what this measures
+  service.listLimits.pcCallsPerMinute = Number.MAX_SAFE_INTEGER;
   const { fixture } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountListAddPollMs: 0, accountService: { url: "https://account.test", fetch: service.fetch } });
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
