@@ -146,9 +146,11 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     await account.addPostedPc(made.endpoint);
     expect(await made.state()).toMatchObject({ state: "added" });
     await until(() => completed.length > 0, "No completion was sent");
-    // once, with the listing the pull named: the account's page stops showing the PC as only listed
+    // once, with the listing the pull named, and the account service takes it (its pull is the listing's evidence): the
+    // account's page stops showing the PC as only listed
     expect(completed).toHaveLength(1);
     expect(named).toContain(completed[0]!);
+    await until(() => made.pc.account.pcs(ACCOUNT).find((row) => row.listing_id === completed[0])?.completed_at != null, "The completion was not taken");
     expect(made.pc.account.requests.some((line) => line.includes("/v1/pc/admission"))).toBe(false);
   });
 
@@ -629,14 +631,12 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
     const account = await TestList.start(made.pc.account, ACCOUNT);
     const line = await redeemed(made, await account.invite({ auto: false }));
     const named = { account: ACCOUNT, list: account.id, invite: line.key };
-    // What the PC posts with its keys. This branch's fake service predates the two members the PC adds to the post:
-    // they are read here, and the post is passed on without them
+    // What the PC posts with its keys, the two members it adds included, which the fake service checks as the account
+    // service does
     const posts: Record<string, unknown>[] = [];
     made.hook.on = async (request, forward) => {
-      if (new URL(request.url).pathname !== "/v2/pc/list/keys") return await forward();
-      const { invite, invite_proof, ...rest } = await request.json() as Record<string, unknown>;
-      posts.push({ ...rest, invite, invite_proof });
-      return await made.pc.account.fetch(new Request(request.url, { method: "POST", headers: request.headers, body: JSON.stringify(rest) }));
+      if (new URL(request.url).pathname === "/v2/pc/list/keys") posts.push(await request.clone().json() as Record<string, unknown>);
+      return await forward();
     };
     // the line names the list, so its holder shows that it holds it: the PC hands over its card for the line to sign
     const asked = await made.post("/api/account/list/join", named);
@@ -667,10 +667,11 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
     const named = { account: ACCOUNT, list: account.id, invite: line.key };
     const posts: Record<string, unknown>[] = [];
     made.hook.on = async (request, forward) => {
-      if (new URL(request.url).pathname !== "/v2/pc/list/keys") return await forward();
-      const { invite, invite_proof, ...rest } = await request.json() as Record<string, unknown>;
-      posts.push({ invite, invite_proof });
-      return await made.pc.account.fetch(new Request(request.url, { method: "POST", headers: request.headers, body: JSON.stringify(rest) }));
+      if (new URL(request.url).pathname === "/v2/pc/list/keys") {
+        const { invite, invite_proof } = await request.clone().json() as Record<string, unknown>;
+        posts.push({ invite, invite_proof });
+      }
+      return await forward();
     };
     const { card } = (await made.post("/api/account/list/join", named)).body as unknown as { card: LineProof["card"] };
     const proof = await line.signLineProof({ server_id: made.serverId, card });

@@ -3,7 +3,7 @@ import nacl from "tweetnacl";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { canonicalBase64Url, entryFromText, entryHash, entryToText, readBody, signEntry, verifySignature, type EntryBody } from "./account-list-entry.ts";
 import { kindBody, replayList, shownList, signCard, type ListKind, type Sealed } from "./account-list.ts";
-import { inviteRedeemBytes } from "./account-list-invite.ts";
+import { inviteRedeemBytes, lineChallenge, lineProofBytes } from "./account-list-invite.ts";
 import { linkBytes } from "./account-list-migrate.ts";
 import type { ListPlace } from "./account-list-signers.ts";
 import { newRecordId, pcAddSigningBytes, signSafetyRecord, type PcAddPurpose } from "./account-records.ts";
@@ -247,6 +247,18 @@ async function birthOf(w: World, first: Key, next: Key, carried: readonly ListKi
   const list = zero.head.hash;
   const run = await chain(list, zero.head, [...carried.map((kind) => [first, kind] as const), [first, await deviceOf(next, list, true)], [next, epochOf(0)]], w.seconds());
   return { list, entry: zero.text, entries: run.texts, head: run.head };
+}
+
+/** The line's proof a PC that joined by a plain invite posts with its keys: the line key's signature over lineProofBytes for its card. */
+async function lineProof(list: string, pc: Machine, card: Key, line: Key, account = ACCOUNT): Promise<string> {
+  const bytes = lineProofBytes({ account, server_id: pc.serverId, list, card: { key: card.key, enc: card.enc, endpoint: pc.endpoint } });
+  return toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, line.pair.privateKey, bytes)));
+}
+
+/** A redeem signature by the line over the line challenge of a card, which a lying service can ask a line for: never a line's proof. */
+async function redeemOverLineChallenge(list: string, pc: Machine, card: Key, line: Key): Promise<string> {
+  const bytes = inviteRedeemBytes({ account: ACCOUNT, server_id: pc.serverId, public_key: pc.endpoint, challenge_id: lineChallenge(list, { key: card.key, enc: card.enc, endpoint: pc.endpoint }) });
+  return toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, line.pair.privateKey, bytes)));
 }
 
 const rowOf = <Row>(rows: { readonly [name: string]: Row }, name: string): Row | undefined => (Object.hasOwn(rows, name) ? rows[name] : undefined);
@@ -1909,6 +1921,91 @@ describe("the fake account service's list routes (Part D)", () => {
       // once the phone's own sign-in no longer passes Step 2, nobody up the chain does
       w.service.removeDevice(ACCOUNT, phone.key);
       expect((await snapshotOf(w, pc)).eligible[tabletReg.key]).toBe(false);
+    });
+  });
+
+  describe("a list account's PC completes its listing", () => {
+    test("on its own mailbox pull, as the service accepts any confirmed listing a PC pulled since: a list hands out no admission to take", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      await w.start();
+      const complete = async (pc: Machine, listing: string) => {
+        const scope = { account: ACCOUNT, listing_id: listing };
+        const challenge = await (await w.service.fetch(new Request(`${BASE}/v1/pc/challenge`, { method: "POST", body: JSON.stringify({ server_id: pc.serverId, public_key: pc.endpoint, completion: scope }) }))).json() as { challenge_id: string; frame: string };
+        const answer = answerServerChallenge(challenge.frame, pc.keys.secretKey, { server_id: pc.serverId, role: "account", connection_id: `pc-complete/1:${ACCOUNT}:${listing}:${challenge.challenge_id}` });
+        return await w.call("POST", "/v1/pc/complete", { server_id: pc.serverId, ...scope, challenge_id: challenge.challenge_id, proof: answer });
+      };
+      const pullListing = async (pc: Machine) => (await (await w.service.fetch(new Request(`${BASE}/v1/pc/mailbox`, { method: "POST",
+        body: JSON.stringify({ ...(await proof(w, pc)), ack: null, account: ACCOUNT, with_listing_id: true }) }))).json() as { listing_id: string | null }).listing_id;
+      const listingOf = (pc: Machine) => w.service.pcs(ACCOUNT).find((row) => row.server_id === pc.serverId)!.listing_id!;
+      const pc = machine();
+      await listPc(w, pc);
+      // before its first pull, with no admission to take, nothing is the listing's evidence
+      expect(refusal(await complete(pc, listingOf(pc)))).toBe("409 listing_changed");
+      expect(refusal(await pcCall(w, pc, "/v1/pc/admission", { account: ACCOUNT }))).toBe("404 no_admission");
+      expect(await pullListing(pc)).toBe(listingOf(pc));
+      expect((await complete(pc, listingOf(pc))).status).toBe(200);
+      // a listing a device code made that nobody confirmed completes on no pull
+      const typed = machine();
+      await listPc(w, typed, w.service.issueToken(ACCOUNT, { device: true }));
+      expect(await pullListing(typed)).toBeNull();
+      expect(refusal(await complete(typed, listingOf(typed)))).toBe("409 listing_changed");
+    });
+  });
+
+  describe("the plain invite's line proof on a PC's post", () => {
+    /** A list that holds a plain invite of `line`, and a PC the account lists, with the keys it posts. */
+    async function withPlainInvite() {
+      const w = await world();
+      const { list, head } = await w.start();
+      const line = await newKey();
+      const invited = await chain(list, head, [[w.owner, inviteOf(line, w.seconds() + 600, false, 1, null)]], w.seconds());
+      expect((await w.place(list, invited.texts)).status).toBe(200);
+      const pc = machine();
+      await listPc(w, pc);
+      const key = await newKey();
+      const post = async (more: Record<string, unknown> = {}) => pcCall(w, pc, "/v2/pc/list/keys", { list, key: key.key, enc: key.enc, card: await cardOf(key, list, pc.endpoint), ...more });
+      const posts = async () => ((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts ?? []) as unknown as Record<string, unknown>[];
+      return { w, list, head: invited.head, line, pc, key, post, posts };
+    }
+
+    test("a PC posts its keys with the plain invite's key and the line's proof: carried on the post and shown to the account's devices; a post without them clears them", async () => {
+      const { list, line, pc, key, post, posts } = await withPlainInvite();
+      const proof = await lineProof(list, pc, key, line);
+      const posted = await post({ invite: line.key, invite_proof: proof });
+      expect([posted.status, posted.body.key]).toEqual([200, key.key]);
+      expect(await posts()).toEqual([expect.objectContaining({ endpoint: pc.endpoint, key: key.key, invite: line.key, invite_proof: proof })]);
+      expect((await post()).status).toBe(200);
+      const plain = await posts();
+      expect([plain.length, Object.hasOwn(plain[0] ?? {}, "invite"), Object.hasOwn(plain[0] ?? {}, "invite_proof")]).toEqual([1, false, false]);
+    });
+
+    test("the invite and its proof go together, in their forms; an invite the list does not hold open is invite_not_in_list; a proof not the line's is invite_proof_invalid; nothing is posted", async () => {
+      const { w, list, head, line, pc, key, post, posts } = await withPlainInvite();
+      const proof = await lineProof(list, pc, key, line);
+      for (const over of [{ invite: line.key }, { invite_proof: proof }, { invite: "not a key", invite_proof: proof }, { invite: line.key, invite_proof: 7 }]) {
+        expect([Object.keys(over), refusal(await post(over))]).toEqual([Object.keys(over), "400 invalid_request"]);
+      }
+      const stranger = await newKey();
+      expect(refusal(await post({ invite: stranger.key, invite_proof: await lineProof(list, pc, key, stranger) }))).toBe("409 invite_not_in_list");
+      const other = await newKey();
+      const proofs = {
+        "another key's": await lineProof(list, pc, key, other),
+        "another PC's": await lineProof(list, machine(), key, line),
+        "another account's": await lineProof(list, pc, key, line, "acct_2"),
+        "another card's": await lineProof(list, pc, other, line),
+        // a lying service hands the line the challenge of a card of its own as a redeem challenge: that signature is no proof
+        "a redeem signature over another card's line challenge": await redeemOverLineChallenge(list, pc, other, line),
+        "a redeem signature over this card's line challenge": await redeemOverLineChallenge(list, pc, key, line),
+        "86 characters of junk": "A".repeat(86),
+      };
+      for (const [why, bad] of Object.entries(proofs)) expect([why, refusal(await post({ invite: line.key, invite_proof: bad }))]).toEqual([why, "400 invite_proof_invalid"]);
+      expect(await posts()).toEqual([]);
+      // the invite put out of the list by a member
+      const out = await chain(list, head, [[w.owner, removeOf(line)]], w.seconds());
+      expect((await w.place(list, out.texts)).status).toBe(200);
+      expect(refusal(await post({ invite: line.key, invite_proof: proof }))).toBe("409 invite_not_in_list");
+      expect(await posts()).toEqual([]);
     });
   });
 

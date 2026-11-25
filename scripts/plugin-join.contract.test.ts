@@ -128,14 +128,14 @@ test("an auto invite: the PC is in the account at once, with no Add", async () =
 
 /** A PC whose account keeps a signed list, and that list as its members write it. */
 async function listed() {
-  // What the PC posts with its keys. This branch's fake service predates the two members a PC that joined by a plain
-  // invite adds to its post (`invite`, `invite_proof`): they are kept here, and the post is passed on without them
+  // What the PC posts with its keys, with the two members a PC that joined by a plain invite adds (`invite`,
+  // `invite_proof`), which the fake service checks as the account service does
   const posts: { invite?: unknown; invite_proof?: unknown; key?: unknown; enc?: unknown }[] = [];
   const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" }, accountFetch: async (request, service) => {
     if (new URL(request.url).pathname !== "/v2/pc/list/keys") return await service.fetch(request);
-    const { invite, invite_proof, ...rest } = await request.json() as Record<string, unknown>;
-    posts.push({ invite, invite_proof, key: rest.key, enc: rest.enc });
-    return await service.fetch(new Request(request.url, { method: "POST", headers: request.headers, body: JSON.stringify(rest) }));
+    const { invite, invite_proof, key, enc } = await request.clone().json() as Record<string, unknown>;
+    posts.push({ invite, invite_proof, key, enc });
+    return await service.fetch(request);
   } });
   made.account.opensAll = true;
   made.account.listAccounts = "*";

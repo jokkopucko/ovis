@@ -2182,6 +2182,17 @@ every route in use.
   The fake only carries them, as the service does. Openings are counted per PC endpoint and
   account, six in ten minutes, whichever post or keys they were for; only a call that opens one
   counts.
+- **A PC that joined by a plain invite's line** posts `invite` and `invite_proof` with its keys: the
+  line's proof for the card it posts (`lineProofBytes`, under `ovis-list-line/1`, checked with
+  `verifyLineProof` of `shared/account-list-invite.ts`; a redeem signature is never one). Both or
+  neither (`400 invalid_request`); an invite the list does not hold open is
+  `409 invite_not_in_list`; a proof that does not verify is `400 invite_proof_invalid`.
+  `GET posts` shows both on that post only, and a later post without them clears them. The
+  account's devices check the proof themselves.
+- **A PC completes its listing** (`POST /v1/pc/complete`) when the listing is current and
+  confirmed and has evidence of its own: completed already, a mailbox pull of that PC since the
+  listing was made, a digit admission, or a one-press admission it took. So a PC of an account
+  that has a list, which takes no admission (`list_add`), completes on its own pull.
 - **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
   the first at the head (`409 head_moved` names the head; a batch already in the log text for text
   is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library
