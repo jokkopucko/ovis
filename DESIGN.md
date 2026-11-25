@@ -1811,6 +1811,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   workspace, tab and pane order. **Activity** pins a blocked agent on top and orders the rest by
   their most recent state change (herdr's `state_change_seq`, read from the snapshot's `agents`),
   within each PC, so the agent just worked in stays on top while it runs and after it finishes.
+  Under Activity, **Across PCs** (off by default, shared by every browser) orders the agents of
+  every PC together. Each PC's herdr counts from an origin of its own, so two PCs' counters are
+  never compared: the server stamps each agent's state change with its own clock
+  (`changed_at`, `server/agent-changes.ts`) and keeps the times in `agent-changes.json`, so a
+  reload or a restart keeps the order and every browser shows the same one. A change made while
+  the server was away or the PC unreachable is dated when its raised counter is first seen again;
+  an agent with no time yet keeps its PC's own Activity order after the dated ones. Do not order
+  PCs by their counters, and do not keep this order in the browser: a reload loses it, and two
+  browsers disagree.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.

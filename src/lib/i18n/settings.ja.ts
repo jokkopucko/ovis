@@ -265,6 +265,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.": "再起動してから Ovis が応答しません。少ししてからこのページを再読み込みし、それでも応答がなければこの PC で Ovis を起動し直してください。",
   "Only those words are kept, on this server, until the tab closes; turning this off deletes them.": "保存するのはその数語だけで、タブを閉じるまでこのサーバーに残り、オフにすると削除されます。",
   "Within a state": "同じ状態の中で",
+  "Across PCs": "PC をまたいで",
+  "Order the agents of every PC together, by when this server saw each one change. Off: each PC's agents stay together.": "すべての PC のエージェントを、このサーバーがそれぞれの変化を見た時刻の順にまとめて並べます。オフ: 各 PC のエージェントはまとまったままです。",
   "Longest wait": "待ち時間順",
   "Also send to": "ほかの送り先",
   "Bot token": "ボットトークン",

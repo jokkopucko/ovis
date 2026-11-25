@@ -20,6 +20,16 @@ function snapshotFixture(): SessionSnapshot {
 }
 
 describe("applyPaneStatus", () => {
+  it("takes the server's change time from a frame that has one, and keeps it through frames that do not", () => {
+    const current = snapshotFixture();
+    const changed = applyPaneStatus(current, "w1:p1", "done", undefined, false, undefined, undefined, undefined, undefined, 2_000);
+    expect(changed.panes[0]?.changed_at).toBe(2_000);
+    // a frame that only carries a context names no time: the pane keeps the one it has
+    const context = applyPaneStatus(changed, "w1:p1", "done", undefined, false, undefined, undefined, undefined, { used: 5, window: 10 });
+    expect(context.panes[0]?.changed_at).toBe(2_000);
+    expect(applyPaneStatus(context, "w1:p1", "working", undefined, false, undefined, undefined, undefined, undefined, 3_000).panes[0]?.changed_at).toBe(3_000);
+  });
+
   it("carries new finish IDs even when status is unchanged and invalidates other panes on epoch change", () => {
     const current = snapshotFixture();
     current.finish_epoch = "old";

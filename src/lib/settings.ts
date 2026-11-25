@@ -75,6 +75,8 @@ export interface Settings {
   sidebarAgentTree: boolean;
   pcLoad: boolean | null;
   agentOrder: AgentOrder;
+  /** Activity sorts the agents of every PC together, by the server's change times (lib/agentRoster.ts); off, each PC's own */
+  agentOrderAcrossPcs: boolean;
   agentGroups: boolean;
   agentGroupSort: AgentGroupSort;
   agentMarks: AgentMarks;
@@ -214,7 +216,7 @@ type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "builtInBrowser" | "browserBlockedSites" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
-  | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "agentOrderAcrossPcs" | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
@@ -282,7 +284,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
 }
 
 export const SETTING_SCOPE = {
-  theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
+  theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared", agentOrderAcrossPcs: "shared",
   agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", ompHeldFiles: "shared", restoreReplacedServer: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared", builtInBrowser: "shared", browserBlockedSites: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
@@ -342,6 +344,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarAgentTree: false,
   pcLoad: null,
   agentOrder: "waiting",
+  agentOrderAcrossPcs: false,
   agentGroups: false,
   agentGroupSort: "wait",
   agentMarks: "color",
@@ -547,6 +550,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     sidebarAgentTree: typeof record["sidebarAgentTree"] === "boolean" ? record["sidebarAgentTree"] : DEFAULT_SETTINGS.sidebarAgentTree,
     pcLoad: typeof record["pcLoad"] === "boolean" ? record["pcLoad"] : null,
     agentOrder: record["agentOrder"] === "waiting" || record["agentOrder"] === "workspace" || record["agentOrder"] === "activity" ? record["agentOrder"] : DEFAULT_SETTINGS.agentOrder,
+    agentOrderAcrossPcs: typeof record["agentOrderAcrossPcs"] === "boolean" ? record["agentOrderAcrossPcs"] : DEFAULT_SETTINGS.agentOrderAcrossPcs,
     agentGroups: typeof record["agentGroups"] === "boolean" ? record["agentGroups"] : DEFAULT_SETTINGS.agentGroups,
     agentGroupSort: AGENT_GROUP_SORTS.includes(record["agentGroupSort"] as AgentGroupSort) ? record["agentGroupSort"] as AgentGroupSort : DEFAULT_SETTINGS.agentGroupSort,
     agentMarks: record["agentMarks"] === "color" || record["agentMarks"] === "mono" ? record["agentMarks"] : DEFAULT_SETTINGS.agentMarks,

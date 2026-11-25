@@ -265,6 +265,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.": "다시 시작한 뒤로 Ovis가 응답하지 않습니다. 잠시 뒤 이 페이지를 새로 고치고, 그래도 응답이 없으면 이 PC에서 Ovis를 다시 실행하세요.",
   "Only those words are kept, on this server, until the tab closes; turning this off deletes them.": "그 몇 단어만 탭이 닫힐 때까지 이 서버에 보관하며, 끄면 삭제됩니다.",
   "Within a state": "같은 상태 안에서",
+  "Across PCs": "PC 전체에서",
+  "Order the agents of every PC together, by when this server saw each one change. Off: each PC's agents stay together.": "모든 PC의 에이전트를 이 서버가 각 에이전트의 변화를 본 시점 순으로 함께 정렬합니다. 끄면 각 PC의 에이전트가 함께 모여 있습니다.",
   "Longest wait": "오래 기다린 순",
   "Also send to": "외부 앱으로 알림 보내기",
   "Bot token": "봇 토큰",

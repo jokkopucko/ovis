@@ -250,10 +250,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // which `$name` tokens herdr's own sidebar draws, from this server's herdr config (server/herdr-sidebar.ts)
   const rowTokens = useSyncExternalStore(subscribeAgentRowTokens, currentAgentRowTokens, currentAgentRowTokens);
   const activity = useSidebarActivity();
-  // Settings → Agents order: herdr's order, or Activity within each PC (each herdr counts its own changes);
-  // the pinned rows stand first, in the order they were pinned (lib/agentRoster.ts)
+  // Settings → Agents order: herdr's order, or Activity within each PC or across PCs (lib/agentRoster.ts);
+  // the pinned rows stand first, in the order they were pinned
   const byActivity = settings.agentOrder === "activity" && !settings.agentGroups;
-  const roster = useMemo(() => agentRoster(machines, { byActivity, seqs: activity.seqs, pinned }), [machines, byActivity, activity, pinned]);
+  const roster = useMemo(() => agentRoster(machines, { byActivity, acrossPcs: settings.agentOrderAcrossPcs, seqs: activity.seqs, pinned }), [machines, byActivity, settings.agentOrderAcrossPcs, activity, pinned]);
   const allRows = useMemo(() => [...roster.pinned, ...roster.rest], [roster]);
   const { filter } = useSidebarFilter();
   const split = useMemo(() => {

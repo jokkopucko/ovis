@@ -3,7 +3,7 @@ import type { AgentStatus, HerdrPane, PaneContext, PlanSummary, SessionSnapshot 
 const samePlan = (a: PlanSummary | undefined, b: PlanSummary | undefined): boolean =>
   a === b || (a !== undefined && b !== undefined && a.done === b.done && a.total === b.total && a.current === b.current);
 
-export function applyPaneStatus(snapshot: SessionSnapshot, paneId: string, status: AgentStatus, background?: number, waiting = false, plan?: PlanSummary | null, finishId?: number, finishEpoch?: string, context?: PaneContext | null): SessionSnapshot {
+export function applyPaneStatus(snapshot: SessionSnapshot, paneId: string, status: AgentStatus, background?: number, waiting = false, plan?: PlanSummary | null, finishId?: number, finishEpoch?: string, context?: PaneContext | null, changedAt?: number): SessionSnapshot {
   const epochChanged = snapshot.finish_epoch !== finishEpoch;
   let paneChanged = epochChanged;
   const panes = snapshot.panes.map((pane: HerdrPane) => {
@@ -15,10 +15,12 @@ export function applyPaneStatus(snapshot: SessionSnapshot, paneId: string, statu
     const tasks = background === undefined ? pane.background_tasks : background > 0 ? background : undefined;
     const progress = plan === undefined ? pane.plan : plan ?? undefined;
     const filled = context === undefined ? pane.context : context ?? undefined;
-    if (pane.agent_status === status && pane.finish_id === finishId && pane.background_tasks === tasks && (pane.background_wait === true) === waiting && samePlan(pane.plan, progress) && pane.context?.used === filled?.used && pane.context?.window === filled?.window) return pane;
+    // a frame without a time keeps the pane's: only a frame that changes the status names one
+    const changed = changedAt ?? pane.changed_at;
+    if (pane.agent_status === status && pane.changed_at === changed && pane.finish_id === finishId && pane.background_tasks === tasks && (pane.background_wait === true) === waiting && samePlan(pane.plan, progress) && pane.context?.used === filled?.used && pane.context?.window === filled?.window) return pane;
     paneChanged = true;
     const { background_tasks: _before, background_wait: _waited, plan: _plan, context: _context, finish_id: _finish, ...rest } = pane;
-    return { ...rest, agent_status: status, ...(finishId === undefined ? {} : { finish_id: finishId }), ...(tasks === undefined ? {} : { background_tasks: tasks }), ...(waiting ? { background_wait: true as const } : {}), ...(progress === undefined ? {} : { plan: progress }), ...(filled === undefined ? {} : { context: filled }) };
+    return { ...rest, agent_status: status, ...(changed === undefined ? {} : { changed_at: changed }), ...(finishId === undefined ? {} : { finish_id: finishId }), ...(tasks === undefined ? {} : { background_tasks: tasks }), ...(waiting ? { background_wait: true as const } : {}), ...(progress === undefined ? {} : { plan: progress }), ...(filled === undefined ? {} : { context: filled }) };
   });
   if (!paneChanged) return snapshot;
   const agents = snapshot.agents.map((agent) =>
