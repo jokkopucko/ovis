@@ -2179,9 +2179,12 @@ a signed `remove` and a signed block apply. Where it adds, it does not: a signed
   takes entries any device hands it over its session, since entries prove themselves
   (`POST /api/account/list/head`, `POST /api/account/list/page`): a device says where it stands,
   the PC says where it stands, and the device hands the PC the entries after that place. So a
-  removal one device holds reaches every PC that device opens, whatever the service shows. Until a
-  device that holds it opens the PC, a removed device still opens a pinned PC that has not been
-  shown its removal.
+  removal one device holds reaches every PC that device opens, whatever the service shows: at once
+  over a session that is open when the device places it, and at the start of every later session
+  ([Meeting a PC](account-list.md#meeting-a-pc)). Until a device that holds it opens the PC, a
+  removed device still opens a pinned PC that has not been shown its removal. The other way round,
+  a PC hands a device the entries the service withholds from that device, and two histories that
+  members signed raise the alarm on both sides once they meet.
 - **Deny.** It can answer nothing, and it can keep a new device or a new PC from being added.
 - **See.** It sees how many devices and PCs an account has and when each came and went, and not what
   they are called.

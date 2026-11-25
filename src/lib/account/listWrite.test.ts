@@ -186,3 +186,23 @@ describe("a signed request that still waits, and another change", () => {
     expect(await removeListPc(again.first.list, again.pc.endpoint, noWait)).toEqual({ removed: true });
   });
 });
+
+describe("a write called off", () => {
+  it("sends nothing once called off while it looked for an alarm right before the send", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const desk = await addListPc(w, first, "Desk");
+    const before = placements(first).length;
+    const off = new AbortController();
+    let looks = 0;
+    // the second look is the one right before the request goes: the person cancels while it reads the saved copy
+    const writer = () => {
+      const real = first.list.writer();
+      return real === null ? null : { ...real, live: async () => { looks += 1; const live = await real.live(); if (looks === 2) off.abort(); return live; } };
+    };
+    const writing = removeListPc(first.list, desk.endpoint, { ...noWait, writer, signal: off.signal });
+    expect(await writing.then(() => "went", (error: unknown) => error instanceof DOMException ? error.name : "other")).toBe("AbortError");
+    expect([looks, placements(first).length]).toEqual([2, before]);
+  });
+});

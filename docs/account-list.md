@@ -1963,6 +1963,79 @@ How often the device asks while it gets no list:
   the service named another list or none and did not answer for the device's own log;
 - never while signed out.
 
+### Meeting a PC
+
+From the moment the app owns an authenticated session with a PC that selected the account's list
+for it (it is pinned to its list, [Two members meet](#two-members-meet)), whatever screen shows
+(Ready, an update the PC needs, the PC's own pages), the device and the PC say where they stand,
+and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account/list/head` and
+`POST /api/account/list/page`):
+
+- at once, at every new carrier of the session (each is a new session at the PC, whose selected
+  features are known before anyone is told the carrier is up), whenever the device's own copy moves
+  its head, and every five minutes while the session is up. So a removal this device places
+  reaches the open PC at once, and one the account service withholds from a PC reaches it the next
+  time any device of the account that holds it opens that PC;
+- the device says its footing; what the PC answers of its own entries (`page`) is taken by the
+  device's follower as a page from a peer (`takeFromPeer`: never a full read, saved under the
+  account's lock as a round saves, and installed only while the sign-in it was begun under is the
+  stored one); what the PC asks for (`asks`) is handed over, once an exchange, following every
+  place the PC asks for next: a later one where it took a page in part, an earlier one where it
+  looks for where two histories part, until it asks for a place it was handed already. Where the PC
+  asks for a place past the footing it names beside it (an entry no member signed stands above its
+  footing, which the service may have shown it), the device hands from that footing, so a stranger's
+  entry keeps no removal from the PC. Entries are handed only to a PC this device's copy holds or
+  held; one that merely names the list's id is told where the device stands and handed nothing;
+- the session belongs to the account, the list and the member key its list key was taken for (a
+  session opened with the list key), or else of its first exchange: while the page's list is
+  another one (another account signed in on this browser in another tab, or this device back with
+  another key), the PC is told nothing of it, the app says nothing of that PC by it (no "removed
+  from the account"), and once that list is back the exchanges go on. This is looked at before
+  every call and after every answer: an exchange under way when the page's list changes stops
+  there, and takes or hands nothing more. So does one under way when its session is no longer the
+  app's, when the device stops comparing with that PC, or when a new carrier comes up: its call is
+  called off, and what a late answer brings is neither taken nor followed. The PC, for its part,
+  asks for entries from its footing, never from an entry no member signed above it;
+- where the device needs the PC's entries after another place (the PC holds more, another entry at
+  a place the device holds, or the device looks for where two histories part), it asks for them in
+  the head call (`asks`), and judges what comes back. The PC answers that read only to a key its
+  list lets in. Two histories that members signed raise the alarm on both sides; one that holds
+  only what its writer left behind raises it on the side that is shown the other;
+- at most 24 of the two calls a minute of one PC and the key it let the device in by, and a
+  `429`'s wait, kept for that PC and key in the browser's storage, so every tab and every
+  reopening of the PC draws on the same budget (the PC counts 30 by that key, in memory); a wait
+  lasts no longer than the PC asked for, whatever the wall clock does, and is armed in pieces of
+  five minutes at most. Where the browser's storage takes no write, the page goes by its own record
+  until it does. What a minute's calls or a `429` did not finish (the device's read, or the PC's
+  next asked place) goes on as soon as the budget has room again, from where it got to, while the
+  device stands where it stood;
+- one answer is read up to 512 KiB and for 10 seconds, an error's body included; a longer or a
+  slower one ends the exchange;
+- a page whose save fails is acted on from memory all the same (a removal stands at once), is not
+  said to be taken, and the next round writes it first. Where another tab saved meanwhile, what this
+  tab verified (the entries, an alarm) is taken into what that tab saved before anything is shown,
+  from the last entry a member signed in it: entries no member signed above it, which the service may
+  have shown that tab, give way to what this tab verified.
+
+**A PC the list puts out while it is open.** The device ends its own use of it at once (the PC's
+pages go, the session is no longer the app's, and an exchange of that use under way stops), and
+over the session it still has makes one attempt of three seconds at most to hand that PC its
+removal, then closes the session: it waits within those seconds for a carrier that is down, draws
+on what is left of the PC's own 30 calls of the minute, takes nothing from that PC (a PC known to be
+out raises no alarm here), and hands nothing where the page's list never held that PC, or stands
+for another account, list or member key by the time the carrier is back. The attempt can fail: the
+carrier stays down, the PC does not answer in time, or the minute's calls are spent. The PC then
+learns of its removal only from the account service, or from a member that hands it over at a later
+session; where the service withholds it too, the PC does not know it is out until then.
+
+**An alarm ends every write.** From the moment the device's copy holds an alarm, in this tab or as
+another tab of the device saved it, nothing it signs is kept or sent: an Allow that was waiting for
+a claim, a change that was waiting for an answer, a request kept from before.
+
+Nothing is asked of a PC that follows no list (it did not select the list for the session), and
+nothing by a device that follows none: an account with no list sends no request and no frame it
+did not send before. Entries prove themselves, so neither side is trusted for who is in.
+
 ### What the device says is wrong
 
 Each of these is a state the app can show. None takes anybody out of the copy, and none lets
@@ -1970,7 +2043,7 @@ anybody in.
 
 | state | when |
 |---|---|
-| `fork` | the account service showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found |
+| `fork` | the account service, or a PC this device met, showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found, and signs nothing |
 | `stuck` | the account service shows another history under what the device holds, which no member signed |
 | `other_list` | the account service names another list for the account than the one the device follows |
 | `refused` | the log holds an entry that does not hold: a changed byte, a broken chain |
@@ -1980,6 +2053,22 @@ anybody in.
 
 A name that does not open for another reason (no wrap yet, a wrap that was spoiled on the way) is
 a device or a PC without a name, and no state: it is no evidence of anything.
+
+**The alarm on the screen.** A device whose copy holds `fork` says so in a part of its own at the
+top of Manage account's lists, and in one line on My PCs that points there: **Two different
+histories of your account's list were seen**. It names no device or PC as the cause. It says that
+the devices and PCs already in keep working and that this device lets nobody new in while it
+shows, and it gives the way back of [What a person does](#two-histories), one device or PC at a
+time: reset one (a device: Sign out, sign in again and be allowed from another device or PC, then
+remove its old listing there; a PC: Revoke all, then add it again), look at what it shows and
+remove what is not the person's at that same device or PC, check it is gone there before the next,
+and stop where two of them still differ. A device is reset by Sign out, not Disconnect: Disconnect
+signs the device's own removal first, which the alarm refuses, so it never finishes while the alarm
+stands, while Sign out signs nothing, ends the sign-in and forgets the key and the copy. The old key
+stays in the list until a member that shows no alarm removes it, as the one that let the device in
+again can; the message after that sign-out says so in the same order. A pinned PC says the same in its own words, in `reason` of
+`GET /api/account/list` and in the account's status, which `ovis status --json` shows as
+`list.reason`.
 
 ### What the app reads
 
@@ -2001,7 +2090,8 @@ once it goes by the list:
   on (the device's state, its keys, the epoch keys it holds), or none for a device that may not
   sign. A device of power `bound` has one only for the removal of its own key
   (`writer({ self: true })`), which the signers' rules let any signer write. `gossip()` and `pageAfter(place, limit)`: where the device stands, and its entries after a
-  place, for another member.
+  place, for another member. `compare(head)` and `takeFromPeer(page, read)`: how the device
+  stands against a PC's head, and a page that PC handed it ([Meeting a PC](#meeting-a-pc)).
 - `subscribe`, `sync` (one read now), `due` (when the next read is due), `forget` (a person's reset).
 
 ### Compared with the directory

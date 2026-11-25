@@ -4,6 +4,7 @@ import type { PendingPushStore } from "../push.ts";
 import type { AccountList } from "../account/accountList.ts";
 import type { AppPlatform } from "../appShell.ts";
 import type { AccountKey, AccountStore } from "../account/store.ts";
+import type { WriteScope } from "../account/listRemoveDevice.ts";
 import type { EnrollmentState, ShellDeviceStore } from "./device.ts";
 import type { openRelayTransport } from "./transport.ts";
 import type { checkPc } from "./pcStatus.ts";
@@ -297,6 +298,8 @@ export interface Attempt {
    * before are tried
    */
   readonly listOpen?: AccountKey;
+  /** the account, the list and the key in it that `listOpen` was taken for, read with it: the session's list exchanges are for them alone */
+  readonly listFor?: WriteScope;
   /** this attempt came back from a refusal that told it to come by the list key, or by the key from before: it is not sent round again */
   readonly retriedListOpen?: true;
   readonly retriedAccountOpen?: true;

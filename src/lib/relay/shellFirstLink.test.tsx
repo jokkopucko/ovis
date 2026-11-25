@@ -192,7 +192,7 @@ describe("the admission before a first link", () => {
     const pcCard = pcKeys === null ? null : await signCard({ key: pcKeys.key, enc: pcKeys.enc, list: LIST, endpoint, invite: null }, pcKeys.signs);
     const accountList: AccountList | undefined = !options.namedList && !options.namedUnread ? undefined : {
       sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null, shown: () => Math.floor(Date.now() / 1000),
-      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
+      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, compare: () => null, takeFromPeer: async () => null, knowsPc: () => false,
       kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
       // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
       writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki },

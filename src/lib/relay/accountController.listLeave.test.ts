@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { listView, signListEntry } from "../../../shared/account-list.ts";
-import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
+import { kindBody, listView, signListEntry } from "../../../shared/account-list.ts";
+import { entryFromText, entryHash, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
+import { ATTEMPT_ENTRIES_MAX } from "../../../shared/account-list-follower.ts";
 import { addListPc, listWorld, type WorldDevice } from "../account/accountList.test-helpers.ts";
 import { allowDevice } from "../account/listAllow.ts";
 import { accountList, type AccountList, type AccountListView } from "../account/accountList.ts";
@@ -300,6 +301,38 @@ describe("the hosted shell and a device's place in its account's signed list", (
     if (shown.scope === null) throw new Error("the page does not show the first account's list");
     return { w, device, other, shell, shown, theirs: w.fake.accountList("acct_other")!.entries.length };
   }
+
+  it("under the fork alarm, Sign out still ends the sign-in and forgets the key and the copy, signing nothing: the alarm's way back starts there", async () => {
+    const { w, first, second } = await twoDevices();
+    const keys = await first.keys();
+    const own = (await second.keys()).key;
+    const { id } = w.held();
+    // a member signed another history from entry 1 while the list went on: the service shows this device the other one
+    const fork: string[] = [];
+    for (let head = { seq: 0, hash: id }; fork.length <= ATTEMPT_ENTRIES_MAX;) {
+      const endpoint = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const text = entryToText(await signEntry(kindBody({ issued_at: Math.floor(w.clock.now / 1000), list: id, prev: head.hash, seq: head.seq + 1, signer: keys.key }, { kind: "carried", endpoint, sealed: null }), keys.signs));
+      fork.push(text);
+      head = { seq: head.seq + 1, hash: entryHash(entryFromText(text).body) };
+    }
+    await addListPc(w, second, "Laptop");
+    w.fake.tamperList(id, { fork });
+    w.clock.now += 30_000;
+    expect((await second.list.sync()).status).toMatchObject({ at: "following", standing: "in", trouble: "fork" });
+    const shell = shellOf(second);
+    await shell.refresh(true);
+    const placed = w.held().entries.length;
+    // Disconnect cannot finish while the alarm stands: it would sign this device's removal first
+    expect((await shell.leave()).left).toBe(false);
+    expect(await second.store.get("session")).toBeDefined();
+    shell.signOut();
+    await until(async () => (await second.lists.get("copy", w.account)) === undefined);
+    expect(await second.store.get("session")).toBeUndefined();
+    expect((await second.keys()).key).not.toBe(own);
+    expect(w.held().entries).toHaveLength(placed);
+    // what follows is the alarm's own way back: let in again, then the old listing removed there
+    expect(shell.state).toEqual({ kind: "signed-out", error: "This device signed out, but your account still lists it. Sign in again and allow it from another device or PC, then remove its old listing there." });
+  });
 
   it("H1: Disconnect leaves the account it was shown: a sign-in to another account stored meanwhile is not left, and nothing is signed", async () => {
     const { w, device, other, shell, shown, theirs } = await twoAccounts();

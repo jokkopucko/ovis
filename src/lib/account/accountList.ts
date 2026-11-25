@@ -15,8 +15,8 @@ import { isListKey, listClock, listView, readKind, type ListNames, type ListRole
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import { entryFromText, entryHash, isListHash, ListEntryError, readBody, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
-  followStep, gossipHead, heardHead, pcOfKey, pinList, READ_PAGES_MAX, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
-  type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type ListHead, type ListPage as PeerPage, type SaveRefusal, type Standing,
+  compareHeads, followStep, gossipHead, heardHead, PAGE_ENTRIES_MAX, pcOfKey, pinList, READ_PAGES_MAX, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
+  type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type HeadsVerdict, type ListHead, type ListPage as PeerPage, type SaveRefusal, type Standing,
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
@@ -456,6 +456,20 @@ interface Held {
   readonly check?: { readonly doubt: ListDoubt | null; readonly asks: readonly string[] };
   /** The keys of this device's own blocks that the list its own birth made holds: its first write there puts them out (#4652, b2). */
   readonly owed?: readonly string[];
+  /**
+   * The copy holds a page a PC handed over that could not be saved: it is acted on from memory, and the next round
+   * writes it over the text it was taken on (`saved`) before anything else.
+   */
+  readonly unsaved?: true;
+}
+
+/** What came of a page a PC handed this device (AccountList.takeFromPeer). */
+export interface PeerTake {
+  readonly verdict: FollowVerdict;
+  /** The request to make of that PC at once, or null. */
+  readonly read: FollowRead | null;
+  /** False: what the page proved is acted on in this page's memory, and was not saved; it is not said to be taken. */
+  readonly saved: boolean;
 }
 
 /**
@@ -504,6 +518,13 @@ export interface ListWriter {
    */
   readonly adrift: boolean;
   readonly service: AccountService;
+  /**
+   * Whether this writer may still sign and send: false from the moment this page's copy of its list holds an alarm,
+   * or holds another account's or list's copy, and from the moment another page of this device saved the list with an
+   * alarm. Every signing and every sending looks again, so an alarm that rises while a write waits (for a claim, for an
+   * answer), in this page or another, ends it with nothing signed or sent after it.
+   */
+  readonly live: () => boolean | Promise<boolean>;
 }
 
 /**
@@ -641,6 +662,23 @@ export interface AccountList {
   gossip(): ListHead | null;
   /** This device's entries after a place, for another member to take: at most `limit`, up to the last one a member signed; null while it follows none. */
   pageAfter(after: number | null, limit: number): PeerPage | null;
+  /** How this device's copy stands against where a PC says it stands (compareHeads), and what to ask that PC for; null while it follows none. */
+  compare(theirs: ListHead): { readonly verdict: HeadsVerdict; readonly read: FollowRead | null } | null;
+  /**
+   * Whether the PC with this id (the one its relay key gives) is one this device's copy holds or held: a `pc` or `join`
+   * entry named it, whether or not it is out since. A PC it never held is handed none of its entries.
+   */
+  knowsPc(serverId: string): boolean;
+  /**
+   * A page of the list a PC handed this device over a session (listGossip.ts), taken as a page of the account service
+   * is, since entries prove themselves, and never as a full read: so a removal the service withholds from this device
+   * reaches it from a PC that holds it, and another history a member signed raises the alarm here too. `read` is the
+   * request the page answers, or null for one nobody asked for, taken from the place it names. Saved under the
+   * account's lock, as a round saves. Where the save fails, what the page proved stands in this page's memory all the
+   * same (a removal is acted on at once), the next round writes it first, and the page is not said to be taken. Null:
+   * this device follows no list of the account signed in now, or another list than the read's.
+   */
+  takeFromPeer(page: PeerPage, read: FollowRead | null): Promise<PeerTake | null>;
   /**
    * What this device says inside a session to a PC that follows no list (Part F, F6), or null where it has nothing to
    * say: only a device that follows a list its account moved onto, and is in it with power `full`, names that list, by
@@ -744,7 +782,44 @@ export function accountList(options: AccountListOptions): AccountList {
     // with the later of what the copy says and what was kept beside it since, of its last full read and its clock's floor
     const times = readTimes(await store.get("times", account), read.copy.list);
     const copy: FollowerCopy = times === null ? read.copy : { ...read.copy, read_at: later(read.copy.read_at, times.read_at), seen_at: later(read.copy.seen_at, times.seen_at) };
+    // Another page saved since, over a copy this page verified and could not save (a removal a PC handed it, an alarm):
+    // what this page verified is taken into what was saved before anything is shown, and written by the round
+    const unsaved = held !== null && held.unsaved === true && held.account === account && held.copy !== null && ownCopy(held.copy, keys.key, signIn, handing) && held.copy.list === copy.list ? held.copy : null;
+    if (unsaved !== null) {
+      const joined = await reconcile(copy, unsaved);
+      if (joined !== copy) return { ...fresh, copy: joined, saved: text, unsaved: true };
+    }
     return { ...fresh, copy, saved: text };
+  };
+
+  /**
+   * `load` as a round of `session` reads the saved copy: with this device's sign-in key and a hand-over under way, so
+   * a carried device's copy is its own wherever it is read.
+   */
+  const loadFor = async (account: string, keys: DeviceListKeys, saved: unknown, session: AccountSession): Promise<Held | SaveRefusal> => {
+    const handing = readHandOver(await store.get("handover", account));
+    return load(account, keys, saved, (await signInOf(session))?.key ?? null, handing !== null && handing.refused_at === null ? handing.signIn : null);
+  };
+
+  /**
+   * `saved` with what `verified` holds of the same list and it lacks: the entries after the last one a member signed in
+   * `saved`, taken as a peer's pages (the follower judges them as it judged them first, and they take the place of
+   * entries no member signed above it), and the alarm `verified` raised, when `saved` has none. `saved` itself where
+   * neither adds anything.
+   */
+  const reconcile = async (saved: FollowerCopy, verified: FollowerCopy): Promise<FollowerCopy> => {
+    let copy = saved;
+    const begun = startRead(copy, "peer");
+    let read: FollowRead | null = copy.state === null ? begun : { ...begun, after: copy.state.footing.seq };
+    for (let pages = 0; read !== null && pages < READ_PAGES_MAX; pages += 1) {
+      const page = verified.state === null ? null : servePage(verified, { list: verified.list, after: read.after }, PAGE_ENTRIES_MAX);
+      if (page === null || page.entries.length === 0) break;
+      const took = await takePage(copy, read, page, seconds());
+      ({ copy } = took);
+      ({ read } = took);
+    }
+    if (copy.alarm === null && verified.alarm !== null) copy = { ...copy, alarm: verified.alarm };
+    return writeSave(copy) === writeSave(saved) ? saved : copy;
   };
 
   /**
@@ -767,8 +842,9 @@ export function accountList(options: AccountListOptions): AccountList {
     }
   };
 
-  const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null }, copy: FollowerCopy): Promise<string> => {
-    if (before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) {
+  const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null; readonly unsaved?: true }, copy: FollowerCopy): Promise<string> => {
+    // a copy held in memory that its text does not hold yet (Held.unsaved) is written whatever it differs in
+    if (before.unsaved !== true && before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) {
       if (before.copy.read_at !== copy.read_at || before.copy.seen_at !== copy.seen_at) {
         // never back: another page may have read later
         const kept = readTimes(await store.get("times", copy.account), copy.list);
@@ -1534,11 +1610,15 @@ export function accountList(options: AccountListOptions): AccountList {
       }
       const keys = await deviceListKeys(accountStore);
       ctx = { account, keys, bound };
-      const handing = readHandOver(await store.get("handover", account));
-      const loaded = await load(account, keys, saved, (await signInOf(session))?.key ?? null, handing !== null && handing.refused_at === null ? handing.signIn : null);
+      let loaded = await loadFor(account, keys, saved, session);
       if (typeof loaded === "string") {
         held = null;
         return publish({ account, status: loaded === "version" ? { at: "newer_save" } : { at: "damaged", why: loaded }, reached: hint !== undefined, devices: [], pcs: [] });
+      }
+      // what a PC handed over and this page could not save is written first, over the text it was taken on
+      if (loaded.unsaved === true && loaded.copy !== null) {
+        const { unsaved: _written, ...rest } = loaded;
+        loaded = { ...rest, saved: await save(loaded, loaded.copy) };
       }
       let next = loaded;
       // for a device that follows a list, an account off the service's switch is the service being away, never "the list is gone"
@@ -1583,6 +1663,78 @@ export function accountList(options: AccountListOptions): AccountList {
       held = next;
       return publish(view);
     }
+  };
+
+  /** AccountList.takeFromPeer, under the account's lock: one page at a time among this page's rounds and the other pages'. */
+  /** ListWriter.live for writers of `account`'s `list`: one function for all of them, read from this page's copy at each call. */
+  let lives: { readonly account: string; readonly list: string; readonly live: () => Promise<boolean> } | null = null;
+  const liveFor = (account: string, list: string): (() => Promise<boolean>) => {
+    if (lives === null || lives.account !== account || lives.list !== list) {
+      const mine = (): boolean => {
+        const now = held?.copy ?? null;
+        return held !== null && held.account === account && now !== null && now.list === list && now.alarm === null;
+      };
+      lives = { account, list, live: async () => {
+        if (!mine()) return false;
+        // and what the pages of this device saved: another page may have saved an alarm this page has not read yet
+        const saved = await store.get("copy", account);
+        // and this page's own copy again: an alarm it raised while that was read, and could not save, ends the write too
+        if (!mine()) return false;
+        if (typeof saved !== "string") return true;
+        try {
+          const read = JSON.parse(saved) as { list?: unknown; alarm?: unknown };
+          return !(read.list === list && read.alarm !== null && read.alarm !== undefined);
+        } catch { return false; }
+      } };
+    }
+    return lives!.live;
+  };
+
+  const takeFromPeer = async (page: PeerPage, asked: FollowRead | null): Promise<PeerTake | null> => {
+    const session = await service.session();
+    if (session === undefined) return null;
+    const { account } = session;
+    return lock(account, async () => {
+      for (let tries = 1; tries <= SAVE_TRIES; tries += 1) {
+        const saved = await store.get("copy", account);
+        if (saved === undefined) return null;
+        const keys = await deviceListKeys(accountStore);
+        let loaded: Held | SaveRefusal;
+        try { loaded = await loadFor(account, keys, saved, session); } catch (error) {
+          if (error instanceof StaleCopyError) continue;
+          throw error;
+        }
+        if (typeof loaded === "string" || loaded.copy === null || loaded.copy.state === null) return null;
+        const copy = loaded.copy;
+        if (asked !== null && asked.list !== copy.list) return null;
+        // the request this page answers; a page nobody asked for is taken from the place it names
+        const after = isRecord(page) && (page.after === null || (typeof page.after === "number" && Number.isSafeInteger(page.after) && page.after >= 0)) ? page.after : undefined;
+        const read: FollowRead = asked !== null && (after === undefined || after === asked.after) ? asked : { ...startRead(copy, "peer"), ...(after === undefined ? {} : { after }) };
+        const took = await takePage(copy, read, page, seconds());
+        let next: Held;
+        let wrote = true;
+        try {
+          next = { ...loaded, copy: took.copy, saved: await save(loaded, took.copy) };
+          if (next.unsaved === true) { const { unsaved: _written, ...rest } = next; next = rest; }
+        } catch (error) {
+          if (error instanceof StaleCopyError) continue;
+          // verified and not saved: acted on from memory all the same, written by the next round, and not said to be taken
+          console.warn("Ovis: entries of the account's list a PC handed over could not be saved", error instanceof Error ? error.name : error);
+          next = { ...loaded, copy: took.copy, unsaved: true };
+          wrote = false;
+        }
+        const view = await viewOf(next, keys, null);
+        // installed only for the sign-in it was begun under: another page that signed this browser in to another
+        // account meanwhile is shown nothing of this one, and a PC is told nothing of it under that one
+        const still = await service.session();
+        if (still === undefined || !sameSignIn(still, session)) return null;
+        held = next;
+        // a peer's page is no word of the account service's: whether that was reached stays as the last round found
+        publish({ ...view, reached: shown.account === account && shown.reached });
+        return { verdict: took.verdict, read: took.read, saved: wrote };
+      }
+      return null;
+    });
   };
 
   /** The removal the device owes the list its own birth made, while it is under way: the rounds its write reads in pay nothing again. */
@@ -1762,8 +1914,10 @@ export function accountList(options: AccountListOptions): AccountList {
       if (own === undefined || own.ended !== null || (own.power !== "full" && options.self !== true)) return null;
       if ((held.owed?.length ?? 0) > 0 && options.owed !== true) return null;
       const at = seconds();
+      const { account } = held;
+      const { list } = copy;
       return {
-        account: held.account, list: copy.list, state: copy.state, keys: ctx.keys, service: ctx.bound,
+        account, list, state: copy.state, keys: ctx.keys, service: ctx.bound,
         epochs: named !== null && named.history === historyOf(copy) ? named.keys : new Map(),
         // Whose time is over is judged by this device's own clock, held against the floor it saved and the list's own
         // time, and an entry is dated by that clock: never by the account service's, which could otherwise make a
@@ -1772,6 +1926,7 @@ export function accountList(options: AccountListOptions): AccountList {
         issued_at: at,
         shown: this.shown(),
         adrift: copy.seen_at !== null && at < copy.seen_at - ADRIFT_SECONDS,
+        live: liveFor(account, list),
       };
     },
     holdsEntry(place) {
@@ -1786,6 +1941,15 @@ export function accountList(options: AccountListOptions): AccountList {
       const copy = held?.copy ?? null;
       return copy === null || copy.state === null ? null : servePage(copy, { list: copy.list, after }, limit);
     },
+    compare(theirs) {
+      const copy = held?.copy ?? null;
+      return copy === null || copy.state === null ? null : compareHeads(copy, theirs);
+    },
+    knowsPc(serverId) {
+      const state = held?.copy?.state ?? null;
+      return state !== null && Object.keys(state.pcs).some((endpoint) => /^[0-9a-f]{64}$/.test(endpoint) && deriveServerId(hexToBytes(endpoint)) === serverId);
+    },
+    takeFromPeer,
     async naming(given) {
       /** The copy to name, while it is the one of `given.account` this page holds and follows, and nothing stands in the way. */
       const current = (): FollowerCopy | null => {

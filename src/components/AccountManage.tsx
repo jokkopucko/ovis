@@ -19,6 +19,7 @@ import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
 import { signInOfAccount } from "./AccountPcs.tsx";
 import { AddPcByNumber } from "./AddPcByNumber.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { ListAlarmNotice } from "./ListAlarmNotice.tsx";
 import type { Shown } from "../lib/account/listLeave.ts";
 import { ListDevices, showsListDevices, useListView } from "./ListDevices.tsx";
 import { StatusDot } from "./StatusDot.tsx";
@@ -51,6 +52,7 @@ export function offlinePc(pc: { readonly last_seen_at: string | null; readonly a
 export function AccountManageLists({ account, watching, pcHere = true, onLeave }: { readonly account: string; readonly watching: boolean; readonly pcHere?: boolean; readonly onLeave?: (shown: Shown) => Promise<void> }) {
   return (
     <>
+      <ListAlarmNotice account={account} />
       <AccountDevices account={account} pcHere={pcHere} {...(onLeave ? { onLeave } : {})} />
       <AccountPcs account={account} watching={watching} />
     </>

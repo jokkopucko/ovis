@@ -303,11 +303,12 @@ export class RelayTransport implements Transport {
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
     this.found = undefined;
+    // what this carrier's PC selected is known before anyone is told it is up (followsList, version)
+    this.known = channel.server;
     this.routeChanged();
     channel.mux.onStreamAvailable = () => {
       for (const pending of this.waitingHttp) if (!pending.run()) break;
     };
-    this.known = channel.server;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
     this.delay = 1000;

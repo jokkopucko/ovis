@@ -227,7 +227,7 @@ describe("what came in through a key", () => {
 /** A writer over a state this test made, for what is signed and never placed. */
 function writerOn(state: ListState, keys: DeviceListKeys, now: number): ListWriter {
   const at = Math.floor(now / 1000);
-  return { account: state.account, list: state.list, state, keys, epochs: new Map(), clock: at, shown: at, issued_at: at, adrift: false, service: null as never };
+  return { account: state.account, list: state.list, state, keys, epochs: new Map(), clock: at, shown: at, issued_at: at, adrift: false, service: null as never, live: () => true };
 }
 
 describe("a list that moves, or a service that is busy, under a removal", () => {

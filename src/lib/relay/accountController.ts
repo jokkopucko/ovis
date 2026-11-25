@@ -554,6 +554,9 @@ export function createAccountController(mount: RelayShellMount, view: {
     const ending = account.session();
     // the key this device is in its account's list with, as the person saw it, or as the page shows it now
     const member = shown?.scope?.member ?? (lists === null ? null : scopeOf(lists.view())?.member ?? null);
+    // the list showed two histories: this device signs nothing, and its old listing goes from a member that shows none
+    const read = lists?.view();
+    const forked = read !== undefined && read.status.at === "following" && read.status.trouble === "fork";
     const another = ending.then((session) => shown !== undefined && session !== undefined && session.account !== shown.account, () => false);
     // a device that is in its account's list puts itself out of it first, while its sign-in still stands: signing in
     // again is a new device (account/listLeave.ts); for any other device this is null at once
@@ -586,7 +589,12 @@ export function createAccountController(mount: RelayShellMount, view: {
         }
         // a member signs out for good: the key it was a member with goes, whatever the list took
         await forgetMembership(accountStore, lists, session, member);
-        if (!out.removed && epoch === generation) { accountView = { kind: "signed-out", error: leaveFailure(out) }; await changed(); }
+        if (!out.removed && epoch === generation) {
+          // under the alarm the way back is the one it shows: let in again, then the old listing removed there
+          const error = forked && out.why !== "unknown" ? t("This device signed out, but your account still lists it. Sign in again and allow it from another device or PC, then remove its old listing there.") : leaveFailure(out);
+          accountView = { kind: "signed-out", error };
+          await changed();
+        }
       } finally { leavingList = null; followed?.poke(); }
     }).catch((error: unknown) => console.warn("Ovis: this device did not forget its account", error instanceof Error ? error.name : error));
   };
@@ -1488,7 +1496,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     const view = lists?.view();
     return copyUnread !== null || (view !== undefined && view.account !== null && view.status.at !== "off");
   };
-  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, sessionOpened, takePlace, get knowsList() { return knowsList(); },
+  return { dispose, get state() { return accountView; }, /** this page's copy of its account's list, or null */ get list() { return lists; }, get directory() { return directory; }, get listKey() { return listKey(); }, /** the account, list and key in it that listKey is this device's for: read with it */ get listScope() { return listKey() === null || lists === null ? null : scopeOf(lists.view()); }, listHolds, listSays, listTimeOver, readList, sessionOpened, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }
