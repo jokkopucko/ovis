@@ -444,6 +444,20 @@ export interface DevicePairedSeenEvent {
 /** What a comparison asks for (docs/account.md, "Negotiation"): pairing this PC only, or joining the account. */
 export type PairingIntent = "pc" | "account";
 /**
+ * Where an add of this PC to an account that keeps a signed list stands (GET /api/account/list/add, this PC's own
+ * window and CLI alone; server/account/list-add.ts `AddState` answers it). `number`: `digits` are on this PC's
+ * screen until `until`, and the person says here whether the device adding the PC shows the same
+ * (POST /api/account/list/add/confirm `{ digits, run }`, or `/cancel` `{ run }`).
+ */
+export type ListAddState =
+  | { readonly state: "none" | "replaced" }
+  | { readonly state: "no_list"; readonly account: string }
+  | { readonly state: "waiting" | "confirmed"; readonly run: string; readonly account: string; readonly list: string; readonly until: string }
+  | { readonly state: "number"; readonly run: string; readonly account: string; readonly list: string; readonly digits: string; readonly until: string }
+  | { readonly state: "added"; readonly run: string; readonly account: string; readonly list: string }
+  | { readonly state: "ended"; readonly run: string; readonly account: string; readonly why: string };
+
+/**
  * An account join taken outside the pairing window, as this PC's own window lists it (GET /api/relay/joins): never its
  * digits, which the owner types from the new device's screen (POST /api/relay/join). `digits`: a first join, asked while
  * the PC had no member to approve it, which the owner compares and allows or declines by a tap there.

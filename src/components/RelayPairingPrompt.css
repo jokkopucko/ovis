@@ -30,6 +30,12 @@
   letter-spacing: var(--tracking-code);
 }
 
+/* the add's question goes on after its number ("… show 482 913?"): kept on the number's line, the number in one piece */
+.relay-pairing-prompt[data-own-window="add"] .relay-pairing-digits {
+  display: inline;
+  white-space: nowrap;
+}
+
 .relay-pairing-prompt .relay-pairing-left {
   color: var(--text-dim);
   font-size: var(--fs-sm);

@@ -34,7 +34,8 @@ const VALUE = /^[A-Za-z0-9_-]{43}$/;
 export type AddEnd = "timeout" | "attempts" | "cancelled" | JoinRefusal;
 
 /**
- * Where an Add stands. `no_list`: the account service names no list for the account, so the PC is added as before.
+ * Where an Add stands, as GET /api/account/list/add answers it (shared/machines.ts ListAddState is the same shape, as
+ * the PC's own window reads it). `no_list`: the account service names no list for the account, so the PC is added as before.
  * `waiting`: the PC's card is posted and no phone has asked yet, or its number did not check out. `number`: show
  * `digits` and ask the person whether the phone shows the same. `confirmed`: the person said yes; the PC waits for
  * the entry that adds it. `added`: the PC is in the account by its list. `ended`: nothing was added.

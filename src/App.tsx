@@ -1199,7 +1199,7 @@ export function App() {
         <PushHealthNotice onRepair={repairNotifications} onOpen={() => { setSettingsLinkPage("alerts"); setSettingsOpen(true); }} />
         <InstallHint />
         {setupGuide.guide !== null && setupGuide.paused && <SetupGuideResume onResume={setupGuide.resume} />}
-        {prompts.length > 0 && <RelayPairingPrompt pairings={prompts} />}
+        {prompts.length > 0 && <RelayPairingPrompt pairings={prompts} onDecided={rereadOwnJoins} />}
         {/* an account join a member could approve too: this PC's own window asks for the number itself (OwnJoinCard) */}
         {ownWindow && locked === false && <OwnJoinCard joins={ownJoins} onDecided={rereadOwnJoins} />}
         {/* always there: it keeps what an approval left to say after its request is gone from this PC */}

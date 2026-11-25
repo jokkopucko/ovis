@@ -13,7 +13,7 @@ import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllR
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
 import { TAILNET_NODE_ROUTES, type TailnetNodesAnswer } from "../../shared/tailnet-nodes.ts";
-import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type ListAddState, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -385,6 +385,37 @@ export async function fetchOwnJoins(): Promise<OwnJoinRequest[]> {
 /** POST /api/relay/join: the digits the new device shows, typed on this PC's own window; 409 `wrong_digits` ends that join. */
 export async function approveOwnJoin(id: string, digits: string): Promise<void> {
   await getJson<{ readonly ok: true }>("/api/relay/join", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, digits }) });
+}
+
+/**
+ * GET /api/account/status, for why this PC lets nobody of its account in by its signed list: the `reason` of the list it
+ * is pinned to, or what a PC that cannot read its own account state says (403 `strict`). Null for none.
+ */
+export async function fetchListReason(): Promise<string | null> {
+  const response = await apiFetch("/api/account/status", { cache: "no-store" });
+  const body = await response.json().catch(() => null) as { list?: { reason?: unknown } | null; error?: { code?: unknown; reason?: unknown } } | null;
+  const said = response.ok ? body?.list?.reason : body?.error?.code === "strict" ? body.error.reason : null;
+  return typeof said === "string" && said !== "" ? said : null;
+}
+
+/** GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). */
+export async function fetchListAdd(): Promise<ListAddState> {
+  return await getJson<ListAddState>("/api/account/list/add", { cache: "no-store" });
+}
+
+/** POST /api/account/list/add/confirm: the person at this PC says the device adding it shows these digits; 409 `wrong_number` confirms nothing. */
+export async function confirmListAdd(run: string, digits: string): Promise<void> {
+  await postListAdd("/api/account/list/add/confirm", { run, digits });
+}
+
+/** POST /api/account/list/add/cancel: the numbers differ, or the person gives the add up; it joins nothing. */
+export async function cancelListAdd(run: string): Promise<void> {
+  await postListAdd("/api/account/list/add/cancel", { run });
+}
+
+async function postListAdd(url: string, body: Record<string, string>): Promise<void> {
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify(body) });
+  if (!response.ok) throw await errorFrom(url, response);
 }
 
 /** POST /api/relay/join: Allow or Decline of a first join on this PC's own window, its digits compared there. */

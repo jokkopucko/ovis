@@ -6,7 +6,7 @@ import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
-import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, INPUT_AGE_MAX_MS, RelayPairingPrompt, aroundDigits, deadlineOf, firstJoinPrompts, inputAge, pendingKeyPrompts, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
+import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, INPUT_AGE_MAX_MS, RelayPairingPrompt, aroundDigits, deadlineOf, firstJoinPrompts, inputAge, listAddPrompts, pendingKeyPrompts, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
 
 const AT = Date.parse("2026-11-10T00:00:00.000Z");
 const request = (over: Partial<RelayPairingRequest> = {}): RelayPairingRequest => ({ id: "p1", label: "Hako's iPhone", digits: "725403", expires_at: new Date(AT + 90_000).toISOString(), ...over });
@@ -554,6 +554,27 @@ describe("the PC's prompt for a device waiting for approval", () => {
     // refusing only narrows: it goes the way the PC's waiting list always declined a key
     await act(async () => { prompt!.findAllByType("button")[1]!.props.onClick(); });
     expect(decided).toEqual([["/api/account/confirm-page", null], ["/api/devices/pending/decline", { id: "a".repeat(32) }]]);
+  });
+
+  it("shows this PC's own window the number of its add by the account's list, and answers for that add: The numbers match, or Cancel", async () => {
+    const until = new Date(AT + 120_000).toISOString();
+    const shown = { state: "number" as const, run: "0123456789abcdef", account: "acct_1", list: "ab".repeat(32), digits: "482913", until };
+    expect(listAddPrompts({ ...shown, state: "waiting" } as never)).toEqual([]);
+    expect(listAddPrompts(null)).toEqual([]);
+    const [prompt, ...more] = prompts(await show(listAddPrompts(shown)));
+    expect(more).toEqual([]);
+    expect(sentence(prompt!)).toBe("This PC is being added to your account. Does the device adding it show 482 913?");
+    expect(left(prompt!)).toBe("120 s left");
+    const checks = prompt!.findAll((found) => found.props["data-testid"] === "relay-pairing-check").map(text);
+    expect(checks).toEqual([` · ${translate("en", "Confirm only if that device shows the same number")}`]);
+    expect(prompt!.findAllByType("button").map(text)).toEqual(["The numbers match", "Cancel"]);
+    // the yes waits out the guard as any approval does, and names the number it was shown with its add
+    await act(async () => { approveOf(prompt!).props.onClick(POINTER); });
+    expect(decided).toEqual([]);
+    await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
+    await act(async () => { approveOf(prompt!).props.onClick(POINTER); });
+    await act(async () => { prompt!.findAllByType("button")[1]!.props.onClick(KEY); });
+    expect(decided).toEqual([["/api/account/list/add/confirm", { run: "0123456789abcdef", digits: "482913" }], ["/api/account/list/add/cancel", { run: "0123456789abcdef" }]]);
   });
 
   it("still approves and declines through decideRelayPairing", async () => {
