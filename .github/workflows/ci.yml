@@ -48,6 +48,7 @@ jobs:
       draft: ${{ steps.filter.outputs.draft }}
       linux: ${{ steps.route.outputs.linux }}
       fast: ${{ steps.route.outputs.fast }}
+      integration: ${{ steps.route.outputs.integration }}
       windows: ${{ steps.route.outputs.windows }}
       rust: ${{ steps.route.outputs.rust }}
       ratchet_base: ${{ steps.ratchet.outputs.base }}
@@ -73,6 +74,8 @@ jobs:
           LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
+          # the fastest machine's own labels for Integration tests while its queue is short (scripts/ci-runner-route.sh)
+          INTEGRATION_LABELS: ${{ vars.CI_INTEGRATION_SELF_HOSTED_LABELS }}
           # winvm's runner, while it waits for a job (scripts/self-hosted-runner/winvm-runner.sh); in ci.yml's own runs only
           WINVM_READY: ${{ github.workflow == 'CI' && vars.CI_WINVM_READY || '' }}
           # a draft's Native Windows install fails at its first step: it must not take winvm's one round
@@ -284,8 +287,10 @@ jobs:
     name: herdr-core live contract
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    # GitHub-hosted: it runs there faster than on the self-hosted pool, where it took a slot of every run. The repository
+    # variable CI_HC_LIVE_LABELS (a self-hosted label list) moves it back; fork pull requests stay GitHub-hosted whatever
+    # it says (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(vars.CI_HC_LIVE_LABELS || '"ubuntu-24.04"') }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
@@ -426,7 +431,8 @@ jobs:
     name: Integration tests
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
+    # the Linux jobs' runners, or CI_INTEGRATION_SELF_HOSTED_LABELS' while their queue is short; forks always hosted (scripts/ci-runner-route.sh)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.integration) }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:

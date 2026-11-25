@@ -90,7 +90,7 @@ A release validated by main's run (`main-run-<id>`) is made of these checks of i
 | Fast checks | the Release run, and main's run | GitHub's runner, and the self-hosted PC |
 | Rust PTY host build, with the crate's tests and the PtySession checks on the built Linux binaries | the Release run | GitHub's runners |
 | Integration tests, both Browser regression jobs | main's run | the self-hosted PC, unless the runner variables keep `main` on GitHub's ([self-hosted runner](../scripts/self-hosted-runner/README.md)) |
-| herdr-core live contract | main's run | the self-hosted PC, unless the runner variables keep the light jobs on GitHub's |
+| herdr-core live contract | main's run | GitHub's runner, unless `CI_HC_LIVE_LABELS` moves it to the self-hosted PC |
 | Native Windows install, Native macOS session identity | main's run | GitHub's runners |
 | Rust PTY host | main's run | GitHub's runners, or the self-hosted Rust slots once `CI_RUST_SELF_HOSTED` is `true` |
 

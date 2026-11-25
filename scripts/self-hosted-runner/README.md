@@ -359,6 +359,35 @@ repository's `scripts/build-cache.ts` against the installed `build-cache-promote
 to where the build cache's entries are filed, no job restores a build until the copy is the new one
 ([Build cache](#build-cache)).
 
+### The fastest machine's own label (Fast checks, Integration tests, herdr-core live contract)
+
+The hosts differ: the P620 runs Fast checks and Integration tests in about half the time of the slower PC, so these
+two jobs can prefer it. Give that host's runners a label of its own beside the pool's (they still take every pool job),
+then name it in the job's repository variable:
+
+```sh
+# on the P620: its launcher's --labels gets a second label (a comma, no space), then restart the unit when it is idle
+run.sh --repo devswha/ovis --count 6 --reserved 2 --labels self-hosted-ovis,self-hosted-ovis-p620 ...
+gh variable set CI_FAST_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis-p620"]'
+gh variable set CI_INTEGRATION_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis-p620"]'
+gh variable set CI_FAST_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'   # Fast checks back on the pool
+gh variable delete CI_INTEGRATION_SELF_HOSTED_LABELS   # Integration tests back on the pool
+```
+
+`scripts/ci-runner-route.sh` uses them only while the Linux jobs take the shared pool (`["self-hosted","self-hosted-ovis"]`)
+in a same-repository pull request or a push (a fork, `hosted_only`, every other event, main's reserved runners and the
+VM runners stay where the Linux jobs go), and only while that label's queue is short: once a job asking for it has
+waited more than two minutes, or one has waited a minute while none of its jobs runs (the host looks offline), the job
+goes to the Linux jobs' runners instead. Its counts come from the same Actions read as the other routes. The P620 also
+runs agent lanes and QA, so a busy P620 lengthens that queue and the jobs move back to the pool by themselves. A job
+already sent to the host waits for it, so when the host goes offline for long, set the variables back to the pool's
+labels (or delete them), as for `CI_MAIN_SELF_HOSTED_LABELS`. A value equal to the pool's labels means no preference.
+On the cloud VM runners (`ovis-vm`) `CI_FAST_SELF_HOSTED_LABELS` keeps its own rule below, without the queue check.
+
+herdr-core live contract runs GitHub-hosted by default: it finished there faster (about 310 s) than on the self-hosted
+PCs (about 330 s) and took a pool slot in every run. `gh variable set CI_HC_LIVE_LABELS --body '["self-hosted","self-hosted-ovis"]'`
+moves it back to the pool (a fork's run stays hosted whatever it says); `gh variable delete CI_HC_LIVE_LABELS` returns it.
+
 ### The Rust PTY host job
 
 `ci.yml`'s Rust PTY host job asks for `["self-hosted","self-hosted-ovis-rust"]`. Only a slot that a
@@ -677,9 +706,9 @@ the rules.
 | ci.yml | windows-install | `windows-latest` | yes | - | setup-ci save, none under hosted_only |
 | ci.yml | macos-session | HO macos-15, else MAC | yes under hosted_only; else yes unless CI_MAC_LABELS is set | - | setup-ci save, none under hosted_only |
 | ci.yml | rust-pty-host | HO ubuntu-24.04, else ROUTE rust | yes under hosted_only; else as routed: hosted unless CI_RUST_SELF_HOSTED is true | - | setup-ci save, none under hosted_only |
-| ci.yml | herdr-core-live | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | setup-ci restore, none under hosted_only; actions/cache (Cache hc, off under hosted_only) |
+| ci.yml | herdr-core-live | HO ubuntu-24.04, else a fork PR ubuntu-24.04, else CI_HC_LIVE_LABELS or ubuntu-24.04 | yes, unless CI_HC_LIVE_LABELS is set (never for a fork PR) | - | setup-ci restore, none under hosted_only; actions/cache (Cache hc, off under hosted_only) |
 | ci.yml | fast | HO ubuntu-24.04, else ROUTE fast | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |
-| ci.yml | integration | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |
+| ci.yml | integration | HO ubuntu-24.04, else ROUTE integration | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |
 | ci.yml | browser-main | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only; actions/cache (Cache Playwright browser, hosted runners, off under hosted_only) |
 | ci.yml | browser-other | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only; actions/cache (Cache Playwright browser, hosted runners, off under hosted_only) |
 | ci.yml | integration-browser | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | none |

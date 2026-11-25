@@ -13,6 +13,10 @@ const LIGHT = `\${{ ${FORK_GUARD} || fromJSON(github.ref == 'refs/heads/main' &&
 const ROUTED = "${{ fromJSON(needs.changes.outputs.linux) }}";
 // Fast checks: the Linux jobs' runner, or CI_FAST_SELF_HOSTED_LABELS only when those name ovis-vm (never a fork's)
 const ROUTED_FAST = "${{ fromJSON(needs.changes.outputs.fast) }}";
+// Integration tests: the Linux jobs' runner, or CI_INTEGRATION_SELF_HOSTED_LABELS' while their queue is short (never a fork's)
+const ROUTED_INTEGRATION = "${{ fromJSON(needs.changes.outputs.integration) }}";
+// herdr-core live contract: GitHub-hosted unless CI_HC_LIVE_LABELS moves it, and a fork stays hosted before it is read
+const HC_LIVE = `\${{ ${FORK_GUARD} || fromJSON(vars.CI_HC_LIVE_LABELS || '"ubuntu-24.04"') }}`;
 // Native Windows install: winvm's runner or windows-latest; the route keeps forks on windows-latest (scripts/ci-runner-route.test.ts)
 const ROUTED_WINDOWS = "${{ fromJSON(needs.changes.outputs.windows) }}";
 // the Rust PTY host: the runners with the Rust toolchain, or hosted (forks always)
@@ -57,6 +61,8 @@ function forkSafe(job: Job & { strategy?: { matrix?: { include?: { os?: unknown 
   if (runsOn === MAC || runsOn === hostedOnly("macos-15", MAC)) return "mac";
   if (runsOn === ROUTED || runsOn === hostedOnly("ubuntu-24.04", ROUTED)) return "routed";
   if (runsOn === ROUTED_FAST || runsOn === hostedOnly("ubuntu-24.04", ROUTED_FAST)) return "routed (fast)";
+  if (runsOn === ROUTED_INTEGRATION || runsOn === hostedOnly("ubuntu-24.04", ROUTED_INTEGRATION)) return "routed (integration)";
+  if (runsOn === HC_LIVE || runsOn === hostedOnly("ubuntu-24.04", HC_LIVE)) return "herdr-core live";
   if (runsOn === ROUTED_WINDOWS || runsOn === hostedOnly("windows-latest", ROUTED_WINDOWS)) return "routed (Windows)";
   if (runsOn === ROUTED_RUST || runsOn === hostedOnly("ubuntu-24.04", ROUTED_RUST)) return "routed (rust)";
   if (runsOn === "${{ matrix.os }}" || runsOn === MAC_PULL_REQUEST) {
@@ -101,12 +107,26 @@ describe("self-hosted runners and fork pull requests", () => {
     const changes = ci.jobs.changes!;
     expect(changes.outputs?.linux).toBe("${{ steps.route.outputs.linux }}");
     expect(changes.outputs?.fast).toBe("${{ steps.route.outputs.fast }}");
+    expect(changes.outputs?.integration).toBe("${{ steps.route.outputs.integration }}");
+    expect(changes.steps?.find((step) => step.id === "route")?.env?.["INTEGRATION_LABELS"]).toBe("${{ vars.CI_INTEGRATION_SELF_HOSTED_LABELS }}");
     expect(changes.outputs?.windows).toBe("${{ steps.route.outputs.windows }}");
     expect(changes.steps?.find((step) => step.id === "route")?.env?.["WINVM_READY"]).toBe("${{ github.workflow == 'CI' && vars.CI_WINVM_READY || '' }}");
     expect(changes.steps?.find((step) => step.id === "route")?.env?.["PR_DRAFT"]).toBe("${{ github.event.pull_request.draft }}");
     expect(changes.outputs?.rust).toBe("${{ steps.route.outputs.rust }}");
     expect(changes.steps?.find((step) => step.id === "route")?.env?.["LINUX_LABELS"]).toBe("${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}");
     expect(changes.steps?.find((step) => step.id === "route")?.run).toBe('bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"');
+  });
+
+  test("herdr-core live contract is GitHub-hosted unless CI_HC_LIVE_LABELS moves it, and a fork never reads it", () => {
+    expect(HC_LIVE.indexOf(FORK_GUARD)).toBe(4);
+    const run = (event: string, head: string | null, vars: Record<string, string>) =>
+      evaluateValue(HC_LIVE, { github: { event_name: event, repository: "devswha/ovis", event: head === null ? {} : { pull_request: { head: { repo: { full_name: head } } } } }, vars } as Contexts);
+    const moved = { CI_HC_LIVE_LABELS: '["self-hosted","self-hosted-ovis"]' };
+    expect(run("pull_request", "devswha/ovis", {})).toBe("ubuntu-24.04");
+    expect(run("push", null, {})).toBe("ubuntu-24.04");
+    expect(run("pull_request", "devswha/ovis", moved)).toEqual(["self-hosted", "self-hosted-ovis"]);
+    expect(run("push", null, moved)).toEqual(["self-hosted", "self-hosted-ovis"]);
+    expect(run("pull_request", "someone/fork", moved)).toBe("ubuntu-24.04");
   });
 
   test("some job uses the light runner expression", () => {
@@ -135,7 +155,7 @@ describe("ci.yml's hosted_only input", () => {
   const setupCi = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as { inputs: { cache: { default: string } } };
   const PREFIX = /^inputs\.hosted_only && '([^']+)' \|\| /;
   const labelSets = ['["self-hosted","self-hosted-ovis"]', '["self-hosted","self-hosted-ovis-main"]', '"ubuntu-24.04"'];
-  const variables = (value: string | null): Value => (value === null ? {} : Object.fromEntries(["CI_MAIN_SELF_HOSTED_LABELS", "CI_LIGHT_LABELS", "CI_SELF_HOSTED_LABELS", "CI_MAC_LABELS"].map((name) => [name, value])));
+  const variables = (value: string | null): Value => (value === null ? {} : Object.fromEntries(["CI_MAIN_SELF_HOSTED_LABELS", "CI_LIGHT_LABELS", "CI_SELF_HOSTED_LABELS", "CI_MAC_LABELS", "CI_HC_LIVE_LABELS"].map((name) => [name, value])));
   const ownRuns: Contexts[] = [];
   for (const [workflow, event, ref, pullRequest] of [
     ["CI", "push", "refs/heads/main", null], ["CI", "push", "refs/heads/topic", null], ["CI", "workflow_dispatch", "refs/heads/main", null], ["CI", "workflow_dispatch", "refs/heads/topic", null],
@@ -147,7 +167,7 @@ describe("ci.yml's hosted_only input", () => {
         for (const inputs of [{}, { hosted_only: false }, { hosted_only: null }, { self_hosted_labels: "" }]) {
           for (const [environment, draft] of [["self-hosted", "false"], ["github-hosted", "false"], ["github-hosted", "true"]]) {
             const github = { workflow, event_name: event, ref, repository: "devswha/ovis", event: pullRequest === null ? {} : { pull_request: { draft: draft === "true", head: { repo: { full_name: pullRequest } } } } };
-            const needs = { changes: { outputs: { linux: routedTo, fast: routedTo, rust: routedTo, windows, draft, code: "true" } } };
+            const needs = { changes: { outputs: { linux: routedTo, fast: routedTo, integration: routedTo, rust: routedTo, windows, draft, code: "true" } } };
             ownRuns.push({ github, vars: variables(vars), inputs, needs, runner: { environment, os: "Linux" } } as Contexts);
           }
         }
@@ -178,7 +198,7 @@ describe("ci.yml's hosted_only input", () => {
       expect(prefix, `${id}: runs-on starts with the hosted_only prefix`).not.toBeNull();
       const label = prefix![1]!;
       const before = `\${{ ${inner.slice(prefix![0].length)} }}`;
-      expect([LIGHT, MAC, ROUTED, ROUTED_FAST, ROUTED_RUST, ROUTED_WINDOWS], `${id}: behind the prefix, the expression it had`).toContain(before);
+      expect([LIGHT, MAC, ROUTED, ROUTED_FAST, ROUTED_INTEGRATION, ROUTED_RUST, ROUTED_WINDOWS, HC_LIVE], `${id}: behind the prefix, the expression it had`).toContain(before);
       expect(GITHUB_HOSTED_LABELS).toContain(label);
       for (const context of ownRuns) expect([id, evaluateValue(runsOn, context)]).toEqual([id, evaluateValue(before, context)]);
       for (const context of ownRuns) expect([id, evaluateValue(runsOn, called(context))]).toEqual([id, label]);
@@ -230,12 +250,12 @@ describe("ci.yml's hosted_only input", () => {
       cache("macos-session", "save"),
       runner("rust-pty-host", "ubuntu-24.04", ROUTED_RUST),
       cache("rust-pty-host", "save"),
-      runner("herdr-core-live", "ubuntu-24.04", LIGHT),
+      runner("herdr-core-live", "ubuntu-24.04", HC_LIVE),
       cache("herdr-core-live", "restore"),
       "jobs.herdr-core-live.steps.hc-cache.if: needs.changes.outputs.draft != 'true' && !inputs.hosted_only",
       runner("fast", "ubuntu-24.04", ROUTED_FAST),
       cache("fast", "save"),
-      runner("integration", "ubuntu-24.04", ROUTED),
+      runner("integration", "ubuntu-24.04", ROUTED_INTEGRATION),
       cache("integration", "save"),
       runner("browser-main", "ubuntu-24.04", ROUTED),
       cache("browser-main", "save"),

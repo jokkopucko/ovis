@@ -708,6 +708,7 @@ describe("ci.yml", () => {
   const HOSTED_ONLY_READS = [
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.fast) }}",
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}",
+    "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.integration) }}",
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.rust) }}",
     "${{ inputs.hosted_only && 'windows-latest' || fromJSON(needs.changes.outputs.windows) }}",
     "${{ inputs.hosted_only && 'none' || 'save' }}",
@@ -745,7 +746,8 @@ describe("ci.yml", () => {
     "concurrency.group": "validation-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && '-manual' || '' }}",
     "concurrency.cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
     "jobs.changes.runs-on": LIGHT,
-    "jobs.herdr-core-live.runs-on": LIGHT,
+    // GitHub-hosted unless CI_HC_LIVE_LABELS moves it; the event only keeps a fork's pull request hosted
+    "jobs.herdr-core-live.runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(vars.CI_HC_LIVE_LABELS || '\"ubuntu-24.04\"') }}",
     "jobs.integration-browser.runs-on": LIGHT,
     "jobs.macos-session.runs-on": "${{ inputs.hosted_only && 'macos-15' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(github.workflow == 'CI' && vars.CI_MAC_LABELS || '\"macos-15\"') }}",
     "jobs.changes.steps.route.env.EVENT_NAME": "${{ github.event_name }}",
