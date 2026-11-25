@@ -3,7 +3,7 @@
  * the service's own routes, so a PC under test reads what a real account would hold.
  */
 import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "../../shared/account-list-entry.ts";
-import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, readStoredEncryptionKey, sealFields, wrapEpochKey, wrapToText, type EpochKey, type MemberEncryptionKey } from "../../shared/account-list-seal.ts";
+import { epochKeyCommitment, generateStoredEncryptionKey, LIST_EPOCH_LINK_BYTES, newEpochKey, nextEpoch, readStoredEncryptionKey, sealFields, wrapEpochKey, wrapToText, type EpochKey, type MemberEncryptionKey } from "../../shared/account-list-seal.ts";
 import { newInvite } from "../../shared/account-list-join.ts";
 import { cardBinding, kindBody, namesFields, signCard, type ListKind, type ListNames, type ListRole } from "../../shared/account-list.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
@@ -44,8 +44,21 @@ export function memberCard(member: ListMember, list: string): Promise<string> {
 /** The test account's list as its members write it: what they sign follows the last entry they placed or made. */
 export class TestList {
   private constructor(readonly service: FakeAccountService, readonly account: string, readonly id: string, readonly first: ListMember, private head: ListPlace, private readonly token: string, private clock: () => number,
-    /** The key to the names of epoch 0, which every member the tests add is given a wrap of. */
-    readonly epochKey: EpochKey) {}
+    private current: EpochKey) {}
+
+  /** The key to the names of the current epoch (0 until `nextEpoch`), which every member the tests add is given a wrap of. */
+  get epochKey(): EpochKey { return this.current; }
+
+  /**
+   * The first member opens the next epoch (as after a removal), with the link to the key before; nothing is wrapped
+   * to anybody here. `link: "broken"`: the entry carries a link that opens nothing, as a member that wrote a wrong one.
+   */
+  async nextEpoch(link: "good" | "broken" = "good"): Promise<void> {
+    const next = await nextEpoch({ list: this.id, current: this.current, members: [] });
+    const written = link === "good" ? next.link : Uint8Array.of(next.link[0]!, ...crypto.getRandomValues(new Uint8Array(LIST_EPOCH_LINK_BYTES - 1)));
+    await this.placeTexts([await this.sign({ kind: "epoch", epoch: this.current.epoch, opens: next.commitment, link: written })]);
+    this.current = next.epoch;
+  }
 
   /** A wrap of the names' key for the encryption key `enc`, as a placement carries it. */
   async wrapFor(enc: string): Promise<{ epoch: number; member: string; wrap: string }> {
@@ -122,11 +135,11 @@ export class TestList {
 
   /**
    * A member lets a device in: the device claims its key with a sign-in of its own (the second lock), the member signs and
-   * places. `names`: sealed into the entry under epoch 0's key, as a member that holds it seals a device's name.
+   * places. `names`: sealed into the entry under the current epoch's key, as a member that holds it seals a device's name.
    */
   async addDevice(device: ListMember, options: { role?: ListRole; until?: number | null; by?: ListMember; power?: "full" | "bound"; names?: ListNames } = {}): Promise<string> {
     const card = await claimKey(this.service, this.account, this.id, device);
-    const sealed = options.names === undefined ? null : { epoch: 0, bytes: await sealFields({ place: { list: this.id, seq: this.head.seq + 1 }, epoch: this.epochKey,
+    const sealed = options.names === undefined ? null : { epoch: this.epochKey.epoch, bytes: await sealFields({ place: { list: this.id, seq: this.head.seq + 1 }, epoch: this.epochKey,
       commitment: epochKeyCommitment({ list: this.id, epoch: this.epochKey }), fields: namesFields(options.names) }) };
     const text = await this.sign({ kind: "device", key: device.key, power: options.power ?? "full", role: options.role ?? "drive", until: options.until ?? null, enc: device.enc, card, sealed, rotates: false }, options.by);
     await this.placeTexts([text]);

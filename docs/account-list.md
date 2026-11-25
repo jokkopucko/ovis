@@ -2321,12 +2321,12 @@ neither a hand-over nor the pin undoes a removal.
   the names; an entry the service could not be asked about is asked again a minute later, and one
   whose epoch it holds no wrap of for this PC yet (a PC just added gets its wrap a moment later) after
   the next read of the log, at most once a minute; a PC with no key of its own in the list asks for
-  none. A newcomer is given the key of the epoch it comes in at and of later ones only (signedNamed
-  wraps the current epoch; the account service takes wraps of the current epoch alone), so a name
-  sealed in an epoch before this PC's own wraps stays unopened here for good: a PC added to the list
-  later shows the devices named before it came as `Device` (not solved yet: it would take wraps of
-  earlier epochs for a newcomer, which the account service does not take). A name it cannot open (a
-  wrap that does not open, none sealed) leaves the row named `Device`; a name a person gave a row
+  none. A newcomer is given wraps of the epoch it comes in at and of later ones only, so a PC added
+  to the list later reads a name sealed in an earlier epoch as a device does: from the nearest later
+  wrap it holds, back through the links the list's `epoch` entries carry (walkBack), each key
+  checked against the commitment its own copy holds. What that walk cannot reach (a link missing or
+  that does not open) is final, with no error. A name it cannot open (a wrap that does not open,
+  none sealed) leaves the row named `Device`; a name a person gave a row
   at the PC is kept, but a row a person named `Device` or cleared takes the list's name,
   since the PC tells it from the placeholder by the label alone. Only the list's commits name rows:
   a PC that follows no list keeps the labels its rows came in with. The names decide nothing, and

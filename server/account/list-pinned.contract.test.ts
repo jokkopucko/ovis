@@ -272,6 +272,51 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     } finally { pc.reach.hook = undefined; }
   });
 
+  /**
+   * A PC added to the list after its epoch moved: `early` was let in, named, under epoch 0 and `gone` too, `gone` was
+   * removed and the next epoch opened, and only then the PC came in, given a wrap of the epoch it came in at alone.
+   */
+  async function laterPc(link: "good" | "broken") {
+    const pc = await listedPc();
+    const early = await listMember();
+    const gone = await listMember();
+    await pc.account.addDevice(early, { names: { label: "Early tablet", os: "android" } });
+    await pc.account.addDevice(gone, { names: { label: "Gone phone", os: "android" } });
+    await pc.account.remove(gone.key);
+    await pc.account.nextEpoch(link);
+    let wraps = 0;
+    pc.reach.hook = async (request) => { if (new URL(request.url).pathname === "/v2/pc/list/wraps") wraps++; return undefined; };
+    closes.push(() => { pc.reach.hook = undefined; });
+    expect(await pc.list.wantList(pc.account.id)).toMatchObject({ status: { pinned: false, want: pc.account.id } });
+    await pc.account.addPostedPc(pc.endpoint);
+    await pc.pull();
+    expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in", list: pc.account.id });
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    const labels = () => new Map(pc.services.accountRows!.rows().map((row) => [row.key, row.label]));
+    return { pc, early, gone, labels, wraps: () => wraps };
+  }
+
+  test("a PC added after the epoch moved names a device sealed in an earlier epoch, walking the list's links back from the wrap it holds; a removed device it never names", async () => {
+    const { pc, early, gone, labels } = await laterPc("good");
+    for (let turn = 0; turn < 50 && labels().get(early.key) !== "Early tablet"; turn++) await pc.list.settled();
+    expect(labels().get(early.key)).toBe("Early tablet");
+    expect(labels().has(gone.key)).toBe(false);
+    expect([...labels().values()]).not.toContain("Gone phone");
+  });
+
+  test("a link that does not open leaves the row Device for good: no error, and no call for it again", async () => {
+    const { pc, early, labels, wraps } = await laterPc("broken");
+    for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+    expect(labels().get(early.key)).toBe("Device");
+    const asked = wraps();
+    pc.time.wall(2 * 60_000);
+    await pc.pull();
+    for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+    expect(labels().get(early.key)).toBe("Device");
+    expect(wraps()).toBe(asked);
+    expect(pc.list.status().error).toBeNull();
+  });
+
   test("opening names never holds up a read: with names to open and the wraps route held, then failing, a removal is read before a session opens", async () => {
     const pc = await pinnedPc();
     const victim = await listMember();

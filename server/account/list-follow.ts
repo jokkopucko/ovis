@@ -24,7 +24,7 @@ import { dirname, join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { verifyLineProof } from "../../shared/account-list-invite.ts";
 import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writeBody } from "../../shared/account-list-entry.ts";
-import { openSealed, openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
+import { openSealed, openWrap, sealFields, walkBack, wrapEpochKey, wrapFromText, wrapToText, type EpochKey, type EpochOpening } from "../../shared/account-list-seal.ts";
 import { signerPower, type ListPlace } from "../../shared/account-list-signers.ts";
 import {
   admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS, READ_PAGES_MAX,
@@ -35,6 +35,7 @@ import { heirOf, heldNaming, heldOut, heldVouches, pinVerdict, standsFor, type L
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { fromBase64Url } from "../../shared/relay-pair-sas.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
 import { logAccess } from "../connection-diagnostics.ts";
 import { preparePrivateState, syncDirectory, writePrivateState } from "../private-state.ts";
@@ -1942,21 +1943,53 @@ export class ListFollow implements ListAuthority {
     if (opens === undefined) return null;
     let wraps: unknown;
     try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) { return { failed: error }; }
-    const mine = Array.isArray(wraps) ? wraps.find((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null && (wrap as { epoch?: unknown }).epoch === epoch && typeof (wrap as { wrap?: unknown }).wrap === "string") : undefined;
+    const held = Array.isArray(wraps) ? wraps.filter((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null
+      && Number.isSafeInteger((wrap as { epoch?: unknown }).epoch) && typeof (wrap as { wrap?: unknown }).wrap === "string") : [];
+    const mine = held.find((wrap) => wrap.epoch === epoch);
     if (mine === undefined) {
-      // A wrap of an epoch this PC was not yet a member in never comes (a newcomer is given the epoch it comes in at,
-      // and later ones): an epoch before the last one it holds a wrap of is final. Only one past all of them, or any
-      // while it holds none yet (a PC just added), may still be given
-      const held = Array.isArray(wraps) ? wraps.flatMap((wrap) => typeof wrap === "object" && wrap !== null && Number.isSafeInteger((wrap as { epoch?: unknown }).epoch) ? [(wrap as { epoch: number }).epoch] : []) : [];
-      return held.length === 0 || epoch > Math.max(...held) ? "unwrapped" : null;
+      // Only an epoch past every wrap this PC holds, or any while it holds none yet (a PC just added), may still be
+      // given. A newcomer is given the epoch it comes in at and later ones, and reads an earlier one through the list's
+      // links from the nearest later wrap it holds (walkedKey); what that walk cannot reach is final
+      if (held.length === 0 || held.every((wrap) => wrap.epoch < epoch)) return "unwrapped";
+      return await this.walkedKey(copy, state, epoch, keys, held.filter((wrap) => wrap.epoch > epoch));
     }
-    const opened = await openWrap({ list: copy.list, epoch, commitment: opens, wrap: wrapFromText(mine.wrap), member: { key: keys.enc, privateKey: keys.encPrivateKey } });
+    return await this.openedWrap(copy, state, epoch, keys, mine.wrap);
+  }
+
+  /** The key of `epoch` out of this PC's wrap of it, kept once it gives the commitment the list holds; null otherwise (a wrong key is the service's doing, and said). */
+  private async openedWrap(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys, wrap: string): Promise<EpochKey | null> {
+    const opens = state.epochs[epoch]?.opens;
+    if (opens === undefined) return null;
+    const opened = await openWrap({ list: copy.list, epoch, commitment: opens, wrap: wrapFromText(wrap), member: { key: keys.enc, privateKey: keys.encPrivateKey } });
     if (!opened.open) {
       if (opened.why === "other_key") this.error = "The account service gave this PC a wrong key to the list's names";
       return null;
     }
-    this.epochKeys.set(id, opened.value);
+    this.epochKeys.set(`${copy.list} ${epoch}`, opened.value);
     return opened.value;
+  }
+
+  /**
+   * The key of an `epoch` before this PC came into the list, as a device reads one (src/lib/account/listNames.ts
+   * openEpochs): from the nearest `later` wrap that opens, back through the links the list's entries carry (walkBack),
+   * each key checked against the commitment this PC's verified copy holds. Every key the walk reaches is kept; a walk
+   * that ends at its bound of links goes on from the last key it reached. Null where it cannot reach `epoch` (a link
+   * missing or that does not open): final, and no error, as a name that does not open. Names only: nothing that decides
+   * who gets in reads these keys.
+   */
+  private async walkedKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys, later: readonly { readonly epoch: number; readonly wrap: string }[]): Promise<EpochKey | null> {
+    const openings = new Map<number, EpochOpening>(state.epochs.map((row, at) => [at, { commitment: row.opens, link: row.link === null ? null : fromBase64Url(row.link) }]));
+    for (const wrap of [...later].sort((a, b) => a.epoch - b.epoch)) {
+      const from = this.epochKeys.get(`${copy.list} ${wrap.epoch}`) ?? await this.openedWrap(copy, state, wrap.epoch, keys, wrap.wrap);
+      if (from === null) continue;
+      for (let start: EpochKey | undefined = from; start !== undefined;) {
+        const walk = await walkBack({ list: copy.list, from: start, to: epoch, openings });
+        for (const key of walk.keys) if (!this.epochKeys.has(`${copy.list} ${key.epoch}`)) this.epochKeys.set(`${copy.list} ${key.epoch}`, key);
+        start = walk.stopped?.why === "bound" ? walk.keys.at(-1) : undefined;
+      }
+      return this.epochKeys.get(`${copy.list} ${epoch}`) ?? null;
+    }
+    return null;
   }
 
   /**
