@@ -77,11 +77,23 @@ interface XtermInternals {
 
 const screens = new WeakMap<Terminal, TerminalScreen>();
 const engineRows = new WeakMap<Terminal, () => ScreenRows | null>();
+/** terminals whose output libghostty alone parses (overlay `only`): xterm's buffer holds no text there */
+const parsedAlone = new WeakSet<Terminal>();
 
 /** libghostty's rows for `term` while it holds the screen (ghostty/overlay.ts); null, or rows it cannot give, leave the reads to xterm */
-export function holdScreenRows(term: Terminal, rows: (() => ScreenRows | null) | null): void {
+export function holdScreenRows(term: Terminal, rows: (() => ScreenRows | null) | null, alone = false): void {
   if (rows) engineRows.set(term, rows);
   else engineRows.delete(term);
+  if (rows && alone) parsedAlone.add(term);
+  else parsedAlone.delete(term);
+}
+
+/**
+ * The rows a reader judged at whole frames (the frame gate: the input row, an agent's stop check) reads: xterm's,
+ * whose parse the frame gate follows, unless libghostty parses alone, when its rows are the only ones with text.
+ */
+export function frameRows(term: Terminal): ScreenRows {
+  return parsedAlone.has(term) ? viewRows(term) : term.buffer.active;
 }
 
 /** the rows of the screen up now (normal or alternate): libghostty's while it holds the screen, xterm's otherwise */

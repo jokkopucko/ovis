@@ -34,10 +34,13 @@ export function selectionText(rows: ScreenRows, start: Point, end: Point, column
   return result.map((line) => line.replace(NON_BREAKING_SPACE, " ")).join(newline);
 }
 
-/** the rows a triple click takes: the line under it with every row it wraps over */
+/**
+ * the rows a triple click takes: the line under it with every row it wraps over. With libghostty alone parsing, xterm's
+ * rows are the view's, and a line that wraps from above the view goes on into rows numbered below 0
+ */
 export function wrappedRange(rows: ScreenRows, y: number): { first: number; last: number } {
   let first = y, last = y;
-  while (first > 0 && rows.getLine(first)?.isWrapped) first--;
+  while (rows.getLine(first - 1) !== undefined && rows.getLine(first)?.isWrapped) first--;
   while (last + 1 < rows.length && rows.getLine(last + 1)?.isWrapped) last++;
   return { first, last };
 }

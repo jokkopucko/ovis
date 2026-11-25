@@ -78,10 +78,10 @@ function loadModule(): Promise<GhosttyModule> {
   return modulePromise;
 }
 
-function rgb(color: string): [number, number, number] | null {
-  const match = /^#([0-9a-f]{6})/i.exec(color.trim());
-  if (!match) return null;
-  const value = Number.parseInt(match[1]!, 16);
+export function rgb(color: string): [number, number, number] | null {
+  const hex = /^#([0-9a-f]{6})/i.exec(color.trim())?.[1];
+  if (!hex) return null;
+  const value = Number.parseInt(hex, 16);
   return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
 }
 

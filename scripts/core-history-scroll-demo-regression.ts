@@ -173,7 +173,7 @@ try {
               const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];
               return [...rows].some((row) => Number(/HIST-(\d{3})/.exec(row.textContent ?? "")?.[1] ?? Infinity) < before);
             }, topBefore, { timeout: 5000 }).catch(async (cause: unknown) => {
-              throw new Error(`core: the wheel moved xterm's view but the rows drawn still start at HIST-${topBefore}: ${JSON.stringify(await drawn(page))}`, { cause });
+              throw new Error(`core: the wheel moved xterm's view but the rows drawn still start at HIST-${topBefore}:`, { cause });
             });
             const jump = page.locator(".pane-frame.is-current .terminal-jump-bottom");
             await jump.waitFor();
@@ -338,10 +338,13 @@ try {
           await appFaces(page);
           await showsNewest(page);
           await settled(page);
-          // rows longer than the phone's grid: the desktop's wide grid holds each on one row, the phone's wraps it
+          // a long session (#4688: 50k lines, the scrollback full), then rows longer than the phone's grid: the desktop's
+          // wide grid holds each on one row, the phone's wraps it
+          await page.evaluate(() => window.historyFixture.output(Array.from({ length: 50_000 }, (_, line) => `\r\nLONG-${line + 1}`).join("")));
+          await settled(page);
           await page.evaluate(() => window.historyFixture.output(Array.from({ length: 200 }, (_, line) => `\r\nWIDE-${String(line + 1).padStart(3, "0")} ${"w".repeat(70)}`).join("")));
           await settled(page);
-          for (let round = 1; round <= 3; round++) {
+          for (let round = 1; round <= 10; round++) {
             await openLens(page, "chat", "tap");
             await page.locator('.app-header .lens-toggle[data-view="chat"]').waitFor();
             await page.evaluate(() => window.historyFixture.geometry(120, 42));
@@ -355,11 +358,12 @@ try {
               const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];
               return [...rows].some((row) => row.textContent?.trim() === last);
             }, `NEW-${round}-5`).catch(async (cause: unknown) => {
-              throw new Error(`round ${round}: the newest output is not in view after the switch: ${JSON.stringify(await history(page))}`, { cause });
+              throw new Error(`round ${round}: the newest output is not in view after the switch: ${JSON.stringify(await history(page))} ${JSON.stringify(await drawn(page))}`, { cause });
             });
             await settled(page);
             const now = (await history(page))!;
             assert.equal(now.viewportY, now.baseY, `round ${round}: after a switch back from another device's grid the view stays at the newest rows (${JSON.stringify(now)})`);
+            assert.equal(await page.locator(".pane-frame.is-current .terminal-jump-bottom").count(), 0, `round ${round}: no Jump to bottom at the newest rows`);
           }
           assert.deepEqual(errors, [], "no page errors");
           console.log("PASS core: back from the chat to a grid another device sized, the terminal lands at its newest rows and follows the output after it");

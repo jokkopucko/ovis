@@ -12,8 +12,8 @@
  * Every other picture goes to the addon as it came. The addon's own caps still apply to what it is given.
  */
 
-/** the addon's caps a picture is held to here too: decoded file bytes, and pixels */
-export interface PictureLimits { sizeLimit: number; pixelLimit: number }
+import { base64Length, decodedLength, fromBase64, ITERM_ARGS_ROOM, ITERM_PICTURE_COMMANDS, itermFile, itermMultipart, sizeOf, toBase64, validBase64, type PictureLimits } from "./itermPicturePayload.ts";
+export type { PictureLimits } from "./itermPicturePayload.ts";
 
 export type PictureFeed = (payload: string) => boolean | Promise<boolean>;
 
@@ -24,8 +24,6 @@ export interface OscStreamHandler {
   end(success: boolean): boolean | Promise<boolean>;
 }
 
-const ARGS_ROOM = 65536;
-
 function textOf(data: Uint32Array, start: number, end: number): string {
   let out = "";
   // the parser hands code points; a slice at a time keeps the argument list short
@@ -33,37 +31,14 @@ function textOf(data: Uint32Array, start: number, end: number): string {
   return out;
 }
 
-const decodedLength = (base64: string): number => {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor(base64.length / 4) * 3 - padding);
-};
-
-const base64Length = (bytes: number): number => Math.ceil(bytes / 3) * 4;
-
-const sizeOf = (args: string): number | null => {
-  const match = /(?:^|;)size=(\d+)/.exec(args);
-  return match ? Number(match[1]) : null;
-};
-
 const withSize = (args: string, size: number): string =>
   sizeOf(args) === null ? `${args};size=${size}` : args.replace(/(^|;)size=\d+/, `$1size=${size}`);
-
-const fromBase64 = (base64: string): Uint8Array => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-
-function toBase64(bytes: Uint8Array): string {
-  let out = "";
-  // btoa takes a string of bytes; one call per slice keeps the argument list of fromCharCode short, and a
-  // slice of a multiple of three bytes ends without padding, so the slices join into one base64 text
-  const slice = 3 * 0x2aaa;
-  for (let i = 0; i < bytes.length; i += slice) out += btoa(String.fromCharCode(...bytes.subarray(i, i + slice)));
-  return out;
-}
 
 function headOf(base64: string): Uint8Array {
   try { return fromBase64(base64.slice(0, 8).replace(/=+$/, "")); } catch { return new Uint8Array(); }
 }
 
-const isTiff = (head: Uint8Array): boolean =>
+export const isTiff = (head: Uint8Array): boolean =>
   head.length >= 4 && ((head[0] === 0x49 && head[1] === 0x49 && head[2] === 0x2a && head[3] === 0)
     || (head[0] === 0x4d && head[1] === 0x4d && head[2] === 0 && head[3] === 0x2a));
 
@@ -213,59 +188,34 @@ async function fromTiff(args: string, base64: string, limits: PictureLimits): Pr
   return { args: sized, png: await placeholderPng(tiff?.width ?? 0, tiff?.height ?? 0) };
 }
 
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-
 /**
  * An OSC 1337 handler, registered after the addon so it reads each payload first: true where it took
  * the payload (a multipart piece, or a picture it handed on in a form the addon takes), false where the
  * addon reads it as it came.
  */
 export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): { handle(data: string): boolean | Promise<boolean>; stream: OscStreamHandler; reset(): void } {
-  let multipart: { args: string; parts: string[]; length: number } | null = null;
-
   const picture = (args: string, base64: string): boolean | Promise<boolean> => {
-    // a length of one past a multiple of four is no base64 at all: atob would throw on it
-    if (base64.length === 0 || base64.length % 4 === 1 || !BASE64.test(base64)) return true;
+    if (!validBase64(base64)) return true;
     if (!isTiff(headOf(base64))) return feed(`File=${withSize(args, decodedLength(base64))}:${base64}`);
     return fromTiff(args, base64, limits()).then(({ args: sized, png }) => feed(`File=${withSize(sized, png.length)}:${toBase64(png)}`), () => true);
   };
+  const multipart = itermMultipart(picture, limits);
 
   const handle = (data: string): boolean | Promise<boolean> => {
-    if (data.startsWith("MultipartFile=")) {
-      const args = data.slice("MultipartFile=".length);
-      const size = sizeOf(args);
-      multipart = size !== null && size > limits().sizeLimit ? null : { args, parts: [], length: 0 };
-      return true;
-    }
-    if (data.startsWith("FilePart=")) {
-      if (multipart) {
-        const part = data.slice("FilePart=".length);
-        multipart.length += part.length;
-        // past the addon's cap the picture is dropped now, not once all of it is held
-        if (multipart.length > base64Length(limits().sizeLimit)) multipart = null;
-        else multipart.parts.push(part);
-      }
-      return true;
-    }
-    if (data.startsWith("FileEnd")) {
-      const done = multipart;
-      multipart = null;
-      return done ? picture(done.args, done.parts.join("")) : true;
-    }
     if (data.startsWith("File=")) {
-      const colon = data.indexOf(":");
-      if (colon < 0) return false;
-      const args = data.slice("File=".length, colon);
-      const base64 = data.slice(colon + 1);
+      const file = itermFile(data);
+      if (!file) return false;
+      const { args, base64 } = file;
       if (sizeOf(args) !== null && !isTiff(headOf(base64))) return false;
       if (base64.length > base64Length(limits().sizeLimit)) return true;
       return picture(args, base64);
     }
+    if (ITERM_PICTURE_COMMANDS.some((command) => data.startsWith(command))) return multipart.handle(data) ?? true;
     return false;
   };
 
   const leftToAddon = (head: string): boolean => {
-    if (!["File=", "MultipartFile=", "FilePart=", "FileEnd"].some((command) => head.startsWith(command) || command.startsWith(head))) return true;
+    if (!ITERM_PICTURE_COMMANDS.some((command) => head.startsWith(command) || command.startsWith(head))) return true;
     if (!head.startsWith("File=")) return false;
     const colon = head.indexOf(":");
     return colon >= 0 && head.length >= colon + 9 && sizeOf(head.slice("File=".length, colon)) !== null && !isTiff(headOf(head.slice(colon + 1)));
@@ -287,14 +237,14 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
       if (state !== "hold") return;
       const text = textOf(data, start, end);
       const colon = head.indexOf(":");
-      const room = colon >= 0 ? colon + 16 : ARGS_ROOM;
+      const room = colon >= 0 ? colon + 16 : ITERM_ARGS_ROOM;
       if (head.length < room) head += text.slice(0, room - head.length);
       heldLength += text.length;
       // the cap is on the base64 after the arguments, as the addon's is on the file
-      const argsLength = head.indexOf(":") >= 0 ? head.indexOf(":") + 1 : ARGS_ROOM;
+      const argsLength = head.indexOf(":") >= 0 ? head.indexOf(":") + 1 : ITERM_ARGS_ROOM;
       if (heldLength - argsLength > base64Length(limits().sizeLimit)) { release(); state = "over"; return; }
       if (leftToAddon(head)) { release(); state = "addon"; return; }
-      if (head.startsWith("FilePart=") && multipart === null) { release(); state = "drop"; return; }
+      if (head.startsWith("FilePart=") && !multipart.active()) { release(); state = "drop"; return; }
       recent.push(text);
       if (recent.length >= 1024) { held.push(recent.join("")); recent = []; }
     },
@@ -306,10 +256,10 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
         return handle(data);
       }
       // past the addon's cap: a picture, or a piece of one, is dropped as the addon would drop it
-      if (state === "over" && !head.startsWith("File=")) multipart = null;
+      if (state === "over" && !head.startsWith("File=")) multipart.reset();
       return true;
     },
   };
 
-  return { handle, stream, reset: () => { multipart = null; } };
+  return { handle, stream, reset: multipart.reset };
 }

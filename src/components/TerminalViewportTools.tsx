@@ -8,7 +8,7 @@ import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { SCROLL_POLL_BUSY_MS, SCROLL_POLL_SETTLE_MS, scrollPollDelay, validScroll, visibleFindRects, type FindCellRect } from "../lib/terminalViewport.ts";
-import { VIEW_MOVED_EVENT } from "../lib/ghostty/viewMoved.ts";
+import { GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ghosttyRowsAbove } from "../lib/ghostty/viewMoved.ts";
 import { viewRows } from "../lib/terminalScreen.ts";
 import "./TerminalViewportTools.css";
 
@@ -275,10 +275,13 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     });
     // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
     const readLocal = () => {
-      // xterm's own view: the overlay follows it (overlay.ts), and moves libghostty's view only when it next draws
-      setLocalBack(terminal.buffer.active.viewportY < terminal.buffer.active.baseY);
+      // xterm's own view: the overlay follows it (overlay.ts), and moves libghostty's view only when it next draws.
+      // When libghostty parses alone, xterm keeps no rows and libghostty's view is the one
+      const rowsAbove = ghosttyRowsAbove(terminal);
+      setLocalBack(rowsAbove === null ? terminal.buffer.active.viewportY < terminal.buffer.active.baseY : rowsAbove > 0);
     };
     const scrolled = terminal.onScroll(readLocal);
+    terminal.element?.addEventListener(GHOSTTY_VIEW_EVENT, readLocal);
     const rendered = terminal.onRender(() => { readLocal(); paintHits(); });
     // a wheel or swipe that xterm sends to herdr as mouse reports comes back only as output, from a view
     // that left the bottom: read at the busy cadence, not the follow pace
@@ -303,6 +306,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       previewRef.current = null;
       unregisterCancellation();
       if (timer !== null) clearTimeout(timer);
+      terminal.element?.removeEventListener(GHOSTTY_VIEW_EVENT, readLocal);
       parsed.dispose(); scrolled.dispose(); rendered.dispose(); resized.dispose(); observer.disconnect();
       mount?.removeEventListener("scroll", paint);
       terminal.element?.removeEventListener("wheel", gesture, { capture: true });

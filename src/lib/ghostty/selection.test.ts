@@ -96,3 +96,22 @@ test("a row of xterm's view reads as the row libghostty draws there, at the bott
     term.dispose();
   }
 });
+
+test("with no history in xterm, a triple click on a line that wraps from above the view takes it from its start", async () => {
+  const term = new Terminal({ cols: 10, rows: 2, scrollback: 0, allowProposedApi: true });
+  const vt = await GhosttyVt.create(10, 2);
+  try {
+    vt.setScrollback(50);
+    vt.write("abcdefghijklmnopqrstuvwxyz123\r\n$ ");
+    holdScreenRows(term, () => ghosttyRows(vt));
+    // the view shows the line's last row and the prompt: the line starts two rows above it
+    const rows = viewRows(term);
+    const { first, last } = wrappedRange(rows, 0);
+    expect({ first, last }).toEqual({ first: -2, last: 0 });
+    expect(selectionText(rows, [0, first], [10, last], false, "\n")).toBe("abcdefghijklmnopqrstuvwxyz123");
+  } finally {
+    holdScreenRows(term, null);
+    vt.dispose();
+    term.dispose();
+  }
+});

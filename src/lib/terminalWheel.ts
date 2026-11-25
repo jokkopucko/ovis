@@ -16,6 +16,9 @@ interface WheelViewport {
 }
 
 const forwarded = new WeakSet<Event>();
+const gridPans = new WeakSet<WheelEvent>();
+export const wheelPansGrid = (event: WheelEvent): boolean => gridPans.has(event);
+
 export function forwardWheel(target: EventTarget, event: WheelEvent): void {
   const copy = new WheelEvent("wheel", event);
   if (event.isTrusted) forwarded.add(copy);
@@ -31,7 +34,11 @@ export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scroll
 /** herdr owns history; xterm owns encoding mouse reports for applications that use them. */
 export function attachTerminalWheel(term: Terminal, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
   term.attachCustomWheelEventHandler((event) => {
-    if (viewport.drag(event) || viewport.pan?.(event)) return false;
+    if (viewport.drag(event)) return false;
+    if (viewport.pan?.(event)) {
+      gridPans.add(event);
+      return false;
+    }
     // Observers pan locally; an interactive mirror can scroll herdr through the API.
     const mirrored = viewport.mirrored();
     if (viewport.adopted() && !mirrored) return false;

@@ -39,7 +39,7 @@ import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
-import { terminalScreen, viewRows } from "./terminalScreen.ts";
+import { screenRows, terminalScreen, viewRows } from "./terminalScreen.ts";
 import { hyperlinkProvider } from "./ghostty/hyperlinks.ts";
 import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
@@ -1049,7 +1049,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           write(data, () => { inFlight--; callback?.(); });
         };
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
-          history: { scrollback: term.options.scrollback ?? 0, length: terminalScreen(term).length, viewportY: terminalScreen(term).viewportY, baseY: terminalScreen(term).baseY },
+          history: ((rows) => ({ scrollback: term.options.scrollback ?? 0, length: rows.length, viewportY: rows.viewportY, baseY: rows.baseY }))(screenRows(term)),
           grid: { cols: term.cols, rows: term.rows } }) });
       }
 
@@ -1128,7 +1128,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       pendingScopeRef.current = session.scope;
       pendingEpochRef.current = session.epoch;
       socketRef.current = socket;
-      const releaseGhostty = captureForGhostty(term, socket, host);
+      const releaseGhostty = captureForGhostty(term, socket, host, () => {
+        const owner = outputOwner;
+        const view = parsingView;
+        return () => !view && owner === outputOwner;
+      });
       let adjustingFaint = false;
       const clampGhosttyFaint = (): void => {
         if (adjustingFaint) return;
