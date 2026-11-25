@@ -22,7 +22,7 @@ export const FILE_TASK_DEADLINE_MS = 3_000;
  * A task of many calls rather than one: a page rendered with its own files (work for the processor
  * too), a folder walked for a name (up to its 5,000 entries, each a call to a disk that may be
  * slow), a Claude task list scanned from its agent session's history, an Agy catalog copied (up to
- * 64 MiB), or a Letta transcript scanned for one call's output (up to 256 MiB). It may take longer.
+ * 256 MiB), or a Letta transcript scanned for one call's output (up to 256 MiB). It may take longer.
  */
 export const FILE_LONG_TASK_DEADLINE_MS = 15_000;
 /**

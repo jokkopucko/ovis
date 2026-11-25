@@ -18,8 +18,9 @@ const MAX_LINE = 16 * 1024 * 1024;
 const SCAN_BYTES = 32 * 1024 * 1024;
 // The catalog's database and WAL grow with the session's payloads, not its step count: a long
 // session passes 32 MiB during a turn (#2618). The copy repeats while a turn writes, on a file
-// thread since #2706, but it still holds that thread and the disk for its duration.
-export const AGY_CATALOG_BYTES = 64 * 1024 * 1024;
+// thread since #2706, but it still holds that thread and the disk for its duration. A session of
+// two days passed 64 MiB (48 MiB database, 33 MiB WAL) and its chat went blank.
+export const AGY_CATALOG_BYTES = 256 * 1024 * 1024;
 const CATALOG_BYTES = AGY_CATALOG_BYTES;
 const hash = (value: string): string => createHash("sha256").update(value).digest("base64url");
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
