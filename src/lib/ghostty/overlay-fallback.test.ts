@@ -47,7 +47,7 @@ test("a module that fails while the layer is set up leaves xterm drawing, with i
 test("a screen read libghostty fails gives the reads back to xterm, which answers that one too", async () => {
   failing = new Set(["rowText"]);
   const xtermLine = (y: number): ScreenLine => ({ isWrapped: false, length: 80, getCell: () => undefined, translateToString: () => `xterm row ${y}` });
-  const xtermRows = { length: 3, baseY: 0, viewportY: 0, cursorX: 0, cursorY: 0, getLine: xtermLine };
+  const xtermRows = { length: 3, baseY: 0, viewportY: 0, cursorX: 0, cursorY: 0, getLine: xtermLine, getNullCell: () => stub };
   const term: any = { cols: 80, rows: 24, element: stub, options: { scrollback: 0, fontFamily: "monospace", fontSize: 13, theme: {} }, buffer: { active: xtermRows }, write: () => {}, reset: () => {}, onResize: stub, onRender: stub, onScroll: stub, refresh: () => {} };
   const overlay = await attachGhosttyOverlay(term, stub, () => []);
   expect(overlay).not.toBeNull();

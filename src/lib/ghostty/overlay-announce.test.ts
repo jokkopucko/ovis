@@ -23,6 +23,7 @@ class FakeElement {
   getContext(): null { return null; }
   listeners = new Map<string, () => void>();
   addEventListener(type: string, listener: () => void): void { this.listeners.set(type, listener); }
+  dispatchEvent(event: { type: string }): boolean { this.listeners.get(event.type)?.(); return true; }
   removeEventListener(type: string): void { this.listeners.delete(type); }
   querySelector(): FakeElement | null { return screen; }
 }

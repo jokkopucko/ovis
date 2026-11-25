@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILinkProvider } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { HerdrSocket, markTyped } from "./ws.ts";
@@ -39,7 +39,8 @@ import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
-import { terminalScreen } from "./terminalScreen.ts";
+import { terminalScreen, viewRows } from "./terminalScreen.ts";
+import { hyperlinkProvider } from "./ghostty/hyperlinks.ts";
 import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
@@ -265,12 +266,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       term.loadAddon(fit);
       matchHerdrWidths(term);
-      // the same policy as the linkHandler above: an http(s) address or nothing (S10)
-      term.loadAddon(new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); }));
+      // libghostty's OSC 8 hyperlinks, first: where a hyperlink's label is an address too, its target is what opens, as with
+      // xterm's own provider
+      term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), (uri) => isWebLink(uri) || fileUriPath(uri) !== null, openHyperlink));
+      // the same policy as the linkHandler above: an http(s) address or nothing (S10). The addon reads the rows a link is
+      // in through the terminal it is given: the rows drawn (viewRows), libghostty's while it holds the screen. It is not
+      // loaded through the terminal (that would read xterm's buffer), so it is disposed with it below
+      const webLinks = new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); });
+      webLinks.activate({ registerLinkProvider: (provider: ILinkProvider) => term.registerLinkProvider(provider), buffer: { get active() { return viewRows(term); } } } as unknown as Terminal);
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
-      term.registerLinkProvider(terminalFileLinkProvider(() => terminalScreen(term).active(), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
+      term.registerLinkProvider(terminalFileLinkProvider(() => viewRows(term), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
       term.open(host);
       // xterm turns autocorrect, autocapitalize and spellcheck off on its helper textarea; an Android
       // keyboard still shows its word strip there unless the field also says autocomplete="off",
@@ -465,7 +472,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (!shouldOpenInPanel(event, target.url)) openExternal(target.url, "link", reuseTab(event));
             return true;
           }
-          const buffer = terminalScreen(term).active();
+          const buffer = viewRows(term);
           const uri = terminalScreen(term).hyperlinkAt(buffer.viewportY + target.row, target.col);
           if (uri !== null && (isWebLink(uri) || fileUriPath(uri) !== null)) {
             openHyperlink(event, uri);
@@ -473,7 +480,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           const y = buffer.viewportY + target.row + 1;
           const x = target.col + 1;
-          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined)
+          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined, () => viewRows(term))
             .find(({ range: { start, end } }) => (y > start.y || (y === start.y && x >= start.x)) && (y < end.y || (y === end.y && x <= end.x)));
           if (!link) return false;
           link.activate(event);
@@ -490,7 +497,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         const row = screen.offsetHeight / term.rows;
-        const cursorBottom = screen.offsetTop + (terminalScreen(term).cursorY + 1) * row;
+        const cursorBottom = screen.offsetTop + (viewRows(term).cursorY + 1) * row;
         const max = host.scrollHeight - host.clientHeight;
         host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight;
       };
@@ -2594,6 +2601,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         for (const handler of queryReplies) handler.dispose();
         for (const handler of arrowModeWitnesses) handler.dispose();
         osc8.dispose();
+        webLinks.dispose();
         modifyOtherKeysSet.dispose();
         modifyOtherKeysOff.dispose();
         if (clipboardTimerRef.current !== null) window.clearTimeout(clipboardTimerRef.current);

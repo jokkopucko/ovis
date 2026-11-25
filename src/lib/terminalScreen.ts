@@ -36,6 +36,8 @@ export interface ScreenLine {
   /** cell `x`, read into `cell` when one is given (a reader that walks a row reuses one cell) */
   getCell(x: number, cell?: ScreenCell): ScreenCell | undefined;
   translateToString(trimRight?: boolean, startColumn?: number, endColumn?: number): string;
+  /** libghostty's rows only: the OSC 8 target of cell `x`, or null (xterm's is read through TerminalScreen.hyperlinkAt) */
+  hyperlink?(x: number): string | null;
 }
 
 export interface ScreenRows {
@@ -45,6 +47,8 @@ export interface ScreenRows {
   readonly cursorX: number;
   readonly cursorY: number;
   getLine(y: number): ScreenLine | undefined;
+  /** a blank cell to read cells into (getCell(x, cell)) */
+  getNullCell(): ScreenCell;
 }
 
 type ScreenPoint = readonly [x: number, y: number];
@@ -54,7 +58,6 @@ export interface TerminalScreen extends ScreenRows {
   active(): ScreenRows;
   /** a full-screen program's alternate screen is up: it keeps no history */
   readonly alternate: boolean;
-  getNullCell(): ScreenCell;
   /** the OSC 8 target (`ESC ] 8 ; ; uri`) of cell `x` on row `y`, or null */
   hyperlinkAt(y: number, x: number): string | null;
   hasSelection(): boolean;
@@ -88,7 +91,7 @@ export function screenRows(term: Terminal): ScreenRows {
 
 /**
  * The rows of the screen up now numbered as xterm's buffer numbers them, for a reader that takes its rows from xterm
- * (a selection, a pointer on the view): libghostty's while it holds the screen, xterm's otherwise. A row of xterm's
+ * (a selection, a link provider, a pointer on the view): libghostty's while it holds the screen, xterm's otherwise. A row of xterm's
  * view is the row libghostty draws there (overlay.ts), so a selection is copied and a pointer hits as they are shown:
  * where a resize left the two engines' histories at different depths, the view's top is where they meet. While the
  * two are on different screens (a switch libghostty took and xterm has yet to parse), xterm's own rows answer.
@@ -101,7 +104,9 @@ export function viewRows(term: Terminal): ScreenRows {
   const offset = rows.viewportY - own.viewportY;
   if (offset === 0) return rows;
   return {
+    ...("alternate" in rows ? { alternate: rows.alternate } : {}),
     length: rows.length - offset, baseY: rows.baseY - offset, viewportY: rows.viewportY - offset, cursorX: rows.cursorX, cursorY: rows.cursorY,
+    getNullCell: () => rows.getNullCell(),
     getLine: (y) => rows.getLine(y + offset),
   };
 }
@@ -123,7 +128,10 @@ export function terminalScreen(term: Terminal): TerminalScreen {
     getNullCell: () => term.buffer.active.getNullCell(),
     // xterm (5.5 and 6.0) keeps OSC 8 targets in its own link service with no public way to read them: this reads
     // its internals and finds nothing where they are not there; the caller applies its own link policy to the uri
+    // the folded view draws and hits libghostty's cells while it holds the screen: their target is its
     hyperlinkAt: (y, x) => {
+      const held = viewRows(term).getLine(y);
+      if (held?.hyperlink) return held.hyperlink(x);
       const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
       const id = cell?.extended?.urlId;
       if (!id) return null;

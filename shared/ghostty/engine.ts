@@ -46,6 +46,7 @@ export interface GhosttyExports {
   ghostty_grid_ref_cell(ref: number, outCell: number): number;
   ghostty_grid_ref_graphemes(ref: number, buf: number, bufLen: number, outLen: number): number;
   ghostty_grid_ref_style(ref: number, outStyle: number): number;
+  ghostty_grid_ref_hyperlink_uri(ref: number, buf: number, bufLen: number, outLen: number): number;
   ghostty_row_get(row: bigint, key: number, out: number): number;
   ghostty_terminal_select_word(terminal: number, options: number, outSelection: number): number;
   ghostty_terminal_select_line(terminal: number, options: number, outSelection: number): number;
@@ -107,7 +108,7 @@ export const ENGINE_FUNCTIONS: Record<Exclude<keyof GhosttyExports, "memory" | "
   ghostty_wasm_take_opaque: true, ghostty_free: true, ghostty_terminal_new: true, ghostty_terminal_free: true, ghostty_terminal_reset: true,
   ghostty_terminal_resize: true, ghostty_terminal_set: true, ghostty_terminal_get: true, ghostty_terminal_vt_write: true,
   ghostty_terminal_scroll_viewport: true, ghostty_terminal_grid_ref: true, ghostty_terminal_point_from_grid_ref: true,
-  ghostty_grid_ref_row: true, ghostty_grid_ref_cell: true, ghostty_grid_ref_graphemes: true, ghostty_grid_ref_style: true, ghostty_row_get: true,
+  ghostty_grid_ref_row: true, ghostty_grid_ref_cell: true, ghostty_grid_ref_graphemes: true, ghostty_grid_ref_style: true, ghostty_grid_ref_hyperlink_uri: true, ghostty_row_get: true,
   ghostty_terminal_select_word: true, ghostty_terminal_select_line: true, ghostty_terminal_selection_format_alloc: true,
   ghostty_render_state_new: true, ghostty_render_state_free: true,
   ghostty_render_state_update: true, ghostty_render_state_get: true, ghostty_render_state_clean: true,
@@ -219,7 +220,7 @@ export interface GhosttyCursor { visible: boolean; x: number; y: number; style: 
 export interface EngineCell { text: string; width: 0 | 1 | 2; flags: number; fg: WrittenColor | null; bg: WrittenColor | null }
 
 /** A kept row's text cell by cell (GhosttyEngine.rowText). */
-export interface EngineRowText { continues: boolean; codes: Uint32Array; widths: Uint8Array; graphemes: Map<number, string> }
+export interface EngineRowText { continues: boolean; codes: Uint32Array; widths: Uint8Array; graphemes: Map<number, string>; hyperlinks: Map<number, string> }
 
 /** A Kitty image on screen, in viewport cells and CSS pixels, as the render state places it. */
 export interface GhosttyImage {
@@ -474,7 +475,7 @@ export class GhosttyModule {
   readonly sizes: { readonly [K in keyof typeof ENGINE_FIELDS]: number };
   /** GhosttyKey values by name */
   readonly keys: Readonly<Record<string, number>>;
-  readonly bit: Record<"codepoint" | "content_tag" | "wide" | "style_id" | "bg_index" | "bg_r" | "bg_g" | "bg_b", Bits>;
+  readonly bit: Record<"codepoint" | "content_tag" | "wide" | "style_id" | "hyperlink" | "bg_index" | "bg_r" | "bg_g" | "bg_b", Bits>;
   /**
    * The trap that broke this module, recorded by a screen's engine (one made with `events`): a trap leaves
    * the module's stack pointer moved for good, so every engine on it refuses from then on and its owner makes
@@ -514,7 +515,7 @@ export class GhosttyModule {
       return { lsb: content.lsb + inner.lsb, width: inner.width };
     };
     this.bit = {
-      codepoint: arm("CODEPOINT", "codepoint"), content_tag: pick("content_tag"), wide: pick("wide"), style_id: pick("style_id"),
+      codepoint: arm("CODEPOINT", "codepoint"), content_tag: pick("content_tag"), wide: pick("wide"), style_id: pick("style_id"), hyperlink: pick("hyperlink"),
       bg_index: arm("BG_COLOR_PALETTE", "index"), bg_r: arm("BG_COLOR_RGB", "r"), bg_g: arm("BG_COLOR_RGB", "g"), bg_b: arm("BG_COLOR_RGB", "b"),
     };
   }
@@ -560,6 +561,8 @@ function bitField(lo: number, hi: number, b: Bits): number {
   if (b.lsb + b.width <= 32) return (lo >>> b.lsb) & mask;
   return ((lo >>> b.lsb) | (hi << (32 - b.lsb))) & mask;
 }
+
+const UTF8 = new TextDecoder();
 
 /** a blank cell in the default style, shared: rowCells hands out many */
 const BLANK_CELL: EngineCell = Object.freeze({ text: "", width: 1, flags: 0, fg: null, bg: null });
@@ -1486,7 +1489,8 @@ export class GhosttyEngine {
   /**
    * The text of kept row `y` cell by cell, for a reader of the text alone: each cell's code point (0 where nothing was
    * printed, a background left by an erase included) and width (0 for a wide cell's second column), and the whole
-   * grapheme of a cell that holds more than one code point, and whether the row continues a soft wrap (rowContinues).
+   * grapheme of a cell that holds more than one code point, the OSC 8 target of a cell in a hyperlink, and whether the
+   * row continues a soft wrap (rowContinues).
    * Null outside the kept rows. Unlike rowCells, no style is read.
    */
   rowText(y: number): EngineRowText | null {
@@ -1497,11 +1501,11 @@ export class GhosttyEngine {
       const cols = this.grid().cols;
       if (!this.gridRef({ x: 0, y }, ref)) return null;
       const refX = ref + this.f.GhosttyGridRef.x;
-      const { wide: wideB, content_tag: tagB, codepoint: cpB } = this.bit;
+      const { wide: wideB, content_tag: tagB, codepoint: cpB, hyperlink: linkB } = this.bit;
       const rowRaw = this.scratch + AT.refEnd;
       this.check(x.ghostty_grid_ref_row(ref, rowRaw), "grid_ref_row");
       this.check(x.ghostty_row_get(this.view().getBigUint64(rowRaw, true), this.e.GhosttyRowData.WRAP_CONTINUATION, this.scratch), "row wrap continuation");
-      const row: EngineRowText = { continues: this.view().getUint8(this.scratch) !== 0, codes: new Uint32Array(cols), widths: new Uint8Array(cols), graphemes: new Map() };
+      const row: EngineRowText = { continues: this.view().getUint8(this.scratch) !== 0, codes: new Uint32Array(cols), widths: new Uint8Array(cols), graphemes: new Map(), hyperlinks: new Map() };
       let dv = this.view();
       for (let col = 0; col < cols; col++) {
         dv.setUint16(refX, col, true);
@@ -1509,6 +1513,12 @@ export class GhosttyEngine {
         const lo = dv.getUint32(raw, true), hi = dv.getUint32(raw + 4, true);
         const wide = bitField(lo, hi, wideB), tag = bitField(lo, hi, tagB);
         row.widths[col] = wide === wides.WIDE ? 2 : wide === wides.SPACER_TAIL ? 0 : 1;
+        // the blank a wide glyph left at the end of the row it did not fit on is no part of its link
+        if (bitField(lo, hi, linkB) !== 0 && wide !== wides.SPACER_HEAD) {
+          const uri = this.refHyperlink(ref);
+          dv = this.view();
+          if (uri !== null) row.hyperlinks.set(col, uri);
+        }
         if (wide === wides.SPACER_HEAD || (tag !== tags.CODEPOINT && tag !== tags.CODEPOINT_GRAPHEME)) continue;
         row.codes[col] = bitField(lo, hi, cpB);
         if (tag === tags.CODEPOINT_GRAPHEME) {
@@ -1565,6 +1575,25 @@ export class GhosttyEngine {
       }
       return cells;
     });
+  }
+
+  /** the OSC 8 target of the cell `ref` points at, or null */
+  private refHyperlink(ref: number): string | null {
+    const x = this.x;
+    const out = this.scratch + AT.graphemeOut, buf = this.scratch + AT.grapheme, cap = AT.scroll - AT.grapheme;
+    const read = (at: number, len: number): string => UTF8.decode(new Uint8Array(x.memory.buffer, at, len).slice());
+    const result = x.ghostty_grid_ref_hyperlink_uri(ref, buf, cap, out);
+    if (result === this.e.GhosttyResult.NO_VALUE) return null;
+    if (result === 0) return read(buf, this.view().getUint32(out, true)) || null;
+    if (result !== this.e.GhosttyResult.OUT_OF_SPACE) this.check(result, "grid_ref_hyperlink_uri");
+    const need = this.view().getUint32(out, true);
+    const big = this.allocate(need, "a hyperlink");
+    try {
+      this.check(x.ghostty_grid_ref_hyperlink_uri(ref, big, need, out), "grid_ref_hyperlink_uri");
+      return read(big, this.view().getUint32(out, true)) || null;
+    } finally {
+      x.ghostty_wasm_free(big, need);
+    }
   }
 
   /** the grapheme cluster of the cell `ref` points at, its first code point included */

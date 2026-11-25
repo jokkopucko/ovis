@@ -1,6 +1,7 @@
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
-import { terminalScreen, type ScreenCell, type ScreenLine } from "./terminalScreen.ts";
+import { viewRows, type ScreenCell, type ScreenLine, type ScreenRows } from "./terminalScreen.ts";
+import { GHOSTTY_DREW_EVENT } from "./ghostty/viewMoved.ts";
 
 /*
  * The folded view of a grid wider than its screen that this browser does not size. A Windows PC's
@@ -284,8 +285,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
   view.setAttribute("aria-hidden", "true");
   const rows: HTMLDivElement[] = [];
   const drawn: string[] = [];
-  const reader = terminalScreen(term);
-  const scratch = reader.getNullCell();
+  // the rows drawn: libghostty's while it holds the screen (terminalScreen.ts viewRows)
+  const reader = (): ScreenRows => viewRows(term);
   let active = false;
 
   const screen = (): HTMLElement | null => term.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
@@ -295,7 +296,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const style = getComputedStyle(term.element);
     return grid.offsetWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > host.clientWidth + 1;
   };
-  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(reader.cursorY, rows.length - 1)];
+  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(reader().cursorY, rows.length - 1)];
   const cursorBottom = (): number | null => {
     const row = cursorRow();
     return active && row ? view.offsetTop + row.offsetTop + row.offsetHeight : null;
@@ -318,7 +319,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!xterm || !grid || !row || term.rows === 0 || term.cols === 0) return;
     const gridRect = grid.getBoundingClientRect();
     const line = grid.offsetHeight / term.rows;
-    const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (reader.cursorY + 1) * line;
+    // the preedit and xterm's helper textarea stand at xterm's own cursor
+    const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * line;
     let target = view.offsetTop + row.offsetTop + row.offsetHeight;
     let scroll = 0;
     let left = 0;
@@ -329,7 +331,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       const segment = Math.max(0, Math.floor((rect.top + rect.height / 2 - row.getBoundingClientRect().top) / foldLine));
       target = view.offsetTop + row.offsetTop + Math.min(row.offsetHeight, (segment + 1) * foldLine);
       // xterm's input stands on the last column while the cursor waits to wrap past it
-      const column = Math.min(reader.cursorX, term.cols - 1);
+      // xterm's input stands at xterm's cursor
+      const column = Math.min(term.buffer.active.cursorX, term.cols - 1);
       const needed = gridRect.left - (parseFloat(xterm.style.left) || 0) + xterm.scrollLeft + column * grid.offsetWidth / term.cols - rect.left;
       scroll = Math.max(0, Math.min(needed, xterm.scrollWidth - xterm.clientWidth));
       left = scroll - needed;
@@ -360,7 +363,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       rows.pop()!.remove();
       drawn.pop();
     }
-    const buffer = reader.active();
+    const buffer = reader();
+    const scratch = buffer.getNullCell();
     const shown = term.element?.querySelector(".xterm-rows .xterm-cursor");
     const cursorY = buffer.baseY + buffer.cursorY - buffer.viewportY;
     for (let y = Math.max(0, start); y <= Math.min(end, term.rows - 1); y++) {
@@ -402,6 +406,10 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!foreign() || !wrap()) sync();
     else draw(start, end);
   });
+  // libghostty's rows change where it says, not where xterm's write did (a resize lays the two out apart): the fold
+  // draws every row again after a frame of libghostty's, writing only those whose HTML changed
+  const ghosttyDrew = (): void => { if (active && foreign() && wrap()) draw(0, term.rows - 1); };
+  host.addEventListener(GHOSTTY_DREW_EVENT, ghosttyDrew);
   const resized = term.onResize(() => sync());
   const measured = new ResizeObserver(() => sync());
   const grid = screen();
@@ -443,7 +451,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (selection && !selection.isCollapsed && selection.anchorNode && view.contains(selection.anchorNode)) return;
     const hit = textAt(event.clientX, event.clientY);
     if (hit) {
-      const buffer = reader.active();
+      const buffer = reader();
+      const scratch = buffer.getNullCell();
       const line = buffer.getLine(buffer.viewportY + hit.row);
       const col = line ? columnAt(line, term.cols, hit.offset, scratch) : -1;
       if (col >= 0 && onText(hit.row, hit.offset, hit.offset + 1, event.clientX, event.clientY) && onLink({ row: hit.row, col }, event)) return;
@@ -470,6 +479,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     cursorBottom,
     dispose() {
       rendered.dispose();
+      host.removeEventListener(GHOSTTY_DREW_EVENT, ghosttyDrew);
       resized.dispose();
       measured.disconnect();
       view.removeEventListener("click", tap);
