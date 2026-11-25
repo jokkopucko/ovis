@@ -451,6 +451,53 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(windows({ EVENT_NAME: "push", REF: "refs/heads/main", WINVM_READY: ready, PR_DRAFT: "" })).toEqual(winvm);
     });
 
+    it("reads the Actions API once for the Linux, Rust and Windows routes", () => {
+      const state = actions({ in_progress: { 1: running(2) }, queued: { 2: waiting(1, 30, ["self-hosted", "self-hosted-ovis-rust"]) } });
+      const now = Math.floor(Date.now() / 1000);
+      expect(allOutputs({ ...pr, FAKE_GH: state, WINVM_READY: readyAgo(5), RUST_SELF_HOSTED: "true", RUST_SEEN: String(now) }))
+        .toEqual({ linux: ovis, fast: ovis, rust: ["self-hosted", "self-hosted-ovis-rust"], windows: winvm });
+      const calls = readFileSync(join(state, "calls"), "utf8").trim().split("\n");
+      for (const read of ["status=in_progress", "status=queued", "/runs/1/jobs", "/runs/2/jobs"]) {
+        expect(calls.filter((call) => call.includes(read))).toHaveLength(1);
+      }
+    });
+
+    it("reads past the run that sends the Linux jobs hosted until it knows whether winvm is taken", () => {
+      const state = actions({ queued: { 1: waiting(1, 300), 2: waiting(1, 10, winvm) } });
+      expect(allOutputs({ ...pr, FAKE_GH: state, WINVM_READY: readyAgo(5) })).toMatchObject({ linux: "ubuntu-24.04", windows: "windows-latest" });
+      const free = actions({ queued: { 1: [...waiting(1, 300), ...waiting(1, 10, winvm)], 2: waiting(1, 10) } });
+      expect(allOutputs({ ...pr, FAKE_GH: free, WINVM_READY: readyAgo(5) })).toMatchObject({ linux: "ubuntu-24.04", windows: "windows-latest" });
+      expect(readFileSync(join(free, "calls"), "utf8")).not.toContain("/runs/2/jobs");
+    });
+
+    it("checks winvm's mark again after the jobs were read, which may take minutes", () => {
+      // a date that moves 100 s on each call: winvm's mark is 100 s old before the read and older after it
+      const clock = tempDir();
+      const base = Math.floor(Date.now() / 1000);
+      writeFileSync(join(clock, "date"), `#!/bin/sh\nn=$(cat "$FAKE_CLOCK/n" 2>/dev/null || echo 0)\necho $((n + 1)) > "$FAKE_CLOCK/n"\necho $((${base} + n * 100))\n`);
+      chmodSync(join(clock, "date"), 0o755);
+      const result = route({ ...pr, FAKE_GH: actions({}), WINVM_READY: String(base - 100), PATH: `${clock}:${bin}:${process.env.PATH ?? ""}`, FAKE_CLOCK: clock });
+      expect(result.stdout.split("\n")[3]).toBe('windows="windows-latest"');
+      expect(result.stderr).toMatch(/Windows: windows-latest \(winvm's runner last said it was waiting [2-9]00s ago\)/);
+    });
+
+    it("takes windows-latest when the jobs' answer cannot be kept in its temporary file", () => {
+      const result = spawnSync("bash", ["-c", `trap '' XFSZ; ulimit -f 0; exec bash "$0"`, script], {
+        encoding: "utf8",
+        timeout: 5_000,
+        env: { PATH: `${bin}:${process.env.PATH ?? ""}`, REPOSITORY: repo, EVENT_NAME: "push", REF: "refs/heads/main", WINVM_READY: readyAgo(5), FAKE_GH: actions({ queued: { 1: waiting(1, 10, winvm) } }) },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.split("\n")[3]).toBe('windows="windows-latest"');
+    });
+
+    it("is not kept off winvm by a job of another runner whose times are missing", () => {
+      const odd: Job[] = [{ status: "queued", labels: ["self-hosted", "self-hosted-ovis-mac"], created_at: null as unknown as string }];
+      expect(windows({ EVENT_NAME: "push", REF: "refs/heads/main", WINVM_READY: readyAgo(5), FAKE_GH: actions({ queued: { 1: odd } }) })).toEqual(winvm);
+      const busy: Job[] = [{ status: "in_progress", labels: winvm, created_at: ago(30), started_at: null as unknown as string }];
+      expect(windows({ ...pr, WINVM_READY: readyAgo(5), FAKE_GH: actions({ in_progress: { 1: busy } }) })).toBe("windows-latest");
+    });
+
     it("does not follow the Linux jobs' route", () => {
       expect(allOutputs({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(1, 300) } }), WINVM_READY: readyAgo(5) })).toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04", rust: "ubuntu-24.04", windows: winvm });
       expect(allOutputs({ EVENT_NAME: "push", CONFIGURED_LABELS: labels })).toEqual({ linux: JSON.parse(labels), fast: JSON.parse(labels), rust: "ubuntu-24.04", windows: "windows-latest" });

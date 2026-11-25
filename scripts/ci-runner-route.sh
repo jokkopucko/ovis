@@ -77,44 +77,55 @@ api() {
   return 1
 }
 
-# Prints "<longest wait> <live> <longest Rust wait>": the seconds the longest-waiting queued job of the pool has
-# waited for a runner (a day at most: GitHub drops it then), how many jobs that can only run on the pool's
-# label and started within the last hour are running, and the seconds the longest-waiting queued job that
-# asks for the Rust runners' label has waited. A job "in progress" for longer is a stale record (some stay so
-# for days), not a runner; so is a run nothing has updated for a day, which is not read.
+# Prints "<longest wait> <live> <longest Rust wait> <winvm taken>": the seconds the longest-waiting queued job of
+# the pool has waited for a runner (a day at most: GitHub drops it then), how many jobs that can only run on the
+# pool's label and started within the last hour are running, the seconds the longest-waiting queued job that
+# asks for the Rust runners' label has waited, and how many jobs that name winvm's label are queued, or started
+# within the last hour and running. A job "in progress" for longer is a stale record (some stay so for days), not
+# a runner; so is a run nothing has updated for a day, which is not read. One read serves all three routes.
 pool_jobs() {
-  local ids id jobs counts wait live rust longest=0 running=0 rust_longest=0
+  local ids id jobs counts wait live rust win longest=0 running=0 rust_longest=0 winvm_taken=0
   ids=$(for status in in_progress queued; do
     api "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[] | select(now - (.updated_at | fromdateiso8601) < 86400) | .id' || exit 1
   done) || return 1
   for id in $ids; do
     jobs=$(api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
-    counts=$(jq -s -r -e --argjson pool "$pool_labels" --argjson live "$live_job" --arg rust "$rust_label" '[.[].jobs[]] as $all
+    counts=$(jq -s -r -e --argjson pool "$pool_labels" --argjson live "$live_job" --arg rust "$rust_label" '# a missing time counts as now: no wait, and a running job that is live
+      def age(t): if t == null then 0 else now - (t | fromdateiso8601) end;
+      [.[].jobs[]] as $all
       | [$all[] | select([.labels[] | ascii_downcase] | length > 0 and all(.[]; . as $x | $pool | index($x) != null))] as $ours
-      | ([$ours[] | select(.status == "queued") | now - (.created_at | fromdateiso8601) | select(. < 86400)] | max // 0 | floor) as $wait
+      | ([$ours[] | select(.status == "queued") | age(.created_at) | select(. < 86400)] | max // 0 | floor) as $wait
       | ([$ours[] | select(.status == "in_progress" and ([.labels[] | ascii_downcase] | index("self-hosted-ovis") != null)
-          and now - (.started_at | fromdateiso8601) < $live)] | length) as $running
+          and age(.started_at) < $live)] | length) as $running
       | ([$all[] | select(.status == "queued" and ([.labels[] | ascii_downcase] | index($rust) != null))
-          | now - (.created_at | fromdateiso8601) | select(. < 86400)] | max // 0 | floor) as $rust_wait
-      | "\($wait) \($running) \($rust_wait)"' <<<"$jobs") || return 1
-    read -r wait live rust <<<"$counts"
+          | age(.created_at) | select(. < 86400)] | max // 0 | floor) as $rust_wait
+      | ([$all[] | select([.labels[] | ascii_downcase] | index("self-hosted-ovis-win") != null)
+          | select(.status == "queued" or (.status == "in_progress" and age(.started_at) < $live))] | length) as $win
+      | "\($wait) \($running) \($rust_wait) \($win)"' <<<"$jobs") || return 1
+    read -r wait live rust win <<<"$counts"
     if (( wait > longest )); then longest=$wait; fi
     if (( rust > rust_longest )); then rust_longest=$rust; fi
     running=$((running + live))
-    # the Rust route reads the scan only when opted in; otherwise the Linux route's answer is enough to stop
-    if (( longest > queue_limit )) && { [[ "${RUST_SELF_HOSTED:-}" != true ]] || (( rust_longest > rust_queue_limit )); }; then break; fi
+    winvm_taken=$((winvm_taken + win))
+    # the Rust route reads the scan only when opted in and the Windows route only while winvm waits; otherwise the
+    # Linux route's answer is enough to stop
+    if (( longest > queue_limit )) && { [[ "${RUST_SELF_HOSTED:-}" != true ]] || (( rust_longest > rust_queue_limit )); } \
+      && { [[ -n "$winvm_why" ]] || (( winvm_taken > 0 )); }; then break; fi
   done
-  echo "$longest $running $rust_longest"
+  echo "$longest $running $rust_longest $winvm_taken"
 }
 
-# pool_jobs once for both routes, each of which runs in a subshell: its answer, or "failed". Without a
+# pool_jobs once for the three routes, the Linux and Rust ones each in a subshell: its answer, or "failed". Without a
 # temporary file each route reads the jobs itself, as a run with only one route needing them always did.
 pool_file=$(mktemp 2>/dev/null) || pool_file=""
 trap '[ -z "$pool_file" ] || rm -f "$pool_file"' EXIT
 pool_counts() {
   [ -n "$pool_file" ] || { pool_jobs; return; }
   if [ ! -s "$pool_file" ]; then pool_jobs > "$pool_file" || echo failed > "$pool_file"; fi
-  [ "$(cat "$pool_file")" != failed ] && cat "$pool_file"
+  # only a whole answer counts: a cache the disk would not take (empty, cut short) is a failed read
+  local counts
+  counts=$(cat "$pool_file")
+  [[ "$counts" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]] && echo "$counts"
 }
 
 route_pull_request() {
@@ -207,7 +218,7 @@ route_rust() {
     echo "::warning::could not read the self-hosted runners' jobs; the Rust PTY host uses ubuntu-24.04" >&2
     echo "rust=$hosted"
   else
-    read -r _ _ waited <<<"$counts"
+    read -r _ _ waited _ <<<"$counts"
     if (( waited > rust_queue_limit )); then
       echo "Rust PTY host: ubuntu-24.04 (a job has waited ${waited}s for the Rust runners)" >&2
       echo "rust=$hosted"
@@ -217,6 +228,34 @@ route_rust() {
     fi
   fi
 }
+
+# Native Windows install: winvm, the Windows 11 VM on the maintainer's PC, while its launcher says its one runner
+# waits for a job (scripts/self-hosted-runner/winvm-runner.sh writes the Unix time into the repository variable
+# CI_WINVM_READY every minute while it listens, and 0 once a job starts or it stops). Anything else gets
+# windows-latest: hosted_only, a fork pull request, an event other than a pull request or a push (WINVM_READY is
+# empty for a workflow that calls ci.yml), a draft pull request (its job fails at its first step without running a
+# test, and on winvm that would spend the VM's whole round), a mark that is missing or older than three minutes, and a job of winvm's
+# label already queued or running (winvm runs one job a round; a second would wait for the next round, or forever
+# when the launcher stops after the first) or a jobs list the API does not give. winvm_why is decided before the
+# routes read the jobs, so their one read knows whether winvm's jobs matter: empty while they do.
+windows_hosted='"windows-latest"'
+windows_labels='["self-hosted","self-hosted-ovis-win"]'
+ready="${WINVM_READY:-}"
+now=$(date +%s)
+winvm_why=""
+if [[ "${HOSTED_ONLY:-}" == true ]]; then
+  winvm_why="called with hosted_only"
+elif [[ ("$event" == pull_request || "$event" == pull_request_target) && "${HEAD_REPO:-}" != "${REPOSITORY:-}" ]]; then
+  winvm_why="pull request from fork ${HEAD_REPO:-unknown}"
+elif [[ "$event" != pull_request && "$event" != push ]]; then
+  winvm_why="${event:-no event}"
+elif [[ "${PR_DRAFT:-}" == true ]]; then
+  winvm_why="a draft pull request, whose job runs no test"
+elif ! [[ "$ready" =~ ^[1-9][0-9]{0,11}$ ]]; then
+  winvm_why="winvm's runner is not waiting for a job (CI_WINVM_READY ${ready:-unset})"
+elif (( now - ready > 180 || ready - now > 60 )); then
+  winvm_why="winvm's runner last said it was waiting $((now - ready))s ago"
+fi
 
 line=$(route_linux)
 rust_line=$(route_rust)
@@ -237,49 +276,16 @@ fi
 echo "fast=$fast"
 echo "$rust_line"
 
-# Native Windows install: winvm, the Windows 11 VM on the maintainer's PC, while its launcher says its one runner
-# waits for a job (scripts/self-hosted-runner/winvm-runner.sh writes the Unix time into the repository variable
-# CI_WINVM_READY every minute while it listens, and 0 once a job starts or it stops). Anything else gets
-# windows-latest: hosted_only, a fork pull request, an event other than a pull request or a push (WINVM_READY is
-# empty for a workflow that calls ci.yml), a draft pull request (its job fails at its first step without running a
-# test, and on winvm that would spend the VM's whole round), a mark that is missing or older than three minutes, and a job of winvm's
-# label already queued or running (winvm runs one job a round; a second would wait for the next round, or forever
-# when the launcher stops after the first) or a jobs list the API does not give.
-windows_hosted='"windows-latest"'
-windows_labels='["self-hosted","self-hosted-ovis-win"]'
-ready="${WINVM_READY:-}"
-now=$(date +%s)
-
-# How many jobs that name winvm's label are queued, or started within the last hour and running.
-winvm_jobs() {
-  local ids id jobs count total=0
-  ids=$(for status in in_progress queued; do
-    api "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[] | select(now - (.updated_at | fromdateiso8601) < 86400) | .id' || exit 1
-  done) || return 1
-  for id in $ids; do
-    jobs=$(api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
-    count=$(jq -s -e --argjson live "$live_job" '[.[].jobs[] | select([.labels[] | ascii_downcase] | index("self-hosted-ovis-win") != null)
-      | select(.status == "queued" or (.status == "in_progress" and now - (.started_at | fromdateiso8601) < $live))] | length' <<<"$jobs") || return 1
-    total=$((total + count))
-  done
-  echo "$total"
-}
-if [[ "${HOSTED_ONLY:-}" == true ]]; then
-  why="called with hosted_only"
-elif [[ ("$event" == pull_request || "$event" == pull_request_target) && "${HEAD_REPO:-}" != "${REPOSITORY:-}" ]]; then
-  why="pull request from fork ${HEAD_REPO:-unknown}"
-elif [[ "$event" != pull_request && "$event" != push ]]; then
-  why="${event:-no event}"
-elif [[ "${PR_DRAFT:-}" == true ]]; then
-  why="a draft pull request, whose job runs no test"
-elif ! [[ "$ready" =~ ^[1-9][0-9]{0,11}$ ]]; then
-  why="winvm's runner is not waiting for a job (CI_WINVM_READY ${ready:-unset})"
-elif (( now - ready > 180 || ready - now > 60 )); then
-  why="winvm's runner last said it was waiting $((now - ready))s ago"
-elif ! taken=$(winvm_jobs); then
+if [[ -n "$winvm_why" ]]; then
+  why=$winvm_why
+elif ! counts=$(pool_counts); then
   why="could not read the jobs of winvm's label"
-elif (( taken > 0 )); then
+elif read -r _ _ _ taken <<<"$counts"; (( taken > 0 )); then
+  # the read stops at the first run that settles every route, so this is how many it saw, at least one
   why="$taken job(s) of winvm's label already queued or running"
+# the read may have taken minutes: the mark is checked again against the clock now
+elif now=$(date +%s); (( now - ready > 180 || ready - now > 60 )); then
+  why="winvm's runner last said it was waiting $((now - ready))s ago"
 else
   echo "Windows: self-hosted $windows_labels (winvm's runner said it was waiting $((now - ready))s ago)" >&2
   echo "windows=$windows_labels"
