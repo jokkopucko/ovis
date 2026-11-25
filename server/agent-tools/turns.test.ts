@@ -241,11 +241,15 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     const session = await start("hold");
     const child = acp.forPane(session);
     if (!child) throw new Error("missing child");
+    // A hold's receipt says the cancel reached the agent; the agent's cancelled answer to the prompt comes on its own.
+    const cancelled = until(child.client, "cancelled turn", () => child.client.turn?.stopReason === "cancelled");
+    // if a hold throws first, its error is the test's; the await below still sees this wait's own failure
+    cancelled.catch(() => {});
     const first = await child.client.request("_keeper/hold", { sessionId: child.client.session });
     const second = await child.client.request("_keeper/hold", { sessionId: child.client.session });
     if (!isRecord(first) || !isRecord(second)) throw new Error("missing hold receipt");
     expect(second.generation).not.toBe(first.generation);
-    expect(child.client.turn?.stopReason).toBe("cancelled");
+    await cancelled;
     expect(await call("send", { session, task: "ignored" })).toMatchObject({ error: { code: "taken_over" } });
     await expect(child.client.request("_keeper/release", { generation: first.generation, sessionId: child.client.session })).rejects.toThrow();
     await child.client.request("_keeper/release", { generation: second.generation, sessionId: child.client.session });
