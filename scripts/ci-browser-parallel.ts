@@ -4,8 +4,8 @@
  * process tree is stopped, its last log lines are printed at once, and it is not run again.
  */
 import { availableParallelism } from "node:os";
-import { basename, join } from "node:path";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { QUARANTINE, QUARANTINE_MAX_DAYS, type QuarantineEntry } from "./ci-browser-quarantine.ts";
 
@@ -41,6 +41,81 @@ export function selectBrowserScripts(all: string[], include?: string, exclude?: 
   const unknown = [...included, ...excluded].filter((script) => !all.includes(script));
   if (unknown.length > 0) throw new Error(`Not in scripts/ci-browser.sh: ${[...new Set(unknown)].join(", ")}`);
   return [...new Set(included)].filter((script) => !excluded.includes(script));
+}
+
+const isFile = (path: string): boolean => existsSync(path) && statSync(path).isFile();
+/**
+ * import() or require() (spaces or a comment may come before the parenthesis) of anything but one
+ * plain string or a data: URL (code it carries, no file), import.meta.glob, or a
+ * `new URL(…, import.meta.url)` whose first argument is not one plain string: a name worked out as
+ * the file runs.
+ */
+const COMPUTED_IMPORT = /\b(?:import|require)\s*(?:\/\*[\s\S]*?\*\/\s*)*\(\s*(?!["'][^"'\n]*["']\s*[),]|`data:)[^\s)]|import\.meta\.glob|new URL\(\s*(?!["'`][^"'`$\n]+["'`]\s*,\s*import\.meta\.url)[^;]*?,\s*import\.meta\.url\s*\)/;
+const CODE = /\.(?:[cm]?[jt]sx?)$/;
+
+/**
+ * The repository files `entry` loads, itself included, by its static and dynamic imports and the
+ * files it names with `new URL("…", import.meta.url)` (a worker, an entry it bundles), followed
+ * through relative and root paths (scripts/conventions.test.ts allows no alias); a package is not
+ * followed. `unresolved` is true when an import names a file that is not there, a code file
+ * does not parse, or a file loads one whose name it works out as it runs (import() or require() of
+ * anything but a plain string, import.meta.glob, a `new URL` entry that is not a plain string): no caller may take the set as proof of what the
+ * entry does not load then.
+ */
+export function importClosure(root: string, entry: string, cache = new Map<string, string[] | null>()): { files: Set<string>; unresolved: boolean } {
+  const files = new Set([entry]);
+  const next = [entry];
+  let unresolved = false;
+  while (next.length > 0) {
+    const file = next.pop()!;
+    let found = cache.get(file);
+    if (found === undefined) {
+      found = [];
+      const text = readFileSync(join(root, file), "utf8");
+      let imports: { path: string }[] = [];
+      if (CODE.test(file)) {
+        try { imports = new Bun.Transpiler({ loader: /\.[jt]sx$/.test(file) ? "tsx" : "ts" }).scanImports(text); } catch { imports = []; found = null; }
+      }
+      if (found === null || COMPUTED_IMPORT.test(text)) { cache.set(file, null); unresolved = true; continue; }
+      const urls = [...text.matchAll(/new URL\(\s*["'`]([^"'`$]+)["'`]\s*,\s*import\.meta\.url\s*\)/g)].map((match) => ({ path: match[1]! }));
+      for (const { path: written } of [...imports, ...urls]) {
+        const path = written.replace(/[?#].*$/, "");
+        const base = path.startsWith(".") ? resolve(root, dirname(file), path) : path.startsWith("/") ? join(root, path) : null;
+        if (base === null) continue;
+        const target = [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx"), base.replace(/\.js$/, ".ts")].find(isFile);
+        // a URL may name a folder (vite.config.ts's own, the shared folder's), which loads nothing by itself
+        if (target === undefined && urls.some((url) => url.path === written) && existsSync(base) && statSync(base).isDirectory()) continue;
+        if (target === undefined) { found = null; break; }
+        found.push(relative(root, target));
+      }
+      cache.set(file, found);
+    }
+    if (found === null) { unresolved = true; continue; }
+    for (const dependency of found) if (!files.has(dependency)) { files.add(dependency); next.push(dependency); }
+  }
+  return { files, unresolved };
+}
+
+/** What scripts/demo-build.ts builds the demo from: the client's entries and the demo transport. */
+const DEMO_APP = ["scripts/demo-build.ts", "vite.config.ts", "src/main.tsx", "src/pwa.ts", "site/demo/transport.ts"];
+/** A string with server as one of its path's names: "server", "server/…", `${root}/server/…`, "cat server/x", "//server/share". */
+const NAMES_SERVER = /(["'`])(?:(?:[^"'`\n]*\/)?server|(?:[^"'`\n]*[\s/])?server\/[^"'`\n]*)\1/;
+
+/**
+ * The scripts of `scripts` that check the static demo alone (named *-demo-regression.ts) and load
+ * no file of server/: none of the files they import, through any chain, is under server/, none of
+ * those outside the client and the demo names a server path, and every import resolves. A change to server/ alone
+ * cannot reach them. None at all when the demo app itself loads a file of server/.
+ */
+export function demoOnlyScripts(scripts: string[], root = repo): string[] {
+  const cache = new Map<string, string[] | null>();
+  const loadsServer = (entry: string): boolean => {
+    const { files, unresolved } = importClosure(root, entry, cache);
+    // the client and the demo run in the browser, where a server path names no file; anything else may read one
+    return unresolved || [...files].some((file) => file.startsWith("server/") || (!/^(src|shared|site)\//.test(file) && NAMES_SERVER.test(readFileSync(join(root, file), "utf8"))));
+  };
+  if (DEMO_APP.some((entry) => !isFile(join(root, entry)) || loadsServer(entry))) return [];
+  return scripts.filter((script) => script.endsWith("-demo-regression.ts") && isFile(join(root, script)) && !loadsServer(script));
 }
 
 function mostFirst(scripts: string[], seconds: (script: string) => number): string[] {
@@ -403,8 +478,18 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   const timings = readTimings();
   const shard = process.env.BROWSER_SHARD?.trim();
-  const scripts = shardScripts(selectBrowserScripts(serialBrowserScripts(), process.env.BROWSER_SCRIPTS, process.env.BROWSER_EXCLUDE), timings, shard);
-  if (scripts.length === 0) throw new Error("No browser scripts selected");
+  const selected = selectBrowserScripts(serialBrowserScripts(), process.env.BROWSER_SCRIPTS, process.env.BROWSER_EXCLUDE);
+  if (selected.length === 0) throw new Error("No browser scripts selected");
+  // a pull request that changed the server alone (scripts/ci-browser-reach.sh's browser=live)
+  const demoOnly = new Set(process.env.BROWSER_LIVE_ONLY === "true" ? demoOnlyScripts(selected) : []);
+  if (demoOnly.size > 0) console.log(`[setup] Only the server changed: ${demoOnly.size} scripts that check the static demo alone are left out`);
+  const scripts = shardScripts(selected.filter((script) => !demoOnly.has(script)), timings, shard);
+  if (scripts.length === 0) {
+    // only a part the demo-only scripts alone would have filled passes empty
+    if (shardScripts(selected, timings, shard).length === 0) throw new Error(`No browser scripts selected${shard ? ` for shard ${shard}` : ""}`);
+    console.log(`Browser lane: no script left for this part${shard ? ` (shard ${shard})` : ""} once the demo-only ones are left out`);
+    return;
+  }
 
   const requested = Number(process.env.BROWSER_WORKERS);
   const workers = Math.max(1, Math.min(

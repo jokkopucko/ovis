@@ -152,7 +152,8 @@ jobs:
             echo "Only documentation changes detected, skipping heavy tests"
           fi
           # Only a pull request may skip the Browser regression jobs, and only when none of its paths can
-          # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name).
+          # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name); one that
+          # changed the server alone runs them without the demo-only scripts (browser=live).
           printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
   windows-install:
     name: Native Windows install
@@ -605,6 +606,10 @@ jobs:
           BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-terminal-regression.ts,scripts/ui-ime-regression.ts,scripts/ui-access-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
           BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
+          # a pull request that changed the server alone (scripts/ci-browser-reach.sh): the scripts that check the
+          # static demo alone and load no file of the server are left out (scripts/ci-browser-parallel.ts); in ci.yml's
+          # own runs only, so no workflow that calls it from a pull request leaves any out
+          BROWSER_LIVE_ONLY: ${{ github.workflow == 'CI' && needs.changes.outputs.browser == 'live' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       # About 2,000 screenshots of a green run cost ~50 s to upload on the job that ends a run last,
       # so they go up only when the job failed; the report and every script's log always do.
@@ -663,7 +668,8 @@ jobs:
             exit 1
           fi
           # A change that cannot reach the browser jobs skipped them (Detect changes): only a skip counts
-          # then, never a job that failed or was cancelled.
+          # then, never a job that failed or was cancelled. A change to the server alone (browser=live) ran
+          # them without the demo-only scripts, so they must pass as on any other change.
           if [ "$BROWSER" = "false" ]; then
             if [ "$BROWSER_MAIN_RESULT" != "skipped" ] || [ "$BROWSER_OTHER_RESULT" != "skipped" ]; then
               echo "Browser regression was to be skipped and ended as $BROWSER_MAIN_RESULT and $BROWSER_OTHER_RESULT"
