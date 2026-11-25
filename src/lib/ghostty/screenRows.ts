@@ -39,8 +39,9 @@ function screenLine(vt: GhosttyVt, y: number, row: EngineRowText): ScreenLine {
       return cell ? screenCell(cell) : undefined;
     },
     translateToString: (trimRight = false, startColumn = 0, endColumn = codes.length) => {
-      // as xterm: a blank cell reads as a space, a wide cell's second column as nothing, and a trimmed row ends after
-      // its last printed cell (a written space is kept)
+      // as xterm: a trimmed row ends after its last printed cell (a written space is kept), a blank cell reads as a
+      // space, and a cell is passed by its width, so a wide glyph is read once and its second column, read on its own
+      // (a read that starts there), as a space
       let end = Math.min(endColumn, codes.length);
       if (trimRight) {
         let printed = 0;
@@ -48,8 +49,7 @@ function screenLine(vt: GhosttyVt, y: number, row: EngineRowText): ScreenLine {
         end = Math.min(end, printed);
       }
       let text = "";
-      for (let x = startColumn; x < end; x++) {
-        if (widths[x] === 0) continue;
+      for (let x = startColumn; x < end; x += widths[x] || 1) {
         const code = codes[x]!;
         text += code === 0 ? " " : graphemes.get(x) ?? String.fromCodePoint(code);
       }
@@ -63,13 +63,14 @@ function screenLine(vt: GhosttyVt, y: number, row: EngineRowText): ScreenLine {
  * a line's styled cells are read when first asked, so a reader is done with them before the terminal is written again.
  * History past the lines asked for (vt.scrollback), which libghostty has not freed yet, is left out, as xterm drops it.
  */
-export function ghosttyRows(vt: GhosttyVt): ScreenRows {
+export function ghosttyRows(vt: GhosttyVt): ScreenRows & { readonly alternate: boolean } {
   const history = vt.history();
   const cursor = vt.screenCursor();
   const hidden = Math.max(0, history.scrollback - vt.scrollback);
   const length = history.total - hidden;
   const lines = new Map<number, ScreenLine | undefined>();
   return {
+    alternate: vt.alternate(),
     length,
     baseY: history.scrollback - hidden,
     viewportY: Math.max(0, history.viewportTop - hidden),
