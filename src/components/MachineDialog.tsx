@@ -151,6 +151,10 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     addedFor.current = id;
     setAdded("adding");
     void addOverSsh(service, { id, account_add: current.account_add }, { account: accountAdd, running: () => mounted.current && jobRef.current?.id === id, ...(signIn === undefined ? {} : { signIn }) })
+      .catch((error: unknown): SshAddOutcome => {
+        console.warn("Ovis: the add over SSH stopped", error instanceof Error ? error.name : error);
+        return "refused";
+      })
       .then(async (outcome) => {
         if (!mounted.current || addedFor.current !== id) return;
         if (outcome === "disconnected" && signIn !== undefined) { void begin(undefined, current.machine_id, current.account_add!.server_id); return; }
@@ -324,6 +328,14 @@ function addedWords(outcome: SshAddOutcome | "adding" | "other-pc", t: ReturnTyp
     case "other-account": return t("That PC is in another account.");
     case "number": return t("Add it with the number on the server's Ovis page.");
     case "sign-in-again": return t("Sign in again on this PC, then add it again.");
+    case "list-cannot-add": return t("This PC cannot add PCs to your account's list. On that PC, run ovis add and add it with the number it shows.");
+    case "update-that-pc": return t("Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.");
+    case "list-not-added": return t("That PC was not put in your account's list. Add it again.");
+    case "list-placed": return t("That PC is in your account's list, and has not taken it yet. Add it again to finish.");
+    case "list-later": return t("Your account's list takes no more PCs for now. Add that PC again later.");
+    case "list-removed": return t("That PC was removed from your account. It comes back only as a new PC: run ovis add on it and type yes when it asks to add it as a new PC.");
+    case "account-changed": return t("This PC's account changed while that PC was being added. Look for that PC in the account you added it to.");
+    case "pc-error": return t("That PC could not answer. Try again.");
     case "refused": case "disconnected": return t("It was not added to your account. Try again.");
   }
 }
