@@ -309,8 +309,9 @@ export function createServer(
   // A PC that is pinned to its account's signed list follows it whatever this start is told: the pin is one-way, and
   // with Step 2's parts left out nothing here would know of it, so a member's word could add a device the list does
   // not hold. Its own folder's pin, or its sibling folder's, turns them on
-  // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48): asked before
-  // its pin counts for anything, so another PC's folder changes nothing for a PC that follows no list
+  // A folder of another relay identity is another PC, not a source of rows, account state or pairings, Step 2 on or
+  // off (P12, T48): asked before its pin counts for anything, so another PC's folder changes nothing for a PC that
+  // follows no list
   const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
   const ownSibling = typeof provided.siblingStateDir === "string" && sameIdentity(provided.siblingStateDir) ? provided.siblingStateDir : null;
   // so does the word that the list removed this PC under the relay identity it has: with Step 2's parts left out
@@ -321,7 +322,7 @@ export function createServer(
   if (pinnedHere && !askedOpensAll) console.warn(removedHere ? "[account] this PC's account removed it by its signed list, so it keeps to that although Step 2 is turned off here"
     : "[account] this PC is pinned to its account's signed list, so it follows the list although Step 2 is turned off here");
   const opensAll = askedOpensAll || pinnedHere;
-  const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
+  const foreignSibling = typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
   const sibling = foreignSibling ? null : options.siblingStateDir;
   // the order is checked against this folder's own rows before the sibling merge, which may remove some (P21, S29)
   const checkedOrder = (dir: string) => {

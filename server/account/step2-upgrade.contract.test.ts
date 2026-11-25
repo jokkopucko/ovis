@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
@@ -196,6 +196,8 @@ test("first offline activation keeps the local cookie when only the Step 1 sibli
 test("a future timestamp from an imported Step 1 row does not shut out a normal local phone", async () => {
   const local = await upgrade();
   const sibling = await upgrade({ created: Date.now() + 2 * DAY });
+  // the install's other folder of this same PC: another PC's folder gives it nothing to import
+  copyFileSync(relayIdentityPath(local.stateDir), relayIdentityPath(sibling.stateDir));
   const before = local.start(offline, { accountOpensAll: false, siblingStateDir: sibling.stateDir });
   expect(before.devices.match(local.token)?.id).toBe(local.device.id);
   expect(before.devices.list(null).some(row => row.id === sibling.device.id)).toBe(true);
