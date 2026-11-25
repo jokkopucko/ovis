@@ -84,7 +84,10 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       const window = client.data.output.get(paneId);
       const buffered = backlog(client);
       if (window) {
-        const verdict = window.check(buffered, Date.now(), client.getBufferedAmount() - buffered);
+        // A PTY host gives up an exited attach's unread output 15 s into a pause (pty-host.mjs EXIT_HELD_LIMIT_MS):
+        // only a herdr-core attach, paused by withholding hc's credit, may be held for the longer bound.
+        const alone = attachment.clients.size === 1 && attachment.process instanceof CoreAttachSession;
+        const verdict = window.check(buffered, Date.now(), client.getBufferedAmount() - buffered, alone);
         if (verdict === "stop") end(client, "stalled");
         else if (verdict === "pause") paused = true;
         continue;

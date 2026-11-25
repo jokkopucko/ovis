@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { OutputWindow, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, ReplayBuffer, wireBytes } from "./output-window.ts";
+import { OutputWindow, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_PAUSE_ALONE_MAX_MS, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, ReplayBuffer, wireBytes } from "./output-window.ts";
 
 describe("terminal output credit", () => {
   it("holds high-water backpressure until the low watermark, without duplicate credit", () => {
@@ -113,6 +113,25 @@ describe("terminal output credit", () => {
     honest.write(OUTPUT_HIGH_BYTES);
     expect(honest.check(0, OUTPUT_PAUSE_MAX_MS)).toBe("pause");
     expect(honest.check(0, OUTPUT_PAUSE_MAX_MS + 1)).toBe("pause");
+  });
+
+  it("lets the pane's only viewer hold its pty paused while it keeps acknowledging, up to a fixed bound", () => {
+    const window = new OutputWindow();
+    window.write(OUTPUT_HIGH_BYTES);
+    let at = 0;
+    let acknowledged = 0;
+    expect(window.check(0, at, 0, true)).toBe("pause");
+    while (at + OUTPUT_STALL_MS - 100 < OUTPUT_PAUSE_ALONE_MAX_MS) {
+      at += OUTPUT_STALL_MS - 100;
+      window.acknowledge(window.id, ++acknowledged);
+      expect(window.check(0, at, 0, true)).toBe("pause");
+    }
+    expect(at).toBeGreaterThan(OUTPUT_PAUSE_MAX_MS);
+    expect(window.check(0, OUTPUT_PAUSE_ALONE_MAX_MS, 0, true)).toBe("stop");
+    const silent = new OutputWindow();
+    silent.write(OUTPUT_HIGH_BYTES);
+    expect(silent.check(0, 0, 0, true)).toBe("pause");
+    expect(silent.check(0, OUTPUT_STALL_MS, 0, true)).toBe("stop");
   });
 
   it("sizes a joiner's budget by its serialized frame, where an ESC costs six bytes", () => {

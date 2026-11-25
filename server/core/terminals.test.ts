@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
-import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
 import { connectionData, send } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
@@ -88,6 +88,50 @@ it("pauses a pane whose output waits behind a large frame queued after its attac
     registry.conversations.stop();
   }
 });
+
+for (const [peers, core, name] of [
+  [0, true, "keeps a slow phone that is a herdr-core pane's only viewer paused, not stopped,"],
+  [1, true, "stops a slow viewer that holds a peer's herdr-core attach paused"],
+  [0, false, "stops a slow only viewer of a herdr attach, whose PTY host drops an exited attach's held output at 15 s,"],
+] as const) {
+  it(`${name} past ${OUTPUT_PAUSE_MAX_MS} ms while it acknowledges`, async () => {
+    const ended: string[] = [];
+    const flow: string[] = [];
+    const viewer = () => ({
+      data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+      getBufferedAmount: () => 0, send: (text: string) => text.length, close() {},
+    });
+    const slow = viewer();
+    attachment = {
+      kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
+      process: Object.assign(Object.create(core ? coreAttach.CoreAttachSession.prototype : Object.prototype), { exited: Promise.resolve(), pause() { flow.push("pause"); }, resume() { flow.push("resume"); }, resize() {}, winch() {}, kill() {}, write() {} }) as Extract<PaneAttachment, { kind: "pty" }>["process"],
+    };
+    const clients = new Set([slow, ...Array.from({ length: peers }, viewer)]);
+    const registry = createTerminalRegistry({
+      options: {}, clients, stopped: () => false, terminalAttach: async () => true,
+      holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
+      holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end: (client, reason) => { if (client === slow) ended.push(reason); },
+    });
+    const start = Date.now();
+    try {
+      for (const client of clients) await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true, flow_control: "ack" });
+      const window = slow.data.output.get("p")!;
+      window.write(OUTPUT_HIGH_BYTES);
+      let acknowledged = 0;
+      for (let at = 0; at <= OUTPUT_PAUSE_MAX_MS; at += OUTPUT_STALL_MS / 2) {
+        setSystemTime(start + at);
+        await registry.terminalFrames["pty-ack"](slow, { type: "pty-ack", pane_id: "p", stream_id: window.id, offset: acknowledged += 1024 });
+      }
+      const kept = core && !peers;
+      expect(ended).toEqual(kept ? [] : ["stalled"]);
+      if (kept) expect(flow.at(-1)).toBe("pause");
+    } finally {
+      setSystemTime();
+      registry.closeAttachment("p");
+      registry.conversations.stop();
+    }
+  });
+}
 
 for (const [how, name] of [
   ["detach", "delivers the letter and wheel reports a viewer was answered for, in order, before its own detach lets the attach go, and takes nothing after it"],
