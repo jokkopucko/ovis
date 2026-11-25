@@ -27,13 +27,18 @@ const UNREADABLE = { error: "This PC cannot read its safety log, so nothing is c
 
 /**
  * Another PC of this user adds this one to its account over SSH (docs/account.md, "Adding a PC over SSH"): it reads this
- * PC's public relay fields, then names the account; this PC takes the admission on its own proof (one-press.ts).
+ * PC's public relay fields, then names the account; this PC takes the admission on its own proof (one-press.ts). For an
+ * account that keeps a signed list it names the list and the key whose entry adds this PC too (`named`): this PC answers
+ * its card for that list (`state: "waiting"`) until the list holds that entry, then joins by the list.
  */
 export interface AccountAddSeams {
   inspect(): { server_id: string; public_key: string; relay: string; label: string; account: string | null } | { refused: string; code: string };
   /** in `account`, with this PC's relay turned on and as it stood when it answered */
-  take(account: string, serverId: string): Promise<{ account: string; relay: AccountAddRelay } | { refused: string; code: string }>;
+  take(account: string, serverId: string, named?: { readonly list: string; readonly adder: string }): Promise<{ account: string; relay: AccountAddRelay; list_joined?: true } | ListTakeWaiting | { refused: string; code: string }>;
 }
+
+/** A take that named a list, while the list holds no entry that adds this PC: its card for that list, which the adding PC signs into one. */
+export interface ListTakeWaiting { readonly state: "waiting"; readonly standing: string; readonly key: string; readonly enc: string; readonly card: string }
 
 export function recoveryActs(options: { releases: RecoveryReleases; logReadable(act: RecoveryAction["act"]): boolean; user: string; seams?: RecoverySeams; accountAdd?: AccountAddSeams }): (request: unknown) => Promise<unknown> {
   const { releases } = options;
@@ -53,7 +58,8 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
       case "account_add_inspect": case "account_add_take": {
         const add = options.accountAdd;
         if (add === undefined) return { error: "Adding this PC over SSH is not available on it", code: "unavailable" };
-        const done = action.act === "account_add_inspect" ? add.inspect() : await add.take(action.account, action.server_id);
+        const done = action.act === "account_add_inspect" ? add.inspect()
+          : await add.take(action.account, action.server_id, action.list === undefined || action.adder === undefined ? undefined : { list: action.list, adder: action.adder });
         return "refused" in done ? { error: done.refused, code: done.code } : done;
       }
       case "list":

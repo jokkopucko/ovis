@@ -804,7 +804,7 @@ export function createServer(
   }) : undefined;
   const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
     stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
-    relay: ovisRelay, accountMailbox, addedRelayOnlineMs: options.accountAddRelayMs,
+    relay: ovisRelay, accountMailbox, accountList, addedRelayOnlineMs: options.accountAddRelayMs,
   }) : null;
   // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
   const lockSignal = safetyLog ? new LockSignal() : undefined;

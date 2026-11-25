@@ -18,6 +18,7 @@ import { ACCOUNT_ADD_BRIDGE_ONLY, ACCOUNT_ADD_NO_OVIS, MachineManager } from "./
 import type { PushService } from "./push.ts";
 import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
+import { TestList } from "./account/list.test-helpers.ts";
 import { pairingPc, type Pc } from "./account/pairing.test-helpers.ts";
 import { askRecovery, openRecoverySocket } from "./account/recovery.ts";
 import { sendAccountAddAct } from "./account-add-channel.ts";
@@ -249,8 +250,73 @@ test("nothing but an account add's inspect and take is ever sent on the forwarde
     { act: "admit", pending: "a".repeat(32), fingerprint: "AB12-CD34" }, { act: "revoke_all" }, { act: "lift", blocks: ["a".repeat(64)] },
     { act: "remove", targets: ["0123456789abcdef"] }, { act: "release", rows: ["0123456789abcdef"] }, { act: "list" },
     { act: "account_add_inspect", rows: ["0123456789abcdef"] }, { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), pending: "x" },
+    // a take names a list and its adder both or neither, and nothing beside them
+    { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), list: "a".repeat(64) },
+    { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), adder: "key" },
+    { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), list: "a".repeat(64), adder: "key", pending: "x" },
   ]) await expect(sendAccountAddAct(socket.path, request as never)).rejects.toThrow("Only an account add's inspect and take");
   expect(socket.seen).toEqual([]);
+});
+
+test("a take that names the account's list keeps the forward open while that PC waits for its entry, and closes it once that PC joined", async () => {
+  const b = await otherPc({ server: { accountAddRelayMs: 300 } });
+  b.account.listAccounts = "*";
+  const list = await TestList.start(b.account, "acct_1");
+  const socket = recorded(b);
+  const { manager, closed, settled } = fixture({ descriptor: "own", socketPath: socket.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  expect((await listAndAdmit(b, "acct_1", job.account_add!)).ok).toBe(true);
+  const named = { list: list.id, adder: list.first.key };
+  const endpoint = bytesToHex(importPublicKey(job.account_add!.public_key));
+  const waiting = await manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named);
+  // its card, at the relay key and with the name the inspect read: never ones the take's answer names
+  expect(waiting).toEqual({ waiting: { key: expect.any(String), enc: expect.any(String), card: expect.any(String), endpoint, label: job.account_add!.label, standing: "waiting" } });
+  expect(closed).toEqual([]);
+  await list.addPostedPc(endpoint);
+  expect(await manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named)).toEqual({ account: "acct_1", relay: { phase: "connecting", blocked: null }, listJoined: true });
+  expect(closed).toEqual([socket.path]);
+  expect(socket.seen.map((request) => (request as { act: string }).act)).toEqual(["account_add_inspect", "account_add_take", "account_add_take"]);
+  await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named)).rejects.toMatchObject({ code: "disconnected" });
+});
+
+test("a take that names a list, answered by an Ovis from before lists: that PC is to be updated, and the forward closes", async () => {
+  const b = await otherPc();
+  const older = recorded(b, (request, said) => (request as { list?: unknown }).list !== undefined ? { error: "Unexpected field list" } : said);
+  const { manager, closed, settled } = fixture({ descriptor: "own", socketPath: older.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", { list: "a".repeat(64), adder: "key" })).rejects.toMatchObject({ code: "that_pc_old" });
+  expect(closed).toEqual([older.path]);
+});
+
+test("a take that names a list whose answer is lost is never taken for added on a second look: that PC's word that it is in the account says nothing of the list", async () => {
+  const b = await otherPc({ server: { accountAddRelayMs: 300 } });
+  const socket = lossy(b, "answer");
+  const { manager, settled } = fixture({ descriptor: "own", socketPath: socket.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", { list: "a".repeat(64), adder: "key" })).rejects.toMatchObject({ code: "take_lost" });
+  // no inspect goes after it: the account that PC names is no answer for a list
+  expect(socket.seen).toEqual(["account_add_inspect", "account_add_take"]);
+});
+
+test("a take that names a list, answered by a current Ovis with an error of no code, is not an Ovis from before lists: it could not answer", async () => {
+  const b = await otherPc();
+  const failing = recorded(b, (request, said) => (request as { list?: unknown }).list !== undefined ? { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" } : said);
+  const { manager, closed, settled } = fixture({ descriptor: "own", socketPath: failing.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", { list: "a".repeat(64), adder: "key" })).rejects.toMatchObject({ code: "that_pc_error" });
+  expect(closed).toEqual([failing.path]);
+});
+
+test("a card answer with a field longer than any key or card is no card: refused, and the forward closes", async () => {
+  const b = await otherPc();
+  b.account.listAccounts = "*";
+  const list = await TestList.start(b.account, "acct_1");
+  const long = recorded(b, (_request, said) => said !== null && typeof said === "object" && (said as { state?: unknown }).state === "waiting" ? { ...said, card: "A".repeat(257) } : said);
+  const { manager, closed, settled } = fixture({ descriptor: "own", socketPath: long.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  expect((await listAndAdmit(b, "acct_1", job.account_add!)).ok).toBe(true);
+  await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", { list: list.id, adder: list.first.key })).rejects.toMatchObject({ code: "refused" });
+  expect(closed).toEqual([long.path]);
 });
 
 test("a refused inspect closes the forward at once", async () => {

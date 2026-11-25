@@ -6,8 +6,10 @@
 import type { AccountAddRelay } from "../../shared/machines.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayService } from "../relay/service.ts";
+import type { JoinRefusal, ListFollow } from "./list-follow.ts";
 import { AccountServiceRefusal, type AccountMailbox } from "./mailbox.ts";
 import { LIST_REMOVED_FROM } from "./records.ts";
+import type { ListTakeWaiting } from "./recovery-acts.ts";
 
 export interface PressServices {
   readonly devices: DeviceStore;
@@ -131,6 +133,71 @@ export async function takeForAccount(services: PressServices, account: string, s
   if (services.devices.account() !== account || services.devices.serviceBinding() !== binding) return refuse("not_listed", "The account removed this PC while it was being added", 409);
   if ((services.relay.currentIdentity()?.server_id ?? null) !== serverId) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
   return { account, relay };
+}
+
+/** What a take that named a list says when this PC does not join by it, by the join's refusal: its code, words and status. */
+const LIST_TAKE_REFUSALS: Readonly<Record<JoinRefusal, readonly [string, string, number]>> = {
+  other_account: ["other_account", "This PC is in another account", 409],
+  other_keys: ["other_keys", "Your account's list holds this PC by an entry with other keys than the ones it posted, so this PC follows no list by this add.", 409],
+  other_adder: ["other_adder", "Your account's list holds this PC by an entry another key signed than the PC that adds it over SSH, so this PC follows no list by this add.", 409],
+  pinned: ["pinned", "This PC already follows another list. Revoke all on this PC to leave its account first.", 409],
+  removed: ["list_removed", LIST_REMOVED_FROM, 409],
+  invalid_list: ["invalid_list", "Name the account and its list by their ids", 400],
+  not_in_account: ["unavailable", "This PC's account could not be read", 503],
+  unavailable: ["unavailable", "This PC's relay identity, its list or its keys cannot be read or written.", 503],
+  ended: ["identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409],
+  line_unproven: ["unavailable", "This PC could not join the account's list", 503],
+  invite_unknown: ["unavailable", "This PC could not join the account's list", 503],
+};
+
+/**
+ * Over SSH, another PC of the owner adds this one to an account that keeps a signed list (docs/account.md, "Adding a PC
+ * over SSH to an account that keeps a list"): it names the account, the list and its own list key, `adder`. That take,
+ * on this PC's owner socket over the owner's own SSH session, is the act at this PC that names the list: nothing the
+ * account service says names one here, and no number is compared. Until the list holds an entry that adds this PC, it
+ * answers its card for that list (posting its keys at the account service meanwhile, the second lock of that entry),
+ * which the adding PC signs into a `pc` entry. Once the list holds it, signed by `adder` and no other key, this PC joins
+ * the account by the list, pinned from its first moment (ListFollow.joinList), and its relay comes on as for a take. A
+ * PC already in that account names the list as its own window would; one in another account, or that the account's
+ * list removed, names nothing.
+ */
+export async function takeByList(services: PressServices & { readonly accountList: ListFollow | null }, account: string, serverId: string,
+  named: { readonly list: string; readonly adder: string }, onlineWithinMs = ADDED_RELAY_ONLINE_MS): Promise<(TakeOutcome & { readonly list_joined?: true }) | ListTakeWaiting> {
+  const { devices, relay, accountMailbox, accountList } = services;
+  const identity = () => relay.currentIdentity()?.server_id ?? null;
+  if (identity() !== serverId) return refuse("identity_changed", "This PC's relay identity changed since it was read. Add it again.", 409);
+  if (accountList === null) return refuse("unavailable", "This PC follows no list", 503);
+  const bound = devices.account();
+  if (bound !== null && bound !== account) return refuse("other_account", "This PC is in another account", 409);
+  // an account whose signed list removed this PC takes it back on no path: only as a new PC, after a reset relay identity
+  if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
+  // in no account: named for that account, as a take names it before it presses, so its relay pass is asked under it
+  if (bound === null && !relay.setRelayAccount(account)) return refuse("invalid_account", "Name the account", 400);
+  // following that very list before this take: the take found it there, and joined it to nothing
+  const before = bound !== null && accountList.status().pinned_list === named.list;
+  // A Revoke all, a reset or a denial at this PC while the join reads the list moves this counter: the join's binding
+  // write asks `live` in the very step it writes, so one that ends while the list is read binds nothing (as pressOnce)
+  const generation = devices.gen();
+  const joined = await accountList.joinList({ account, list: named.list, by: named.adder, live: () => identity() === serverId && devices.gen() === generation });
+  if ("refused" in joined && joined.refused === "ended" && identity() === serverId) return refuse("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
+  if ("refused" in joined) {
+    const [code, message, status] = LIST_TAKE_REFUSALS[joined.refused];
+    return refuse(code, message, status);
+  }
+  if ("waiting" in joined) {
+    // its card for that list, for the adding PC to sign: the keys it just posted, for this list and its own relay key
+    const card = await accountList.cardFor(named.list);
+    if (card === null) return refuse("unavailable", "This PC's relay identity, its list or its keys cannot be read or written.", 503);
+    return { state: "waiting", standing: joined.waiting, ...card };
+  }
+  // in the account by its list: the receipt it owes the account service goes out with its next pull
+  accountMailbox.joinedByList();
+  const relayNow = await relayForAdd(relay, account, onlineWithinMs, bound === null);
+  if (devices.account() !== account) return refuse("not_listed", "The account removed this PC while it was being added", 409);
+  // still following the list this take named, after the relay wait: one that left it, or another list, is no add by it
+  if (accountList.status().pinned_list !== named.list) return refuse("not_listed", "This PC no longer follows your account's list. Add it again.", 409);
+  if (identity() !== serverId) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
+  return { account, relay: relayNow, ...(before ? {} : { list_joined: true as const }) };
 }
 
 /**

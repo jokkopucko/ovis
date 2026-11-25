@@ -14,6 +14,7 @@ import { ListAddAway, type AddState } from "./list-add.ts";
 import type { JoinOutcome } from "./list-follow.ts";
 import { noteListAdd, notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, listNamedBy, listNamingOf, LIST_NAMED_LINK, LIST_NAMED_OTHER, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
+import { addOverSshByList } from "./ssh-add-list.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
@@ -49,6 +50,7 @@ const JOIN_REFUSALS: Readonly<Record<string, string>> = {
   removed: LIST_REMOVED_FROM,
   unavailable: "This PC's relay identity, its list or its keys cannot be read or written.",
   other_adder: "The list holds this PC already, by another entry than this invite's.",
+  other_keys: "The list holds this PC by an entry with other keys than its own.",
   line_unproven: "The invite's line did not sign for this PC and this list.",
   not_read: "The account's list could not be read from the account service.",
   invite_unknown: "The account's list holds no such invite.",
@@ -351,15 +353,27 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (!machines) return fail("not_found", "This PC adds no other PCs", 404);
       // that PC waits up to ADDED_RELAY_ONLINE_MS for its relay after its press: more than the default budget of an API call
       context.timeout(request, 120);
-      let taken: { account: string; relay: AccountAddRelay | null; unanswered?: true };
-      try { taken = await machines.accountTake(jobId, target, account); }
-      catch (error) {
+      let taken: { account: string; relay: AccountAddRelay | null; unanswered?: true; listJoined?: true };
+      // A PC that follows its account's signed list adds another one by that list alone: it names the list and its own
+      // key over the SSH channel and signs that PC's entry itself (ssh-add-list.ts). With no list, as ever
+      const list = context.services.accountList;
+      try {
+        if (list === null || !list.pinned()) taken = await machines.accountTake(jobId, target, account);
+        else {
+          const endpoint = machines.accountAddEndpoint(jobId);
+          if (endpoint === null) return fail("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.", 404);
+          const byList = await addOverSshByList({ endpoint, list, take: (named) => machines.accountTake(jobId, target, account, named), end: () => machines.accountAddEnd(jobId) });
+          if ("refused" in byList) return fail(byList.refused.code, byList.refused.message, byList.refused.status);
+          taken = byList;
+        }
+      } catch (error) {
         if (!(error instanceof AccountAddError)) throw error;
         return fail(error.code, error.message, error.code === "job_not_found" ? 404 : 409);
       }
       // this PC left or changed its account while that PC took it: that PC is in the account named then, and says so
       if (devices.account() !== taken.account) return fail("account_changed", "This PC's account changed while the other PC was being added.", 409);
-      return reply({ account: taken.account, server_id: target, relay: taken.relay, ...(taken.unanswered ? { unanswered: true as const } : {}) } satisfies AccountAddTaken);
+      return reply({ account: taken.account, server_id: target, relay: taken.relay, ...(taken.unanswered ? { unanswered: true as const } : {}),
+        ...("listJoined" in taken && taken.listJoined === true ? { list_joined: true as const } : {}) } satisfies AccountAddTaken);
     }
     case "/api/account/introduce": {
       setRequestRoute(pathname);

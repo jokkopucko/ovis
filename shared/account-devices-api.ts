@@ -2,6 +2,7 @@
  * What an app and a PC say to each other about the account's devices: notices, block receipts, holds
  * and the recovery acts. Shapes and validators only, and nothing here is sent while the release flag is off.
  */
+import { isListHash, isListKeyEncoding } from "./account-list-entry.ts";
 import { AccountRecordError, isAccountKeyEncoding, parseSafetyRecord, type BlockRecord, type SafetyRecord } from "./account-records.ts";
 import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 
@@ -148,7 +149,9 @@ export type RecoveryAction =
   | { readonly act: "admit"; readonly pending: string; readonly fingerprint: string }
   // adding this PC to its owner's account from another PC over SSH (docs/account.md, "Adding a PC over SSH")
   | { readonly act: "account_add_inspect" }
-  | { readonly act: "account_add_take"; readonly account: string; readonly server_id: string };
+  // `list` and `adder`, both or neither: the account keeps a signed list, and this take names it and the key whose entry
+  // adds this PC to it (docs/account.md, "Adding a PC over SSH to an account that keeps a list")
+  | { readonly act: "account_add_take"; readonly account: string; readonly server_id: string; readonly list?: string; readonly adder?: string };
 
 /** A safety record still in force, named by the ID the recovery socket accepts for a lift. */
 export type RecoveryStanding = {
@@ -210,12 +213,13 @@ export function parseBlockReceipt(value: unknown): BlockReceipt {
 
 /** Device table R11: one recovery act; throws AccountDevicesApiError. Every list names 1-64 entries. */
 export function parseRecoveryAction(value: unknown): RecoveryAction {
-  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "account", "server_id"]);
+  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "account", "server_id", "list", "adder"]);
   const only = (...fields: string[]) => Object.keys(action).every((name) => name === "act" || fields.includes(name));
   const ok = (() => {
     switch (action.act) {
       case "list": case "revoke_all": case "account_add_inspect": return only();
-      case "account_add_take": return only("account", "server_id") && typeof action.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(action.account)
+      case "account_add_take": return (only("account", "server_id") || (only("account", "server_id", "list", "adder") && typeof action.list === "string" && isListHash(action.list)
+        && typeof action.adder === "string" && isListKeyEncoding(action.adder))) && typeof action.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(action.account)
         && typeof action.server_id === "string" && HEX32.test(action.server_id);
       case "release": return only("rows") && ids(action.rows, ROW_ID);
       case "undo": return only("rows") && (action.rows === null || ids(action.rows, ROW_ID));

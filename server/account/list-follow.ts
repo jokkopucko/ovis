@@ -119,6 +119,8 @@ const LIST_MEMBER_LOOK_MS = 100;
 const LIST_ALLOW_RETRY_MAX_MS = 10_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
 export const LIST_DEVICE_LABEL = "Device";
+/** The name a PC added over SSH is sealed under when the one it gave is no name. */
+const LIST_PC_LABEL = "PC";
 
 const BIND_ID = /^[0-9a-f]{32}$/;
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -210,11 +212,32 @@ export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "
 /** The device a PC is asked to let into its list: its member key, its encryption key, its card for the list, and the name it gave. */
 export interface AllowedDevice { readonly key: string; readonly enc: string; readonly card: string; readonly label: string }
 
+/**
+ * A PC a person at this PC adds to the list over SSH (ssh-add-list.ts): its list key, its encryption key and its card
+ * for this list as it handed them over that channel, its relay key as this PC read it there before, and its name.
+ */
+export interface AddedPc { readonly key: string; readonly enc: string; readonly card: string; readonly endpoint: string; readonly label: string }
+
 export type AllowOutcome = { readonly allowed: { readonly id: string; readonly seq: number; readonly hash: string } } | { readonly refused: AllowRefusal; readonly detail: string | null };
 
-/** `other_account`: this PC is in another account. `other_adder`: the list holds this PC, by an entry of another key than the one the person confirmed. */
+/** What one entry this PC signs lets into its list, for the loop that places it (allow): a device by an Allow, or a PC added over SSH. */
+interface Newcomer {
+  readonly key: string;
+  readonly enc: string;
+  /** a device: what this PC itself holds against its key keeps it out (deps.mayAdmit) */
+  readonly device: boolean;
+  /** where the copy's list let this very newcomer in, while it is in */
+  placeOf(copy: FollowerCopy): { id: string; seq: number; hash: string } | null;
+  /** its entry on the copy's footing, with the wrap of the names' key to it where this PC holds that key */
+  write(copy: FollowerCopy, state: ListState, keys: PcListKeys): Promise<{ entries: string[]; wraps: { epoch: number; member: string; wrap: string }[] }>;
+}
+
+/**
+ * `other_account`: this PC is in another account. `other_adder`: the list holds this PC, by an entry of another key than
+ * the one the person confirmed. `other_keys`: that entry names another encryption key than this PC's own.
+ */
 /** `ended`: what the join was for ended before the binding was written (an add's time, or the person's No). */
-export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "line_unproven" | "invite_unknown" | "ended";
+export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "other_keys" | "line_unproven" | "invite_unknown" | "ended";
 
 /**
  * Why a PC writes no `join` of its own. The invite's refusal as the list holds it (inviteRefusal); `invite_plain`: a
@@ -741,6 +764,12 @@ export class ListFollow implements ListAuthority {
     return scope !== null && this.deps.removedFrom(account, scope.serverId);
   }
 
+  /** Whether the PC at the relay key `endpoint` is in `list`, the one this PC is pinned to, once its copy was read again from the account service. */
+  async holdsPcRead(endpoint: string, list: string): Promise<boolean> {
+    await this.readNow();
+    return this.copy?.list === list && this.status().pinned_list === list && this.holdsPc(endpoint);
+  }
+
   /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to. */
   holdsPc(endpoint: string): boolean {
     if (!this.pinned() || this.copy === null || this.alarmLost) return false;
@@ -964,6 +993,8 @@ export class ListFollow implements ListAuthority {
         return { waiting: stands };
       }
       if (by !== null && addedBy(copy) !== by) return { refused: "other_adder" };
+      // the entry a key the act named signed carries exactly the keys this PC posted for it, at its own relay key
+      if (by !== null && !holdsOwnKeys(copy, keys)) return { refused: "other_keys" };
       // the line named this list: the list must hold the line's invite, or the line was for no list at all
       if (invite !== undefined && (copy.state === null || !Object.hasOwn(copy.state.invites, invite))) return { refused: "invite_unknown" };
       // still in no account, the same PC, and a follower that runs: whatever happened while the list was read
@@ -1027,6 +1058,8 @@ export class ListFollow implements ListAuthority {
       return { waiting: stands };
     }
     if (by !== null && addedBy(copy) !== by) return { refused: "other_adder" };
+    // the entry a key the act named signed carries exactly the keys this PC posted for it, at its own relay key
+    if (by !== null && !holdsOwnKeys(copy, keys)) return { refused: "other_keys" };
     if (invite !== undefined && (copy.state === null || !Object.hasOwn(copy.state.invites, invite))) return { refused: "invite_unknown" };
     if (given.live?.() === false) return { refused: "ended" };
     // pinned with the copy that showed it in, as any pin is (settle): the want lives for this turn alone
@@ -1332,7 +1365,20 @@ export class ListFollow implements ListAuthority {
       } finally { this.allowing.delete(device.key); }
     };
     // A member's entry is waited for outside the queue: half a minute of waiting holds back no read, and no page
-    return sign ? this.enqueue(() => decided(this.allow(device, no))) : decided(this.awaitMember(device, no));
+    const newcomer: Newcomer = { key: device.key, enc: device.enc, device: true, placeOf: (copy) => placeOf(copy, device), write: (copy, state, keys) => this.writeAllow(copy, state, device, keys) };
+    return sign ? this.enqueue(() => decided(this.allow(newcomer, no))) : decided(this.awaitMember(device, no));
+  }
+
+  /**
+   * A person at this PC adds another PC to the list over SSH (ssh-add-list.ts): this PC signs a `pc` entry with its own
+   * key for the card that PC handed over that channel, at the relay key this PC read there, and places it as an Allow
+   * is placed (one signed request per place, a head that moved read and signed on again). The writer signs nothing
+   * that would not count, so a card that is not that key's for this list and that relay key is refused `not_written`.
+   * The PC is in only once the log shows its entry; one the list holds already by that key is answered at once.
+   */
+  addPc(pc: AddedPc): Promise<AllowOutcome> {
+    const no = (refused: AllowRefusal, detail: string | null = null): AllowOutcome => ({ refused, detail });
+    return this.enqueue(() => this.allow({ key: pc.key, enc: pc.enc, device: false, placeOf: (copy) => pcPlaceOf(copy, pc), write: (copy, state, keys) => this.writePc(copy, state, pc, keys) }, no));
   }
 
   /**
@@ -1369,7 +1415,7 @@ export class ListFollow implements ListAuthority {
     }
   }
 
-  private async allow(device: AllowedDevice, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+  private async allow(device: Newcomer, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
     {
       const scope = this.bound();
       if (scope === null || !this.isPinned) return no("not_pinned");
@@ -1377,7 +1423,7 @@ export class ListFollow implements ListAuthority {
       await this.ensureCopy(scope);
       const keys = await this.keysOf(scope);
       if (keys === null || this.problem !== null) return no("unavailable");
-      if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+      if (device.device && this.deps.mayAdmit?.(device.key) === false) return no("held_here");
       await this.read(scope);
       // One signature per place: the request as it was signed, and the head it was signed on. It is sent again as it
       // is while this PC's own copy shows that head; another is signed only once the copy shows a new one. It is kept
@@ -1396,7 +1442,7 @@ export class ListFollow implements ListAuthority {
         // what this PC signed before and does not know to be placed; one the copy has gone past is forgotten here
         const kept = this.keptAllow(scope, copy);
         // in already: this PC's own entry that the log now shows, or one a member placed
-        const place = placeOf(copy, device);
+        const place = device.placeOf(copy);
         if (place !== null) return { allowed: place };
         const cannot = keys.key !== copy.me.key ? "unavailable" : cannotAllow(copy);
         if (cannot !== null) return no(cannot);
@@ -1409,7 +1455,7 @@ export class ListFollow implements ListAuthority {
           if (kept !== null) request = kept;
           else {
             let written: Awaited<ReturnType<ListFollow["writeAllow"]>>;
-            try { written = await this.writeAllow(copy, state, device, keys); } catch (error) {
+            try { written = await device.write(copy, state, keys); } catch (error) {
               if (error instanceof ListWriteError && error.reason === "behind") return no("behind");
               if (error instanceof ListWriteError) return no("not_written", error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome);
               if (error instanceof ListKindError) return no("not_written", "entry_invalid");
@@ -1433,7 +1479,7 @@ export class ListFollow implements ListAuthority {
           if (!this.live(scope) || !this.isPinned || now === null || now.state === null) return no("unavailable");
           const cannot = keys.key !== now.me.key ? "unavailable" : cannotAllow(now);
           if (cannot !== null) return no(cannot);
-          if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+          if (device.device && this.deps.mayAdmit?.(device.key) === false) return no("held_here");
           if (this.deps.mayAdmit?.(sent.key) !== false) return null;
           this.keptHeld = true;
           return no("not_written", "place_kept");
@@ -1485,7 +1531,7 @@ export class ListFollow implements ListAuthority {
       }
       const copy = this.live(scope) ? this.copy : null;
       if (copy !== null && copy.state !== null) this.keptAllow(scope, copy);
-      const place = copy !== null ? placeOf(copy, device) : null;
+      const place = copy !== null ? device.placeOf(copy) : null;
       return place === null ? no(last) : { allowed: place };
     }
   }
@@ -1510,6 +1556,24 @@ export class ListFollow implements ListAuthority {
     }
     const written = await signListEntry(state, { kind: "device", key: device.key, power: "full", role: "drive", until: null, enc: device.enc, card: device.card, sealed, rotates: false },
       { key: keys.key, privateKey: keys.privateKey }, now);
+    return { entries: [written.text], wraps };
+  }
+
+  /** The `pc` entry of an add over SSH on the copy's footing, with the wrap of the names' key for that PC when this PC holds that key. */
+  private async writePc(copy: FollowerCopy, state: ListState, pc: AddedPc, keys: PcListKeys) {
+    // by this PC's own clock held against the list's own time, as an Allow is signed (writeAllow)
+    const now = listClock(state, this.seconds(), null);
+    const seal = sealEpoch(state, now);
+    const epochKey = seal === null ? null : await this.epochKey(copy, state, seal.epoch, keys);
+    let sealed: Sealed | null = null;
+    const wraps: { epoch: number; member: string; wrap: string }[] = [];
+    if (seal !== null && epochKey !== null) {
+      const label = isListLabel(pc.label) ? pc.label : LIST_PC_LABEL;
+      sealed = { epoch: seal.epoch, bytes: await sealFields({ place: { list: copy.list, seq: state.footing.seq + 1 }, epoch: epochKey, commitment: seal.opens, fields: namesFields({ label, os: null }) }) };
+      const wrap = await wrapEpochKey({ list: copy.list, epoch: epochKey, member: pc.enc });
+      if (wrap !== null) wraps.push({ epoch: seal.epoch, member: pc.enc, wrap: wrapToText(wrap) });
+    }
+    const written = await signListEntry(state, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card: pc.card, sealed }, { key: keys.key, privateKey: keys.privateKey }, now);
     return { entries: [written.text], wraps };
   }
 
@@ -2217,6 +2281,24 @@ function placeOf(copy: FollowerCopy, device: AllowedDevice): { id: string; seq: 
   const text = row === undefined ? undefined : copy.entries[row.seq];
   if (row === undefined || text === undefined || row.as !== "device" || row.ended !== null || state.devices[device.key]?.enc !== device.enc) return null;
   return { id: copy.list, seq: row.seq, hash: entryHash(entryFromText(text).body) };
+}
+
+/** Where the copy's list let this very PC in by a `pc` entry, with that key at that relay key, while it is in; null otherwise. */
+function pcPlaceOf(copy: FollowerCopy, pc: Pick<AddedPc, "key" | "endpoint">): { id: string; seq: number; hash: string } | null {
+  const { state } = copy;
+  if (state === null) return null;
+  const row = Object.hasOwn(state.pcs, pc.endpoint) ? state.pcs[pc.endpoint] : undefined;
+  const signer = Object.hasOwn(state.signers, pc.key) ? state.signers[pc.key] : undefined;
+  const text = signer === undefined ? undefined : copy.entries[signer.seq];
+  if (row === undefined || row.removed !== null || row.key !== pc.key || signer === undefined || signer.as !== "pc" || signer.ended !== null || text === undefined) return null;
+  return { id: copy.list, seq: signer.seq, hash: entryHash(entryFromText(text).body) };
+}
+
+/** Whether the list holds the PC this copy is of with exactly its own keys: its signing key and its encryption key, at its own relay key. */
+function holdsOwnKeys(copy: FollowerCopy, keys: Pick<PcListKeys, "key" | "enc">): boolean {
+  const { state, me } = copy;
+  const row = state === null || me.endpoint === null || !Object.hasOwn(state.pcs, me.endpoint) ? undefined : state.pcs[me.endpoint];
+  return row !== undefined && row.removed === null && row.key === keys.key && row.enc === keys.enc;
 }
 
 /**

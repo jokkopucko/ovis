@@ -9,7 +9,8 @@ import type { PendingRedemptions } from "./pending.ts";
 import { RelayIdentityError } from "../relay/identity.ts";
 import type { RelayService } from "../relay/service.ts";
 import type { AccountMailbox } from "./mailbox.ts";
-import { takeForAccount } from "./one-press.ts";
+import type { ListFollow } from "./list-follow.ts";
+import { takeByList, takeForAccount } from "./one-press.ts";
 import { recoveryActs, type AccountAddSeams, type RecoverySeams } from "./recovery-acts.ts";
 import { openRecoverySocket, type RecoveryReleases } from "./recovery.ts";
 import { pcRecordId, SafetyLog } from "./safety-log.ts";
@@ -26,6 +27,8 @@ export function openPcRecovery(options: {
   readonly pairings: KeyProofPairings | undefined;
   readonly relay: RelayService;
   readonly accountMailbox: AccountMailbox;
+  /** the account's signed list as this PC follows it: a take that names a list joins by it */
+  readonly accountList?: ListFollow | null;
   /** how long a take over SSH waits for this PC's relay to come online (one-press.ts ADDED_RELAY_ONLINE_MS) */
   readonly addedRelayOnlineMs?: number | undefined;
 }) {
@@ -100,9 +103,10 @@ export function openPcRecovery(options: {
       const { name, ...shown } = fields;
       return { ...shown, label: (name ?? fields.server_id.slice(0, 8)).slice(0, 48), account: devices.account() };
     },
-    take: async (account, serverId) => {
+    take: async (account, serverId, named) => {
       if (managed()) return { refused: "This is a bridge another PC started, not this PC's own Ovis", code: "managed" };
-      const taken = await takeForAccount({ devices, relay, accountMailbox }, account, serverId, options.addedRelayOnlineMs);
+      const taken = named === undefined ? await takeForAccount({ devices, relay, accountMailbox }, account, serverId, options.addedRelayOnlineMs)
+        : await takeByList({ devices, relay, accountMailbox, accountList: options.accountList ?? null }, account, serverId, named, options.addedRelayOnlineMs);
       return "refused" in taken ? { refused: taken.refused.message, code: taken.refused.code } : taken;
     },
   };
