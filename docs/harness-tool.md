@@ -76,8 +76,10 @@ for example:
 {"settings":{"agentHarnessTool":{"level":"start","depth":1,"harnesses":["opencode"]}}}
 ```
 
-Use `view` for read-only, or `off` to revoke every existing run token. A new launch is needed
-after revocation. Changing a grant never kills a running child. Ovis does not install adapters
+With a valid run token, a parent can still stop a child it started after its start/send grant
+shrinks. Stop cancels pending approval cards without choosing any option. Use `off` to revoke
+every existing run token; a new launch is needed after revocation. Changing a grant never kills
+a running child. Ovis does not install adapters
 or edit the user's settings. For unverified parents, every other harness and version gets
 `not_granted`, not a launch in the harness default. These were run and found to let an action
 through with no card (checked 2026-11-24):
@@ -157,6 +159,7 @@ sets that hold and **Hand back** releases it; the sidebar marks a held child **S
 `POST /api/pane/turn/cancel-children {"pane_id":"t7"}` holds every ACP child pane `t7` started
 (its menu's **Stop agents it called**) and answers `held` (pane, `child_id`, `generation`) and
 `failed` (panes that did not take the hold).
+A driving device can cancel with agent tools off.
 
 The token travels only over the private Unix socket, not HTTP. A same-account program can read
 the token file: this is run attribution, not isolation from other programs of the same OS user.

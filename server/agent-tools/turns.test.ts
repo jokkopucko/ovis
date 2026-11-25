@@ -147,7 +147,6 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
       expect(JSON.stringify(value)).not.toContain("touch x");
     }
     expect(await call("send", { session, task: "answer" })).toMatchObject({ error: { code: "waiting_human" } });
-    expect(await call("stop", { session })).toMatchObject({ error: { code: "waiting_human" } });
     const child = acp.forPane(session);
     const approval = child?.client.pending()[0];
     if (!child || !approval) throw new Error("missing card");

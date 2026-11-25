@@ -59,10 +59,11 @@ it("defaults to local delegation after an unrelated preference is saved and relo
   expect(await call("scope")).toMatchObject({ verbs: expect.arrayContaining(["start", "send"]) });
 });
 
-it("a saved view policy still refuses start, send, wait, result, ask and stop after restart", async () => {
+it("a saved view policy still refuses start, send, wait, result and ask after restart", async () => {
   new PreferenceStore(dir).set({ settings: { agentHarnessTool: { level: "view", depth: 1, harnesses: ["gjc"] } } });
   setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
-  for (const verb of ["start", "send", "wait", "result", "ask", "stop"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });
+  for (const verb of ["start", "send", "wait", "result", "ask"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("stop", { session: "other" })).toMatchObject({ error: { code: "unknown_session" } });
   expect(await call("scope")).toMatchObject({ verbs: ["machines", "harnesses", "ls", "read"] });
 });
 it("refuses a start on another machine without starting it", async () => {
@@ -86,7 +87,8 @@ it("tool discovery during session opening confers no data access; the depth ceil
   expect(await call("scope", {}, secret)).toMatchObject({ verbs: ["machines","harnesses","ls","read"] });
   expect(await call("machines", {}, secret)).toMatchObject({ error: { code: "not_granted" } });
   child.bind({ self: "child", harness: "gjc", started_by: parent.id, root: parent.id, depth: 1 });
-  for (const verb of ["send","stop"]) expect(await call(verb, { session: "other", ...(verb === "send" ? { task: "hello" } : {}) }, secret)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("send", { session: "other", task: "hello" }, secret)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("stop", { session: "other" }, secret)).toMatchObject({ error: { code: "unknown_session" } });
 });
 it.each([1,2,3] as const)("a run at depth %d cannot start, even with the local harness granted", async depth => {
   setting = { level: "start", depth, harnesses: ["gjc"] };
@@ -119,6 +121,7 @@ it("the off switch rejects every verb and revokes credentials already issued", a
   setting = { ...setting, level: "off" };
   hub.settingsChanged();
   expect(await call("read")).toMatchObject({ error: { code: "tools_off" } });
+  expect(await call("stop", { session: "other" })).toMatchObject({ error: { code: "tools_off" } });
   start();
   expect(await call("scope")).toMatchObject({ error: { code: "not_granted" } });
 });

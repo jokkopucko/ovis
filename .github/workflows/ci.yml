@@ -266,7 +266,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         env:
           OVIS_REQUIRE_ACP_KEEPER: '1'
-        run: bun test server/acp server/agent-tools/turns.test.ts server/agent-tools/child.contract.test.ts server/approvals/acp.test.ts server/core/acp-composer.test.ts
+        run: bun test server/acp server/agent-tools/turns.test.ts server/agent-tools/child.contract.test.ts server/agent-tools/stop.contract.test.ts server/approvals/acp.test.ts server/core/acp-composer.test.ts
       - name: PtySession on both hosts
         if: needs.changes.outputs.draft != 'true'
         run: bun test ./server/pty/host.test.ts

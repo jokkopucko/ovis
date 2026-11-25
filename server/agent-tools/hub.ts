@@ -163,9 +163,13 @@ export class AgentToolHub {
   }
   private async act(run: Run, auth: () => unknown, deny: () => ReturnType<typeof refuse>, verb: unknown, args: unknown, signal: AbortSignal, began: number): Promise<object> {
     if (!this.runs.takeCall(run.id, this.now())) return refuse("rate_limited", "Too many calls in the past minute.");
-    if (verb === "scope") return answer("scope", { verbs: this.verbs(run) });
+    if (verb === "scope") {
+      const verbs = this.verbs(run);
+      const ownsChild = !verbs.includes("stop") && [...this.ledger.children.values()].some(row => row.starter === run.id);
+      return answer("scope", { verbs: ownsChild ? [...verbs, "stop"] : verbs });
+    }
     if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");
-    if (!isView(verb) && this.setting.level !== "start") return deny();
+    if (!isView(verb) && verb !== "stop" && this.setting.level !== "start") return deny();
     if (!validArgs(verb, args)) return refuse("bad_request", "Invalid or unexpected argument.");
     const privilegedRead = verb === "read" && (args.what === "result" || args.what === "screen");
     if (privilegedRead && !this.verbs(run).includes("result")) return deny();
@@ -173,7 +177,7 @@ export class AgentToolHub {
       const result = await this.view.query(verb, args, this.turns);
       return auth() && (!privilegedRead || this.verbs(run).includes("result")) ? result : deny();
     }
-    const allowed = () => !!auth() && this.verbs(run).includes(verb);
+    const allowed = () => !!auth() && (verb === "stop" || this.verbs(run).includes(verb));
     const session = String(args.session ?? "");
     if (verb === "start" || verb === "ask") {
       if (!run.ceiling && run.depth < this.setting.depth && (!askable(String(args.harness)) || !this.setting.harnesses.includes(String(args.harness)))) return refuse("not_granted", "This harness has no verified ask-for-everything launch.");
@@ -225,7 +229,6 @@ export class AgentToolHub {
         const receipt = await child.client.request("_keeper/tool_stop", {}, signal);
         if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");
       } catch (error) {
-        if (error instanceof KeeperRequestError && error.code === -32003) return refuse("waiting_human", "A person must answer the child's card.");
         if (error instanceof KeeperRequestError && error.code === -32002) return refuse("taken_over", "A person holds this child.");
         throw error;
       }

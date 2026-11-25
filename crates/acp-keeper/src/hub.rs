@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::UnboundedSender;
@@ -101,6 +101,12 @@ struct Route {
     change: Option<Change>,
 }
 
+struct ToolStop {
+    conn: u64,
+    id: Value,
+    deadline: Instant,
+}
+
 /// Why an answer to a permission request is not one (the request stays pending), or None. An error
 /// answer, a cancellation and a selection of one of the offered options are answers.
 fn invalid_answer(pending: &crate::model::Pending, answer: &Value) -> Option<&'static str> {
@@ -141,6 +147,7 @@ pub struct Hub {
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
     hold: Option<u64>,
+    stop: Option<ToolStop>,
     pub quit: bool,
     /// The pane was resized: paint the status line again.
     pub redraw: bool,
@@ -170,6 +177,7 @@ impl Hub {
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
             hold: None,
+            stop: None,
             quit: false,
             redraw: false,
         }
@@ -194,7 +202,9 @@ impl Hub {
     }
 
     fn switch_blocker(&self) -> Option<&'static str> {
-        if self.mode != Mode::Acp {
+        if self.quit || self.stop.is_some() {
+            Some("the keeper is stopping")
+        } else if self.mode != Mode::Acp {
             Some("already switching")
         } else if !self.job_control {
             Some("the pane has no terminal with job control")
@@ -288,6 +298,7 @@ impl Hub {
         self.own.clear();
         self.prompts.clear();
         self.model.working = false;
+        self.finish_stop();
     }
 
     fn fail_routes(&mut self, message: &str) {
@@ -428,6 +439,9 @@ impl Hub {
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
         match (method, msg.get("id").cloned()) {
             (Some(method), Some(id)) => {
+                if self.quit {
+                    return;
+                }
                 self.next += 1;
                 let ours = Value::String(format!("agent-{}", self.next));
                 msg.insert("id".into(), ours.clone());
@@ -447,6 +461,9 @@ impl Hub {
                 }
                 self.agent_ids.insert(key_of(&ours), id);
                 self.model.request(key_of(&ours), ours, seq, &msg);
+                if self.stop.is_some() && method == "session/request_permission" {
+                    self.cancel_pending(None, "tool-stop");
+                }
             }
             (Some(method), None) => {
                 self.archive.append("from-agent", &text);
@@ -583,6 +600,12 @@ impl Hub {
         let Some(mut msg) = rpc(&line) else { return };
         let by = format!("client-{conn}");
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
+        if self.stop.is_some() || self.quit {
+            if let (Some(_), Some(id)) = (method, msg.get("id")) {
+                self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"the keeper is stopping"}}));
+            }
+            return;
+        }
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.answer(&key_of(&id), &line, &by),
             (Some(_), Some(id)) if self.client_ids.contains(&(conn, key_of(&id))) => {
@@ -597,18 +620,19 @@ impl Hub {
                 self.reply(conn, &answer);
             }
             (Some(method), Some(id)) if method == "_keeper/tool_stop" => {
-                let reply = if self.mode != Mode::Acp || self.hold.is_some() {
-                    json!({"error":{"code":-32002,"message":"held by a person"}})
-                } else if !self.model.pending.is_empty() || !self.answering.is_empty() {
-                    json!({"error":{"code":-32003,"message":"a person's decision is pending"}})
+                if self.mode != Mode::Acp || self.hold.is_some() {
+                    self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"held by a person"}}));
                 } else {
-                    self.quit = true;
-                    json!({"result":{"stopping":true}})
-                };
-                let mut message = reply;
-                message["id"] = id;
-                message["jsonrpc"] = json!("2.0");
-                self.reply(conn, &message);
+                    self.stop = Some(ToolStop {
+                        conn,
+                        id,
+                        deadline: Instant::now() + Duration::from_secs(1),
+                    });
+                    self.cancel_pending(None, &by);
+                    if self.answering.is_empty() {
+                        self.finish_stop();
+                    }
+                }
             }
             (Some(_), Some(id)) if self.mode != Mode::Acp => {
                 self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "terminal mode"}));
@@ -749,6 +773,23 @@ impl Hub {
         self.note_row("_keeper/resolved", json!({"id": pending.id, "by": by, "optionId": option, "outcome": outcome, "seq": pending.seq}));
         let chosen = option.or(outcome).unwrap_or_else(|| "error".into());
         self.model.note(format!("승인 답함 ({by}): {chosen}"));
+        if self.answering.is_empty() {
+            self.finish_stop();
+        }
+    }
+
+    pub fn stop_deadline(&self) -> Option<Instant> {
+        self.stop.as_ref().map(|stop| stop.deadline)
+    }
+
+    pub fn finish_stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            // A closed or stuck pipe cannot acknowledge cancellation. Expire those cards
+            // without recording a delivered answer, and still end the child.
+            self.expire_pending("the keeper is stopping");
+            self.quit = true;
+            self.reply(stop.conn, &json!({"jsonrpc":"2.0","id":stop.id,"result":{"stopping":true}}));
+        }
     }
 
     fn cancel_pending(&mut self, session: Option<&str>, by: &str) {
@@ -756,7 +797,7 @@ impl Hub {
             .model
             .pending
             .iter()
-            .filter(|p| p.method == "session/request_permission" && p.session.as_deref() == session)
+            .filter(|p| p.method == "session/request_permission" && (self.stop.is_some() || p.session.as_deref() == session) && !self.answering.contains(&p.key))
             .map(|p| (p.key.clone(), p.id.clone()))
             .collect();
         for (key, id) in keys {

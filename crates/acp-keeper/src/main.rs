@@ -593,11 +593,17 @@ async fn run(mut opts: Opts) -> i32 {
         if hub.quit || archive.error().is_some() {
             break;
         }
+        let stop_deadline = hub.stop_deadline();
         tokio::select! {
+            _ = async {
+                if let Some(deadline) = stop_deadline {
+                    tokio::time::sleep_until(deadline.into()).await;
+                }
+            }, if stop_deadline.is_some() => hub.finish_stop(),
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
                 hub.handle(ev);
-                while archive.error().is_none() {
+                while archive.error().is_none() && !hub.quit && hub.stop_deadline().is_none() {
                     match rx.try_recv() {
                         Ok(ev) => hub.handle(ev),
                         Err(_) => break,
