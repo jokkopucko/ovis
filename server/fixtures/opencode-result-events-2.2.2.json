@@ -1,0 +1,145 @@
+{
+ "opencode": "2.2.2",
+ "note": "OpenCode 2.2.2 GET /api/event, isolated serve, one session: agent plan then build, model selected, a prompt, then a compact (dsapi model)",
+ "events": [
+  {
+   "type": "session.agent.selected",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "agent": "plan"
+   },
+   "created": 1795579742512
+  },
+  {
+   "type": "session.agent.selected",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "agent": "build",
+    "previous": "plan"
+   },
+   "created": 1795579742516
+  },
+  {
+   "type": "session.model.selected",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "model": {
+     "id": "deepseek-v4.1-flash",
+     "providerID": "dsapi"
+    }
+   },
+   "created": 1795579742519
+  },
+  {
+   "type": "session.inbox.enqueued",
+   "data": {
+    "inboxID": "msg_210e48986001gveK5EmNX4l4eJ",
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "item": {
+     "type": "user",
+     "payload": {
+      "text": "Reply with the single word OK."
+     },
+     "delivery": "steer"
+    }
+   },
+   "created": 1795579743136,
+   "directory": "/work/proj"
+  },
+  {
+   "type": "session.execution.started",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N"
+   },
+   "created": 1795579743139
+  },
+  {
+   "type": "session.inbox.delivered",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "inboxID": "msg_210e48986001gveK5EmNX4l4eJ"
+   },
+   "created": 1795579743151,
+   "directory": "/work/proj"
+  },
+  {
+   "type": "session.execution.succeeded",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N"
+   },
+   "created": 1795579746768
+  },
+  {
+   "type": "session.inbox.enqueued",
+   "data": {
+    "inboxID": "msg_210e49a53001Bqjg5PEn1i3SwK",
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "item": {
+     "type": "compaction",
+     "payload": {},
+     "delivery": "steer"
+    }
+   },
+   "created": 1795579746900,
+   "directory": "/work/proj"
+  },
+  {
+   "type": "session.execution.started",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N"
+   },
+   "created": 1795579746903
+  },
+  {
+   "type": "session.inbox.delivered",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "inboxID": "msg_210e49a53001Bqjg5PEn1i3SwK"
+   },
+   "created": 1795579746906,
+   "directory": "/work/proj"
+  },
+  {
+   "type": "session.compaction.started",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "reason": "manual",
+    "inputID": "msg_210e49a53001Bqjg5PEn1i3SwK"
+   },
+   "created": 1795579746906,
+   "directory": "/work/proj"
+  },
+  {
+   "type": "session.compaction.ended",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N",
+    "reason": "manual",
+    "model": {
+     "id": "deepseek-v4.1-flash",
+     "providerID": "dsapi",
+     "variant": "default"
+    },
+    "text": "## Objective\n- User requested a reply consisting of the single word \"OK\".\n\n## Re (shortened)",
+    "tokens": {
+     "input": 9247,
+     "output": 110,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    },
+    "cost": 0
+   },
+   "created": 1795579751826,
+   "directory": "/work/proj"
+  },
+  {
+   "type": "session.execution.succeeded",
+   "data": {
+    "sessionID": "ses_def1b76dbffeXQfv0c4KviDQ0N"
+   },
+   "created": 1795579751828
+  }
+ ]
+}
