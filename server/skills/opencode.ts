@@ -86,6 +86,19 @@ const V2_BUILTINS: readonly Builtin[] = [
   { name: "worktrees", description: "Manage workspaces", forms: TERMINAL, visibility: "terminal" },
 ];
 
+/**
+ * The names and aliases OpenCode 2.2.2's TUI runs itself before it asks its server (`argumentSlash` in
+ * prompt/index.tsx; every `slash: { name, aliases }` of packages/tui/src at 098aa7fd). A server command of the same
+ * name never runs from that TUI.
+ */
+const V2_TUI_COMMANDS = new Set([
+  "agents", "btw", "cd", "clear", "compact", "connect", "copy", "debug", "diff", "editor", "exit", "quit", "q", "export",
+  "fork", "help", "highlights", "mcps", "models", "new", "open", "projects", "project", "pair", "web", "plugins", "redo",
+  "reload", "rename", "restart", "sessions", "resume", "continue", "settings", "skills", "stats", "status", "terminal",
+  "themes", "timeline", "undo", "update", "usage", "variants", "thinking", "effort", "worktrees",
+]);
+export const openCodeTuiCommand = (name: string): boolean => V2_TUI_COMMANDS.has(name);
+
 const majorMinor = (version: string): string => version.split(".").slice(0, 2).join(".");
 const isV2 = (version: string | null | undefined): boolean => Number(/^(\d+)(?:\.|$)/.exec(version ?? "")?.[1] ?? 1) >= 2;
 const canonical = (path: string): string => { try { return realpathSync(path); } catch { return path; } };

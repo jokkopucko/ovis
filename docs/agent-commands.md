@@ -17,16 +17,43 @@ Everything here rests on three rules. A change that breaks one of them is a bug,
    knows (`dialog`, naming the reader), only works in the terminal (`terminal`), or is not known
    (`unknown`). Rows also carry `visibility`, `provenance` (scan, static or native, and whether it
    was checked against the running version), `shadows` and a stable `id`.
-2. **The terminal is the only way a command is sent.** Chat types into the pane exactly as the
-   user would, through the same submit path as any message. No command goes through an agent's
-   API. The native writes the bridge keeps are answers, not commands: a pending OpenCode v2 form,
-   and the approvals of a Codex Ovis started on its own app server
+2. **A command goes as data where the agent takes it as data, and is typed everywhere else.**
+   Where the pane's own agent session has an API route for a command, and the bridge reaches that
+   session, Chat sends the command there ([Commands sent as data](#commands-sent-as-data)).
+   Everything else is typed into the pane exactly as the user would, through the same submit path
+   as any message. A request that reached nothing (no verified session, no connection, a refusal
+   before anything ran) falls back to typing; one that may have reached the agent is never typed
+   as well, so a command never runs twice. The other native writes the bridge keeps are answers,
+   not commands: a pending OpenCode v2 form, and the approvals of a Codex Ovis started on its own app server
    ([`server/approvals/codex.ts`](../server/approvals/codex.ts)), which subscribes to its threads
    for them (`thread/resume`, no overrides) and starts no turn.
 3. **An outcome changes only on evidence tied to that send.** Sending a command records
    `accepted` and nothing more. A later state needs evidence that belongs to this send, listed
    under [Outcome states](#outcome-states-and-their-evidence). A screen that changed, an idle agent
    or a timer proves nothing.
+
+## Commands sent as data
+
+[`server/command-data-send.ts`](../server/command-data-send.ts) decides, per send, whether a
+command has a data route (`commandDataRoute`) and sends it (`sendCommandAsData`); the composer
+types it otherwise. Only a send that is exactly one command, with no `@skill`, is routed.
+
+| Agent | Command | Route | Result |
+| --- | --- | --- | --- |
+| OpenCode 2 | a server command (`GET /api/command`: `init`, `review`, `goal`, user commands), not one the TUI runs itself | `POST /api/session/{id}/command {name, text, delivery: "steer"}`, as the TUI's Enter does | the 204 answers once the command's callback ran: `native` evidence |
+| OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it, so the send stays `accepted` as a typed `/compact` does |
+
+The pane's session must be the one its verified OpenCode 2 service holds (`openCodePaneService`)
+and the one herdr still reports for the pane right before the request, never on Windows. The
+text is read as OpenCode's TUI reads it: the slash first, the name up to the first white space
+(it may hold `/`, as `team/check`), the rest as the argument; a name the TUI runs itself, or one
+of its aliases (`/resume`, `/effort`, `/usage`), is typed. The sender's right to type and the
+send's deadline are checked once the connection is open, right before the request's bytes go.
+Known limits: a message queued behind a working agent is typed when its turn comes, as before;
+and a model or agent picked in OpenCode's terminal but not yet sent there is not used, where the
+TUI's own Enter would commit it first. A 4xx answer (an unknown command is 404) or a connection that never opened types the
+command as before. No answer after the connection opened is `timeout`, and a 5xx is
+`command_failed`: neither is typed again, and the chat keeps the text.
 
 ## Where the rows come from
 
@@ -206,8 +233,9 @@ Recognized Hermes informational result cards remain available.
   after this send's own echo and was not on screen when it was sent. Hermes `/help`, `/status`,
   `/version`, `/profile` and `/reload-skills` work this way, and the text is shown verbatim on a
   card with a **Dismiss** that sends no keys.
-- `native`: the agent's own event stream. Today only OpenCode v2, whose service announces the
-  session's message and the end of its execution.
+- `native`: the agent's own event stream or API answer. Today only OpenCode v2, whose service
+  announces the session's message and the end of its execution, and answers a server command sent
+  as data once its callback ran.
 - `side-store`: reserved for an agent's own side store, such as omp's saved BTW answers. Nothing
   produces it yet, so omp `/btw` is a terminal command.
 
@@ -386,7 +414,7 @@ There is no single place for a new agent. These files each need it:
 
 ## Not done yet
 
-These are tracked as issues rather than built: sending a command through an agent's own API, a
+These are tracked as issues rather than built: data routes for agents other than OpenCode, a
 link between a Codex pane and its thread, opt-in companions that would let an agent report its
 own runtime commands, probes that are certified free of side effects, versions for the nine
 agents whose stores do not record one, translations of card labels the server writes,

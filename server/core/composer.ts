@@ -8,10 +8,11 @@ import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
 import { paneProcessRoots } from "../conversation.ts";
 import type { CommandSend } from "../outcome.ts";
+import { commandDataRoute, sendCommandAsData } from "../command-data-send.ts";
 import { processStartedAt } from "../process-start.ts";
 import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
-import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
+import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteCommandEvidence, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "../dialogs/registry.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
@@ -623,6 +624,29 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           }, () => {});
         }
         inTime();
+        const route = pane && command ? commandDataRoute(command, text) : null;
+        if (pane && command && route) {
+          const sending = command;
+          const sendingTo = pane;
+          // asked as the request's bytes leave, as herdr asks at its write: a revoked sender or a spent deadline sends nothing
+          const mayWrite = (): boolean => {
+            try { inTime(); } catch (error) { refused = error; return false; }
+            if (!mayType()) return false;
+            bindCommandProcess(paneId, sending, seen, sendingTo);
+            return true;
+          };
+          const viaData = await sendCommandAsData(pane, route, mayWrite, options.openCodeStateDir);
+          if (viaData) {
+            noteSubmitted(paneId, text, recorded(command), viaData.at);
+            // evidence counts only after the send it belongs to (outcome.ts)
+            if (viaData.ran) noteCommandEvidence(paneId, command.id, { kind: "native", at: Math.max(Date.now(), viaData.at + 1) });
+            return;
+          }
+          if (refused !== undefined) throw refused;
+          // nothing reached the agent: what follows types it as before
+          writeStarted = false;
+          inTime();
+        }
         // agent.prompt pastes the whole text, and OpenCode v2 leaves a pasted @skill unattached
         let skills: string[] = [];
         if (pane) ({ sent: command, skills } = await openCodeSkillsToType(pane, command, text, beforeScreen, options.openCodeStateDir));
