@@ -164,7 +164,9 @@ of a turn are not held. Nothing is typed to close the screen.
 
 Rows marked `agent-hidden` mirror the agent's own menu, which hides them (Claude Code's
 `/heapdump`, for instance). They are left out of the menu too, but typing one sends it like any
-other command. No other row a source finds is ever hidden.
+other command. The agent catalog may also mark an ordinary plan, permission, model or effort
+control `chatPaletteHidden` when its bare form shows no result in Chat. This affects suggestions
+only: typed commands still run, and rows with a terminal handoff or a Chat dialog stay listed.
 
 ## Outcome states and their evidence
 

@@ -29,7 +29,7 @@ export const expect = async ({ page, width, box, menu, scenario, log, clear, row
     const rows = await rowNames();
     assert.ok(rows.includes("skill:mass-ulw") && rows.includes("compact"), `the menu lists skill:mass-ulw and compact: ${rows.join(" ")}`);
     assert.ok(rows.includes("tree"), `the menu lists tree, a terminal command: ${rows.join(" ")}`);
-    assert.deepEqual([...rows].sort(), commands.map((command) => command.name).sort(), "every omo command is offered, once");
+    assert.deepEqual([...rows].sort(), commands.filter((row) => !row.chatPaletteHidden).map(({ name }) => name).sort(), "every offered OmO command and skill is listed once");
     const headings = await menu.locator(".menu-heading").allTextContents();
     assert.ok(headings.includes("Your skills") && headings.includes("Built-in skills") && !headings.includes("Skills"), `yours and omo's stand under their own headings: ${headings.join(" | ")}`);
     assert.ok(headings.indexOf("Your skills") < headings.indexOf("Built-in skills"), "yours first");

@@ -181,5 +181,8 @@ export function paneCommands(agent: string | null | undefined, cwd: string | nul
     if (trigger === "/" && source.skillsOverrideBuiltins && builtins.delete(found.name)) command.shadows = "builtin";
     commands.push(command);
   }
-  return [...builtins.values(), ...commands].sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source));
+  return [...builtins.values(), ...commands]
+    .map<SlashCommand>((command) => command.source === "builtin" && source.chatPaletteHidden?.includes(command.name)
+      ? { ...command, chatPaletteHidden: true } : command)
+    .sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source));
 }

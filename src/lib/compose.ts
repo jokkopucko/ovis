@@ -215,11 +215,22 @@ export function commandListed(command: SlashCommand): boolean {
   return command.visibility !== "agent-hidden";
 }
 
+function paletteCommandListed(command: SlashCommand): boolean {
+  return commandListed(command) && (!command.chatPaletteHidden || terminalCommand(command)
+    || (command.forms ?? []).some((form) => form.match === "bare" && form.interaction === "dialog" && form.dialog !== undefined));
+}
+
+/** A row left out of the palette whose whole name was typed: the menu stays out of the way, so Enter sends it as typed. */
+function namesPaletteHidden(commands: readonly SlashCommand[], word: string, prefix: string | undefined): boolean {
+  return word !== "" && commands.some((command) => commandListed(command) && !paletteCommandListed(command)
+    && (prefix === undefined || (command.trigger ?? "/") === prefix) && command.name.toLowerCase() === word);
+}
+
 export function namesHiddenCommand(commands: readonly SlashCommand[], query: string, prefix?: string): boolean {
   const word = query.toLowerCase();
-  return word !== "" && commands.some((command) => !commandListed(command)
+  return word !== "" && (namesPaletteHidden(commands, word, prefix) || commands.some((command) => !commandListed(command)
     && (prefix === undefined || (command.trigger ?? "/") === prefix)
-    && command.name.toLowerCase().startsWith(word));
+    && command.name.toLowerCase().startsWith(word)));
 }
 
 /**
@@ -375,8 +386,9 @@ function slashMatchTier(command: SlashCommand, needle: string, prefixOnly: boole
 export function commandsForTrigger(commands: readonly SlashCommand[], agent: string | null, trigger: ActiveTrigger): SlashCommand[] {
   const syntax = skillSyntax(agent);
   const prefix = trigger.prefix ?? "/";
+  if (trigger.start === 0 && namesPaletteHidden(commands, trigger.query.toLowerCase(), prefix)) return [];
   return commands.filter((command) => {
-    if (!commandListed(command)) return false;
+    if (!paletteCommandListed(command)) return false;
     if (trigger.start === 0) {
       return syntax.skillTriggers.length > 1
         ? prefix === "/" || command.source === "skill"

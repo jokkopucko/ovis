@@ -161,6 +161,7 @@ function disabledSkills(home: string, cwd: string | null | undefined, env: reado
 export const source: AgentCommandSource = {
   builtins: ["settings", "model", "thinking", "scoped-models", "favorite-models", "export", "import", "share", "copy", "rename", "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "sessions", "reload", "quit", "exit"],
   descriptions: OMO_DESCRIPTIONS,
+  chatPaletteHidden: ["efforts", "reasoning"],
   pin: "2026.10.19",
   forms: {
     model: [{ match: "bare", interaction: "dialog", dialog: "omo-model" }],

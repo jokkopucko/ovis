@@ -100,6 +100,7 @@ function config(path: string): Record<string, unknown> {
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions),
+  chatPaletteHidden: ["accept-edits", "ask", "autonomous", "bypass", "bypass-permissions", "code", "dangerous", "fast", "normal", "plan", "smart", "yolo"],
   descriptions,
   pin: "3000.11.92",
   terminalBound,

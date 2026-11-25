@@ -276,6 +276,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
 
 export const source: AgentCommandSource = {
   builtins: [...builtins, ...aliases],
+  chatPaletteHidden: ["mode:accept-edits", "mode:default", "mode:plan", "plan"],
   descriptions: {
     ...descriptions,
     new: descriptions.clear!,

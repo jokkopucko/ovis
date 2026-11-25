@@ -975,6 +975,8 @@ export interface SlashCommand {
   forms?: CommandForm[];
   /** `terminal`: only works in the terminal; `agent-hidden`: the agent's own menu hides it, it still sends when typed */
   visibility?: "offered" | "terminal" | "agent-hidden";
+  /** Omit this ordinary live control from Chat suggestions without changing how typed commands run. */
+  readonly chatPaletteHidden?: true;
   /** where this row came from, and whether it was checked against the running agent version */
   provenance?: {
     /** how the row was found: `scan` read from disk, `static` shipped with the bridge, `native` asked of the agent */

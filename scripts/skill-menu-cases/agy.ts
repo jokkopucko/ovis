@@ -23,7 +23,7 @@ export const expect = async ({ page, width, box, menu, scenario, clear, rowNames
     await clear();
     await box.fill("/");
     await menu.locator(".menu-item").filter({ hasText: "/probe-skill" }).waitFor();
-    assert.deepEqual((await rowNames()).sort(), commands.map(({ name }) => name).sort());
+    assert.deepEqual((await rowNames()).sort(), commands.filter((row) => !row.chatPaletteHidden).map(({ name }) => name).sort());
     assert.deepEqual(await menu.locator(".menu-heading").allTextContents(), [
       "Built in", "Your skills", "Project skills", "Built-in skills", "Plugin skills", "Terminal commands",
     ]);

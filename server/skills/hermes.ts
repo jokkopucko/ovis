@@ -316,6 +316,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(BUILTINS),
+  chatPaletteHidden: ["approvals", "reasoning", "yolo"],
   descriptions: BUILTINS,
   forms: RESULT_FORMS,
   terminalBound: TERMINAL_BOUND,

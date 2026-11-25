@@ -102,6 +102,7 @@ const TERMINAL: CommandForm[] = [{ match: "bare", interaction: "terminal" }];
 const NONE: CommandForm[] = [{ match: "bare", interaction: "none" }];
 
 export const source: AgentCommandSource = {
+  chatPaletteHidden: ["plan"],
   // codex-rs/tui/src/slash_command.rs at rust-v0.163.0, in its presentation order. Not listed: `app` (macOS and
   // Windows builds only) and `rollout` and `test-approval` (debug builds). `fast` is a model service-tier command
   // there, not a built-in. What the popup hides is listed again in `agentHidden`.
