@@ -266,4 +266,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Not sent: no agent is running in this pane. Your message stayed here.": "未送信: このペインではエージェントが動いていません。メッセージはここに残っています。",
   "1 comment": "コメント1件",
   "{count} comments": "コメント{count}件",
+  "Close tab?": "タブを閉じますか？",
+  "The agent first checks for open work and questions. It closes the tab only when nothing is left.": "エージェントはまず、残っている作業と質問を確認します。何も残っていないときだけタブを閉じます。",
+  "Nothing was sent: the message box is not empty.": "何も送信されませんでした: 入力欄が空ではありません。",
 };

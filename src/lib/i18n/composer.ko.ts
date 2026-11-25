@@ -266,4 +266,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "Not sent: no agent is running in this pane. Your message stayed here.": "보내지 않음: 이 패널에서 실행 중인 에이전트가 없습니다. 메시지는 그대로 남아 있습니다.",
   "1 comment": "코멘트 1개",
   "{count} comments": "코멘트 {count}개",
+  "Close tab?": "탭을 닫을까요?",
+  "The agent first checks for open work and questions. It closes the tab only when nothing is left.": "에이전트가 먼저 남은 작업과 질문을 확인합니다. 남은 것이 없을 때만 탭을 닫습니다.",
+  "Nothing was sent: the message box is not empty.": "아무것도 보내지 않았습니다: 입력란이 비어 있지 않습니다.",
 };

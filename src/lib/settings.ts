@@ -9,6 +9,7 @@ import { browserBlockedSites } from "../../shared/browser-policy.ts";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type DrawnTheme, type ThemeId } from "./themes.ts";
 import { bootRows, drawnTheme, NO_CUSTOM_THEMES, sanitizeCustomThemes, type CustomThemes } from "./customThemes.ts";
+import { sanitizeCloseTabSkill } from "./closeTabSkill.ts";
 import { LANGUAGE_SETTINGS, LOCALE_TAGS, resolveLanguage, setCurrentLanguage, type Language, type LanguageSetting } from "./i18n.ts";
 import type { AlertPrefs, DoneAlerts } from "../../shared/notify-policy.ts";
 import { AGENT_GROUP_SORTS, type AgentGroupSort } from "../../shared/attention.ts";
@@ -150,6 +151,9 @@ export interface Settings {
   /** the Side conversations chip in an OMP pane's composer, listing what was asked and answered with `/btw`; off until
    *  chosen, so the composer's row stays minimal */
   composerBtw: boolean;
+  /** the skill a Close tab button in the chat's composer asks the agent to run (`close-tab`, or `jokko:close-tab` where two
+   *  plugins have one); empty: no button. Unlike the pane menu's Close tab, the agent checks for open work first */
+  composerCloseSkill: string;
   /** on a touch screen, a chip above the message box offers the prompt the agent suggests next.
    * Not `showSuggestionChip`: that key was on by default until 0.4.9 and is still stored on phones */
   suggestionChip: boolean;
@@ -216,7 +220,7 @@ type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "builtInBrowser" | "browserBlockedSites" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
-  | "agentOrderAcrossPcs" | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "agentOrderAcrossPcs" | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "composerCloseSkill" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
@@ -307,6 +311,8 @@ export const SETTING_SCOPE = {
   composerArtifacts: "device",
   composerPasteSend: "device",
   composerBtw: "device",
+  // a phone may want the one-tap close a desk does without
+  composerCloseSkill: "device",
   sidebarFilter: "device",
   sidebarContext: "device",
   foldHelpers: "device",
@@ -391,6 +397,7 @@ export const DEFAULT_SETTINGS: Settings = {
   composerArtifacts: false,
   composerPasteSend: false,
   composerBtw: false,
+  composerCloseSkill: "",
   suggestionChip: false,
   showThinking: false,
   expandThinking: false,
@@ -606,6 +613,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     composerArtifacts: typeof record["composerArtifacts"] === "boolean" ? record["composerArtifacts"] : DEFAULT_SETTINGS.composerArtifacts,
     composerPasteSend: typeof record["composerPasteSend"] === "boolean" ? record["composerPasteSend"] : DEFAULT_SETTINGS.composerPasteSend,
     composerBtw: typeof record["composerBtw"] === "boolean" ? record["composerBtw"] : DEFAULT_SETTINGS.composerBtw,
+    composerCloseSkill: sanitizeCloseTabSkill(record["composerCloseSkill"]),
     suggestionChip: typeof record["suggestionChip"] === "boolean" ? record["suggestionChip"] : DEFAULT_SETTINGS.suggestionChip,
     showThinking: typeof record["showThinking"] === "boolean" ? record["showThinking"] : DEFAULT_SETTINGS.showThinking,
     expandThinking: typeof record["expandThinking"] === "boolean" ? record["expandThinking"] : DEFAULT_SETTINGS.expandThinking,

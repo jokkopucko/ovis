@@ -18,6 +18,7 @@ import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "..
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, phoneInboxOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
+import { sanitizeCloseTabSkill } from "../lib/closeTabSkill.ts";
 import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { chosenTheme, customRow, customRowId, type CustomTheme } from "../lib/customThemes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
@@ -587,6 +588,21 @@ function ChatPage() {
             {chip(Layers, t("Artifacts (Claude Code)"), settings.composerArtifacts, (composerArtifacts) => update({ composerArtifacts }))}
             {touch && chip(Sparkles, t("Suggestion"), settings.suggestionChip, (suggestionChip) => update({ suggestionChip }))}
           </span>
+        </SettingsRow>
+        {/* this device's: the button shows only where the pane's agent lists the skill (lib/closeTabSkill.ts) */}
+        <SettingsRow icon={X} label={t("Close tab button")} description={t("A button beside Attach files asks the agent to run this skill, for example close-tab. The agent checks for open work first and then closes its tab. Empty: no button. On this device only.")} wide reset={["composerCloseSkill"]}>
+          {/* sized as the font names are: beside its label on a wide screen, under it on a phone */}
+          <input
+            className="input settings-font-input"
+            value={settings.composerCloseSkill}
+            placeholder="close-tab"
+            aria-label={t("Close tab button")}
+            autoComplete="off"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            onChange={(event) => update({ composerCloseSkill: sanitizeCloseTabSkill(event.target.value) })}
+          />
         </SettingsRow>
       </SettingsGroup>
 
