@@ -42,7 +42,7 @@ describe("agy background tasks", () => {
     expect(taskCount(state, null, T0 + 60 * 60_000)).toEqual(count(2, 2, T0, false));
     expect(taskCount(state, null, T0 + 94 * 60_000)).toEqual(count(1, 1, T0, false));
     readTaskLine("agy", state, JSON.stringify(agy.start(5, 2)));
-    expect(taskCount(state, null, T0 + 3 * 60_000).capped).toBe(true);
+    expect(taskCount(state, null, T0 + 3 * 60_000).capped).toBe(false);
     expect(taskCount(state, T0 + 10 * 60_000, T0 + 11 * 60_000)).toEqual(count(0, 0, T0));
   });
 });
@@ -122,6 +122,104 @@ describe("AgentTaskStatus", () => {
     now += 30_000;
     await status.track(pane("agy"));
     expect(resets).toEqual(["p1"]);
+  });
+
+  it("takes no agy lookup for a pane that runs grok by the time it finishes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n`);
+    const lookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    const told: TaskCount[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent); return looked.agent === "agy" ? lookup.promise : Promise.resolve(null); }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    const tracking = status.track(pane("agy"));
+    await status.refresh([pane("grok")]);
+    lookup.resolve({ path, started: null, owner: null });
+    await tracking;
+    expect(asked).toEqual(["agy", "grok"]);
+    expect(told).toEqual([]);
+    expect(status.countOf("p1")).toBe(0);
+  });
+
+  it("keeps a grok lookup that a snapshot naming no session for the pane comes in during", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "one.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["watch", "running", 1]]))}\n`);
+    const session = { ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value: "one" } } as HerdrPane;
+    const lookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? lookup.promise : Promise.resolve(null); }, onChange: () => undefined, onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    const tracking = status.track(session);
+    await status.refresh([pane("grok")]);
+    lookup.resolve({ path, started: null, owner: null });
+    await tracking;
+    expect(asked).toEqual(["one"]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("takes the grok session the newest snapshot names back, after one named another during the lookup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "one.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["watch", "running", 1]]))}\n`);
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const lookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? lookup.promise : Promise.resolve(null); }, onChange: () => undefined, onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    const tracking = status.refresh([session("one")]);
+    await status.refresh([session("two")]);
+    await status.refresh([session("one")]);
+    lookup.resolve({ path, started: null, owner: null });
+    await tracking;
+    expect(asked).toEqual(["one"]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("keeps the grok session a pane holds when a snapshot names it again during a lookup of another", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const file = (name: string, tasks: [string, string, number][]) => {
+      const path = join(root, name);
+      writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, tasks))}\n`);
+      return { path, started: null, owner: null };
+    };
+    const one = file("one.jsonl", [["watch", "running", 1]]);
+    const two = file("two.jsonl", [["build", "running", 1], ["serve", "running", 1]]);
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const lookupTwo = Promise.withResolvers<typeof two | null>();
+    const asked: string[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? Promise.resolve(one) : lookupTwo.promise; }, onChange: () => undefined, onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    await status.track(session("one"));
+    expect(status.countOf("p1")).toBe(1);
+    const switching = status.refresh([session("two")]);
+    await status.refresh([session("one")]);
+    lookupTwo.resolve(two);
+    await switching;
+    expect(asked).toEqual(["one", "two"]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("keeps a held agy timer's own lookup from taking the place of the grok one a snapshot started", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const files = { agy: join(root, "agy.jsonl"), grok: join(root, "grok.jsonl") };
+    writeFileSync(files.agy, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1, "Timer: 2h, Prompt: x"))}\n`);
+    writeFileSync(files.grok, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["build", "running", 1], ["serve", "running", 1]]))}\n`);
+    const grokLookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent); return looked.agent === "agy" ? Promise.resolve({ path: files.agy, started: null, owner: null }) : grokLookup.promise; }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    await status.track(pane("agy"));
+    expect(status.countOf("p1")).toBe(1);
+    now += 30_000;
+    const switching = status.refresh([pane("grok")]);
+    status.poll();
+    grokLookup.resolve({ path: files.grok, started: null, owner: null });
+    await switching;
+    expect(asked).toEqual(["agy", "grok"]);
+    expect(status.countOf("p1")).toBe(2);
   });
 
   it("drops a lookup that finishes after the pane was let go", async () => {
@@ -639,8 +737,14 @@ describe("agy timers", () => {
     const state = read("agy", [agy.prompt(0), agy.start(3, 1, "Timer: 9999h, Prompt: x")]);
     expect(taskCount(state, null, T0 + 2 * 60_000)).toEqual(count(1, 1, T0, true));
     readTaskLine("agy", state, JSON.stringify(agy.start(4, 1, "Timer: 24h, Prompt: x")));
-    expect(taskCount(state, null, T0 + 2 * 60_000)).toEqual(count(2, 2, T0, true));
+    expect(taskCount(state, null, T0 + 2 * 60_000)).toEqual(count(2, 2, T0, false));
     readTaskLine("agy", state, JSON.stringify(agy.notice(3, 2)));
     expect(taskCount(state, null, T0 + 3 * 60_000)).toEqual(count(1, 1, T0, false));
+  });
+
+  it("holds a timer until it is due with a command running beside it, and the command alone to the hold's limit", () => {
+    const state = read("agy", [agy.prompt(0), agy.start(3, 1, "Timer: 2h, Prompt: check the backup"), agy.start(4, 1)]);
+    expect(taskCount(state, null, T0 + 60 * 60_000)).toEqual(count(2, 2, T0, false));
+    expect(taskCount(state, null, T0 + 124 * 60_000)).toEqual(count(1, 1, T0, true));
   });
 });
