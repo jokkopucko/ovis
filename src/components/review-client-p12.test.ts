@@ -54,11 +54,19 @@ let service: AccountService;
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+/** settles until `done` holds: a press's work (signing, the list's write) takes as many turns as the machine's load makes it */
+const until = async (done: () => boolean, what: string): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  for (await settle(); !done(); await settle()) if (Date.now() > deadline) throw new Error(`still not so after 10 s: ${what}`);
+};
+/** a card's buttons are disabled while a press of it is at work */
+const cardsIdle = (): boolean => renderer!.root.findAll((card) => card.props["data-unconfirmed-pc"] !== undefined)
+  .every((card) => card.findAll((node) => node.type === "button" && node.props.disabled === true).length === 0);
 const pressWhere = async (find: (node: ReactTestInstance) => boolean): Promise<void> => {
   const found = renderer!.root.findAll((node) => node.type === "button" && find(node));
   if (found.length !== 1) throw new Error(`${found.length} buttons match`);
   await act(async () => { await found[0]!.props.onClick(); });
-  await settle();
+  await until(cardsIdle, "the card's press is done");
 };
 const press = (label: string): Promise<void> => pressWhere((node) => textOf(node).trim() === label);
 const text = (): string => renderer === undefined ? "" : renderer.root.findAll((node) => node.type === "div").map(textOf).join(" ");
@@ -282,7 +290,7 @@ describe("RED findings", () => {
       await press("Add");
       const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
       await act(async () => { void add.props.onClick(); });
-      await settle();
+      await until(() => list.view().pcs.length > 0, "the PC is in the list");
       // another tab holds the record's lock: the PC is in the list; on 1cb5f8afa the card is gone while the record waits
       expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
       expect(cardsFor(pc.server_id)).toBe(1);

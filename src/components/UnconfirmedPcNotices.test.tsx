@@ -45,9 +45,17 @@ const press = async (label: string): Promise<void> => {
   const found = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
   if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`);
   await act(async () => { await found[0]!.props.onClick(); });
-  await settle();
+  await until(cardsIdle, "the card's press is done");
 };
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+/** settles until `done` holds: a press's work (signing, the list's write) takes as many turns as the machine's load makes it */
+const until = async (done: () => boolean, what: string): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  for (await settle(); !done(); await settle()) if (Date.now() > deadline) throw new Error(`still not so after 10 s: ${what}`);
+};
+/** a card's buttons are disabled while a press of it is at work */
+const cardsIdle = (): boolean => renderer!.root.findAll((card) => card.props["data-unconfirmed-pc"] !== undefined)
+  .every((card) => card.findAll((node) => node.type === "button" && node.props.disabled === true).length === 0);
 const text = (): string => renderer === undefined ? "" : renderer.root.findAll((node) => node.type === "div").map(textOf).join(" ");
 /** the one-press admissions this device asked the account service for, for the PC on the card */
 const admits = (): number => fake.requests.filter((line) => line === `POST /v1/pcs/${PC}/admit`).length;
@@ -780,12 +788,12 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await mount();
       const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
       await act(async () => { void add.props.onClick(); });
-      await settle();
+      await until(() => list.view().pcs.length > 0, "the PC is in the list");
       // another tab holds the record's lock: the PC is in the list, and the card stays until its record is written
       expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
       expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
       locks.resolve();
-      await settle();
+      await until(cardsIdle, "the Add is done");
       expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
       expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
     } finally {

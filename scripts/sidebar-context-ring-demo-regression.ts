@@ -64,6 +64,8 @@ try {
           : { viewport: { width: 1280, height: 900 }, locale: "en-US", colorScheme: theme });
         try {
           await context.addInitScript((value) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value })), theme);
+          // the demo's opening turn would finish the api agent on its own timer, and a resting agent folds under +N resting
+          await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));

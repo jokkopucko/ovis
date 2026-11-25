@@ -158,6 +158,8 @@ try {
             localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", palette: "codex" }));
             localStorage.setItem(`ovis:view:${id}`, "chat");
           }, PANE);
+          // the demo's opening turn on this pane would finish on its own timer and grow the chat under the selection
+          await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           let release!: () => void;
           const held = new Promise<void>((resolve) => { release = resolve; });
           await context.route(/\/assets\/ChatTimeline-[^/]*\.js$/, async (route) => { await held; await route.continue(); });
@@ -189,6 +191,8 @@ try {
             localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: scheme, palette: "codex" }));
             localStorage.setItem(`ovis:view:${id}`, "chat");
           }, [PANE, theme] as const);
+          // the demo's opening turn on this pane would finish on its own timer and grow the chat under the selection
+          await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
