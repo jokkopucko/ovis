@@ -1185,8 +1185,8 @@ export async function serve(): Promise<void> {
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
     // its relay, and the pipes it logs to must outlive it
     // herdr-core's adapter answers what the stopping server still asks meanwhile
-    void Promise.all([Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(() => {
-      herdrCore?.stop();
+    void Promise.all([Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(async () => {
+      await herdrCore?.stop({ drain: true });
       process.exit(0);
     });
   };

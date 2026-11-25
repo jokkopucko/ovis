@@ -1164,8 +1164,16 @@ it.skipIf(Boolean(process.env["CLAUDE_CONFIG_DIR"]))("holds a message queued for
     clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "claude", agent_status: "idle" }] }) as SessionSnapshot,
     omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
   });
-  processes.set("p", { shell_pid: SHELL, foreground_processes: [{ pid: process.pid, name: "claude", argv: ["claude", "attach", JOB] }] });
+  // The reader consults the client's real HOME, so this stand-in must own the fixture store.
+  const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+    env: { PATH: process.env["PATH"] ?? "", HOME: home }, stdin: "pipe", stdout: "pipe",
+  });
   try {
+    const reader = child.stdout.getReader();
+    const ready = await reader.read();
+    reader.releaseLock();
+    expect(ready.done).toBe(false);
+    processes.set("p", { shell_pid: SHELL, foreground_processes: [{ pid: child.pid, name: "claude", argv: ["claude", "attach", JOB] }] });
     const item = delivery.pending.enqueue(owner, "p", 1, "for session A", null, { agent: "claude", terminalId: "p", session: null, claudeSession: SESSION_A }, true);
     const steer = async (id: number) => {
       await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id, pane_id: "p", pending_id: item.message.id, action: "steer", resend_generation: id });
@@ -1181,5 +1189,5 @@ it.skipIf(Boolean(process.env["CLAUDE_CONFIG_DIR"]))("holds a message queued for
     expect(await steer(12)).toMatchObject({ ok: false, code: "pending_target_changed" });
     expect(calls).toEqual(["read p", "read p"]);
     expect(delivery.pending.list(owner, "p")).toMatchObject([{ id: item.message.id, state: "held" }]);
-  } finally { session.mockRestore(); }
+  } finally { session.mockRestore(); child.kill(); await child.exited; }
 });

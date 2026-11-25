@@ -5020,7 +5020,7 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
 async function claudeStandIns(count: number): Promise<{ leader: number; pids: number[]; start: (pid: number) => string; stop: () => void }> {
   // a background job's stdin would be /dev/null: each stand-in reads the test's pipe through fd 3
   const one = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";
-  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { env: { PATH: process.env["PATH"] ?? "" }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
   const reader = job.stdout.getReader();
   let text = "";
   while (text.split("\n").length <= count) {
@@ -5120,6 +5120,26 @@ describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs o
 // herdr-core names only the first process of the foreground job: a launcher in front of Claude hid it (#3009)
 describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name in front (#3009)", () => {
   const launcher = (leader: number) => ({ process_info: { pane_id: "t1", shell_pid: 1, foreground_processes: [{ pid: leader, name: "bun", argv: ["bun", "launch.ts"] }] } });
+
+  it("reads a pane's default Claude transcript even when the server has a different store (#4618)", async () => {
+    const job = await claudeStandIns(1);
+    const pid = job.pids[0]!;
+    const store = claudeHome(pid, job.start(pid));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+      ? { agent: {} }
+      : { process_info: { foreground_processes: [{ pid, name: "claude", argv: ["claude"] }] } }) as unknown as typeof herdr.herdrRpc);
+    try {
+      process.env["CLAUDE_CONFIG_DIR"] = join(store.home, "server-store");
+      mkdirSync(process.env["CLAUDE_CONFIG_DIR"], { recursive: true });
+      const pane = { pane_id: "default-claude-store", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane;
+      expect((await claudePaneSession(pane))?.path).toBe(store.transcript);
+    } finally {
+      delete process.env["CLAUDE_CONFIG_DIR"];
+      rpc.mockRestore();
+      job.stop();
+      store.restore();
+    }
+  });
 
   it("finds the one Claude a launcher runs, and its session by the PID record", async () => {
     const job = await claudeStandIns(1);

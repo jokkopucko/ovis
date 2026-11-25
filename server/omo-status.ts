@@ -280,7 +280,9 @@ export class OmoStatus {
     }
     if (this.refreshing) {
       await this.refreshing;
-      if (generation === this.generation) await this.poll();
+      if (generation !== this.generation) return;
+      if (this.deps.refreshKey && key !== this.refreshedFor) return this.refresh(panes);
+      await this.poll();
       return;
     }
     this.refreshing = (async () => {

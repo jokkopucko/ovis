@@ -20,6 +20,6 @@ const server = createServer({ port: 0, hostname: "127.0.0.1", token, machines: f
 process.send?.({ type: "ready", port: server.port, token });
 for await (const _chunk of Bun.stdin.stream()) {}
 server.stop();
-core?.stop();
+await core?.stop({ drain: true });
 rmSync(socketDir, { recursive: true, force: true });
 process.exit(0);

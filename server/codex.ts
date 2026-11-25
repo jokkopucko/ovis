@@ -2602,6 +2602,7 @@ async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: st
  * then maybe " · " and a message; or all of it cut with "…" where the line is narrow.
  */
 const STATUS_ROW = /^[\u2022\u25e6] (?:.* \((?:\d+h )?(?:\d+m )?\d+s(?: \u2022 .* to interrupt)?\)(?: \u00b7 .*)?|.*\u2026)$/;
+const MODEL_CHANGE_ROW = /^\u2022 Model changed to [\w.-]+(?: [\w.-]+)?$/;
 
 /**
  * What a Codex TUI's screen shows of its conversation since its last header, answers only: each
@@ -2620,7 +2621,10 @@ function shownAnswers(screen: string): string {
     if (line.includes("OpenAI Codex (v")) {
       kept = [];
       answer = false;
-    } else if (/^\S/.test(line)) answer = line.startsWith("\u2022") && !STATUS_ROW.test(line.trimEnd()) && !CODEX_TOOL_CALL.test(line);
+    } else if (/^\S/.test(line)) {
+      const row = line.trimEnd();
+      answer = line.startsWith("\u2022") && !STATUS_ROW.test(row) && !MODEL_CHANGE_ROW.test(row) && !CODEX_TOOL_CALL.test(line);
+    }
     else if (/^\s+(?:[\u2514\u21b3](?:\s|$)|answer: |note: )/.test(line)) answer = false;
     if (answer) kept.push(line);
   }
@@ -2634,11 +2638,11 @@ function shownAnswers(screen: string): string {
  * so nothing is offered while another of them may show text it has not written: a turn running, or
  * one interrupted or failed since it was loaded (`codex exec` shows an answer only once written).
  */
-async function loadedConversation(screen: string, weighed: readonly string[], home: string): Promise<string | null> {
+async function loadedConversation(screen: string, weighed: readonly string[], home: string, known?: ReadonlyMap<string, LoadedThread>): Promise<string | null> {
   const shown = shownAnswers(screen);
   if (normalizeDisplay(shown).length < 64) return null;
   try {
-    const loaded = await loadedRollouts(home);
+    const loaded = known ?? await loadedRollouts(home);
     if (loaded === null) return null;
     const offered = [...loaded].flatMap(([path, { offered: may }]) => may && !weighed.includes(path) ? [path] : []);
     const tails = new Map<string, string>();
@@ -2666,18 +2670,22 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
   } catch { return null; }
 }
 
-const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean }>();
+const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean; screen?: string }>();
 
 /**
  * A screen as two reads of it are compared: the rows down to the composer (the last row Codex starts with "\u203a",
  * holding any draft), whitespace removed. The rows under it are left out (the model row and the hint row, which the
  * pane's width cuts), and so are line breaks and indents, which only the width moves.
  */
-function shownScreen(screen: string): string {
+function shownScreen(screen: string, includeDraft = true): string {
   const lines = screen.split("\n");
   let composer = -1;
   for (let at = lines.length - 1; at >= 0; at--) if (lines[at]!.startsWith("\u203a")) { composer = at; break; }
-  return (composer >= 0 ? lines.slice(0, composer + 1) : lines).join("").replace(/\s+/g, "");
+  return (composer >= 0 ? lines.slice(0, composer + Number(includeDraft)) : lines).join("").replace(/\s+/g, "");
+}
+
+function bindingScreen(screen: string): string {
+  return Bun.CryptoHasher.hash("sha256", shownScreen(screen, false), "hex");
 }
 
 /**
@@ -3421,6 +3429,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   const bound = boundRollouts.get(paneId);
   let boundHere = bound !== undefined && bound.processes === processes && processes !== "" ? bound : undefined;
   let boundNewer: string[] = [];
+  let checkedBound = false;
   const reported = reportedRollout(session, home);
   let listed = false;
   let titledElsewhere: string | null = null;
@@ -3443,7 +3452,6 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       resumedPath = row ? codexRolloutPath(row.rollout_path, home) : null;
       resumedNewer = newerThreads(db, cwd, since, resumed, paneId, home, firsts);
     }
-    if (boundHere !== undefined) boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
     const { where, params } = storedCwdCondition(cwd);
     const rows = db.query<{ rollout_path: string }, string[]>(
       // a burst of `codex exec` runs must not push the pane's own thread out of the 32
@@ -3457,12 +3465,18 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     paths = [...new Set([...paths, ...(reported !== null ? [reported] : []), ...rollouts.filter((path): path is string => path !== null)])];
     const titled = titledCandidate(agent, codexProcesses, db, home);
     if (titled !== null && !paths.includes(titled)) { titledElsewhere = titled; paths.push(titled); }
+    if (boundHere !== undefined) {
+      boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
+      checkedBound = true;
+    }
     opened.settled();
   } catch (error) {
     if (error instanceof CodexStoreChanged || !storeUnchanged(opened)) return null;
   }
   finally { db?.close(); }
   if (reported !== null && !paths.includes(reported)) paths.push(reported);
+  const addedResume = resumedPath !== null && !paths.includes(resumedPath) ? resumedPath : null;
+  if (addedResume !== null) paths.push(addedResume);
   if (boundHere?.titled === true && titledElsewhere !== boundHere.path) {
     boundRollouts.delete(paneId);
     boundHere = undefined;
@@ -3490,8 +3504,20 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     }
   }
   if (matched !== null) {
+    if (matched === addedResume && screen !== null) {
+      // This thread was offered by argv, not by the folder. A picker can load a
+      // different thread from outside the folder that shows the same answer.
+      const loaded = await loadedRollouts(home);
+      if (loaded === null
+        || ([...loaded.keys()].some((path) => path !== matched)
+          && await loadedConversation(screen.text, paths.filter((path) => path !== matched), home, loaded) !== matched)
+        || !await stillAsWeighed(paneId, processes, screen.text, home, new Set(loaded.keys()))) {
+        boundRollouts.delete(paneId);
+        return null;
+      }
+    }
     boundRollouts.delete(paneId);
-    boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), ...(matched === titledElsewhere ? { titled: true } : {}) });
+    boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), screen: bindingScreen(screen?.text ?? ""), ...(matched === titledElsewhere ? { titled: true } : {}) });
     if (boundRollouts.size > 64) boundRollouts.delete(boundRollouts.keys().next().value!);
     return matched;
   }
@@ -3511,16 +3537,51 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     boundNewer = theirs(boundNewer, paneId, claimed);
     resumedNewer = theirs(resumedNewer, paneId, claimed);
   }
-  if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null) {
+  // The picker can switch to a thread older than both the process and the binding.
+  // Without a current match, neither the launch argv nor the old screen breaks that tie.
+  const local = codexProcesses.length > 0 && open.size === 0
+    && !codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")));
+  const loaded = local && (boundHere !== undefined || resumedPath !== null) ? await loadedRollouts(home) : null;
+  if (screen !== null && loaded !== null && [...loaded.keys()].some((path) => !paths.includes(path))) {
+    const found = await loadedConversation(screen.text, paths, home);
+    if (found !== null) return found;
+  }
+  // A different pane's cached binding does not prove it still holds the thread.
+  const plausible = [...new Set([...paths, ...(loaded?.keys() ?? [])])];
+  const onlyPlausible = (path: string) => listed && loaded !== null && plausible.every((candidate) => candidate === path);
+  const screenHasAnswer = screen !== null && shownAnswers(screen.text).trim() !== "";
+  const noLoadedCompetitor = (path: string) => loaded !== null && [...loaded.keys()].every((other) => other === path);
+  const withoutAnswer = (path: string) => !screenHasAnswer && noLoadedCompetitor(path)
+    && screen !== null && screen.text.trim() !== "";
+  const visibleMatch = (path: string) => {
+    if (!listed || screen === null || !screenHasAnswer || !noLoadedCompetitor(path)) return false;
+    const shortTurn = (candidate: typeof candidates[number]) =>
+      footedShortTranscript(screen.text, [candidate], new Set([candidate.path]), readWhole) !== null
+      || footedTailTranscript(screen.text, [candidate], new Set([candidate.path]), readWhole) !== null;
+    const visible = candidates.filter(shortTurn);
+    // A rendering that also fits another complete exchange cannot verify the launch hint.
+    return visible.length === 1 && visible[0]!.path === path;
+  };
+  if (boundHere !== undefined && checkedBound && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null
+    && ((!screenHasAnswer && onlyPlausible(boundHere.path)) || (listed && withoutAnswer(boundHere.path))
+      || visibleMatch(boundHere.path) || (listed && loaded !== null && screen !== null && boundHere.screen === bindingScreen(screen.text)
+      && plausible.every((path) => {
+        const candidate = candidates.find((entry) => entry.path === path);
+        return path === boundHere?.path || (candidate !== undefined && readWhole(path) && turnless(candidate));
+      })))) {
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, boundHere);
     return boundHere.path;
   }
   if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
-  if (resumed !== null) return resumedNewer.length === 0 ? resumedPath : null;
+  if (resumed !== null) {
+    if (resumedPath === null || resumedNewer.length > 0) return null;
+    // A verified launch ID is still useful before any answer is visible (including terminals
+    // with tool output only). A visible answer that fits no candidate is not launch evidence.
+    if ((!screenHasAnswer && onlyPlausible(resumedPath)) || withoutAnswer(resumedPath) || visibleMatch(resumedPath)) return resumedPath;
+  }
   if (agent.nestedTerminal || agent.unlabelled) return null;
-  if (boundHere !== undefined) return null;
   const short = screen === null ? null : await (async () => {
     if (!listed || candidates.length !== paths.length) return null;
     let cut: boolean[];
@@ -3528,14 +3589,13 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       cut = candidates.map((candidate) => Object.keys(record(rolloutHeader(candidate.path)?.history_base)).length > 0 || statSync(candidate.path).size > 1024 * 1024);
     } catch { return null; }
     const found = matchShortCodexAnswers(screen.text, candidates.map((candidate, index) => ({ ...candidate, cut: cut[index] })));
-    if (found !== null) return found;
-    if (titledElsewhere !== null) return null;
+    if (found !== null && (boundHere === undefined || found === boundHere.path)) return found;
+    if (boundHere !== undefined || resumed !== null || titledElsewhere !== null) return null;
     return shortThreadFromProcess(paneId, cwd, home, screen.text, codexProcesses, panes);
   })();
   if (short !== null) return short;
   // Not for a TUI of an app server elsewhere (--remote), which has
   // its conversation loaded there, nor for one holding rollouts open itself.
-  if (codexProcesses.length === 0 || open.size > 0
-    || codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
+  if (!local) return null;
   return loadedConversation((screen ?? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true })).text, paths, home);
 }

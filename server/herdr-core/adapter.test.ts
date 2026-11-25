@@ -852,6 +852,60 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     expect(written).toHaveLength(1);
   });
 
+  it("drains accepted OpenCode label writes on orderly shutdown, accepting no more writes", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      if (written.length === 1) {
+        started.resolve();
+        await first.promise;
+      }
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    labels.label("t1", "", ["ses_first"]);
+    await started.promise;
+    labels.label("t1", "", ["ses_first", "ses_second"]);
+    const stopping = labels.stop({ drain: true });
+    labels.label("t2", "", ["ses_third"]);
+    first.resolve();
+    await stopping;
+    expect(written).toEqual(["ses_first", "ses_first ses_second"]);
+  });
+
+  it("stops draining after its deadline without sending the next queued OpenCode label", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      started.resolve();
+      await first.promise;
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    jest.useFakeTimers();
+    try {
+      labels.label("t1", "", ["ses_first"]);
+      await started.promise;
+      labels.label("t1", "", ["ses_first", "ses_second"]);
+      let stopped = false;
+      void Promise.resolve(labels.stop({ drain: true })).then(() => { stopped = true; });
+      jest.advanceTimersByTime(499);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      jest.advanceTimersByTime(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(true);
+      first.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(written).toEqual(["ses_first"]);
+    } finally {
+      first.resolve();
+      jest.useRealTimers();
+    }
+  });
+
   it("remembers an OpenCode session a status event named, for a turn that ended before any snapshot", async () => {
     let channel = 0;
     const t1 = terminal("t1", { title: "OC | short", status: { app: "opencode", state: "idle" } });

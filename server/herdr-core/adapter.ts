@@ -74,7 +74,7 @@ interface ConnectionState {
 export interface HerdrCoreAdapter {
   /** where it listens: the server's HERDR_SOCKET */
   socketPath: string;
-  stop: () => void;
+  stop: (options?: { drain?: boolean }) => void | Promise<void>;
 }
 
 /**
@@ -103,6 +103,7 @@ export interface AdapterOptions {
 
 /** The sessions a terminal named that it keeps as candidates, the newest last. */
 const NAMED_SESSIONS = 32;
+const LABEL_DRAIN_MS = 500;
 /**
  * A terminal's named OpenCode sessions, space separated, kept on it through a restart of Ovis (docs/herdr-core-layout.md):
  * all of its candidates, about 1 KB at most, since the pane may still show any of them, not only the newest.
@@ -114,13 +115,15 @@ export const OPENCODE_SESSIONS_LABEL = "ovis.opencode";
  * terminal's writes in order. A write that fails is tried again on the next change. Once stopped, a
  * write still queued is dropped rather than open a new line to hc after the server closed it.
  */
-export function sessionLabeler(hc: Pick<HcConnection, "call">): { label: (address: string, kept: string, named: readonly string[]) => void; forget: (address: string) => void; stop: () => void } {
+export function sessionLabeler(hc: Pick<HcConnection, "call">) {
   const written = new Map<string, string>();
   const queue = new Map<string, Promise<void>>();
+  let accepting = true;
   let stopped = false;
+  let draining: Promise<void> | undefined;
   const label = (address: string, kept: string, named: readonly string[]) => {
     const value = named.join(" ");
-    if (stopped || value === (written.get(address) ?? kept)) return;
+    if (!accepting || value === (written.get(address) ?? kept)) return;
     written.set(address, value);
     const run = (queue.get(address) ?? Promise.resolve())
       .then(async () => { if (!stopped) await hc.call("terminal.label", { terminal: address, labels: { [OPENCODE_SESSIONS_LABEL]: value } }); })
@@ -128,7 +131,25 @@ export function sessionLabeler(hc: Pick<HcConnection, "call">): { label: (addres
     queue.set(address, run);
     void run.then(() => { if (queue.get(address) === run) queue.delete(address); });
   };
-  return { label, forget: (address) => written.delete(address), stop: () => { stopped = true; } };
+  const stop: HerdrCoreAdapter["stop"] = (options) => {
+    accepting = false;
+    if (!options?.drain || queue.size === 0) { stopped = true; return; }
+    if (stopped) return;
+    draining ??= (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all(queue.values()),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, LABEL_DRAIN_MS); }),
+        ]);
+      } finally {
+        stopped = true;
+        clearTimeout(timer);
+      }
+    })();
+    return draining;
+  };
+  return { label, forget: (address: string) => written.delete(address), stop };
 }
 
 export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string, observeSeen?: SeenObserver, options: AdapterOptions = {}): Promise<HerdrCoreAdapter> {
@@ -228,10 +249,10 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
   });
   return {
     socketPath,
-    stop: () => {
-      sessionLabels.stop();
+    stop: (options) => {
       listener.stop(true);
       rmSync(socketPath, { force: true });
+      return sessionLabels.stop(options);
     },
   };
 }

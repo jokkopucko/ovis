@@ -1042,6 +1042,32 @@ const said = (type: "user_message" | "agent_message", message: string) => ({ typ
 
 const heldIt = (name: string, test: () => Promise<void>) => it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(name, test, 20_000);
 
+heldIt("does not bind an argv resume outside the folder when another loaded thread gave the visible answer", async () => {
+  const launch = "01a16b22-7e1f-7072-8897-d5e46a0d5f90";
+  const picked = "01a16b22-7e1f-7072-8897-d5e46a0d5f91";
+  ownThread([]);
+  const rollout = elsewhereThread(launch, [answer]);
+  const competitor = elsewhereThread(picked, ["This conversation answered a different question before it was loaded in the picker."]);
+  foreground = [{ pid: 2147483523, argv: ["codex", "resume", launch] }];
+  screen = `• ${answer}`;
+  await loaded(launch, picked);
+  expect(await resolve()).toBe(rollout);
+  appendFileSync(competitor, `${JSON.stringify(said("agent_message", answer))}\n`);
+  expect(await resolve()).toBeNull();
+  expect(await codexOpenRollout(root, root, home)).toBeNull();
+});
+
+heldIt("does not trust tool-only output on an argv resume when the loaded set cannot be enumerated", async () => {
+  const older = "01a16b22-7e1f-7072-8897-d5e46a0d5f92";
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 0, 0, 'cli')").run(older, path + ".missing", root);
+  db.close();
+  foreground = [{ pid: 2147483523, argv: ["codex", "resume", thread] }];
+  screen = "• Ran inspect\n  └ Tool output\n\n› Ask Codex to do anything";
+  await loaded(older);
+  expect(await resolve()).toBeNull();
+});
+
 describe("a thread of another folder Codex has loaded, as a resume through the picker leaves it (#896)", () => {
   heldIt("is matched on screen while its answer shows there, with Codex's default title, and never remembered", async () => {
     const rollout = otherFolderThread();
@@ -2768,17 +2794,21 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(await resolve()).toBeNull();
   });
 
-  it("answers the thread the command line resumed, of another folder, when this folder's ended on the same answer", async () => {
+  it("requires a distinguishing screen for a cross-folder resume with the same finished exchange nearby", async () => {
     finishedRollout(path, thread, [[fencedPrompt, fenced]]);
     const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f79";
     const fileX = elsewhereThread(elsewhere, finishedRecords(fencedPrompt, fenced));
     foreground = [{ pid: 2147483523, argv: ["codex", "resume", elsewhere] }];
     screen = fencedScreen();
+    expect(await resolve()).toBeNull();
+    finishedRollout(path, thread, [["A different local prompt", "An unrelated local answer."]]);
     expect(await resolve()).toBe(fileX);
     finishedRollout(path, thread, [["thanks", "You're welcome!"]]);
     writeFileSync(fileX, `${[{ type: "session_meta", payload: { id: elsewhere, cwd: join(root, `elsewhere-${elsewhere.slice(-4)}`), source: "cli" } }, ...finishedRecords("thanks", "You're welcome!")].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     foreground = [{ pid: 2147483524, argv: ["codex", "resume", elsewhere] }];
     screen = [...header(), "› thanks", "", "", "• You're welcome!", "", footer, ...idle].join("\n");
+    expect(await resolve()).toBeNull();
+    finishedRollout(path, thread, [["A different local prompt", "An unrelated local answer."]]);
     expect(await resolve()).toBe(fileX);
   });
 
@@ -3280,6 +3310,37 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     screen = "";
     expect(await resolve()).toBe(path);
     expect(await codexOpenRollout(root, root, home)).toBe(path);
+  });
+
+  for (const [issue, launch] of [[3725, ["/usr/bin/codex", "resume", thread]], [3491, ["/usr/bin/codex"]]] as const) {
+    it(`does not show the previous thread when a picker resume leaves no readable screen (#${issue})`, async () => {
+      foreground = [{ pid: 2147483629, argv: [...launch] }];
+      const started = spyOn(processStart, "processStartedAt").mockReturnValue(1_000_000);
+      try {
+        writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+        folderThread(otherThread, turn("b1", "Original B request", "ok"));
+        if (issue === 3491) {
+          screen = footed(["› Explain which conversation this pane shows"], [`• ${answer}`]);
+          expect(await resolve()).toBe(path);
+        }
+        title = issue === 3491 ? "Older named thread B" : null;
+        screen = "";
+        expect(await resolve()).toBeNull();
+        screen = ["• ok", "", "› Ask Codex to do anything"].join("\n");
+        expect(await resolve()).toBeNull();
+      } finally { started.mockRestore(); }
+    });
+  }
+
+  it("keeps the resumed chat when only a model-change notice is visible", async () => {
+    foreground = [{ pid: 2147483629, argv: ["/usr/bin/codex", "resume", thread] }];
+    const started = spyOn(processStart, "processStartedAt").mockReturnValue(1_000_000);
+    try {
+      writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+      folderThread(otherThread, turn("b1", "An older conversation", "ok"));
+      screen = "OpenAI Codex (v0.164.0)\n• Model changed to gpt-5\n\n› Ask Codex to do anything";
+      expect(await resolve()).toBe(path);
+    } finally { started.mockRestore(); }
   });
 
   it("drops a long answer's binding once the pane's last turn is another conversation's: it is the one the pane left", async () => {

@@ -80,15 +80,24 @@ describe("claudeProcessSession", () => {
 
   it.skipIf(!NATIVE || Boolean(process.env["CLAUDE_CONFIG_DIR"]))("reads the session a pane's one Claude process records, which /clear rewrites (#540)", async () => {
     const home = nativeRecord();
-    const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
-    expect(await claudeForegroundSession([claude], home)).toBe(SESSION);
-    const cleared = "1c9e7f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
-    const path = join(home, ".claude", "sessions", `${process.pid}.json`);
-    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
-    expect(await claudeForegroundSession([claude], home)).toBe(cleared);
-    expect(await claudeForegroundSession([], home)).toBeNull();
-    expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
-    expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
+    const original = fsPromises.readFile;
+    const read = spyOn(fsPromises, "readFile");
+    read.mockImplementation((async (file: Parameters<typeof readFileSync>[0], ...args: unknown[]) =>
+      file === `/proc/${process.pid}/environ`
+        ? `HOME=${home}\0`
+        : Reflect.apply(original, fsPromises, [file, ...args])) as typeof fsPromises.readFile);
+    const darwin = process.platform === "darwin" ? spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`) : null;
+    try {
+      const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
+      expect(await claudeForegroundSession([claude], home)).toBe(SESSION);
+      const cleared = "1c9e7f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
+      const path = join(home, ".claude", "sessions", `${process.pid}.json`);
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
+      expect(await claudeForegroundSession([claude], home)).toBe(cleared);
+      expect(await claudeForegroundSession([], home)).toBeNull();
+      expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
+      expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
+    } finally { darwin?.mockRestore(); read.mockRestore(); forgetClaudeSessions(); }
   });
 
   it.skipIf(process.platform !== "darwin")("reads it on a Mac whose locale puts the day first", async () => {
@@ -410,11 +419,17 @@ describe("a claude attach pane's job (#1645)", () => {
     roots.push(home);
     const dir = join(home, ".claude");
     job(dir, JOB, { sessionId: `${JOB}-6228-4376-a66c-ad9820b26f37`, resumeSessionId: SESSION });
-    const client = { pid: process.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
-    expect(await claudeForegroundSession([client], home)).toBe(SESSION);
-    job(dir, JOB, { command: "sleep 100", sessionId: undefined });
-    expect(await claudeForegroundSession([client], home)).toBeNull();
-    expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: home }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      const client = { pid: child.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
+      expect(await claudeForegroundSession([client], home)).toBe(SESSION);
+      job(dir, JOB, { command: "sleep 100", sessionId: undefined });
+      expect(await claudeForegroundSession([client], home)).toBeNull();
+      expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
+    } finally { child.kill(); await child.exited; }
   });
 
   // CLAUDE_CODE_SESSION_KIND=bg makes Claude read no subcommand behind options: it runs an interactive Claude
@@ -961,12 +976,52 @@ describe("CLAUDE_CONFIG_DIR", () => {
       [process.execPath, "-e", "console.log('ready'); await Bun.sleep(5000)"], { env, stdout: "pipe" },
     );
     const child = sleeper({ ...process.env, CLAUDE_CONFIG_DIR: dir });
-    const bare = sleeper({ PATH: process.env["PATH"] ?? "" });
+    const paneHome = join(dir, "pane-home");
+    mkdirSync(join(paneHome, ".claude"), { recursive: true });
+    const bare = sleeper({ PATH: process.env["PATH"] ?? "", HOME: paneHome });
     try {
       for (const process of [child, bare]) await process.stdout.getReader().read();
       expect(await processClaudeConfigDir(child.pid)).toBe(dir);
-      expect(await processClaudeConfigDir(bare.pid)).toBeNull();
+      expect(await processClaudeConfigDir(bare.pid, [], dir)).toBe(join(paneHome, ".claude"));
     } finally { child.kill(); bare.kill(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects foreign ownership in a pane HOME store (#4618)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-claude-ownership-"));
+    const paneHome = join(home, "pane-home");
+    const store = join(paneHome, ".claude");
+    const cwd = join(home, "project");
+    const folder = join(store, "projects", claudeProjectDir(cwd));
+    const transcript = join(folder, `${SESSION}.jsonl`);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(transcript, '{"type":"user"}\n');
+    const original = fsPromises.lstat;
+    let foreign = store;
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(original, fsPromises, [path, options]);
+      if (path === foreign) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof original);
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: paneHome }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(join(home, ".claude"));
+      foreign = transcript;
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(store);
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+      foreign = "";
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBe(transcript);
+      const outside = join(home, "outside-project");
+      renameSync(folder, outside);
+      symlinkSync(outside, folder, "dir");
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+    } finally {
+      child.kill(); await child.exited;
+      ownership.mockRestore(); forgetClaudeSessions();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -987,6 +1042,42 @@ describe("a Claude process's store source", () => {
     return child.pid;
   };
   const tempDir = () => { const dir = mkdtempSync(join(tmpdir(), "herdr-claude-source-")); roots.push(dir); return dir; };
+
+  it.skipIf(!NATIVE)("rejects an untrusted symlink above the pane HOME", async () => {
+    const home = tempDir();
+    const target = join(home, "target");
+    const ancestor = join(home, "ancestor");
+    const paneHome = join(ancestor, "pane");
+    mkdirSync(join(target, "pane", ".claude"), { recursive: true });
+    symlinkSync(target, ancestor, "dir");
+    const lstat = fsPromises.lstat;
+    let foreign = false;
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(lstat, fsPromises, [path, options]);
+      if (foreign && path === ancestor) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof lstat);
+    try {
+      const pid = await standIn({ HOME: paneHome });
+      expect(await processClaudeConfigDir(pid, [], home)).toBe(join(paneHome, ".claude"));
+      foreign = true;
+      expect(await processClaudeConfigDir(pid, [], home)).not.toBe(join(paneHome, ".claude"));
+    } finally { ownership.mockRestore(); }
+  });
+
+  it.skipIf(!NATIVE)("uses the server's override when the pane HOME store cannot be used", async () => {
+    const home = tempDir();
+    const override = tempDir();
+    const saved = process.env["CLAUDE_CONFIG_DIR"];
+    process.env["CLAUDE_CONFIG_DIR"] = override;
+    try {
+      const pid = await standIn({ HOME: join(home, "missing-pane-home") });
+      expect(await processClaudeConfigDir(pid, [], home)).toBe(override);
+    } finally {
+      if (saved === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+      else process.env["CLAUDE_CONFIG_DIR"] = saved;
+    }
+  });
 
   it.skipIf(!NATIVE)("reads an exported store, an empty export and none exported as three sources", async () => {
     const store = tempDir();

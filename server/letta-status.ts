@@ -156,7 +156,11 @@ export function lettaRefreshKey(pane: HerdrPane): string {
   if (pane.agent !== "letta") return "";
   const title = pane.terminal_title ?? "";
   const mark = LETTA_ASKING_TITLE.test(title) ? "asking" : LETTA_BUSY_TITLE.test(title) ? "busy" : "";
-  return `${mark}\0${title.replace(LETTA_ASKING_TITLE, "").replace(LETTA_BUSY_TITLE, "")}`;
+  return `${mark}\0${lettaTitleName(pane)}`;
+}
+
+export function lettaTitleName(pane: HerdrPane | undefined): string {
+  return (pane?.terminal_title ?? "").replace(LETTA_ASKING_TITLE, "").replace(LETTA_BUSY_TITLE, "");
 }
 
 export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs" | "refreshKey" | "file">): OmoStatus {
