@@ -18,8 +18,10 @@ export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { clau
 export const OWN_RULES_HARNESSES: readonly string[] = ["codex", "copilot", "agy"];
 /** Of those, the ones whose built-in web search runs unasked in every launch. */
 export const UNASKED_SEARCH_HARNESSES: readonly string[] = ["agy"];
-export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "view", depth: 1, harnesses: [] };
-export const HARNESS_TOOL_OFF: HarnessToolSetting = { ...HARNESS_TOOL_DEFAULT, level: "off" };
+/** Harness kinds with an ACP launch in server/agent-tools/harnesses.ts (resolveHarness). */
+export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc"] as const;
+export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES };
+export const HARNESS_TOOL_OFF: HarnessToolSetting = { level: "off", depth: 1, harnesses: [] };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {
   if (!isRecord(stored) || !Object.keys(stored).every(k => ["level","depth","harnesses"].includes(k))) return null;
   const { level, depth, harnesses } = stored;

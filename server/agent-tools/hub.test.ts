@@ -5,16 +5,17 @@ import * as conversation from "../conversation.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HARNESS_CONTRACT, HARNESS_TOOL_DEFAULT, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { HARNESS_CONTRACT, harnessToolSetting, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { AcpChildren } from "../acp/children.ts";
 import { lineCall } from "../line-call.ts";
+import { PreferenceStore } from "../preferences.ts";
 import { AgentToolHub } from "./hub.ts";
 
 let dir: string, hub: AgentToolHub, token: string;
 let setting: HarnessToolSetting;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ath-"));
-  setting = HARNESS_TOOL_DEFAULT;
+  setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
   hub = new AgentToolHub({ dir, setting: () => setting, acp: new AcpChildren(join(dir, "acp")) });
   const key = hub.runs.reserve();
   key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "fixture", ceiling: "fixture/ask-v1" });
@@ -51,7 +52,16 @@ it("drops a terminal result when its agent returns to work during the read", asy
   } finally { history.mockRestore(); prompt.mockRestore(); snap.mockRestore(); }
 });
 
-it("at view level start, send, wait, result, ask and stop are refused", async () => {
+it("defaults to local delegation after an unrelated preference is saved and reloaded", async () => {
+  new PreferenceStore(dir).set({ settings: { theme: "dark" } });
+  setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
+  expect(setting).toEqual({ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy", "gjc"] });
+  expect(await call("scope")).toMatchObject({ verbs: expect.arrayContaining(["start", "send"]) });
+});
+
+it("a saved view policy still refuses start, send, wait, result, ask and stop after restart", async () => {
+  new PreferenceStore(dir).set({ settings: { agentHarnessTool: { level: "view", depth: 1, harnesses: ["gjc"] } } });
+  setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
   for (const verb of ["start", "send", "wait", "result", "ask", "stop"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });
   expect(await call("scope")).toMatchObject({ verbs: ["machines", "harnesses", "ls", "read"] });
 });

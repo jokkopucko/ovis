@@ -9,6 +9,14 @@ const local = (settings: Settings, pins: readonly string[], muted: readonly stri
 const light: Settings = { ...DEFAULT_SETTINGS, theme: "light" };
 
 describe("preferences sync", () => {
+  it("replaces the pre-upgrade cached view policy without writing it back", () => {
+    const cached: Settings = { ...DEFAULT_SETTINGS, agentHarnessTool: { level: "view", depth: 1, harnesses: [] } };
+    const remote = { revision: 0, settings: { agentHarnessTool: DEFAULT_SETTINGS.agentHarnessTool } };
+    const taken = takePreferences(base(cached, null), local(cached, []), remote, null);
+    expect(taken.patch.agentHarnessTool).toEqual(remote.settings.agentHarnessTool);
+    expect(preferencesChange(taken.base, local({ ...cached, ...taken.patch }, []))).toBeNull();
+  });
+
   it("sends the tab labels learned and dropped here, key by key", () => {
     const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server" } };
     expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server", "w1:p2|t2": "Learned" } })).toEqual({ settings: {}, tab_labels: { "w1:p2|t2": "Learned" } });

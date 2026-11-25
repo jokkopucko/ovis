@@ -87,7 +87,7 @@ export const SETUP_JA: Record<string, string> = {
   "None": "なし",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "エージェントが操作できるブラウザです。Ovis がこのエージェントを起動するときに、バージョンを固定した MCP サーバーを追加します。そのブラウザは専用のプロフィールを使うため、あなたのログインは使われません。Ovis はそのブラウザを監視も制限もしません。次の起動から適用され、ターミナルから直接起動したエージェントは変わりません。",
   "Let agents call other agents": "ほかのエージェントを呼び出す",
-  "On this PC only. You still answer every permission request.": "この PC のみ。許可のリクエストには常にあなたが答えます。",
+  "On this PC only. Only you can approve requests.": "この PC でのみ。承認はご自身で行います。",
   "Agents they may call": "呼び出せるエージェント",
   "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "{agents} に自分で設定した許可ルール（プロジェクトフォルダーのものを含む）は、呼び出されたときにも適用されます。",
   "{agents} searches the web without asking.": "{agents} は確認せずに Web 検索を行います。",

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HARNESS_TOOL_DEFAULT } from "../shared/harness-tool.ts";
 import { MAX_MUTED_PANES, MAX_PINS, MAX_TAB_LABEL_LENGTH, MAX_TAB_LABELS } from "../shared/preferences.ts";
 import { handlePreferencesRequest, PreferenceStore } from "./preferences.ts";
 
@@ -72,7 +73,7 @@ describe("shared preferences", () => {
     try { expect((await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).status).toBe(500); } finally { spy.mockRestore(); }
     expect(store.get()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
     expect(readdirSync(dir).filter((name) => !name.endsWith(".tmp"))).toEqual([]);
-    expect(await (await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).json()).toEqual(named({ revision: 1, settings: {}, pins: ["local:t1"], muted_panes: [] }));
+    expect(await (await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).json()).toEqual(named({ revision: 1, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, pins: ["local:t1"], muted_panes: [] }));
   });
 
   it("fails a save whose listener fails, after every other listener has heard of it (#3428)", async () => {
@@ -156,22 +157,23 @@ describe("shared preferences", () => {
     expect(store.get().settings).toEqual(expected);
   });
 
-  it("starts empty, keeps only the shared names, counts each write, and survives a restart", async () => {
+  it("serves the default policy without storing it, keeps only shared names, and survives a restart", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
     // no pins until a browser shares its own: an empty list would be taken for everyone's
-    expect(await (await handlePreferencesRequest(new Request("http://x/api/preferences"), store)).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+    expect(await (await handlePreferencesRequest(new Request("http://x/api/preferences"), store)).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
     const heard: number[] = [];
     store.subscribe((preferences) => heard.push(preferences.revision));
     const settingsOnly = await put(store, JSON.stringify({ settings: { showThinking: false } }));
-    expect(await settingsOnly.json()).toEqual(named({ revision: 1, settings: { showThinking: false }, muted_panes: [] }));
+    expect(await settingsOnly.json()).toEqual(named({ revision: 1, settings: { showThinking: false, agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] }));
     const first = await put(store, JSON.stringify({ settings: { theme: "light", terminalFontSize: 22, alertsOn: false, nonsense: 1 }, pins: ["local:w1:p1", "local:w1:p1", "pc:w2:p3"] }));
     expect(first.status).toBe(200);
-    expect(await first.json()).toEqual(named({ revision: 2, settings: { showThinking: false, theme: "light" }, pins: ["local:w1:p1", "pc:w2:p3"], muted_panes: [] }));
+    expect(await first.json()).toEqual(named({ revision: 2, settings: { showThinking: false, theme: "light", agentHarnessTool: HARNESS_TOOL_DEFAULT }, pins: ["local:w1:p1", "pc:w2:p3"], muted_panes: [] }));
     await put(store, JSON.stringify({ settings: { agentOrder: "activity" } }));
     expect(store.get()).toEqual(named({ revision: 3, settings: { showThinking: false, theme: "light", agentOrder: "activity" }, pins: ["local:w1:p1", "pc:w2:p3"], muted_panes: [] }));
     await put(store, JSON.stringify({ settings: { theme: "dark" }, pins: [] }));
     expect(heard).toEqual([1, 2, 3, 4]);
+    expect(existsSync(join(dir, "agent-harness-policy.json"))).toBe(false);
     expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toMatchObject({ revision: 4, settings: { showThinking: false, theme: "dark", agentOrder: "activity" }, pins: [] });
     expect(new PreferenceStore(dir).get()).toEqual(named({ revision: 4, settings: { showThinking: false, theme: "dark", agentOrder: "activity" }, pins: [], muted_panes: [] }));
   });
@@ -207,23 +209,23 @@ describe("shared preferences", () => {
     store.subscribe((preferences) => heard.push(preferences.revision));
     const failed = await put(store, JSON.stringify({ settings: { theme: "light" } }));
     expect(failed.status).toBe(500);
-    expect(await (await handlePreferencesRequest(new Request("http://x/api/preferences"), store)).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+    expect(await (await handlePreferencesRequest(new Request("http://x/api/preferences"), store)).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
     expect(heard).toEqual([]);
   });
 
   it("fresh store advertises empty mutes and accepts first mute", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
-    expect(await (await handlePreferencesRequest(new Request("http://x/api/preferences"), store)).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+    expect(await (await handlePreferencesRequest(new Request("http://x/api/preferences"), store)).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
     const heard: number[] = [];
     store.subscribe((preferences) => heard.push(preferences.revision));
     const first = await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1", "w1:p1", "remote:pc-2:w1%3Ap1"] }));
-    expect(await first.json()).toEqual(named({ revision: 1, settings: {}, muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] }));
+    expect(await first.json()).toEqual(named({ revision: 1, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] }));
     expect(heard).toEqual([1]);
     expect(JSON.parse(readFileSync(join(dir, "muted-panes.json"), "utf8"))).toEqual({ muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] });
     expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 1, settings: {} });
     expect(new PreferenceStore(dir).get()).toEqual(named({ revision: 1, settings: {}, muted_panes: ["w1:p1", "remote:pc-2:w1%3Ap1"] }));
-    expect(await (await put(store, JSON.stringify({ settings: {}, muted_panes: [] }))).json()).toEqual(named({ revision: 2, settings: {}, muted_panes: [] }));
+    expect(await (await put(store, JSON.stringify({ settings: {}, muted_panes: [] }))).json()).toEqual(named({ revision: 2, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] }));
   });
 
   it("pre-feature stored document advertises empty mutes and accepts first mute", async () => {
@@ -235,7 +237,7 @@ describe("shared preferences", () => {
     expect(store.get()).toEqual({ revision: 7, settings: { theme: "light" }, pins: ["local:w1:p1"], muted_panes: [] });
     expect(JSON.parse(readFileSync(join(dir, "preferences.json"), "utf8"))).toEqual({ revision: 7, settings: { theme: "light" }, pins: ["local:w1:p1"] });
     expect(heard).toEqual([]);
-    expect(await (await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }))).json()).toEqual(named({ revision: 8, settings: { theme: "light" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }));
+    expect(await (await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }))).json()).toEqual(named({ revision: 8, settings: { theme: "light", agentHarnessTool: HARNESS_TOOL_DEFAULT }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }));
     expect(heard).toEqual([8]);
     expect(new PreferenceStore(dir).get().muted_panes).toEqual(["w1:p1"]);
   });
@@ -258,7 +260,7 @@ describe("shared preferences", () => {
     const dir = root();
     const store = new PreferenceStore(dir);
     const first = await put(store, JSON.stringify({ settings: {}, tab_labels: { "w1:p1|term_a": "Fix the login…" } }));
-    expect(await first.json()).toEqual(named({ revision: 1, settings: {}, muted_panes: [], tab_labels: { "w1:p1|term_a": "Fix the login…" } }));
+    expect(await first.json()).toEqual(named({ revision: 1, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [], tab_labels: { "w1:p1|term_a": "Fix the login…" } }));
     const second = await put(store, JSON.stringify({ settings: {}, tab_labels: { "w1:p1|term_a": "Later", "remote:pc-2:w1%3Ap1|term_b": "Write the docs" } }));
     expect((await second.json()).tab_labels).toEqual({ "w1:p1|term_a": "Fix the login…", "remote:pc-2:w1%3Ap1|term_b": "Write the docs" });
     const third = await put(store, JSON.stringify({ settings: {}, tab_labels_removed: ["w1:p1|term_a"] }));
@@ -468,7 +470,7 @@ describe("shared preferences", () => {
     expect((await put(store, JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }))).status).toBe(500);
     expect(store.get()).toEqual(named({ revision: 1, settings: { theme: "light" }, muted_panes: [] }));
     unblock();
-    expect(await (await put(store, JSON.stringify({ settings: { theme: "dark" } }))).json()).toEqual(named({ revision: 2, settings: { theme: "dark" }, muted_panes: [] }));
+    expect(await (await put(store, JSON.stringify({ settings: { theme: "dark" } }))).json()).toEqual(named({ revision: 2, settings: { theme: "dark", agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] }));
     expect(new PreferenceStore(dir).get()).toEqual(named({ revision: 2, settings: { theme: "dark" }, muted_panes: [] }));
   });
 
@@ -495,7 +497,7 @@ describe("shared preferences", () => {
     const unblock = block(dir, "muted-panes.json");
     expect((await put(store, JSON.stringify({ settings: { showThinking: false }, muted_panes: ["w1:p1"] }))).status).toBe(500);
     unblock();
-    expect(await (await put(store, JSON.stringify({ settings: { agentOrder: "activity" } }))).json()).toEqual(named({ revision: 6, settings: { theme: "light", agentOrder: "activity" }, pins: ["local:w1:p1"], muted_panes: [] }));
+    expect(await (await put(store, JSON.stringify({ settings: { agentOrder: "activity" } }))).json()).toEqual(named({ revision: 6, settings: { theme: "light", agentOrder: "activity", agentHarnessTool: HARNESS_TOOL_DEFAULT }, pins: ["local:w1:p1"], muted_panes: [] }));
   });
 
   it("absent field does not clear mutes", async () => {
@@ -532,7 +534,7 @@ describe("a damaged preferences file", () => {
     const first = Buffer.from('{"revision": 7, "settings": {"theme": "dark"');
     writeFileSync(file(dir), first);
     const store = new PreferenceStore(dir);
-    expect(await get(store)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+    expect(await get(store)).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
     expect(readFileSync(file(dir))).toEqual(first);
     expect(files(dir)).toEqual(["preferences.json"]);
     expect(logged.mock.calls.flat().join("\n")).toContain("not JSON");

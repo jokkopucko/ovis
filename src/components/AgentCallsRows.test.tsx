@@ -54,58 +54,56 @@ describe("Settings > Agents > Let agents call other agents", () => {
   const toggle = () => renderer!.root.findByProps({ role: "switch" });
   const chips = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "settings-chip");
 
-  it("is off by default: agents may only look, and no agent to call is offered", () => {
+  it("starts on with installed ACP agents already selected", () => {
     mount();
-    expect(toggle().props["aria-checked"]).toBe(false);
-    expect(chips()).toHaveLength(0);
-  });
-
-  it("writes this PC's grant straight to its server: on with the agents it may start, then back to looking", async () => {
-    mount();
-    await act(async () => { toggle().props.onClick(); });
-    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["opencode"] }]);
     expect(toggle().props["aria-checked"]).toBe(true);
-    expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["OpenCode", true]]);
-    await act(async () => { chips()[0]!.props.onClick(); });
-    expect(saved.at(-1)).toEqual({ level: "start", depth: 1, harnesses: [] });
+    expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["OpenCode", true], ["Claude Code", true]]);
+  });
+
+  it("writes this PC's grant straight to its server when an agent is unticked and delegation is turned off", async () => {
+    mount();
+    const openCode = chips().find((chip) => chip.children.join("") === "OpenCode");
+    if (!openCode) throw new Error("Expected an OpenCode chip");
+    await act(async () => { openCode.props.onClick(); });
     await act(async () => { toggle().props.onClick(); });
-    expect(saved.at(-1)).toEqual({ level: "view", depth: 1, harnesses: [] });
+    expect(saved).toEqual([
+      { level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "agy", "gjc"] },
+      { level: "view", depth: 1, harnesses: ["claude", "codex", "copilot", "agy", "gjc"] },
+    ]);
     expect(chips()).toHaveLength(0);
   });
 
-  it("offers no OpenCode whose version has no ask-every-time launch", async () => {
-    mount(false, [agent("opencode", "OpenCode", true, "2.2.3")]);
-    await act(async () => { toggle().props.onClick(); });
-    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: [] }]);
-    expect(chips()).toHaveLength(0);
+  it("offers installed ACP agents even at unknown versions but omits agents without an ACP launch", () => {
+    mount(false, [agent("opencode", "OpenCode", true, "2.2.3"), agent("claude", "Claude Code", true), agent("pi", "pi", true)]);
+    expect(chips().map((chip) => chip.children.join(""))).toEqual(["OpenCode", "Claude Code"]);
   });
 
-  it("offers Claude Code at the version its ask-every-time launch was run against", async () => {
-    mount(false, [agent("claude", "Claude Code", true, "2.1.330")]);
-    await act(async () => { toggle().props.onClick(); });
-    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude"] }]);
-    expect(chips().map((chip) => chip.children.join(""))).toEqual(["Claude Code"]);
+  it("lets a person deselect GJC when it is installed", async () => {
+    mount(false, [agent("gjc", "GJC", true, "0.18.12")]);
+    const gjc = chips().find((chip) => chip.children.join("") === "GJC");
+    if (!gjc) throw new Error("Expected a GJC chip");
+    expect(gjc.props["aria-pressed"]).toBe(true);
+    await act(async () => { gjc.props.onClick(); });
+    expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["GJC", false]]);
+    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy"] }]);
   });
 
-  it("names the agents whose own allow rules still apply to them when called, and only those", async () => {
+  it("names the agents whose own allow rules still apply to them when called, and only those", () => {
     mount(false, [agent("claude", "Claude Code", true, "2.1.330"), agent("codex", "Codex", true, "0.171.0"), agent("copilot", "GitHub Copilot", true, "1.0.109")]);
-    await act(async () => { toggle().props.onClick(); });
-    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot"] }]);
     const note = () => renderer!.root.findAll((node) => node.type === "span" && node.props.className === "settings-condition");
     expect(note().map((span) => span.children.join(""))).toEqual(["The allow rules you set in Codex, GitHub Copilot, a project folder's included, apply when they are called too."]);
     act(() => { renderer!.update(createElement(SettingsProvider, null, createElement(AgentCallsRows, { agents: [agent("claude", "Claude Code", true, "2.1.330")], watching: false }))); });
     expect(note()).toHaveLength(0);
   });
 
-  it("says agy searches the web without asking, under the rules line", async () => {
+  it("says agy searches the web without asking, under the rules line", () => {
     mount(false, [agent("agy", "agy", true, "1.5.16"), agent("codex", "Codex", true, "0.171.0")]);
-    await act(async () => { toggle().props.onClick(); });
     const note = renderer!.root.find((node) => node.type === "span" && node.props.className === "settings-condition");
     const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
     expect(text(note)).toBe("The allow rules you set in agy, Codex, a project folder's included, apply when they are called too.agy searches the web without asking.");
   });
 
-  it("cannot be turned on from a watching device", () => {
+  it("cannot be changed from a watching device", () => {
     mount(true);
     expect(toggle().props.disabled).toBe(true);
   });

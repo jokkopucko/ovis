@@ -2,9 +2,10 @@
 
 The contract for Ovis's harness layer: what it says about machines, harnesses and sessions, the
 harness tool Ovis hands to agents it starts, and the safety rules around both. The owner decided
-D18, D19, D21 and D23 on 2026-11-24 ([decisions](#decisions)). For the local ACP implementation,
-see [Ask another coding agent](harness-tool.md) and `shared/harness-contract.schema.json`. The
-terminal fallback and starts on other machines below describe future work.
+D18, D19, D21 and D23 on 2026-11-24 and updated the D19 default on 2026-11-25
+([decisions](#decisions)). For the local ACP implementation, see
+[Ask another coding agent](harness-tool.md) and `shared/harness-contract.schema.json`. The terminal
+fallback and starts on other machines below describe future work.
 
 - Source: the direction plan `ovis-direction-1123` (`PLAN.ko.md`, revision 2), chapters 11 and 12
   and step H0 of 4.7. ACP background is in its chapters 10 and 13.
@@ -38,7 +39,7 @@ The owner decided the four questions H0 waited on (2026-11-24, in the Dori sessi
 | # | Question | Decision | Where it lands |
 |---|---|---|---|
 | D18 | Does Ovis own a common harness-layer interface? | (c), as far as H2: this contract, the read-only commands for people (H1) and the harness tool handed to agents on this PC (H2). Another machine (H3) is not part of it yet. Ovis still never decides or hands out work (D22): it runs the one ask the calling agent made. | [Commands](#commands-and-the-code-they-use), the ACP drive path, [the safety rules](#safety-rules-g1g12) |
-| D19 | What may an agent do through the harness tool? | View only by default: list, state, transcript. Starting and sending on this PC once the user turns it on. Starting on another machine only through a person's approval card, every time. Answering a child's approval: never; only a person approves. Machine commands (`exec`, `file`) stay hc's and Ovis does not open them. | The `Scope` values in [the schema](#schema-draft); rules G2, G3 and G8 |
+| D19 | What may an agent do through the harness tool? | View, start and send on this PC by default, subject to the launch checks. The person may narrow the list of harnesses, switch to view only or turn the tool off. Starting on another machine only through a person's approval card, every time. Answering a child's approval: never; only a person approves. Machine commands (`exec`, `file`) stay hc's and Ovis does not open them. | The `Scope` values in [the schema](#schema-draft); rules G2, G3 and G8 |
 | D21 | What shape is the contract? | (a): one schema generates the types, and the commands' `--json` output is the stable surface. It survives a Rust port of the inside unchanged (plan 11.3). | [Schema](#schema-draft) |
 | D23 | Default limits of the harness tool | Depth 1, settable up to 3. No limit on running children per parent (owner decision 2026-11-24). 60 minutes per child. 30 calls per minute per run. Cost is shown wherever the harness reports it. No further limit. | `Limits`; rules G4, G5 and G7 |
 
@@ -92,8 +93,8 @@ the earlier "ACP is not Ovis's path"). In this contract it is four things:
   follows:
   - The ACP connection is Ovis's. The calling agent holds none: it gets no socket, no ACP command
     and no adapter to run, only the harness tool's answers.
-  - Every `session/request_permission` becomes a card for a person, with the agent's own options
-    (`allow_once`, `reject_once` and the rest) passed unchanged. The calling agent sees only
+  - Every `session/request_permission` becomes a card for a person. For ask-every-time launches,
+    the keeper forwards only `allow_once` and `reject_once`. The calling agent sees only
     `waiting_human` (G8 holds).
   - Ovis adds no approval of its own, so a child that requests nothing ends with no card.
   - Ovis offers the agent no client file or terminal methods (`fs/*`, `terminal/*`). ACP v2 drops
@@ -223,7 +224,7 @@ interface Screen { cols: number; rows: number; text: Untrusted }
 // ---- safety ---------------------------------------------------------------
 type Scope = "view" | "start" | "send" | "start_elsewhere";   // never "approve" (D19)
 
-interface Grant {                    // what the user turned on, and where
+interface Grant {                    // what the policy allows, and where
   scope: Scope;
   where: { session: string } | { project: string } | { machine: string };
 }
@@ -402,15 +403,15 @@ program of the same OS account (as R20).
 | # | Rule | Default (D23) | Enforced at | Proof (G12) |
 |---|---|---|---|---|
 | G1 Visible | Every agent an agent starts shows under its parent in the sidebar. A terminal child is a real TUI in a herdr-core terminal that a person can step into and take over at any time. An ACP child is drawn as a chat in Ovis's view, and a person can cancel it at any time. | always | Terminal: `start` sets hc `parent`; the sidebar already nests by `parent_pane_id` (read, `shared/agent-roster.ts`, `src/components/AgentSidebar.tsx`). Across machines the parent is not found today (same machine only): H3. ACP: the keeper's terminal, started with `parent`, so the same nesting applies; its chat and cards in Ovis, F4 for the real TUI. | A started child of either drive appears under its parent; one started on another machine shows its parent. |
-| G2 View by default | An agent caller may only view (list, state, transcript). Start and send are turned on by the user per session, project or machine (`Grant`). | view only | Run token → grants check before every verb. Agent callers are a new kind of principal: neither `drive` nor `watch` (read, `shared/access.ts`). | Without a grant, `start` and `send` are refused `not_granted`. |
+| G2 Local delegation by default | An agent caller may view (list, state, transcript), start and send locally by default. The policy includes the ACP launch harnesses but does not bypass launch checks. | `start` on this PC; saved `view` and `off` stay in effect | Run token → grants check before every verb. Agent callers are a new kind of principal: neither `drive` nor `watch` (read, `shared/access.ts`). | An explicit view-only grant still refuses `start` and `send` with `not_granted`. |
 | G3 Other machine | Starting on another machine goes through a person's approval card showing who, which machine, which harness and what task. "Always allow" binds to one parent and one machine. | card each time | `start --on`; the card reuses the approval card surface. Touches authentication: owner check and a real review. | Zero starts elsewhere without an approval. |
 | G4 Depth | An agent may start agents only while its depth is below the limit. At the default of 1, a child cannot start agents and gets view-only tools; at 2 or 3, descendants may start agents until the limit. | 1, settable to 3 | Depth carried in the run token, one more for each generation. | Past the depth, `depth_exceeded`, at 1, 2 and 3. |
 | G5 Limits | No limit on running children per parent (owner decision 2026-11-24); 60 minutes per child; cost shown wherever the harness reports it, with no cost cap. Past a limit no new work is taken and a person is told; a running child is never killed. | 60 min | `start` and `send`. | Past the limit, `time_limit`, and the running child still runs. |
 | G6 Record | Each parent → child act is recorded: who, machine, harness, when, turn id, stop reason. What was sent is in the session's own transcript and is not copied. | always | `AuditRecord` on every start, send and stop; a screen for it in H3. | Every start, send and stop leaves exactly one record. |
 | G7 No loops | Sending to an ancestor or to oneself is refused. The same key types once. Calls per minute are limited. | 30/min per run | `send`, using the `parent` chain and the key store. | `ancestor_target`, `self_target`, a repeated key gives `duplicate: true` and types nothing, a burst gets `rate_limited`. |
-| G8 Only people approve | The tool has no approval verb. A child's approval request goes to a person as a card; the parent only sees `waiting_human`. While a child waits on an approval, the parent's `send` is refused (`waiting_human`) before any text is typed, so it cannot answer a dialog by typing, and `read --screen` and `--transcript` return no text, so the dialog's content never reaches the parent. For an ACP child, Ovis is the only ACP client: each `session/request_permission` becomes a card with the agent's options unchanged, and the calling agent never holds the connection or sees the request. Ovis adds no approval of its own, so a child that requests nothing ends with no card. "Always allow" on a child's card holds for that child session only. Exact scope: this covers the requests that reach Ovis; a call the harness's own settings already allow never asks. | always | Schema: no approve scope. The ACP client is Ovis's (server and keeper) and its connection is never handed out. | No verb exists, and the parent's view of a waiting child holds no card content. A `send` to a child with a dialog open types nothing and returns `waiting_human`; a screen read then returns no dialog text. With a fake ACP agent: a permission request shows a card, the turn waits until a person answers, and the parent's tool has no way to answer it. A turn with no request ends with no card. |
+| G8 Only people approve | The tool has no approval verb. A child's approval request goes to a person as a card; the parent only sees `waiting_human`. While a child waits on an approval, the parent's `send` is refused (`waiting_human`) before any text is typed, so it cannot answer a dialog by typing, and `read --screen` and `--transcript` return no text, so the dialog's content never reaches the parent. For an ACP child, Ovis is the only ACP client: each `session/request_permission` becomes a card, with only one-time options in ask-every-time launches. The calling agent never holds the connection or sees the request. Ovis adds no approval of its own, so a child that requests nothing ends with no card. If an "Always allow" option is available, it holds for that child session only. Exact scope: this covers the requests that reach Ovis; a call the harness's own settings already allow never asks. | always | Schema: no approve scope. The ACP client is Ovis's (server and keeper) and its connection is never handed out. | No verb exists, and the parent's view of a waiting child holds no card content. A `send` to a child with a dialog open types nothing and returns `waiting_human`; a screen read then returns no dialog text. With a fake ACP agent: a permission request shows a card, the turn waits until a person answers, and the parent's tool has no way to answer it. A turn with no request ends with no card. |
 | G9 People win | A send waits while a person types in that terminal; once a person takes over, the parent's sends are refused. For an ACP child, a person's cancel or card answer wins over the parent; after a person cancels a turn, the parent's next send is refused until a person resumes the child. | always | The existing send path and attach claims (`server/input-guard.ts`, hc `terminal.send`); for ACP, the server's client. | A send during typing waits; after take-over, `taken_over`; after a person cancels an ACP turn, `taken_over`. |
-| G10 Off switch | One switch turns the whole tool off and revokes every agent caller's token at once. View is on by default; starting and sending are off. | view | Settings, checked before every verb. | With the switch off, every verb is `tools_off` and old tokens fail. |
+| G10 Off switch | Setting the policy to `off` turns the whole tool off and revokes every agent caller's token at once. Look-only (`view`) turns off starting and sending. | `start` on this PC | Settings, checked before every verb. | With the policy `off`, every verb is `tools_off` and old tokens fail. |
 | G11 Untrusted text | `read` and `result` mark another agent's words as data so they do not read as instructions. | always | `Untrusted` wrapper in the schema; the skill text says how to treat it. | Every text field from another session is `Untrusted`. |
 | G12 Tests | Removing any one guard turns a test red. Each state change has a test: off then on, parent ends first, child on another machine, late answer, and for ACP children the Ovis server restarting mid-turn (the keeper keeps the turn) and an adapter that never answers `initialize` (falls back to terminal drive). | n/a | the H2 and H3 test suites, in an isolated session (`mkdtempSync` state, `port: 0`). | Guard-removal run per guard. |
 
@@ -433,8 +434,8 @@ The same few gaps keep turning up in other tools that let one agent run another.
   cards. They do not count toward Ovis's depth, because Ovis cannot stop them, but people see and
   approve them.
 
-H2's exit tests come from these rules and risks: "view only unless turned on", "refused past the
-depth, also from a process inside the child", "the same key types once", "waits while a person
+H2's exit tests come from these rules and risks: "local delegation by default, explicit view
+stays read-only", "refused past the depth, also from a process inside the child", "the same key types once", "waits while a person
 types", "a child's mode does not widen on a later send", "a parent's `wait` returns when its child
 waits on a person", and for ACP drive "a permission request reaches only the card" and "a read-only
 ask ends with no card". H3 adds "zero starts elsewhere without approval" and

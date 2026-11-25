@@ -247,11 +247,15 @@ export class PreferenceStore {
   }
 }
 
+/** Tell clients the effective policy without storing it as an explicit choice. */
+export const preferencesForClient = (doc: SharedPreferences): SharedPreferences =>
+  ({ ...doc, settings: { ...doc.settings, agentHarnessTool: harnessToolSetting(doc.settings.agentHarnessTool) } });
+
 /** /api/preferences: GET the shared document, PUT a change to it. A watching device's PUT is refused before this (index.ts). */
 export async function handlePreferencesRequest(request: Request, store: PreferenceStore): Promise<Response> {
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const tooLarge = () => reply({ error: { code: "too_large", message: new PreferencesTooLarge().message } }, 413);
-  if (request.method === "GET") return reply(store.get());
+  if (request.method === "GET") return reply(preferencesForClient(store.get()));
   if (request.method !== "PUT") return reply({ error: { code: "method_not_allowed", message: "Use GET or PUT /api/preferences" } }, 405);
   // a body announced over the limit is refused unread; one that lies about its length is measured
   const announced = Number(request.headers.get("content-length"));
@@ -263,7 +267,7 @@ export async function handlePreferencesRequest(request: Request, store: Preferen
   const body = sharedPreferencesBody(raw);
   if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[] }");
   if (Object.hasOwn(body.settings, "agentHarnessTool") && !parseHarnessSetting(body.settings.agentHarnessTool)) return badRequest("invalid_policy", "Invalid agent harness policy.");
-  try { return reply(store.set(body)); }
+  try { return reply(preferencesForClient(store.set(body))); }
   catch (error) {
     if (error instanceof PreferencesTooLarge) return tooLarge();
     return reply({ error: { code: "preferences_unwritable", message: error instanceof Error ? error.message : String(error) } }, 500);

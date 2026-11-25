@@ -15,6 +15,7 @@ import * as appModule from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, SecuritySummary, PushKey, RemoteAccess, SessionSnapshot, TabMoved, TabMovedToWorkspace, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
+import { HARNESS_TOOL_DEFAULT } from "../shared/harness-tool.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
 import { noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
@@ -5520,7 +5521,7 @@ setInterval(() => {}, 1 << 30);
 // The shared preferences (shared/preferences.ts) over HTTP and the event stream: the muted panes
 // are always in the document, the first mute is a change of the empty list, a watching device
 // reads and cannot write, and two tabs' changes land as two revisions with both kept.
-const namedPreferences = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+const namedPreferences = (doc: SharedPreferences) => ({ ...doc, settings: { ...doc.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 
 describe("shared preferences API", () => {
   const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
@@ -5563,9 +5564,9 @@ describe("shared preferences API", () => {
     const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${base}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: typeof body === "string" ? body : JSON.stringify(body) });
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const first = await put({ settings: {}, muted_panes: ["w1:p1"] });
       expect(first.status).toBe(200);
       expect(await first.json()).toEqual(namedPreferences({ revision: 1, settings: {}, muted_panes: ["w1:p1"] }));
@@ -5597,10 +5598,11 @@ describe("shared preferences API", () => {
     const headers = { ...guard, authorization: "Bearer test-preferences" };
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ ...stored, muted_panes: [] });
+      const advertised = { ...stored, settings: { ...stored.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] };
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual(advertised);
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual(stored);
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual(advertised);
       const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
       expect(await first.json()).toEqual(namedPreferences({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }));
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });
