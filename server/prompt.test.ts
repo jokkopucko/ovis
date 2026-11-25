@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
+import { answerKeys, claudeBoxRows, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -2628,6 +2628,24 @@ describe("Claude's suggested next prompt", () => {
     expect(viewportShowsLive(null, null, colors, live, live)).toBe(true);
     expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live)).toBe(false);
     expect(viewportShowsLive(bottom, bottom, colors, live.replace("run the tests", "run the test"), live)).toBe(false);
+  });
+
+  test("without scroll from herdr, Claude's box counts from its top rule down when the reads lay out older rows apart (#4321)", () => {
+    const box = screen("❯ \u001b[2mrun the tests\u001b[0m");
+    // the colored read and the text read put the rows above the box a row apart after a redraw, the same height
+    const colors = ["  - a caption row", "❯ an older prompt", box].join("\r\n");
+    const live = ["    a caption row:", "", box.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")].join("\r\n");
+    expect(claudeBoxRows(live)).not.toBeNull();
+    expect(viewportShowsLive(null, null, colors, live, live)).toBe(false);
+    expect(viewportShowsLive(null, null, colors, live, live, claudeBoxRows(live))).toBe(true);
+    // a different height is another view, and a different box is another box
+    expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live, claudeBoxRows(live))).toBe(false);
+    expect(viewportShowsLive(null, null, colors.replace("run the tests", "run the test"), live, live, claudeBoxRows(live))).toBe(false);
+    // the box's top rule is compared too: a named session's rule on one read only is another box
+    const rule = "\u2500".repeat(10);
+    const named = colors.replace(rule, "\u2500\u2500 main " + "\u2500".repeat(4));
+    expect(named).not.toBe(colors);
+    expect(viewportShowsLive(null, null, named, live, live, claudeBoxRows(live))).toBe(false);
   });
 
   test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
