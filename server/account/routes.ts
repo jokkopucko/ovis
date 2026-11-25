@@ -123,6 +123,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (!list.peerBudget(session)) return limited();
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
+    // the PC may have left its list while the body was on its way: the call is answered as a new one would be
+    const now = list.peerHead();
+    if (now === null) return fail("not_found", "This PC follows no list", 404);
     const placeOf = (value: unknown): { seq: number; hash: string } | null => {
       const { seq, hash } = (typeof value === "object" && value !== null ? value : {}) as { seq?: unknown; hash?: unknown };
       return typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 && typeof hash === "string" && isListHash(hash) ? { seq, hash } : null;
@@ -130,23 +133,38 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (pathname === "/api/account/list/head") {
       // where the device stands: its list and the last entry a member signed in its copy, or null before it read any
       const theirs = body.place === null ? null : placeOf(body.place);
-      if (typeof body.list !== "string" || !isListHash(body.list) || (body.place !== null && theirs === null)) return fail("invalid_head", "Send the list's id and the place the device stands at", 400);
-      return reply(list.peerHeads({ list: body.list, place: theirs }, session) ?? own);
+      // and, where it wants them, this PC's own entries after a place it names (its own read: a place where the two
+      // differ, or the search for where they part): a list id and a place, or null for entry 0. Left out when there is
+      // none; a read sent as null is out of form
+      const { asks } = body as { asks?: unknown };
+      const read = typeof asks === "object" && asks !== null ? asks as { list?: unknown; after?: unknown } : null;
+      const wanted = asks === undefined ? null
+        : read !== null && typeof read.list === "string" && isListHash(read.list) && (read.after === null || (typeof read.after === "number" && Number.isSafeInteger(read.after) && read.after >= 0))
+          ? { list: read.list, after: read.after } : undefined;
+      if (typeof body.list !== "string" || !isListHash(body.list) || (body.place !== null && theirs === null) || wanted === undefined) {
+        return fail("invalid_head", "Send the list's id and the place the device stands at", 400);
+      }
+      // the read is answered only to a key this PC's list lets in now; any other signed-in row gets the plain exchange
+      const member = peer.kind === "relay" && list.role(peer.key) != null;
+      const answered = list.peerHeads({ list: body.list, place: theirs }, session, member ? wanted : null);
+      return answered === null ? fail("not_found", "This PC follows no list", 404) : reply(answered);
     }
     const { entries, after } = body as { entries?: unknown; after?: unknown };
     const head = placeOf(body.head);
-    if (body.list !== own.list) return fail("not_my_list", "This PC follows another list", 409);
+    if (body.list !== now.list) return fail("not_my_list", "This PC follows another list", 409);
     if (!Array.isArray(entries) || entries.length > LIST_PEER_PAGE_MAX || !entries.every((entry) => typeof entry === "string" && entry.length <= LIST_PEER_ENTRY_CHARS)
       || !(after === null || (typeof after === "number" && Number.isSafeInteger(after) && after >= 0)) || head === null) {
       return fail("invalid_page", "Send the entries after a place, and the head they lead to", 400);
     }
-    const taken = await list.takePeerPage({ list: own.list, after, entries: entries as string[], head }, session);
+    const taken = await list.takePeerPage({ list: now.list, after, entries: entries as string[], head }, session);
     if (taken === null) return fail("not_found", "This PC follows no list", 404);
     // Verified and acted on, and not on disk: the device is not told the page was taken, and hands it again later
     if (taken.verdict === "not_saved") return fail("not_saved", "This PC could not save the entries it was handed; hand them again later.", 503);
     // a page nobody asked for whose first entry follows no entry this PC holds: no signature of it was checked
     if (taken.verdict === "unasked") return fail("not_continued", "Those entries do not follow this PC's copy of the list. Ask where it stands first (POST /api/account/list/head).", 409);
-    return reply({ verdict: taken.verdict, ...(taken.asks ? { asks: taken.asks } : {}), ...list.peerHead() });
+    const stands = list.peerHead();
+    if (stands === null) return fail("not_found", "This PC follows no list", 404);
+    return reply({ verdict: taken.verdict, ...(taken.asks ? { asks: taken.asks } : {}), ...stands });
   }
   const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);

@@ -137,6 +137,18 @@ const PEER_SESSIONS_MAX = 64;
 export type PeerCaller = string;
 
 /**
+ * The read this PC keeps for a member and asks it for, as it states it: a read from its own top asks from its footing,
+ * the last entry a member signed in its copy (an entry no member signed above it, which the account service showed it,
+ * is not counted as held, so a member hands the entries that take its place). A read that goes on inside another
+ * history (`carry`) keeps its place, wherever that lies. What is kept and what is asked are one place, so the page
+ * that answers it is taken as its continuation.
+ */
+function footingRead(copy: FollowerCopy, read: FollowRead): FollowRead {
+  const footing = copy.state?.footing.seq ?? null;
+  return read.carry !== null || read.after === null || footing === null || read.after <= footing ? read : { ...read, after: footing };
+}
+
+/**
  * `account-list.json`. `save` is the follower's own text (writeSave), which carries its sum; null while a list is
  * named and nothing is read. `want` is the list a person at this PC named.
  */
@@ -1946,16 +1958,17 @@ export class ListFollow implements ListAuthority {
         if (!this.live(scope)) return null;
         // what the PC holds was replaced while the page was checked (a list named here): the page is checked against that
         if (this.copy === null || changed(copy, this.copy)) continue;
+        const next = result.read === null ? null : footingRead(result.copy, result.read);
         if (session !== undefined) {
           this.peerReads.delete(session);
-          if (result.read !== null) {
-            this.peerReads.set(session, result.read);
+          if (next !== null) {
+            this.peerReads.set(session, next);
             while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
           }
         }
         // acted on at once; said as taken only once it is on disk
         const saved = this.keep(result.copy, scope, changed(copy, result.copy));
-        return { verdict: saved ? result.verdict : "not_saved", asks: result.read === null ? null : { list: result.read.list, after: result.read.after } };
+        return { verdict: saved ? result.verdict : "not_saved", asks: next === null ? null : { list: next.list, after: next.after } };
       }
       return null;
     });
@@ -1964,25 +1977,35 @@ export class ListFollow implements ListAuthority {
   /**
    * Where this PC stands against where a device says it stands (POST /api/account/list/head): the PC's own head; the
    * entries after the device's place when the device stands at an earlier place of the PC's own history (`page`); and
-   * the place the PC asks the device for when the device stands further, or at another entry (`asks`). For another
-   * list than the PC's: its own head and nothing else. Null while it follows no list a person named.
+   * the place the PC asks the device for when the device stands further, or at another entry (`asks`). `wanted`: the
+   * read the device asks for itself (where it sees the two differ, or looks for where they part); the PC answers it
+   * with its own entries after that place, as any member answers a read, in place of the page its own comparison
+   * would give. The caller passes it only for a key the list lets in. For another list than the PC's, named by the
+   * head or by the read: its own head and nothing else. Null while it follows no list a person named.
    */
-  peerHeads(theirs: ListHead, session?: PeerCaller): { readonly list: string; readonly place: ListHead["place"]; readonly page?: ListPage; readonly asks?: PeerAsk } | null {
+  peerHeads(theirs: ListHead, session?: PeerCaller, wanted: PeerAsk | null = null): { readonly list: string; readonly place: ListHead["place"]; readonly page?: ListPage; readonly asks?: PeerAsk } | null {
     const own = this.peerHead();
     const copy = this.copy;
     if (own === null || copy === null) return null;
+    // a head of another list, or a read of another list: the PC's own head and nothing else, wherever the device stands
+    if (theirs.list !== copy.list || (wanted !== null && wanted.list !== copy.list)) return own;
     const compared = compareHeads(copy, theirs);
+    if (compared.verdict === "not_my_list") return own;
+    const served = wanted === null ? null : servePage(copy, wanted, PEER_PAGE_MAX);
     if (compared.verdict === "ahead") {
-      const page = servePage(copy, { list: copy.list, after: theirs.place?.seq ?? null }, PEER_PAGE_MAX);
+      const page = served ?? servePage(copy, { list: copy.list, after: theirs.place?.seq ?? null }, PEER_PAGE_MAX);
       return page === null ? own : { ...own, page };
     }
-    if (compared.read === null) return own;
+    const answered = served === null ? own : { ...own, page: served };
+    if (compared.read === null) return answered;
+    // asked from the footing the PC states beside it: an entry no member signed above it is not counted as held
+    const read = footingRead(copy, compared.read);
     if (session !== undefined) {
       this.peerReads.delete(session);
-      this.peerReads.set(session, compared.read);
+      this.peerReads.set(session, read);
       while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
     }
-    return { ...own, asks: { list: compared.read.list, after: compared.read.after } };
+    return { ...answered, asks: { list: read.list, after: read.after } };
   }
 
   /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Charged before its body is read. */

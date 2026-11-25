@@ -597,14 +597,24 @@ entry for the PC's own key, at this call or at a later read. 400 `invalid_list`;
 `list_removed` for an account whose list removed this PC; 503 `unavailable` when the PC's copy or
 its keys cannot be read or written.
 
-`POST /api/account/list/head` `{ "list", "place" }`: a device tells this PC where it stands in the
+`POST /api/account/list/head` `{ "list", "place", "asks"? }`: a device tells this PC where it stands in the
 account's signed list (`place` is the last entry a member signed in its copy, `{ "seq", "hash" }`, or
 `null` before it read any), and reads where the PC stands: `{ "list", "place", "page"?, "asks"? }`.
 `page` is there when the device stands at an earlier place of the PC's own history: the PC's
-entries after that place, 256 at most, as `{ "list", "after", "entries", "head" }`. `asks` is there
-when the device stands further, or at another entry: `{ "list", "after" }`, the place the PC wants
-the device's entries after. For another list than the PC's: the PC's own `list` and `place` and
-nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
+entries after that place, 256 at most, as `{ "list", "after", "entries", "head" }`. A device that
+wants the PC's entries after another place sends that read as `asks`, `{ "list", "after" }` (`after`
+null for entry 0): where the PC holds another entry at a place the device holds, or while it looks
+for where two histories part. The PC then answers that read in `page`, whatever its own comparison
+gives, as any member answers a read: its own entries up to its last signed one, with or without an
+alarm. It answers the read only to a key its list lets in at that moment: any other signed-in row
+(a pairing of this PC's own) gets the plain exchange, as if it had sent no read. A read is left out
+when there is none; `asks: null` is out of form. `asks` in the answer is there when the device stands further, or at another entry:
+`{ "list", "after" }`, the place the PC wants the device's entries after: never past the footing it
+states beside it (an entry no member signed above its footing, which the service may have shown it,
+is not counted as held), but where it goes on inside another history the device showed it, which may
+reach past its footing. The place it asks for is the place it keeps: the page that answers it is
+taken as the read's continuation. For another list than the
+PC's, in `list` or in the device's `asks`: the PC's own `list` and `place` and nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
 the PC entries, 256 at most, with the head they lead to; the PC takes them as it takes the account
 service's pages, each entry on its own signature, and answers `{ "verdict", "asks"?, "list",
 "place" }`: what came of them (`caught_up`, `more`, `asks_after` for an entry kept beside the list
@@ -614,13 +624,13 @@ only watches and one in its join hold too; nothing is taken on its word. One dev
 these calls a minute (429 `rate_limited`, `retry-after`), counted under the key the PC let it in by,
 whatever sessions it opens (this PC's own window and its direct clients share one count), by a clock
 that only moves forward, and charged before the body is read; no caller is refused because others
-called. A page whose first entry follows no entry this PC holds, and that this PC did not ask that
+called. The count lives in memory: a PC that starts again counts afresh. A page whose first entry follows no entry this PC holds, and that this PC did not ask that
 device for, is refused before any of it is checked (409 `not_continued`): ask where it stands first.
 On a PC that follows no list a person named, both answer every caller as before this list (403
 `read_only` to a device that only watches, `account_route_denied` to an account row). 503 `not_saved`: the entries were
 verified and acted on, and the PC could not save them; hand them again later. 404 `not_found` on a
-PC that follows no list a person named; 409 `not_my_list` for a page of another list; 400
-`invalid_head`, `invalid_page`.
+PC that follows no list a person named, also for a call that began before this PC left its list
+and ends after; 409 `not_my_list` for a page of another list; 400 `invalid_head`, `invalid_page`.
 
 `POST /api/account/list/named` `{ "account", "list" }`: a device that waits to link (it paired with a
 code made for the account) names the account's signed list in the place of its link
