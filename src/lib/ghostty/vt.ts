@@ -7,10 +7,14 @@
 import {
   GhosttyEngine,
   GhosttyModule,
+  type EngineCell,
+  type EngineHistory,
+  type EngineRowText,
   type GhosttyCursor,
   type GhosttyImage,
   type GhosttyRun,
   type Rgb,
+  type ScreenPoint,
 } from "../../../shared/ghostty/engine.ts";
 
 export {
@@ -19,8 +23,11 @@ export {
   STYLE_INVERSE,
   STYLE_INVISIBLE,
   STYLE_ITALIC,
+  STYLE_OVERLINE,
   STYLE_STRIKE,
   STYLE_UNDERLINE_MASK,
+  type EngineCell,
+  type EngineRowText,
   type GhosttyCursor,
   type GhosttyImage,
   type GhosttyRun,
@@ -30,6 +37,10 @@ export interface GhosttyColors { foreground: string; background: string; cursor:
 
 /** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
 const MODE_GRAPHEME_CLUSTER = 2027;
+/** DEC private mode 40, which lets a program switch the grid to 132 columns (DECCOLM, mode 3) */
+const MODE_ALLOW_DECCOLM = 40;
+/** history kept past the lines asked for: more than the rows of one of libghostty's pages at any width */
+const HISTORY_SLACK_LINES = 4096;
 const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3, CSI_OTHER = 4, CSI_STRING = 5;
 /**
  * Whether a code point joins the emoji before it into one cell: ZWJ, the emoji- and text-presentation
@@ -77,19 +88,22 @@ function rgb(color: string): [number, number, number] | null {
 export class GhosttyVt {
   cols: number;
   rows: number;
+  /** the history asked for: libghostty frees history a page at a time, so it can hold a few rows more */
+  scrollback = 0;
   private readonly engine: GhosttyEngine;
   private readonly encoder = new TextEncoder();
   private csi = CSI_GROUND;
   private param = 0;
   private sawGraphemeMode = false;
+  private sawDeccolmAllow = false;
   private afterZwj = false;
   private broken = true;
 
   private constructor(module: GhosttyModule, cols: number, rows: number) {
     this.cols = cols;
     this.rows = rows;
-    this.engine = new GhosttyEngine(module, cols, rows, { widths: "xterm", images: IMAGE_STORAGE_BYTES });
-    this.setScrollback(0);
+    // history is cut by lines alone, as xterm cuts it: libghostty's byte limit would keep far fewer than a herdr-core pane's 2,000
+    this.engine = new GhosttyEngine(module, cols, rows, { widths: "xterm", images: IMAGE_STORAGE_BYTES, scrollbackLines: 0 });
   }
 
   static async create(cols: number, rows: number): Promise<GhosttyVt> {
@@ -153,6 +167,7 @@ export class GhosttyVt {
           this.csi = byte === 0x3f ? CSI_PRIVATE : byte >= 0x40 && byte <= 0x7e ? CSI_GROUND : CSI_OTHER;
           this.param = 0;
           this.sawGraphemeMode = false;
+          this.sawDeccolmAllow = false;
           continue;
         case CSI_OTHER:
           if (byte >= 0x40 && byte <= 0x7e) this.csi = CSI_GROUND;
@@ -161,11 +176,18 @@ export class GhosttyVt {
       if (byte >= 0x30 && byte <= 0x39) this.param = Math.min(this.param * 10 + byte - 0x30, 1e6);
       else if (byte === 0x3b || byte === 0x3a) {
         if (this.param === MODE_GRAPHEME_CLUSTER) this.sawGraphemeMode = true;
+        if (this.param === MODE_ALLOW_DECCOLM) this.sawDeccolmAllow = true;
         this.param = 0;
       } else {
         if ((byte === 0x68 || byte === 0x72) && (this.sawGraphemeMode || this.param === MODE_GRAPHEME_CLUSTER)) {
           flush(at + 1);
           this.setGraphemeClusters(false);
+        }
+        // xterm keeps the pane's columns whatever a program asks (DECCOLM), and the pane is drawn on xterm's grid:
+        // mode 40 is turned off again as soon as a program turns it on, so libghostty keeps them too
+        if ((byte === 0x68 || byte === 0x72) && (this.sawDeccolmAllow || this.param === MODE_ALLOW_DECCOLM)) {
+          flush(at + 1);
+          this.engine.setMode(MODE_ALLOW_DECCOLM, false);
         }
         this.csi = CSI_GROUND;
       }
@@ -188,9 +210,13 @@ export class GhosttyVt {
     this.rows = rows;
   }
 
-  /** lines of history above the screen; 0 keeps none */
+  /**
+   * lines of history above the screen; 0 keeps none. libghostty frees history a whole page at a time, so it is
+   * let keep a few pages more than asked, and the rows past `lines` are left out where it is read (screenRows.ts)
+   */
   setScrollback(lines: number): void {
-    this.engine.setScrollback(lines);
+    this.engine.setScrollback(lines === 0 ? 0 : lines + HISTORY_SLACK_LINES);
+    this.scrollback = lines;
   }
 
   scrollFromBottom(rowsAboveBottom: number): void {
@@ -222,6 +248,27 @@ export class GhosttyVt {
 
   cursor(): GhosttyCursor {
     return this.engine.cursor();
+  }
+
+  /** the kept rows: the history above the screen and where the view sits in it (screen coordinates, row 0 the oldest) */
+  history(): EngineHistory {
+    return this.engine.history();
+  }
+
+  alternate(): boolean {
+    return this.engine.alternate();
+  }
+
+  screenCursor(): ScreenPoint {
+    return this.engine.screenCursor();
+  }
+
+  rowCells(y: number): EngineCell[] | null {
+    return this.engine.rowCells(y);
+  }
+
+  rowText(y: number): EngineRowText | null {
+    return this.engine.rowText(y);
   }
 
   placedImages(): GhosttyImage[] | null {

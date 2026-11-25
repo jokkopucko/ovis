@@ -5,11 +5,14 @@
 # file and shared memory media, which have no meaning in a browser, and links ghostty's bundled
 # wuffs PNG decoder, so a PNG a program sends is decoded inside the module.
 # screen-generation.patch exposes the selection lifetime at the native switch/reset sites.
+# erase-ends-wrap.patch makes an erase from a row's first column (EL 0 there, EL 2, ED 0 there) and a line
+# feed onto a row end the soft wrap that led into the row, as xterm does: the app reads a pane's lines as
+# xterm joins them.
 #
 #   ZIG=/path/to/zig-0.17.1/zig scripts/ghostty-vt/build.sh
 #
 # Expected output sha256 (zig 0.17.1, x86_64-linux):
-#   20e40e3cdbb33b7206c0b8bc9606fcfb412f01605d3302f1e85975ea832a6c3a
+#   f887637963ac8582acd6f31e2ad7e2d30de11cde8a1863bfec3cadd17f80fc42
 set -euo pipefail
 GHOSTTY_COMMIT=e95bed63330cc921f3cf2fe3d14e024396b09d43
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -22,6 +25,7 @@ git -C "$work/ghostty" fetch -q --depth 1 https://github.com/ghostty-org/ghostty
 git -C "$work/ghostty" checkout -q FETCH_HEAD
 git -C "$work/ghostty" apply "$here/kitty-on-wasm.patch"
 git -C "$work/ghostty" apply "$here/screen-generation.patch"
+git -C "$work/ghostty" apply "$here/erase-ends-wrap.patch"
 (cd "$work/ghostty" && "$zig" build -Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall --prefix "$work/out")
 cp "$work/out/bin/ghostty-vt.wasm" "$repo/shared/ghostty/ghostty-vt.wasm"
 sha256sum "$repo/shared/ghostty/ghostty-vt.wasm"

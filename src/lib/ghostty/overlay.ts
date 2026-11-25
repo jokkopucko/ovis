@@ -13,7 +13,8 @@ import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
 import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
-import { terminalScreen } from "../terminalScreen.ts";
+import { holdScreenRows, terminalScreen } from "../terminalScreen.ts";
+import { ghosttyRows } from "./screenRows.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
@@ -575,12 +576,41 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   muteXtermRows();
 
   host.dataset["renderer"] = "ghostty";
+  // libghostty has every byte xterm was given by now, and each later one before xterm parses it
+  // A read that fails gives the terminal back to xterm, which has every byte too: a reader runs in xterm's write
+  // callback, where a throw would leave the output behind it queued
+  const readFailed = (error: unknown): void => {
+    console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
+    overlay.dispose();
+  };
+  holdScreenRows(term, () => {
+    if (disposed) return null;
+    try {
+      const rows = ghosttyRows(vt);
+      return {
+        ...rows,
+        getLine: (y) => {
+          if (disposed) return term.buffer.active.getLine(y);
+          try {
+            return rows.getLine(y);
+          } catch (error) {
+            readFailed(error);
+            return term.buffer.active.getLine(y);
+          }
+        },
+      };
+    } catch (error) {
+      readFailed(error);
+      return null;
+    }
+  });
   const overlay: GhosttyOverlay = {
     dispose: () => {
       if (disposed) return;
       disposed = true;
       cancelPaint();
       delete host.dataset["renderer"];
+      holdScreenRows(term, null);
       unmuteXtermRows();
       term.refresh(0, term.rows - 1);
       term.write = write;

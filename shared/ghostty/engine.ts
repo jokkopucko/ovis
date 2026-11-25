@@ -43,6 +43,9 @@ export interface GhosttyExports {
   ghostty_terminal_grid_ref(terminal: number, point: number, outRef: number): number;
   ghostty_terminal_point_from_grid_ref(terminal: number, ref: number, tag: number, outCoordinate: number): number;
   ghostty_grid_ref_row(ref: number, outRow: number): number;
+  ghostty_grid_ref_cell(ref: number, outCell: number): number;
+  ghostty_grid_ref_graphemes(ref: number, buf: number, bufLen: number, outLen: number): number;
+  ghostty_grid_ref_style(ref: number, outStyle: number): number;
   ghostty_row_get(row: bigint, key: number, out: number): number;
   ghostty_terminal_select_word(terminal: number, options: number, outSelection: number): number;
   ghostty_terminal_select_line(terminal: number, options: number, outSelection: number): number;
@@ -104,7 +107,7 @@ export const ENGINE_FUNCTIONS: Record<Exclude<keyof GhosttyExports, "memory" | "
   ghostty_wasm_take_opaque: true, ghostty_free: true, ghostty_terminal_new: true, ghostty_terminal_free: true, ghostty_terminal_reset: true,
   ghostty_terminal_resize: true, ghostty_terminal_set: true, ghostty_terminal_get: true, ghostty_terminal_vt_write: true,
   ghostty_terminal_scroll_viewport: true, ghostty_terminal_grid_ref: true, ghostty_terminal_point_from_grid_ref: true,
-  ghostty_grid_ref_row: true, ghostty_row_get: true,
+  ghostty_grid_ref_row: true, ghostty_grid_ref_cell: true, ghostty_grid_ref_graphemes: true, ghostty_grid_ref_style: true, ghostty_row_get: true,
   ghostty_terminal_select_word: true, ghostty_terminal_select_line: true, ghostty_terminal_selection_format_alloc: true,
   ghostty_render_state_new: true, ghostty_render_state_free: true,
   ghostty_render_state_update: true, ghostty_render_state_get: true, ghostty_render_state_clean: true,
@@ -130,7 +133,7 @@ export const ENGINE_ENUMS = {
   GhosttyResult: ["OUT_OF_SPACE", "NO_VALUE"],
   GhosttyTerminalOption: ["USERDATA", "WRITE_PTY", "BELL", "SIZE", "COLOR_FOREGROUND", "COLOR_BACKGROUND", "COLOR_CURSOR", "COLOR_PALETTE",
     "KITTY_IMAGE_STORAGE_LIMIT", "CLIPBOARD_WRITE", "SCROLLBACK_MAX_BYTES", "SCROLLBACK_MAX_LINES", "MODE_DEFAULT", "MODE", "RENDER_HOLD"],
-  GhosttyTerminalData: ["COLS", "ROWS", "ACTIVE_SCREEN", "SCREEN_GENERATION", "KITTY_KEYBOARD_FLAGS", "SCROLLBAR", "SCROLLBACK_ROWS", "KITTY_GRAPHICS", "MODE"],
+  GhosttyTerminalData: ["COLS", "ROWS", "CURSOR_X", "CURSOR_Y", "ACTIVE_SCREEN", "SCREEN_GENERATION", "KITTY_KEYBOARD_FLAGS", "SCROLLBAR", "SCROLLBACK_ROWS", "KITTY_GRAPHICS", "MODE"],
   GhosttyTerminalScreen: ["ALTERNATE"],
   GhosttyTerminalScrollViewportTag: ["BOTTOM", "DELTA"],
   GhosttyRenderStateData: ["DIRTY", "ROW_ITERATOR", "CURSOR_VISUAL_STYLE", "CURSOR_VISIBLE", "CURSOR_VIEWPORT_HAS_VALUE",
@@ -142,8 +145,8 @@ export const ENGINE_ENUMS = {
     "CELL_OFFSET_Y", "PIXEL_WIDTH", "PIXEL_HEIGHT", "SOURCE_X", "SOURCE_Y", "SOURCE_WIDTH", "SOURCE_HEIGHT"],
   GhosttyKittyGraphicsImageData: ["WIDTH", "HEIGHT", "FORMAT", "DATA_PTR", "DATA_LEN"],
   GhosttyKittyImageFormat: ["RGB", "RGBA", "GRAY_ALPHA", "GRAY"],
-  GhosttyCellWide: ["WIDE", "SPACER_TAIL", "SPACER_HEAD"],
-  GhosttyCellContentTag: ["CODEPOINT_GRAPHEME", "BG_COLOR_PALETTE", "BG_COLOR_RGB"],
+  GhosttyCellWide: ["NARROW", "WIDE", "SPACER_TAIL", "SPACER_HEAD"],
+  GhosttyCellContentTag: ["CODEPOINT", "CODEPOINT_GRAPHEME", "BG_COLOR_PALETTE", "BG_COLOR_RGB"],
   GhosttyStyleColorTag: ["PALETTE", "RGB"],
   GhosttyKeyAction: ["PRESS", "REPEAT", "RELEASE"],
   GhosttyMouseAction: ["PRESS", "RELEASE", "MOTION"],
@@ -177,7 +180,7 @@ export const ENGINE_FIELDS = {
   GhosttyMousePosition: ["x", "y"],
   GhosttyPoint: ["tag", "value"],
   GhosttyPointCoordinate: ["x", "y"],
-  GhosttyGridRef: ["node"],
+  GhosttyGridRef: ["node", "x"],
   GhosttySelection: ["start", "end", "rectangle"],
   GhosttySelectionBuffer: ["ptr", "cap", "len"],
   GhosttyTerminalSelectWordOptions: ["size", "ref", "boundary_codepoints", "boundary_codepoints_len"],
@@ -208,6 +211,15 @@ export interface GhosttyRun<Color = string> {
 }
 
 export interface GhosttyCursor { visible: boolean; x: number; y: number; style: number }
+
+/**
+ * One cell of a kept row as a reader walks it. `width` 0 is the second column of a wide cell, and `text` is "" where
+ * nothing was printed (a blank cell, or one an erase left only a background on). Colours are as the program wrote them.
+ */
+export interface EngineCell { text: string; width: 0 | 1 | 2; flags: number; fg: WrittenColor | null; bg: WrittenColor | null }
+
+/** A kept row's text cell by cell (GhosttyEngine.rowText). */
+export interface EngineRowText { continues: boolean; codes: Uint32Array; widths: Uint8Array; graphemes: Map<number, string> }
 
 /** A Kitty image on screen, in viewport cells and CSS pixels, as the render state places it. */
 export interface GhosttyImage {
@@ -352,6 +364,7 @@ export const STYLE_FAINT = 1 << 2;
 export const STYLE_INVERSE = 1 << 4;
 export const STYLE_INVISIBLE = 1 << 5;
 export const STYLE_STRIKE = 1 << 6;
+export const STYLE_OVERLINE = 1 << 7;
 export const STYLE_UNDERLINE_MASK = 0x7 << 8;
 
 // GhosttyMods bits (key/event.h): ghostty_type_json() describes GhosttyMods only as a u16
@@ -540,6 +553,17 @@ const hex = (r: number, g: number, b: number): string => `#${((r << 16) | (g << 
  * Where the engine keeps its small structs in its scratch block (bytes from its start), each placed once
  * so that no two calls in one operation share a spot.
  */
+/** a field of a 64-bit cell read as two 32-bit halves; a field may straddle them (style_id does) */
+function bitField(lo: number, hi: number, b: Bits): number {
+  const mask = b.width >= 32 ? 0xffffffff : (1 << b.width) - 1;
+  if (b.lsb >= 32) return (hi >>> (b.lsb - 32)) & mask;
+  if (b.lsb + b.width <= 32) return (lo >>> b.lsb) & mask;
+  return ((lo >>> b.lsb) | (hi << (32 - b.lsb))) & mask;
+}
+
+/** a blank cell in the default style, shared: rowCells hands out many */
+const BLANK_CELL: EngineCell = Object.freeze({ text: "", width: 1, flags: 0, fg: null, bg: null });
+
 const AT = {
   frameIterator: 16, frameCells: 24, frameY: 32, frameView: 40, frameColor: 64, frameStyle: 96, palette: 128, graphemeOut: 240,
   grapheme: 256, scroll: 512, mode: 1000, cursor: 1024, mouseSize: 1056, mousePosition: 1096, outLen: 1104, outPtr: 1108,
@@ -1102,13 +1126,7 @@ export class GhosttyEngine {
     this.check(x.ghostty_render_state_get(this.state, rs.ROW_ITERATOR, iterSlot), "row iterator");
     dv.setUint32(cellsSlot, this.cells, true);
     const { codepoint: cpB, content_tag: tagB, wide: wideB, style_id: styleB } = this.bit;
-    const field = (lo: number, hi: number, b: Bits): number => {
-      // a 64-bit cell read as two 32-bit halves; a field may straddle them (style_id does)
-      const mask = b.width >= 32 ? 0xffffffff : (1 << b.width) - 1;
-      if (b.lsb >= 32) return (hi >>> (b.lsb - 32)) & mask;
-      if (b.lsb + b.width <= 32) return (lo >>> b.lsb) & mask;
-      return ((lo >>> b.lsb) | (hi << (32 - b.lsb))) & mask;
-    };
+    const field = bitField;
     const next = all
       ? (): boolean => {
         if (!x.ghostty_render_state_row_iterator_next(this.iterator)) return false;
@@ -1446,6 +1464,131 @@ export class GhosttyEngine {
       this.check(this.x.ghostty_row_get(raw, this.e.GhosttyRowData.WRAP_CONTINUATION, this.scratch), "row wrap continuation");
       return this.view().getUint8(this.scratch) !== 0;
     });
+  }
+
+  /** the cursor's cell on the screen a program writes to, `y` counted from that screen's top row (the first one below the history) */
+  screenCursor(): ScreenPoint {
+    return this.guard(() => {
+      const data = this.e.GhosttyTerminalData;
+      const read = (key: number): number => {
+        this.check(this.x.ghostty_terminal_get(this.terminal, key, this.scratch), `terminal_get ${key}`);
+        return this.view().getUint16(this.scratch, true);
+      };
+      return { x: read(data.CURSOR_X), y: read(data.CURSOR_Y) };
+    });
+  }
+
+  /** whether a program has the alternate screen up (it keeps no history) */
+  alternate(): boolean {
+    return this.guard(() => this.onAlternate());
+  }
+
+  /**
+   * The text of kept row `y` cell by cell, for a reader of the text alone: each cell's code point (0 where nothing was
+   * printed, a background left by an erase included) and width (0 for a wide cell's second column), and the whole
+   * grapheme of a cell that holds more than one code point, and whether the row continues a soft wrap (rowContinues).
+   * Null outside the kept rows. Unlike rowCells, no style is read.
+   */
+  rowText(y: number): EngineRowText | null {
+    return this.guard(() => {
+      const x = this.x;
+      const tags = this.e.GhosttyCellContentTag, wides = this.e.GhosttyCellWide;
+      const ref = this.scratch + AT.refStart, raw = this.scratch + AT.frameView;
+      const cols = this.grid().cols;
+      if (!this.gridRef({ x: 0, y }, ref)) return null;
+      const refX = ref + this.f.GhosttyGridRef.x;
+      const { wide: wideB, content_tag: tagB, codepoint: cpB } = this.bit;
+      const rowRaw = this.scratch + AT.refEnd;
+      this.check(x.ghostty_grid_ref_row(ref, rowRaw), "grid_ref_row");
+      this.check(x.ghostty_row_get(this.view().getBigUint64(rowRaw, true), this.e.GhosttyRowData.WRAP_CONTINUATION, this.scratch), "row wrap continuation");
+      const row: EngineRowText = { continues: this.view().getUint8(this.scratch) !== 0, codes: new Uint32Array(cols), widths: new Uint8Array(cols), graphemes: new Map() };
+      let dv = this.view();
+      for (let col = 0; col < cols; col++) {
+        dv.setUint16(refX, col, true);
+        if (x.ghostty_grid_ref_cell(ref, raw) !== 0) throw new Error("ghostty-vt: grid_ref_cell failed");
+        const lo = dv.getUint32(raw, true), hi = dv.getUint32(raw + 4, true);
+        const wide = bitField(lo, hi, wideB), tag = bitField(lo, hi, tagB);
+        row.widths[col] = wide === wides.WIDE ? 2 : wide === wides.SPACER_TAIL ? 0 : 1;
+        if (wide === wides.SPACER_HEAD || (tag !== tags.CODEPOINT && tag !== tags.CODEPOINT_GRAPHEME)) continue;
+        row.codes[col] = bitField(lo, hi, cpB);
+        if (tag === tags.CODEPOINT_GRAPHEME) {
+          row.graphemes.set(col, this.refGrapheme(ref));
+          dv = this.view();
+        }
+      }
+      return row;
+    });
+  }
+
+  /** The cells of kept row `y` (screen coordinates, as rowContinues), as wide as the grid; null outside the kept rows. */
+  rowCells(y: number): EngineCell[] | null {
+    return this.guard(() => {
+      const x = this.x;
+      const tags = this.e.GhosttyCellContentTag, wides = this.e.GhosttyCellWide;
+      const ref = this.scratch + AT.refStart, raw = this.scratch + AT.frameView, style = this.scratch + AT.frameStyle;
+      const cols = this.grid().cols;
+      const cells: EngineCell[] = [];
+      // the row is found once (a point is looked up from the oldest kept row); its cells are its reference moved along it
+      if (!this.gridRef({ x: 0, y }, ref)) return null;
+      const refX = ref + this.f.GhosttyGridRef.x;
+      const { wide: wideB, content_tag: tagB, codepoint: cpB, style_id: styleB } = this.bit;
+      let dv = this.view();
+      for (let col = 0; col < cols; col++) {
+        dv.setUint16(refX, col, true);
+        if (x.ghostty_grid_ref_cell(ref, raw) !== 0) throw new Error("ghostty-vt: grid_ref_cell failed");
+        const lo = dv.getUint32(raw, true), hi = dv.getUint32(raw + 4, true);
+        const wide = bitField(lo, hi, wideB);
+        const tag = bitField(lo, hi, tagB);
+        const codepoint = tag === tags.CODEPOINT || tag === tags.CODEPOINT_GRAPHEME ? bitField(lo, hi, cpB) : 0;
+        const styleId = bitField(lo, hi, styleB);
+        if (wide === wides.NARROW && tag === tags.CODEPOINT && styleId === 0) {
+          // the common cell: one code point, or none, in the default style
+          cells.push(codepoint === 0 ? BLANK_CELL : { text: codepoint < 0x10000 ? String.fromCharCode(codepoint) : String.fromCodePoint(codepoint), width: 1, flags: 0, fg: null, bg: null });
+          continue;
+        }
+        const cell: EngineCell = { text: "", width: wide === wides.WIDE ? 2 : wide === wides.SPACER_TAIL ? 0 : 1, flags: 0, fg: null, bg: null };
+        if (tag === tags.BG_COLOR_PALETTE) cell.bg = bitField(lo, hi, this.bit.bg_index);
+        else if (tag === tags.BG_COLOR_RGB) cell.bg = [bitField(lo, hi, this.bit.bg_r), bitField(lo, hi, this.bit.bg_g), bitField(lo, hi, this.bit.bg_b)];
+        else {
+          if (tag === tags.CODEPOINT_GRAPHEME) {
+            cell.text = this.refGrapheme(ref);
+            dv = this.view();
+          } else if (codepoint !== 0 && wide !== wides.SPACER_HEAD) cell.text = String.fromCodePoint(codepoint);
+          if (styleId !== 0) {
+            this.check(x.ghostty_grid_ref_style(ref, style), "grid_ref_style");
+            cell.flags = dv.getUint16(style + this.f.GhosttyStyle.flags, true);
+            cell.fg = this.writtenColor(dv, style + this.f.GhosttyStyle.fg_color);
+            cell.bg = this.writtenColor(dv, style + this.f.GhosttyStyle.bg_color);
+          }
+        }
+        cells.push(cell);
+      }
+      return cells;
+    });
+  }
+
+  /** the grapheme cluster of the cell `ref` points at, its first code point included */
+  private refGrapheme(ref: number): string {
+    const x = this.x;
+    const out = this.scratch + AT.graphemeOut, buf = this.scratch + AT.grapheme, cap = (AT.scroll - AT.grapheme) / 4;
+    const read = (at: number, count: number): string => {
+      const dv = this.view();
+      let text = "";
+      for (let index = 0; index < count; index++) text += String.fromCodePoint(dv.getUint32(at + index * 4, true));
+      return text;
+    };
+    const result = x.ghostty_grid_ref_graphemes(ref, buf, cap, out);
+    if (result === 0) return read(buf, this.view().getUint32(out, true));
+    if (result !== this.e.GhosttyResult.OUT_OF_SPACE) this.check(result, "grid_ref_graphemes");
+    // a long ZWJ sequence: the call names the room it needs
+    const need = this.view().getUint32(out, true);
+    const big = this.allocate(need * 4, "a grapheme");
+    try {
+      this.check(x.ghostty_grid_ref_graphemes(ref, big, need, out), "grid_ref_graphemes");
+      return read(big, this.view().getUint32(out, true));
+    } finally {
+      x.ghostty_wasm_free(big, need * 4);
+    }
   }
 
   /**

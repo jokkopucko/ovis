@@ -2,9 +2,10 @@ import type { IBufferCell, Terminal } from "@xterm/xterm";
 
 /*
  * The one way the app reads what a terminal shows: its rows and cells, the cursor, where the view sits in
- * history, the selection and the links in it. xterm is the only engine that holds a screen today
- * (`terminalScreen`); every reader goes through this so another engine (libghostty) can answer the same reads
- * later without touching them. The shapes follow xterm's buffer API, so its rows and cells serve as they are.
+ * history, the selection and the links in it. Two engines hold a screen: xterm, under every terminal
+ * (`terminalScreen`), and libghostty, which draws it while it can (ghostty/overlay.ts) and answers the rows of a
+ * reader moved to it (`screenRows`). Readers move over one at a time; the rest still read xterm's buffer. The
+ * shapes follow xterm's buffer API, so its rows and cells serve as they are.
  *
  * Rows are buffer rows, history first: `baseY` is the first row of the screen a program writes to, `viewportY`
  * the first row in view, `cursorX`/`cursorY` the cursor's cell on the screen (cursorY counts from `baseY`).
@@ -72,6 +73,18 @@ interface XtermInternals {
 }
 
 const screens = new WeakMap<Terminal, TerminalScreen>();
+const engineRows = new WeakMap<Terminal, () => ScreenRows | null>();
+
+/** libghostty's rows for `term` while it holds the screen (ghostty/overlay.ts); null, or rows it cannot give, leave the reads to xterm */
+export function holdScreenRows(term: Terminal, rows: (() => ScreenRows | null) | null): void {
+  if (rows) engineRows.set(term, rows);
+  else engineRows.delete(term);
+}
+
+/** the rows of the screen up now (normal or alternate): libghostty's while it holds the screen, xterm's otherwise */
+export function screenRows(term: Terminal): ScreenRows {
+  return engineRows.get(term)?.() ?? term.buffer.active;
+}
 
 /** xterm's screen: reads go to whichever of its buffers (normal or alternate) is up when they are made */
 export function terminalScreen(term: Terminal): TerminalScreen {

@@ -1,0 +1,58 @@
+diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
+index 29d630f..145c804 100644
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -1702,6 +1702,18 @@ pub fn cursorResetWrap(self: *Screen) void {
+     }
+ }
+ 
++/// The cursor's row no longer continues the row above it, which no longer
++/// wraps onto it: an erase from the row's first column ends the soft wrap
++/// that led into it, as xterm has it.
++pub fn cursorResetWrapContinuation(self: *Screen) void {
++    const page_row = self.cursor.page_row;
++    if (!page_row.wrap_continuation) return;
++    page_row.wrap_continuation = false;
++    if (self.cursor.page_pin.up(1)) |prev_row| {
++        prev_row.rowAndCell().row.wrap = false;
++    }
++}
++
+ /// Options for scrolling the viewport of the terminal grid. The reason
+ /// we have this in addition to PageList.Scroll is because we have additional
+ /// scroll behaviors that are not part of the PageList.Scroll enum.
+diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
+index 65c96cb..ee878ae 100644
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -2530,7 +2530,11 @@ pub fn carriageReturn(self: *Terminal) void {
+ 
+ /// Linefeed moves the cursor to the next line.
+ pub fn linefeed(self: *Terminal) !void {
++    const y = self.screens.active.cursor.y;
+     try self.index();
++    // As xterm: a line feed that moves the cursor onto a row below (rather
++    // than scrolling) ends the soft wrap into that row.
++    if (self.screens.active.cursor.y != y) self.screens.active.cursorResetWrapContinuation();
+     if (self.modes.get(.linefeed)) self.carriageReturn();
+ }
+ 
+@@ -4345,6 +4349,10 @@ pub fn eraseLine(
+             // Reset our row's soft-wrap.
+             self.screens.active.cursorResetWrap();
+ 
++            // From the row's first column, as xterm has it: the row no longer
++            // continues the one above it either.
++            if (x == 0) self.screens.active.cursorResetWrapContinuation();
++
+             break :right .{ x, self.cols };
+         },
+ 
+@@ -4364,6 +4372,7 @@ pub fn eraseLine(
+             // rows when resizing. Since we do, the erased row must no longer
+             // continue onto the next row.
+             self.screens.active.cursorResetWrap();
++            self.screens.active.cursorResetWrapContinuation();
+ 
+             break :complete .{ 0, self.cols };
+         },
