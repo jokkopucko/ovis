@@ -250,6 +250,22 @@
   white-space: nowrap;
 }
 
+/* Claude Code's plan mode as an icon after the level: it never shrinks, the model's name gives way instead */
+.composer-mode {
+  display: inline-flex;
+  flex: none;
+}
+
+.composer-mode svg {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+}
+
+/* where the row has no room for that icon, the plan chip's step gives way to it (fitStatus) */
+.composer-surface[data-step-out] .bg-tasks-current {
+  display: none;
+}
+
 .composer-reasoning-dot {
   margin-right: var(--space-2);
 }

@@ -55,6 +55,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Reasoning effort: {effort}": "推理强度：{effort}",
   "Reasoning effort not available": "推理强度信息不可用",
   "Reasoning {effort}": "推理 {effort}",
+  "Plan mode": "计划模式",
   "Uploading file…": "正在上传文件…",
   "{max}-character limit · {count} over": "{max} 字上限 · 超出 {count} 字",
   "{max}-character limit": "{max} 字上限",

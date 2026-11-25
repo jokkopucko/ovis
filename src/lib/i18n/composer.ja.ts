@@ -55,6 +55,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Reasoning effort: {effort}": "推論レベル: {effort}",
   "Reasoning effort not available": "推論レベル情報なし",
   "Reasoning {effort}": "推論 {effort}",
+  "Plan mode": "プランモード",
   "Uploading file…": "ファイルをアップロードしています…",
   "{max}-character limit · {count} over": "{max} 文字の上限 · {count} 文字超過",
   "{max}-character limit": "{max} 文字の上限",

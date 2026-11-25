@@ -129,6 +129,13 @@ export const claudeApprovals: ApprovalAdapter = {
     }
   },
 
+  /** Every hook of the main agent names its mode and session (2.1.330); a subagent's (`agent_id`) has its own mode. */
+  mode(event) {
+    const input = event as { permission_mode?: unknown; session_id?: unknown; agent_id?: unknown } | null;
+    const mode = text(input?.permission_mode), session = text(input?.session_id);
+    return mode === null || session === null || input?.agent_id !== undefined ? null : { mode, session };
+  },
+
   decision: permissionDecision,
 
   toAnswer(decision) {

@@ -210,6 +210,9 @@ export function parseConversationMetadata(text: string, source: ConversationResp
       const set = claudeSetting(entry);
       if (set.model !== undefined) metadata.model = set.model;
       if (set.effort !== undefined) metadata.reasoning_effort = set.effort;
+      // a prompt carries the mode it was sent under, and a switch is recorded as its own entry; a subagent has its own
+      const mode = entry.isSidechain !== true && (entry.type === "user" || entry.type === "permission-mode") ? label(entry.permissionMode) : null;
+      if (mode) metadata.permission_mode = mode;
       if (entry.type === "assistant" && entry.isSidechain !== true && label(message.model)) {
         const usage = record(message.usage);
         metadata.context = contextOf(count(usage.input_tokens) + count(usage.cache_creation_input_tokens) + count(usage.cache_read_input_tokens), metadata.model, null, metadata.context);

@@ -74,6 +74,7 @@ import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, cop
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, type MetadataFold, parseConversationMetadata } from "./conversation-metadata.ts";
 import { catalogVersion, piCatalogVersion } from "./pi-models.ts";
+import type { ToldMode } from "./approvals/hub.ts";
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -127,6 +128,21 @@ const METADATA_HEAD_BYTES = 64 * 1024;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const writtenSessions = new Set<string>();
+
+/** The permission mode the hook of a Claude Ovis started in a pane last told, and in which session (the approval hub's). */
+let toldMode: (paneId: string) => ToldMode | null = () => null;
+export function readToldModes(read: ((paneId: string) => ToldMode | null) | null): void {
+  toldMode = read ?? (() => null);
+}
+
+/**
+ * `answer` with the permission mode a hook told in `session`, the session the answer's transcript is: a mode told in
+ * another one (before a /resume or a /clear, or by an agent no longer running there) leaves the transcript's.
+ */
+export function withToldMode<T extends Pick<RecognizedConversation, "metadata" | "version">>(answer: T, told: ToldMode | null, session: string): T {
+  if (told === null || told.session !== session || told.mode === answer.metadata.permission_mode) return answer;
+  return { ...answer, metadata: { ...answer.metadata, permission_mode: told.mode }, version: answerVersion(answer.version, told.mode) };
+}
 
 const cache = new Map<string, { source: RecognizedConversation["source"]; signature: string; turns: ConversationTurn[]; metadata: ConversationMetadata; cursor: string | null; abandoned?: { count: number; branches: number; summary: string | null } }>();
 
@@ -2437,6 +2453,9 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   // this conversation, nor the model its screen shows now, and nothing is recorded for it.
   if (agyScreen !== null && (!live() || rebound(paneId, transcript))) throw new ConversationUnavailable("no_session_id");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
+  // a Claude Ovis started tells its permission mode with each hook, also between the prompts its transcript records it
+  // with: only for the session this transcript is (another one, resumed or cleared to, has its own)
+  if (resolved.source === "claude-transcript" && identity !== null) answer = withToldMode(answer, toldMode(paneId), identity);
   if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
     const window = readStatuslineContext(userHome(), identity, answer.metadata.model, resolved.path);
     if (window !== null) return {

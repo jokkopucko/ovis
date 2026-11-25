@@ -60,6 +60,7 @@ import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
 import { noteHookCommand, OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
+import { readToldModes } from "./conversation.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -608,6 +609,7 @@ export function createServer(
   const catalogPlatformHere = catalogPlatform(process.platform);
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
   readHeldApprovals(approvals);
+  readToldModes((paneId) => approvals.toldMode(paneId));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
     return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;

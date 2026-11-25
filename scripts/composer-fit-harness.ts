@@ -13,7 +13,7 @@ import { serveDemo } from "./demo-server.ts";
 const LONG_MODEL = "gpt-5.6-sol-codex-preview-2026-10";
 const NAMED = ["gpt-5.6", "claude-opus-5-5"] as const;
 
-interface Case { model: string | null; agent?: "claude" | "codex" | "pi" | "omo"; provider?: string; pending?: boolean; effort?: string | null; status?: "working" | "idle"; mic?: boolean; ring?: boolean; chatFontSize?: number | null; showUsage?: boolean; weeklyOnly?: boolean; suggestion?: string | null; suggestionChip?: boolean; contextUsed?: number; stream?: number; freezeConversation?: boolean; language?: "en" | "ko" | "ja" | "zh"; theme?: "light" | "dark"; scale?: number; autoSend?: boolean; uiFontSize?: number }
+interface Case { model: string | null; agent?: "claude" | "codex" | "pi" | "omo"; provider?: string; pending?: boolean; effort?: string | null; status?: "working" | "idle"; mic?: boolean; ring?: boolean; chatFontSize?: number | null; showUsage?: boolean; weeklyOnly?: boolean; suggestion?: string | null; suggestionChip?: boolean; contextUsed?: number; stream?: number; freezeConversation?: boolean; language?: "en" | "ko" | "ja" | "zh"; theme?: "light" | "dark"; scale?: number; autoSend?: boolean; uiFontSize?: number; mode?: string; noChip?: boolean; step?: boolean }
 type Draw = "full" | "no-effort" | "out";
 interface ComposerScrollGeometry {
   height: number;
@@ -122,7 +122,7 @@ export async function composerFitDemo(app: string) {
       if (value.pane_id === TARGET && "agent_status" in value) {
         // the chip without its step in progress: this script measures the model label's room, which
         // the step (plan-chip-demo-regression.ts) is drawn after and may take from
-        if ("agent" in value) Object.assign(value, { agent: window.fitCase.agent, background_tasks: 2, ...(value.plan ? { plan: { ...value.plan, current: null } } : {}) });
+        if ("agent" in value) Object.assign(value, { agent: window.fitCase.agent, background_tasks: window.fitCase.noChip ? 0 : 2, ...(value.plan ? { plan: window.fitCase.noChip ? null : window.fitCase.step ? value.plan : { ...value.plan, current: null } } : {}) });
         value.agent_status = window.fitCase.status;
       }
       if ("prompt" in value && window.fitCase.suggestion !== undefined) value.suggestion = window.fitCase.suggestion;
@@ -134,7 +134,7 @@ export async function composerFitDemo(app: string) {
         { name: "plugin:deploy", description: "Deploy through a plugin", source: "plugin" }
       );
       if (window.fitCase.weeklyOnly && value.id === "codex" && Array.isArray(value.windows)) value.windows = value.windows.filter((limit) => limit.kind !== "session");
-      if (Array.isArray(value.turns) && value.metadata) value.metadata = { model: window.fitCase.model, reasoning_effort: window.fitCase.effort, ...(window.fitCase.provider ? { provider: window.fitCase.provider } : {}), ...(window.fitCase.ring ? { context: { used: window.fitCase.contextUsed ?? 151000, window: 272000 } } : {}) };
+      if (Array.isArray(value.turns) && value.metadata) value.metadata = { model: window.fitCase.model, reasoning_effort: window.fitCase.effort, ...(window.fitCase.provider ? { provider: window.fitCase.provider } : {}), ...(window.fitCase.mode ? { permission_mode: window.fitCase.mode } : {}), ...(window.fitCase.ring ? { context: { used: window.fitCase.contextUsed ?? 151000, window: 272000 } } : {}) };
       if (Array.isArray(value.turns) && window.fitCase.stream) {
         const turn = value.turns.findLast((turn) => turn.role === "assistant");
         const text = "Streamed update " + window.fitCase.stream;

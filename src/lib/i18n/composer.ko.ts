@@ -55,6 +55,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "Reasoning effort: {effort}": "추론 강도: {effort}",
   "Reasoning effort not available": "추론 강도 정보 없음",
   "Reasoning {effort}": "추론 {effort}",
+  "Plan mode": "플랜 모드",
   "Uploading file…": "파일 올리는 중…",
   "{max}-character limit · {count} over": "{max}자 한도 · {count}자 넘침",
   "{max}-character limit": "{max}자 한도",

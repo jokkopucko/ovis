@@ -808,6 +808,11 @@ export interface ConversationMetadata {
    * `openai-codex`): set by a model change and by each answer, absent when none is named.
    */
   provider?: string;
+  /**
+   * Claude Code's permission mode (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), as its
+   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it.
+   */
+  permission_mode?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";

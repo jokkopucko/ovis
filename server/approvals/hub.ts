@@ -73,6 +73,12 @@ export interface CommandEvent {
   args?: string;
 }
 
+/** A permission mode an agent's hook told, with the session it told it in. */
+export interface ToldMode {
+  mode: string;
+  session: string;
+}
+
 export interface HeldApproval extends ApprovalRequest {
   /** what a card built on this request carries in its id, so that its answer settles this request and no other */
   id: string;
@@ -95,6 +101,8 @@ export interface ApprovalAdapter {
   toCard(event: unknown): ApprovalRequest | null;
   /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop, OmO's runs), else null. */
   turn?(event: unknown): TurnEvent | null;
+  /** The permission mode an event the hook sent was sent under, and the agent's session it was in, else null. */
+  mode?(event: unknown): ToldMode | null;
   /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
   command?(event: unknown): CommandEvent | null;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
@@ -195,6 +203,8 @@ export class ApprovalHub {
   private stopped = false;
   private readonly launches = new Map<string, Launch>();
   private readonly pending = new Map<string, Pending[]>();
+  /** each pane's agent's permission mode, as its hook last told */
+  private readonly modes = new Map<string, ToldMode>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
   readonly address: string;
@@ -215,6 +225,11 @@ export class ApprovalHub {
 
   private now(): number {
     return (this.options.now ?? Date.now)();
+  }
+
+  /** The permission mode the hook of the agent started in `paneId` last told, and in which of its sessions, or null. */
+  toldMode(paneId: string): ToldMode | null {
+    return this.modes.get(paneId) ?? null;
   }
 
   /** Whether an agent of this kind asks its approvals through the hub. */
@@ -328,6 +343,8 @@ export class ApprovalHub {
     };
     let parsed: unknown;
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
+    const mode = launch.adapter.mode?.(parsed) ?? null;
+    if (mode !== null) this.modes.set(launch.paneId, mode);
     // told, not asked: the hook prints nothing, so the agent goes on as it would without it
     const turn = launch.adapter.turn?.(parsed) ?? null;
     const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
@@ -459,6 +476,7 @@ export class ApprovalHub {
    * and its launches' requests get none.
    */
   forget(paneId: string): void {
+    this.modes.delete(paneId);
     for (const entry of [...(this.pending.get(paneId) ?? [])]) entry.settle(null);
     for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
   }

@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ClipboardList, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
@@ -395,22 +395,33 @@ export function Composer({
       status.removeAttribute("data-model");
       status.removeAttribute("data-hint-alone");
       status.removeAttribute("data-meta-empty");
+      surface?.removeAttribute("data-step-out");
       const clipped = (selector: string): boolean => {
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
-      const first = composerModelDraw({
-        modelClipped: clipped(".composer-model"),
-        effortClipped: clipped(".composer-reasoning"),
-      });
-      if (first !== "full") status.setAttribute("data-model", first);
-      const model = status.querySelector<HTMLElement>(".composer-model");
-      const draw = model === null ? first : composerLabelDraw(first, {
-        modelClipped: model.scrollWidth > model.clientWidth,
-        modelWidth: model.clientWidth,
-        modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
-      });
-      if (draw !== first) status.setAttribute("data-model", draw);
+      const drawModel = (): void => {
+        status.removeAttribute("data-model");
+        const first = composerModelDraw({
+          modelClipped: clipped(".composer-model"),
+          effortClipped: clipped(".composer-reasoning"),
+        });
+        if (first !== "full") status.setAttribute("data-model", first);
+        const model = status.querySelector<HTMLElement>(".composer-model");
+        const draw = model === null ? first : composerLabelDraw(first, {
+          modelClipped: model.scrollWidth > model.clientWidth,
+          modelWidth: model.clientWidth,
+          modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
+        });
+        if (draw !== first) status.setAttribute("data-model", draw);
+      };
+      drawModel();
+      // the plan mode icon is never cut: where the row still pushes it out, the plan chip's step steps out for it
+      const mode = status.querySelector<HTMLElement>(".composer-mode");
+      if (surface && mode !== null && mode.getBoundingClientRect().left < status.getBoundingClientRect().left - 0.5) {
+        surface.setAttribute("data-step-out", "");
+        drawModel();
+      }
       const hint = hintRef.current;
       if (!hint) return;
       const meta = status.querySelector<HTMLElement>(".composer-status-meta")?.getBoundingClientRect();
@@ -1108,7 +1119,7 @@ export function Composer({
     observer.observe(stripElement);
     return () => observer.disconnect();
   }, [strip?.branch, strip?.folder, strip?.path, worktree, facesLoaded, t]);
-  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort,
+  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort, metadata?.permission_mode,
     metadata?.context?.window, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
     plan?.done, plan?.total, plan?.current, statusCompact, facesLoaded, t]);
   const menuId = `composer-menu-${paneId}`;
@@ -1463,6 +1474,10 @@ export function Composer({
                     <span className="composer-reasoning-short" aria-hidden="true">{metadata.reasoning_effort}</span>
                   </>}
                 </span>
+              </span>}
+              {/* Claude Code's plan mode is the one mode the pill marks, as an icon; every other mode draws nothing */}
+              {metadata?.permission_mode === "plan" && <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
+                <ClipboardList aria-hidden="true" />
               </span>}
               {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
