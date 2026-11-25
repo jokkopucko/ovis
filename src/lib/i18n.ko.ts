@@ -20,6 +20,7 @@ import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
 import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
+import { LIST_MOVE_KO } from "./i18n/list-move.ko.ts";
 import { MEMORY_KO } from "./i18n/memory.ko.ts";
 
 /**
@@ -824,6 +825,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_KO,
   dashboard: DASHBOARD_KO,
   "runtime-move": RUNTIME_MOVE_KO,
+  "list-move": LIST_MOVE_KO,
   memory: MEMORY_KO,
 };
 

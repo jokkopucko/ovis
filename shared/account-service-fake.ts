@@ -909,6 +909,18 @@ export class FakeAccountService {
     if (path === "/v1/session" && request.method === "GET") {
       return json({ account, own_sign_in: !this.deviceFamilies.has(session.family), signed_in_at: new Date(this.signedInAt.get(session.family) ?? this.now()).toISOString() });
     }
+    if (path === "/v1/devices" && request.method === "GET" && this.opensAll) {
+      // as the service: every key the account registered, with Step 2's word on it and without a block's freeze line
+      // (rulings-migrate-3.md, its addendum on GET /v1/devices); the account's lie `eligibleAgain` lists a key again
+      const registry = this.registry(account);
+      const again = new Set(this.accountLies.get(account)?.eligibleAgain ?? []);
+      return json({ methods_version: registry.methods_version, devices: [...registry.devices].sort(([, a], [, b]) => a.no - b.no).map(([key, device]) => ({
+        no: device.no, key, registered_at: this.iso(), signed_in: true, removed: device.removed && !again.has(key), provider: "github", two_step_set: true,
+        eligible: again.has(key) || (device.eligible && !device.removed),
+        // the name the app sent when its sign-in registered the key, only where it sent one
+        ...(device.label === "" ? {} : { label: device.label }),
+      })) });
+    }
     if (path === "/v1/pcs" && request.method === "GET") {
       // PCL-1: while step 2 is on, a PC listed by a device code and not confirmed only for `?include=unconfirmed`
       const unconfirmed = new URL(request.url).searchParams.get("include") === "unconfirmed";

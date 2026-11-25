@@ -216,7 +216,7 @@ async function removalDigest(removal: Removal): Promise<string> {
  * with them where there is room. A key that is out already is passed by; with nothing left the outcome is `removed`.
  * `scope`: what the write was begun for (scopeOf the view the person acted on); null takes the first read's.
  */
-export async function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait" | "operation"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
+export async function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait" | "operation" | "writer"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
   // A device asked for that handed its place to a new key since is not out: its heir is. Nothing is signed, and the
   // person is asked again for the heir (the key was asked for, not the device that holds it now).
   let heirs: Record<string, string> = {};

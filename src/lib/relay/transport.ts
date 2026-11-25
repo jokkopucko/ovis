@@ -521,6 +521,9 @@ export class RelayTransport implements Transport {
   /** The PC's row this session signed in, or was admitted, as: the one its channel saved. Undefined while none is open. */
   get deviceId(): string | null | undefined { return this.channel?.device.device_id; }
 
+  /** The key this session signed in with (its row's public key, as a list spells a key). Undefined while none is open. */
+  get deviceKey(): string | undefined { return this.channel?.device.public_spki; }
+
   /** Whether the PC lets its account's devices in by the account's signed list alone: it selected ACCOUNT_LIST_FEATURE, which only a PC pinned to its list does. */
   get followsList(): boolean { return this.known?.features?.includes(ACCOUNT_LIST_FEATURE) === true; }
 

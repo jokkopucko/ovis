@@ -102,6 +102,7 @@ import { useOwnWindowPrompts } from "./lib/useOwnWindowPrompts.ts";
 import { pcHeld } from "./lib/relay/newPcHere.ts";
 import { OwnJoinCard } from "./components/OwnJoins.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
+import { ListMoveNotices } from "./components/ListMoveNotice.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
 import { FilesDialog } from "./components/FilesDialog.tsx";
 import { folderQueryFor } from "./lib/paletteFolders.ts";
@@ -1204,6 +1205,7 @@ export function App() {
         {ownWindow && locked === false && <OwnJoinCard joins={ownJoins} onDecided={rereadOwnJoins} />}
         {/* always there: it keeps what an approval left to say after its request is gone from this PC */}
         <AccountApprovals pairings={remotePairings} />
+        <ListMoveNotices />
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
         {health !== null && <NewPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} ownWindowOf={ownWindowHere(health.auth) ? health.web_ui?.server_id : undefined} signIn={accountSignedIn ?? undefined} />}

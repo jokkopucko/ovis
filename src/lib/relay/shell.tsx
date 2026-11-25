@@ -1001,6 +1001,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // forgotten. Not read from the store again, where another tab may have saved a newer pairing of this PC since
     attempt.row = opened.deviceId ?? null;
     void noteAdmitted(attempt);
+    // the move of an account that was in use onto its list asks this PC, or names the list to it (account/listMigrate.ts)
+    void account.sessionOpened(opened, attempt.offer.server_public_key).catch((error: unknown) => console.info("Ovis: this session said nothing for the move onto the account's list", error instanceof Error ? error.name : error));
     opening = null;
     comparison = null;
     markRemovedPc(attempt.offer.server_id, null);

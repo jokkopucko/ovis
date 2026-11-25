@@ -37,17 +37,19 @@ const MOOT = "target_removed";
 const MOOT_STATUS = 409;
 
 /**
- * Stores `records` for `session`, one entry per record id, in one step with reading that it is still the stored
- * sign-in; false (nothing kept) when it is not. Call it before handing them to any PC or the service.
+ * Stores `records` for `session`, one entry per record id, and their targets among the account's own blocks, in one step
+ * with reading that it is still the stored sign-in; false (nothing kept) when it is not. Call it before handing them to any
+ * PC or the service.
  */
 export async function keepUnsent(store: AccountStore, session: AccountSession, records: readonly BlockRecord[]): Promise<boolean> {
   let kept = false;
-  await store.updateMany(["session", "unsent_blocks"], (current) => {
+  await store.updateMany(["session", "unsent_blocks", "own_blocks"], (current) => {
     const stored = current.session;
     if (stored === undefined || stored.account !== session.account || stored.sign_in_id !== session.sign_in_id) return current;
     kept = true;
     const added = Object.fromEntries(records.map((record) => [record.id, { account: session.account, sign_in_id: session.sign_in_id, records: [record] }]));
-    return { ...current, unsent_blocks: { ...current.unsent_blocks, ...added } };
+    const blocked = [...new Set([...current.own_blocks?.[session.account] ?? [], ...records.map((record) => record.target)])];
+    return { ...current, unsent_blocks: { ...current.unsent_blocks, ...added }, own_blocks: { ...current.own_blocks, [session.account]: blocked } };
   });
   return kept;
 }

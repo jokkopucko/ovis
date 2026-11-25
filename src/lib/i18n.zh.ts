@@ -20,6 +20,7 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
+import { LIST_MOVE_ZH } from "./i18n/list-move.zh.ts";
 import { MEMORY_ZH } from "./i18n/memory.zh.ts";
 
 /**
@@ -831,6 +832,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
+  "list-move": LIST_MOVE_ZH,
   memory: MEMORY_ZH,
 };
 

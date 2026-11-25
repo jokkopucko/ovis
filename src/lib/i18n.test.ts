@@ -162,6 +162,7 @@ const PART_FILES: Record<string, string[]> = {
   guide: ["components/SetupGuide.tsx", "components/RelayOnlyWarning.tsx"],
   dashboard: ["components/AddPcSheet.tsx", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
+  "list-move": ["components/ListMoveNotice.tsx"],
   memory: ["components/MemorySettings.tsx"],
 };
 

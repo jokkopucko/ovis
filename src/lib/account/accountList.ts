@@ -11,7 +11,7 @@
  * What the two differ in is recorded (listShadow.ts).
  */
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { listClock, type ListNames, type ListRole, type ListState } from "../../../shared/account-list.ts";
+import { isListKey, listClock, listView, readKind, type ListNames, type ListRole, type ListSigner, type ListState } from "../../../shared/account-list.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import { entryFromText, entryHash, isListHash, ListEntryError, readBody, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
@@ -20,8 +20,17 @@ import {
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import { standsFor } from "../../../shared/account-list-migrate.ts";
-import { makeGenesis, type Genesis } from "./listGenesis.ts";
+import {
+  devicePlace, heirOf, joinVerdict, MIGRATION_ANSWER_SECONDS, MigrationError, migrationPlan, ownEvidence, signMigration, signNaming, signRotation, signVouch, standsFor,
+  type JoinRefusal, type MigrationKnown, type NoMigration, type SignedNaming, type SignedVouch,
+} from "../../../shared/account-list-migrate.ts";
+import { listNames, makeGenesis, type Genesis } from "./listGenesis.ts";
+import {
+  birthSeals, birthText, elapsed, handOverRecord, joinedRecord, knownPcs, listDoubt, MOVE_AGAIN_SECONDS, noticeRecord, notCarriedAt, pageAnswers, pcAgrees, readBirth, readHandOver,
+  readJoined, readNotice, readRetired, retiredText, scaled, signLink, type KeptBirth, type ListDoubt, type MoveNoticeView, type MoveRefusal, type PcAnswers,
+} from "./listMigrate.ts";
+import { removeFromList } from "./listRemoveDevice.ts";
+import { clearTried, noteTried, readSeenPcs } from "./seenPcs.ts";
 import { deviceCard, deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { namesAt, openEpochs, readWraps, wrapsRecord, type OpenedEpochs } from "./listNames.ts";
 import type { ListHint, ListWrap } from "./listAnswers.ts";
@@ -58,7 +67,31 @@ export type ListTrouble = "fork" | "stuck" | "other_list" | "refused" | "unsigne
  *   its keys lets nobody in: another device starts it.
  * - `switched_off`: this page was told to start none.
  */
-export type NoGenesis = "not_new" | "not_first_device" | "has_pcs" | "not_own_sign_in" | "frozen" | "session_not_fresh" | "refused" | "clock" | "storage" | "switched_off";
+export type NoGenesis = "not_new" | "not_first_device" | "has_pcs" | "not_own_sign_in" | "frozen" | "session_not_fresh" | "refused" | "clock" | "storage" | "switched_off" | "moving";
+
+/**
+ * Why the first device of an account that was in use has not moved it onto its list yet, while the account service says
+ * it may (docs/account-list.md, "An account that was in use"): the pure part's reasons (NoMigration), `refused` for the
+ * hour after the service refused a birth for good, `sending` while a birth it kept waits for an answer, and `paused`
+ * while the account service no longer opens the move for the account and a birth it kept waits as it is. `wait`: the
+ * seconds left, by this device's clock, where one is known. `asks`: the relay keys of the PCs it knows by its own record
+ * that have not answered in this run of the app.
+ */
+export interface MoveState {
+  readonly why: NoMigration | "refused" | "sending" | "paused";
+  readonly wait: number | null;
+  readonly asks: readonly string[];
+}
+
+/**
+ * Where a device that a moved list carried in stands before it follows it: what its PCs said (joinVerdict). `join` while
+ * it only asks again; `refused` once one said no, which it says, naming the PCs, and asks to be let in as a new device.
+ */
+export interface JoinState {
+  readonly why: JoinRefusal;
+  readonly wait: number | null;
+  readonly pcs: readonly string[];
+}
 
 /**
  * Where a device's claim of its own key stands, while it waits to be let in.
@@ -76,7 +109,7 @@ type Without =
   /** Not signed in, the account service keeps no list for this account, or it has not been reached yet. */
   | { readonly at: "off" }
   /** The account may have a list, has none, and this device starts none. */
-  | { readonly at: "none"; readonly why: NoGenesis }
+  | { readonly at: "none"; readonly why: NoGenesis; /** with `moving`: where the move of an account that was in use stands */ readonly move?: MoveState }
   /**
    * The account service names a list that this device does not follow, and it reads no more of it than entry 0.
    * - `not_mine`: entry 0 is that list's and is not this device's own: it is in no list until a member lets it in.
@@ -85,7 +118,13 @@ type Without =
    * `claim`: whether the account service holds this device's claim of its own key for that list, without which no
    * member's entry for the key is placed.
    */
-  | { readonly at: "not_in"; readonly list: string; readonly why: "not_mine" | "unread" | "needs_newer_client"; readonly claim: ListClaimState };
+  | {
+    readonly at: "not_in"; readonly list: string; readonly why: "not_mine" | "unread" | "needs_newer_client" | "carried"; readonly claim: ListClaimState;
+    /** `carried`: the list carried this device in, and it asks its PCs whether they know who started it */
+    readonly join?: JoinState;
+    /** `not_mine` after a list that carried this device in was refused: why, and which PCs said so */
+    readonly refused?: Pick<JoinState, "why" | "pcs">;
+  };
 
 export type AccountListStatus =
   | Without
@@ -94,7 +133,13 @@ export type AccountListStatus =
   /** What this device saved was written by a later build of the app, which this one cannot read: it needs a newer app. Kept as it is. */
   | { readonly at: "newer_save" }
   /** `head`: the place of the last entry of the copy. `read_at`: when it last held all the account service showed, in seconds. */
-  | { readonly at: "following"; readonly list: string; readonly standing: Standing; readonly head: number; readonly read_at: number | null; readonly trouble: ListTrouble | null };
+  | {
+    readonly at: "following"; readonly list: string; readonly standing: Standing; readonly head: number; readonly read_at: number | null; readonly trouble: ListTrouble | null;
+    /** A device the move of its account carried in: what a PC it knows said against the list since it joined (V4-6). */
+    readonly doubt?: ListDoubt;
+    /** The PCs such a device still asks about the list, within three days of its join: those that were silent then. */
+    readonly asks?: readonly string[];
+  };
 
 /** A device of the account, as the verified list says. `name` is null where this device cannot open it. */
 export interface ListedDevice {
@@ -178,6 +223,19 @@ export interface AccountListOptions {
   readonly genesis?: () => GenesisMode;
   /** Whether what this page stores lasts (storageLasts): a device starts a list by itself only where it does. */
   readonly durable?: () => Promise<boolean>;
+  /** What moving an account that was in use onto its list reads (listMigrate.ts); each has the page's own by default. */
+  readonly migration?: MigrationOptions;
+}
+
+export interface MigrationOptions {
+  /** What the PCs answered this device in this run of the app. */
+  readonly answers?: PcAnswers;
+  /** Where this device's record of its PCs is kept (seenPcs.ts): this page's localStorage by default. */
+  readonly storage?: Storage | null;
+  /** The factor this device's own waits are turned down by (listMigrate.ts migrationScale): 1 but in the QA twin. */
+  readonly scale?: () => number;
+  /** The keys this device itself holds a block or a removal against, sent or not: never carried. */
+  readonly removed?: (account: string) => Promise<readonly string[]>;
 }
 
 /**
@@ -268,6 +326,28 @@ function signerAt(entries: readonly string[], seq: number): string | null {
     if (error instanceof ListEntryError) return null;
     throw error;
   }
+}
+
+/** The kind of the entry a text holds, or null for a text that is no entry or none at all. */
+function kindAt(text: string | undefined): string | null {
+  if (text === undefined) return null;
+  try {
+    return readKind(readBody(entryFromText(text).body))?.kind ?? null;
+  } catch (error) {
+    if (error instanceof ListEntryError) return null;
+    throw error;
+  }
+}
+
+/** A row of its own, or null: what every object answers to is no row. */
+function rowOf<Row>(rows: { readonly [name: string]: Row }, name: string): Row | null {
+  return Object.hasOwn(rows, name) ? (rows[name] ?? null) : null;
+}
+
+/** Whether a copy holds the whole of a birth this device kept: its last entry, the `epoch`, at its own place. */
+function holdsBirth(copy: FollowerCopy, birth: KeptBirth): boolean {
+  const last = birth.entries.length;
+  return copy.state !== null && copy.entries.length > last && hashOf(copy.entries[last]) === hashOf(birth.entries[last - 1]);
 }
 
 function readOffer(value: unknown): ListOffer | null {
@@ -372,6 +452,10 @@ interface Held {
   readonly unread?: true;
   /** The round that gave this took pages of the log and left some: the next one goes on at once. */
   readonly behind?: true;
+  /** A carried device's check of its list against its PCs, from the last round that read them (V4-6). */
+  readonly check?: { readonly doubt: ListDoubt | null; readonly asks: readonly string[] };
+  /** The keys of this device's own blocks that the list its own birth made holds: its first write there puts them out (#4652, b2). */
+  readonly owed?: readonly string[];
 }
 
 /**
@@ -545,8 +629,10 @@ export interface AccountList {
    * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
    * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
    * borrowed browser that signs out): only the power is not asked, and the kinds refuse whatever else it would sign.
+   * While the device owes the list the removal of keys it blocked itself (Held's `owed`), only that removal signs
+   * (`owed`): it is the first write there.
    */
-  writer(options?: { readonly self?: boolean }): ListWriter | null;
+  writer(options?: { readonly self?: boolean; readonly owed?: boolean }): ListWriter | null;
   /** The place of the entry at `seq` in this device's copy, or null where the copy does not reach it. */
   placeAt(seq: number): ListPlace | null;
   /** Whether this device's copy holds that entry at that place: its own entry is in its copy only once the log showed it. */
@@ -555,6 +641,19 @@ export interface AccountList {
   gossip(): ListHead | null;
   /** This device's entries after a place, for another member to take: at most `limit`, up to the last one a member signed; null while it follows none. */
   pageAfter(after: number | null, limit: number): PeerPage | null;
+  /**
+   * What this device says inside a session to a PC that follows no list (Part F, F6), or null where it has nothing to
+   * say: only a device that follows a list its account moved onto, and is in it with power `full`, names that list, by
+   * the key the list holds it by now (its account key, or a carried device's sign-in key before its hand-over is
+   * placed). `account`: the account the session was opened for, which the device must still follow a list of after
+   * every wait. `session`: the key that session signed in with; `endpoint`: the PC's relay key; `signIn`: this
+   * device's sign-in key, when that session signed in with it, which then vouches for the account key.
+   */
+  naming?(given: { readonly account: string; readonly session: string; readonly endpoint: string; readonly signIn: string | null }): Promise<{ readonly naming: SignedNaming; readonly vouches: readonly SignedVouch[] } | null>;
+  /** The one-time notice of the move of this account onto its list, while the person has not seen it and this device follows that list; null otherwise. */
+  notice?(account: string): Promise<MoveNoticeView | null>;
+  /** The person saw the notice of the move onto `list`: it is not shown again. */
+  noticeSeen?(account: string, list: string): Promise<void>;
 }
 
 export function accountList(options: AccountListOptions): AccountList {
@@ -599,13 +698,28 @@ export function accountList(options: AccountListOptions): AccountList {
     return view;
   };
 
+  /**
+   * Whether a saved copy is this device's own: pinned under its member key; or, for an account that moved onto its list,
+   * under a sign-in key of this device's that the list shows handed over to that member key, or under the sign-in key
+   * of now while the list still holds it (a carried device that has not handed over yet, or was put out by that key).
+   */
+  const ownCopy = (copy: FollowerCopy, member: string, signIn: string | null, handing: string | null = null): boolean => {
+    if (copy.me.key === member) return true;
+    // a carried device's hand-over this device kept, whose outcome its copy does not show yet: the copy pinned under the
+    // key that signed it stays, whatever sign-in this device holds by now, until a read shows where the device stands
+    if (handing !== null && copy.me.key === handing) return true;
+    if (copy.state === null) return copy.me.key === signIn;
+    const stands = standsFor(copy.state, copy.me.key);
+    return stands === member || (copy.me.key === signIn && (stands === signIn || stands === null));
+  };
+
   /** The saved copy as this page holds it: read again only when another page wrote since. */
-  const load = async (account: string, keys: DeviceListKeys, saved: unknown): Promise<Held | SaveRefusal> => {
+  const load = async (account: string, keys: DeviceListKeys, saved: unknown, signIn: string | null = null, handing: string | null = null): Promise<Held | SaveRefusal> => {
     const fresh: Held = { account, copy: null, saved: null, trouble: null, without: held?.account === account ? held.without : { at: "off" } };
     if (saved === undefined) return fresh;
     if (typeof saved !== "string") return "form";
     // the copy this page holds, while it is the one saved and this device's key is the one it was pinned under
-    if (held !== null && held.account === account && held.saved === saved && held.copy !== null && held.copy.me.key === keys.key) {
+    if (held !== null && held.account === account && held.saved === saved && held.copy !== null && ownCopy(held.copy, keys.key, signIn, handing)) {
       // with what another page kept beside the copy since: its last full read, and the floor of its clock
       const beside = readTimes(await store.get("times", account), held.copy.list);
       const [read_at, seen_at] = [later(held.copy.read_at, beside?.read_at ?? null), later(held.copy.seen_at, beside?.seen_at ?? null)];
@@ -614,7 +728,7 @@ export function accountList(options: AccountListOptions): AccountList {
     const read = await readSave(saved);
     if (!read.read) return read.why;
     // saved under another account key: this device has a new one since, and is another member
-    if (read.copy.me.key !== keys.key || read.copy.me.endpoint !== null) {
+    if (!ownCopy(read.copy, keys.key, signIn, handing) || read.copy.me.endpoint !== null) {
       // what goes is the very copy that was read: one another page saved since, under the key of now, stays
       if (!await store.drop(account, saved)) throw new StaleCopyError();
       return fresh;
@@ -769,22 +883,26 @@ export function accountList(options: AccountListOptions): AccountList {
     const follows = (): AccountListStatus => ({
       at: "following", list: copy.list, standing: stands, head: copy.entries.length - 1, read_at: copy.read_at,
       trouble: worst([copy.alarm === null ? null : "fork", next.trouble, unsigned ? "unsigned" : null, wrongKey === account ? "wrong_key" : null]),
+      ...(next.check?.doubt == null ? {} : { doubt: next.check.doubt }), ...(next.check === undefined || next.check.asks.length === 0 ? {} : { asks: next.check.asks }),
     });
     if (stands !== "in") return { account, status: follows(), reached, devices: [], pcs: [] };
     const history = historyOf(copy);
     if (named === null || named.history !== history || (!named.complete && ask !== null)) {
       const opened = await epochsOf(copy, state, history, keys, ask);
       const nameAt = (seq: number): Promise<ListNames | null> => namesAt(copy.list, copy.entries, seq, opened.keys);
+      // the row of this device's own: the key that stands where it came in (a carried device's sign-in key until its
+      // hand-over is placed, its account key after), and its account key otherwise
+      const selfKey = standsFor(state, copy.me.key) ?? keys.key;
       const devices: ListedDevice[] = [];
       for (const row of shownDevices(copy)) {
         // in by a key the same device handed its place on to: the entry that let the key in ended the key that signed it
         const handed = row.by !== null && state.signers[row.by]?.ended === row.seq && copy.entries[row.seq] !== undefined;
         const moved = handed ? readBody(entryFromText(copy.entries[row.seq]!).body).issued_at : undefined;
-        devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq), ...(moved === undefined ? {} : { moved }) });
+        devices.push({ key: row.key, self: row.key === selfKey, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq), ...(moved === undefined ? {} : { moved }) });
       }
       const pcs: ListedPc[] = [];
       // a PC that came in after this device did, by another's signature, is new to it from when it first held the entry
-      const own = shownDevices(copy).find((row) => row.key === keys.key)?.seq ?? null;
+      const own = shownDevices(copy).find((row) => row.key === selfKey)?.seq ?? null;
       const seen = readSeen(await store.get("seen", account), copy.list);
       const news: Record<string, readonly [number, number]> = {};
       for (const row of shownPcs(copy)) {
@@ -893,8 +1011,315 @@ export function accountList(options: AccountListOptions): AccountList {
     return own !== undefined && own.seq <= offer.seq ? copy : null;
   };
 
+  /** The PCs' answers, the record and the factor a move goes by (MigrationOptions). */
+  const answers = options.migration?.answers ?? pageAnswers;
+  const seenStorage = options.migration?.storage;
+  const recordOf = (account: string) => seenStorage === undefined ? readSeenPcs(account) : readSeenPcs(account, seenStorage);
+  const tryNoted = (account: string): Promise<void> => seenStorage === undefined ? noteTried(account, now()) : noteTried(account, now(), seenStorage);
+  const tryEnded = (account: string): Promise<void> => seenStorage === undefined ? clearTried(account) : clearTried(account, seenStorage);
+  const scaleOf = (): number => {
+    const scale = options.migration?.scale?.() ?? 1;
+    return Number.isSafeInteger(scale) && scale >= 1 ? scale : 1;
+  };
+
+  /** This device's sign-in key, as a signer, while it is the registered key of the sign-in stored now; null otherwise. */
+  const signInOf = async (session: AccountSession): Promise<ListSigner | null> => {
+    const kept = await accountStore.get("signin_key");
+    if (kept === undefined || kept.account !== session.account || kept.sign_in_id !== session.sign_in_id || kept.no === null || !isListKey(kept.key.public_spki)) return null;
+    return { key: kept.key.public_spki, privateKey: kept.key.private_key };
+  };
+
+  /** A device keeps the move's notice until the person saw it: what the list carried in, as the list shows it. */
+  const keepNotice = async (account: string, state: ListState, first: string): Promise<void> => {
+    if (readNotice(await store.get("notice", account))?.list === state.list) return;
+    const rows = listView(state);
+    await store.set("notice", account, noticeRecord({
+      list: state.list, first, devices: rows.devices.filter((row) => row.carried).map((row) => row.key),
+      pcs: rows.pcs.filter((row) => row.how === "carried").map((row) => row.endpoint), seen: false,
+    }));
+  };
+
+  /**
+   * Lets the birth `birth` go, with the final refusal that let it go (null for none), in one write over the very record
+   * that held it: where the record holds another request by now (another tab's), this answer is not its, and nothing
+   * changes.
+   */
+  const retireBirth = async (account: string, birth: KeptBirth, refusal: MoveRefusal | null): Promise<void> => {
+    const now = await store.get("birth", account);
+    if (readBirth(now)?.list !== birth.list) return;
+    const text = retiredText(birth.list, refusal);
+    if (typeof now === "string") await store.swap("birth", account, now, text);
+    else await store.set("birth", account, text);
+  };
+
+  /**
+   * Sends a birth this device kept, as it is (X5): placed (201, or `409 list_exists` naming this very list); the account
+   * has another list (`409 list_exists` naming another), so this one is given up for good; or not known yet (no answer,
+   * a 429, a 5xx, a 401, a success other than the 201, a refusal that names nothing, a refusal of the caller rather than
+   * of the birth), and it is sent again as it is at the next round, which first asks the account service which list the
+   * account has. The birth's own final refusal (a 400 or a 413 of its body, a `403 not_carried`) lets it go, in the same
+   * write as the refusal; the next plan comes no sooner than MOVE_AGAIN_SECONDS later, without the key or the PC a
+   * `403 not_carried` named (rulings-migrate-3.md, its addendum on GET /v1/devices).
+   */
+  const sendBirth = async (bound: AccountService, account: string, birth: KeptBirth, signal: AbortSignal): Promise<"placed" | "other" | MoveState> => {
+    const sending: MoveState = { why: "sending", wait: null, asks: [] };
+    try {
+      await bound.startBirth({ entry: birth.entry, entries: birth.entries, wraps: birth.wraps, ...(birth.link === null ? {} : { link: birth.link }) }, signal);
+      return "placed";
+    } catch (error) {
+      const said = refusalOf(error);
+      if (said === null) {
+        if (!unreached(error)) throw error;
+        return sending;
+      }
+      if (said.status === 409 && said.code === "list_exists") {
+        // a list_exists that names nothing says nothing of this birth: which list the account has is asked at the next round
+        if (said.list === null) return sending;
+        if (said.list === birth.list) return "placed";
+        await retireBirth(account, birth, null);
+        await giveUp(account, birth.list);
+        return "other";
+      }
+      const notCarried = said.status === 403 && said.code === "not_carried";
+      // a refusal of the caller (a frozen or borrowed sign-in, a route the service hides, ...), or one that names
+      // nothing, is no answer about the birth
+      if (said.code === "http_error" || (!notCarried && said.status !== 400 && said.status !== 413)) return sending;
+      const about = notCarried ? notCarriedAt(birth, said.index) : null;
+      // its list id is not given up: no other birth can ever have it
+      await retireBirth(account, birth, {
+        at: seconds(),
+        keys: [...birth.skip.keys, ...about !== null && "key" in about ? [about.key] : []],
+        endpoints: [...birth.skip.endpoints, ...about !== null && "endpoint" in about ? [about.endpoint] : []],
+      });
+      return { why: "refused", wait: MOVE_AGAIN_SECONDS, asks: [] };
+    }
+  };
+
+  /**
+   * The first device's move of an account that was in use onto its list (Part F, F1 to F4): a birth it kept is sent
+   * again, while the account service opens the move for the account (`migrate`; with the switch withdrawn it is kept as
+   * it is, `paused`) and has answered every block of this device's own on a key the birth carries; otherwise, an hour after a final refusal at the soonest, it plans from the account service's
+   * devices and PCs, its own record of its PCs and what they answered in this run, signs the birth once and keeps it,
+   * over the very record it read (one birth per account on this device, whatever its tabs do), and sends the birth the
+   * record holds: its own, or the one another tab kept first.
+   */
+  const move = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, migrate: boolean, signal: AbortSignal): Promise<"placed" | "other" | MoveState> => {
+    const { account } = session;
+    const slot = await store.get("birth", account);
+    const kept = readBirth(slot);
+    if (kept !== null) {
+      if (!migrate) return { why: "paused", wait: null, asks: [] };
+      // a block of this device's own on a key the birth carries goes to the account service first: once it is answered,
+      // the service judges the birth by it (a frozen sign-in is not carried), and the birth goes as it is (X5)
+      const blocks = Object.values(await accountStore.get("unsent_blocks") ?? {}).filter((entry) => entry.account === account && entry.refused !== true);
+      if (blocks.some((entry) => entry.records.some((record) => kept.carried.devices.includes(record.target)))) return { why: "sending", wait: null, asks: [] };
+      return await sendBirth(bound, account, kept, signal);
+    }
+    const signIn = await signInOf(session);
+    if (signIn === null) return { why: "self_unlisted", wait: null, asks: [] };
+    const at = seconds();
+    const refusal = readRetired(slot)?.refusal ?? null;
+    // a clock that moved back counts as no time passed
+    if (refusal !== null && elapsed(refusal.at, at) < MOVE_AGAIN_SECONDS) return { why: "refused", wait: MOVE_AGAIN_SECONDS - elapsed(refusal.at, at), asks: [] };
+    // the service refused this device's own key in a birth: it starts none, and asks to be let in as a new device does
+    if (refusal?.keys.includes(signIn.key) === true) return { why: "self_unlisted", wait: null, asks: [] };
+    const [devices, directory] = [await bound.devices(signal), await bound.listPcs(signal)];
+    const record = recordOf(account);
+    const scale = scaleOf();
+    const letIn = new Set(directory.flatMap((pc) => (pc.public_key === null ? [] : [pc.public_key])));
+    const label = new Map(directory.flatMap((pc) => (pc.public_key === null ? [] : [[pc.public_key, pc.label] as const])));
+    // every PC this device knows by its own record is a witness, whatever the directory says of it; only one the
+    // directory lists as let in, and no refusal named, is carried in (the service would refuse any other)
+    const pcs = knownPcs({ account, record, letIn: null, answers, now: at, scale, names: (endpoint) => { const name = label.get(endpoint); return name === undefined ? null : listNames(name, null); } });
+    const skipped = { keys: new Set(refusal?.keys ?? []), endpoints: new Set(refusal?.endpoints ?? []) };
+    const known: MigrationKnown = {
+      account, self: signIn.key, member: keys.key,
+      // each carried device is named by the name its sign-in registered with the account service, where it sent one
+      devices: devices.filter((device) => !device.removed && !skipped.keys.has(device.key)).map((device) => ({ key: device.key, eligible: device.eligible, names: device.label === undefined ? null : listNames(device.label, null) })),
+      removed: [...devices.filter((device) => device.removed).map((device) => device.key), ...await options.migration?.removed?.(account) ?? []],
+      pcs,
+    };
+    if (record.tried === undefined) await tryNoted(account);
+    const planned = migrationPlan(known, record.tried === undefined ? 0 : scaled(record.tried, at, scale));
+    const asks = pcs.filter((pc) => pc.says === null && ownEvidence(pc)).map((pc) => pc.endpoint);
+    if (!planned.start) return { why: planned.why, wait: planned.wait === null ? null : Math.ceil(planned.wait / scale), asks };
+    const plan = { devices: planned.plan.devices, pcs: planned.plan.pcs.filter((pc) => letIn.has(pc.endpoint) && !skipped.endpoints.has(pc.endpoint)) };
+    // signed once, and kept before it is sent: a lost answer or a closed page makes no second one
+    const sealed = birthSeals();
+    const member = { key: keys.key, privateKey: keys.signs };
+    const made = await signMigration(account, plan, { signIn, member, enc: keys.enc.key, names: options.names?.() ?? null }, at, sealed.seals);
+    const [entry, ...entries] = made.entries.map((written) => written.text);
+    if (entry === undefined) throw new RangeError("A birth holds entry 0");
+    const birth: KeptBirth = {
+      list: made.list, signIn: signIn.key, member: keys.key, entry, entries, wraps: sealed.wraps(), enc: keys.enc.key, at,
+      link: await signLink({ account, list: made.list, member, device: signIn }),
+      carried: { devices: plan.devices.map((device) => device.key), pcs: plan.pcs.map((pc) => pc.endpoint) },
+      skip: { keys: [...skipped.keys], endpoints: [...skipped.endpoints] },
+    };
+    if (await store.swap("birth", account, typeof slot === "string" ? slot : undefined, birthText(birth))) return await sendBirth(bound, account, birth, signal);
+    // another tab kept a birth first: that one is the one signature, and this one is never sent
+    const winner = readBirth(await store.get("birth", account));
+    return winner === null ? { why: "sending", wait: null, asks: [] } : await sendBirth(bound, account, winner, signal);
+  };
+
+  /**
+   * The keys of this device's own blocks (`own_blocks`) that the list its own birth made holds, each by the key that
+   * stands for it now (#4652, b2): X5 sends a kept birth as it is, so a key blocked after it was signed may be carried
+   * in, by a block the service refused for good or a service that placed the birth all the same. The device's first
+   * write in that list puts them out.
+   */
+  const owedOf = async (account: string, copy: FollowerCopy, keys: DeviceListKeys): Promise<string[]> => {
+    const { state } = copy;
+    if (copy.pin.how !== "genesis" || state === null || !movedList(state)) return [];
+    const blocked = (await accountStore.get("own_blocks"))?.[account] ?? [];
+    return [...new Set(blocked.flatMap((key) => { const now = standsFor(state, key); return now === null || now === keys.key ? [] : [now]; }))];
+  };
+
+  /** Whether a list was born by a move: its first signer handed its place on, or it carried somebody in. */
+  const movedList = (state: ListState): boolean => {
+    const first = Object.entries(state.signers).find(([, row]) => row.seq === 0)?.[0] ?? null;
+    return (first !== null && heirOf(state, first) !== null) || Object.values(state.devices).some((row) => row.carried) || Object.values(state.pcs).some((row) => row.how === "carried");
+  };
+
+  /**
+   * A device that a moved list may have carried in, shown that list (Part F, F5): it reads the log without keeping any of
+   * it, finds where it stands (devicePlace), and follows only once the PCs it knows by its own record say who started it
+   * (joinVerdict). A copy to follow; a state to say (it waits, or it refused); or null: the list holds it nowhere, and it
+   * asks to be let in as any new device does.
+   */
+  const joining = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, hint: ListHint, signal: AbortSignal, stopped: AbortSignal): Promise<{ readonly copy: FollowerCopy } | { readonly without: Without } | null> => {
+    const { account } = session;
+    const signIn = await signInOf(session);
+    if (signIn === null) return null;
+    const pinned = pinList(null, { account, list: hint.list, me: { key: signIn.key, endpoint: null }, pin: { how: "carried" } });
+    if (!pinned.pinned) return null;
+    let got: Awaited<ReturnType<typeof pages>>;
+    try {
+      got = await pages(bound, pinned.copy, null, stopped);
+    } catch (error) {
+      if (stopped.aborted || !unreached(error)) throw error;
+      return { without: { at: "not_in", list: hint.list, why: "unread", claim: "unclaimed" } };
+    }
+    const { state } = got.copy;
+    // a read that did not finish says nothing of where this device stands: it reads again at the next round
+    if (got.cut || state === null) return { without: { at: "not_in", list: hint.list, why: "unread", claim: "unclaimed" } };
+    const place = devicePlace(state, { signIn: signIn.key, member: keys.key });
+    const waiting = (join: JoinState): { readonly without: Without } => ({ without: { at: "not_in", list: hint.list, why: "carried", claim: "unclaimed", join } });
+    if ((place.at === "carried" || place.at === "absent") && place.wait) return waiting({ why: "run_open", wait: null, pcs: [] });
+    if (place.at === "first") {
+      // entry 0 is this very sign-in's: the list it made, whose answer it lost with its kept birth
+      const own = pinList(null, { account, list: hint.list, me: { key: signIn.key, endpoint: null }, pin: { how: "genesis" } });
+      return own.pinned ? { copy: own.copy } : null;
+    }
+    const record = recordOf(account);
+    const scale = scaleOf();
+    const at = seconds();
+    const pcs = knownPcs({ account, record, letIn: null, answers, names: () => null, now: at, scale });
+    // a device that handed its place on and keeps no copy (it reset the one its PCs did not know, V4-6): it asks to be let
+    // in, and says why while a PC it knows says it
+    if (place.at === "member") {
+      const doubt = listDoubt(state, pcs, []);
+      return doubt === null ? null : { without: { at: "not_in", list: hint.list, why: "not_mine", claim: await claim(bound, account, keys, hint.list, "unclaimed", signal), refused: doubt } };
+    }
+    if (place.at !== "carried") return null;
+    if (record.tried === undefined) await tryNoted(account);
+    const verdict = joinVerdict(state, { signIn: signIn.key, member: keys.key }, pcs, record.tried === undefined ? 0 : scaled(record.tried, at, scale));
+    if (verdict.pin) {
+      await tryEnded(account);
+      // what it goes on checking against: the PCs that agreed now; the others are asked about the list for three days more
+      const agreed = pcs.filter((pc) => pc.says !== null && pc.says.account === account && ownEvidence(pc) && pcAgrees(state, pc.says)).map((pc) => pc.endpoint);
+      await store.set("joined", account, joinedRecord({ list: state.list, at, agreed }));
+      return { copy: got.copy };
+    }
+    if (verdict.waits) return waiting({ why: verdict.why, wait: verdict.wait === null ? null : Math.ceil(verdict.wait / scale), pcs: verdict.pcs });
+    // refused: it says so, names no list to anybody, and asks to be let in as a new device does
+    await tryEnded(account);
+    return { without: { at: "not_in", list: hint.list, why: "not_mine", claim: await claim(bound, account, keys, hint.list, "unclaimed", signal), refused: { why: verdict.why, pcs: verdict.pcs } } };
+  };
+
+  /**
+   * A carried device that follows its list hands its place to its member key (signRotation), with the D11.2 link of the
+   * two, placed with no claim (Part F, F10b's later hand-over). Kept before it is sent and sent again as it is while the
+   * copy shows the head it was signed on (X5); a refusal that is final waits for a new head, or MOVE_AGAIN_SECONDS.
+   */
+  const handOver = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, copy: FollowerCopy, signal: AbortSignal): Promise<void> => {
+    const { account } = session;
+    const state = copy.state;
+    if (state === null) return;
+    let kept = readHandOver(await store.get("handover", account));
+    // where the copy shows the carried key no longer carried (handed over, or put out), what was kept for it is done
+    const place = devicePlace(state, { signIn: copy.me.key, member: keys.key });
+    if (place.at !== "carried" || place.wait) {
+      if (kept !== null) await store.set("handover", account, undefined);
+      return;
+    }
+    const signIn = await signInOf(session);
+    if (signIn === null || copy.me.key !== signIn.key) return;
+    // kept for another account key or encryption key than this device holds now: it ends there, and is never sent (C2)
+    if (kept !== null && (kept.member !== keys.key || kept.enc !== keys.enc.key)) {
+      await store.set("handover", account, undefined);
+      return;
+    }
+    const at = seconds();
+    const head = { seq: state.footing.seq, hash: state.footing.hash };
+    if (kept !== null && (kept.list !== copy.list || kept.signIn !== signIn.key || kept.on.seq !== head.seq || kept.on.hash !== head.hash)) kept = null;
+    if (kept !== null && kept.refused_at !== null) {
+      if (elapsed(kept.refused_at, at) < MOVE_AGAIN_SECONDS) return;
+      kept = null;
+    }
+    if (kept === null) {
+      const member = { key: keys.key, privateKey: keys.signs };
+      let entry: string;
+      try {
+        entry = (await signRotation(state, { signIn, member, enc: keys.enc.key }, at, null)).text;
+      } catch (error) {
+        if (!(error instanceof MigrationError)) throw error;
+        console.info("Ovis: this device hands its place in the list on to its account key later", error.code);
+        return;
+      }
+      kept = { list: copy.list, signIn: signIn.key, member: keys.key, enc: keys.enc.key, on: head, entry, link: await signLink({ account, list: copy.list, member, device: signIn }), refused_at: null };
+      await store.set("handover", account, handOverRecord(kept));
+    }
+    try {
+      await bound.placeEntries(copy.list, [kept.entry], [], signal, undefined, kept.link);
+      readAsked = true;
+    } catch (error) {
+      const said = refusalOf(error);
+      if (said === null || said.status === 429 || said.status >= 500) {
+        if (!unreached(error)) throw error;
+        return;
+      }
+      readAsked = true;
+      // the list moved meanwhile: signed again on the head the next read shows
+      if (said.status === 409 && said.code === "head_moved") await store.set("handover", account, undefined);
+      else await store.set("handover", account, handOverRecord({ ...kept, refused_at: at }));
+    }
+  };
+
+  /**
+   * A carried device that follows its list checks it against what the PCs it knows say in this run (V4-6): a doubt
+   * when one says against it, and which PCs it still asks (those that have not agreed, for three days after the join).
+   * A PC that agrees is kept among those that did. Undefined for any other copy, or where the join was not kept.
+   */
+  const checkJoined = async (account: string, copy: FollowerCopy): Promise<Held["check"]> => {
+    if (copy.pin.how !== "carried" || copy.state === null) return undefined;
+    const joined = readJoined(await store.get("joined", account));
+    if (joined === null || joined.list !== copy.list) return undefined;
+    const { state } = copy;
+    const scale = scaleOf();
+    const at = seconds();
+    const pcs = knownPcs({ account, record: recordOf(account), letIn: null, answers, names: () => null, now: at, scale });
+    const agreed = [...new Set([...joined.agreed, ...pcs.filter((pc) => pc.says !== null && pc.says.account === account && ownEvidence(pc) && pcAgrees(state, pc.says)).map((pc) => pc.endpoint)])];
+    if (agreed.length !== joined.agreed.length) await store.set("joined", account, joinedRecord({ ...joined, agreed }));
+    const open = scaled(joined.at, at, scale) < MIGRATION_ANSWER_SECONDS;
+    // a PC that has not agreed yet, silent or with an answer that waits (the key that started the list let in for less
+    // than a day), is asked again; one that answered for another account is no PC of it
+    const asks = open ? pcs.filter((pc) => (pc.says === null || pc.says.account === account) && ownEvidence(pc) && !agreed.includes(pc.endpoint)).map((pc) => pc.endpoint) : [];
+    return { doubt: listDoubt(state, pcs, agreed), asks };
+  };
+
   /** What a round does with the list the account service names (`named`: null for none); `loaded` is what this device saved. */
-  const follow = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, loaded: Held, told: ListHint | null, signal: AbortSignal, stopped: AbortSignal): Promise<Held> => {
+  const follow = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, loaded: Held, told: ListHint | null, signal: AbortSignal, stopped: AbortSignal, migrate = false): Promise<Held> => {
     const { account } = session;
     let hint = told;
     let copy = loaded.copy;
@@ -902,29 +1327,48 @@ export function accountList(options: AccountListOptions): AccountList {
     // a member that let this device in named its list: that word, checked against the log, comes before the service's
     if (copy === null) copy = await offered(bound, account, keys, stopped);
     const handed = fresh && copy !== null;
+    /** The list this device moved its account onto, and the birth it kept for it, until the copy is saved. */
+    let born: KeptBirth | null = null;
+    /** The first signer of a moved list this device was carried into and now follows, for its notice. */
+    let carriedFrom: string | null = null;
     if (copy === null) {
       if (hint === null) {
-        const started = await start(bound, session, keys, signal);
+        // a birth this device kept goes first: sent again as it is, whatever else is said now
+        let started: "placed" | "exists" | NoGenesis | MoveState = readBirth(await store.get("birth", account)) === null ? await start(bound, session, keys, signal) : "moving";
+        // an account that was in use, on the account service's migrate switch: the first device moves it onto its list.
+        // A new birth is signed only on storage that lasts, as a genesis is; one kept already is sent whatever.
+        const newBirth = migrate && (started === "not_new" || started === "not_first_device" || started === "has_pcs");
+        if (newBirth && !await (options.durable ?? storageLasts)()) started = "storage";
+        else if (started === "moving" || newBirth) {
+          const moved = await move(bound, session, keys, migrate, signal);
+          started = moved === "placed" || moved === "other" ? "exists" : moved;
+        }
+        if (typeof started === "object") return { ...loaded, without: { at: "none", why: "moving", move: started } };
         if (started !== "placed" && started !== "exists") return { ...loaded, without: { at: "none", why: started } };
         const after = await bound.accountList(signal);
         const named = after === "off" ? null : after.hint;
         if (named === null) throw new AccountServiceError(502, "invalid_answer", "The account service took a list and names none");
         hint = named;
       }
+      const birth = readBirth(await store.get("birth", account));
+      if (birth !== null && birth.list === hint.list) born = birth;
       // a list that is not this device's own is not read again while the account service names it: the device waits to
-      // be let in, and keeps its claim of its own key standing
-      if (loaded.without.at === "not_in" && loaded.without.why === "not_mine" && loaded.without.list === hint.list) {
+      // be let in, and keeps its claim of its own key standing. One that carried it in is asked about again at every
+      // round, while it waits on its PCs and after it refused: the refusal clears when its cause does.
+      if (loaded.without.at === "not_in" && loaded.without.why === "not_mine" && loaded.without.refused === undefined && loaded.without.list === hint.list) {
         return { ...loaded, without: { ...loaded.without, claim: await claim(bound, account, keys, hint.list, loaded.without.claim, signal) } };
       }
       // nor is a list whose entry 0 this device signed and gave up: it follows that one never, whoever names it
       if (readDropped(await store.get("dropped", account)).includes(hint.list)) return { ...loaded, without: { at: "not_in", list: hint.list, why: "not_mine", claim: "unclaimed" } };
-      const me: FollowerSelf = { key: keys.key, endpoint: null };
+      // the list this device moved its account onto is pinned under the sign-in key that signed its entry 0
+      const me: FollowerSelf = { key: born === null ? keys.key : born.signIn, endpoint: null };
       const pinned = pinList(null, { account, list: hint.list, me, pin: { how: "genesis" } });
       if (!pinned.pinned) throw new RangeError("This account or this device's key cannot follow a list");
-      // only entry 0 says whether this device started the list; nothing else of it is asked for before that
+      // only entry 0 says whether this device started the list, and entry 1 whether a move carried others in with it;
+      // nothing else of it is asked for before that
       const first = startRead(pinned.copy, "service");
-      const page = await bound.listLog(hint.list, first.after, signal, 1);
-      const began = await takePage(pinned.copy, first, { list: page.list, after: page.after, entries: page.entries, head: page.head }, seconds());
+      const page = await bound.listLog(hint.list, first.after, signal, 2);
+      const began = await takePage(pinned.copy, first, { list: page.list, after: page.after, entries: page.entries.slice(0, 1), head: page.head }, seconds());
       const pending = readPending(await store.get("genesis", account), keys);
       if (began.copy.state === null) {
         // not this device's own only when what was shown is that list's entry 0: anything else is the account service not showing it
@@ -932,10 +1376,18 @@ export function accountList(options: AccountListOptions): AccountList {
         const why = !shown ? "unread" : began.verdict === "needs_newer_client" ? "needs_newer_client" : began.verdict === "not_my_list" ? "not_mine" : "unread";
         // the account has a list that is not the one this device signed: its own will never be the account's
         if (why === "not_mine" && pending !== null && pending.list !== hint.list) await giveUp(account, pending.list);
-        return { ...loaded, without: { at: "not_in", list: hint.list, why, claim: why === "not_mine" ? await claim(bound, account, keys, hint.list, "unclaimed", signal) : "unclaimed" } };
-      }
-      ({ copy } = began);
+        // a list born by a move: this device may be one it carried in
+        const joined = why === "not_mine" && kindAt(page.entries[1]) === "carried" ? await joining(bound, session, keys, hint, signal, stopped) : null;
+        // a read of the list that did not finish decides nothing: the next round reads again
+        if (joined !== null && "without" in joined) return { ...loaded, without: joined.without, ...(joined.without.at === "not_in" && joined.without.why === "unread" ? { unread: true as const } : {}) };
+        if (joined === null) return { ...loaded, without: { at: "not_in", list: hint.list, why, claim: why === "not_mine" ? await claim(bound, account, keys, hint.list, "unclaimed", signal) : "unclaimed" } };
+        ({ copy } = joined);
+        carriedFrom = joined.copy.state === null ? null : Object.entries(joined.copy.state.signers).find(([, row]) => row.seq === 0)?.[0] ?? null;
+      } else ({ copy } = began);
       if (pending !== null && pending.list === copy.list) await store.set("wraps", account, wrapsRecord({ list: copy.list, member: keys.enc.key, wraps: new Map([[0, pending.wrap]]) }));
+      // the key of the epoch the birth opened, wrapped to this device itself: the link under it gives the one before
+      const wrap = born?.wraps.find((one) => one.member === keys.enc.key);
+      if (born !== null && wrap !== undefined) await store.set("wraps", account, wrapsRecord({ list: copy.list, member: keys.enc.key, wraps: new Map([[wrap.epoch, wrap.wrap]]) }));
     }
 
     // a device that follows a list starts no other over it, whatever the account service names
@@ -951,7 +1403,18 @@ export function accountList(options: AccountListOptions): AccountList {
     // asked for by a write whose outcome only the log says: the head the account service names proves nothing of it
     const forced = readAsked;
     readAsked = false;
-    if (heard.verdict === "read" || other || heard.verdict === "none" || forced) {
+    if (fresh && born !== null) {
+      // the list this device made is followed only once the copy holds its whole birth, through its `epoch`: a read
+      // that stops short of it saves nothing and decides nothing, and the kept birth stays for the next round
+      const got = await pages(bound, copy, null, stopped).catch((error: unknown) => {
+        if (stopped.aborted || !unreached(error)) throw error;
+        return null;
+      });
+      if (got === null || !holdsBirth(got.copy, born)) return { ...loaded, without: { at: "none", why: "moving", move: { why: "sending", wait: null, asks: [] } }, unread: true };
+      ({ copy, verdict } = got);
+      saved = await save(loaded, copy);
+      behind = got.more;
+    } else if (heard.verdict === "read" || other || heard.verdict === "none" || forced) {
       const had = copy.entries.length;
       const got = await read(bound, copy, loaded, stopped);
       ({ copy, saved } = got);
@@ -965,7 +1428,23 @@ export function accountList(options: AccountListOptions): AccountList {
     if (fresh) await store.set("genesis", account, undefined);
     // and the place a member handed over, only now that the copy it led to is saved: a save that failed keeps the place
     if (handed) await store.set("offer", account, undefined);
-    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}) };
+    const kept = born ?? readBirth(await store.get("birth", account));
+    // a birth kept for another list than the verified one this device follows can never be the account's: it is let go
+    if (kept !== null && kept.list !== copy.list && copy.state !== null) await retireBirth(account, kept, null);
+    // a move whose whole birth the copy holds: the birth is let go, the try ended, and the notice waits for the person
+    const finished = born ?? (copy.pin.how === "genesis" ? kept : null);
+    if (finished !== null && finished.list === copy.list && copy.state !== null && holdsBirth(copy, finished)) {
+      await keepNotice(account, copy.state, finished.signIn);
+      await retireBirth(account, finished, null);
+      await tryEnded(account);
+    }
+    if (fresh && carriedFrom !== null && copy.state !== null) await keepNotice(account, copy.state, carriedFrom);
+    // a carried device that follows its list checks it against its PCs, and hands its place on to its member key only
+    // while none of them says against it, and its copy holds no alarm of another history
+    const check = await checkJoined(account, copy);
+    if (copy.pin.how === "carried" && copy.state !== null && copy.alarm === null && (check?.doubt ?? null) === null) await handOver(bound, session, keys, copy, signal);
+    const owed = await owedOf(account, copy, keys);
+    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}), ...(check === undefined ? {} : { check }), ...(owed.length === 0 ? {} : { owed }) };
   };
 
   const round = async (): Promise<AccountListView> => {
@@ -1031,9 +1510,12 @@ export function accountList(options: AccountListOptions): AccountList {
       if (told !== null && told <= at && at - told < OFF_SECONDS) return off(told);
       offAt = null;
       let hint: ListHint | null | "off" | undefined;
+      /** The account has no list and is on the account service's migrate switch (Part F, F10.1). */
+      let migrate = false;
       try {
         const answer = await bound.accountList(signal);
         hint = answer === "off" ? "off" : answer.hint;
+        migrate = answer !== "off" && answer.migrate;
       } catch (error) {
         if (stopped.aborted || !unreached(error)) throw error;
       }
@@ -1052,7 +1534,8 @@ export function accountList(options: AccountListOptions): AccountList {
       }
       const keys = await deviceListKeys(accountStore);
       ctx = { account, keys, bound };
-      const loaded = await load(account, keys, saved);
+      const handing = readHandOver(await store.get("handover", account));
+      const loaded = await load(account, keys, saved, (await signInOf(session))?.key ?? null, handing !== null && handing.refused_at === null ? handing.signIn : null);
       if (typeof loaded === "string") {
         held = null;
         return publish({ account, status: loaded === "version" ? { at: "newer_save" } : { at: "damaged", why: loaded }, reached: hint !== undefined, devices: [], pcs: [] });
@@ -1064,7 +1547,7 @@ export function accountList(options: AccountListOptions): AccountList {
       try {
         if (hint !== undefined && hint !== "off") {
           try {
-            next = await follow(bound, session, keys, loaded, hint, signal, stopped);
+            next = await follow(bound, session, keys, loaded, hint, signal, stopped, migrate);
             if (next.unread === true) reached = false;
           } catch (error) {
             if (stopped.aborted || !unreached(error)) throw error;
@@ -1102,6 +1585,23 @@ export function accountList(options: AccountListOptions): AccountList {
     }
   };
 
+  /** The removal the device owes the list its own birth made, while it is under way: the rounds its write reads in pay nothing again. */
+  let paying: Promise<void> | null = null;
+  /**
+   * Puts out the keys the device owes its list (Held's `owed`) through the devices step's removal, kept and sent
+   * again like any write (operation `not-me:<key>:<digest>`); a removal that is not placed yet is tried at the next round.
+   */
+  const payOwed = async (): Promise<void> => {
+    const owed = held?.owed ?? [];
+    if (owed.length === 0) return;
+    try {
+      const outcome = await removeFromList(page, { keys: [...owed], pcs: [] }, { operation: `not-me:${owed[0]}`, writer: () => page.writer({ owed: true }) });
+      if (!outcome.removed) console.info("Ovis: the removal of a key this device blocked is not placed in its list yet", outcome.why);
+    } catch (error) {
+      console.info("Ovis: the removal of a key this device blocked is not placed in its list yet", error instanceof Error ? error.name : error);
+    }
+  };
+
   const sync = (options: { readonly read?: boolean } = {}): Promise<AccountListView> => {
     if (options.read === true) readAsked = true;
     if (running !== null) {
@@ -1119,10 +1619,15 @@ export function accountList(options: AccountListOptions): AccountList {
       }
       throw error;
     }).finally(() => { running = null; });
-    return running;
+    return running.then(async (view) => {
+      if (paying !== null || (held?.owed?.length ?? 0) === 0) return view;
+      paying = payOwed().finally(() => { paying = null; });
+      await paying;
+      return shown;
+    });
   };
 
-  return {
+  const page: AccountList = {
     sync,
     async follows(account) {
       return (await store.get("copy", account)) !== undefined;
@@ -1255,6 +1760,7 @@ export function accountList(options: AccountListOptions): AccountList {
       if (status.at !== "following" || status.standing !== "in" || status.trouble === "fork" || status.trouble === "stuck") return null;
       const own = copy.state.signers[ctx.keys.key];
       if (own === undefined || own.ended !== null || (own.power !== "full" && options.self !== true)) return null;
+      if ((held.owed?.length ?? 0) > 0 && options.owed !== true) return null;
       const at = seconds();
       return {
         account: held.account, list: copy.list, state: copy.state, keys: ctx.keys, service: ctx.bound,
@@ -1279,6 +1785,68 @@ export function accountList(options: AccountListOptions): AccountList {
     pageAfter(after, limit) {
       const copy = held?.copy ?? null;
       return copy === null || copy.state === null ? null : servePage(copy, { list: copy.list, after }, limit);
+    },
+    async naming(given) {
+      /** The copy to name, while it is the one of `given.account` this page holds and follows, and nothing stands in the way. */
+      const current = (): FollowerCopy | null => {
+        const copy = held?.copy ?? null;
+        const { status } = shown;
+        if (copy === null || copy.state === null || ctx === null || held?.account !== given.account || ctx.account !== given.account || shown.account !== given.account) return null;
+        // nor a list a PC it knows says it does not know (V4-6)
+        return status.at === "following" && status.standing === "in" && status.trouble === null && status.doubt === undefined && movedList(copy.state) ? copy : null;
+      };
+      const copy = current();
+      if (copy === null || copy.state === null || ctx === null) return null;
+      const keys = ctx.keys;
+      const session = await service.session();
+      const signIn = session === undefined || session.account !== given.account ? null : await signInOf(session);
+      // what was read is still what this device follows, after the waits
+      if (current() !== copy || ctx?.keys !== keys) return null;
+      const state = copy.state!;
+      const holds = standsFor(state, copy.me.key);
+      const member = holds === keys.key ? { key: keys.key, privateKey: keys.signs } : signIn !== null && holds === signIn.key ? signIn : null;
+      if (member === null) return null;
+      const naming = await signNaming(state, { member, session: given.session, endpoint: given.endpoint });
+      if (naming === null) return null;
+      // the sign-in key this session signed in with vouches for the account key, while it is this device's of now
+      const vouching = given.signIn !== null && given.signIn === given.session && signIn !== null && signIn.key === given.signIn && member.key === keys.key;
+      const vouch = vouching ? await signVouch(state, { signIn, member }) : null;
+      return { naming, vouches: vouch === null ? [] : [vouch] };
+    },
+    async notice(account) {
+      const notice = readNotice(await store.get("notice", account));
+      const copy = held?.account === account ? held.copy : null;
+      const own = ctx?.account === account ? ctx.keys.key : null;
+      if (notice === null || notice.seen || copy === null || copy.state === null || copy.list !== notice.list || own === null || shown.account !== account) return null;
+      const { state } = copy;
+      // this device, by the key the list holds it by now, its account key and the sign-in key it was carried in by
+      const self = new Set([own, copy.me.key, standsFor(state, copy.me.key)]);
+      // a device is named as the list names the key it stands by now, else by the name the birth sealed for the key it
+      // was carried in by: its hand-over carries no name of its own
+      const opened = named !== null && named.history === historyOf(copy) ? named.keys : new Map<number, EpochKey>();
+      const nameOf = async (now: string, carried: string): Promise<ListNames | null> => {
+        const shownName = shown.devices.find((row) => row.key === now)?.name ?? null;
+        const at = rowOf(state.signers, carried)?.seq;
+        return shownName ?? (at === undefined ? null : await namesAt(copy.list, copy.entries, at, opened));
+      };
+      const first = standsFor(state, notice.first);
+      const devices: { key: string; name: ListNames | null }[] = [];
+      const removed: { key: string; name: ListNames | null }[] = [];
+      // a device this device blocked itself and put out of the list again (#4652, b2)
+      const blocked = new Set((await accountStore.get("own_blocks"))?.[account] ?? []);
+      for (const key of notice.devices) {
+        const now = standsFor(state, key);
+        if (now !== null && !self.has(now)) devices.push({ key: now, name: await nameOf(now, key) });
+        else if (now === null && blocked.has(key)) removed.push({ key, name: await nameOf(key, key) });
+      }
+      const pcs = notice.pcs.flatMap((endpoint) => { const row = shown.pcs.find((pc) => pc.endpoint === endpoint); return row === undefined ? [] : [{ endpoint, name: row.name }]; });
+      return { list: notice.list, first: { self: first !== null && self.has(first), key: first, name: first === null ? null : await nameOf(first, notice.first) }, devices, pcs, removed };
+    },
+    async noticeSeen(account, list) {
+      await lock(account, async () => {
+        const notice = readNotice(await store.get("notice", account));
+        if (notice !== null && notice.list === list && !notice.seen) await store.set("notice", account, noticeRecord({ ...notice, seen: true }));
+      });
     },
     async forget(account, member) {
       // the round under way for the account ends here, rather than be waited for: it holds the account's lock
@@ -1307,4 +1875,5 @@ export function accountList(options: AccountListOptions): AccountList {
       if (shown.account === account) { offAt = null; misses = 0; publish(OFF); }
     },
   };
+  return page;
 }

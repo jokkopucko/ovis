@@ -6,6 +6,7 @@ import { leaveAccount } from "./leave.ts";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
 import { memoryAccountStore, newKey, type AccountSession } from "./store.ts";
+import { ownRemovals } from "./listMigrate.ts";
 
 const session: AccountSession = { service: "https://account.example", account: "acct", provider: "github", sign_in_id: "this-sign-in", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 };
 
@@ -25,6 +26,19 @@ it("S32-1: kept before any delivery, and dropped once the service confirms it", 
   expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
   expect(await postKept(store, session, [record], async () => {})).toBe("sent");
   expect(await unsentBlocks(store, session)).toEqual([]);
+});
+
+it("R-F: a kept block's target stays among the account's own blocks once the service confirmed it, and after a sign-out", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  expect(await postKept(store, session, [record], async () => {})).toBe("sent");
+  expect(await unsentBlocks(store, session)).toEqual([]);
+  expect(await ownRemovals(store, session.account)).toEqual([record.target]);
+  expect(await ownRemovals(store, "other")).toEqual([]);
+  await store.clear();
+  expect(await ownRemovals(store, session.account)).toEqual([record.target]);
 });
 
 it("S32-1: a post a retry may change (no answer, 5xx, 401, 408, 429) keeps the exact record and throws", async () => {

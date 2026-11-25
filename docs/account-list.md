@@ -2278,6 +2278,83 @@ neither a hand-over nor the pin undoes a removal.
   that never handed over is let in by a PC that follows the list only while the snapshot also
   names it, which is local and undone when the snapshot names it again.
 
+### In the app
+
+The app does all of this by itself, behind the account service's migrate switch, and asks the
+person to press nothing ([`src/lib/account/listMigrate.ts`](../src/lib/account/listMigrate.ts),
+[`accountList.ts`](../src/lib/account/accountList.ts)). An account the switch does not name, and an
+account with no list, is asked and told exactly what it was before; a list that was not born by a
+move is never named to any PC.
+
+- **What a device knows.** Its PCs are its own record of them (`seenPcs.ts`: since when it held
+  sessions with each relay key, and what it did itself for it); `invited` counts as `added`. Each
+  PC's answer (`GET /api/account/list/witness` on a session) is kept in memory for this run of the
+  app only. While the device waits on its PCs, every session the app opens to one asks it, and the
+  PCs its record knows that have not answered are asked over a session of their own (a saved
+  pairing, or through the account with this sign-in's key, and once more with the key its list holds
+  where the PC lets the account's devices in by the list alone), each at most once in ten minutes. A
+  PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
+- **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, a device whose
+  storage lasts (as for a genesis) plans from `GET /v1/devices`, the directory's PCs that are listed
+  as let in (a PC outside it is left out, as the service would refuse it), its record, this run's
+  answers, and the keys it holds a block or a removal against itself (every key a Not me of it
+  blocked, whatever the service answered, and the removals it signed). It notes its first try
+  (`tried`) and waits while the plan says so. Each carried device's entry seals the name its sign-in
+  registered (`GET /v1/devices`' `label`, where it sent one). It signs the birth once, keeps it in
+  its own store and sends it (`POST /v2/lists` with `entries`, the wraps of epoch 1 to itself, and
+  the link of its account key to its sign-in key) as it is until a 201 or its own list back in a
+  `409 list_exists`, or until the account service names that list. While a block of its own on a key
+  the birth carries has no answer from the account service, the birth waits: a frozen sign-in is
+  never carried. Where a key it blocked is carried in all the same (a block the service refused for
+  good, or a service that placed the birth anyway), the device's first write in the list it made
+  removes it (`not-me:<key>:<digest>`, kept and sent again like any write), and it signs nothing
+  else there before that is placed. The birth's own final refusal (a 400 or a 413 of its body, a
+  `403 not_carried`) drops it; the next plan comes an hour later at the soonest and leaves out the
+  key or the PC a `403 not_carried` named (its `index`: entry 0 is 0, then the devices, then the
+  PCs, in the plan's order). A refusal of the caller (a frozen sign-in, a route the service hides)
+  keeps it. Only a `409 list_exists` naming another list gives its list up for good, and a birth
+  kept for another list than the one the device follows is let go. It follows the list pinned under
+  the sign-in key that signed entry 0.
+- **A carried device.** A device that is not in the list the account service names reads its first
+  two entries, in one request (`limit=2`), on every account: entry 1's kind is the only word on
+  whether a move carried it in. A list whose entry 1 is `carried` is read whole without being kept.
+  Where the device's sign-in key was carried in, it asks `joinVerdict` with its record and this
+  run's answers; on a yes it pins as `carried`, saves the copy and, while no PC it knows says
+  against the list and its copy holds no fork alarm, hands its place to its account key
+  (`signRotation`, with the D11.2 link, one kept request per head). On a no that does not wait it
+  says why, names the PCs, and asks to be let in as any new device does; it asks again at every
+  round, so the refusal clears when its cause does. Until its hand-over is placed it signs in to a
+  PC of the list with its sign-in key, the key the list holds it by (R-E), never the way from
+  before.
+- **After a carried device joins** it keeps the PCs that agreed then or since (one agrees when it
+  follows the list, or has let the device that started it in for a day by both its counters), and
+  for three days asks the others again. Where a PC it knows says that it follows another list of the
+  account, holds a removal against the device that started the list, or (one that did not agree at
+  the join) lets that device in by none of its keys, it says so, names the list to no PC any more,
+  and offers the reset of its copy of the list (V4-6). After the reset it follows nothing, says why
+  while a PC says it, and asks to be let in as a new device does: a member's Allow hands it its own
+  place.
+- **A saved copy** is the device's own when it was pinned under its account key, or under a
+  sign-in key of its own that the list shows handed over to it, or under its sign-in key of now
+  while the list still holds that key.
+- **Sessions.** A device that follows its moved list names it (`POST /api/account/list/name`, the
+  naming by the key the list holds it by, with the vouch of the sign-in key the session signed in
+  with) to every PC of the account that takes no `account-list-1`: one its directory lists, or one
+  its own record knows. It says nothing of the move to any other PC. On a PC that does, a PC the
+  move left with no keys gets them from a member that did something itself for that PC: it takes the
+  PC's card over the session (`POST /api/account/list/card`), checks it for this list and that relay
+  key, signs the `pc` entry and hands the PC the page. Any other member leaves it to the number at
+  the PC.
+- **What the person sees.** Once, after the pin, who made the list and every device and PC it
+  brought in that is still in, never the device itself, and each device it put out again because
+  this device said Not me to it. Each PC has Not me, which removes it from the list after a
+  question; a device's Not me, and that of the device that made the list where it is another, is the
+  devices list's Remove. A carried device that refused the list says why. Nothing else.
+- **The QA twin** (`sh.ovis.app.previewqa`, which says so through `HerdrShell.appId`) multiplies
+  the durations the device hands over (`known`, `tried`) by `localStorage["ovis-migrate-qa-scale"]`
+  (1 to 86400). No other build reads it, and the pure constants never change; a PC scales its own
+  two counters itself.
+
 ## The vectors
 
 Each file of [`shared/account-list-vectors/envelope/`](../shared/account-list-vectors/envelope) is

@@ -1,5 +1,6 @@
-import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
-import { importPublicKey } from "../../../shared/relay-e2ee.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE, MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { exportPublicKey, importPublicKey } from "../../../shared/relay-e2ee.ts";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList, type AccountList, type AccountListView, type ListOffer } from "../account/accountList.ts";
@@ -21,8 +22,13 @@ import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
-import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
+import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
+import { askWitness, asksAgain, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
+import { callNative, hasNativeMethod } from "../nativeApp.ts";
+import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -36,7 +42,7 @@ import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
 import { AdmissionRefusedError, firstLinkRefusal, listRemovedLink, refusalOf } from "./firstLink.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { accountOpenablePcs } from "./pcPick.ts";
-import { openRelayTransport, type RelayTransport } from "./transport.ts";
+import { openRelayTransport, type RelayTransport, type RelayTransportOptions } from "./transport.ts";
 import { sendAgainWhenBack } from "./networkRetry.ts";
 
 const INTRODUCTION_WAIT_MS = 60_000;
@@ -47,6 +53,10 @@ export const ADMISSION_WAIT_MS = 8_000;
 /** A row's links in all, the first included, and the longest wait between two after a 503. */
 const LINK_SENDS = 5;
 export const LINK_RETRY_MAX_MS = 15_000;
+/** A PC this device asks in the background for the move of its account onto its list is asked again after this long at the soonest. */
+const ASK_AGAIN_MS = 10 * 60_000;
+/** How long such an ask waits for the PC's session to open: a PC that is off is silent, which the move waits out. */
+const ASK_OPEN_MS = 20_000;
 /**
  * `consent`: whose account the pairing was confirmed for. `signal`: the pairing in front of the person was cancelled.
  * From then on the enrollment sends nothing more to the PC or the account service and writes nothing: every step
@@ -147,8 +157,12 @@ export function createAccountController(mount: RelayShellMount, view: {
       service: account, accountStore,
       names: () => listNames(label, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0)),
       linkedPcs: async (id) => (await store.list()).filter((device) => device.account === id).length,
+      // a key this device itself blocked or removed, sent or not, is never carried into a list (R-F)
+      migration: { scale: pageScale, removed: (id) => ownRemovals(accountStore, id) },
     });
   const followed = lists === null ? null : followAccountList(lists);
+  // which build of the phone app this page runs in: only the QA twin may turn the waits of a move down
+  if (lists !== null && mount.accountList === undefined) void readAppId({ has: hasNativeMethod, call: (plugin, method) => callNative(plugin, method) });
   // the page's own list is the one a card that lets a device in signs with (account/pageList.ts)
   if (mount.accountList === undefined && lists !== null) setPageAccountList(lists);
   const forgotten = new Map<string, number>();
@@ -339,7 +353,103 @@ export function createAccountController(mount: RelayShellMount, view: {
     const byList = account !== null && (notRead(account) || (lists !== null && listReading(lists.view(), account) !== null));
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && account !== null && (byList || drewByList)) void redraw().then(compareList).catch(failed);
     else void compareList().catch(failed);
+    void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
   });
+  /**
+   * A session this page opened to a PC (shell.tsx), for the move of an account that was in use onto its list
+   * (account/listMigrate.ts onPcSession): asked while this device waits on its PCs, named its moved list when it
+   * follows one and the PC follows none. Nothing waits for it, and it fails quietly.
+   */
+  const sessionOpened = async (opened: RelayTransport, serverPublicKey: string): Promise<void> => {
+    if (lists === null) return;
+    const session = await account.session().catch(() => undefined);
+    if (session === undefined) return;
+    const kept = await accountStore.get("signin_key").catch(() => undefined);
+    const signIn = kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept.key.public_spki : null;
+    const endpoint = Array.from(importPublicKey(serverPublicKey), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    // only a PC of the account: one its directory lists, or one this device's own record knows it by (ownEvidence)
+    const listed = shownFor?.account === session.account && directory.some((pc) => pc.public_key === endpoint);
+    const known = pcsToAsk({ account: session.account, record: readSeenPcs(session.account), answers: pageAnswers, now: Math.floor(Date.now() / 1000), scale: pageScale(), again: true });
+    if (!listed && !known.includes(endpoint)) return;
+    const fetch = (path: string, init?: RequestInit): Promise<Response> => opened.fetch(path, init);
+    await onPcSession({
+      list: lists, answers: pageAnswers, account: session.account, fetch, endpoint,
+      pinned: opened.server?.features?.includes(ACCOUNT_LIST_FEATURE) === true, session: opened.deviceKey ?? null, signIn,
+      carriedKeys: async () => {
+        const label = directory.find((pc) => pc.public_key === endpoint)?.label;
+        const added = await keysForCarriedPc({ list: lists, fetch, account: session.account, endpoint, record: readSeenPcs(session.account), names: label === undefined ? null : listNames(label, null) });
+        // the PC is handed its own entry over this session, rather than wait for its next read of the account service
+        if (added === "added") await handListToPc(fetch, lists).catch(() => false);
+      },
+    });
+  };
+  /** When each PC was last asked in the background for the move, by relay key, in ms: once in ASK_AGAIN_MS at most. */
+  const askedPcs = new Map<string, number>();
+  let askingPcs = false;
+  /**
+   * While this device waits on its PCs for the move onto its list, the PCs it knows by its own record that have not
+   * answered in this run are asked over a session of their own, one at a time: by a pairing this device saved with
+   * that PC, or through the account with this sign-in's key where the directory names the PC. A PC that cannot be
+   * reached is silent, which the move waits out (three days at most).
+   */
+  const askPcs = async (): Promise<void> => {
+    if (lists === null || askingPcs || !view.active()) return;
+    const listed = lists.view();
+    const session = shownFor;
+    if (session === undefined || listed.account !== session.account || !waitsOnPcs(listed.status)) return;
+    askingPcs = true;
+    try {
+      const now = Date.now();
+      const record = readSeenPcs(session.account);
+      // a carried device that follows its list without a doubt on it asks only the PCs that have not agreed with it yet
+      const { status } = listed;
+      const only = status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
+      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) })
+        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
+      if (due.length === 0) return;
+      const saved = await store.list();
+      const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      let heard = false;
+      for (const endpoint of due) {
+        askedPcs.set(endpoint, Date.now());
+        // through the account with this sign-in's key first: a PC answers for its account's rows, not for a pairing made
+        // at it; a saved pairing only where the directory gives no way through the account
+        const row = directory.find((pc) => pc.public_key === endpoint && pc.relay !== null);
+        const openKey = listedFor?.epoch === generation ? listedFor.openKey : null;
+        const paired = saved.find((device) => device.device_id !== null && hexOf(device.server_public_key) === endpoint);
+        const way = row !== undefined && row.relay !== null && openKey !== null ? (() => {
+          const offer = { v: 1 as const, server_id: row.server_id, server_public_key: exportPublicKey(hexToBytes(endpoint)), relay: row.relay, name: row.label };
+          return { offer, options: { store: withAccountDevice(store, accountDevice(offer, openKey.key)), accountOpensAll: true } };
+        })() : paired !== undefined ? { offer: offerOf(paired), options: { store } } : null;
+        if (way === null) continue;
+        let opened: RelayTransport | null = null;
+        const openBy = (options: RelayTransportOptions) => open(way.offer, { ...options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
+        try {
+          try {
+            opened = await openBy(way.options);
+          } catch (error) {
+            // a PC that lets its account's devices in by the list alone refuses a key the list does not hold: once more,
+            // with the key the list holds for this device, as the shell does
+            const held = error instanceof MuxProtocolError && error.code === "account_list_required" ? listKey() : null;
+            if (held === null) throw error;
+            opened = await openBy({ store: withAccountDevice(store, accountDevice(way.offer, held)), accountListKey: true });
+          }
+          const said = await askWitness((path, init) => opened!.fetch(path, init));
+          // no answer here takes no answer heard meanwhile (a session of this page's own may have heard one)
+          if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);
+          heard ||= said !== null;
+        } catch (error) {
+          console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);
+        } finally {
+          opened?.close();
+        }
+        if (shownFor !== session) return;
+      }
+      if (heard) await lists.sync().catch(() => undefined);
+    } finally {
+      askingPcs = false;
+    }
+  };
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
     if (account === undefined) return;
@@ -1314,17 +1424,24 @@ export function createAccountController(mount: RelayShellMount, view: {
   /** The providers the service named, an empty list included; the build's only when it gave no answer to read. */
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
   /**
-   * The key the account's signed list holds for this device, the account key, while the device follows the list of the
-   * account in view and is in it; null otherwise. Read with each directory read, which reads the key anyway.
+   * The key the account's signed list holds for this device, while the device follows the list of the account in view
+   * and is in it; null otherwise: its account key, or, for a device the move of an account onto its list carried in
+   * whose hand-over is not placed yet, the key of this sign-in, which the list holds it by until then (R-E). Read with
+   * each directory read, which reads the keys anyway.
    */
   let memberKey: AccountKey | null = null;
+  /** The key the list's row of this device's own is (the view's `self`) among this device's two keys; null for neither. */
+  const heldKey = (view: ReturnType<NonNullable<typeof lists>["view"]>): AccountKey | null => {
+    const own = view.devices.find((device) => device.self)?.key;
+    const signIn = listedFor?.openKey?.key ?? null;
+    return own === undefined ? null : memberKey !== null && own === memberKey.public_spki ? memberKey : signIn !== null && own === signIn.public_spki ? signIn : null;
+  };
   const listKey = (): AccountKey | null => {
     const view = lists?.view();
     // only for the sign-in in view, as the key of the sign-in is given (openKey): from the moment a sign-out begins
     // there is none, whatever the list's own view still shows until the account service has answered
     if (accountView?.kind !== "signed-in" || listedFor?.epoch !== generation) return null;
-    return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account
-      && memberKey !== null && view.devices.some((device) => device.self && device.key === memberKey!.public_spki) ? memberKey : null;
+    return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account ? heldKey(view) : null;
   };
   /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
   const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
@@ -1338,7 +1455,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (read === undefined || shownFor === undefined || read.account !== shownFor.account || read.status.at !== "following" || read.status.trouble !== null) return "unknown";
     if (read.status.standing === "out") return "device-out";
     if (read.status.standing !== "in") return "unknown";
-    if (memberKey === null || !read.devices.some((device) => device.self && device.key === memberKey!.public_spki)) return "device-out";
+    if (heldKey(read) === null) return "device-out";
     return read.pcs.some((pc) => pc.server_id === serverId) ? "holds" : "pc-out";
   };
   /**
@@ -1371,7 +1488,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     const view = lists?.view();
     return copyUnread !== null || (view !== undefined && view.account !== null && view.status.at !== "off");
   };
-  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, takePlace, get knowsList() { return knowsList(); },
+  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, sessionOpened, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

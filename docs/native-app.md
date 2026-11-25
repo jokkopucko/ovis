@@ -490,6 +490,11 @@ app's own page (the released front page does), bring the SSH setup up over home 
 SSH](#pcs-over-ssh)): Back or Cancel there is home again as it was, and the current PC is untouched. A pairing link tapped outside the app (Android) still waits for the app's own page, which
 checks it and opens its PC.
 
+`HerdrShell.appId` (Android) answers `{ id }`, the application id the build was made as. The client reads it once
+for one thing: only the QA twin (`sh.ovis.app.previewqa`) may turn the waits of moving an account onto its signed list
+down ([account-list.md](account-list.md), "In the app"); every other build, a browser and an app that does not answer
+wait the full time.
+
 `HerdrShell.identify` (both platforms) lets a PC's own page say which PC it is: its relay ID, as its own
 `/api/health` gives it to that page (`web_ui.server_id`, authenticated only; `""` once a health read names none, which
 drops the one kept), and its name (64 characters at most, counted as grapheme clusters on both platforms,

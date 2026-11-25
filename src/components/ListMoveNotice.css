@@ -1,0 +1,47 @@
+/* the one-time notice of the move onto the account's list: one row for each device and PC it brought in */
+.list-move-first {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.list-move-first .account-approval-lead {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-move-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  text-align: start;
+}
+
+.list-move-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+}
+
+.list-move-row svg {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+}
+
+.list-move-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+  color: var(--text-strong);
+}
+
+.list-move-ask {
+  margin-top: var(--space-4);
+}
