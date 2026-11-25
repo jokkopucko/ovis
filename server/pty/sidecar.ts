@@ -16,8 +16,12 @@ export interface SidecarRuntime {
   pty: () => boolean;
 }
 
-/** a node that hangs must not hold the server: no answer in this long counts as no Node */
-const PROBE_TIMEOUT_MS = 3000;
+/**
+ * a node that hangs must not hold the server: the whole lookup of a Node takes at most this long. A
+ * real Node's first start from a cold disk can pass 3 s (a fresh CI runner, a PC just booted), and
+ * the answer is kept, so the bound is the one the app's own hc gets for its first answer.
+ */
+const PROBE_TIMEOUT_MS = 10_000;
 
 /** the oldest Node pty-host.mjs runs on (top-level await, its syntax) */
 const MIN_NODE_MAJOR = 18;
@@ -54,15 +58,20 @@ const APP_NODE_DIRS = [".local/share/ovis/node", ".local/share/herdr-web-ui/node
  * find two different `node`s. The PATH is the one the spawn inherits (PtySession passes
  * process.env), not the one this process was launched with: a remote bundle adds its own bin/ at
  * runtime (server/remote-entry.ts), and a bare Bun.which() would not see the Node shipped there.
+ * The lookup takes at most `budgetMs`; each candidate asked gets an equal share of what is left, so
+ * a hung one before it cannot use up a later one's time.
  */
-export function realNode(env: Record<string, string | undefined>): string | null {
+export function realNode(env: Record<string, string | undefined>, budgetMs = PROBE_TIMEOUT_MS): string | null {
   const home = env["HOME"];
   const installed = home ? APP_NODE_DIRS.map((dir) => join(home, dir, "bin", "node")).filter((path) => existsSync(path)) : [];
   const onPath = Bun.which("node", { PATH: env["PATH"] ?? "" });
-  for (const found of onPath === null ? installed : [...installed, onPath]) {
+  const candidates = onPath === null ? installed : [...installed, onPath];
+  const until = Date.now() + budgetMs;
+  for (const [index, found] of candidates.entries()) {
     let ok = probed.get(found);
     if (ok === undefined) {
-      ok = isRealNode(found, env);
+      // at least 1 ms: a spawnSync timeout of 0 is no timeout at all
+      ok = isRealNode(found, env, Math.max(1, Math.floor((until - Date.now()) / (candidates.length - index))));
       probed.set(found, ok);
     }
     if (ok) return found;

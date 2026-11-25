@@ -662,7 +662,7 @@ export function createServer(
     seen.subscribe((finish, presented) => { if (presented !== "new") markSeen(finish, false); });
     seen.onPresented((finish) => markSeen(finish, true));
   }
-  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
+  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 10 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
   const bridgeToken = options.bridgeToken ?? randomBytes(32).toString("hex");
