@@ -16,11 +16,15 @@ import { appFaces } from "./app-faces.ts";
 import { CLEAR_HISTORY } from "../server/herdr-core/attach-session.ts";
 import { SUPPORTED_ENTRIES } from "../src/lib/themes.generated.ts";
 import { serveDemo } from "./demo-server.ts";
+import { openLens } from "./header-lens.ts";
 
 interface Frame { type: string; pane_id?: string; data?: string; features?: string[] }
 interface HistoryFixture {
   inputs: Frame[];
   replay(): void;
+  /** the pty taken to another device's grid, as the server tells a viewer that does not drive it */
+  geometry(cols: number, rows: number): void;
+  output(data: string): void;
 }
 declare global { interface Window { historyFixture: HistoryFixture } }
 
@@ -36,6 +40,8 @@ function installHistoryFixture(clearHistory: string): void {
   const state: HistoryFixture = {
     inputs: [],
     replay: () => { for (const socket of sockets) if (pane) socket.push({ type: "pty-data", fixture: "history", pane_id: pane, data: stream }); },
+    geometry: (cols, rows) => { for (const socket of sockets) if (pane) socket.push({ type: "pane-geometry", pane_id: pane, cols, rows }); },
+    output: (data) => { for (const socket of sockets) if (pane) socket.push({ type: "pty-data", fixture: "history", pane_id: pane, data }); },
   };
   window.historyFixture = state;
   const Demo = window.WebSocket;
@@ -313,6 +319,50 @@ try {
           assert.deepEqual(faint, [], `${theme}: the way to the bottom stands out from the terminal in every theme, at rest and hovered (edge contrast ${JSON.stringify(contrasts)})`);
           assert.deepEqual(errors, [], `${theme}: no page errors`);
           console.log(`PASS ${theme}: from the chat back to the terminal shows its newest rows once (not under a selection being made), and the way to the bottom stands out over every theme's terminal (${contrasts.map((each) => `${each.entry} ${each.edge}`).join(", ")})`);
+        } finally {
+          await context.close();
+        }
+      }
+      {
+        // another device drives the pty at its own grid while the chat covers this one: back on the terminal, the
+        // grid fitted to this page lands at the newest rows and output that follows keeps it there
+        const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US" });
+        try {
+          await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false })));
+          const page = await context.newPage();
+          page.setDefaultTimeout(10000);
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=core`);
+          await page.locator(".conn-live").waitFor();
+          await appFaces(page);
+          await showsNewest(page);
+          await settled(page);
+          // rows longer than the phone's grid: the desktop's wide grid holds each on one row, the phone's wraps it
+          await page.evaluate(() => window.historyFixture.output(Array.from({ length: 200 }, (_, line) => `\r\nWIDE-${String(line + 1).padStart(3, "0")} ${"w".repeat(70)}`).join("")));
+          await settled(page);
+          for (let round = 1; round <= 3; round++) {
+            await openLens(page, "chat", "tap");
+            await page.locator('.app-header .lens-toggle[data-view="chat"]').waitFor();
+            await page.evaluate(() => window.historyFixture.geometry(120, 42));
+            await settled(page);
+            await openLens(page, "terminal", "tap");
+            await page.locator('.app-header .lens-toggle[data-view="terminal"]').waitFor();
+            await settled(page);
+            await page.evaluate((n) => window.historyFixture.output(Array.from({ length: 5 }, (_, line) => `\r\nNEW-${n}-${line + 1}`).join("")), round);
+            await page.waitForFunction((last) => {
+              const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
+              const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];
+              return [...rows].some((row) => row.textContent?.trim() === last);
+            }, `NEW-${round}-5`).catch(async (cause: unknown) => {
+              throw new Error(`round ${round}: the newest output is not in view after the switch: ${JSON.stringify(await history(page))}`, { cause });
+            });
+            await settled(page);
+            const now = (await history(page))!;
+            assert.equal(now.viewportY, now.baseY, `round ${round}: after a switch back from another device's grid the view stays at the newest rows (${JSON.stringify(now)})`);
+          }
+          assert.deepEqual(errors, [], "no page errors");
+          console.log("PASS core: back from the chat to a grid another device sized, the terminal lands at its newest rows and follows the output after it");
         } finally {
           await context.close();
         }

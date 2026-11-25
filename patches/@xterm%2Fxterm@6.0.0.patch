@@ -1,6 +1,3 @@
-diff --git a/node_modules/@xterm/xterm/.bun-tag-e1e69684691299b1 b/.bun-tag-e1e69684691299b1
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/css/xterm.css b/css/xterm.css
 index 819654e4537eeb7b64364249e52274b7197b9c8a..6df7cfb20f4b5f16cb770377d029ba7088d7af4d 100644
 --- a/css/xterm.css
@@ -300,6 +297,35 @@ index 10e604114ae9fffc25c931497413800b0b6bd7bb..9bd1c71c684c7def8e69f0dfb3ac7068
    readonly isComposing: boolean;
    compositionstart(): void;
    compositionupdate(ev: CompositionEvent): void;
+diff --git a/src/browser/Viewport.ts b/src/browser/Viewport.ts
+index 1a9f222575b9cec71168ecbe438c9f2f80c34467..4aa79485cdffe29f2a73da3eae8456d8332b3024 100644
+--- a/src/browser/Viewport.ts
++++ b/src/browser/Viewport.ts
+@@ -157,17 +157,23 @@ export class Viewport extends Disposable {
+     // never cause a scrollLines call, only setScrollPosition can do that.
+     this._suppressOnScrollHandler = true;
+     this._scrollableElement.setScrollDimensions({
+-      height: this._renderService.dimensions.css.canvas.height,
++      // the grid's rows, not the canvas: while rendering is paused (the terminal hidden) a resize reaches the canvas only
++      // once rendering resumes, and a stale height would clamp the position short of the newest rows
++      height: this._bufferService.rows * this._renderService.dimensions.css.cell.height,
+       scrollHeight: this._renderService.dimensions.css.cell.height * this._bufferService.buffer.lines.length
+     });
+     this._suppressOnScrollHandler = false;
+ 
+     // If ydisp has been changed by some other component (input/buffer), then stop animating smooth
+     // scroll and scroll there immediately.
++    // The buffer is the truth here: a position the scrollable clamps short (its height still the old grid's) is not
++    // the reader scrolling up, which would keep the view off the bottom while output follows
+     if (ydisp !== this._latestYDisp) {
++      this._suppressOnScrollHandler = true;
+       this._scrollableElement.setScrollPosition({
+         scrollTop: ydisp * this._renderService.dimensions.css.cell.height
+       });
++      this._suppressOnScrollHandler = false;
+     }
+ 
+     this._isSyncing = false;
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
 index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103c4383442 100644
 --- a/src/browser/input/CompositionHelper.ts
