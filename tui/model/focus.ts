@@ -179,5 +179,8 @@ export function nextFocus(before: World, after: World, focus: Focus): Focus {
   }
   const workspace = pick(before.workspaces, after.workspaces, focus.workspace ?? undefined, previousPath?.workspace.id) ?? null;
   const next: Focus = { ...focus, workspace, tabs: Object.fromEntries(tabs), panes: Object.fromEntries(panes), previous: previousPath === null ? null : focus.previous };
-  return next.previous !== null && focused(after, next).pane?.id === next.previous ? { ...next, previous: null } : next;
+  // A world update that falls back to the previous pane consumes it. A zoom-follow may already
+  // show that pane provisionally; a refresh of the same focus must not erase its history.
+  return next.previous !== null && focused(after, next).pane?.id === next.previous
+    && focused(before, focus).pane?.id !== next.previous ? { ...next, previous: null } : next;
 }

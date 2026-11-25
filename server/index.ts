@@ -14,6 +14,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { OrderSequence } from "./order-sequence.ts";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
 import { accessSync, chmodSync, constants, mkdirSync, rmSync, statSync } from "node:fs";
+import { recordDesktopListener } from "./desktop-listener.ts";
 import { version } from "../package.json";
 import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
@@ -1166,11 +1167,19 @@ export async function serve(): Promise<void> {
     herdrCore?.stop();
     process.exit(1);
   }
+  let clearDesktopListener: (() => void) | undefined;
+  const desktopRecord = process.env["OVIS_DESKTOP_APP"] === "1" ? process.env["OVIS_DESKTOP_COMMAND_RECORD"] : undefined;
+  if (desktopRecord !== undefined) {
+    try { clearDesktopListener = recordDesktopListener(desktopRecord, process.pid); }
+    catch (error) { console.error("Cannot record the desktop listener:", error); }
+  }
   telemetry.start();
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
+    try { clearDesktopListener?.(); }
+    catch (error) { console.error("Cannot clear the desktop listener record:", error); }
     telemetry.stop();
     instance.stop();
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from

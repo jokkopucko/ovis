@@ -91,6 +91,42 @@ const channelOf = (run: Run, terminal: string): number => run.core.viewers(termi
 /** every byte the screen sent a terminal's program, as hex, read from the fake's log: kept after the terminal is removed */
 const sentTo = (run: Run, terminal: string): string => Buffer.concat(run.core.log.flatMap((entry) =>
   entry.what === "frame" && entry.from === "viewer" && entry.terminal === terminal && (entry.kind === FRAME_DATA || entry.kind === FRAME_AUTOMATIC_INPUT) ? [entry.payload] : [])).toString("hex");
+
+it("a refused picker jump under another tab's zoom does not become the last pane", async () => {
+  const run = await start({ core: zoomedElsewhere() });
+  await run.live();
+  run.loop.dispatch({ type: "keys", keys: { last_pane: "prefix+y" }, at: run.clock.current });
+  await run.advance(1);
+  run.core.conflictNext(2);
+  run.type("\x02g/claude\r\r");
+  await run.settle();
+  const refused = run.loop.model();
+  expect(refused.notices.map(({ code }) => code)).toContain("layout_conflict");
+  expect(focused(refused.world, refused.focus).pane?.id).toBe("t2");
+  expect(refused.focus.previous).toBeNull();
+  await run.advance(1);
+  await run.keys("ctrl+b,y");
+  const after = run.loop.model();
+  expect(focused(after.world, after.focus).pane?.id).toBe("t2");
+}, TEST_MS);
+
+it("a refused picker jump preserves the previous pane even when the destination zoom shows it", async () => {
+  const run = await start({ core: zoomedElsewhere() });
+  await run.live();
+  for (const id of ["t2", "t1"]) {
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id }, at: run.clock.current });
+    await run.settle();
+  }
+  expect(run.loop.model().focus.previous).toBe("t2");
+  run.core.conflictNext(2);
+  run.type("\x02g/claude\r\r");
+  await run.settle();
+  const refused = run.loop.model();
+  expect(refused.notices.map(({ code }) => code)).toContain("layout_conflict");
+  expect(focused(refused.world, refused.focus).pane?.id).toBe("t2");
+  expect(refused.focus.previous).toBe("t2");
+}, TEST_MS);
+
 /** what the screen sent each terminal's program, by terminal, for every terminal it sent anything (one a split or a new
  * tab made too), so a destination outside the fixture's own terminals is seen */
 const received = (run: Run): Record<string, string> => Object.fromEntries([...new Set(run.core.log.flatMap((entry) =>

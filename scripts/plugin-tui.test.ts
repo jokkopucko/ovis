@@ -302,6 +302,13 @@ describe("core choice", () => {
     expect(picked(run.runs[0]!.env)).toEqual(expected);
   });
 
+  it("probes a relative socket from the user's folder and passes that same path to the screen", async () => {
+    const run = fake({ over: { caller: { HOME, HC_SOCKET: "./relative.sock" } } });
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(work(run.calls)).toEqual(["probe /home/me/project/relative.sock", "run screen"]);
+    expect(run.runs[0]?.env["HC_SOCKET"]).toBe("/home/me/project/relative.sock");
+  });
+
   it("is what the screen gets in its environment, without the Ovis server's token", async () => {
     const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, XDG_RUNTIME_DIR: "/run/test", OVIS_TOKEN: "secret", PATH: "/usr/bin" } } });
     expect(await launchTui(["--session", "work"], run.parts)).toBe(0);
@@ -494,7 +501,7 @@ describe("the shell's environment", () => {
       process.exit(await runTui([], () => null, () => ${JSON.stringify(account)}));
     `], {
       cwd: project, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", XDG_RUNTIME_DIR: join(scratch, "run"), HC_SESSION: "row60-home", HERDR_TEST_SESSION: "row60-home", PORT: "1", TMPDIR: scratch },
+      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HC_SOCKET: join(scratch, "hc.sock"), HC_SESSION: "row60-home", HERDR_TEST_SESSION: "row60-home", PORT: "1", TMPDIR: scratch },
     });
     const [err, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
     expect(code, err).toBe(1);
@@ -804,5 +811,24 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)("ovis 
       const help = await tui(join(scratch, "config"), flag);
       expect([help.code, help.err, help.out.startsWith("Usage: ovis tui")], flag).toEqual([0, "", true]);
     }
+  }, 30_000);
+
+  it("uses the core session from herdr's plugin config directory when called from a shell", async () => {
+    const config = join(scratch, "plugin-config");
+    const bin = join(scratch, "bin");
+    mkdirSync(config);
+    mkdirSync(bin);
+    writeFileSync(join(config, "env"), "HC_SESSION=work\n");
+    writeFileSync(join(bin, "herdr"), "#!/bin/sh\nprintf '%s\\n' \"$HOME/plugin-config\"\n", { mode: 0o755 });
+    const result = Bun.spawnSync([process.execPath, "scripts/plugin.ts", "tui"], {
+      cwd: ROOT,
+      env: {
+        HOME: scratch, PATH: bin, TMPDIR: scratch, XDG_CONFIG_HOME: join(scratch, "xdg-config"),
+        XDG_RUNTIME_DIR: join(scratch, "run"), BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+      },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("herdr-core session work is not running");
   }, 30_000);
 });

@@ -16,5 +16,7 @@ import { execWaiter } from "../../scripts/plugin-tui-waiter.ts";
 const caller: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 const parts = systemParts(caller, caller["HOME"] ?? "/");
 const screen = { command: [process.execPath, join(import.meta.dir, "host-fixture.ts")], cwd: import.meta.dir, file: null };
+const mode = process.argv[2] ?? "wait";
+if (mode === "job") process.stdout.write(`OVIS_TEST_JOB ${process.pid}\n`);
 const handOver = process.argv[3] === "waiter" ? { handOver: execWaiter } : {};
-process.exit(await launchTui([process.argv[2] ?? "wait"], { ...parts, screen, ...handOver }));
+process.exit(await launchTui([mode], { ...parts, screen, ...handOver }));

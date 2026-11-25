@@ -80,4 +80,5 @@ const asked = performance.now();
 const result = await host.probe();
 say(`PROBE ${Math.round(performance.now() - asked)} ${JSON.stringify(result)}`);
 say(`DEPTH ${host.colorDepth}`);
+if (mode === "job") say(`OVIS_TEST_SCREEN ${process.pid}`);
 say("READY");

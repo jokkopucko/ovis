@@ -14,7 +14,7 @@ function fixture() {
   const home = join(root, "home");
   const cli = join(home, "cli");
   mkdirSync(cli, { recursive: true });
-  const places = { serverBinary: join(home, "ovis-server"), desktopJson: join(home, "desktop.json"), stateDir: join(home, "state"), configDir: join(home, "config"), accountService: null };
+  const places = { serverBinary: join(home, "ovis-server"), desktopJson: join(home, "desktop.json"), stateDir: join(home, "state"), configDir: join(home, "config"), coreSession: "ovis", accountService: null };
   writeFileSync(places.serverBinary, '#!/bin/sh\nexec "$TEST_BUN" "$TEST_SERVER" "$@"\n', { mode: 0o755 });
   const launcher = writeLauncher(cli, "darwin", places);
   const host: CommandHost = { platform: "darwin", home, launcher, shell: "/bin/zsh", isFile, terminalPath: async () => "/usr/bin:/bin", run: async () => null };

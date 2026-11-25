@@ -4,7 +4,7 @@ import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileS
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { choosePort, coreEnv, coreSession, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
 import { appUpdateState, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
@@ -118,6 +118,7 @@ function writeCommand(): void {
       desktopJson: savedPath,
       stateDir,
       configDir: join(app.getPath("userData"), "cli-settings"),
+      coreSession: coreSession(process.env),
       accountService: process.env["OVIS_ACCOUNT_SERVICE_URL"]?.trim() || null,
     });
   } catch (error) {
@@ -282,9 +283,10 @@ async function launch(): Promise<void> {
     if (quitting) return;
     try {
       // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
-      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
+      const running = await startServer(programs, { ...serverEnv(process.env, { hc, stateDir, port }), OVIS_DESKTOP_COMMAND_RECORD: savedPath }, log, 60_000, (child) => {
         spawning = child;
-        writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.serverBinary, started: processStartSync(child.pid!) } });
+        if (child.pid === undefined) return;
+        writeSaved(savedPath, { port, server: { pid: child.pid, bun: programs.serverBinary, started: processStartSync(child.pid), ready: false } });
       });
       spawning = null;
       if (quitting) {
@@ -293,6 +295,10 @@ async function launch(): Promise<void> {
         return;
       }
       server = running;
+      const listeningRecord = readSaved(savedPath).server;
+      if (listeningRecord !== null && listeningRecord.pid === running.child.pid) {
+        writeSaved(savedPath, { port, server: { ...listeningRecord, ready: true } });
+      }
       browserPort = port;
       watchState();
       updateBrowser();
