@@ -109,6 +109,7 @@ import type { AlertPrefs } from "../../shared/notify-policy.ts";
 import type { TelemetryChange, TelemetryStatus } from "../../shared/telemetry.ts";
 import type { VoiceConfigUpdate, VoiceStatus } from "../../shared/voice.ts";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
+import { uploadableImage } from "./composerImageMime.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
 import { movingHerdrFocus } from "./followFocus.ts";
@@ -1032,8 +1033,9 @@ export function assertAttachable(file: Blob): void {
 }
 
 /** Any file: an image is stored as a paste, anything else under its own (sanitised) name. */
-export async function uploadPaneImage(paneId: string, image: Blob, machineId = "local"): Promise<string> {
-  assertAttachable(image);
+export async function uploadPaneImage(paneId: string, file: Blob, machineId = "local"): Promise<string> {
+  assertAttachable(file);
+  const image = await uploadableImage(file);
   const data_base64 = base64FromBytes(new Uint8Array(await image.arrayBuffer()));
   const response = await apiFetch(machinePath(machineId, "pane/image"), {
     method: "POST",

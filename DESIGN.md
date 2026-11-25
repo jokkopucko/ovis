@@ -4714,6 +4714,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   PC was only slow). The advice and the server's words fold behind a dim Details toggle under the
   line, never on it; the size limit's own sentence is the whole note. Removing the tile removes its
   note.
+- An iPhone's HEIC or HEIF photo is drawn to a JPEG in the browser before it uploads (at most 4096
+  pixels a side), since the agents read PNG, JPEG, GIF and WebP only; one the browser cannot decode
+  uploads as it is (`uploadableImage`, `lib/composerImageMime.ts`).
 - While a phone's keyboard is up, a tap on the transcript or a drag down it (`32px`) puts the
   keyboard away. Each only blurs the field, so the draft stays. The prompt card, which can stand
   where the transcript was on a short screen, does the same: a tap on its text (never on an
