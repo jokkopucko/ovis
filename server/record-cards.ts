@@ -23,7 +23,8 @@ import { hermesRecord } from "./dialogs/hermes-record.ts";
  */
 interface RecordSource {
   readonly record: Omit<AgentRecord, "pending">;
-  read(paneId: string): Promise<RecordRequest | null>;
+  /** The request the record holds open, null when it holds none, undefined when no record of the pane's session was found. */
+  read(paneId: string): Promise<RecordRequest | null | undefined>;
 }
 
 /** A request named by the record it is read from too, so the same call id in another session is another request. */
@@ -33,7 +34,7 @@ function within(record: string, request: RecordRequest | null): RecordRequest | 
 
 /** A record kept in a session file the agent appends to, found as the pane's conversation is: its last lines are read. */
 function sessionFile(record: AgentRecord, file: (transcript: NativeTranscript) => string | null): RecordSource {
-  return { record, read: async (paneId) => { const path = file(await paneTranscript(paneId)); return path === null ? null : within(path, record.pending(await tail(path))); } };
+  return { record, read: async (paneId) => { const path = file(await paneTranscript(paneId)); return path === null ? undefined : within(path, record.pending(await tail(path))); } };
 }
 
 /** Grok's session as herdr names it, or else the one its process holds (grok-store.ts `grokHeldTranscript`). */
@@ -55,18 +56,18 @@ const RECORDS: Readonly<Record<string, RecordSource>> = {
   copilot: sessionFile(copilotRecord, (found) => found.source === "copilot-transcript" ? found.path : null),
   // the local backend's messages, which Letta appends to as the turn goes; its transcript waits for the turn's end
   letta: sessionFile(lettaRecord, (found) => found.source === "letta-transcript" && found.letta ? lettaMessagesPath(found.letta.store, found.letta.agent, found.letta.conversation) : null),
-  grok: { record: grokRecord, read: async (paneId) => { const path = await grokSessionFile(paneId); return path === null ? null : within(path, grokRecord.pending(await tail(path))); } },
+  grok: { record: grokRecord, read: async (paneId) => { const path = await grokSessionFile(paneId); return path === null ? undefined : within(path, grokRecord.pending(await tail(path))); } },
   // the conversation database, read from a private copy on a file thread (agy.ts)
   agy: { record: agyRecord, read: async (paneId) => {
     const found = await paneTranscript(paneId);
-    return found.source === "agy-transcript" ? within(found.path, agyRecord.pending(await agyPendingStepsOffThread(found.path))) : null;
+    return found.source === "agy-transcript" ? within(found.path, agyRecord.pending(await agyPendingStepsOffThread(found.path))) : undefined;
   } },
   // state.db, read the same way (hermes.ts)
   // its own dangerous-command panel card takes it (prompt.ts), the generic card too
   hermes: { record: hermesRecord, read: async (paneId) => {
     const found = await paneTranscript(paneId);
     return found.source === "hermes-transcript"
-      ? within(`${found.path}\0${found.sessionId}`, hermesRecord.pending(await hermesPendingMessagesOffThread(found.path, found.sessionId))) : null;
+      ? within(`${found.path}\0${found.sessionId}`, hermesRecord.pending(await hermesPendingMessagesOffThread(found.path, found.sessionId))) : undefined;
   } },
 };
 
@@ -87,19 +88,48 @@ async function tail(path: string): Promise<string> {
 const unreadable = new Set<string>();
 
 export async function recordRequest(paneId: string, agent: string): Promise<RecordRequest | null> {
+  return (await readRecord(paneId, agent)) ?? null;
+}
+
+/** The record's open request as `read` gives it; undefined for no record, one not found or one that cannot be read. */
+async function readRecord(paneId: string, agent: string): Promise<RecordRequest | null | undefined> {
   const source = RECORDS[agent];
-  if (source === undefined) return null;
+  if (source === undefined) return undefined;
   try {
     return await source.read(paneId);
   } catch (error) {
     if (error instanceof ConversationUnavailable || error instanceof FileBusyError || error instanceof AgyUnavailable || error instanceof SnapshotUnavailable
-      || (error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      || (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     const kind = `${agent}\0${error instanceof Error ? error.name : typeof error}`;
     if (!unreadable.has(kind)) {
       unreadable.add(kind);
       console.warn(`prompt: ${agent}'s record could not be read for pane ${paneId}; its card stays the screen's (${error instanceof Error ? error.message : String(error)})`);
     }
-    return null;
+    return undefined;
+  }
+}
+
+/** What the record says of a request after its card's key went (recordSettled). */
+export type RecordOutcome = "closed" | "open" | "unread";
+
+const SETTLE_MS = 1_000;
+const LOOK_MS = 100;
+
+/**
+ * Whether request `id`, which the record held when its card's key went, is closed now, looked at for at most a second:
+ * "closed" when the record is read and holds no request or another one, "open" when it still holds that one by then (a
+ * key that did not take, or an agent that leaves a refused request open in its record, as Letta does), "unread" when
+ * no record could be read. None of them is a reason to send anything again.
+ */
+export async function recordSettled(paneId: string, agent: string, id: string, settleMs = SETTLE_MS, read = readRecord): Promise<RecordOutcome> {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    // a read still under way at the deadline proves nothing
+    const request = await Promise.race([read(paneId, agent), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => "late" as const)]);
+    if (request === "late" || request === undefined) return "unread";
+    if (request?.id !== id) return "closed";
+    if (Date.now() + LOOK_MS > deadline) return "open";
+    await Bun.sleep(LOOK_MS);
   }
 }
 
