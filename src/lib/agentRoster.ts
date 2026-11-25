@@ -52,3 +52,16 @@ export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: Age
   const nest = (part: AgentRow[]): AgentRow[] => nestRows(part, keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id));
   return { people: nest(people), background: nest(background) };
 }
+
+/** Nested rows (an agent, then the helpers under it) cut into families: a row that names an earlier member of the family before it as its parent joins that family. */
+export function agentFamilies(rows: readonly AgentRow[]): AgentRow[][] {
+  const families: AgentRow[][] = [];
+  let members = new Set<string>();
+  for (const row of rows) {
+    const parent = row.entry.pane.parent_pane_id;
+    if (families.length > 0 && parent !== undefined && members.has(sidebarPinKey(row.machine.id, parent))) families.at(-1)!.push(row);
+    else { families.push([row]); members = new Set(); }
+    members.add(sidebarPinKey(row.machine.id, row.entry.pane.pane_id));
+  }
+  return families;
+}
