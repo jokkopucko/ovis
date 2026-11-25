@@ -65,8 +65,10 @@ try {
   let routed: WebSocketRoute | undefined;
   let holdDiscard = false, delayedDiscard: (() => void) | undefined;
   let swallowResend = false, swallowedResend = false;
-  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
-    if (!admit) { void socket.close(); return; }
+  // a refused socket is closed before the handler returns: Playwright opens a socket the handler did not connect as
+  // soon as it returns, and an open that lands first leaves the page holding a socket that reaches no server
+  await page.routeWebSocket(/\/ws(?:\?|$)/, async (socket) => {
+    if (!admit) { await socket.close(); return; }
     const upstream = socket.connectToServer(); routed = socket;
     socket.onMessage((data) => {
       const frame = JSON.parse(String(data)) as ClientMessage;

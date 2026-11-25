@@ -191,11 +191,17 @@ try {
           } else if (scenario === "older") {
             const earlier = chat.getByRole("button", { name: "Earlier messages", exact: true });
             const height = await chat.evaluate((node) => node.scrollHeight);
-            await earlier.click();
-            await page.waitForFunction(({ selector, height }) => (document.querySelector(selector)?.scrollHeight ?? 0) > height + 1500, { selector: scrollerSelector, height });
+            // pressed from the keyboard where it is: a click scrolls the button to the top first, and the top
+            // reads an earlier page by itself, so the click would race a second read
+            await earlier.evaluate((button) => button.focus({ preventScroll: true }));
+            await page.keyboard.press("Enter");
+            const pagesRead = (reads: number, grown: number) => page.waitForFunction(({ selector, height, reads, grown }) =>
+              (window as Window & { olderReads?: number }).olderReads === reads && (document.querySelector(selector)?.scrollHeight ?? 0) > height + grown,
+            { selector: scrollerSelector, height, reads, grown });
+            await pagesRead(1, 1500);
             await chat.hover();
             await page.mouse.wheel(0, -height * 3);
-            await page.waitForFunction(({ selector, height }) => (document.querySelector(selector)?.scrollHeight ?? 0) > height + 6500, { selector: scrollerSelector, height });
+            await pagesRead(2, 6500);
             const place = await wheelTo(page, (place) => Math.floor((place.top + place.gap) / 4));
             assert.ok(Number(place.row?.split(" ").at(-1)) < 36, "reader is in the second earlier page");
             await workspace(page, panes.hermes).click();

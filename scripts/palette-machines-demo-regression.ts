@@ -117,8 +117,21 @@ try {
           assert.equal(await dialog.getByRole("option").filter({ hasText: "Claude Code" }).count(), 0, "the visible choices come from the remote catalog, not the local catalog");
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
-          await page.evaluate(() => history.pushState(null, "", "?machine=remote&new=workspace&agent=codex&name=Forward"));
-          await page.goBack();
+          // puts `link` one entry ahead of the one the page is on. The app writes its own address over the entry it is on
+          // whenever that differs (a roster update reruns it), so the link is never left as the current entry: the
+          // current address goes on top of it in the same task, and the page steps back past both
+          const linkAhead = async (link: string) => {
+            await page.evaluate((link) => {
+              const here = location.search;
+              history.pushState(null, "", link);
+              history.pushState(null, "", here);
+              (window as any).linkAheadLanded = false;
+              addEventListener("popstate", () => { (window as any).linkAheadLanded = true; }, { once: true });
+              history.go(-2);
+            }, link);
+            await page.waitForFunction(() => (window as any).linkAheadLanded === true);
+          };
+          await linkAhead("?machine=remote&new=workspace&agent=codex&name=Forward");
           await page.goForward();
           await dialog.waitFor();
           assert.equal(await dialog.locator("h2").innerText(), "New workspace · Build PC", "Forward to a creation-only link selects the link's PC before opening its dialog");
@@ -126,12 +139,12 @@ try {
           // opened (its PC's pane and that pane's folder) over the Forward entry once both are in: the next entry is
           // pushed after that write, or the write lands on it and the entry asks for Build PC again
           await page.waitForFunction(() => { const query = new URLSearchParams(location.search); return query.get("name") === "Forward" && query.has("pane") && query.has("cwd"); });
-          await page.evaluate(() => history.pushState(null, "", "?new=workspace&agent=codex&name=Here"));
-          await page.goBack();
+          await linkAhead("?new=workspace&agent=codex&name=Here");
           await page.goForward();
           await page.getByRole("dialog", { name: "New workspace \u00b7 Laptop", exact: true }).waitFor();
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
+          await page.waitForFunction(() => new URLSearchParams(location.search).has("ws"));
           const here = await page.evaluate(() => location.search);
           await page.evaluate((search) => { history.pushState(null, "", "?machine=offline&new=tab&name=WRONG"); history.pushState(null, "", search); }, here);
           await page.goBack();
