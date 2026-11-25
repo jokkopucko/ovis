@@ -25,12 +25,12 @@ import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { holdWaitMs } from "./joinHold.ts";
-import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, oldDashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, markRemovedPc, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
+import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, oldDashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, markRemovedPc, keepPairingReturn, takePairingReturn, offerDigest, keepTypedCode, typedCode } from "./shellState.ts";
 import { setPcNewness, type PcNewness } from "./newPcHere.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
-import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
+import { ADMISSION_WAIT_MS, AddedToListError, ConsentChangedError, createAccountController, ListUnwritableError, PlacedInListError } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
 import { listRemovedLink, refusalOf } from "./firstLink.ts";
@@ -729,13 +729,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     try {
       // the account of the sign-in stored now, read and nothing more: a page that opened a saved PC before it read
       // the account's PCs is signed in all the same
-      const signedIn = await account.storedAccount();
+      // The account the pairing was prepared under (the confirm's, where it named one): another tab that signed in as
+      // someone else since gets nothing of this act. A session with no such act goes to whoever is signed in.
+      const signedIn = attempt.recordFor ?? await account.storedAccount();
       if (signedIn === undefined) return;
       const endpoint = Array.from(importPublicKey(attempt.offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
-      // what this device did itself here: a pairing it just made at the PC, by the PC's own code for the account, or
-      // otherwise (the digits, a code for this device alone); nothing, where it opened a PC it held or was shown
+      // what this device did itself here: a pairing it just made at the PC, by a QR code of that PC for the account
+      // (`added`), or otherwise (a code typed here, the digits, a code for this device alone: `paired`); nothing, where
+      // it opened a PC it held or was shown
       const made = !attempt.paired || attempt.fresh === true;
-      await noteSession(signedIn, endpoint, !made ? "none" : attempt.code && attempt.accountEnrollment === true && !attempt.accountless ? "added" : "paired");
+      // a code that carries the account's mark (`admission: 1`): one without it pairs with the PC alone
+      const scanned = attempt.code && attempt.offer.admission === 1 && attempt.codeTyped !== true && attempt.accountEnrollment === true && !attempt.accountless;
+      await noteSession(signedIn, endpoint, !made ? "none" : scanned ? "added" : "paired");
     } catch (error) {
       console.warn("Ovis: this session was not written to the device's record of its PCs", error instanceof Error ? error.name : error);
     }
@@ -902,6 +907,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const listOpen = attempt.listOpen;
       const prepared = accountOpen === undefined && listOpen === undefined ? await account.prepare(attempt.offer, controller.signal, consentOf(attempt)) : {};
       attempt.accountEnrollment = prepared.accountKey !== undefined;
+      if (prepared.account !== undefined) attempt.recordFor = prepared.account;
       if (!attempt.paired) {
         const marked = attempt.offer.code !== undefined && attempt.offer.admission === 1;
         const saved = marked ? await store.get(attempt.offer.server_id) : undefined;
@@ -1002,7 +1008,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}),
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.recordFor === undefined ? {} : { recordFor: attempt.recordFor }), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}),
       // which key this session signed in with stays with it: a refusal at a later reconnect is read by that. That the
       // other key was tried once on the way here ends with this sign-in: a PC that pins later is asked once more
       ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}) };
@@ -1131,6 +1137,30 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       markedPairings.delete(attempt.offer.server_id);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
+      // The pairing was spent on adding the PC to the account's list: its row is gone, and the PC is opened anew as a
+      // PC of the list, with the key the list holds for this device. No pairing of this device's stands behind it.
+      if (error instanceof AddedToListError) {
+        markedPairings.delete(attempt.offer.server_id);
+        if (last !== attempt) return;
+        const key = account.listKey;
+        const { code: _spent, ...offer } = attempt.offer;
+        if (transport === opened) transport = null;
+        if (key !== null) { void connect({ offer, code: false, paired: true, listOpen: key }); return; }
+        // the list is not read on this page yet: the front page, where the PC has its row and a tap opens it
+        cancelAttempt();
+        void showFront();
+        return;
+      }
+      // The PC's entry is in the list and the PC has not read it yet (or that is not known yet), or this device cannot
+      // write its account's list: the pairing stays, and nothing is opened over its session, which lets only the
+      // account's first steps through. The front page, where the PC has its row
+      if (error instanceof PlacedInListError || error instanceof ListUnwritableError) {
+        markedPairings.delete(attempt.offer.server_id);
+        if (last !== attempt) return;
+        cancelAttempt();
+        void showFront();
+        return;
+      }
       if (linkRefused(opened, attempt, error)) return;
       // The account's signed list removed this PC, and it takes no link into that account until it is a new PC. This
       // pairing was not made for the account alone (no mark), so it stands and nothing is forgotten; while its own
@@ -1190,7 +1220,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   /** `consent`: the sign-in the confirm named, `null` when it said the device gets a key of its own; absent for the sheet's join, which acts as whoever is signed in. */
   const pair = (consent?: AccountSession | null): void => {
     if (entry.offer === null || shown?.kind !== "confirm") return;
-    void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id), ...(consent === null ? { accountless: true } : consent ? { signIn: consent } : {}) });
+    void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id), ...(entry.offer.code !== undefined && typedCode(entry.offer) ? { codeTyped: true } : {}), ...(consent === null ? { accountless: true } : consent ? { signIn: consent } : {}) });
   };
   /**
    * The confirm's button. What was confirmed is what the screen said, about the account it named: the sign-in and its
@@ -1291,7 +1321,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       codeOffer = offer; show({ kind: "code-compare", offer });
     }, (error: unknown) => { if (!controller.signal.aborted) show({ kind: "code-entry", failure: error instanceof TypedCodeError ? error.failure : "unreachable" }); });
   };
-  const codeMatch = (): void => { const offer = codeOffer; codeOffer = null; if (offer) { keepConfirmedPc(offer.server_id); navigate(encodeOffer(offer, window.location.origin)); } };
+  const codeMatch = (): void => { const offer = codeOffer; codeOffer = null; if (offer) { keepConfirmedPc(offer.server_id); keepTypedCode(offer); navigate(encodeOffer(offer, window.location.origin)); } };
   const cancel = (): void => {
     if (entry.serverId !== null && launchJoinFor(entry.serverId)) keepLaunchJoin(null);
     // whatever this page's own load is still waiting for (its saved pairing, the account, a launch) is no longer wanted

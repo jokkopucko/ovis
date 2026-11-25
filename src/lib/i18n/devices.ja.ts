@@ -361,6 +361,7 @@ export const DEVICES_JA: Record<string, string> = {
   "A PC not in the list": "一覧にない PC",
   "user@host or address": "user@host またはアドレス",
   "Enter an SSH address, such as user@host.": "user@host のような SSH アドレスを入力してください。",
+  "Update Ovis on this PC": "この PC の Ovis を更新してください",
   "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "確認のあとに {name} が新しいキーに移りました。何も削除していません。削除するにはもう一度「削除」を押してください。",
   "Moved to a new key on {day}": "{day} に新しいキーに移動",
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "この端末のアカウントでの位置が新しいキー（{name}）に引き継がれました。心当たりがなければ、別の端末からその端末を削除してください。",

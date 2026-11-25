@@ -2,7 +2,7 @@ import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
-import { accountList, type AccountListView, type ListOffer } from "../account/accountList.ts";
+import { accountList, type AccountList, type AccountListView, type ListOffer } from "../account/accountList.ts";
 import { deviceCard, deviceListKeys } from "../account/listKeys.ts";
 import { listReading, pcsByList, allOutside, unreadCopy } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
@@ -11,7 +11,9 @@ import { forgetMembership, inList, leaveList, otherDevices, removeOthers, tidyOn
 import { scopeOf, type RemoveOutcome, type WriteScope } from "../account/listRemoveDevice.ts";
 import { LIST_WRITE_WAITING_EVENT } from "../account/listWrite.ts";
 import { listNames } from "../account/listGenesis.ts";
-import { myPcs } from "../account/myPcs.ts";
+import { nameListToPc } from "../account/listNamed.ts";
+import { holdsList } from "../account/listWrite.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";
 import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, indexedAccountService, offeredProviders, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
@@ -62,6 +64,49 @@ const wait = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((r
 class AnotherAccountError extends Error {
   constructor() { super("The sign-in is for another account"); this.name = "AnotherAccountError"; }
 }
+/**
+ * The pairing a scan made was spent on adding its PC to the account's signed list (account/listNamed.ts): the PC is
+ * in the list, the pairing's row is gone, and whoever holds the session opens the PC anew, as a PC of the list.
+ */
+export class AddedToListError extends Error {
+  constructor(readonly serverId: string) {
+    super("The PC was added to the account's list, and the pairing that named it is spent");
+    this.name = "AddedToListError";
+  }
+}
+
+/**
+ * A scanned PC of an account that has a signed list, on a device that cannot write that list now (ListUnwritableError):
+ * no link from before goes, the pairing stays the device's own, and nothing is opened over its session. The PC is
+ * added to the list from a device that can.
+ */
+export class ListUnwritableError extends Error {
+  constructor(readonly serverId: string) {
+    super("The account has a signed list that this device cannot write to now");
+    this.name = "ListUnwritableError";
+  }
+}
+
+/** Whether `account` has a list, by this device's own knowledge: a copy it holds, read or not, or a list the account service names that this device is not in yet. */
+async function accountHasList(list: AccountList, account: string): Promise<boolean> {
+  const view = list.view();
+  if (view.account === account) return holdsList(view) || view.status.at === "not_in";
+  return unreadCopy(list, account);
+}
+
+/**
+ * A scan put the PC's entry in the account's signed list, as this device's own copy shows, and the PC has not said yet
+ * that it read it (account/listNamed.ts `placed`), or whether the entry was placed is not known yet (`unknown`): the
+ * pairing stays this device's own and is not spent. Its session lets nothing but the account's first steps through, so
+ * nothing is opened over it: the PC has its row in the list, and opens from it once it took the list.
+ */
+export class PlacedInListError extends Error {
+  constructor(readonly serverId: string) {
+    super("The PC's entry is in the account's list, and the PC has not read it yet");
+    this.name = "PlacedInListError";
+  }
+}
+
 /**
  * The sign-in a pairing's confirm was drawn for is no longer the one stored (another tab signed out, or in as someone
  * else): the pairing is not made, and the person is asked again.
@@ -899,8 +944,9 @@ export function createAccountController(mount: RelayShellMount, view: {
     // other PC never sees it.
     const listCard = intent === "account" && session !== undefined && key !== undefined ? await cardFor(session, key) : null;
     signal.throwIfAborted();
-    const prepared: { accountKey?: AccountKey; intent?: "pc" | "account"; listCard?: { readonly list: string; readonly enc: string; readonly card: string } } =
-      key ? { accountKey: key, intent, ...(listCard === null ? {} : { listCard }) } : {};
+    // `account`: the sign-in's the pairing is prepared under, which the confirm named when it named one
+    const prepared: { accountKey?: AccountKey; intent?: "pc" | "account"; listCard?: { readonly list: string; readonly enc: string; readonly card: string }; account?: string } =
+      key ? { accountKey: key, intent, ...(listCard === null ? {} : { listCard }), ...(session === undefined ? {} : { account: session.account }) } : {};
     return prepared;
   };
   /**
@@ -919,7 +965,8 @@ export function createAccountController(mount: RelayShellMount, view: {
     void done.finally(() => { mine.delete(stop); if (mine.size === 0 && stops.get(serverId) === mine) stops.delete(serverId); }).catch(() => {});
     // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
     // a link refused for a PC the account's list removed is said on the pairing's own screen, in place of the app
-    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null && !listRemovedLink(error)) settled(); });
+    // (nor is the app opened over a session whose pairing was spent on adding the PC to the list: the shell opens it anew)
+    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null && !listRemovedLink(error) && !(error instanceof AddedToListError) && !(error instanceof PlacedInListError) && !(error instanceof ListUnwritableError)) settled(); });
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
@@ -1050,6 +1097,49 @@ export function createAccountController(mount: RelayShellMount, view: {
           }
         }
         signal?.throwIfAborted();
+        // The pairing was made with the PC's own code for the account (a scanned QR), and this device may write its
+        // account's list: it names the list to the PC in place of the link, and signs the PC into the list with the
+        // card it takes over this session (account/listNamed.ts). A PC with no such call gets the link, as before.
+        // A page that has not read its list yet reads it first. A device that cannot write a list its account has (it
+        // waits to be let in, its copy does not read, it cannot reach it) sends no link from before either: the pairing
+        // stays its own and nothing is opened over it; the PC is added to the list from a device that can
+        if (posted !== undefined && fresh && lists !== null && lists.view().account !== session.account) await lists.sync().catch(() => undefined);
+        if (posted !== undefined && fresh && lists !== null && lists.writer() === null && await accountHasList(lists, session.account)) {
+          await keptOwn();
+          window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+          throw new ListUnwritableError(serverId);
+        }
+        if (posted !== undefined && fresh && lists !== null && lists.writer() !== null) {
+          const endpoint = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          const named = await nameListToPc({
+            fetch, list: lists, account: session.account, endpoint, names: listNames((device.name ?? serverId.slice(0, 8)).slice(0, 48), null),
+            admit: async () => { await account.forSignIn(session).admitPc(serverId, signal); }, ...(signal === undefined ? {} : { signal }),
+          });
+          if (named.outcome === "refused") {
+            // the PC's own refusals of that pairing are the link's (the code ended, the account did not confirm the device)
+            if (firstLinkRefusal(named.why, status.account)) throw new AccountPcError(409, named.why, null, true);
+            throw new AccountPcError(409, named.why);
+          }
+          // The entry is in this device's own copy and the PC has not said yet that it read it, or whether it was placed
+          // is not known yet: the pairing is not spent (it is the way to the PC until the PC takes the list), and the PC
+          // is opened anew from its row once it did
+          if (named.outcome === "placed" || named.outcome === "unknown") {
+            await keptOwn();
+            window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+            throw new PlacedInListError(serverId);
+          }
+          if (named.outcome === "added") {
+            // The PC read its entry, and this device's own copy holds it: the pairing that named it is spent. Its row
+            // goes, by that very row inside the delete (a newer pairing another tab saved meanwhile is that tab's), and
+            // the PC is opened as any PC of the list is, with the key the list holds for this device (shell.tsx)
+            const spent = assertPairing(await store.get(serverId));
+            if (spent.device_id === null || !await store.removeRow(serverId, spent.device_id)) throw new DOMException("The pairing was forgotten or replaced", "AbortError");
+            window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+            await lists.sync().catch(() => undefined);
+            await refresh(false, true);
+            throw new AddedToListError(serverId);
+          }
+        }
         // in one transaction with a leave's mark (leave.ts): a link recorded here is in that leave's snapshot, and
         // none goes out once a leave of this key has begun, in any tab, or for a sign-in that has ended
         const link = newRecordId();
@@ -1197,6 +1287,9 @@ export function createAccountController(mount: RelayShellMount, view: {
       if (mine !== undefined && mine.account === session.account && mine.status.at === "not_in") return "local";
       return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
+      // the pairing's row went with the PC's place in the list, or stays the device's own while the PC reads its
+      // entry: nothing of it is left to mark
+      if (error instanceof AddedToListError || error instanceof PlacedInListError || error instanceof ListUnwritableError) throw error;
       assertPairing(await store.get(serverId));
       if (error instanceof AccountServiceUnreachableError) unanswered = true;
       await record("failed");

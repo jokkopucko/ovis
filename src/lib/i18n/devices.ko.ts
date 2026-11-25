@@ -361,6 +361,7 @@ export const DEVICES_KO: Record<string, string> = {
   "A PC not in the list": "목록에 없는 PC",
   "user@host or address": "user@host 또는 주소",
   "Enter an SSH address, such as user@host.": "user@host 같은 SSH 주소를 입력하세요.",
+  "Update Ovis on this PC": "이 PC의 Ovis를 업데이트하세요",
   "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "확인한 뒤에 {name} 기기가 새 키로 바뀌었어요. 아무것도 제거하지 않았으니, 제거하려면 다시 제거를 누르세요.",
   "Moved to a new key on {day}": "{day}에 새 키로 바뀜",
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "이 기기의 계정 자리가 새 키({name})로 넘어갔어요. 직접 한 일이 아니라면 다른 기기에서 그 기기를 제거하세요.",

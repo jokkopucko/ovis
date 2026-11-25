@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
-import { pagePcs, readPageList } from "../lib/account/listPcs.ts";
+import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
+import { pageListReading, pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
@@ -16,6 +17,7 @@ import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
 import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
 import { signInOfAccount } from "./AccountPcs.tsx";
+import { AddPcByNumber } from "./AddPcByNumber.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import type { Shown } from "../lib/account/listLeave.ts";
 import { ListDevices, showsListDevices, useListView } from "./ListDevices.tsx";
@@ -156,15 +158,33 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     if (how === "directory" && !byList && inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
+  // The PCs that posted their keys for the list, where this device may add one to it: a row the list does not hold
+  // yet offers Add for such a PC, and says to update one that posted nothing. null: not read, so neither is said
+  const [posts, setPosts] = useState<readonly PostedPc[] | null>(null);
+  const [adding, setAdding] = useState<{ readonly pc: DirectoryPc; readonly post: PostedPc } | null>(null);
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
   // (a page that has not read its copy of the list yet reads it first: until a read ends, every row is marked)
   // Reads overlap (the list moves while the directory is read): only the newest one draws, so an older answer, or an
   // older failure, never takes the place of a newer one
   const reads = useRef(0);
-  const read = useCallback(() => {
+  const read = useCallback(async () => {
     const mine = ++reads.current;
-    return service.listPcs().then(async (listed) => { await readPageList(account); if (mine === reads.current) setPcs(pagePcs(account, listed)); })
-      .catch(() => { if (mine === reads.current) setPcs("failed"); });
+    let shown: readonly DirectoryPc[];
+    try {
+      const listed = await service.listPcs();
+      await readPageList(account);
+      shown = pagePcs(account, listed);
+    } catch { if (mine === reads.current) setPcs("failed"); return; }
+    if (mine !== reads.current) return;
+    setPcs(shown);
+    const list = pageAccountList();
+    // only a device that may write the list adds a PC to it
+    if (list === null || pageListReading(account) !== "in" || list.writer() === null || !shown.some((pc) => pc.not_in_list === true)) { setPosts(null); return; }
+    const posted = await postedPcs(list).catch((error: unknown) => {
+      console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
+      return null;
+    });
+    if (mine === reads.current) setPosts(posted);
   }, [service, account]);
   useEffect(() => {
     void read();
@@ -184,11 +204,13 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           : pcs.map((pc) => {
             // a PC the list holds that the account service gives no way to: off, as far as this device can tell, and removable
             const off = offlinePc(pc, now) || (pc.by_list === true && pc.relay === null);
+            const post = pc.not_in_list === true && !watching ? posts?.find((each) => each.server_id === pc.server_id) : undefined;
             return (
               <li key={pc.server_id} className="account-manage-row" data-pc-id={pc.server_id}>
                 <StatusDot state={off ? "offline" : "ready"} />
                 <span className="visually-hidden">{off ? t("Offline") : t("Online")}</span>
-                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}</span>}</span>
+                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Update Ovis on this PC")}` : ""}</span>}</span>
+                {post !== undefined && <button type="button" className="btn account-head-btn" data-action="add-pc" onClick={() => setAdding({ pc, post })}>{t("Add|account pc")}</button>}
                 {/* a PC in use lists itself again on its next pull: only an offline one is offered, whatever its age */}
                 {off && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}
               </li>
@@ -196,6 +218,9 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           })}
       </ul>
       {removal.prompt !== null && <p className="settings-condition">{removal.prompt}</p>}
+      {adding !== null && pageAccountList() !== null && (
+        <AddPcByNumber list={pageAccountList()!} account={account} post={adding.post} name={adding.pc.label} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
+      )}
       {asked !== null && (
         <ConfirmDialog title={t("Remove {name} from your account?", { name: asked.label })}
           body={t("{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.", { name: asked.label })}

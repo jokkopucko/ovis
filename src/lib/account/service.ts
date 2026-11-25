@@ -11,7 +11,7 @@ import { newRecordId, pcAddSigningBytes, registerSigningBytes, type AccountRecor
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
-import { claimsOf, genesisBody, hintOf, nowOf, pageOf, wrapsOf, type ListClaim, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
+import { attemptOf, claimsOf, genesisBody, hintOf, nowOf, pageOf, postsOf, wrapsOf, type ListAttempt, type ListClaim, type ListPost, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
 import type { PcProofFields } from "./pcProof.ts";
 import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
@@ -862,6 +862,27 @@ export class AccountService {
     const claims = claimsOf(await this.listCall("GET", `/v2/lists/${list}/claims`, undefined, signal));
     if (claims === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no claims");
     return claims;
+  }
+
+  /** The PCs that posted their keys for the list and still wait to be added (`GET /v2/lists/{list}/posts`), each with the comparison under way for it. */
+  async listPosts(list: string, signal?: AbortSignal): Promise<ListPost[]> {
+    const posts = postsOf(await this.listCall("GET", `/v2/lists/${list}/posts`, undefined, signal));
+    if (posts === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no posts");
+    return posts;
+  }
+
+  /**
+   * One message of the comparison of numbers with a PC that posted (`POST /v2/lists/{list}/posts/{endpoint}/attempt`),
+   * which the account service only carries. Without `reveal` it opens an attempt with this device's key and its
+   * commitment, in place of any before it; with `reveal` it hands over the nonce it committed to, once the PC answered
+   * with its own. Refusals are the service's: `409 post_changed` (the PC posted other keys, or none stands),
+   * `409 attempt_changed` (not the open attempt, or the PC has not answered yet), `429 attempts_spent`.
+   */
+  async listAttempt(list: string, endpoint: string, message: { readonly key: string; readonly adder: string; readonly commitment: string; readonly reveal?: string }, signal?: AbortSignal): Promise<ListAttempt> {
+    const body = await this.listCall("POST", `/v2/lists/${list}/posts/${endpoint}/attempt`, message, signal);
+    const attempt = isRecord(body) ? attemptOf(body.attempt) : undefined;
+    if (attempt === undefined || attempt === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no attempt");
+    return attempt;
   }
 
   /**

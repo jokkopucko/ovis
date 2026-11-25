@@ -90,7 +90,6 @@ export const CHAT_ZH: Record<string, string> = {
   "The list is empty.": "列表为空。",
   "Every update, in order": "全部更新（按顺序）",
   "Loading conversation…": "正在加载对话…",
-  "Waiting for the PC…": "正在等待电脑响应…",
   "The PC isn't responding": "电脑没有响应",
   "Couldn't load the conversation": "无法加载对话",
   "Couldn't load the terminal output": "无法加载终端输出",

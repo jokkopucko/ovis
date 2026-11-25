@@ -90,7 +90,6 @@ export const CHAT_KO: Record<string, string> = {
   "The list is empty.": "목록이 비어 있습니다.",
   "Every update, in order": "모든 업데이트(순서대로)",
   "Loading conversation…": "대화를 불러오는 중…",
-  "Waiting for the PC…": "PC 응답 기다리는 중…",
   "The PC isn't responding": "PC가 응답하지 않습니다",
   "Couldn't load the conversation": "대화를 불러오지 못했습니다",
   "Couldn't load the terminal output": "터미널 출력을 불러오지 못했습니다",

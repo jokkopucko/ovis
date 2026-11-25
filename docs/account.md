@@ -2588,12 +2588,16 @@ that it has a history by the time something does.
   by the device's clock. `since` is written once and never moved. A session the PC refused, or
   one that only reached the relay, writes nothing.
 - **`how`**: what this device did itself for that PC that the account service could not have
-  faked. `paired`: it paired with it at the PC (a QR, a code, the digits). `added`: the person
-  pressed Add for it where a number was compared on both screens or the PC's QR code was scanned
-  (nothing writes this yet). `ssh`: this device added it over SSH. `window`: the page is that
-  PC's own window. `none`: everything else, also one press of **Add** on the card of a PC that
-  asked, where no number is compared: the service could have listed a PC of its own at that
-  moment. It moves from `none` to one of the others, never back and never between them.
+  faked. `paired`: it paired with it at the PC (a code typed on this device, the digits, a code
+  for this device alone). `added`: a QR code of that PC was scanned for the account, or the
+  person pressed Add for it where a number was compared on both screens (the card's Add with the
+  number, on an account with a signed list). `ssh`: this device added it over SSH. `window`: the
+  page is that PC's own window. `none`: everything else, also one press of **Add** on the card of
+  a PC that asked, where no number is compared: the service could have listed a PC of its own at
+  that moment. It moves from `none` to one of the others, never back and never between them. The
+  act is written for the account the pairing was confirmed for, whoever signed in since. A value
+  this build does not know (a later build wrote it) is kept as it is, through every write, and
+  counts as `none` for any decision.
 - It is kept in the browser's storage under `ovis:seen-pcs:<account>`, the newest 256 PCs for an
   account. Signing out keeps it: it is the device's memory, not the account's. Removing a PC from
   the account on this device forgets its row. Cleared site data loses the record, which only

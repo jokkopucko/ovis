@@ -361,6 +361,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "A PC not in the list": "不在列表中的电脑",
   "user@host or address": "user@host 或地址",
   "Enter an SSH address, such as user@host.": "请输入 SSH 地址，例如 user@host。",
+  "Update Ovis on this PC": "请更新这台 PC 上的 Ovis",
   "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "确认之后 {name} 换成了新的密钥。没有移除任何内容：要移除它，请再次点击移除。",
   "Moved to a new key on {day}": "{day} 换成了新密钥",
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "此设备在账户中的位置已交给一个新密钥（{name}）。如果不是你做的，请在你的另一台设备上移除那台设备。",

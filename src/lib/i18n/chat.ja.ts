@@ -90,7 +90,6 @@ export const CHAT_JA: Record<string, string> = {
   "The list is empty.": "リストは空です。",
   "Every update, in order": "すべての更新（順番どおり）",
   "Loading conversation…": "会話を読み込んでいます…",
-  "Waiting for the PC…": "PC の応答を待っています…",
   "The PC isn't responding": "PC が応答しません",
   "Couldn't load the conversation": "会話を読み込めませんでした",
   "Couldn't load the terminal output": "ターミナル出力を読み込めませんでした",

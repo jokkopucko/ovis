@@ -19,8 +19,14 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
  */
 export type SeenHow = "paired" | "added" | "ssh" | "window" | "none";
 
+/**
+ * A value of `how` this build does not know: a later build wrote it. The row is kept as it is, through every write,
+ * and the value is never replaced; for any decision it counts as `none` (howOf).
+ */
+export type OtherHow = string & { readonly other?: never };
+
 /** `since`, `last`: seconds since 1970 by this device's clock, of the first and the latest session in which the PC let this device in; absent until there was one. */
-export interface SeenPc { readonly since?: number; readonly last?: number; readonly how: SeenHow }
+export interface SeenPc { readonly since?: number; readonly last?: number; readonly how: SeenHow | OtherHow }
 
 /** `tried`: when this device first tried to start or to join the account's list, in seconds; written once and cleared when that try ends. */
 export interface SeenPcs { readonly v: 1; readonly account: string; readonly pcs: Readonly<Record<string, SeenPc>>; readonly tried?: number }
@@ -30,15 +36,24 @@ export const SEEN_PCS_MAX = 256;
 
 const ENDPOINT = /^[0-9a-f]{64}$/;
 const HOWS: readonly SeenHow[] = ["paired", "added", "ssh", "window", "none"];
+/** The form a value of `how` takes, known to this build or not. */
+const HOW = /^[a-z][a-z0-9_]{0,31}$/;
+
+/** What `row` says this device did for its PC, for a decision: a value this build does not know counts as `none`. */
+export function howOf(row: SeenPc | undefined): SeenHow {
+  return row !== undefined && HOWS.includes(row.how as SeenHow) ? row.how as SeenHow : "none";
+}
 const keyOf = (account: string): string => `ovis:seen-pcs:${account}`;
 const isSeconds = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 function readRow(value: unknown): SeenPc | null {
-  if (!isRecord(value) || !HOWS.includes(value.how as SeenHow)) return null;
+  // a value a later build wrote is kept as it is: no reader drops a row for its `how`
+  if (!isRecord(value) || typeof value.how !== "string" || !HOW.test(value.how)) return null;
+  const how = value.how as SeenHow | OtherHow;
   const { since, last } = value;
-  if (since === undefined && last === undefined) return { how: value.how as SeenHow };
-  return isSeconds(since) && isSeconds(last) && last >= since ? { since, last, how: value.how as SeenHow } : null;
+  if (since === undefined && last === undefined) return { how };
+  return isSeconds(since) && isSeconds(last) && last >= since ? { since, last, how } : null;
 }
 
 /** The newest SEEN_PCS_MAX rows by their last session; a row with no session yet (an act alone) counts as the newest. */

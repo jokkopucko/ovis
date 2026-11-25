@@ -316,6 +316,13 @@ export interface Attempt {
    * forgotten or replaced for it, so a Forget or a newer pairing made since (another tab) stands. null: none was saved
    */
   row?: string | null;
+  /**
+   * the code was typed on this device (a code the PC showed, entered and compared here), not scanned: the pairing earns
+   * `paired` in the device's record of its PCs, never `added` (docs/account.md, "What a device remembers of its PCs")
+   */
+  codeTyped?: true;
+  /** the account the pairing was prepared under, which the confirm named when it named one: what the device's record of this act goes to */
+  recordFor?: string;
 }
 
 
@@ -388,6 +395,18 @@ export function takePairingReturn(offer: RelayOffer | null, now = Date.now()): (
     if (server_id !== offer.server_id || digest !== offerDigest(offer) || typeof at !== "number" || typeof sent !== "number" || !(refused === null || typeof refused === "string")) return null;
     return { server_id, offer: digest, at, refused, provider: ACCOUNT_PROVIDERS.includes(provider as AccountProvider) ? provider as AccountProvider : null, sent, late: now < sent || now - sent > PAIRING_RETURN_MS };
   } catch { return null; }
+}
+
+/**
+ * The offer a code typed on this device turned into, in this tab: only its digest (offerDigest), never the code. The
+ * page that pairs with it pairs as a typed code does, a reload included; another offer, a scanned one most of all,
+ * never reads it.
+ */
+export function keepTypedCode(offer: RelayOffer): void {
+  try { sessionStorage.setItem("ovis-typed-code", offerDigest(offer)); } catch { /* not kept: the pairing is recorded as any code's */ }
+}
+export function typedCode(offer: RelayOffer): boolean {
+  try { return sessionStorage.getItem("ovis-typed-code") === offerDigest(offer); } catch { return false; }
 }
 
 /** One navigation's consent: only the PC ID, consumed even if the next load has no offer. */
