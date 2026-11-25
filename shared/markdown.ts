@@ -2,6 +2,7 @@ import { fileUriPath } from "./fileUri.ts";
 import { charBefore } from "./lookbehind.ts";
 import { visualizationReference, type VisualizationReference } from "./visualization.ts";
 import { parseHtmlBlock, startsHtml } from "./markdownHtml.ts";
+import { linkTaskCode, linkTaskIds } from "./taskLinks.ts";
 
 export type InlineNode =
   | { type: "text"; value: string }
@@ -257,7 +258,7 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
     let token = match[0];
     const image = token.startsWith("[") && index > offset && source[index - 1] === "!";
     const textEnd = image ? index - 1 : index;
-    if (textEnd > offset) nodes.push({ type: "text", value: source.slice(offset, textEnd) });
+    if (textEnd > offset) nodes.push(...plainText(source.slice(offset, textEnd), links));
     if (token.startsWith(":codex-file-citation{")) {
       const citation = links ? codexFileCitation(token) : null;
       nodes.push(citation === null ? { type: "text", value: token }
@@ -274,7 +275,7 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
       const href = /^www\./i.test(token) ? `https://${token}` : token;
       nodes.push(links ? { type: "link", href, children: [{ type: "text", value: token }] } : { type: "text", value: token });
     } else if (token.startsWith("`")) {
-      nodes.push({ type: "code", value: token.slice(1, -1) });
+      nodes.push(links ? linkTaskCode(token.slice(1, -1)) : { type: "code", value: token.slice(1, -1) });
     } else if (token.startsWith("\\(")) {
       nodes.push({ type: "math", value: token.slice(2, -2) });
     } else if (token.startsWith("$")) {
@@ -298,8 +299,12 @@ export function parseInline(source: string, links = true, depth = 0): InlineNode
     }
     offset = index + token.length;
   }
-  if (offset < source.length) nodes.push({ type: "text", value: source.slice(offset) });
+  if (offset < source.length) nodes.push(...plainText(source.slice(offset), links));
   return nodes;
+}
+
+function plainText(value: string, links: boolean): InlineNode[] {
+  return links ? linkTaskIds(value) : [{ type: "text", value }];
 }
 
 // `s`: the text may hold a line separator (U+2028) that `.` would stop at, and the pattern then

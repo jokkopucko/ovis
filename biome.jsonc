@@ -1,0 +1,8 @@
+{
+  // Fork of devswha/ovis: upstream writes its own style by hand and checks it with
+  // `bun run typecheck` and `bun test`. The central biome default would rewrite every touched
+  // upstream file, so this fork turns biome off and keeps upstream's style.
+  "formatter": { "enabled": false },
+  "linter": { "enabled": false },
+  "assist": { "enabled": false }
+}
