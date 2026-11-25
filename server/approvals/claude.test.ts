@@ -17,7 +17,7 @@ const launch = (hooks: ApprovalHub, paneId: string, args: string[] | undefined) 
 const ULTRACODE = JSON.stringify({ ultracode: true });
 type CommandHook = { type: string; command: string; args: string[] };
 type HookEntry = { matcher?: string; hooks: CommandHook[] };
-type HookSettings = { ultracode?: boolean; hooks: { PermissionRequest: HookEntry[]; UserPromptSubmit: HookEntry[]; Stop: HookEntry[] } };
+type HookSettings = { ultracode?: boolean; hooks: Record<"PermissionRequest" | "UserPromptSubmit" | "Stop" | "SessionStart" | "PostCompact" | "UserPromptExpansion", HookEntry[]> };
 
 const roots: string[] = [];
 const started: ApprovalHub[] = [];
@@ -85,10 +85,19 @@ describe.skipIf(!posix)("launchArgs", () => {
     // the turns, told to the same relay
     expect(settings.hooks.UserPromptSubmit).toEqual([{ hooks: [entry.hooks[0]!] }]);
     expect(settings.hooks.Stop).toEqual([{ hooks: [entry.hooks[0]!] }]);
+    // and the commands it ran
+    const told = [{ ...entry.hooks[0]!, timeout: 10 }];
+    expect([settings.hooks.SessionStart, settings.hooks.PostCompact, settings.hooks.UserPromptExpansion])
+      .toEqual([[{ matcher: "clear", hooks: told }], [{ matcher: "manual", hooks: told }], [{ hooks: told }]]);
     expect(entry.hooks[0]).toMatchObject({ type: "command", command: process.execPath });
     expect(entry.hooks[0]!.args.slice(0, 3)).toEqual(relayCommand().slice(1));
     expect(entry.hooks[0]!.args).toContain(join(dir, "hub.sock"));
-    expect(plain.join(" ")).not.toContain(entry.hooks[0]!.args.at(-1)!);
+    // the launch's key is in a file of its own, never in the command Claude Code writes into its transcript
+    const keyFile = entry.hooks[0]!.args[entry.hooks[0]!.args.indexOf("--launch-file") + 1]!;
+    expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+    const key = readFileSync(keyFile, "utf8");
+    expect(key.length).toBeGreaterThan(20);
+    expect([...plain, readFileSync(path, "utf8")].join(" ")).not.toContain(key);
     expect(settings.ultracode).toBeUndefined();
 
     const merged = launch(hooks, "p1", ["--model", "opus", "--settings", ULTRACODE, "--", "--settings"])!;
@@ -595,5 +604,24 @@ describe("Claude's other tools on a card from the hook's request", () => {
     // a turn left with background or scheduled work can begin again with no prompt: no rest from its Stop
     expect(claudeApprovals.turn!({ ...stop, background_tasks: [{ id: "b1" }] })).toBeNull();
     expect(claudeApprovals.turn!({ ...stop, session_crons: [{ id: "c1" }] })).toBeNull();
+  });
+
+  it("tells the commands Claude's hooks said it ran, in the order it ran them, with nothing printed for Claude", async () => {
+    // Claude Code 2.1.330 as recorded (Haiku, an isolated config): `/hello` (a user skill), `/compact`, then `/clear`
+    const events = readFileSync(new URL("../fixtures/claude-result-hooks-2.1.330.jsonl", import.meta.url), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const root = tempRoot();
+    const commands: string[] = [];
+    const hooks = new ApprovalHub(join(root, "h"), [claudeApprovals], { onCommand: (paneId, kind, { name, builtin }) => commands.push(`${paneId} ${kind} ${name} ${builtin}`) });
+    started.push(hooks);
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const printed: unknown[] = [];
+    for (const event of events.filter((event) => event["hook_event_name"] !== "UserPromptSubmit")) printed.push(await ask(hook, event).answer());
+    expect(commands).toEqual(["p1 claude hello false", "p1 claude compact true", "p1 claude clear true"]);
+    expect(printed.every((answer) => answer === null || JSON.stringify(answer) === "{}")).toBe(true);
+    // a compact Claude began by itself, or a session it started or resumed, is no command of the user's
+    const compacted = events.find((event) => event["hook_event_name"] === "PostCompact")!;
+    expect(claudeApprovals.command!({ ...compacted, trigger: "auto" })).toBeNull();
+    for (const source of ["startup", "resume", "compact"]) expect(claudeApprovals.command!({ hook_event_name: "SessionStart", source }), source).toBeNull();
+    expect(claudeApprovals.command!({ hook_event_name: "UserPromptExpansion", command_name: "" })).toBeNull();
   });
 });

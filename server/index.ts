@@ -59,7 +59,7 @@ import { mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./
 import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
-import { OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
+import { noteHookCommand, OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -526,8 +526,12 @@ export function createServer(
   const preferences = new PreferenceStore(stateDir);
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
   readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
-  // a turn a hook tells of goes to the status of its pane: no hook runs before the core below starts an agent
-  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals], { onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn) });
+  // a turn a hook tells of goes to the status of its pane, and a command it ran to the chat's send of it: no hook runs
+  // before the core below starts an agent
+  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals], {
+    onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn),
+    onCommand: (paneId, kind, command) => noteHookCommand(paneId, kind, command),
+  });
   const codexServers = new CodexServers(approvals);
   // the agents this server drives over ACP run under keepers in this PC's own herdr-core; the ones an earlier run
   // started are taken up again, as their keepers outlive the server

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer, connect, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,7 +43,7 @@ function hubIn() {
 }
 
 const hookOf = (args: string[]): { command: string; args: string[] } => JSON.parse(args[args.indexOf("--hook") + 1]!) as { command: string; args: string[] };
-const keyOf = (hook: { args: string[] }): string => hook.args[hook.args.indexOf("--launch") + 1]!;
+const keyOf = (hook: { args: string[] }): string => readFileSync(hook.args[hook.args.indexOf("--launch-file") + 1]!, "utf8");
 
 function ask(hook: { command: string; args: string[] }, event: unknown) {
   const relay = Bun.spawn([hook.command, ...hook.args], { stdin: new Blob([JSON.stringify(event)]), stdout: "pipe", stderr: "pipe" });

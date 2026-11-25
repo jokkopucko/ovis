@@ -19,7 +19,7 @@
  * permission dialog, dialogs/claude.ts; OmO's permission dialog and the one Ovis's pi extension draws like it, dialogs/pi.ts)
  * only says whether the request is still open: one the screen shows no dialog for, or a dialog showing another request's
  * subject whole, was answered in the terminal. An adapter may also read the turns its agent's hook tells of
- * (`onTurn`), which ask nothing and get no answer. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
+ * (`onTurn`) and the commands it says the agent ran (`onCommand`), which ask nothing and get no answer. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
  *
  * Codex asks no hook: Ovis is a client of its own app server (codex.ts), whose requests are held with `hold` and
  * released when Codex says they were answered, never by a read of the screen.
@@ -28,6 +28,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
+import { settingsFile } from "../claude-settings-file.ts";
 import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
 import { isNonce, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
@@ -62,6 +63,16 @@ export interface TurnEvent {
   prompt: string | null;
 }
 
+/**
+ * A command the agent's hook told it ran: one of its own (`builtin`), or a skill or custom command it expanded, with the
+ * argument it was given where the hook names it.
+ */
+export interface CommandEvent {
+  name: string;
+  builtin: boolean;
+  args?: string;
+}
+
 export interface HeldApproval extends ApprovalRequest {
   /** what a card built on this request carries in its id, so that its answer settles this request and no other */
   id: string;
@@ -84,6 +95,8 @@ export interface ApprovalAdapter {
   toCard(event: unknown): ApprovalRequest | null;
   /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop, OmO's runs), else null. */
   turn?(event: unknown): TurnEvent | null;
+  /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
+  command?(event: unknown): CommandEvent | null;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
   decision(label: string): ApprovalDecision | null;
   /** What the hook prints for a decision, or for none (null), after which the agent's own dialog stands. */
@@ -123,6 +136,7 @@ const LAUNCHES_MAX = 256;
 /** The most of a card's body the bridge and the card show (finishPrompt, promptWords). */
 const CARD_BODY_MAX = 12_000;
 const SOCKET_NAME = "hub.sock";
+const KEY_SUFFIX = ".key";
 
 const spaced = (text: string): string => text.trim().replace(/\s+/g, " ");
 const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -189,6 +203,8 @@ export class ApprovalHub {
     now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void; onSettled?: (paneId: string) => void; platform?: string;
     /** a turn of the agent started in `paneId` began or ended, as its hook told */
     onTurn?: (paneId: string, kind: string, turn: TurnEvent) => void;
+    /** the agent started in `paneId` ran a command, as its hook told */
+    onCommand?: (paneId: string, kind: string, command: CommandEvent) => void;
     /** what the hook runs, before its own arguments */
     relay?: readonly string[];
   } = {}) {
@@ -222,9 +238,9 @@ export class ApprovalHub {
     const uid = process.getuid?.();
     if (!folder.isDirectory() || (uid !== undefined && folder.uid !== uid)) throw new Error(`${this.dir} is not a folder of this account`);
     chmodSync(this.dir, 0o700);
-    // a settings file or extension names a key of an earlier run of this server, which nothing here answers any more,
+    // a settings file, extension or key file is of an earlier run of this server, which nothing here answers any more,
     // and the socket of that run is in the way of this one's
-    for (const name of readdirSync(this.dir)) if (/\.js(?:on)?$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
+    for (const name of readdirSync(this.dir)) if (/\.(?:js|json|key)$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
     const listener = createServer((socket) => this.receive(socket));
     // a bind that fails comes as an event on the next tick (a pipe's name taken, a folder it may not bind in): no
     // hook works then, as its relay finds no answer, and the server goes on
@@ -264,14 +280,21 @@ export class ApprovalHub {
     const [command, ...relay] = this.options.relay ?? relayCommand();
     let hooked: string[] | null;
     try {
-      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch", key] }, this.dir);
+      // the key goes in a file of its own (named by its digest), never on the agent's command line, which Claude Code
+      // writes into its transcript (relay.ts)
+      const keyFile = settingsFile(key, this.dir, KEY_SUFFIX);
+      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch-file", keyFile] }, this.dir);
     } catch (error) {
       console.error(`approval hub (${kind}): ${error instanceof Error ? error.message : String(error)}`);
+      this.dropKey(keyDigest(key));
       return unchanged;
     }
-    if (hooked === null) return unchanged;
+    if (hooked === null) {
+      this.dropKey(keyDigest(key));
+      return unchanged;
+    }
     this.launches.set(keyDigest(key), { key, paneId, adapter });
-    if (this.launches.size > LAUNCHES_MAX) this.launches.delete(this.launches.keys().next().value!);
+    if (this.launches.size > LAUNCHES_MAX) this.dropLaunch(this.launches.keys().next().value!);
     return hooked;
   }
 
@@ -307,9 +330,11 @@ export class ApprovalHub {
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
     // told, not asked: the hook prints nothing, so the agent goes on as it would without it
     const turn = launch.adapter.turn?.(parsed) ?? null;
-    if (turn !== null) {
+    const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
+    if (turn !== null || command !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
-      this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
+      if (turn !== null) this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
+      else this.options.onCommand?.(launch.paneId, launch.adapter.kind, command!);
       return;
     }
     const card = launch.adapter.toCard(parsed);
@@ -435,7 +460,17 @@ export class ApprovalHub {
    */
   forget(paneId: string): void {
     for (const entry of [...(this.pending.get(paneId) ?? [])]) entry.settle(null);
-    for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.launches.delete(digest);
+    for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
+  }
+
+  /** A launch no request is taken for any more, and its key file, so its hook finds no key and gives no decision. */
+  private dropLaunch(digest: string): void {
+    this.launches.delete(digest);
+    this.dropKey(digest);
+  }
+
+  private dropKey(digest: string): void {
+    rmSync(join(this.dir, `${digest}${KEY_SUFFIX}`), { force: true });
   }
 
   stop(): void {

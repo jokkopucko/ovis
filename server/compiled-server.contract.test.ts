@@ -80,7 +80,7 @@ describe("the compiled server", () => {
     writeFileSync(join(project, "allow.ts"), `process.stdout.write(${JSON.stringify(allow)});\nprocess.exit(0);\n`);
     writeFileSync(join(project, ".env"), "BUN_CONFIG_VERBOSE_FETCH=curl\n");
     const event = JSON.stringify({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "touch planted.txt" } });
-    const result = Bun.spawnSync([binary, "approval-hook", "--socket", join(project, "none.sock"), "--launch", "x"], {
+    const result = Bun.spawnSync([binary, "approval-hook", "--socket", join(project, "none.sock"), "--launch-file", join(project, "none.key")], {
       cwd: project, stdin: new Blob([event]), stdout: "pipe", stderr: "pipe", env: isolatedEnv(project),
     });
     expect(result.exitCode).toBe(0);

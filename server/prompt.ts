@@ -18,7 +18,7 @@ import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
-import { heldBody, type ApprovalDialog, type ApprovalHub } from "./approvals/hub.ts";
+import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
@@ -273,6 +273,7 @@ export function noteSubmitted(paneId: string, text: string, command?: PaneComman
   chatSent.delete(paneId);
   chatSent.set(paneId, { text, commands, reservations });
   if (chatSent.size > 128) chatSent.delete(chatSent.keys().next().value!);
+  if (command) heardBefore(paneId, command);
   if (INVISIBLE_CHAR_RE.test(text)) heldCandidates.set(paneId, { text, at: Date.now() });
   else heldCandidates.delete(paneId);
   const prompt = !INVISIBLE_CHAR_RE.test(text) && !text.trimStart().startsWith("/");
@@ -292,6 +293,50 @@ export function noteCommandEvidence(paneId: string, id: string, evidence: NonNul
   const sent = commands[index];
   if (!sent) return;
   sent.outcome = commandOutcome(paneId, sent, { now: Date.now(), evidence, nextAt: commands[index + 1]?.at });
+}
+
+/** What a hook told of a command it ran that no send matched yet: the send is noted once herdr has taken its keys. */
+type HeardCommand = CommandEvent & { agent: string; at: number };
+const hookHeard = new Map<string, HeardCommand[]>();
+const HOOK_HEARD_MAX = 8;
+const HOOK_HEARD_MS = 30_000;
+
+/**
+ * Whether the command a hook told of at `at` is `sent`: to the same agent, after it was sent and within its window, from
+ * the process it was sent to, the same command (the builtin `/clear`, `/new` and `/reset` all start the next session as a
+ * clear; a skill named clear is not one) with the same argument where the hook names it.
+ */
+function hookRan(sent: PaneCommandSend, agent: string, { name, builtin, args }: CommandEvent, at: number): boolean {
+  if (sent.agent !== agent || at <= sent.at || at >= sent.at + COMMAND_WINDOW_MS || sent.outcome?.state === "result-observed"
+    || sent.visibility?.replaced) return false;
+  const invocation = sent.invocations[0];
+  if (invocation === undefined) return false;
+  if (builtin && name === "clear") return sent.sessionChange !== undefined && invocation.name !== "resume";
+  return sent.sessionChange === undefined && invocation.name === name && (args === undefined || invocation.argument.trim() === args.trim());
+}
+
+/**
+ * A command the agent's own hook said it ran (server/approvals/hub.ts): the result of the oldest open send of it, even
+ * when another send followed it (a `/compact` takes a while). One told before the send is noted (herdr answers the keys
+ * after the agent has them) waits a while for it.
+ */
+export function noteHookCommand(paneId: string, agent: string, command: CommandEvent, at = Date.now()): void {
+  const sent = (chatSent.get(paneId)?.commands ?? []).find((sent) => hookRan(sent, agent, command, at));
+  if (sent) return noteCommandEvidence(paneId, sent.id, { kind: "native", at, named: true });
+  const heard = (hookHeard.get(paneId) ?? []).filter((entry) => at - entry.at < HOOK_HEARD_MS);
+  heard.push({ ...command, agent, at });
+  hookHeard.delete(paneId);
+  hookHeard.set(paneId, heard.slice(-HOOK_HEARD_MAX));
+  if (hookHeard.size > 128) hookHeard.delete(hookHeard.keys().next().value!);
+}
+
+/** A hook that told of `sent` before it was noted. */
+function heardBefore(paneId: string, sent: PaneCommandSend): void {
+  const heard = hookHeard.get(paneId) ?? [];
+  const index = heard.findIndex((entry) => hookRan(sent, entry.agent, entry, entry.at));
+  if (index < 0) return;
+  const [entry] = heard.splice(index, 1);
+  noteCommandEvidence(paneId, sent.id, { kind: "native", at: entry!.at, named: true });
 }
 
 async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: InteractivePrompt | null, screen: string | undefined, readSendId: string | undefined, codexHome?: string, snapshot?: SessionSnapshot): Promise<NonNullable<PanePromptResponse["outcomes"]>> {

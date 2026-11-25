@@ -1,9 +1,13 @@
 /**
- * `ovis-server approval-hook --socket <address> --launch <key>`: the command an agent Ovis starts runs for each approval
+ * `ovis-server approval-hook --socket <address> --launch-file <path>`: the command an agent Ovis starts runs for each approval
  * its hook asks (server/approvals/hub.ts). It sends the event on stdin to the hub at `address` (a unix socket, a named
  * pipe on Windows) and prints the hub's answer. No hub, a refusal, an answer not sealed with this launch's key, or any
  * other failure prints nothing and exits 0, which the agent reads as no decision: its own dialog stands. It has no time
  * limit of its own; the agent's hook timeout ends it.
+ *
+ * The key is read from its file (0600, in the hub's 0700 folder), never from the command line: Claude Code writes a hook's
+ * command and arguments into its transcript and its compact summary (2.1.330), where the key would be readable. A key
+ * file that cannot be read is no hub: nothing printed.
  *
  * The key never goes over the wire. The request carries the key's digest and the event sealed with the key (AES-GCM),
  * and the answer comes back sealed with it, bound to the request's nonce: a listener at the address that does not hold
@@ -11,6 +15,7 @@
  * command nor answer it.
  */
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { connect } from "node:net";
 
 /** The most of a line either side sends: an event, sealed and encoded, and its envelope. */
@@ -60,13 +65,13 @@ export function lineObject(line: string): Record<string, unknown> | null {
   }
 }
 
-export function relayOptions(argv: readonly string[]): { socket: string; launch: string } | null {
+export function relayOptions(argv: readonly string[]): { socket: string; launchFile: string } | null {
   const value = (name: string) => {
     const at = argv.indexOf(name);
     return at >= 0 && typeof argv[at + 1] === "string" && argv[at + 1] !== "" ? argv[at + 1]! : null;
   };
-  const socket = value("--socket"), launch = value("--launch");
-  return socket === null || launch === null ? null : { socket, launch };
+  const socket = value("--socket"), launchFile = value("--launch-file");
+  return socket === null || launchFile === null ? null : { socket, launchFile };
 }
 
 /**
@@ -107,10 +112,13 @@ export async function runApprovalRelay(): Promise<void> {
   if (preloaded(process.execArgv)) return;
   const options = relayOptions(process.argv.slice(2));
   if (options === null) {
-    console.error("usage: ovis-server approval-hook --socket <address> --launch <key>");
+    console.error("usage: ovis-server approval-hook --socket <address> --launch-file <path>");
     process.exit(2);
   }
-  const answer = await relay(options.socket, options.launch, await Bun.stdin.text());
+  let key: string;
+  try { key = readFileSync(options.launchFile, "utf8"); } catch { return; }
+  if (key === "") return;
+  const answer = await relay(options.socket, key, await Bun.stdin.text());
   if (answer !== null) process.stdout.write(answer);
 }
 

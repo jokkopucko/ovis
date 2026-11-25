@@ -1,7 +1,8 @@
 /**
  * Claude Code's adapter to the approval hub (server/approvals/hub.ts): its approvals of a shell command, a file it
- * writes or edits, a page it fetches and an MCP tool through its own PermissionRequest hook, and its turns through its
- * UserPromptSubmit and Stop hooks. The hooks go in a `--settings` file (0600, in the hub's folder), never the user's
+ * writes or edits, a page it fetches and an MCP tool through its own PermissionRequest hook, its turns through its
+ * UserPromptSubmit and Stop hooks, and the commands it ran through its PostCompact, SessionStart and UserPromptExpansion
+ * hooks. The hooks go in a `--settings` file (0600, in the hub's folder), never the user's
  * settings.
  * Measured on Claude Code 2.1.330:
  * - the terminal draws its own dialog while the hook waits, and whichever answers first wins;
@@ -28,6 +29,14 @@ export const CLAUDE_HOOK_MIN_VERSION = "2.1.286";
  * it comes as itself, and is left to the terminal (toCard).
  */
 const MATCHER = "^(?:Bash|Monitor|Edit|Write|WebFetch|mcp__.+)$";
+
+/**
+ * The hooks that tell a command Claude ran (command), each matched to the case that is one: a SessionStart's matcher is its
+ * source, a PostCompact's its trigger. Every other start, resume and compact runs no hook of Ovis's.
+ */
+const COMMAND_EVENTS: Record<string, string | null> = { PostCompact: "manual", SessionStart: "clear", UserPromptExpansion: null };
+/** Seconds Claude waits on such a hook at most (its default is ten minutes) */
+const TOLD_TIMEOUT_S = 10;
 
 /** Yes allows and No declines; any other option of the dialog goes as its keys. */
 export function permissionDecision(label: string): ApprovalDecision | null {
@@ -72,6 +81,9 @@ export const claudeApprovals: ApprovalAdapter = {
     const relay = [{ type: "command", command: hook.command, args: hook.args }];
     hooks["PermissionRequest"] = [...theirs("PermissionRequest"), { matcher: MATCHER, hooks: relay }];
     for (const event of ["UserPromptSubmit", "Stop"]) hooks[event] = [...theirs(event), { hooks: relay }];
+    // told only of what is a command (command), and never waited on for long: the hub answers them at once
+    const told = [{ ...relay[0]!, timeout: TOLD_TIMEOUT_S }];
+    for (const [event, matcher] of Object.entries(COMMAND_EVENTS)) hooks[event] = [...theirs(event), { ...(matcher ? { matcher } : {}), hooks: told }];
     const path = settingsFile(JSON.stringify({ ...settings, hooks }), dir);
     if (replaced === null) return ["--settings", path, ...given];
     return [...given.slice(0, replaced.from), "--settings", path, ...given.slice(replaced.to)];
@@ -98,6 +110,23 @@ export const claudeApprovals: ApprovalAdapter = {
     if (name !== "Stop") return null;
     const none = (list: unknown) => list === undefined || (Array.isArray(list) && list.length === 0);
     return none(input!.background_tasks) && none(input!.session_crons) ? { turn: "ended", prompt } : null;
+  },
+
+  /**
+   * Measured on 2.1.330, where its own commands tell no UserPromptSubmit: a `/compact` the user ran ends with a manual
+   * PostCompact, a `/clear` starts the next session with a SessionStart from `clear`, and a skill or custom command comes
+   * as a UserPromptExpansion that names it. A compact Claude began by itself, and a session it started or resumed, are
+   * no command.
+   */
+  command(event) {
+    const input = event as { hook_event_name?: unknown; trigger?: unknown; source?: unknown; command_name?: unknown; command_args?: unknown } | null;
+    switch (input?.hook_event_name) {
+      case "PostCompact": return input.trigger === "manual" ? { name: "compact", builtin: true } : null;
+      case "SessionStart": return input.source === "clear" ? { name: "clear", builtin: true } : null;
+      case "UserPromptExpansion": return text(input.command_name) === null ? null
+        : { name: input.command_name as string, builtin: false, ...(typeof input.command_args === "string" ? { args: input.command_args } : {}) };
+      default: return null;
+    }
   },
 
   decision: permissionDecision,
