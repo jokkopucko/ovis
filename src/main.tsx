@@ -24,8 +24,11 @@ import { shellMode } from "./lib/shellMode.ts";
 import { isReportableWindowError } from "./lib/uncaughtErrors.ts";
 import "./lib/viewport.ts";
 import { watchSheetExits } from "./lib/sheets.ts";
+import { installSafariLinks } from "./lib/externalLink.ts";
 
 watchSheetExits();
+// the iOS home-screen app sends a link to another site to Safari, not to a sheet of its own
+installSafariLinks();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("#root is missing from index.html");
