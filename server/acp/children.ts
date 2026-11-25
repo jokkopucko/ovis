@@ -117,10 +117,13 @@ function socketAppears(root: string, ms: number): Promise<boolean> {
   return promise;
 }
 
-/** Waits, bounded, for the agent's session, or for the agent to end first. */
+/**
+ * Waits, bounded, for the agent's session and the end of the client's replay (a child whose client still replays is
+ * "unknown" and takes no prompt), or for the agent to end first: an end the replay already shows wins over its session.
+ */
 type Opening = "open" | "exited" | "late" | "refused";
 function sessionOpens(client: KeeperClient, ms: number): Promise<Opening> {
-  const state = () => client.session !== null ? "open" : client.sessionError ? "refused" : client.agentGone || client.keeperGone ? "exited" : null;
+  const state = () => client.sessionError ? "refused" : client.agentGone || client.keeperGone ? "exited" : client.session !== null && client.connected ? "open" : null;
   const now = state();
   if (now !== null) return Promise.resolve(now);
   const { promise, resolve } = Promise.withResolvers<Opening>();

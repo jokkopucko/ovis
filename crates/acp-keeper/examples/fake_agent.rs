@@ -13,7 +13,8 @@
 //!
 //! `session/load` adopts the loaded id, and fails while the file named by `--refuse-load FILE`
 //! exists; with `--no-load` the agent does not offer `loadSession`. With `--ask-on-close` it asks for one more approval as its stdin closes, and with
-//! `--linger` it stays alive after that, as an agent busy elsewhere would.
+//! `--linger` it stays alive after that, as an agent busy elsewhere would. With `--exit-after-session` it exits
+//! right after answering `session/new`.
 
 use std::io::{BufRead, Write};
 
@@ -109,11 +110,18 @@ fn main() {
                 send(&mut out, &json!({"jsonrpc":"2.0","id":id,"error":{"code":refuse_session,"message":"session refused"}}));
                 continue;
             }
-            "session/new" => json!({
-                "sessionId": session,
-                "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
-                "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
-            }),
+            "session/new" => {
+                let opened = json!({
+                    "sessionId": session,
+                    "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
+                    "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
+                });
+                if args.iter().any(|a| a == "--exit-after-session") {
+                    send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "result": opened}));
+                    std::process::exit(0);
+                }
+                opened
+            }
             "session/load" if refuse_load.as_ref().is_some_and(|f| std::path::Path::new(f).exists()) => {
                 send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the session is locked"}}));
                 continue;

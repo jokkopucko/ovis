@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createConnection, Socket } from "node:net";
 import { dirname } from "node:path";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, watch } from "node:fs";
+import { join } from "node:path";
 import { KeeperClient } from "./client.ts";
 import { keeperBuilt, keeperRoot, startKeeper, until } from "./keeper.fake.ts";
 
@@ -53,6 +54,21 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     cleanups.push(() => client.close());
     return client;
   }
+
+  it("names its process before its socket appears, so a client refused by a socket not listening yet waits for it", async () => {
+    const root = keeperRoot();
+    const created: string[] = [];
+    const socket = Promise.withResolvers<unknown>();
+    const watcher = watch(root, (_event, name) => {
+      if (name !== null && !created.includes(name)) created.push(name);
+      if (name === "acp.sock") socket.resolve(JSON.parse(readFileSync(join(root, "process.json"), "utf8")));
+    });
+    cleanups.push(() => watcher.close());
+    const { pid } = await keeper([], root);
+    expect(await socket.promise).toMatchObject({ keeper: pid });
+    expect(created.indexOf("process.json")).toBeGreaterThanOrEqual(0);
+    expect(created.indexOf("process.json")).toBeLessThan(created.indexOf("acp.sock"));
+  });
 
   it("replays what happened before it attached, then follows live, and reports the turn's stop reason and text", async () => {
     const { root } = await keeper();
