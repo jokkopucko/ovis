@@ -76,14 +76,14 @@ test.each([false, true])("capture sends and acknowledges the crossing frame in p
   const term = terminal();
   const socket = new HerdrSocket("ws://localhost");
   const features = spyOn(socket, "featuresListed").mockReturnValue(true);
-  const setting = spyOn(localStorage, "getItem").mockReturnValue(only ? "on" : null);
+  const setting = spyOn(localStorage, "getItem").mockReturnValue(only ? "on" : "off");
   const sent: string[] = [];
   let parsed: (() => void) | undefined;
   const write = spyOn(term, "write").mockImplementation((data, callback) => {
     if (typeof data === "string") sent.push(data.slice(-8));
     parsed = callback;
   });
-  const release = captureForGhostty(term, socket, stub);
+  const release = captureForGhostty(term, socket, stub, () => false);
   try {
     let acknowledged = false;
     term.write("x".repeat(32 * 1024 * 1024 - 2));
@@ -107,7 +107,7 @@ test.each([true, false])("startup keeps text and CPR out of xterm until the rend
   const replies: string[] = [];
   const answered = Promise.withResolvers<void>();
   term.onData((reply) => { replies.push(reply); answered.resolve(); });
-  const release = captureForGhostty(term, socket, stub);
+  const release = captureForGhostty(term, socket, stub, () => false);
   try {
     await started.promise;
     await parse(term, "abc\x1b[");

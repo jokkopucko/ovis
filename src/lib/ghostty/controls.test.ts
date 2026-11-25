@@ -103,3 +103,16 @@ test("the replay frame gives xterm the clipboard OSC before the live frame compl
   expect(scan("\x1b]5").map((piece) => piece.controls).join("")).toBe("\x1b]5");
   expect(scan("2;c;YWJj\x07").map((piece) => piece.controls).join("")).toBe("2;c;YWJj\x07");
 });
+
+test("an OSC 52 whose ST is split between ESC and the backslash reaches xterm's clipboard with the first frame, as a whole stream would", async () => {
+  const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const copies: string[] = [];
+  term.parser.registerOscHandler(52, (payload) => { copies.push(payload); return true; });
+  const scan = controlScanner();
+  const sent = ["\x1b]52;c;aGk=\x1b", "\\after"].map((frame) => scan(frame).map((piece) => piece.controls).join(""));
+  await parse(term, sent[0]!);
+  expect(copies).toEqual(["c;aGk="]);
+  await parse(term, sent[1]!);
+  expect(copies).toEqual(["c;aGk="]);
+  term.dispose();
+});

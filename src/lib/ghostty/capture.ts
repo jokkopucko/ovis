@@ -9,22 +9,24 @@ const HELD_BYTES_MAX = 32 * 1024 * 1024;
 export const GHOSTTY_ONLY_KEY = "ovis:ghostty-only";
 
 /**
- * Whether libghostty alone parses a terminal: by default on a phone or tablet (a coarse pointer), where parsing every
- * byte twice cost the most. It is decided before the first byte, when the server's kind may not be known yet, so the
- * default does not depend on it. "on" or "off" under GHOSTTY_ONLY_KEY decides instead.
+ * Whether libghostty alone parses a terminal: by default every attached pane, on any device and either server. A
+ * mirrored pane (a Windows PC's, repainted from `pane.read`) keeps xterm's parse: its folded view stands the IME's
+ * preedit on xterm's rows. It is decided before the first byte; a pane not yet known to be mirrored counts as
+ * attached. "on" or "off" under GHOSTTY_ONLY_KEY decides instead.
  */
-export function ghosttyOnly(coarse: boolean): boolean {
+export function ghosttyOnly(mirrored: boolean): boolean {
   // a browser that refuses storage leaves the default
   let choice: string | null | undefined = null;
   try { choice = globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY); } catch { /* the default */ }
   if (choice === "on" || choice === "off") return choice === "on";
-  return coarse;
+  return !mirrored;
 }
 
 export function captureForGhostty(
-  term: Terminal, socket: HerdrSocket, host: HTMLElement, questionOwner: () => (() => boolean) = () => () => true,
+  term: Terminal, socket: HerdrSocket, host: HTMLElement, mirrored: () => boolean,
+  questionOwner: () => (() => boolean) = () => () => true,
 ): () => void {
-  const only = ghosttyOnly(globalThis.matchMedia?.("(pointer: coarse)").matches === true);
+  const only = ghosttyOnly(mirrored());
   let held: (string | Uint8Array)[] | null = [];
   const questions: DeferredQuestions[] = [];
   let scan = controlScanner();

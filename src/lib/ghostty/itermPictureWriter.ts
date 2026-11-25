@@ -126,6 +126,10 @@ function pictureScanner(limits: () => PictureLimits | null) {
       const end = st ? at : boundary.exec(text)?.index ?? text.length;
       if (state === "string") {
         if (end === text.length) { at = end; break; }
+        // xterm ends a string at its ESC: one that ends the write goes on now (a copy is made when xterm makes it), and
+        // the backslash after it comes as text. A picture whose introducer follows that very ESC in the next write is
+        // not told apart then.
+        if (end === text.length - 1 && text.charAt(end) === "\x1b") { state = "text"; at = text.length; break; }
         if (text.charAt(end) === "\x1b") {
           stringEscape = true;
           escapeAt = end;

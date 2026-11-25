@@ -48,6 +48,8 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
   let oscId = -1;
   let oscPayload = false;
   let streaming = false;
+  // an OSC whose ESC ended a write was already ended for xterm with that ESC (xterm dispatches on the ESC)
+  let escSent = false;
   const control = /[\x1b\u0090\u0098\u009b\u009d-\u009f]/g;
   const scanner = (text: string): ControlPiece[] => {
     const pieces: ControlPiece[] = [];
@@ -140,7 +142,8 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
           break;
         case OSC_ESC: {
           const st = ch === "\\";
-          endOsc(st ? at : at - 2, st ? "\x1b\\" : "\x1b");
+          endOsc(st ? at : at - 2, escSent ? (st ? "\\" : "") : st ? "\x1b\\" : "\x1b");
+          escSent = false;
           if (!st) { start = position + at - 2; state = ESC; seq = ""; at--; }
           break;
         }
@@ -153,6 +156,9 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
           break;
       }
     }
+    // xterm ends an OSC at its ESC: a write that stops between ESC and the backslash gives xterm the ESC now, so a copy
+    // is made when xterm would make it, and the backslash that follows is all that is left to send
+    if (state === OSC_ESC && streaming && !escSent) { out += "\x1b"; escSent = true; }
     position += length;
     pieces.push({ end: length, controls: out, question: null });
     return pieces;

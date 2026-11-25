@@ -165,3 +165,10 @@ test("drops the pending image on queue overflow but still emits every later byte
   writer.write(large, emit);
   expect(output).toEqual([cancel, "same", "later", large]);
 });
+
+test("a string whose ESC ends a write goes on with that ESC, as xterm ends the string there", () => {
+  const writer = itermPictureWriter(() => CAPS, () => GRID);
+  const out: string[] = [];
+  for (const chunk of ["\x1b]52;c;aGk=\x1b", "\\after"]) writer.write(chunk, (output) => { out.push(Buffer.from(output).toString()); });
+  expect(out).toEqual(["\x1b]52;c;aGk=\x1b", "\\after"]);
+});

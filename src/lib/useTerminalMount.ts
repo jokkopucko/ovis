@@ -950,6 +950,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const osc = term.oscStringState();
         return osc.open && (!osc.idComplete || osc.id === 52);
       };
+      // where each output frame goes into the terminal: the browser scripts' probe counts here, whichever engine parses it
+      let writeFrame = (data: string | Uint8Array, callback: () => void): void => term.write(data, callback);
       const writeNextOutput = (): void => {
         holdingForPictures = false;
         const next = outputFrames[0];
@@ -977,7 +979,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         parsingModePane = mode?.pane ?? null;
         parsingModeGeneration = mode?.generation ?? -1;
         parsingModeLifetime = mode?.lifetime ?? -1;
-        term.write(frame.data, () => {
+        writeFrame(frame.data, () => {
           parsingReplay = false;
           parsingView = false;
           parsingCurrentPtyOutput = false;
@@ -1035,18 +1037,19 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       retireOutputRef.current = retireOutput;
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__) {
-        // browser scripts read the parse state and count xterm writes in flight (never in a release build)
+        // browser scripts read the parse state and count the output frames written and in flight (never in a release
+        // build): at the terminal's door, so the counts are the same whether xterm or libghostty parses the text
         let inFlight = 0;
         let peakInFlight = 0;
         let writes = 0;
         let written = "";
-        const write = term.write.bind(term);
-        term.write = (data, callback) => {
+        const write = writeFrame;
+        writeFrame = (data, callback) => {
           inFlight++;
           writes++;
           if (typeof data === "string") written = (written + data).slice(-4096);
           peakInFlight = Math.max(peakInFlight, inFlight);
-          write(data, () => { inFlight--; callback?.(); });
+          write(data, () => { inFlight--; callback(); });
         };
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
           history: ((rows) => ({ scrollback: term.options.scrollback ?? 0, length: rows.length, viewportY: rows.viewportY, baseY: rows.baseY }))(screenRows(term)),
@@ -1128,7 +1131,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       pendingScopeRef.current = session.scope;
       pendingEpochRef.current = session.epoch;
       socketRef.current = socket;
-      const releaseGhostty = captureForGhostty(term, socket, host, () => {
+      const releaseGhostty = captureForGhostty(term, socket, host, () => mirroredRef.current === true, () => {
         const owner = outputOwner;
         const view = parsingView;
         return () => !view && owner === outputOwner;

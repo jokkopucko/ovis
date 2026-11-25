@@ -5,13 +5,13 @@ const stored = new Map<string, string>();
 Object.assign(globalThis, { localStorage: { getItem: (key: string) => stored.get(key) ?? null } });
 afterEach(() => stored.clear());
 
-test("libghostty alone parses by default only on a phone or tablet", () => {
-  expect([ghosttyOnly(true), ghosttyOnly(false)]).toEqual([true, false]);
+test("libghostty alone parses every attached pane by default, and a mirrored one keeps xterm's parse", () => {
+  expect([ghosttyOnly(false), ghosttyOnly(true)]).toEqual([true, false]);
 });
 
-test("a stored choice decides over the device's default", () => {
+test("a stored choice decides over the default", () => {
   stored.set(GHOSTTY_ONLY_KEY, "off");
-  expect(ghosttyOnly(true)).toBe(false);
+  expect(ghosttyOnly(false)).toBe(false);
   stored.set(GHOSTTY_ONLY_KEY, "on");
-  expect(ghosttyOnly(false)).toBe(true);
+  expect(ghosttyOnly(true)).toBe(true);
 });
