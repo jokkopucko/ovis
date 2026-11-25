@@ -82,7 +82,7 @@ export interface ApprovalAdapter {
   launchArgs(args: readonly string[] | undefined, hook: { command: string; args: string[] }, dir: string): string[] | null;
   /** The approval an event the hook sent asks, or null for one the hub gives no decision on. */
   toCard(event: unknown): ApprovalRequest | null;
-  /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop), else null. */
+  /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop, OmO's runs), else null. */
   turn?(event: unknown): TurnEvent | null;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
   decision(label: string): ApprovalDecision | null;

@@ -23,14 +23,28 @@ const asked = JSON.parse(readFileSync(new URL("../fixtures/omo-permission-asked-
 const COMMAND = asked.request.metadata.command;
 const CALL = asked.request.tool.callID;
 
+/** What OmO 5.1.81 told an extension of its runs, in the order it told them (the fixture says how it was recorded). */
+const runs = JSON.parse(readFileSync(new URL("../fixtures/omo-agent-runs-5.1.81.json", import.meta.url), "utf8")) as Record<string, { type: string }[]>;
+
 function hubIn() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "omh-")));
   roots.push(root);
   const waiting: (() => void)[] = [];
   const settling: (() => void)[] = [];
-  const hub = new ApprovalHub(join(root, "h"), [omoApprovals], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
+  const turns: string[] = [];
+  const turning: { count: number; resolve: () => void }[] = [];
+  const hub = new ApprovalHub(join(root, "h"), [omoApprovals], {
+    onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.(),
+    onTurn: (paneId, kind, { turn }) => {
+      turns.push(`${paneId} ${kind} ${turn}`);
+      for (const wait of turning.filter((wait) => turns.length >= wait.count)) { turning.splice(turning.indexOf(wait), 1); wait.resolve(); }
+    },
+  });
   started.push(hub);
-  return { hub, held: () => new Promise<void>((resolve) => waiting.push(resolve)), settled: () => new Promise<void>((resolve) => settling.push(resolve)) };
+  return {
+    hub, turns, held: () => new Promise<void>((resolve) => waiting.push(resolve)), settled: () => new Promise<void>((resolve) => settling.push(resolve)),
+    told: (count: number) => new Promise<void>((resolve) => { if (turns.length >= count) resolve(); else turning.push({ count, resolve }); }),
+  };
 }
 
 interface Dialog { title: string; options: string[]; signal: AbortSignal | undefined; choose: (label: string | undefined) => void }
@@ -49,12 +63,14 @@ async function loaded(args: string[], hasUI = true) {
   };
   extension({ on: (name: string, handler: (...rest: unknown[]) => void) => handlers.set(name, handler), events: { on: (name: string, listener: (data: unknown) => void) => listeners.set(name, listener) } });
   handlers.get("session_start")!({}, { hasUI, ui });
+  /** what OmO tells its extensions of a run */
+  const run = (event: { type: string }) => handlers.get(event.type)?.(event, { hasUI, ui });
   /** what the permission system does for one request: announce it, then ask in its dialog */
   const ask = (request: unknown = asked.request, title = asked.title, options = asked.options, call = CALL) => {
     listeners.get("permission_asked")!(request);
     return ui.select(title, options, { toolCallId: call } as { signal?: AbortSignal });
   };
-  return { ask, dialogs };
+  return { ask, dialogs, run };
 }
 
 describe.skipIf(!posix)("OmO's approval hook", () => {
@@ -119,6 +135,27 @@ describe.skipIf(!posix)("OmO's approval hook", () => {
     without.dialogs.at(-1)!.choose("Allow once");
     expect(await choice).toBe("Allow once");
     expect(hub.held("p2")).toEqual([]);
+  });
+
+  it("tells the hub a run began, and ended only when OmO will not retry it", async () => {
+    const { hub, turns, told } = hubIn();
+    const omo = await loaded(hub.launchArgs("omo", "p1", undefined, "5.1.81")!);
+    // five retries of a failed request, then OmO gave up: one turn, however many runs
+    for (const event of runs["retriedThenGaveUp"]!) omo.run(event);
+    await told(7);
+    expect(turns).toEqual([...Array.from({ length: 6 }, () => "p1 omo began"), "p1 omo ended"]);
+    turns.length = 0;
+    // stopped by the user, then answered after a follow-up, in the terminal
+    for (const event of runs["tui"]!) omo.run(event);
+    await told(6);
+    expect(turns).toEqual(["p1 omo began", "p1 omo ended", "p1 omo began", "p1 omo ended", "p1 omo began", "p1 omo ended"]);
+    turns.length = 0;
+    // stopped (Esc) while it waited to retry: that retry never starts, and no agent_end tells its end
+    for (const type of ["agent_start", "agent_end", "session_abort", "agent_settled"]) omo.run({ type, ...(type === "agent_end" ? { willRetry: true } : {}) });
+    // the start of a turn after it shows that nothing else was queued before
+    omo.run({ type: "agent_start" });
+    await told(3);
+    expect(turns).toEqual(["p1 omo began", "p1 omo ended", "p1 omo began"]);
   });
 
   it("reads the command of OmO's permission dialog on a pane herdr-core names omo and herdr names pi", () => {

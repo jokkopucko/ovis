@@ -6,9 +6,16 @@
  * `ctx.ui.select`, which the extension runs alongside the hub, for Ovis's card. Whichever answers first wins and closes
  * the other; the dialog stays as OmO draws it, every option of it. Any other request (a file, a folder, a fetch) and
  * any request it cannot tie to its dialog are left to OmO's dialog alone. Measured on OmO 5.1.81 (senpi 2026.11.19-5).
+ *
+ * The extension also tells the hub when a run of OmO's began (`agent_start`) and when it ended for good: an `agent_end`
+ * OmO will not retry (`willRetry`). A request the provider failed ends a run, which OmO then retries in a new one, 2 to
+ * 9 s later, five times before it gives up; its session file shows each failure as the turn's end (omo-status.ts), and
+ * only the extension tells a retry from giving up. `agent_settled` is not waited for: in OmO's terminal UI it came 10
+ * to 11 s after the end of a turn (fixtures/omo-agent-runs-5.1.81.json). It, or `session_abort`, ends a run only when
+ * a retry was to come: one stopped in its wait (Esc) never starts, and tells no `agent_end`.
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
-import { ALLOW_LABEL, DENY_LABEL, extensionApprovals } from "./extension.ts";
+import { ALLOW_LABEL, DENY_LABEL, extensionApprovals, runTurn } from "./extension.ts";
 
 export const OMO_HOOK_MIN_VERSION = "5.1.81";
 
@@ -18,6 +25,12 @@ export default function ovisApprovals(pi) {
   const asked = new Map();
   const wrapped = new WeakSet();
   pi.on("session_start", (_event, ctx) => { ui = ctx?.hasUI ? ctx.ui : null; });
+  let retrying = false;
+  const ended = () => { retrying = false; tell({ run: "ended" }); };
+  pi.on("agent_start", () => { retrying = false; tell({ run: "began" }); });
+  pi.on("agent_end", (event) => { if (event?.willRetry === true) retrying = true; else ended(); });
+  pi.on("session_abort", () => { if (retrying) ended(); });
+  pi.on("agent_settled", () => { if (retrying) ended(); });
   pi.events.on("permission_asked", (request) => {
     const command = request?.metadata?.command;
     const call = request?.tool?.callID;
@@ -48,4 +61,7 @@ export default function ovisApprovals(pi) {
 `;
 
 /** OmO 5.x from the one measured on: a later major may change the permission system under the hook. */
-export const omoApprovals = extensionApprovals("omo", (version) => meetsMinVersion(version, OMO_HOOK_MIN_VERSION) && version.split(".")[0] === "5", GLUE);
+export const omoApprovals = {
+  ...extensionApprovals("omo", (version) => meetsMinVersion(version, OMO_HOOK_MIN_VERSION) && version.split(".")[0] === "5", GLUE),
+  turn: runTurn,
+};

@@ -785,8 +785,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * told before herdr reads it from the screen, and the same as herdr's rest from then on (the transcript still says
    * whether it failed), once no prompt it told of is left open (hookPrompts). A Stop after herdr's rest tells nothing
    * new. Claude's UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
+   *
+   * OmO's extension tells its runs instead (server/approvals/omo.ts): its session file stays the status's source, which
+   * holds the rest it reads while a run told began has not ended (omo-status.ts), and is read again at once when one does.
    */
   function hookTurn(paneId: string, kind: string, { turn, prompt }: TurnEvent): void {
+    if (kind === "omo") {
+      omo.told(paneId, turn);
+      if (turn === "ended") void omo.poll();
+      return;
+    }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
