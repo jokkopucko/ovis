@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels its superseded run, waiting or running; a push run of main is never cancelled.
+concurrency:
+  group: hook-kill-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   hook-kill-tests:
     # the check's name, as branch protection and the merge tool match it: never renamed
