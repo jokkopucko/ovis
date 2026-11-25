@@ -1,5 +1,6 @@
-import type { IBufferCell, IBufferLine, ITheme, Terminal } from "@xterm/xterm";
+import type { ITheme, Terminal } from "@xterm/xterm";
 import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
+import { terminalScreen, type ScreenCell, type ScreenLine } from "./terminalScreen.ts";
 
 /*
  * The folded view of a grid wider than its screen that this browser does not size. A Windows PC's
@@ -115,7 +116,7 @@ export function dimmedColor(fg: string, bg: string, ratio = 4.5): string {
   return readableColor(mixed, bg, ratio);
 }
 
-export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.5): string {
+export function cellStyle(cell: ScreenCell, theme: ITheme, minimumContrast = 4.5): string {
   const bold = cell.isBold() !== 0;
   let fgColor = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor());
   let bgColor = colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor());
@@ -155,7 +156,7 @@ export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.
 
 const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const run = (text: string, style: string): string => !text ? "" : style ? `<span style="${style}">${escapeHtml(text)}</span>` : escapeHtml(text);
-const blank = (cell: IBufferCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
+const blank = (cell: ScreenCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
 
 export interface FoldCursor { x: number; shape: "block" | "outline" | "bar" | "underline" | "none" }
 
@@ -182,7 +183,7 @@ const cursorStyle = (shape: FoldCursor["shape"], theme: ITheme): string => {
  * its cell is drawn on its own (FOLD_CURSOR_CLASS), the blank cells up to it included; past the last
  * column (a write that filled the row, waiting to wrap) it stands on the last cell, as xterm draws it.
  */
-export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch: IBufferCell, minimumContrast = 1, cursor: FoldCursor | null = null): string {
+export function rowHtml(line: ScreenLine, cols: number, theme: ITheme, scratch: ScreenCell, minimumContrast = 1, cursor: FoldCursor | null = null): string {
   let end = 0;
   for (let x = 0; x < cols; x++) {
     const cell = line.getCell(x, scratch);
@@ -234,21 +235,7 @@ export function webLinkAt(text: string, offset: number): { url: string; start: n
   return null;
 }
 
-/**
- * The OSC 8 target (`ESC ] 8 ; ; uri`) of grid cell `x` on buffer row `y`, or null. xterm (5.5 and 6.0) keeps it in its own link
- * service with no public way to read it, so this reads its internals and finds nothing where they are not there; the
- * caller applies the grid's own link policy (http(s) or file only) to what it finds.
- */
-export function hyperlinkAt(term: Terminal, y: number, x: number): string | null {
-  const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
-  const id = cell?.extended?.urlId;
-  if (!id) return null;
-  const links = (term as unknown as { _core?: { _oscLinkService?: { getLinkData?: (id: number) => { uri?: string } | undefined } } })._core?._oscLinkService;
-  const uri = links?.getLinkData?.(id)?.uri;
-  return typeof uri === "string" && uri !== "" ? uri : null;
-}
-
-export function columnAt(line: IBufferLine, cols: number, offset: number, scratch: IBufferCell): number {
+export function columnAt(line: ScreenLine, cols: number, offset: number, scratch: ScreenCell): number {
   let at = 0;
   for (let x = 0; x < cols; x++) {
     const cell = line.getCell(x, scratch);
@@ -297,7 +284,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
   view.setAttribute("aria-hidden", "true");
   const rows: HTMLDivElement[] = [];
   const drawn: string[] = [];
-  const scratch = term.buffer.active.getNullCell();
+  const reader = terminalScreen(term);
+  const scratch = reader.getNullCell();
   let active = false;
 
   const screen = (): HTMLElement | null => term.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
@@ -307,7 +295,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const style = getComputedStyle(term.element);
     return grid.offsetWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > host.clientWidth + 1;
   };
-  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(term.buffer.active.cursorY, rows.length - 1)];
+  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(reader.cursorY, rows.length - 1)];
   const cursorBottom = (): number | null => {
     const row = cursorRow();
     return active && row ? view.offsetTop + row.offsetTop + row.offsetHeight : null;
@@ -330,7 +318,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!xterm || !grid || !row || term.rows === 0 || term.cols === 0) return;
     const gridRect = grid.getBoundingClientRect();
     const line = grid.offsetHeight / term.rows;
-    const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * line;
+    const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (reader.cursorY + 1) * line;
     let target = view.offsetTop + row.offsetTop + row.offsetHeight;
     let scroll = 0;
     let left = 0;
@@ -341,7 +329,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       const segment = Math.max(0, Math.floor((rect.top + rect.height / 2 - row.getBoundingClientRect().top) / foldLine));
       target = view.offsetTop + row.offsetTop + Math.min(row.offsetHeight, (segment + 1) * foldLine);
       // xterm's input stands on the last column while the cursor waits to wrap past it
-      const column = Math.min(term.buffer.active.cursorX, term.cols - 1);
+      const column = Math.min(reader.cursorX, term.cols - 1);
       const needed = gridRect.left - (parseFloat(xterm.style.left) || 0) + xterm.scrollLeft + column * grid.offsetWidth / term.cols - rect.left;
       scroll = Math.max(0, Math.min(needed, xterm.scrollWidth - xterm.clientWidth));
       left = scroll - needed;
@@ -372,7 +360,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       rows.pop()!.remove();
       drawn.pop();
     }
-    const buffer = term.buffer.active;
+    const buffer = reader.active();
     const shown = term.element?.querySelector(".xterm-rows .xterm-cursor");
     const cursorY = buffer.baseY + buffer.cursorY - buffer.viewportY;
     for (let y = Math.max(0, start); y <= Math.min(end, term.rows - 1); y++) {
@@ -455,7 +443,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (selection && !selection.isCollapsed && selection.anchorNode && view.contains(selection.anchorNode)) return;
     const hit = textAt(event.clientX, event.clientY);
     if (hit) {
-      const buffer = term.buffer.active;
+      const buffer = reader.active();
       const line = buffer.getLine(buffer.viewportY + hit.row);
       const col = line ? columnAt(line, term.cols, hit.offset, scratch) : -1;
       if (col >= 0 && onText(hit.row, hit.offset, hit.offset + 1, event.clientX, event.clientY) && onLink({ row: hit.row, col }, event)) return;

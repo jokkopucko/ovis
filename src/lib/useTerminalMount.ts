@@ -38,7 +38,8 @@ import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts
 import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
-import { createTerminalFold, dimmedColor, hyperlinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
+import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
@@ -209,7 +210,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
 
       // xterm activates a link whenever a press and its release land on it: a drag that selects
       // part of a path and a right click do too, and neither means "open this"
-      const linkPressed = (event: MouseEvent): boolean => event.button === 0 && !term.hasSelection();
+      const linkPressed = (event: MouseEvent): boolean => event.button === 0 && !terminalScreen(term).hasSelection();
       const reuseTab = (event: MouseEvent): boolean => reuseExternalLinkTabRef.current && !event.metaKey && !event.ctrlKey && !event.altKey;
       const shouldOpenInPanel = (event: MouseEvent, uri: string): boolean =>
         shouldOpenWebPage(event, uri, (target, shiftKey) => openWebRef.current?.(target, shiftKey) ?? false, machineId);
@@ -269,7 +270,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
-      term.registerLinkProvider(terminalFileLinkProvider(() => term.buffer.active, (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
+      term.registerLinkProvider(terminalFileLinkProvider(() => terminalScreen(term).active(), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
       term.open(host);
       // xterm turns autocorrect, autocapitalize and spellcheck off on its helper textarea; an Android
       // keyboard still shows its word strip there unless the field also says autocomplete="off",
@@ -368,7 +369,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           const letter = clipboardKey(event.key, event.code);
           const clipboard = event.ctrlKey && !event.altKey && /^(c|v)$/.test(letter)
-            && (letter === "v" || term.hasSelection());
+            && (letter === "v" || terminalScreen(term).hasSelection());
           if (chord !== null && !clipboard) {
             if (event.type === "keydown") {
               event.preventDefault();
@@ -385,7 +386,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!event.ctrlKey || event.altKey || event.metaKey) return true;
         const key = clipboardKey(event.key, event.code);
         if (key === "v") return false;
-        if (key === "c" && term.hasSelection()) {
+        if (key === "c" && terminalScreen(term).hasSelection()) {
           if (event.type === "keydown") {
             event.preventDefault();
             copySelection();
@@ -464,8 +465,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (!shouldOpenInPanel(event, target.url)) openExternal(target.url, "link", reuseTab(event));
             return true;
           }
-          const buffer = term.buffer.active;
-          const uri = hyperlinkAt(term, buffer.viewportY + target.row, target.col);
+          const buffer = terminalScreen(term).active();
+          const uri = terminalScreen(term).hyperlinkAt(buffer.viewportY + target.row, target.col);
           if (uri !== null && (isWebLink(uri) || fileUriPath(uri) !== null)) {
             openHyperlink(event, uri);
             return true;
@@ -489,7 +490,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         const row = screen.offsetHeight / term.rows;
-        const cursorBottom = screen.offsetTop + (term.buffer.active.cursorY + 1) * row;
+        const cursorBottom = screen.offsetTop + (terminalScreen(term).cursorY + 1) * row;
         const max = host.scrollHeight - host.clientHeight;
         host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight;
       };
@@ -533,7 +534,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const saidNow = (): readonly string[] => said !== null && said.pane === paneRef.current ? said.texts : [];
       const asCopied = (text: string, firstCol: number, texts: readonly string[]): string =>
         agentRef.current ? unwrapAgentRows(text, term.cols, firstCol, texts) : text;
-      const visibleSelection = (): string => asCopied(term.getSelection(), term.getSelectionPosition()?.start.x ?? 0, saidNow());
+      const visibleSelection = (): string => asCopied(terminalScreen(term).getSelection(), terminalScreen(term).getSelectionPosition()?.start.x ?? 0, saidNow());
       let selectionGeneration = 0;
       let disposed = false;
       // Run after xterm's own copy listener, including for Cmd+C and context-menu
@@ -558,7 +559,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         });
       };
       const onCopy = (event: ClipboardEvent): void => {
-        if (!term.hasSelection() || copiedText === null || !event.clipboardData) return;
+        if (!terminalScreen(term).hasSelection() || copiedText === null || !event.clipboardData) return;
         event.clipboardData.setData("text/plain", copiedText);
         event.preventDefault();
         reserveAwaitedText();
@@ -585,7 +586,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const selectionChange = term.onSelectionChange(() => {
         // a selection is the user's own copy: no program's copy fills the clipboard over it
-        if (term.hasSelection()) cancelCopy();
+        if (terminalScreen(term).hasSelection()) cancelCopy();
         else {
           copiedText = null;
           selectionGeneration++;
@@ -711,7 +712,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           programPress = { pane: paneRef.current, cell: cellAt(event).cell, codex: agent === "codex", moved: false };
           return;
         }
-        const click: ClickKeys | null = reporting && !selecting && !onLink && !term.hasSelection()
+        const click: ClickKeys | null = reporting && !selecting && !onLink && !terminalScreen(term).hasSelection()
           ? { ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey } : null;
         if (reporting) Object.defineProperty(event, isMac ? "altKey" : "shiftKey", { value: true });
         copiedText = null;
@@ -747,7 +748,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // the grid would reach the program as a hover report, and xterm clears its selection on any
           // input. herdr reports no moves to a pane holding a selection either. Copying on, the first
           // move clears the copied highlight as herdr's does, so Ctrl+C interrupts again.
-          if (event.buttons === 0 && !copyOnSelect() && term.hasSelection() && term.element?.contains(event.target as Node)) event.stopPropagation();
+          if (event.buttons === 0 && !copyOnSelect() && terminalScreen(term).hasSelection() && term.element?.contains(event.target as Node)) event.stopPropagation();
           return;
         }
         const { cell, edge } = cellAt(event);
@@ -808,13 +809,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (d.scrolled) repaint(d);
         const released = cellAt(event).cell;
         // released on the pane it was pressed on: a pane switched meanwhile gets no click of this press
-        if (d.click && d.pane !== "" && d.pane === paneRef.current && !d.scrolled && !term.hasSelection()
+        if (d.click && d.pane !== "" && d.pane === paneRef.current && !d.scrolled && !terminalScreen(term).hasSelection()
           && released.row === d.anchor.row && released.col === d.anchor.col) {
           forwardClick(event, d.click);
           if (mayReserveCopy()) reserveCopy(d.pane);
           return;
         }
-        if (!term.hasSelection()) return;
+        if (!terminalScreen(term).hasSelection()) return;
         const visibleText = visibleSelection();
         copiedText = visibleText;
         // herdr's copy_on_select: letting go copies, or only selects for Ctrl+C or Copy (herdr's text below either way)
@@ -826,7 +827,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         let range: [Cell, Cell] | null = null;
         if (d.scrolled) range = historyRange(d);
         else if (d.top !== null) {
-          const position = term.getSelectionPosition();
+          const position = terminalScreen(term).getSelectionPosition();
           if (position) {
             // xterm's end column is exclusive, herdr's inclusive
             const end = position.end.x > 0
@@ -923,7 +924,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       /** whether a click on the terminal now reaches a program that may copy for it */
       const mayReserveCopy = (): boolean => osc52AllowedRef.current && !observeRef.current && !heldRef.current
-        && !term.options.disableStdin && !term.hasSelection();
+        && !term.options.disableStdin && !terminalScreen(term).hasSelection();
       /** the reservation this live copy may fill: still waiting, same pane and output, output from after the click */
       const takeCopy = (origin: number): Osc52Reservation | null => {
         const held = copyReservation;
@@ -931,7 +932,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (held && origin <= held.after) return null;
         copyReservation = null;
         if (held && held.copy.pending && held.pane === paneRef.current && held.owner === outputOwner
-          && !observeRef.current && !term.hasSelection()) return held.copy;
+          && !observeRef.current && !terminalScreen(term).hasSelection()) return held.copy;
         held?.copy.cancel();
         return null;
       };
@@ -1041,7 +1042,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           write(data, () => { inFlight--; callback?.(); });
         };
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
-          history: { scrollback: term.options.scrollback ?? 0, length: term.buffer.active.length, viewportY: term.buffer.active.viewportY, baseY: term.buffer.active.baseY },
+          history: { scrollback: term.options.scrollback ?? 0, length: terminalScreen(term).length, viewportY: terminalScreen(term).viewportY, baseY: terminalScreen(term).baseY },
           grid: { cols: term.cols, rows: term.rows } }) });
       }
 
@@ -2058,7 +2059,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         // history this terminal keeps itself (syncHistory) scrolls here, as a real wheel scrolls it: the
         // wheel dispatched below lands past xterm's viewport, which would type arrow keys to the program
-        if ((term.options.scrollback ?? 0) > 0 && term.buffer.active.type === "normal" && term.modes.mouseTrackingMode === "none") {
+        if ((term.options.scrollback ?? 0) > 0 && !terminalScreen(term).alternate && term.modes.mouseTrackingMode === "none") {
           term.scrollLines(steps * HERDR_MOUSE_SCROLL_LINES);
           return;
         }
@@ -2218,7 +2219,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!idleReleaseRef.current || embedded || mirroredRef.current || fixedGridRef.current || observeRef.current
           || heldRef.current || stalledRef.current || endedRef.current || chatViewRef.current || followRef.current
           || cachedRef.current || !shownRef.current || !presentedRef.current || !socket.canWatch() || findOpenRef.current
-          || composingRef.current || compositionCommitPendingRef.current || secretRef.current !== null || term.hasSelection()
+          || composingRef.current || compositionCommitPendingRef.current || secretRef.current !== null || terminalScreen(term).hasSelection()
           || queueWaits(pane)) {
           noteActivity();
           armIdle();

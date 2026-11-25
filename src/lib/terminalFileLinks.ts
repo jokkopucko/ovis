@@ -1,8 +1,9 @@
-import type { IBuffer, ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
+import type { ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { terminalPathMatches } from "../../shared/terminal-links.ts";
 import { isWebLink } from "./externalLink.ts";
 import { isCodeName } from "./filePaths.ts";
+import type { ScreenRows } from "./terminalScreen.ts";
 
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
 const MAX_LINE_CHARS = 8192;
@@ -82,7 +83,7 @@ interface LogicalLine {
   clipped: boolean;
 }
 
-function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
+function logicalLine(buffer: ScreenRows, lineNumber: number): LogicalLine | null {
   let first = lineNumber - 1;
   while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
   let text = "";
@@ -106,7 +107,7 @@ function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
 
 type FileLink = Omit<ILink, "activate"> & { activate: (event: MouseEvent) => void };
 
-export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): FileLink[] {
+export function terminalFileLinks(buffer: ScreenRows, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): FileLink[] {
   const line = logicalLine(buffer, lineNumber);
   if (line === null) return [];
   const { text, positions } = line;
@@ -151,6 +152,6 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
   return links;
 }
 
-export function terminalFileLinkProvider(buffer: () => IBuffer, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
+export function terminalFileLinkProvider(buffer: () => ScreenRows, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
   return { provideLinks: (line, callback) => callback(terminalFileLinks(buffer(), line, open, bare)) };
 }

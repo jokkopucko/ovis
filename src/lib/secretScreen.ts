@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
 /**
  * A script that asks twice prints its second prompt under the first, and that is all that tells the two apart.
@@ -27,12 +28,13 @@ function sameAsking(seen: Asking, now: Asking): boolean {
 export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
   let seen: Asking | null = null;
   let seenOn: string | null = null;
+  const screen = terminalScreen(term);
   return {
     read(pane: string): string | null {
       if (pane !== seenOn) { seen = null; seenOn = pane; }
       const lines: string[] = [];
       const starts: number[] = [];
-      const buffer = term.buffer.active;
+      const buffer = screen.active();
       // the screen only: a prompt is on its last lines, and a herdr-core pane's history (syncHistory) would
       // cost every output frame a pass over its 2,000 lines
       for (let row = buffer.baseY; row < buffer.length; row++) {

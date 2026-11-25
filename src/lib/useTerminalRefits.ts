@@ -10,6 +10,7 @@ import type { HerdrSocket } from "./ws.ts";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 import { typeAheadFocused } from "./typeAhead.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
 export interface TerminalRefitsDeps {
   activeRef: RefObject<boolean>;
@@ -127,7 +128,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     // where it is and the way to the bottom shows over it (components/TerminalViewportTools.tsx)
     const landAtBottom = (): void => {
       const shown = termRef.current;
-      if (shown && !shown.hasSelection()) shown.scrollToBottom();
+      if (shown && !terminalScreen(shown).hasSelection()) shown.scrollToBottom();
     };
     if (observeRef.current || fixedGridRef.current || keptUndriven()) { landAtBottom(); return; }
     if (keyboardHoldsRef.current(true)) { landAtBottom(); return; }

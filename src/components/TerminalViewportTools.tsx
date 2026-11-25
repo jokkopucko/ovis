@@ -9,6 +9,7 @@ import { useT } from "../lib/i18n.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { SCROLL_POLL_BUSY_MS, SCROLL_POLL_SETTLE_MS, scrollPollDelay, validScroll, visibleFindRects, type FindCellRect } from "../lib/terminalViewport.ts";
 import { VIEW_MOVED_EVENT } from "../lib/ghostty/viewMoved.ts";
+import { terminalScreen } from "../lib/terminalScreen.ts";
 import "./TerminalViewportTools.css";
 
 export interface TerminalSearchState { query: string; result: PaneFindResponse }
@@ -77,6 +78,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       && getComputedStyle(terminal.element).visibility !== "hidden";
     const clearHits = () => { data = null; lastKey = ""; setHits((old) => old.length ? [] : old); };
     const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+    const buffer = terminalScreen(terminal);
     const mount = terminal.element?.parentElement;
     const paintBox = () => {
       if (!alive || !showing()) return;
@@ -102,7 +104,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const nativeScroll = data?.scroll;
       const rectangles = active && data && validScroll(nativeScroll) ? visibleFindRects(matches, nativeScroll, active.query, terminal.cols, terminal.rows,
         (row, col) => {
-          const cell = terminal.buffer.active.getLine(terminal.buffer.active.viewportY + row)?.getCell(col);
+          const cell = buffer.getLine(buffer.viewportY + row)?.getCell(col);
           return cell ? { chars: cell.getChars(), width: cell.getWidth() } : undefined;
         }, active.result.match) : [];
       const key = JSON.stringify(rectangles);
@@ -270,7 +272,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     });
     // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
     const readLocal = () => {
-      const buffer = terminal.buffer.active;
       setLocalBack(buffer.viewportY < buffer.baseY);
     };
     const scrolled = terminal.onScroll(readLocal);

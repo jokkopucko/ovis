@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { HERDR_MOUSE_SCROLL_LINES } from "./wheelSteps.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
 export interface TerminalWheelState {
   readonly speed: number;
@@ -35,7 +36,7 @@ export function attachTerminalWheel(term: Terminal, state: { readonly current: T
     const mirrored = viewport.mirrored();
     if (viewport.adopted() && !mirrored) return false;
     if (mirrored && event.deltaY === 0) return false;
-    if (term.hasSelection()) term.clearSelection();
+    if (terminalScreen(term).hasSelection()) term.clearSelection();
     // OmO consumes wheel reports without acting while a question captures mouse input, so the
     // wheel moves herdr's history itself, as far as the reports below would: one three-line step
     // per event whatever its delta, repeated at the chosen speed for a real wheel only.

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILink } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
-import { bareNameLinks, hyperlinkFilter, terminalFileLinks } from "./terminalFileLinks.ts";
+import { bareNameLinks, hyperlinkFilter, terminalFileLinkProvider, terminalFileLinks } from "./terminalFileLinks.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
 const click = { button: 0 } as MouseEvent;
 const written = (term: Terminal, text: string) => new Promise<void>((resolve) => term.write(text, resolve));
@@ -167,6 +168,19 @@ describe("terminal file links", () => {
     expect(opened).toEqual([]);
     terminalFileLinks(term.buffer.active, 1, (path) => opened.push(path))[0]?.activate(click);
     expect(opened).toEqual(["src/foo.tsx"]);
+    term.dispose();
+  });
+  it("opens a link read on the normal screen when the alternate one comes up before the release", async () => {
+    const term = new Terminal({ cols: 80, allowProposedApi: true });
+    await written(term, "open src/report.ts");
+    const opened: string[] = [];
+    const links = await new Promise<ILink[] | undefined>((resolve) =>
+      terminalFileLinkProvider(() => terminalScreen(term).active(), (path) => opened.push(path)).provideLinks(1, resolve));
+    expect(links?.map((link) => link.text)).toEqual(["src/report.ts"]);
+    // a full-screen program starts between the press and the release, before xterm draws again
+    await written(term, "\x1b[?1049h");
+    links?.[0]?.activate(click, links[0].text);
+    expect(opened).toEqual(["src/report.ts"]);
     term.dispose();
   });
   it("opens the full path when a wide character wraps from the last column", async () => {

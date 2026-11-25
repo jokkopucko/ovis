@@ -26,6 +26,7 @@ import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { paneCommandsNow } from "../lib/paneCommandCache.ts";
 import { autoReturnArmed, paneLensFlags, screenReturnArmed, type PeekRequest, type TerminalPeek } from "../lib/terminalPeek.ts";
 import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState } from "../lib/inputRow.ts";
+import { terminalScreen } from "../lib/terminalScreen.ts";
 import { outcomeCommand } from "../lib/outcomeChip.ts";
 import { composerLift, greetingMemory, greetingFits, greetingFolder, roomOverComposer, showsGreeting } from "../lib/greeting.ts";
 import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
@@ -455,12 +456,12 @@ export function PaneTerminal({
     const current = kindRef.current;
     if (term === null || !readsInputRow(current)) return null;
     if (!frameGateRef.current.current) return "unknown";
-    return inputRowState(current, readScreen(term.buffer.active, term.cols, term.rows));
+    return inputRowState(current, readScreen(terminalScreen(term).active(), term.cols, term.rows));
   }, []);
   const inputAtRest = useCallback((): boolean => {
     const term = termRef.current;
     if (term === null || agentRef.current !== "claude") return false;
-    const lines = readScreenLines(term.buffer.active, term.rows);
+    const lines = readScreenLines(terminalScreen(term).active(), term.rows);
     return lines !== null && claudeMainAtRest(inputRowNow(), lines);
   }, [inputRowNow]);
   // The row as the send's receipt came, before the peek's own resize: the watch starts from it, since
