@@ -38,3 +38,7 @@ export const harnessVerb = (value: unknown): value is HarnessVerb => typeof valu
 export const isView = (verb: HarnessVerb) => VIEW_VERBS.some(v => v === verb);
 export const answer = <K extends string, B extends object>(kind: K, body: B) => ({ contract: HARNESS_CONTRACT, kind, ...body });
 export const refuse = (code: string, message: string) => answer("refusal", { error: { code, message } });
+
+/** Panes hc started that asked for the agent tool (`agent-tool-panes`, GET /api/agent-tools/panes): this PC's owner only. */
+export interface AgentToolPane { readonly id: string; readonly pane: string; readonly label: string }
+export interface AgentToolPanes { readonly pending: readonly AgentToolPane[]; readonly allowed: readonly AgentToolPane[] }

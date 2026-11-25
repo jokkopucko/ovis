@@ -1,6 +1,6 @@
 import { chmodSync, lstatSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { createServer, type Server } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { HubConnections } from "./connections.ts";
 import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, harnessVerb, isRecord, isView, refuse, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { projectSafeCommand } from "../entries.ts";
@@ -14,6 +14,8 @@ import { Ledger, type ToolChild } from "./ledger.ts";
 import { validArgs } from "./guards.ts";
 import { ChildTurns, childRef, childState } from "./turns.ts";
 import { HarnessView, type ViewOptions } from "./view.ts";
+import { PaneGrants } from "./pane-grants.ts";
+import { provePane, socketPeer, stillIn, type PaneReader } from "./pane-proof.ts";
 
 interface Options extends ViewOptions {
   readonly acp: AcpChildren;
@@ -21,10 +23,19 @@ interface Options extends ViewOptions {
   readonly setting: () => HarnessToolSetting;
   readonly now?: () => number;
   readonly resolve?: (kind: string) => HarnessCommand | null;
+  /** this PC's herdr-core panes; tests give their own */
+  readonly panes?: PaneReader;
 }
+const PANE_CALL_FIELDS = new Set(["contract", "id", "principal", "pane_hint", "verb", "args"]);
+const hcPanes: PaneReader = {
+  list: async () => (await coreConnection().call("terminal.list", {})).terminals,
+  get: address => coreConnection().call("terminal.get", { terminal: address }).catch(() => null),
+};
+const paneLabel = (t: { name?: string | null; title?: string }, address: string) => (t.name || t.title || address).replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 80) || address;
 export class AgentToolHub {
   readonly address: string;
   readonly runs: RunStore;
+  readonly grants: PaneGrants;
   private server: Server | null = null;
   private readonly connections = new HubConnections();
   private readonly ledger: Ledger;
@@ -38,6 +49,7 @@ export class AgentToolHub {
   constructor(private readonly options: Options) {
     this.address = join(options.dir, "hub.sock");
     this.runs = new RunStore(options.dir);
+    this.grants = new PaneGrants(options.dir, this.runs);
     this.now = options.now ?? Date.now;
     this.ledger = new Ledger(options.dir);
     this.turns = new ChildTurns(this.ledger, options.acp, this.now);
@@ -58,7 +70,22 @@ export class AgentToolHub {
     return policy.level === "off" ? [] : policy.level === "start" && (principal.ceiling || policy.harnesses.some(askable)) && principal.depth < policy.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS;
   }
   reconcileLaunches() { return this.ledger.reconcile(this.options.acp); }
-  settingsChanged(): void { if (this.setting.level === "off") this.runs.revokeAll(); }
+  settingsChanged(): void {
+    if (this.setting.level !== "start") this.grants.clear();
+    if (this.setting.level === "off") this.runs.revokeAll();
+  }
+  /** Drops the words on panes that closed while nobody asked (an Ovis restart, a missed vacate). */
+  async reconcilePanes(): Promise<void> {
+    const before = this.grants.known();
+    this.grants.reconcile(await (this.options.panes ?? hcPanes).list(), before);
+  }
+  async answerPane(id: string, allow: boolean): Promise<"ok" | "gone"> {
+    const pane = this.grants.view().pending.find(p => p.id === id)?.pane;
+    const live = pane ? await (this.options.panes ?? hcPanes).get(pane) : null;
+    // a pane Ovis launched since (its own token) or an ACP child is never also a tokenless one
+    const taken = !pane || !!this.options.acp.forPane(pane) || this.runs.tokenManaged(pane) || !!live?.labels["ovis.acp"] || !!live?.labels["ovis.run"];
+    return this.setting.level === "start" ? this.grants.answer(id, allow, taken ? null : live) : "gone";
+  }
   listen(): void {
     if (this.server) return;
     if (process.platform === "win32" || Buffer.byteLength(this.address) > 100) throw new Error("Agent tool socket is not available at this path.");
@@ -67,7 +94,7 @@ export class AgentToolHub {
       if (!existing.isSocket() || existing.uid !== process.getuid?.()) throw new Error("Agent tool socket path is occupied.");
       rmSync(this.address);
     }
-    const server = createServer(s => this.connections.receive(s, (body, signal) => this.call(body, signal)));
+    const server = createServer(s => this.connections.receive(s, (body, signal, socket) => this.call(body, signal, socket)));
     server.on("error", () => console.warn("Agent tool socket unavailable."));
     const mask = process.umask(0o077);
     try { server.listen(this.address); chmodSync(this.address, 0o600); this.server = server; }
@@ -85,8 +112,9 @@ export class AgentToolHub {
     this.tails.set(id, next);
     try { return await next; } finally { if (this.tails.get(id) === next) this.tails.delete(id); }
   }
-  private async call(input: unknown, signal: AbortSignal): Promise<object> {
+  private async call(input: unknown, signal: AbortSignal, socket: Socket): Promise<object> {
     if (!isRecord(input) || input.contract !== HARNESS_CONTRACT) return refuse("unknown_contract", "Unknown contract.");
+    if ("principal" in input || "pane_hint" in input) return this.paneCall(input, signal, socket);
     const { token, verb, args } = input;
     const auth = () => !signal.aborted && !this.closed && this.setting.level !== "off" && typeof token === "string" ? this.runs.verify(token) : null;
     const deny = () => this.setting.level === "off" ? refuse("tools_off", "Agent tools are off.") : refuse("not_granted", "This run is not granted that operation.");
@@ -97,6 +125,43 @@ export class AgentToolHub {
       if (reservation) return answer("scope", { verbs: this.verbs(reservation) });
     }
     if (!run) return deny();
+    return this.act(run, auth, deny, verb, args, signal, began);
+  }
+  /**
+   * A call from a pane hc started, with no token: the kernel and hc say which pane (pane-proof.ts), and its owner's
+   * word says whether that pane may (pane-grants.ts). The first call raises his card and does nothing else; nothing
+   * the caller sends names the pane, and HC_TERMINAL_ID (`pane_hint`) can only fail the proof.
+   */
+  private async paneCall(input: Record<string, unknown>, signal: AbortSignal, socket: Socket): Promise<object> {
+    const { verb, args, pane_hint: hint } = input;
+    if (input.principal !== "pane" || Object.keys(input).some(k => !PANE_CALL_FIELDS.has(k)) || (hint !== undefined && (typeof hint !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(hint)))) return refuse("bad_request", "Invalid pane call.");
+    if (verb !== "scope" && !(harnessVerb(verb) && validArgs(verb, args))) return refuse("bad_request", "Invalid or unexpected argument.");
+    if (this.closed) return refuse("unavailable", "The Ovis server did not answer.");
+    if (this.setting.level === "off") return refuse("tools_off", "Agent tools are off.");
+    if (this.setting.level !== "start") return refuse("not_granted", "Let agents call other agents is off in Ovis.");
+    const began = this.now();
+    const peer = socketPeer(socket);
+    if (!peer) return refuse("not_granted", "This process could not be traced to a pane.");
+    try {
+      const before = this.grants.known();
+      const proof = await provePane(peer, hint, this.options.panes ?? hcPanes);
+      if (!proof) return refuse("not_granted", "This process is not in one of this PC's herdr-core panes.");
+      const { key, terminal } = proof;
+      // the panes hc lists now: cards and grants of panes that closed unseen free their places before this one is counted
+      this.grants.reconcile(proof.live, before);
+      if (this.options.acp.forPane(key.pane) || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"] || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "Ovis started this pane's agent with a tool of its own.");
+      if (signal.aborted || this.closed || this.setting.level !== "start") return refuse("not_granted", "The grant changed.");
+      const word = this.grants.decide(key, paneLabel(terminal, key.pane));
+      if (word.state !== "allowed") return word.state === "pending" ? refuse("approval_required", "Ask the person to allow this pane in Ovis, then run the command again.")
+        : word.state === "denied" ? refuse("approval_denied", "The person did not allow this pane.") : refuse("rate_limited", "Too many panes are waiting for an answer.");
+      const run = this.runs.paneRun(word.run);
+      if (!run) return refuse("not_granted", "This pane's grant has ended.");
+      // checked again at every step of the call: still a process of that pane, and the pane still allowed
+      const auth = () => !signal.aborted && !this.closed && this.setting.level === "start" && stillIn(peer, key) && this.grants.allows(key, run.id);
+      return await this.act(run, auth, () => refuse("not_granted", "This pane's grant has ended."), verb, args, signal, began);
+    } finally { peer.close(); }
+  }
+  private async act(run: Run, auth: () => unknown, deny: () => ReturnType<typeof refuse>, verb: unknown, args: unknown, signal: AbortSignal, began: number): Promise<object> {
     if (!this.runs.takeCall(run.id, this.now())) return refuse("rate_limited", "Too many calls in the past minute.");
     if (verb === "scope") return answer("scope", { verbs: this.verbs(run) });
     if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");

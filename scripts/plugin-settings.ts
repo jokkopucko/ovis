@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { mergeEnvLayers } from "../server/legacy-env.ts";
 
 /**
  * Read in this order, so `.env` wins: `env` is what this plugin read first, `.env` is what herdr's
@@ -29,4 +30,10 @@ export function readEnvFile(file: string): Record<string, string> {
     vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
   }
   return vars;
+}
+
+/** Ovis's settings files, read where scripts/plugin.ts reads them, without asking herdr for its config dir. */
+export function readPluginSettings(env: Record<string, string | undefined>, home: string): Record<string, string | undefined> {
+  const dir = env["HERDR_PLUGIN_CONFIG_DIR"] ?? ownDir(join(home, ".config"));
+  return mergeEnvLayers(ENV_FILES.map((name) => join(dir, name)).filter((file) => existsSync(file)).map(readEnvFile));
 }

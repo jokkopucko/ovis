@@ -25,7 +25,7 @@ import { loopbackOrigin } from "../shared/loopback-origin.ts";
 import { appOrigin } from "./plugin-port.ts";
 import { execWaiter } from "./plugin-tui-waiter.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
-import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
+import { readPluginSettings } from "./plugin-settings.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -398,11 +398,6 @@ export function readLine(read: (one: Buffer) => number = (one) => readSync(0, on
   }
 }
 
-/** Ovis's settings files, read where plugin.ts reads them, without asking herdr for its config dir. */
-function readSettings(env: Env, home: string): Env {
-  const dir = env["HERDR_PLUGIN_CONFIG_DIR"] ?? ownDir(join(home, ".config"));
-  return mergeEnvLayers(ENV_FILES.map((name) => join(dir, name)).filter((file) => existsSync(file)).map(readEnvFile));
-}
 
 /**
  * A folder of this run's own with the hold file in it, in the first of `temps` that takes one. Only an absolute
@@ -443,7 +438,7 @@ export function systemParts(caller: Env, home: string): LaunchParts {
     isTty: isatty(0) && isatty(1),
     caller,
     home,
-    settings: readSettings(caller, home),
+    settings: readPluginSettings(caller, home),
     screen: screenStart(),
     folder: process.cwd(),
     probe,

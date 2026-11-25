@@ -1,3 +1,4 @@
+import type { AgentToolPanes } from "./harness-tool.ts";
 import type { AgentRowTokens } from "./pane-tokens.ts";
 import type { SharedPreferences } from "./preferences.ts";
 import type { HealthAuth, SecuritySummary, ServerMessage, SessionSnapshot } from "./protocol.ts";
@@ -542,7 +543,10 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   | DeviceRemovedEvent
   | RelayPairingsEvent
   | RemotePairingsEvent
-  | PendingRedemptionsEvent;
+  | PendingRedemptionsEvent
+  | AgentToolPanesEvent;
+/** Panes hc started that wait for, or have, this PC's owner's word on the agent tool: his windows alone, when one opens and at each change. */
+export type AgentToolPanesEvent = { type: "agent-tool-panes" } & AgentToolPanes;
 /**
  * A device that redeemed a code and proved its key, waiting for this PC's screen to approve that key (device table S31,
  * T71). `label` is what the device says about itself; `fingerprint` is what its own screen shows for the same key.

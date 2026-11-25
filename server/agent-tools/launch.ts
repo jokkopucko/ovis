@@ -3,6 +3,7 @@ import { browserToolChoices, browserToolCommand, isBrowserToolAgent, mcpLaunchAr
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import type { AgentToolHub } from "./hub.ts";
+import { paneFeed } from "./pane-grants.ts";
 import { privateDir, writePrivate } from "./runs.ts";
 
 /**
@@ -29,7 +30,8 @@ const extensionSource = (server: { name: string; command: string; args: readonly
 ].join("\n");
 
 let hub: AgentToolHub | null = null;
-export function useAgentToolHub(current: AgentToolHub | null): void { hub = current; }
+export function useAgentToolHub(current: AgentToolHub | null): void { hub = current; paneFeed.use(current?.grants ?? null); }
+export function agentToolHub(): AgentToolHub | null { return hub; }
 export function forgetLocalRun(pane: string, keep?: string): void { if (hcMachine() === null) hub?.runs.forgetTerminal(pane, keep); }
 export function launchHarnessTool(pane: string, kind: string, options: { args?: string[]; platform: string; browsers: unknown }) {
   if (!hub || hcMachine() !== null || !capabilities().acpChildren || options.platform === "win32") return null;

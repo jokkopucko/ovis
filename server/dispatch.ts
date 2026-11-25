@@ -9,7 +9,7 @@ import { handleIntegrationsRequest } from "./integrations-routes.ts";
 import type { OrderSequence } from "./order-sequence.ts";
 import type { HealthAuth, ObservedIngress, SecuritySummary, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
-import type { Machine } from "../shared/machines.ts";
+import type { Machine, MachineEvent } from "../shared/machines.ts";
 import { authClient, deviceAuthorizationValue, deviceCookieValue, bearerMatches, handleAuthRequest, isAuthenticated, isSecureRequest, parseCookies, presentedToken, presentedTokenHeld, recordPresentedTokenFailure, requiresAuth, unauthorizedJson } from "./auth.ts";
 import { bindScope, cameThroughProxy, decideAccess, decideMachineAccess, forwardingHeaders, inTailnet, isLoopbackAddress, isServeOwnerRequest, lanExposed, machineForwardingHeaders, observedIngress, ownerAccess } from "./access.ts";
 import { type DeviceStore, handleDeviceRequest, newStreamKey, streamCookie, streamKeys, type DeviceMatch } from "./devices.ts";
@@ -79,11 +79,12 @@ import { USER_FONTS_PATH } from "../shared/user-fonts.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { handleMemoryRequest } from "./memory/routes.ts";
+import { handleAgentPanesRequest } from "./agent-tools/pane-routes.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
 import { ACCOUNT_PC_OWNER_ONLY, accountRoster, handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
-import { machinePairingEvents, remotePairingEvents } from "./machine-pairing-events.ts";
+import { agentPaneEvents, machinePairingEvents, remotePairingEvents } from "./machine-pairing-events.ts";
 import { handleJoinSeen, JOIN_SEEN_PATH, type JoinNotices, type JoinViewer } from "./join-notices.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
@@ -665,7 +666,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       if (event.type === "machines") tell(accountRoster(herdrSidebar.get(), event.machines));
     }) : undefined;
     // a device of the account's list hears the joins that wait at this PC over the same socket, when it may let one in
-    const listJoins = localRoster ? remotePairingEvents(ctx) : undefined;
+    const listJoins = localRoster ? (tell: (event: MachineEvent) => void) => {
+      const stops = [remotePairingEvents(ctx)(tell), agentPaneEvents(access)(tell)];
+      return () => { for (const stop of stops) stop(); };
+    } : undefined;
     const presentedKeys = streamKeys(request);
     const issuedKey = useMachineEvents && presentedKeys.length === 0 ? newStreamKey() : null;
     const keys = issuedKey === null ? presentedKeys : [issuedKey];
@@ -768,6 +772,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
   // Settings → Memory: every change is a person's on a screen; the bridge token never reaches it (not a bridge path)
+  // the owner's word on panes hc started that asked for the agent tool: his alone, a watching device's never
+  if (pathname === "/api/agent-tools/panes" || pathname.startsWith("/api/agent-tools/panes/")) return handleAgentPanesRequest(request, pathname, ownerAccess(access) && !readOnly);
   if (pathname === "/api/memory" || pathname.startsWith("/api/memory/")) {
     const by = access.level !== "full" ? "unknown" : access.device ? `device:${access.device.id}` : access.via;
     return handleMemoryRequest(request, url, ctx.services.memory, { readOnly, by });

@@ -92,4 +92,7 @@ export const SETUP_JA: Record<string, string> = {
   "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "{agents} に自分で設定した許可ルール（プロジェクトフォルダーのものを含む）は、呼び出されたときにも適用されます。",
   "{agents} searches the web without asking.": "{agents} は確認せずに Web 検索を行います。",
   "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
+  "Give {name} the tool to call other agents?": "{name} にほかのエージェントを呼び出すツールを渡しますか?",
+  "Programs in this pane can start other agents and give them work until it closes. You still answer every permission request.": "このペインが閉じるまで、中のプログラムがほかのエージェントを起動して作業を任せられます。許可はいつも自分で行います。",
+  "A pane you allowed to call other agents, until it closes.": "ほかのエージェントの呼び出しを許可したペインです。閉じると終わります。",
 };

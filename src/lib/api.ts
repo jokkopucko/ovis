@@ -433,6 +433,20 @@ export async function decideRelayPairing(id: string, decision: "approve" | "decl
   if (!response.ok) throw await errorFrom(url, response);
 }
 
+/** POST /api/agent-tools/panes/answer: the owner's word on a pane hc started that asked for the agent tool (`agent-tool-panes`). */
+export async function answerAgentToolPane(id: string, decision: "allow" | "deny"): Promise<void> {
+  const url = "/api/agent-tools/panes/answer";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** POST /api/agent-tools/panes/remove: takes the agent tool back from a pane the owner allowed. */
+export async function removeAgentToolPane(id: string): Promise<void> {
+  const url = "/api/agent-tools/panes/remove";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 /** POST /api/account/confirm-page: opens this PC's confirm page on its own desktop (own window only; 409 when it cannot). */
 export async function openConfirmPage(): Promise<void> {
   const url = "/api/account/confirm-page";

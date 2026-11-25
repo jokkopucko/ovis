@@ -17,6 +17,8 @@ export interface Run {
   readonly ceiling?: string;
 }
 interface Saved { readonly run: Run; readonly hash: string; readonly starts?: readonly { key: string; run: string }[]; readonly calls?: readonly number[]; readonly foreground?: { pid: number; birth: string } }
+/** A pane hc started that its owner allowed (pane-grants.ts): no token, proved at every call; in pane-runs.json. */
+type PaneSaved = Omit<Saved, "hash" | "foreground">;
 const idPattern = /^[a-f0-9]{16}$/;
 const digest = (token: string) => createHash("sha256").update(token).digest();
 export interface LiveToolTerminal {
@@ -37,7 +39,10 @@ export function writePrivate(path: string, text: string): void {
 }
 
 function saved(value: unknown): value is Saved {
-  if (!value || typeof value !== "object" || !("hash" in value) || typeof value.hash !== "string" || !/^[a-f0-9]{64}$/.test(value.hash) || !("run" in value)) return false;
+  return !!value && typeof value === "object" && "hash" in value && typeof value.hash === "string" && /^[a-f0-9]{64}$/.test(value.hash) && paneSaved(value);
+}
+function paneSaved(value: unknown): value is PaneSaved {
+  if (!value || typeof value !== "object" || !("run" in value)) return false;
   if ("starts" in value && (!Array.isArray(value.starts) || !value.starts.every(s => s && typeof s.key === "string" && typeof s.run === "string" && idPattern.test(s.run)))) return false;
   if ("calls" in value && (!Array.isArray(value.calls) || value.calls.length > HARNESS_LIMITS.calls_per_minute || !value.calls.every(Number.isFinite))) return false;
   const r = value.run;
@@ -57,18 +62,47 @@ function ended(foreground: { pid: number; birth: string }): boolean {
 export class RunStore {
   private readonly entries = new Map<string, Saved>();
   private readonly pending = new Map<string, { depth: number; hash: string; ceiling?: string }>();
+  private readonly panes = new Map<string, PaneSaved>();
   constructor(readonly dir: string) {
     privateDir(dir);
-    const file = join(dir, "runs.json");
-    if (!existsSync(file)) return;
-    try {
-      const doc: unknown = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(doc) && doc.every(saved)) for (const row of doc) this.entries.set(row.run.id, row);
-    } catch {
-      console.warn("Agent tool: unreadable run registry; existing credentials will not be accepted.");
+    for (const [name, rows, valid] of [["runs.json", this.entries, saved], ["pane-runs.json", this.panes, paneSaved]] as const) {
+      const file = join(dir, name);
+      if (!existsSync(file)) continue;
+      try {
+        const doc: unknown = JSON.parse(readFileSync(file, "utf8"));
+        if (Array.isArray(doc) && doc.every(valid)) for (const row of doc) (rows as Map<string, PaneSaved>).set(row.run.id, row);
+      } catch {
+        console.warn("Agent tool: unreadable run registry; existing credentials will not be accepted.");
+      }
     }
   }
-  private save(): void { writePrivate(join(this.dir, "runs.json"), JSON.stringify([...this.entries.values()])); }
+  /** Each registry is written alone, so a pane registry that cannot be written never fails a token run, nor the reverse. */
+  private save(which: "tokens" | "panes" = "tokens"): void {
+    if (which === "panes") writePrivate(join(this.dir, "pane-runs.json"), JSON.stringify([...this.panes.values()]));
+    else writePrivate(join(this.dir, "runs.json"), JSON.stringify([...this.entries.values()]));
+  }
+  private saveFor(id: string): void { this.save(this.panes.has(id) ? "panes" : "tokens"); }
+  private row(id: string): PaneSaved | undefined { return this.entries.get(id) ?? this.panes.get(id); }
+  private put(id: string, row: PaneSaved): void {
+    if (this.panes.has(id)) this.panes.set(id, row); else this.entries.set(id, row as Saved);
+  }
+  /** A depth-zero run for a pane its owner allowed, with no token: the hub proves the pane at every call. */
+  bindPane(self: string): Run {
+    const id = randomBytes(8).toString("hex");
+    const run: Run = { id, self, depth: 0, started_by: null, root: id, harness: "hc-pane", created_ms: Date.now() };
+    this.panes.set(id, { run });
+    try { this.save("panes"); } catch (error) { this.panes.delete(id); throw error; }
+    return run;
+  }
+  paneRun(id: string): Run | null { return this.panes.get(id)?.run ?? null; }
+  /** Drops the pane runs no allowed pane holds (a stop between writing the run and the owner's word). */
+  keepPaneRuns(held: ReadonlySet<string>): void {
+    const orphans = [...this.panes.keys()].filter(id => !held.has(id));
+    for (const id of orphans) this.panes.delete(id);
+    if (orphans.length > 0) this.save("panes");
+  }
+  /** Whether Ovis launched this pane's program with a token of its own: such a pane is never also a tokenless one. */
+  tokenManaged(self: string): boolean { return [...this.entries.values()].some(({ run }) => run.self === self); }
   reserve(depth = 0, ceiling?: string) {
     const id = randomBytes(8).toString("hex");
     const dir = join(this.dir, "tokens");
@@ -104,44 +138,45 @@ export class RunStore {
     const chain: string[] = [];
     let id = run.started_by;
     while (id && chain.length < 3) {
-      const parent = this.entries.get(id)?.run;
+      const parent = this.row(id)?.run;
       if (!parent) break;
       chain.push(parent.self);
       id = parent.started_by;
     }
     return chain;
   }
-  previousStart(id: string, key: string): string | undefined { return this.entries.get(id)?.starts?.find(s => s.key === key)?.run; }
+  previousStart(id: string, key: string): string | undefined { return this.row(id)?.starts?.find(s => s.key === key)?.run; }
   forgetFailedStart(id: string, failed: string): void {
-    const row = this.entries.get(id);
+    const row = this.row(id);
     if (!row?.starts?.some(s => s.run === failed)) return;
-    this.entries.set(id, { ...row, starts: row.starts.filter(s => s.run !== failed) });
-    this.save();
+    this.put(id, { ...row, starts: row.starts.filter(s => s.run !== failed) });
+    this.saveFor(id);
   }
   takeCall(id: string, now: number): boolean {
-    const row = this.entries.get(id);
+    const row = this.row(id);
     if (!row) return false;
     const calls = (row.calls ?? []).filter(at => at > now - 60_000);
     const max = HARNESS_LIMITS.calls_per_minute;
-    this.entries.set(id, { ...row, calls: [...calls, now].slice(-max) });
-    this.save();
+    this.put(id, { ...row, calls: [...calls, now].slice(-max) });
+    this.saveFor(id);
     return calls.length < max;
   }
   rememberStart(id: string, key: string, child: string): void {
-    const row = this.entries.get(id);
+    const row = this.row(id);
     if (!row) throw new Error("Agent tool run has ended.");
-    this.entries.set(id, { ...row, starts: [...row.starts ?? [], { key, run: child }] });
-    this.save();
+    this.put(id, { ...row, starts: [...row.starts ?? [], { key, run: child }] });
+    this.saveFor(id);
   }
   revoke(id: string): void {
     if (!idPattern.test(id)) return;
     this.pending.delete(id);
-    if (this.entries.delete(id)) this.save();
     rmSync(join(this.dir, "tokens", `${id}.token`), { force: true });
     for (const end of [".json", ".js"]) rmSync(join(this.dir, "mcp", `${id}${end}`), { force: true });
+    if (this.entries.delete(id)) this.save("tokens");
+    else if (this.panes.delete(id)) this.save("panes");
   }
   forgetTerminal(self: string, keep?: string): void {
-    for (const { run } of this.entries.values()) if (run.self === self && run.id !== keep) this.revoke(run.id);
+    for (const { run } of [...this.entries.values(), ...this.panes.values()]) if (run.self === self && run.id !== keep) this.revoke(run.id);
   }
   rememberForeground(id: string, pid: number): void {
     const row = this.entries.get(id), reading = readProcessBirth(pid);
@@ -168,7 +203,9 @@ export class RunStore {
   revokeAll(): void {
     this.pending.clear();
     this.entries.clear();
-    this.save();
+    this.panes.clear();
     for (const dir of ["tokens", "mcp"]) rmSync(join(this.dir, dir), { recursive: true, force: true });
+    this.save("tokens");
+    this.save("panes");
   }
 }

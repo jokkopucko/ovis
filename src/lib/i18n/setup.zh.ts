@@ -92,4 +92,7 @@ export const SETUP_ZH: Record<string, string> = {
   "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "你在 {agents} 中设置的允许规则（包括项目文件夹中的）在被调用时同样适用。",
   "{agents} searches the web without asking.": "{agents} 会不经询问直接进行网页搜索。",
   "Not saved: this PC did not answer. Try again.": "未保存：此 PC 没有响应。请重试。",
+  "Give {name} the tool to call other agents?": "要让 {name} 使用调用其他 Agent 的工具吗?",
+  "Programs in this pane can start other agents and give them work until it closes. You still answer every permission request.": "在此窗格关闭前，其中的程序可以启动其他 Agent 并分派任务。每个权限请求仍由你亲自批准。",
+  "A pane you allowed to call other agents, until it closes.": "你允许调用其他 Agent 的窗格，关闭后失效。",
 };

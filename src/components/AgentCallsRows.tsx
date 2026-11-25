@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Network, Users } from "lucide-react";
+import { Network, SquareTerminal, Users } from "lucide-react";
 
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import { ASK_EVERY_TIME_HARNESSES, OWN_RULES_HARNESSES, UNASKED_SEARCH_HARNESSES, harnessToolSetting, type HarnessToolSetting } from "../../shared/harness-tool.ts";
-import { savePreferences } from "../lib/api.ts";
+import { removeAgentToolPane, savePreferences } from "../lib/api.ts";
+import { useAgentToolPanes } from "../lib/agentToolPanes.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { ChipToggles, SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
@@ -21,6 +22,7 @@ export function AgentCallsRows({ agents, watching }: { agents: readonly AgentCat
   const [saved, setSaved] = useState<HarnessToolSetting | null>(null);
   const [failed, setFailed] = useState(false);
   const held = settings.agentHarnessTool;
+  const { allowed } = useAgentToolPanes();
   useEffect(() => { if (saved !== null && JSON.stringify(saved) === JSON.stringify(held)) setSaved(null); }, [saved, held]);
   const setting = saved ?? held;
   const on = setting.level === "start";
@@ -51,6 +53,11 @@ export function AgentCallsRows({ agents, watching }: { agents: readonly AgentCat
           {unaskedSearch !== "" && <><br />{t("{agents} searches the web without asking.", { agents: unaskedSearch })}</>}</span>}>
         <ChipToggles label={t("Agents they may call")} disabled={watching} chips={callable.map((agent) => ({ label: agent.name, on: setting.harnesses.includes(agent.id), onChange: (chosen) => choose(agent.id, chosen) }))} />
       </SettingsRow>}
+      {on && allowed.map((pane) => (
+        <SettingsRow key={pane.id} icon={SquareTerminal} label={pane.label === pane.pane ? pane.pane : `${pane.label} (${pane.pane})`} description={t("A pane you allowed to call other agents, until it closes.")}>
+          <button type="button" className="btn" disabled={watching} onClick={() => { removeAgentToolPane(pane.id).catch(() => setFailed(true)); }}>{t("Remove")}</button>
+        </SettingsRow>
+      ))}
     </SettingsGroup>
   );
 }

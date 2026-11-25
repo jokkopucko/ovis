@@ -7,7 +7,7 @@ export class HubConnections {
   private readonly sockets = new Set<Socket>();
   private active = 0;
   close(): void { for (const s of this.sockets) s.destroy(); }
-  receive(s: Socket, call: (body: unknown, signal: AbortSignal) => Promise<object>): void {
+  receive(s: Socket, call: (body: unknown, signal: AbortSignal, socket: Socket) => Promise<object>): void {
     if (this.sockets.size >= 64) { s.destroy(); return; }
     this.sockets.add(s);
     let buffer = "", bytes = 0;
@@ -29,7 +29,7 @@ export class HubConnections {
       let request: unknown;
       try { request = JSON.parse(buffer.slice(0, at)); } catch { s.end(`${JSON.stringify(refuse("bad_request", "Invalid JSON."))}\n`); return; }
       buffer = ""; this.active++;
-      void call(request, controller.signal).catch(() => refuse("unavailable", "The requested session is unavailable.")).then(reply => {
+      void call(request, controller.signal, s).catch(() => refuse("unavailable", "The requested session is unavailable.")).then(reply => {
         if (controller.signal.aborted) return;
         const text = JSON.stringify(reply);
         s.end(`${Buffer.byteLength(text) <= 262144 ? text : JSON.stringify(refuse("unavailable", "This response is too large."))}\n`);
