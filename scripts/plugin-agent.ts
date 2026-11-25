@@ -9,7 +9,7 @@ import { readPluginSettings } from "./plugin-settings.ts";
 /**
  * This command has no fallback to the owner's HTTP door or another run. With a launch's token (OVIS_AGENT_SOCKET and
  * OVIS_AGENT_TOKEN_FILE, even one alone) it uses that run only; with neither it asks as the hc pane it runs in, which
- * the server proves and its owner allows once (docs/harness-tool.md).
+ * the server proves on every call while local starts are enabled (docs/harness-tool.md).
  */
 export async function runAgent(words: readonly string[]): Promise<number> {
   const [word, ...rest] = words;

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
 import { badRequest, isJsonObject, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
-import { HARNESS_TOOL_OFF, harnessToolSetting, parseHarnessSetting } from "../shared/harness-tool.ts";
+import { harnessToolSetting, parseHarnessSetting } from "../shared/harness-tool.ts";
+import { AgentToolPolicyFile } from "./agent-tools/policy-file.ts";
 
 export const STATE_ID_FILE = "preferences-id.json";
 const STATE_ID = /^[0-9a-f]{32}$/;
@@ -44,6 +45,7 @@ export class PreferenceStore {
   private readonly labelsPath: string;
   private readonly stateDir: string;
   private stateId: string | null | undefined;
+  private readonly agentPolicy: AgentToolPolicyFile;
   private readonly listeners = new Set<(preferences: SharedPreferences) => void>();
   private unsettled = true;
   private mutesUnsettled = true;
@@ -54,6 +56,7 @@ export class PreferenceStore {
     this.mutesPath = join(stateDir, "muted-panes.json");
     this.labelsPath = join(stateDir, "tab-labels.json");
     this.stateDir = stateDir;
+    this.agentPolicy = new AgentToolPolicyFile(stateDir);
     try {
       this.stateId = readStateId(stateDir);
       if (this.stateId === null) console.error(`${join(stateDir, STATE_ID_FILE)} is not a state folder id; none is sent until it is repaired or removed and the server restarts`);
@@ -68,17 +71,8 @@ export class PreferenceStore {
       console.error(`Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? "error"}); shared preferences start empty and are not saved until it can be read`);
     }
     if (typeof this.stateId === "string") this.current = { ...this.current, state_id: this.stateId };
-    // Like muted panes, a security policy cannot live only in preferences.json: an older
-    // server rewrites that document without keys it does not recognize.
-    const policyPath = join(stateDir, "agent-harness-policy.json");
-    try {
-      const read = readStateDocument(policyPath);
-      if (read.kind !== "missing") this.current.settings.agentHarnessTool = read.kind === "json" ? parseHarnessSetting(read.value) ?? HARNESS_TOOL_OFF : HARNESS_TOOL_OFF;
-      else if (this.current.settings.agentHarnessTool !== undefined) writeStateDocument(policyPath, JSON.stringify(harnessToolSetting(this.current.settings.agentHarnessTool)), false);
-    } catch (error) {
-      // A non-directory cannot contain a policy (or a hub); the preference store remains empty.
-      if (!(error instanceof Error && "code" in error && error.code === "ENOTDIR")) this.current.settings.agentHarnessTool = HARNESS_TOOL_OFF;
-    }
+    const policy = this.agentPolicy.read(this.current.settings.agentHarnessTool);
+    if (policy !== undefined) this.current.settings.agentHarnessTool = policy;
     try {
       this.current = { ...this.current, muted_panes: this.readMutes() ?? [] };
     } catch (error) {
@@ -129,6 +123,7 @@ export class PreferenceStore {
   }
 
   get(): SharedPreferences { return this.current; }
+  get paneRunEpoch(): string | null { return this.agentPolicy.paneRunEpoch; }
 
   set(change: PreferencesChange): SharedPreferences {
     const changingPolicy = Object.hasOwn(change.settings, "agentHarnessTool");
@@ -229,7 +224,7 @@ export class PreferenceStore {
       this.mutesUnsettled = false;
     }
     this.unsettled = false;
-    if (policy) writeStateDocument(join(this.stateDir, "agent-harness-policy.json"), JSON.stringify(policy), false);
+    if (policy) this.agentPolicy.save(policy, harnessToolSetting(this.current.settings.agentHarnessTool).level);
     this.current = next;
     // every listener hears of the saved change; the first one that fails then fails the save's caller, so a
     // change that could not be followed through (a Hub account's hide not saved, #3428) is not taken as done

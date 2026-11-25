@@ -94,7 +94,7 @@ export const sameKey = (a: PaneKey, b: PaneKey): boolean => a.pane === b.pane &&
 
 export interface PaneTerminal {
   readonly address: string; readonly state: string; readonly pid?: number | null; readonly created_ms: number;
-  readonly labels: Record<string, string>; readonly name?: string | null; readonly title?: string;
+  readonly labels: Record<string, string>;
 }
 export interface PaneReader {
   list(): Promise<readonly PaneTerminal[]>;

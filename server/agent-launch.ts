@@ -14,7 +14,7 @@ import { browserToolArgs, browserToolChoices, browserToolConfig, isBrowserToolAg
 import { hcMachine } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
 import { userHome } from "./user-home.ts";
-import { forgetLocalRun, launchHarnessTool } from "./agent-tools/launch.ts";
+import { forgetLocalRun, launchHarnessTool, markLocalAgentLaunch } from "./agent-tools/launch.ts";
 
 export type AgentPayload = { kind?: unknown; name?: unknown; args?: unknown };
 
@@ -154,6 +154,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
     // an agent another machine of the core starts could not reach this PC's hub
     const args = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
       ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind)) : agent.args as string[] | undefined;
+    await markLocalAgentLaunch(paneId, options.platform ?? process.platform);
     if (shell) {
       const shellOptions = locator ? { locator } : {};
       tool = kind === "dsh-tui" ? null : launchHarnessTool(paneId, kind, { args, platform: options.platform ?? process.platform, browsers: null });

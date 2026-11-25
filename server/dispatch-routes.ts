@@ -25,7 +25,6 @@ export const LOCAL_DRIVE_POSTS: readonly string[] = [
   "agent/rename", "sessions/resume", "plugin/action", "seen", "connection-diagnostics",
   "agent-catalog/install", "agent-catalog/sign-in", "usage/statusline", "usage/login", "usage/login/code",
   "usage/login/cancel", "usage/accounts", "cliproxy/login", "cliproxy/callback", "voice/transcribe", "telemetry",
-  "agent-tools/panes/answer", "agent-tools/panes/remove",
 ].map(path => `/api/${path}`);
 
 /** Settings → Memory's changes (server/memory/routes.ts): a person driving this PC makes them, an account's phone too. */
@@ -62,7 +61,7 @@ export const DISPATCH_READS: ReadonlySet<string> = new Set([
   "machines", "preferences", "seen", "session", "sessions/history", "health", "system", "herdr-ui", "devices", "access",
   "account/introduction", "account/status", "account/list/witness", "push", "relay", "updates", "updates/notes", "updates/installed", "runtime/move",
   "usage", "usage/statusline", "usage/login", "usage/login/prompt", "voice", "fonts", "cliproxy", "cliproxy/login", "telemetry",
-  "agents", "agent-catalog", "integrations", "memory", "agent-tools/panes", "plugins/actions", "plugin/action", "agent/commands",
+  "agents", "agent-catalog", "integrations", "memory", "plugins/actions", "plugin/action", "agent/commands",
   "pane/read", "pane/scroll", "pane/selection", "pane/commands", "pane/files", "pane/docs",
   "pane/conversation", "pane/conversation/search", "pane/conversation/image", "pane/conversation/tool-output",
   "pane/summary", "pane/omo-tasks", "pane/background-agent", "pane/plan", "pane/artifacts", "pane/btw", "pane/prompt",

@@ -249,7 +249,7 @@ interface AuditRecord {              // G6: one per start, send and stop
 
 interface Refusal {
   error: {
-    code: "tools_off" | "not_granted" | "approval_required" | "approval_denied" | "waiting_human"
+    code: "tools_off" | "not_granted" | "approval_required" | "waiting_human"
         | "depth_exceeded" | "time_limit" | "rate_limited"
         | "ancestor_target" | "self_target" | "not_owner" | "taken_over"
         | "unknown_session" | "unknown_contract";

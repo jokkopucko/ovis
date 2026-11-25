@@ -6,6 +6,7 @@ import type { HerdrRuntimeFacts, RuntimeName } from "../shared/machines.ts";
 import type { PaneInfo, PaneProcessInfo, SessionSnapshot } from "../shared/herdr-api.generated.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus, MoveStopAllOffer } from "../shared/runtime-move.ts";
 import { agentLaunch, withBrowserTool } from "./agent-launch.ts";
+import { OVIS_AGENT_LAUNCH_LABEL } from "./agent-tools/launch.ts";
 import { freeAgentName } from "./agent-name.ts";
 import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendKeys, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
@@ -160,6 +161,7 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
     renamePane: (paneId, name) => paneRename(paneId, name, socket),
     start: async (paneId, argv) => {
       // a shell started a moment ago may not be up yet (`agent_pane_busy`), as agent-launch.ts waits for it
+      if (process.platform === "linux") await hc.call("terminal.label", { terminal: paneId, labels: { [OVIS_AGENT_LAUNCH_LABEL]: "1" } });
       for (const deadline = Date.now() + 10_000; ;) {
         const names = (await sessionSnapshot(socket)).agents.map((agent) => agent.name);
         try {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import * as herdr from "../herdr/client.ts";
 import * as prompts from "../prompt.ts";
 import * as conversation from "../conversation.ts";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HARNESS_CONTRACT, harnessToolSetting, type HarnessToolSetting } from "../../shared/harness-tool.ts";
@@ -26,6 +26,11 @@ afterEach(() => { hub.close(); rmSync(dir, { recursive: true, force: true }); })
 const call = (verb: string, args: object = {}, credential = token) =>
   lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token: credential, verb, args }, 2000);
 const start = () => { setting = { level: "start", depth: 1, harnesses: ["gjc"] }; };
+
+it("a pane registry that cannot be written does not stop a token run", async () => {
+  mkdirSync(join(dir, "pane-runs.json"));
+  expect(await call("scope")).toMatchObject({ kind: "scope" });
+});
 
 it("never consults a plain shell's prompt or contents for agent read", async () => {
   const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ protocol: 22, version: "fixture", agents: [], workspaces: [], tabs: [], layouts: [],

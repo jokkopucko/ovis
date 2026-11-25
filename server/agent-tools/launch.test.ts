@@ -1,16 +1,29 @@
-import { expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { agentLaunch } from "../agent-launch.ts";
 import * as shell from "../shell-agent.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpChildren } from "../acp/children.ts";
+import { HcConnection } from "../herdr-core/connection.ts";
+import { FakeHcCore } from "../herdr-core/core.fake.ts";
+import * as runtime from "../herdr-core/runtime.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { HARNESS_SKILL } from "../../shared/harness-skill.ts";
 import { TOOL_SCHEMAS, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { AgentToolHub } from "./hub.ts";
 import { forgetLocalRun, launchHarnessTool, useAgentToolHub } from "./launch.ts";
 import { mcpMessage } from "./mcp.ts";
+
+let hc: HcConnection;
+let connection: ReturnType<typeof spyOn>;
+beforeEach(() => {
+  const fake = new FakeHcCore();
+  fake.spawn();
+  hc = new HcConnection(() => fake.transport());
+  connection = spyOn(runtime, "coreConnection").mockReturnValue(hc);
+});
+afterEach(() => { connection.mockRestore(); hc.close(); });
 
 it.skipIf(process.platform === "win32")("one launch config holds both relays; no run secret is in argv, config or the MCP answers", async () => {
   const dir = mkdtempSync(join(tmpdir(), "at-launch-"));

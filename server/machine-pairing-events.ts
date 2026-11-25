@@ -1,9 +1,8 @@
-import { ownerAccess, type Access } from "./access.ts";
-import { paneFeed } from "./agent-tools/pane-grants.ts";
+import type { Access } from "./access.ts";
 import { sameBrowser } from "./devices.ts";
 import type { ServerContext } from "./dispatch.ts";
 import type { MachineEventDocument } from "./machine-events.ts";
-import type { AgentToolPanesEvent, RemotePairingRequest, RemotePairingsEvent } from "../shared/machines.ts";
+import type { RemotePairingRequest, RemotePairingsEvent } from "../shared/machines.ts";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
 import { shownTo, type JoinViewer } from "./join-notices.ts";
 
@@ -44,19 +43,6 @@ export function remotePairingEvents({ services, peer }: ServerContext): (listene
   };
 }
 
-/**
- * The panes waiting for the owner's word on the agent tool, and those he allowed (`agent-tool-panes`): his windows
- * alone, on either event route. Anybody else is told, once, that there are none, so a window that was the owner's
- * before drops what it showed.
- */
-export function agentPaneEvents(access: Access): (listener: (event: AgentToolPanesEvent) => void) => () => void {
-  return (listener) => {
-    if (!ownerAccess(access)) { listener({ type: "agent-tool-panes", pending: [], allowed: [] }); return () => {}; }
-    listener({ type: "agent-tool-panes", ...paneFeed.view() });
-    return paneFeed.subscribe((panes) => listener({ type: "agent-tool-panes", ...panes }));
-  };
-}
-
 /** Pairing events visible to this browser's authorized machine-event document. */
 export function machinePairingEvents(ctx: ServerContext, access: Access, keys: readonly string[], viewer: JoinViewer): NonNullable<MachineEventDocument["pairings"]> {
   const { services, peer } = ctx;
@@ -90,7 +76,6 @@ export function machinePairingEvents(ctx: ServerContext, access: Access, keys: r
       tellPending();
       stopPending = pendingRedemptions.onChange(tellPending);
     }
-    const stopPanes = agentPaneEvents(access)(listener);
-    return () => { stopPaired(); stopListed?.(); stopSeen?.(); stopRemoved?.(); stopRelay(); stopPending?.(); stopPanes(); };
+    return () => { stopPaired(); stopListed?.(); stopSeen?.(); stopRemoved?.(); stopRelay(); stopPending?.(); };
   } };
 }
