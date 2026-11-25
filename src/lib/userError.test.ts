@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { ApiError, fetchSession } from "./api.ts";
+import { ApiError, errorFrom, fetchSession } from "./api.ts";
 import { withChatReadDeadline } from "./chatReadDeadline.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
 import { RemoteResponseInvalid, RemoteResponseTooLarge } from "../../server/remote-json.ts";
-import { machineErrorText, saysHerdrAway, setupErrorLines, setupStepText, userErrorMessage, userFailure } from "./userError.ts";
+import { failureReason, machineErrorText, saysHerdrAway, setupErrorLines, setupStepText, uploadFailure, userErrorMessage, userFailure } from "./userError.ts";
 
 const api = (status: number, detail = "herdr said no") => new ApiError("/api/x", status, detail, null);
 
@@ -222,5 +222,43 @@ describe("setupStepText", () => {
   it("shows a step with no code, from an older server or a PC's own notice, as it came", () => {
     expect(setupStepText({ step: "Waiting for Windows sign-in on this PC.", step_code: null }, keyed)).toBe("Waiting for Windows sign-in on this PC.");
     expect(setupStepText({ step: "Connected" }, keyed)).toBe("Connected");
+  });
+});
+
+describe("uploadFailure", () => {
+  it("names the HTTP status of an answer that came with no words, which other screens leave out", async () => {
+    expect(uploadFailure(api(400, "")).detail).toBe("HTTP 400");
+    expect(uploadFailure(api(404, "")).detail).toBeNull();
+    expect(userFailure(api(400, "")).detail).toBeNull();
+    expect(uploadFailure(api(400, "file is empty"))).toEqual(userFailure(api(400, "file is empty")));
+    expect(uploadFailure(new Error(" ")).detail).toBeNull();
+
+    const emptyHttp11 = await errorFrom("/api/pane/image", new Response("", { status: 502, statusText: "Bad Gateway" }));
+    expect(uploadFailure(emptyHttp11).detail).toBe("HTTP 502");
+    expect(userFailure(emptyHttp11).detail).toBe("Bad Gateway");
+
+    const customReason = await errorFrom("/api/pane/image", new Response("", { status: 502, statusText: "Upstream TLS permission denied" }));
+    expect(uploadFailure(customReason)).toMatchObject({ kind: "refused", cause: null, detail: "HTTP 502" });
+  });
+});
+
+describe("failureReason", () => {
+  it("says the plain cause, or else the error's own words, so a failed upload's line never ends bare", () => {
+    expect(failureReason(userFailure(api(404)))).toBe("It no longer exists on the PC");
+    expect(failureReason(userFailure(api(400, "file is empty")))).toBe("file is empty");
+    expect(failureReason(uploadFailure(api(400, "")))).toBe("HTTP 400");
+    expect(failureReason(userFailure(new Error(" ")))).toBeNull();
+  });
+
+  it("caps multiline, Unicode line-break, and overly long diagnostics to a single line", () => {
+    const multiline = ["Upload failed", ...Array.from({ length: 60 }, (_, i) => `detail line ${i + 1}`)].join("\n");
+    expect(failureReason(uploadFailure(api(502, multiline)))).toBe("Upload failed");
+    expect(failureReason(uploadFailure(api(502, `Upload failed${"\u2028".repeat(60)}tail`)))).toBe("Upload failed");
+    expect(failureReason(uploadFailure(api(502, "\n  First diagnostic line  \nsecond line")))).toBe("First diagnostic line");
+    const longLine = "x".repeat(300);
+    const reason = failureReason(uploadFailure(api(502, longLine)));
+    expect(reason).not.toBeNull();
+    expect(reason!.length).toBeLessThanOrEqual(161);
+    expect(reason!.endsWith("…")).toBe(true);
   });
 });

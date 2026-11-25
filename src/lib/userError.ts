@@ -210,3 +210,39 @@ export function userFailure(cause: unknown): UserFailure {
 export function offersRetry(failure: UserFailure): boolean {
   return failure.cause === null || failure.kind === "slow";
 }
+
+const FAILURE_REASON_MAX = 160;
+const LINE_BREAK_RE = /\r\n|[\r\n\u0085\u2028\u2029]/;
+
+function singleLineReason(detail: string): string | null {
+  const first = detail.split(LINE_BREAK_RE).map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+  if (first === "") return null;
+  if (first.length <= FAILURE_REASON_MAX) return first;
+  let cut = first.slice(0, FAILURE_REASON_MAX);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return `${cut.trimEnd()}…`;
+}
+
+/** A failed upload: as `userFailure`, but an answer with no body words and no known status cause names its HTTP status. */
+export function uploadFailure(cause: unknown): UserFailure {
+  if (cause instanceof ApiError && cause.fromStatusText) {
+    const kind = kindOf(cause);
+    const statusCause = CAUSE[kind]?.() ?? null;
+    return {
+      kind,
+      cause: statusCause,
+      advice: ADVICE[kind]?.() ?? null,
+      detail: statusCause === null ? `HTTP ${cause.status}` : null,
+    };
+  }
+  const failure = userFailure(cause);
+  return failure.cause === null && failure.detail === null && cause instanceof ApiError
+    ? { ...failure, detail: `HTTP ${cause.status}` }
+    : failure;
+}
+
+/** What a one-line failure says after its subject: the plain cause, or else a compact single-line summary of the error's words. */
+export function failureReason(failure: UserFailure): string | null {
+  return failure.cause ?? (failure.detail === null ? null : singleLineReason(failure.detail));
+}
