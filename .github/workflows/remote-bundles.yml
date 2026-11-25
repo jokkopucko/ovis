@@ -4,6 +4,11 @@ on:
     paths:
       - 'server/**'
       - 'shared/**'
+      # no bundle carries a unit test or a note: the Windows smoke's own test file is the one they run
+      - '!server/**/*.test.ts'
+      - '!shared/**/*.test.ts'
+      - '!server/**/*.md'
+      - 'server/windows-native.test.ts'
       - 'scripts/build-remote-bundle.ts'
       - 'scripts/server-artifact.ts'
       - 'scripts/install-*-integration.ts'
@@ -12,6 +17,7 @@ on:
       - 'scripts/pty-sidecar.ts'
       - 'crates/pty-sidecar/**'
       - 'scripts/ssh-*.ts'
+      - 'scripts/ci-ssh-checks.sh'
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/remote-bundles.yml'
@@ -60,12 +66,18 @@ jobs:
         with:
           name: remote-${{ matrix.os }}
           path: remote-bundles/*
+  # A pull request's Linux job also assembles the Windows bundle that smoke-windows starts and runs the SSH checks:
+  # what bundle-windows and ssh do for a tag or a manual run, on one hosted runner instead of three. Each part runs
+  # whatever became of the others, as it did in a job of its own: the Windows bundle goes up first, and smoke-windows
+  # starts on its upload, not on this job's result.
   bundle-linux:
     if: github.event_name == 'pull_request'
     timeout-minutes: 20
     runs-on: ubuntu-24.04
     env:
       HERDR_BUNDLE_PTY_SIDECAR: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-linux-x64
+    outputs:
+      windows: ${{ steps.windows-artifact.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,11 +88,46 @@ jobs:
           node: 'true'
           cache: none
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck && bun run build
-      - run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
-      - run: bun run scripts/build-remote-bundle.ts
-      - run: bun run scripts/remote-bundle-smoke.ts
+      - id: common
+        run: bun run typecheck && bun run build
+      # in a folder of its own, so the artifact holds the Windows bundle alone, as bundle-windows' does
+      - name: Windows bundle
+        env:
+          HERDR_BUNDLE_OUTPUT: remote-bundles-win32
+        run: bun run scripts/build-remote-bundle.ts win32-x64
+      - id: windows-artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remote-win32-x64
+          path: remote-bundles-win32/*
+      # the Linux bundle and its smoke, whatever became of the Windows bundle
+      - id: pty-host
+        if: "!cancelled() && steps.common.outcome == 'success'"
+        run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
+      - id: linux-bundle
+        if: "!cancelled() && steps.pty-host.outcome == 'success'"
+        run: bun run scripts/build-remote-bundle.ts
+      - if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        run: bun run scripts/remote-bundle-smoke.ts
+      # the ssh job's bundle has no Rust PTY host, so its remote PC runs the Node one: the same here, whatever became
+      # of the Windows bundle, the Rust PTY host or the smoke
+      - id: node-bundle
+        name: Linux bundle without the Rust PTY host
+        if: "!cancelled() && steps.common.outcome == 'success'"
+        env:
+          HERDR_BUNDLE_PTY_SIDECAR: ''
+        run: bun run scripts/build-remote-bundle.ts
+      - name: OpenSSH server
+        if: "!cancelled() && steps.node-bundle.outcome == 'success'"
+        run: bash scripts/ci-ssh-checks.sh server
+      - name: SSH integration
+        if: "!cancelled() && steps.node-bundle.outcome == 'success'"
+        run: bash scripts/ci-ssh-checks.sh integration
+      - name: SSH password in a disposable container
+        if: "!cancelled() && steps.node-bundle.outcome == 'success'"
+        run: bash scripts/ci-ssh-checks.sh password
   bundle-windows:
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     # release publishes its bundle: GitHub-hosted whatever the runner variables say, and no shared cache (scripts/privileged-jobs-workflow.test.ts)
     runs-on: ubuntu-24.04
@@ -101,7 +148,9 @@ jobs:
           path: remote-bundles/*
   smoke-windows:
     timeout-minutes: 20
-    needs: bundle-windows
+    # the Windows bundle of this run: bundle-linux uploads it for a pull request, bundle-windows otherwise
+    needs: [bundle-linux, bundle-windows]
+    if: "!cancelled() && (needs.bundle-linux.outputs.windows != '' || needs.bundle-windows.result == 'success')"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,6 +177,7 @@ jobs:
           HERDR_TEST_MODE: unit
         run: bun test ./server/windows-native.test.ts
   ssh:
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     runs-on: ubuntu-24.04
     steps:
@@ -142,29 +192,17 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      # the self-hosted image already ships sshd (and has no sudo); a hosted runner installs it
       - name: OpenSSH server
-        run: |
-          if [ -x /usr/sbin/sshd ] && [ -d /run/sshd ]; then
-            echo "sshd is already installed"
-          else
-            sudo bash scripts/ci-bounded-retry.sh 300 bash -c 'apt-get update && apt-get install -y openssh-server' && sudo mkdir -p /run/sshd
-          fi
+        run: bash scripts/ci-ssh-checks.sh server
       - run: bun install --frozen-lockfile && bun run build && bun run scripts/build-remote-bundle.ts
-      # password mode creates an account and starts sshd as root; without sudo (the self-hosted image) the
-      # key-only flow runs, with sshd as the runner user on a port of its own. Only a self-hosted runner
-      # may go without sudo or Docker: a hosted one that lost either fails, since release needs this job (#3829)
       - name: SSH integration
-        run: |
-          if [ "$RUNNER_ENVIRONMENT" != self-hosted ]; then sudo -n true; fi
-          if sudo -n true 2>/dev/null; then export SSH_TEST_PASSWORD=1; fi
-          bun run scripts/ssh-integration.ts
+        run: bash scripts/ci-ssh-checks.sh integration
       - name: SSH password in a disposable container
-        run: |
-          if [ "$RUNNER_ENVIRONMENT" != self-hosted ]; then docker info >/dev/null; fi
-          if docker info >/dev/null 2>&1; then bun run scripts/ssh-password-docker.ts; else echo "::notice::no Docker here, password flow skipped"; fi
+        run: bash scripts/ci-ssh-checks.sh password
   release:
-    if: startsWith(github.ref, 'refs/tags/remote-v')
+    # every job it needs passed, said outright: smoke-windows also waits for bundle-linux, which a tag skips, and the
+    # implicit success() would skip this job behind it (scripts/workflow-needs.test.ts)
+    if: "!cancelled() && startsWith(github.ref, 'refs/tags/remote-v') && needs.bundle.result == 'success' && needs.smoke-windows.result == 'success' && needs.ssh.result == 'success'"
     needs: [bundle, smoke-windows, ssh]
     runs-on: ubuntu-24.04
     permissions:
