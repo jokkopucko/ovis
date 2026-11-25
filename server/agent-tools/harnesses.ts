@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isBrowserToolAgent } from "../../shared/browser-tools.ts";
+import type { Capabilities } from "../../shared/harness-contract.generated.ts";
 import { isRecord } from "../../shared/harness-tool.ts";
 
 const adapters = {
@@ -47,4 +49,19 @@ export function resolveHarness(kind: string): HarnessCommand | null {
     }
     default: return null;
   }
+}
+
+/**
+ * What `agent_harnesses` announces for one harness on this PC, built in this one place from what Ovis can prove here:
+ * an ACP launch it resolves (resolveHarness), an approval hook the hub handles, the browser tool. A flag that is not
+ * proven reports its safe value (docs/harness-contract.md, "Capability flags").
+ */
+export function harnessCapabilities(kind: string, hasHook: boolean): Capabilities {
+  const acp = resolveHarness(kind) !== null, browser = isBrowserToolAgent(kind);
+  return {
+    drive: acp ? ["terminal", "acp"] : ["terminal"], level: acp ? "structured" : "terminal", acp_protocol: acp ? 1 : null,
+    approvals: ["keys", ...(hasHook ? ["hook"] : []), ...(acp ? ["acp"] : [])], transcript: acp ? "acp" : "none", turn_end: acp ? "strong" : "weak", turn_end_from: acp ? ["acp"] : ["terminal"],
+    model_switch: "none", resume: false, images: false, slash_commands: false, subagents: false, tool_delivery: browser || acp ? ["mcp", "shell"] : [],
+    browser_tool: browser, memory_tool: false,
+  };
 }

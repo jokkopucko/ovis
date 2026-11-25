@@ -2,14 +2,13 @@ import type { AcpChildren } from "../acp/children.ts";
 import type { AgentDetector } from "../agent-catalog-detect.ts";
 import { agentCatalogFor } from "../agent-catalog-routes.ts";
 import { catalogPlatform } from "../../shared/agent-catalog.ts";
-import { isBrowserToolAgent } from "../../shared/browser-tools.ts";
 import { answer, refuse } from "../../shared/harness-tool.ts";
 import { paneConversation } from "../conversation.ts";
 import { paneRead, sessionSnapshot } from "../herdr/client.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { readPrompt } from "../prompt.ts";
-import { resolveHarness } from "./harnesses.ts";
+import { harnessCapabilities } from "./harnesses.ts";
 import { childState, ChildTurns, untrusted } from "./turns.ts";
 import type { Ledger } from "./ledger.ts";
 
@@ -28,15 +27,8 @@ export class HarnessView {
       case "harnesses": {
         if (!this.options.detector) return refuse("unavailable", "No harness catalog.");
         const { agents } = await agentCatalogFor(catalogPlatform(process.platform), this.options.detector);
-        return answer("harnesses", { harnesses: agents.map(agent => {
-          const acp = resolveHarness(agent.id) !== null;
-          return { kind: agent.id, installed: agent.state.installed, version: agent.state.version, signed_in: this.signInNeeded.has(agent.id) ? false : null, capabilities: {
-            drive: acp ? ["terminal", "acp"] : ["terminal"], level: acp ? "structured" : "terminal", acp_protocol: acp ? 1 : null,
-            approvals: ["keys", ...(this.options.hasHook?.(agent.id) ? ["hook"] : []), ...(acp ? ["acp"] : [])], transcript: acp ? "acp" : "none", turn_end: acp ? "strong" : "weak", turn_end_from: acp ? ["acp"] : ["terminal"],
-            model_switch: "none", resume: false, images: false, slash_commands: false, subagents: false, tool_delivery: isBrowserToolAgent(agent.id) || acp ? ["mcp","shell"] : [],
-            browser_tool: isBrowserToolAgent(agent.id), memory_tool: false,
-          } };
-        }) });
+        return answer("harnesses", { harnesses: agents.map(agent => ({ kind: agent.id, installed: agent.state.installed, version: agent.state.version,
+          signed_in: this.signInNeeded.has(agent.id) ? false : null, capabilities: harnessCapabilities(agent.id, this.options.hasHook?.(agent.id) ?? false) })) });
       }
       case "ls": {
         const { panes } = await sessionSnapshot();
