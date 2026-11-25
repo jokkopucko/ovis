@@ -237,6 +237,49 @@ test.each(["long-a1", "phone-a1"])("keeps Grok's permission card (%s) while its 
   expect(parseFallbackPrompt("grok", screen.replace(row, row.replace("◆ Run", "◆ Remove"))).id).not.toBe(parseFallbackPrompt("grok", screen).id);
 });
 
+// The refusal on each recorded approval (short-d) sends the one key that refuses in that CLI, measured on the real
+// TUIs: Copilot 1.0.109 only moves its cursor to a typed 3 and Letta 0.34.23 ignores it, where Esc refuses; Esc in
+// Grok 1.0.92 moves its focus to the scrollback, where the panel's own number for "No, reject" refuses (#4570, #4571)
+const recordedTurn = (agent: string, name: string): string => (JSON.parse(readFileSync(join(import.meta.dir, `fixtures/record-cards/${agent}.json`), "utf8")) as { turns: { turn: string; screen: string }[] }).turns
+  .find((recorded) => recorded.turn === name)!.screen;
+
+test.each([
+  ["copilot", "short-d", "No, and tell Copilot what to do differently (Esc to stop)", ["esc"]],
+  ["letta", "short-d", "No, and tell Letta Code what to do differently", ["esc"]],
+  ["grok", "short-d", "No, reject", ["text:4"]],
+  // a phone-wide pane cuts the row's hint, and Grok numbers this panel's rows from 2
+  ["grok", "phone-a1", "No, reject", ["text:3"]],
+])("refuses %s's recorded approval (%s) from its card with the key that refuses", async (agent, name, refusal, keys) => {
+  await withPane(agent, "blocked", recordedTurn(agent, name), async (pane) => {
+    const prompt = (await card())!;
+    expect(labels(prompt)).toContain(refusal);
+    expect(await answer(prompt.id, { option_index: labels(prompt).indexOf(refusal) })).toEqual({ status: 200, code: undefined });
+    expect(pane.sent).toEqual(keys);
+  });
+});
+
+// Grok's refusal is read off the permission panel that ends the screen only: a Grok question drawn like one (its own
+// footer says "Tab:next answer"), or a row like the refusal above the panel, gets no key that the panel would take
+// for another row
+test("offers no refusal row on a Grok question drawn like a permission panel", () => {
+  const screen = recorded("grok-1.0.77-ask");
+  const alike = screen.replace("┃  Option A or option B?", "┃  ›  Run setup?")
+    .replace(/1 \(○\) Option A[^\n]*/u, "1 (●) Yes, proceed").replace(/2 \(○\) Option B[^\n]*/u, "2 (○) No, reject (type to add feedback)");
+  expect(alike).toContain("No, reject");
+  expect(labels(parseFallbackPrompt("grok", alike))).toEqual(["Enter", "Esc"]);
+});
+
+test("takes Grok's refusal from the panel itself, not from a row like it above the panel", async () => {
+  const screen = recordedTurn("grok", "phone-a1");
+  const above = screen.replace("  ┃\n  ┃  ›", "  ┃  2 (○) No, reject (type to add feedback)\n\n  ┃\n  ┃  ›");
+  expect(above).not.toBe(screen);
+  await withPane("grok", "blocked", above, async (pane) => {
+    const prompt = (await card())!;
+    expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("No, reject") })).toEqual({ status: 200, code: undefined });
+    expect(pane.sent).toEqual(["text:3"]);
+  });
+});
+
 // Muse 1.4.25 keeps "◇ Calling tools (21s · esc to interrupt)" over its approval dialog, its time and glyph ticking
 test("keeps Muse's approval card while the row over it ticks, and not once its words change", () => {
   const turn = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/muse.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns

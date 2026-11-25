@@ -10,6 +10,36 @@ const YES_NO_RE = /[([]\s*y(?:es)?\s*\/\s*n(?:o)?\s*[)\]]\s*[:?]?\s*$/i;
 const ARROWS_RE = /[↑↓]|\barrow keys\b/i;
 
 /**
+ * The refusal row of Copilot's and Letta's approval dialogs (Copilot 1.0.109, Letta Code 0.34.23): "3. No, and tell
+ * Copilot what to do differently (Esc to stop)", "3. No, and tell Letta Code what to do differently". Neither takes
+ * its typed number (Copilot moves its cursor there, Letta ignores it); Esc refuses in both (#4570).
+ */
+const ESCAPE_REFUSAL_ROW_RE: Readonly<Record<string, RegExp>> = {
+  copilot: /^No, and tell Copilot what to do differently\b/,
+  letta: /^No, and tell Letta Code what to do differently$/,
+};
+
+/**
+ * Grok's permission panel row that refuses, its number the key that picks it (Grok 1.0.92): "┃  4 (○) No, reject (type
+ * to add feedback)", its hint cut on a narrow pane. Esc moves Grok's focus to its scrollback and leaves the panel up
+ * (#4571). The row is read only inside the panel that ends the screen: from the call it asks about ("┃  ›  Run …") down
+ * to its footer ("2/4:select  │  Tab:next option  │ …"; a question's says "Tab:next answer"), every row on its bar.
+ */
+const GROK_REJECT_ROW_RE = /^┃\s+(\d) \([○●]\) (No, reject) \(type to add feedback/u;
+const GROK_PROCEED_ROW_RE = /^┃\s+\d \([○●]\) Yes, proceed$/u;
+const GROK_PANEL_CALL_RE = /^┃\s+›\s/u;
+const GROK_PANEL_FOOTER_RE = /^\d+\/\d+:select\s+│\s+Tab:next option(?:\s+│|$)/u;
+
+/** The rows of Grok's permission panel when it ends the screen (Grok 1.0.92), its call's row first; null otherwise. */
+function grokPermissionPanel(rows: string[]): string[] | null {
+  if (!GROK_PANEL_FOOTER_RE.test(rows.at(-1) ?? "")) return null;
+  for (let start = rows.length - 2; start >= 0 && rows[start]!.startsWith("┃"); start -= 1) {
+    if (GROK_PANEL_CALL_RE.test(rows[start]!)) return rows.slice(start, -1);
+  }
+  return null;
+}
+
+/**
  * what a menu's hint line says to do with it: a way to choose ("Enter to select", "↵ choose",
  * "Enter a number", "Type 1-3", "↑/↓ to move"). A plain Enter or Press asks for something else
  * ("Enter recovery code", "Enter your phone number", "Press any key").
@@ -164,8 +194,11 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
     const question = [...above].reverse().find((line) => ASKED_RE.test(line)) ?? above.at(-1);
     // a row's number is typed alone, as a menu reading keys takes it; a program reading a whole
     // line ("Enter a number >") still waits for the Enter after it, and Esc backs out
+    const refusal = ESCAPE_REFUSAL_ROW_RE[agent];
+    const refusalRows = refusal ? menu.rows.flatMap((row, index) => refusal.test(row.label) ? [index] : []) : [];
+    const escapeRow = refusalRows.length === 1 ? refusalRows[0]! : null;
     const choices: { label: string; steps: AnswerStep[] }[] = [
-      ...menu.rows.map((row) => ({ label: row.label, steps: [{ text: String(row.number) }] })),
+      ...menu.rows.map((row, index) => ({ label: row.label, steps: index === escapeRow ? keySteps([KEY.escape]) : [{ text: String(row.number) }] })),
       { label: "Enter", steps: keySteps([KEY.enter]) },
       { label: "Esc", steps: keySteps([KEY.escape]) },
     ];
@@ -179,7 +212,7 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
       multi_select: false, custom_option_index: null,
     }, {
       responder: "fallback-menu", menuLabels: choices.map(({ label }) => label), selectedIndex: 0,
-      checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
+      checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: escapeRow,
       optionSteps: choices.map(({ steps }) => steps),
     }, steadyFields(agent, question, body, steady.read)));
   }
@@ -227,6 +260,10 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
   // screen (the agent's composer owns the keys then) or for a line of quoted output
   const hints = NOT_PROMPT_TEXT_RE.test(last.at(-1) ?? "") ? [] : last.slice(-2).filter((line) => !NOT_PROMPT_TEXT_RE.test(line));
   const question = [...last].reverse().find((line) => ASKED_RE.test(line)) ?? last.at(-1);
+  const panel = agent === "grok" ? grokPermissionPanel(shown.map((index) => cleanLine(lines[index]!))) : null;
+  const grokRejects = panel?.filter((line) => GROK_REJECT_ROW_RE.test(line)) ?? [];
+  const grokReject = grokRejects.length === 1 && panel!.filter((line) => GROK_PROCEED_ROW_RE.test(line)).length === 1
+    ? GROK_REJECT_ROW_RE.exec(grokRejects[0]!) : null;
   // a (y/n) letter is offered only for the prompt at the screen's end, never for a mention
   // above it; it is typed without an Enter: a program reading a whole line still waits for
   // one, and the card that follows offers it
@@ -234,7 +271,7 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
     ...(hints.some((line) => YES_NO_RE.test(line)) ? [{ label: own("Yes (y)"), steps: [{ text: "y" }] }, { label: own("No (n)"), steps: [{ text: "n" }] }] : []),
     ...(hints.some((line) => ARROWS_RE.test(line)) ? [{ label: "↑", steps: keySteps([KEY.up]) }, { label: "↓", steps: keySteps([KEY.down]) }] : []),
     { label: "Enter", steps: keySteps([KEY.enter]) },
-    { label: "Esc", steps: keySteps([KEY.escape]) },
+    grokReject ? { label: grokReject[2]!, steps: [{ text: grokReject[1]! }] } : { label: "Esc", steps: keySteps([KEY.escape]) },
   ];
   const body = withoutLine(last, question);
   return screenCard(lines, shown, steady, finishPrompt(agent, {
