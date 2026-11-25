@@ -7,7 +7,7 @@ import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
 import { ACTIVE_LATE_DAYS, COUNTS_LATE_DAYS, emptyUsage, harnessOf, TELEMETRY_COUNT_MAX, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryCounts, type TelemetryEvent, type TelemetryRuntime, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
 import { NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot, type Settings } from "../src/lib/settings.ts";
-import { COUNTS_SETTLE_MS, handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS, visitSurface } from "./telemetry.ts";
+import { COUNTS_SETTLE_MS, handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS, visitSurface, type VisitPane } from "./telemetry.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -60,6 +60,11 @@ function setup(options: { version?: string; env?: Record<string, string>; status
   return { telemetry, sent, actives, counts, urls, answer, stateDir, clock, timers, nextActive, fireTimer };
 }
 
+/** a visit's panes, one per agent named (null: a pane with no agent) */
+/** the usage `agents` a visit adds for panes no Ovis server started and no session version, by kind: the most panes seen at once */
+const seenAgents = (counts: Record<string, number>): TelemetryUsage["agents"] => Object.fromEntries(Object.entries(counts).map(([kind, other]) => [kind, { ovis: 0, other, versions: [] }]));
+const panes = (...agents: (string | null | undefined)[]): VisitPane[] => agents.map((agent) => ({ agent }));
+
 const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const telemetryPost = (body: unknown) => new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
@@ -88,7 +93,7 @@ describe("telemetry events", () => {
     const { telemetry, sent, actives } = setup({ runtime: "herdr-core" });
     seen(telemetry);
     await telemetry.report();
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     expect(sent.map((event) => event.runtime)).toEqual(["herdr-core"]);
     expect(actives.map((active) => active.runtime)).toEqual(["herdr-core"]);
     expect(telemetry.status().next).toBeNull();
@@ -343,50 +348,50 @@ describe("daily active message", () => {
   test("(a) a visit sends one active message with the harness kinds, and the same kinds again send nothing", async () => {
     const { telemetry, actives, urls } = setup();
     seen(telemetry);
-    await telemetry.active(["claude", null, "claude", "weird"]);
+    await telemetry.active(panes("claude", null, "claude", "weird"));
     expect(urls.filter((url) => url === TEST_ACTIVE_URL)).toHaveLength(1);
-    expect(actives).toEqual([{ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: ["claude", "other"], usage: emptyUsage(), runtime: "herdr" }]);
-    await telemetry.active(["claude", null, "claude", "weird"]);
+    expect(actives).toEqual([{ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: ["claude", "other"], usage: { ...emptyUsage(), agents: seenAgents({ claude: 2, other: 1 }) }, runtime: "herdr" }]);
+    await telemetry.active(panes("claude", null, "claude", "weird"));
     expect(actives).toHaveLength(1);
   });
 
   test("(b) a new kind the same day resends the grown set", async () => {
     const { telemetry, actives } = setup();
     seen(telemetry);
-    await telemetry.active(["claude", "weird"]);
-    await telemetry.active(["codex"]);
+    await telemetry.active(panes("claude", "weird"));
+    await telemetry.active(panes("codex"));
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", ["claude", "other"]], ["2026-10-08", ["claude", "codex", "other"]]]);
   });
 
   test("(c) the next day sends its own message and does not resend the day before", async () => {
     const { telemetry, actives, clock } = setup();
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 86_400_000;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", ["claude"]], ["2026-10-09", []]]);
   });
 
   test("(d) nothing is sent while off, blocked, before the notice, after only an older notice, or inside the grace", async () => {
     const off = setup();
     off.telemetry.change({ enabled: false, notice_seen: true, notice_version: NOTICE_VERSION });
-    await off.telemetry.active(["claude"]);
+    await off.telemetry.active(panes("claude"));
     expect(off.actives).toEqual([]);
 
     const blocked = setup({ env: { OVIS_TELEMETRY: "0" } });
     seen(blocked.telemetry);
-    await blocked.telemetry.active(["claude"]);
+    await blocked.telemetry.active(panes("claude"));
     expect(blocked.actives).toEqual([]);
 
     const unseen = setup();
-    await unseen.telemetry.active(["claude"]);
+    await unseen.telemetry.active(panes("claude"));
     expect(unseen.actives).toEqual([]);
 
     const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
     dirs.push(stateDir);
     writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: 3, reported_version: "0.4.1", settings: null }));
     const older = setup({ stateDir });
-    await older.telemetry.active(["claude"]);
+    await older.telemetry.active(panes("claude"));
     expect(older.actives).toEqual([]);
 
     // a visit made while off is not kept: turning the switch on again sends nothing for it
@@ -399,7 +404,7 @@ describe("daily active message", () => {
 
     const grace = setup({ grace: 600_000 });
     seen(grace.telemetry);
-    await grace.telemetry.active(["claude"]);
+    await grace.telemetry.active(panes("claude"));
     expect(grace.actives).toEqual([]);
     expect(grace.timers.at(-1)?.ms).toBe(600_000);
     grace.clock.now += 600_000;
@@ -411,23 +416,24 @@ describe("daily active message", () => {
   test("(e) a refused active message stays undelivered and the next visit retries it", async () => {
     const { telemetry, actives, answer, stateDir } = setup({ status: 500 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     expect(actives).toHaveLength(1);
     // refused, the message still went on the wire: the hour counts from it
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: emptyUsage(), sent_at: expect.any(Number) }]);
+    const usage = { ...emptyUsage(), agents: seenAgents({ claude: 1 }) };
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage, sent_usage: null, wire_usage: usage, sent_at: expect.any(Number), answer_counts: {} }]);
     answer.status = 204;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(actives.map((active) => active.harnesses)).toEqual([["claude"], ["claude"]]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: ["claude"], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), wire_usage: emptyUsage(), sent_at: expect.any(Number) }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: ["claude"], sent: ["claude"], visited: true, usage, sent_usage: usage, wire_usage: usage, sent_at: expect.any(Number), answer_counts: {} }]);
   });
 
   test("(f) the delivered day survives a restart and is not resent", async () => {
     const first = setup();
     seen(first.telemetry);
-    await first.telemetry.active(["claude"]);
+    await first.telemetry.active(panes("claude"));
     expect(first.actives).toHaveLength(1);
     const again = setup({ stateDir: first.stateDir });
-    await again.telemetry.active(["claude"]);
+    await again.telemetry.active(panes("claude"));
     again.telemetry.change({ enabled: true });
     await settled();
     expect(again.actives).toEqual([]);
@@ -439,8 +445,8 @@ describe("daily active message", () => {
     seen(telemetry);
     const before = telemetry.status().active;
     expect(before).toEqual({ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: [], usage: emptyUsage(), runtime: "herdr" });
-    await telemetry.active(["codex", "claude", undefined]);
-    expect(telemetry.status().active).toEqual({ ...before, harnesses: ["claude", "codex"] });
+    await telemetry.active(panes("codex", "claude", undefined));
+    expect(telemetry.status().active).toEqual({ ...before, harnesses: ["claude", "codex"], usage: { ...emptyUsage(), agents: seenAgents({ claude: 1, codex: 1 }) } });
   });
 
   test("(h) every supported agent kind is a telemetry harness, or other until the Worker lists it", () => {
@@ -454,19 +460,19 @@ describe("daily active message", () => {
 
   test("(j) a visit before the notice is not kept: once it is seen, only a later visit goes, after the grace", async () => {
     const { telemetry, actives, clock } = setup({ grace: 600_000 });
-    await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+    await telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
     expect(telemetry.status().active).toMatchObject({ harnesses: [], usage: emptyUsage() });
     expect((await handleTelemetryRequest(telemetryPost({ notice_seen: true, notice_version: NOTICE_VERSION }), telemetry)).status).toBe(200);
     await settled();
     clock.now += 600_001;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(actives.map((active) => [active.day, active.harnesses, active.usage.surfaces])).toEqual([["2026-10-08", [], []]]);
   });
 
   test("nothing is kept before the current notice: a new install, and one whose older notice did not name it", async () => {
     // a new install: a visit, its usage and the settings told before the acknowledgement are not kept
     const fresh = setup({ grace: 600_000 });
-    await fresh.telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+    await fresh.telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
     fresh.telemetry.tally("prompt_answers");
     expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot() }), fresh.telemetry)).status).toBe(200);
     expect(fresh.telemetry.status()).toMatchObject({ notice_seen: false, active: { harnesses: [], usage: emptyUsage() }, next: { settings: null } });
@@ -492,7 +498,7 @@ describe("daily active message", () => {
     for (const off of ["here", "another server"] as const) {
       const { telemetry, actives, clock, stateDir } = setup({ grace: 600_000 });
       seen(telemetry);
-      await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      await telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
       telemetry.tally("prompt_answers");
       expect(savedFile(stateDir).active).toHaveLength(1);
       if (off === "here") {
@@ -556,12 +562,12 @@ describe("daily active message", () => {
   test("a pane read across an off and an on adds nothing to a later visit of the same day", async () => {
     const { telemetry, actives, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    const before = Promise.withResolvers<string[]>();
+    const before = Promise.withResolvers<VisitPane[]>();
     const first = telemetry.active(before.promise);
     telemetry.change({ enabled: false });
     telemetry.change({ enabled: true });
-    await telemetry.active(["codex"]);
-    before.resolve(["claude"]);
+    await telemetry.active(panes("codex"));
+    before.resolve(panes("claude"));
     await first;
     expect(savedFile(stateDir).active.map((entry: { day: string; harnesses: string[] }) => [entry.day, entry.harnesses])).toEqual([["2026-10-08", ["codex"]]]);
     expect(actives).toEqual([]);
@@ -585,9 +591,9 @@ describe("daily active message", () => {
       }) as typeof fetch,
     });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 86_400_000;
-    await telemetry.active(["codex"]);
+    await telemetry.active(panes("codex"));
     clock.now += 86_400_000;
     telemetry.change({ enabled: true });
     await settled();
@@ -600,7 +606,7 @@ describe("daily active message", () => {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
       seen(telemetry);
       telemetry.change({ settings: settingsSnapshot({ theme: "light" }) });
-      await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      await telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
       telemetry.tally("prompt_answers");
       setup({ stateDir, env });
       const allowed = setup({ stateDir, grace: 0 });
@@ -658,7 +664,7 @@ describe("daily active message", () => {
   test("a write from before another server's off neither lowers its counter nor brings its days back", async () => {
     const { telemetry, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     const before = savedFile(stateDir).forgotten;
     setup({ stateDir }).telemetry.change({ enabled: false });
     setup({ stateDir }).telemetry.change({ enabled: true });
@@ -684,7 +690,7 @@ describe("daily active message", () => {
   test("a start with sending forbidden whose deletion cannot be written removes the state file instead", async () => {
     const { telemetry, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     mkdirSync(join(stateDir, `telemetry.json.${process.pid}.tmp`));
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try { setup({ stateDir, env: { DO_NOT_TRACK: "1" } }); } finally { errors.mockRestore(); }
@@ -750,7 +756,7 @@ describe("daily active message", () => {
   test("a lock another live server holds keeps a count out, but an off still goes and nothing is sent after it", async () => {
     const { telemetry, actives, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     writeFileSync(join(stateDir, "telemetry.lock"), `${process.ppid} ${Date.now()}`);
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -771,7 +777,7 @@ describe("daily active message", () => {
     {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
       seen(telemetry);
-      void telemetry.active(["claude"]);
+      void telemetry.active(panes("claude"));
       writeFileSync(join(stateDir, "telemetry.lock"), `${process.ppid} ${Date.now() - 60_000}`);
       const errors = spyOn(console, "error").mockImplementation(() => {});
       try { telemetry.tally("prompt_answers"); } finally { errors.mockRestore(); }
@@ -781,7 +787,7 @@ describe("daily active message", () => {
     {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
       seen(telemetry);
-      void telemetry.active(["claude"]);
+      void telemetry.active(panes("claude"));
       writeFileSync(join(stateDir, "telemetry.lock"), "");
       const errors = spyOn(console, "error").mockImplementation(() => {});
       try { telemetry.tally("prompt_answers"); } finally { errors.mockRestore(); }
@@ -790,7 +796,7 @@ describe("daily active message", () => {
     for (const lock of [`${process.pid} ${Date.now()} earlier-run`, `${process.ppid} ${Date.now() - 10 * 60_000}`]) {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
       seen(telemetry);
-      void telemetry.active(["claude"]);
+      void telemetry.active(panes("claude"));
       const file = join(stateDir, "telemetry.lock");
       writeFileSync(file, lock);
       if (lock.startsWith(`${process.ppid} `)) utimesSync(file, new Date(Date.now() - 10 * 60_000), new Date(Date.now() - 10 * 60_000));
@@ -801,7 +807,7 @@ describe("daily active message", () => {
     for (const lock of [`999999999 ${Date.now()}`, "garbage"]) {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
       seen(telemetry);
-      void telemetry.active(["claude"]);
+      void telemetry.active(panes("claude"));
       const file = join(stateDir, "telemetry.lock");
       writeFileSync(file, lock);
       if (lock === "garbage") utimesSync(file, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
@@ -814,7 +820,7 @@ describe("daily active message", () => {
   test("a lock another server holds for a moment is waited for", async () => {
     const { telemetry, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     const file = join(stateDir, "telemetry.lock");
     const child = Bun.spawn(["bun", "-e", `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(file)}, process.pid + " " + Date.now(), { flag: "wx" }); console.log("HELD"); setTimeout(() => fs.rmSync(${JSON.stringify(file)}), 40);`], { stdout: "pipe" });
     const reader = child.stdout.getReader();
@@ -836,7 +842,7 @@ describe("daily active message", () => {
   test("a section whose lock was taken over while it held it writes nothing back", async () => {
     const { telemetry, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     const file = join(stateDir, "telemetry.lock");
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -873,7 +879,7 @@ describe("daily active message", () => {
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try {
       seen(telemetry);
-      await telemetry.active(["claude"]);
+      await telemetry.active(panes("claude"));
       telemetry.tally("prompt_answers");
       telemetry.change({ enabled: false });
       telemetry.change({ enabled: true });
@@ -896,7 +902,7 @@ describe("daily active message", () => {
     const { telemetry, actives, clock, nextActive, fireTimer } = setup({ grace: 600_000, now: "2026-10-08T23:55:00Z" });
     seen(telemetry);
     clock.now = Date.parse("2026-10-08T23:56:00Z");
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now = Date.parse("2026-10-09T00:07:00Z");
     const delivered = nextActive();
     fireTimer();
@@ -909,9 +915,9 @@ describe("daily active message", () => {
   test("(m) an undelivered day older than ACTIVE_LATE_DAYS is dropped and never sent", async () => {
     const { telemetry, actives, clock, stateDir } = setup({ grace: ACTIVE_LATE_DAYS * 86_400_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 86_400_000;
-    await telemetry.active(["codex"]);
+    await telemetry.active(panes("codex"));
     clock.now += ACTIVE_LATE_DAYS * 86_400_000;
     telemetry.change({ enabled: true });
     await settled();
@@ -922,10 +928,10 @@ describe("daily active message", () => {
   test("(n) agents read after midnight still count for the day of the visit", async () => {
     const { telemetry, actives, clock } = setup({ now: "2026-10-08T23:59:59Z" });
     seen(telemetry);
-    const agents = Promise.withResolvers<string[]>();
+    const agents = Promise.withResolvers<VisitPane[]>();
     const visit = telemetry.active(agents.promise);
     clock.now = Date.parse("2026-10-09T00:00:05Z");
-    agents.resolve(["codex"]);
+    agents.resolve(panes("codex"));
     await visit;
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", ["codex"]]]);
     expect(telemetry.status().active).toMatchObject({ day: "2026-10-09", harnesses: [] });
@@ -934,12 +940,12 @@ describe("daily active message", () => {
   test("(p) a visit whose panes are read across an off and an on is not kept, and nothing of it is sent", async () => {
     const { telemetry, actives, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
-    const agents = Promise.withResolvers<string[]>();
+    const agents = Promise.withResolvers<VisitPane[]>();
     const visit = telemetry.active(agents.promise);
     expect(savedFile(stateDir).active).toHaveLength(1);
     telemetry.change({ enabled: false });
     telemetry.change({ enabled: true });
-    agents.resolve(["codex"]);
+    agents.resolve(panes("codex"));
     await visit;
     expect(savedFile(stateDir).active).toEqual([]);
     await settled();
@@ -951,7 +957,7 @@ describe("daily active message", () => {
     seen(telemetry);
     await telemetry.active(Promise.reject(new Error("herdr down")));
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", []]]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: [], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), wire_usage: emptyUsage(), sent_at: expect.any(Number) }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: [], visited: true, usage: emptyUsage(), sent_usage: emptyUsage(), wire_usage: emptyUsage(), sent_at: expect.any(Number), answer_counts: {} }]);
   });
 
   test("an unreadable active list in the state file is read as no visits", async () => {
@@ -963,7 +969,7 @@ describe("daily active message", () => {
     }));
     const { telemetry, actives } = setup({ stateDir });
     expect(telemetry.status().active).toMatchObject({ day: "2026-10-08", harnesses: ["claude"] });
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(actives).toEqual([]);
   });
 });
@@ -973,40 +979,40 @@ describe("daily usage", () => {
   test("a visit names its kind of screen and way in, and the day's message carries them sorted, once each", async () => {
     const { telemetry, actives, clock } = setup();
     seen(telemetry);
-    await telemetry.active(["claude"], { surface: "mobile-pwa", ingress: "tailscale" });
-    await telemetry.active(["claude"], { surface: "browser", ingress: "local" });
-    await telemetry.active(["claude"], { surface: "mobile-pwa", ingress: "tailscale" });
+    await telemetry.active(panes("claude"), { surface: "mobile-pwa", ingress: "tailscale" });
+    await telemetry.active(panes("claude"), { surface: "browser", ingress: "local" });
+    await telemetry.active(panes("claude"), { surface: "mobile-pwa", ingress: "tailscale" });
     clock.now += USAGE_RESEND_MS;
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     expect(actives.map((active) => active.usage)).toEqual([
-      { ...emptyUsage(), surfaces: ["mobile-pwa"], ingress: ["tailscale"] },
-      { ...emptyUsage(), surfaces: ["browser", "mobile-pwa"], ingress: ["local", "tailscale"] },
+      { ...emptyUsage(), surfaces: ["mobile-pwa"], ingress: ["tailscale"], agents: seenAgents({ claude: 1 }) },
+      { ...emptyUsage(), surfaces: ["browser", "mobile-pwa"], ingress: ["local", "tailscale"], agents: seenAgents({ claude: 1 }) },
     ]);
   });
 
   test("today's usage goes at most once an hour, with the next visit after it: a new screen, way in, agent or tap sends no fresher usage", async () => {
     const { telemetry, actives, clock } = setup();
     seen(telemetry);
-    await telemetry.active(["claude"], { surface: "browser", ingress: "local" });
+    await telemetry.active(panes("claude"), { surface: "browser", ingress: "local" });
     clock.now += 1_000;
     telemetry.tally("prompt_answers");
     telemetry.tally("prompt_answers");
     telemetry.tally("alerts_delivered");
     // a second later a new kind of screen and way in send nothing: they wait with the counts
-    await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+    await telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
     expect(actives).toHaveLength(1);
-    expect(telemetry.status().active.usage).toEqual({ surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, alerts_opened: 0 });
+    expect(telemetry.status().active.usage).toEqual({ ...emptyUsage(), surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, agents: seenAgents({ claude: 1 }) });
     // a new kind of agent still goes at once, as it did before usage, but with the usage already sent
-    await telemetry.active(["codex"]);
-    const first: TelemetryUsage = { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] };
+    await telemetry.active(panes("codex"));
+    const first: TelemetryUsage = { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"], agents: seenAgents({ claude: 1 }) };
     expect(actives.map((active) => [active.harnesses, active.usage])).toEqual([[["claude"], first], [["claude", "codex"], first]]);
     // past the hour a tapped alert is counted but sends nothing by itself; the next visit takes it all
     clock.now += USAGE_RESEND_MS;
     expect((await handleTelemetryRequest(tap(), telemetry)).status).toBe(200);
     await settled();
     expect(actives).toHaveLength(2);
-    await telemetry.active(["codex"]);
-    expect(actives.map((active) => active.usage).at(-1)).toEqual({ surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, alerts_opened: 1 });
+    await telemetry.active(panes("codex"));
+    expect(actives.map((active) => active.usage).at(-1)).toEqual({ ...emptyUsage(), surfaces: ["browser", "ios-app"], ingress: ["local", "tailscale"], prompt_answers: 2, alerts_delivered: 1, alerts_opened: 1, agents: seenAgents({ claude: 1, codex: 1 }) });
     expect(actives).toHaveLength(3);
   });
 
@@ -1021,14 +1027,14 @@ describe("daily usage", () => {
       }) as typeof fetch;
       const first = setup({ stateDir, fetch: lost });
       seen(first.telemetry);
-      await first.telemetry.active(["claude"], { surface: "browser", ingress: "local" });
+      await first.telemetry.active(panes("claude"), { surface: "browser", ingress: "local" });
       const later = restart ? setup({ stateDir, fetch: lost, now: "2026-10-08T12:00:01Z" }) : first;
       if (!restart) later.clock.now += 1_000;
       later.telemetry.tally("prompt_answers");
-      await later.telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      await later.telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
       expect(bodies.map((body) => body.usage)).toEqual([
-        { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] },
-        { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"] },
+        { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"], agents: seenAgents({ claude: 1 }) },
+        { ...emptyUsage(), surfaces: ["browser"], ingress: ["local"], agents: seenAgents({ claude: 1 }) },
       ]);
     }
   });
@@ -1036,7 +1042,7 @@ describe("daily usage", () => {
   test("a state file that cannot be written just before a message goes stops only that try: the next visit sends", async () => {
     const { telemetry, actives, stateDir, clock, fireTimer } = setup({ grace: 60_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 60_000;
     const temp = join(stateDir, `telemetry.json.${process.pid}.tmp`);
     mkdirSync(temp);
@@ -1044,7 +1050,7 @@ describe("daily usage", () => {
     await settled();
     rmSync(temp, { recursive: true });
     expect(actives).toEqual([]);
-    await telemetry.active(["codex"]);
+    await telemetry.active(panes("codex"));
     expect(actives.map((active) => active.harnesses)).toEqual([["claude", "codex"]]);
   });
 
@@ -1058,15 +1064,15 @@ describe("daily usage", () => {
       }) as typeof fetch;
       const { telemetry, clock } = setup({ fetch: receiver, now: "2026-10-08T23:59:59Z" });
       seen(telemetry);
-      await telemetry.active(["claude"]);
+      await telemetry.active(panes("claude"));
       telemetry.tally("prompt_answers");
       clock.now += 1_000;
-      await telemetry.active(["claude"]);
+      await telemetry.active(panes("claude"));
       const late = bodies.filter((body) => body.day === "2026-10-08").map((body) => body.usage.prompt_answers);
       expect(late.every((answers) => answers === 0)).toBe(true);
       expect(bodies.map((body) => body.day)).toEqual(lose ? ["2026-10-08", "2026-10-08"] : ["2026-10-08", "2026-10-09"]);
       clock.now += USAGE_RESEND_MS;
-      await telemetry.active(["claude"]);
+      await telemetry.active(panes("claude"));
       expect(bodies.filter((body) => body.day === "2026-10-08").at(-1)!.usage.prompt_answers).toBe(1);
     }
   });
@@ -1074,7 +1080,7 @@ describe("daily usage", () => {
   test("fresh usage goes only with a visit: a settings change or a late notice timer past the hour sends none", async () => {
     const { telemetry, actives, clock, fireTimer } = setup({ grace: 60_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 60_000;
     fireTimer();
     await settled();
@@ -1084,7 +1090,7 @@ describe("daily usage", () => {
     telemetry.change({ settings: settingsSnapshot() });
     await settled();
     expect(actives).toHaveLength(1);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     expect(actives.map((active) => active.usage.alerts_delivered)).toEqual([0, 1]);
   });
 
@@ -1096,7 +1102,7 @@ describe("daily usage", () => {
         writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: older, reported_version: "0.4.1", settings: null, active: [] }));
       }
       const before = setup({ stateDir });
-      await before.telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      await before.telemetry.active(panes("claude"), { surface: "ios-app", ingress: "tailscale" });
       before.telemetry.tally("prompt_answers");
       before.telemetry.tally("alerts_delivered");
       expect((await handleTelemetryRequest(tap(), before.telemetry)).status).toBe(200);
@@ -1104,8 +1110,8 @@ describe("daily usage", () => {
       // after a restart and the notice, the day goes out without anything counted before it
       const after = setup({ stateDir });
       seen(after.telemetry);
-      await after.telemetry.active(["claude"]);
-      expect(after.actives.map((active) => [active.harnesses, active.usage])).toEqual([[["claude"], emptyUsage()]]);
+      await after.telemetry.active(panes("claude"));
+      expect(after.actives.map((active) => [active.harnesses, active.usage])).toEqual([[["claude"], { ...emptyUsage(), agents: seenAgents({ claude: 1 }) }]]);
       expect(before.actives).toEqual([]);
     }
   });
@@ -1124,19 +1130,20 @@ describe("daily usage", () => {
     }));
     const { telemetry, actives } = setup({ stateDir });
     expect(telemetry.status().active.usage).toEqual(emptyUsage());
-    await telemetry.active(["claude"]);
-    expect(actives.map((active) => [active.day, active.usage])).toEqual([["2026-10-08", emptyUsage()]]);
-    expect(savedFile(stateDir).active.map((entry: { day: string; usage: unknown }) => [entry.day, entry.usage])).toEqual([["2026-10-07", emptyUsage()], ["2026-10-08", emptyUsage()]]);
+    await telemetry.active(panes("claude"));
+    const seenToday = { ...emptyUsage(), agents: seenAgents({ claude: 1 }) };
+    expect(actives.map((active) => [active.day, active.usage])).toEqual([["2026-10-08", seenToday]]);
+    expect(savedFile(stateDir).active.map((entry: { day: string; usage: unknown }) => [entry.day, entry.usage])).toEqual([["2026-10-07", emptyUsage()], ["2026-10-08", seenToday]]);
   });
 
   test("a day's last counts go out with the next day's visit, under their own day", async () => {
     const { telemetry, actives, clock } = setup();
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     telemetry.tally("alerts_delivered");
     telemetry.tally("alerts_opened");
     clock.now += 86_400_000;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(actives.map((active) => [active.day, active.usage.alerts_delivered, active.usage.alerts_opened])).toEqual([
       ["2026-10-08", 0, 0], ["2026-10-08", 1, 1], ["2026-10-09", 0, 0],
     ]);
@@ -1148,17 +1155,17 @@ describe("daily usage", () => {
     telemetry.tally("alerts_delivered");
     await settled();
     expect(actives).toEqual([]);
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: false, usage: { ...emptyUsage(), alerts_delivered: 1 }, sent_usage: null, wire_usage: null, sent_at: null }]);
+    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: false, usage: { ...emptyUsage(), alerts_delivered: 1 }, sent_usage: null, wire_usage: null, sent_at: null, answer_counts: {} }]);
     clock.now += 86_400_000;
     telemetry.tally("alerts_delivered");
     clock.now += 86_400_000;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(actives.map((active) => active.day)).toEqual(["2026-10-10"]);
     const later = setup();
     seen(later.telemetry);
     later.telemetry.tally("alerts_opened");
-    await later.telemetry.active(["claude"], { surface: "ios-app" });
-    expect(later.actives.map((active) => active.usage)).toEqual([{ ...emptyUsage(), surfaces: ["ios-app"], alerts_opened: 1 }]);
+    await later.telemetry.active(panes("claude"), { surface: "ios-app" });
+    expect(later.actives.map((active) => active.usage)).toEqual([{ ...emptyUsage(), surfaces: ["ios-app"], alerts_opened: 1, agents: seenAgents({ claude: 1 }) }]);
   });
 
   test("nothing is counted while off or blocked, and a count stops at its most", () => {
@@ -1185,7 +1192,8 @@ describe("daily usage", () => {
       active: [{ day: "2026-10-07", harnesses: ["claude"], sent: ["claude"] }, { day: "2026-10-08", harnesses: ["claude"], sent: ["claude"] }],
     }));
     const { telemetry, actives } = setup({ stateDir });
-    await telemetry.active(["claude"]);
+    // a visit that sees no pane: one that sees an agent adds it to today's usage, which then goes
+    await telemetry.active(panes());
     expect(actives).toEqual([]);
     expect(telemetry.status().active).toMatchObject({ day: "2026-10-08", usage: emptyUsage() });
   });
@@ -1227,7 +1235,7 @@ describe("another server on the same state directory", () => {
     });
     const other = setup({ stateDir, grace: 60_000 });
     seen(telemetry);
-    if (event === "active") await telemetry.active(["claude"]);
+    if (event === "active") await telemetry.active(panes("claude"));
     clock.now += 60_000;
 
     const accessSync = fs.accessSync;
@@ -1393,9 +1401,9 @@ describe("another server on the same state directory", () => {
     });
     const other = setup({ stateDir: first.stateDir, now: "2026-10-09T12:00:00Z" });
     seen(first.telemetry);
-    await first.telemetry.active(["claude"]);
+    await first.telemetry.active(panes("claude"));
     first.clock.now += 86_400_000;
-    await first.telemetry.active(["claude"]);
+    await first.telemetry.active(panes("claude"));
     first.clock.now += 86_400_000;
 
     first.fireTimer();
@@ -1419,16 +1427,16 @@ describe("another server on the same state directory", () => {
     });
     seen(first.telemetry);
     const other = setup({ stateDir: first.stateDir });
-    const sending = first.telemetry.active(["claude"]);
+    const sending = first.telemetry.active(panes("claude"));
     await started.promise;
     try {
-      await other.telemetry.active(["claude"]);
+      await other.telemetry.active(panes("claude"));
       expect(other.actives).toEqual([]);
     } finally {
       held.resolve(new Response(null, { status: 503 }));
       await sending;
     }
-    await other.telemetry.active(["claude"]);
+    await other.telemetry.active(panes("claude"));
     expect(other.actives).toHaveLength(1);
   });
 
@@ -1476,7 +1484,7 @@ describe("another server on the same state directory", () => {
     test(`turning the counts off while another server is midway through a ${call === "tally" ? "count" : "visit"} keeps them off, and nothing is sent`, async () => {
       const { telemetry, actives, stateDir } = setup();
       seen(telemetry);
-      const writer = await pausedWriter(stateDir, call === "tally" ? "telemetry.tally(\"prompt_answers\");" : "await telemetry.active([\"claude\"]);");
+      const writer = await pausedWriter(stateDir, call === "tally" ? "telemetry.tally(\"prompt_answers\");" : "await telemetry.active([{ agent: \"claude\" }]);");
       try {
         expect(await writer.next()).toBe("PAUSED");
         expect(telemetry.change({ enabled: false }).enabled).toBe(false);
@@ -1488,7 +1496,7 @@ describe("another server on the same state directory", () => {
         expect(after).toEqual([]);
         expect(telemetry.status().enabled).toBe(false);
         expect(setup({ stateDir }).telemetry.status().enabled).toBe(false);
-        await telemetry.active(["claude"]);
+        await telemetry.active(panes("claude"));
         await settled();
         expect(actives).toEqual([]);
       } finally { writer.child.kill(); }
@@ -1554,9 +1562,9 @@ describe("another server on the same state directory", () => {
       }) as typeof fetch,
     });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 86_400_000;
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 86_400_000;
     telemetry.change({ enabled: true });
     await settled();
@@ -1566,7 +1574,7 @@ describe("another server on the same state directory", () => {
   test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a state directory that cannot be read sends nothing, even with the counts on in memory", async () => {
     const { telemetry, sent, actives, clock, stateDir, fireTimer } = setup({ grace: 60_000 });
     seen(telemetry);
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     clock.now += 60_000;
     chmodSync(stateDir, 0o000);
     try {
@@ -1588,7 +1596,7 @@ describe("another server on the same state directory", () => {
     expect(telemetry.status().enabled).toBe(false);
     telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
     await telemetry.report();
-    await telemetry.active(["claude"]);
+    await telemetry.active(panes("claude"));
     await settled();
     expect(sent).toEqual([]);
     expect(actives).toEqual([]);
@@ -1627,7 +1635,7 @@ describe("another server on the same state directory", () => {
     expect(second.telemetry.status().enabled).toBe(false);
     second.telemetry.change({ enabled: true });
     expect(first.telemetry.status().enabled).toBe(true);
-    await first.telemetry.active(["claude"]);
+    await first.telemetry.active(panes("claude"));
     expect(first.actives).toHaveLength(1);
   });
 });
@@ -1729,7 +1737,7 @@ describe("telemetry counts", () => {
     seen(first.telemetry);
     first.telemetry.tallyCounts({ width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 });
     first.clock.now += 86_400_000;
-    await first.telemetry.active([]);
+    await first.telemetry.active(panes());
     await started.promise;
 
     other.telemetry.change({ enabled: false });
@@ -1738,7 +1746,7 @@ describe("telemetry counts", () => {
     held.resolve(new Response(null, { status: 204 }));
     await settled();
     other.clock.now += 86_400_000;
-    await other.telemetry.active([]);
+    await other.telemetry.active(panes());
     expect(other.counts.map(({ day, wide }) => [day, wide?.counts])).toEqual([["2026-10-08", { chat_send: 2 }]]);
   });
 
@@ -1757,16 +1765,16 @@ describe("telemetry counts", () => {
     first.telemetry.tallyCounts({ width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 });
     first.clock.now += 86_400_000;
     other.clock.now = first.clock.now;
-    await first.telemetry.active([]);
+    await first.telemetry.active(panes());
     await started.promise;
     try {
-      await other.telemetry.active([]);
+      await other.telemetry.active(panes());
       expect(other.counts).toEqual([]);
     } finally {
       held.resolve(new Response(null, { status: 503 }));
       await settled();
     }
-    await other.telemetry.active([]);
+    await other.telemetry.active(panes());
     expect(other.counts).toHaveLength(1);
   });
 
@@ -1790,7 +1798,7 @@ describe("telemetry counts", () => {
     first.clock.now = Date.parse("2026-10-07T12:00:00Z");
     first.telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 } });
     first.clock.now = Date.parse("2026-10-08T12:00:00Z");
-    await first.telemetry.active([]);
+    await first.telemetry.active(panes());
     await settled();
     expect(taken.map((counts) => counts.day)).toEqual(["2026-10-06"]);
   });
@@ -1800,14 +1808,14 @@ describe("telemetry counts", () => {
     clock.now = Date.parse("2026-11-15T23:59:30Z");
     telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 } });
     clock.now = Date.parse("2026-11-16T00:00:20Z");
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toEqual([]);
     // the tab's batch from before midnight arrives within its minute
     clock.now = Date.parse("2026-11-16T00:00:50Z");
     telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0, day: "2026-11-15" } });
     clock.now = Date.parse("2026-11-16T00:00:00Z") + COUNTS_SETTLE_MS;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts.map((sent) => [sent.day, sent.wide?.counts])).toEqual([["2026-11-15", { chat_send: 2 }]]);
   });
@@ -1817,7 +1825,7 @@ describe("telemetry counts", () => {
     clock.now = Date.parse("2026-11-15T20:00:00Z");
     telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 } });
     clock.now = Date.parse("2026-11-16T00:01:00Z");
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toEqual([]);
     expect(timers.filter((timer) => !timer.cleared).map((timer) => timer.ms)).toEqual([COUNTS_SETTLE_MS - 60_000]);
@@ -1830,7 +1838,7 @@ describe("telemetry counts", () => {
     const { telemetry, counts, clock, timers, fireTimer } = setup({ countsOn: true });
     seen(telemetry);
     clock.now = Date.parse("2026-11-16T00:00:20Z");
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(timers.filter((timer) => !timer.cleared)).toEqual([]);
     clock.now = Date.parse("2026-11-16T00:00:50Z");
@@ -1867,11 +1875,11 @@ describe("telemetry counts", () => {
     telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 } });
     clock.now += 86_400_000;
     try {
-      await telemetry.active([]);
+      await telemetry.active(panes());
       await settled();
     } finally { chmodSync(stateDir, 0o700); }
     expect(savedFile(stateDir).counts).toHaveLength(1);
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(taken).toHaveLength(1);
   });
@@ -1904,7 +1912,7 @@ describe("telemetry counts", () => {
     seen(telemetry);
     telemetry.change({ counts: { width: "wide", add: { chat_send: 3 }, shown: ["composer"], generation: 0 } });
     clock.now += 86_400_000;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     // 6 is the notice whose wording says buttons are counted: below it, nothing is kept, previewed or sent
     const on = NOTICE_VERSION >= 6;
@@ -1917,7 +1925,7 @@ describe("telemetry counts", () => {
     expect(savedFile(stateDir).counts).toEqual([]);
     expect(telemetry.status().counts).toBeUndefined();
     clock.now += 86_400_000;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toEqual([]);
   });
@@ -1951,10 +1959,10 @@ describe("telemetry counts", () => {
     telemetry.change({ counts: { width: "wide", add: { composer_voice: 30, inbox_enter: 9 }, shown: ["composer_voice"], generation: 0 } });
     // today's counts are exact here and stay here
     expect(savedFile(stateDir).counts[0].narrow.counts).toEqual({ chat_send: 10, view_terminal_by_header: 3, view_terminal_claude: 3 });
-    await telemetry.active([]);
+    await telemetry.active(panes());
     expect(counts).toEqual([]);
     clock.now += DAY_MS;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toEqual([{
       event: "counts", day: "2026-10-08", install_id: telemetry.status().active.install_id, version: "0.5.5",
@@ -1963,7 +1971,7 @@ describe("telemetry counts", () => {
     }]);
     expect(savedFile(stateDir).counts).toEqual([]);
     clock.now += DAY_MS;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toHaveLength(1);
   });
@@ -1993,7 +2001,7 @@ describe("telemetry counts", () => {
     expect(savedFile(stateDir).counts).toEqual([]);
     telemetry.change({ enabled: true });
     clock.now += DAY_MS;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toEqual([]);
   });
@@ -2004,12 +2012,12 @@ describe("telemetry counts", () => {
     telemetry.change(narrow({ chat_send: 1 }));
     answer.status = 500;
     clock.now += DAY_MS;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toHaveLength(1);
     expect(savedFile(stateDir).counts).toHaveLength(1);
     answer.status = 204;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toHaveLength(2);
     expect(counts[1]!.day).toBe("2026-10-08");
@@ -2017,7 +2025,7 @@ describe("telemetry counts", () => {
 
     telemetry.change(narrow({ chat_send: 1 }));
     clock.now += (COUNTS_LATE_DAYS + 1) * DAY_MS;
-    await telemetry.active([]);
+    await telemetry.active(panes());
     await settled();
     expect(counts).toHaveLength(2);
     expect(savedFile(stateDir).counts).toEqual([]);
@@ -2052,5 +2060,86 @@ describe("telemetry counts", () => {
       { counts: { width: "wide", add: {}, shown: [], pane: "w1:p1" } },
     ]) expect((await post(bad)).status).toBe(400);
     expect(telemetry.status().counts?.wide).toEqual({ counts: { chat_send: 1 }, shown: ["composer"] });
+  });
+});
+
+describe("agents and answers", () => {
+  test("a day keeps, per kind of agent, the most panes seen at once that Ovis started and others, and the versions named", async () => {
+    const { telemetry, actives, clock } = setup();
+    seen(telemetry);
+    await telemetry.active([{ agent: "claude", ovis: true, version: "2.1.330" }, { agent: "claude", version: "2.1.331" }, { agent: "codex", version: "0.171.0" }, { agent: null }]);
+    const first = { claude: { ovis: 1, other: 1, versions: ["2.1"] }, codex: { ovis: 0, other: 1, versions: ["0.171"] } };
+    expect(actives.map((active) => active.usage.agents)).toEqual([first]);
+    // fewer panes later keep the day's most; a new version is added
+    await telemetry.active([{ agent: "claude", ovis: true, version: "2.2.0" }]);
+    clock.now += USAGE_RESEND_MS;
+    await telemetry.active(panes());
+    expect(actives.map((active) => active.usage.agents)).toEqual([first, { ...first, claude: { ovis: 1, other: 1, versions: ["2.1", "2.2"] } }]);
+  });
+
+  test("answers from Ovis are counted by the way they went, sent as buckets, and as prompt answers", () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    for (let count = 0; count < 3; count += 1) telemetry.answering("w1:p1")("screen");
+    telemetry.answering("w1:p1")("native");
+    telemetry.answering("w1:p1")(null);
+    expect(telemetry.status().active.usage).toMatchObject({ prompt_answers: 4, answers: { screen: 2, native: 1 } });
+  });
+
+  test("a wait the agent reported that ends with no answer from Ovis counts as answered at the terminal, once", () => {
+    const { telemetry, stateDir } = setup();
+    seen(telemetry);
+    const answers = () => telemetry.status().active.usage.answers;
+    telemetry.paneStatus("w1:p1", "blocked");
+    telemetry.paneStatus("w1:p1", "blocked");
+    telemetry.paneStatus("w1:p1", "working");
+    telemetry.paneStatus("w1:p1", "idle");
+    expect(answers()).toEqual({ terminal: 1 });
+    // answered from Ovis: no terminal, even when the agent moves on before the answer has ended
+    telemetry.paneStatus("w1:p1", "blocked");
+    const ended = telemetry.answering("w1:p1");
+    telemetry.paneStatus("w1:p1", "working");
+    expect(answers()).toEqual({ terminal: 1 });
+    ended("record");
+    expect(answers()).toEqual({ terminal: 1, record: 1 });
+    // an answer that was not delivered leaves the wait to the terminal
+    telemetry.paneStatus("w1:p1", "blocked");
+    telemetry.answering("w1:p1")(null);
+    telemetry.paneStatus("w1:p1", "idle");
+    expect(answers()).toEqual({ terminal: 1, record: 1 });
+    expect(savedFile(stateDir).active[0].answer_counts).toEqual({ terminal: 2, record: 1 });
+  });
+
+  test("an answer begun before the agent's wait was reported is that wait's: one answer, no terminal", () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    const ended = telemetry.answering("w1:p1");
+    telemetry.paneStatus("w1:p1", "blocked");
+    telemetry.paneStatus("w1:p1", "working");
+    ended("native");
+    expect(telemetry.status().active.usage.answers).toEqual({ native: 1 });
+  });
+
+  test("a wait or an answer begun while the counts were off is not counted when it ends after they are on again", () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    telemetry.change({ enabled: false });
+    telemetry.paneStatus("w1:p1", "blocked");
+    const ended = telemetry.answering("w1:p2");
+    telemetry.change({ enabled: true });
+    telemetry.paneStatus("w1:p1", "idle");
+    ended("screen");
+    expect(telemetry.status().active.usage.answers).toEqual({});
+  });
+
+  test("nothing of agents or answers is kept while the counts are off", async () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    telemetry.change({ enabled: false });
+    telemetry.paneStatus("w1:p1", "blocked");
+    telemetry.paneStatus("w1:p1", "idle");
+    telemetry.answering("w1:p1")("screen");
+    await telemetry.active([{ agent: "claude", ovis: true, version: "2.1.0" }]);
+    expect(telemetry.status().active.usage).toEqual(emptyUsage());
   });
 });

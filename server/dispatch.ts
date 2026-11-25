@@ -1127,7 +1127,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   if (pathname.startsWith("/api/pane/prompt")) {
     try {
-      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), onAnswered: () => options.telemetry?.tally("prompt_answers") });
+      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), ...(options.telemetry ? { onAnswering: (paneId: string) => options.telemetry!.answering(paneId) } : {}) });
       if (response) return response;
     } catch (error) {
       return errorResponse(error);

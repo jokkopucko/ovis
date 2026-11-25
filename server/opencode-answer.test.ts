@@ -34,7 +34,8 @@ async function fixture(run: (f: {
   readResponse(): Promise<Response>;
   read(): Promise<InteractivePrompt>;
   answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal): Promise<Response>;
-  counted: { answers: number };
+  /** answers delivered, by the way they went */
+  counted: { answers: number; ways: (string | null)[] };
 }) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), "opencode-answer-"));
   const path = join(root, "herdr.sock");
@@ -42,8 +43,8 @@ async function fixture(run: (f: {
   const session = "ses_fixture01";
   const url = new URL(`http://localhost/api/pane/prompt?pane_id=${paneId}`);
   const answerUrl = new URL("http://localhost/api/pane/prompt/answer");
-  const counted = { answers: 0 };
-  const options = { openCodeStateDir: root, onAnswered: () => { counted.answers += 1; } };
+  const counted = { answers: 0, ways: [] as (string | null)[] };
+  const options = { openCodeStateDir: root, onAnswering: () => (way: string | null) => { counted.ways.push(way); if (way !== null) counted.answers += 1; } };
   const f = {
     counted,
     serviceFile: join(root, "service.json"),
@@ -161,6 +162,7 @@ describe("OpenCode answer ordering", () => {
         expect((await f.answer(prompt, { custom_text: "answered" })).status).toBe(200);
         expect(f.replies).toHaveLength(1);
         expect(f.counted.answers).toBe(1);
+        expect(f.counted.ways.at(-1)).toBe("native");
       });
       expect(asked.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(asked.mock.calls.every((call) => call[2]?.onWindows === true)).toBe(true);
@@ -530,6 +532,7 @@ describe("OpenCode permission card", () => {
       expect((await f.answer(prompt, { option_index: index })).status).toBe(200);
       expect(f.permissionReplies).toEqual([{ path: `/api/session/ses_fixture01/permission/${String(asked("shell").id)}/reply`, body: { decision } }]);
       expect(f.counted.answers).toBe(1);
+      expect(f.counted.ways).toEqual(["native"]);
     });
   });
 
