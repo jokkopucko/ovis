@@ -37,6 +37,39 @@ it("reserves an answer while replay is pending, without waiting for the watermar
   }
 });
 
+it("ignores a question arriving after the client closes", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket, questionHarness: "claude" });
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n`);
+  const raw = JSON.stringify({ id: "late-question", method: "elicitation/create", params: { sessionId: "s", message: "What color?" } });
+
+  client.close();
+  socket.emit("data", `${JSON.stringify({ seq: 2, dir: "from-agent", raw })}\n`);
+
+  expect(client.questions.current).toBeNull();
+});
+
+it("captures the replacement session's opening selection but does not refresh it for the same session", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  let seq = 0;
+  const note = (method: string, params: object) => {
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method, params }) })}\n`);
+  };
+  try {
+    note("_keeper/selections", { mode: "agent", allowAll: false });
+    note("_keeper/session", { sessionId: "first" });
+    expect(client.initialPermissions).toEqual({ mode: "agent", allowAll: false });
+
+    note("_keeper/selections", { mode: "read-only", allowAll: true });
+    note("_keeper/session", { sessionId: "replacement" });
+    note("_keeper/selections", { mode: "read-only", allowAll: false });
+    note("_keeper/session", { sessionId: "replacement" });
+
+    expect(client.initialPermissions).toEqual({ mode: "read-only", allowAll: true });
+  } finally { client.close(); }
+});
+
 describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scripted agent", () => {
   const cleanups: (() => Promise<void> | void)[] = [];
   afterEach(async () => {

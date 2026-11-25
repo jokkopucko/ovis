@@ -12,12 +12,6 @@ export interface HarnessToolSetting {
   readonly depth: 1 | 2 | 3;
   readonly harnesses: readonly string[];
 }
-/** What a parent that cannot prove its permission ceiling may start, at the one version each has an ask-every-time launch for (server/agent-tools/permission-launch.ts, hub.ts's version check). */
-export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { claude: "2.1.330", codex: "0.171.0", copilot: "1.0.109", opencode: "2.2.2", agy: "1.5.16" };
-/** Of those, the ones whose own allow rules (the person's, or a project folder's) still let an action through unasked. */
-export const OWN_RULES_HARNESSES: readonly string[] = ["codex", "copilot", "agy"];
-/** Of those, the ones whose built-in web search runs unasked in every launch. */
-export const UNASKED_SEARCH_HARNESSES: readonly string[] = ["agy"];
 /** Harness kinds with an ACP launch in server/agent-tools/harnesses.ts (resolveHarness). */
 export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc"] as const;
 export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES };

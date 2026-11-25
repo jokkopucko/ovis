@@ -47,7 +47,7 @@ export interface AuditRecord {
   run: string;
   stop_reason: string | null;
   turn_id: string | null;
-  verb: "send" | "start" | "stop" | "turn" | (string & {});
+  verb: "answer" | "send" | "start" | "stop" | "turn" | (string & {});
 }
 
 export interface Screen {
@@ -92,12 +92,22 @@ export interface SessionRef {
   machine: string;
   parent: string | null;
   started_by: "agent" | "human" | (string & {});
+  version?: string;
 }
 
 export interface SessionState {
   on?: "approval" | "question" | (string & {});
-  state: "done" | "gone" | "idle" | "waiting_human" | "working" | (string & {});
+  question?: ChildQuestion;
+  state: "done" | "gone" | "idle" | "waiting_human" | "waiting_parent" | "working" | (string & {});
   turn: number | null;
+}
+
+export interface ChildQuestion {
+  accepts_text: boolean;
+  choices: Untrusted[];
+  id: string;
+  multiple: boolean;
+  prompt: Untrusted;
 }
 
 export interface SendAccepted {

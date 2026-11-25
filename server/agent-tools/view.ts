@@ -21,7 +21,7 @@ const eligible = (pane: { pane_id: string; agent?: string | null }) => !!pane.ag
 export class HarnessView {
   readonly signInNeeded = new Set<string>();
   constructor(private readonly options: ViewOptions, private readonly acp: AcpChildren, private readonly ledger: Ledger) {}
-  async query(verb: string, args: Record<string, unknown>, turns: ChildTurns) {
+  async query(verb: string, args: Record<string, unknown>, turns: ChildTurns, reader: string) {
     switch (verb) {
       case "machines": return answer("machines", { machines: (this.options.machines?.() ?? []).map(m => ({ id: m.id, name: m.name, online: m.state === "connected", versions: {}, reach: m.kind === "local" ? "local" : m.kind === "hc" ? "hc-via" : m.kind === "ssh" ? "hc-ssh" : m.kind })) });
       case "harnesses": {
@@ -35,13 +35,14 @@ export class HarnessView {
         return answer("sessions", { sessions: panes.filter(eligible).map(p => {
           const child = this.acp.forPane(p.pane_id), row = this.ledger.children.get(p.pane_id);
           return { address: p.pane_id, drive: child ? "acp" : "terminal", harness: p.agent, machine: "local", parent: panes.some(parent => parent.pane_id === p.parent_pane_id) ? p.parent_pane_id : null, agent_session_id: child?.client.session ?? p.agent_session?.value ?? null,
+            ...(row && row.id === child?.id && row.version && { version: row.version }),
             started_by: row && row.id === child?.id ? "agent" : "human", state: child ? childState(child, row) : { state: p.agent_status === "blocked" ? "waiting_human" : p.agent_status, turn: null } };
         }) });
       }
-      default: return this.read(args, turns);
+      default: return this.read(args, turns, reader);
     }
   }
-  private async read(args: Record<string, unknown>, turns: ChildTurns) {
+  private async read(args: Record<string, unknown>, turns: ChildTurns, reader: string) {
     const session = String(args.session);
     if (session.includes("/")) return refuse("unknown_session", "Only sessions on this PC can be read.");
     const child = this.acp.forPane(session), row = this.ledger.children.get(session);
@@ -54,7 +55,7 @@ export class HarnessView {
     observe();
     if (uncertain) return refuse("taken_over", "ACP does not own this conversation.");
     const state = async () => {
-      if (child) return childState(child, row);
+      if (child) return childState(child, row, row?.id === child.id && row.starter === reader);
       const read = await readPrompt(session);
       if (!eligible(read.pane) || read.pane.terminal_id !== target?.terminal_id || read.pane.agent !== target?.agent) throw new Error("Agent session changed.");
       if (read.stale || read.inputUnverified) throw new Error("Session changed.");
@@ -62,9 +63,9 @@ export class HarnessView {
     };
     const before = await state();
     const stateOnly = (s: typeof before) => answer("state", { session, state: s });
-    if (args.what === "state" || before.state === "waiting_human" || child && !child.client.connected) return stateOnly(before);
+    if (args.what === "state" || before.state === "waiting_human" || before.state === "waiting_parent" || child && !child.client.connected) return stateOnly(before);
     if ((child || args.what === "result") && before.state === "working") return stateOnly(before);
-    if (args.what === "result" && child && row) return turns.result(child, row, undefined);
+    if (args.what === "result" && child && row) return turns.result(child, row, undefined, row.id === child.id && row.starter === reader);
     let output: object;
     if (args.what === "screen") {
       const screen = await paneRead({ paneId: session, source: "visible", format: "text" });
@@ -85,7 +86,7 @@ export class HarnessView {
     const after = await state();
     observe();
     if (uncertain) return refuse("taken_over", "ACP ownership changed during the read.");
-    return after.state === "waiting_human" || (child || args.what === "result") && after.state === "working" || child && !child.client.connected ? stateOnly(after) : output;
+    return after.state === "waiting_human" || after.state === "waiting_parent" || (child || args.what === "result") && after.state === "working" || child && !child.client.connected ? stateOnly(after) : output;
     } finally { off?.(); }
   }
 }

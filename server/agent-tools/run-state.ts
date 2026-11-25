@@ -12,8 +12,6 @@ export interface Run {
   readonly root: string;
   readonly harness: string;
   readonly created_ms: number;
-  /** Server-verified permission contract, not a harness mode name. Absent for TUI launches. */
-  readonly ceiling?: string;
 }
 export interface RunState { readonly run: Run; readonly starts?: readonly { key: string; run: string }[]; readonly calls?: readonly number[] }
 export interface Saved extends RunState { readonly hash: string; readonly foreground?: { pid: number; birth: string } }

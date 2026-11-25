@@ -170,10 +170,11 @@ export function catalogPlatform(platform: string): CatalogPlatform | null {
 }
 
 const VERSION = /\d+\.\d+(?:\.\d+)?/;
+const REPORTED_VERSION = new RegExp(`${VERSION.source}(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?`);
 
 /** The first dotted version in what a version flag printed ("codex-cli 0.163.0", "omp/18.8.7", "2.1.311 (Claude Code)"). */
-export function parseVersion(output: string): string | null {
-  return VERSION.exec(output)?.[0] ?? null;
+export function parseVersion(output: string, format: "numeric" | "reported" = "numeric"): string | null {
+  return (format === "reported" ? REPORTED_VERSION : VERSION).exec(output)?.[0] ?? null;
 }
 
 export function meetsMinVersion(version: string, min: string): boolean {

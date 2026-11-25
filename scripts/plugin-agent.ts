@@ -29,7 +29,11 @@ export async function runAgent(words: readonly string[]): Promise<number> {
     if (verb === "read" && ["screen","state","result","transcript"].includes(name)) { value = name; name = "what"; }
     else { value = rest[++i]; if (value === undefined) return bad(); }
     if (!Object.hasOwn(TOOL_SCHEMAS[verb].properties, name) || Object.hasOwn(args, name)) return bad();
-    args[name] = name === "timeout_s" ? Number(value) : value;
+    if (name === "choice" || name === "choices") {
+      const indexes = String(value).split(",");
+      if (!indexes.every(v => /^\d+$/.test(v)) || name === "choice" && indexes.length !== 1) return bad();
+      args[name] = name === "choice" ? Number(value) : indexes.map(Number);
+    } else args[name] = name === "timeout_s" ? Number(value) : value;
   }
   for (const key of ["session","task"]) if (positional.length && Object.hasOwn(TOOL_SCHEMAS[verb].properties, key) && !(key in args)) args[key] = positional.shift();
   if (positional.length) return bad();

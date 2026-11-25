@@ -1680,7 +1680,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     answerEnded = options.onAnswering?.(body.pane_id);
     const acpChild = options.acp?.forPane(body.pane_id);
     if (acpChild) {
-      const answered = await answerAcpPrompt(acpChild, body.prompt_id, body.option_index);
+      const answered = await answerAcpPrompt(acpChild, body);
       endAnswer(answered === "invalid" || answered === "changed" ? null : "native");
       if (answered === "invalid") return badRequest("invalid_answer", "option_index must name one of the card's options.");
       if (answered === "changed") return promptChanged();

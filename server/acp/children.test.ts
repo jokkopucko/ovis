@@ -172,6 +172,7 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     const child = await children.start({ harness: "gjc", argv: [FAKE_AGENT], cwd: dir, parentPane: "t42", runId: "run", mcpServers: [server] });
     const log = await Bun.file(join(child.root, "archive.jsonl")).text();
     const messages = log.trim().split("\n").map(line => JSON.parse(line)).filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw));
+    expect(messages.find(m => m.method === "initialize")?.params.clientCapabilities.elicitation).toEqual({ form: {} });
     expect(messages.find(m => m.method === "session/new")?.params).toEqual({ cwd: dir, mcpServers: [server] });
     expect(runs()[0]).toMatchObject({ parent: "t42", labels: { "ovis.run": "run" } });
   });
@@ -183,10 +184,9 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     const messages = log.trim().split("\n").map(line => JSON.parse(line)).filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw));
     expect(messages.find(m => m.method === "session/new")?.params).toEqual({ cwd: dir, mcpServers: [], _meta: sessionMeta, configOptions });
   });
-  it("isolates an all-ask child's permission database and offers no reusable approval", async () => {
+  it("offers no reusable approval for a delegated child", async () => {
     setUp();
-    const child = await children.start({ harness:"fixture", argv:[FAKE_AGENT], cwd:dir, askEveryTime:true, privateFiles:{ OPENCODE_DB:"opencode.db" } });
-    expect(runs()[0]).toMatchObject({env:{OPENCODE_DB:join(child.root,"opencode.db")}});
+    const child = await children.start({ harness:"fixture", argv:[FAKE_AGENT], cwd:dir, askEveryTime:true });
     await child.client.submit("widen");
     await until(child.client, "approval", () => child.client.pending().length === 1);
     const [card] = child.client.pending();

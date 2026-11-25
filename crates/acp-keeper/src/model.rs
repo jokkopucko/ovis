@@ -37,6 +37,7 @@ pub struct Model {
     pub session: Option<String>,
     pub modes: Option<Selector>,
     pub models: Option<Selector>,
+    pub allow_all: bool,
     pub working: bool,
     pub pending: Vec<Pending>,
     pub clients: usize,
@@ -118,6 +119,10 @@ impl Model {
     pub fn config_options(&mut self, options: &Value) {
         for option in options.as_array().into_iter().flatten() {
             let id = str_field(option, "id").unwrap_or_default();
+            if id == "allow_all" {
+                self.allow_all = option.get("currentValue").and_then(Value::as_str) != Some("off");
+                continue;
+            }
             let category = str_field(option, "category").unwrap_or_else(|| id.clone());
             let slot = match category.as_str() {
                 "mode" => &mut self.modes,

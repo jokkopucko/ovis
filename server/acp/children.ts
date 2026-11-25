@@ -14,10 +14,11 @@ import { PANE_NAME_LABEL, TAB_NAME_LABEL } from "../herdr-core/snapshot.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { KeeperClient } from "./client.ts";
+import { hasQuestionForms } from "./question-form.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
 
-type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label";
+type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label" | "machine.exec";
 /** The hc calls the registry makes (HcConnection, or a test's stand-in). */
 export interface AcpHc {
   call<M extends AcpHcMethod>(method: M, params: HcMethods[M]["params"]): Promise<HcMethods[M]["result"]>;
@@ -37,8 +38,6 @@ export interface AcpStart {
   sessionMeta?: unknown;
   /** `configOptions` of the keeper's `session/new`, set before the agent answers it */
   configOptions?: readonly unknown[];
-  /** environment variables, each naming a file of that name in the child's private ROOT */
-  privateFiles?: Record<string, string>;
   /** the terminal's environment over the core's */
   env?: Record<string, string>;
   runId?: string;
@@ -143,11 +142,13 @@ function owned(path: string, kind: "directory" | "file"): boolean {
   return stat !== undefined && (process.getuid === undefined || stat.uid === process.getuid()) && (kind === "directory" ? stat.isDirectory() : stat.isFile());
 }
 
-function harnessOf(root: string): string | null {
+function childInfo(root: string): { harness: string; questionHarness?: string } | null {
   try {
     if (!owned(root, "directory") || !owned(join(root, CHILD_FILE), "file")) return null;
-    const harness = (JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8")) as { harness?: unknown }).harness;
-    return typeof harness === "string" && harness !== "" ? harness : null;
+    const info: unknown = JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8"));
+    if (!info || typeof info !== "object" || !("harness" in info)) return null;
+    const harness = info.harness, questionForms = "questionForms" in info && info.questionForms === true;
+    return typeof harness === "string" && harness !== "" ? { harness, ...(questionForms === true ? { questionHarness: harness } : {}) } : null;
   } catch {
     return null;
   }
@@ -192,7 +193,8 @@ export class AcpChildren {
     this.folder();
     mkdirSync(root, { mode: 0o700 });
     chmodSync(root, 0o700);
-    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness }), { mode: 0o600 });
+    const questionForms = !!start.runId && hasQuestionForms(start.harness);
+    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}) }), { mode: 0o600 });
     const argv = [
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
@@ -200,6 +202,7 @@ export class AcpChildren {
       ...(start.configOptions === undefined ? [] : ["--config-options", JSON.stringify(start.configOptions)]),
       ...(start.announceSubagents ? ["--announce-subagents"] : []),
       ...(start.askEveryTime ? ["--ask-every-time"] : []),
+      ...(questionForms ? ["--question-forms"] : []),
       "--", ...start.argv,
     ];
     const displayName = start.name?.trim();
@@ -209,7 +212,7 @@ export class AcpChildren {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
         labels: { [LABEL]: id, ...(start.runId ? { "ovis.run": start.runId } : {}), ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
-        ...(start.env === undefined && start.privateFiles === undefined ? {} : { env: { ...start.env, ...Object.fromEntries(Object.entries(start.privateFiles ?? {}).map(([name, file]) => [name, join(root, file)])) } }),
+        ...(start.env === undefined ? {} : { env: start.env }),
       }));
     } catch (error) {
       const live = await this.liveTerminals().catch((lookupError: unknown) => {
@@ -229,7 +232,7 @@ export class AcpChildren {
       throw new AcpStartFailed(reason, message, client?.sessionError?.code);
     };
     if (!(await socketAppears(root, this.options.socketMs ?? SOCKET_MS))) return failed("no_socket", "the ACP keeper did not open its socket");
-    const client = new KeeperClient(root);
+    const client = new KeeperClient(root, { questionHarness: questionForms ? start.harness : undefined });
     const opened = await sessionOpens(client, this.options.sessionMs ?? SESSION_MS);
     if (opened === "refused") return failed("refused", "the agent refused to open the ACP session", client);
     if (opened === "late") return failed("no_session", "the agent did not open a session (no answer to initialize or session/new)", client);
@@ -253,6 +256,13 @@ export class AcpChildren {
   }
 
   async terminals() { return (await this.hc().call("terminal.list", {})).terminals; }
+
+  /** Run alongside the keeper, using the same core environment plus the same launch overrides. */
+  async versionOutput(executable: string, { cwd, env }: Pick<AcpStart, "cwd" | "env">): Promise<string | null> {
+    if (this.refusal() !== null) return null;
+    const result = await this.hc().call("machine.exec", { argv: [executable, "--version"], cwd, env, timeout: 5 }).catch(() => null);
+    return result?.code === 0 && !result.timed_out && !result.truncated ? Buffer.from(result.stdout, "base64").toString("utf8") : null;
+  }
 
   private add(child: AcpChild): AcpChild {
     this.children.set(child.id, child);
@@ -339,12 +349,12 @@ export class AcpChildren {
     for (const id of readdirSync(this.dir)) {
       const root = join(this.dir, id);
       if (!/^[a-f0-9]{12}$/.test(id)) continue;
-      const harness = harnessOf(root);
-      if (harness === null) continue;
+      const info = childInfo(root);
+      if (info === null) continue;
       const terminal = live.get(id);
       if (terminal === null) continue;
       if (terminal !== undefined) {
-        if (!this.children.has(id)) this.add({ id, harness, root, terminal, client: new KeeperClient(root) });
+        if (!this.children.has(id)) this.add({ id, harness: info.harness, root, terminal, client: new KeeperClient(root, info) });
       } else if (!keeperRunning(root)) {
         rmSync(root, { recursive: true, force: true });
       }

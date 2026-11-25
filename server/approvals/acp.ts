@@ -6,7 +6,7 @@
  * request and no other.
  */
 import { createHash } from "node:crypto";
-import type { CardText, InteractivePrompt } from "../../shared/protocol.ts";
+import type { CardText, InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import type { AcpApproval, KeeperClient } from "../acp/client.ts";
 import { englishOf, own } from "../dialogs/shared.ts";
 import { shellQuote } from "../machine-security.ts";
@@ -82,14 +82,35 @@ export function acpCard(harness: string, approval: AcpApproval): InteractiveProm
 /** The card a pane's ACP child shows now: its oldest open request, or none. */
 export function acpPrompt(child: { harness: string; client: KeeperClient }): InteractivePrompt | null {
   const oldest = child.client.pending()[0];
-  return oldest === undefined ? null : acpCard(child.harness, oldest);
+  if (oldest) return acpCard(child.harness, oldest);
+  const q = child.client.questions.current;
+  if (!q || q.parent) return null;
+  const field = q.field;
+  const title = own("Question");
+  const label = own(field ? "Type your answer" : "Cancel");
+  const options = field?.choices.map(({ label, description }) => ({ label, description })) ?? [];
+  const custom = field?.custom ? options.length : null;
+  const labels = custom !== null || !field ? { [options.length]: label } : {};
+  if (custom !== null || !field) options.push({ label: englishOf(label), description: null });
+  return { id: q.id, agent: child.harness, kind: "question", title: englishOf(title), question: field?.prompt ?? q.message ?? englishOf(title),
+    body: null, options, custom_option_index: custom, multi_select: field?.multiple ?? false,
+    ...(field?.optional ? { optional: true } : {}), ...(field?.multiple && field.custom ? { checks_with_text: true } : {}),
+    own_text: { title, labels, ...(!field && !q.message ? { question: title } : {}) } };
 }
 
 /**
  * Answers the card `promptId` with its option `optionIndex`: answered once the keeper sent this answer to the agent;
  * changed when the request is no longer open or another answer went first; invalid for an option the card has not.
  */
-export async function answerAcpPrompt(child: { harness: string; client: KeeperClient }, promptId: string, optionIndex: unknown): Promise<"answered" | "changed" | "invalid"> {
+export async function answerAcpPrompt(child: { harness: string; client: KeeperClient }, body: PromptAnswer): Promise<"answered" | "changed" | "invalid"> {
+  const { prompt_id: promptId, option_index: optionIndex } = body;
+  if (promptId.startsWith("question.")) {
+    if (child.client.pending().length || child.client.status !== "blocked") return "changed";
+    if (body.custom_text !== undefined && typeof body.custom_text !== "string") return "invalid";
+    const indices = body.option_indices ?? (optionIndex === undefined || body.custom_text !== undefined && optionIndex === child.client.questions.current?.field?.choices.length ? [] : [optionIndex]);
+    if (!Array.isArray(indices)) return "invalid";
+    return child.client.questions.respond(promptId, null, { indices, text: body.custom_text });
+  }
   const asked = child.client.pending().find((request) => cardId(request) === promptId);
   if (asked === undefined) return "changed";
   const option = typeof optionIndex === "number" && Number.isInteger(optionIndex) ? choices(asked).options[optionIndex] : undefined;

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { HarnessToolSetting } from "../../shared/harness-tool.ts";
@@ -88,19 +88,14 @@ describe("Settings > Agents > Let agents call other agents", () => {
     expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy"] }]);
   });
 
-  it("names the agents whose own allow rules still apply to them when called, and only those", () => {
-    mount(false, [agent("claude", "Claude Code", true, "2.1.330"), agent("codex", "Codex", true, "0.171.0"), agent("copilot", "GitHub Copilot", true, "1.0.109")]);
-    const note = () => renderer!.root.findAll((node) => node.type === "span" && node.props.className === "settings-condition");
-    expect(note().map((span) => span.children.join(""))).toEqual(["The allow rules you set in Codex, GitHub Copilot, a project folder's included, apply when they are called too."]);
-    act(() => { renderer!.update(createElement(SettingsProvider, null, createElement(AgentCallsRows, { agents: [agent("claude", "Claude Code", true, "2.1.330")], watching: false }))); });
-    expect(note()).toHaveLength(0);
+  it("offers Codex and Copilot but not installed agents without an ACP launch", () => {
+    mount(false, [agent("codex", "Codex", true, "0.171.0"), agent("copilot", "GitHub Copilot", true, "1.0.109"), agent("omo", "OmO", true)]);
+    expect(chips().map((chip) => chip.children.join(""))).toEqual(["Codex", "GitHub Copilot"]);
   });
 
-  it("says agy searches the web without asking, under the rules line", () => {
-    mount(false, [agent("agy", "agy", true, "1.5.16"), agent("codex", "Codex", true, "0.171.0")]);
-    const note = renderer!.root.find((node) => node.type === "span" && node.props.className === "settings-condition");
-    const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-    expect(text(note)).toBe("The allow rules you set in agy, Codex, a project folder's included, apply when they are called too.agy searches the web without asking.");
+  it("offers installed agy and GJC with the other ACP harnesses", () => {
+    mount(false, [agent("agy", "agy", true, "1.5.16"), agent("gjc", "GJC", true, "0.18.12")]);
+    expect(chips().map((chip) => chip.children.join(""))).toEqual(["agy", "GJC"]);
   });
 
   it("cannot be changed from a watching device", () => {

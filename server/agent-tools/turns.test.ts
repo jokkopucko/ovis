@@ -7,18 +7,19 @@ import { FakeHcCore } from "../herdr-core/core.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { AcpChildren, type AcpHc } from "../acp/children.ts";
-import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
+import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt, until } from "../acp/keeper.fake.ts";
 import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
 import { KeeperClient, KeeperRequestError } from "../acp/client.ts";
+import { acpPrompt, answerAcpPrompt } from "../approvals/acp.ts";
 
 describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keepers", () => {
   let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection, hc: AcpHc, now: number;
   const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
   const open = () => {
     acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 1500 });
-    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 2, harnesses: ["test", "mute"] }),
-      resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT], ceiling: { profile: "fixture/ask-v1", mode: "ask" } }) });
+    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 2, harnesses: ["test", "mute", "opencode"] }),
+      resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT] }) });
     hub.listen();
   };
   beforeEach(() => {
@@ -34,7 +35,7 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     } };
     open();
     const root = hub.runs.reserve();
-    root.bind({ self: "top", harness: "fixture-parent", depth: 0, root: root.id, started_by: null, ceiling: "fixture/ask-v1" });
+    root.bind({ self: "top", harness: "fixture-parent", depth: 0, root: root.id, started_by: null });
     token = readFileSync(root.tokenFile, "utf8");
   });
   afterEach(async () => {
@@ -120,21 +121,15 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     await call("wait", { session });
     expect(await call("result", { session })).toMatchObject({ model: "m2" });
   });
-  it("refuses an unproven parent before launching and a changed mode before another agent prompt", async () => {
-    const saved = token;
-    const unknown = hub.runs.reserve();
-    unknown.bind({ self: "other", harness: "claude", depth: 0, root: unknown.id, started_by: null });
-    token = readFileSync(unknown.tokenFile, "utf8");
-    expect(await call("start", { harness: "test", cwd: dir })).toMatchObject({ error: { code: "not_granted" } });
-    expect(programs.size).toBe(0);
-    token = saved;
+  it("refuses another agent prompt in a changed mode even after the hub restarts", async () => {
     const session = await start("echo first");
     await call("wait", { session });
     const child = acp.forPane(session);
     if (!child) throw new Error("missing child");
     await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: "code" });
+    hub.close(); acp.close(); open(); await acp.restore();
     expect(await call("send", { session, task: "echo next" })).toMatchObject({ error: { code: "not_granted" } });
-    expect(child.client.turn?.text).toBe("echo bytes=10");
+    expect(acp.forPane(session)?.client.turn?.text).toBe("echo bytes=10");
   });
   it("wait and read show only waiting_human at a card, including after restart", async () => {
     const session = await start("ask");
@@ -150,14 +145,68 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     const child = acp.forPane(session);
     const approval = child?.client.pending()[0];
     if (!child || !approval) throw new Error("missing card");
+    expect(await call("answer", { session, question_id: approval.keeperId, choice: 0 })).toMatchObject({ error: { code: "waiting_human" } });
     expect(await child.client.answer(approval.keeperId, "reject")).toBe("won");
     expect(await call("wait", { session })).toMatchObject({ state: { state: "done" } });
     expect(await call("result", { session })).toMatchObject({ final_message: { text: "answered reject", untrusted: true } });
   });
+  it.each(["parent", "pass", "timeout"] as const)("routes a native question to its parent before the person's card (%s)", async path => {
+    const started = await call("start", { harness: "opencode", cwd: dir, task: "question" });
+    if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error("no child");
+    const session = started.session.address;
+    const child = acp.forPane(session);
+    if (!child) throw new Error("no keeper");
+    const wait = await call("wait", { session, timeout_s: 1 });
+    expect(wait).toMatchObject({ state: { state: "waiting_parent", on: "question", question: {
+      prompt: { untrusted: true, from: session, text: "Which color?" }, choices: [{ text: "Red", untrusted: true }, { text: "Blue", untrusted: true }],
+    } } });
+    if (!isRecord(wait.state) || !isRecord(wait.state.question)) throw new Error("no question");
+    const args = { session, question_id: wait.state.question.id };
+    expect((await call("result", { session })).state).toEqual(wait.state);
+    expect((await call("read", { session, what: "transcript" })).state).toEqual(wait.state);
+    expect(acpPrompt(child)).toBeNull();
+    if (path === "parent") {
+      const parent = token, other = hub.runs.reserve();
+      other.bind({ self: "other", root: other.id, started_by: null, depth: 0, harness: "fixture" });
+      token = readFileSync(other.tokenFile, "utf8");
+      expect((await call("read", { session, what: "state" })).state).not.toHaveProperty("question");
+      expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "not_owner" } });
+      token = parent;
+      await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: "code" });
+      await until(child.client, "new mode", () => child.client.sessionMode === "code");
+      expect(await call("answer", { ...args, choice: 1 })).toMatchObject({ error: { code: "not_granted" } });
+      await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: "ask" });
+      await until(child.client, "original mode", () => child.client.sessionMode === "ask");
+      expect(await call("answer", { ...args, choice: 1 })).toMatchObject({ kind: "answered" });
+    } else {
+      if (path === "pass") expect(await call("answer", args)).toMatchObject({ kind: "state", state: { state: "waiting_human" } });
+      else await until(child.client, "handoff notification", () => child.client.status === "blocked", 33_000);
+      expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "waiting_human" } });
+      const card = acpPrompt(child);
+      expect(card).toMatchObject({ kind: "question", question: "Which color?" });
+      if (!card) throw new Error("no card");
+      expect(await answerAcpPrompt(child, { pane_id: session, prompt_id: card.id, option_index: 1 })).toBe("answered");
+    }
+    await call("wait", { session });
+    expect(await call("result", { session })).toMatchObject({ final_message: { text: JSON.stringify({ action: "accept", content: { q0: "blue" } }) } });
+    expect((await call("answer", { ...args, choice: 0 })).kind).toBe("refusal");
+    const audit = readFileSync(join(dir, "tools/audit.jsonl"), "utf8");
+    expect(audit.split("\n").filter(line => line.includes('"verb":"answer"'))).toHaveLength(path === "timeout" ? 0 : 1);
+    expect(audit).not.toContain("Which color?");
+  }, 38_000);
+  it.each(["parent", "person"])("stops without answering a question waiting for its %s", async owner => {
+    const started = await call("start", { harness: "opencode", cwd: dir, task: "question" });
+    if (!isRecord(started.session)) throw new Error("no child");
+    const session = started.session.address;
+    const waiting = await call("wait", { session });
+    if (!isRecord(waiting.state) || !isRecord(waiting.state.question)) throw new Error("no question");
+    if (owner === "person") expect(await call("answer", { session, question_id: waiting.state.question.id })).toMatchObject({ state: { state: "waiting_human" } });
+    expect(await call("stop", { session })).toMatchObject({ stopped: true });
+  });
   it("refuses an unrelated run as not_owner without changing the child or audit", async () => {
     const session = await start();
     const unrelated = hub.runs.reserve();
-    unrelated.bind({ self: "another-parent", root: unrelated.id, started_by: null, depth: 0, harness: "fixture", ceiling: "fixture/ask-v1" });
+    unrelated.bind({ self: "another-parent", root: unrelated.id, started_by: null, depth: 0, harness: "fixture" });
     token = readFileSync(unrelated.tokenFile, "utf8");
     const audit = join(dir, "tools/audit.jsonl"), before = readFileSync(audit, "utf8");
     for (const verb of ["send","stop","result","wait"]) expect(await call(verb, { session, ...(verb === "send" ? { task: "unused" } : {}) })).toMatchObject({ error: { code: "not_owner" } });
@@ -257,22 +306,22 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     expect(readFileSync(join(dir, "tools/audit.jsonl"), "utf8")).not.toContain("fixture annotation");
   });
 
-  it("allow always on one child leaves a wider-mode request on another child waiting for a person", async () => {
+  it("only allows once: another turn on either child still waits for a person", async () => {
     const a = await start("widen");
     const first = acp.forPane(a);
     const awaiting = await call("wait", { session: a });
     expect(awaiting).toMatchObject({ state: { state: "waiting_human" } });
     const asked = first?.client.pending()[0];
     if (!first || !asked) throw new Error("missing approval");
-    expect(await first.client.answer(asked.keeperId, "always")).toBe("won");
+    expect(await first.client.answer(asked.keeperId, "always")).toBe("gone");
+    expect(await first.client.answer(asked.keeperId, "allow")).toBe("won");
     await call("wait", { session: a });
     const previous = await call("result", { session: a });
     const next = await call("send", { session: a, task: "widen" });
     expect(next).toMatchObject({ accepted: true, duplicate: false });
     expect(typeof next.turn_id).toBe("string");
     expect(next.turn_id).not.toBe(previous.turn_id);
-    expect(await call("wait", { session: a, turn: next.turn_id })).toMatchObject({ state: { state: "done", turn: 2 } });
-    expect(await call("result", { session: a, turn: next.turn_id })).toMatchObject({ turn_id: next.turn_id, stop_reason: "end_turn", final_message: { text: "already allowed here" } });
+    expect(await call("wait", { session: a, turn: next.turn_id })).toMatchObject({ state: { state: "waiting_human", turn: 2 } });
     const b = await start("widen");
     expect(await call("wait", { session: b })).toMatchObject({ state: { state: "waiting_human" } });
     expect(acp.forPane(b)?.client.sessionMode).toBe("ask");

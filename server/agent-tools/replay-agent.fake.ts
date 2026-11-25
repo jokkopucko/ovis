@@ -2,15 +2,20 @@
  * An ACP agent that replays a recorded real agent's side (fixtures/*.jsonl, one message per line): its
  * `initialize` and `session/new` answers, then on every prompt each recorded permission request in turn,
  * the next only once the client answered the last, and the recorded end of the turn. A prompt that says
- * `widen` instead switches the session to `acceptEdits` the way an agent reports it. What the client
- * sent on `session/new` and each answer it gave go to <log>, one JSON line each.
+ * `widen` instead switches the session to `acceptEdits`; `enable allow all` updates only that
+ * config selector. What the client
+ * sent on `session/new`, each prompt and each answer go to <log>, one JSON line each.
  *
- *   bun replay-agent.fake.ts <fixture> <log>
+ *   bun replay-agent.fake.ts <fixture> <log> [scenario]
  */
 import { appendFileSync, readFileSync } from "node:fs";
 
-const [fixture, log] = process.argv.slice(2);
-if (!fixture || !log) throw new Error("usage: bun replay-agent.fake.ts <fixture> <log>");
+const [fixture, log, scenario] = process.argv.slice(2);
+if (!fixture || !log) throw new Error("usage: bun replay-agent.fake.ts <fixture> <log> [scenario]");
+const { startMode, openingAllowAll, updatedMode, updatedAllowAll }: {
+  readonly startMode?: string; readonly openingAllowAll?: "on" | "off";
+  readonly updatedMode?: string; readonly updatedAllowAll?: "on" | "off";
+} = scenario ? JSON.parse(readFileSync(scenario, "utf8")) : {};
 const recorded = readFileSync(fixture, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>);
 const [initialized, opened] = recorded.filter(m => "result" in m);
 const asks = recorded.filter(m => m.method === "session/request_permission");
@@ -21,10 +26,22 @@ const send = (message: object) => process.stdout.write(`${JSON.stringify({ jsonr
 const note = (row: object) => appendFileSync(log, `${JSON.stringify(row)}\n`);
 const waiting = new Map<string, (answer: unknown) => void>();
 let asked = 0;
+const allowAllOption = (currentValue: "on" | "off") => ({ type: "select", id: "allow_all", category: "permissions", currentValue });
+const updateAllowAll = (value: "on" | "off") => send({
+  method: "session/update", params: { sessionId, update: { sessionUpdate: "config_option_update", configOptions: [allowAllOption(value)] } },
+});
+const updateMode = (currentModeId: string) => send({
+  method: "session/update", params: { sessionId, update: { sessionUpdate: "current_mode_update", currentModeId } },
+});
 
 async function turn(id: unknown, text: string) {
   if (text.includes("widen")) {
-    send({ method: "session/update", params: { sessionId, update: { sessionUpdate: "current_mode_update", currentModeId: "acceptEdits" } } });
+    updateMode("acceptEdits");
+    send({ id, result: { stopReason: "end_turn" } });
+    return;
+  }
+  if (text.includes("enable allow all")) {
+    updateAllowAll("on");
     send({ id, result: { stopReason: "end_turn" } });
     return;
   }
@@ -47,8 +64,28 @@ for await (const chunk of Bun.stdin.stream()) {
     if (!line) continue;
     const message = JSON.parse(line) as Record<string, any>;
     if (message.method === "initialize") send({ id: message.id, result: initialized!.result });
-    else if (message.method === "session/new") { note({ sessionNew: message.params }); send({ id: message.id, result: opened!.result }); }
-    else if (message.method === "session/prompt") void turn(message.id, JSON.stringify(message.params.prompt));
+    else if (message.method === "session/new") {
+      note({ sessionNew: message.params });
+      const result = opened!.result;
+      if (startMode !== undefined) {
+        result.modes.currentModeId = startMode;
+        const mode = result.configOptions?.find((option: { category?: string }) => option.category === "mode");
+        if (mode) mode.currentValue = startMode;
+      }
+      if (openingAllowAll !== undefined) {
+        result.configOptions = (result.configOptions ?? []).filter((option: { id: string }) => option.id !== "allow_all");
+        result.configOptions.push(allowAllOption(openingAllowAll));
+      }
+      send({ id: message.id, result });
+      if (updatedMode !== undefined) updateMode(updatedMode);
+      if (updatedAllowAll !== undefined) updateAllowAll(updatedAllowAll);
+    }
+    else if (message.method === "fixture/barrier") send({ id: message.id, result: {} });
+    else if (message.method === "session/prompt") {
+      const prompt = JSON.stringify(message.params.prompt);
+      note({ prompt });
+      void turn(message.id, prompt);
+    }
     else if (message.method === undefined && waiting.has(String(message.id))) { waiting.get(String(message.id))!(message.result ?? message.error); waiting.delete(String(message.id)); }
     else if (message.id !== undefined && message.method !== undefined) send({ id: message.id, error: { code: -32601, message: "Method not found" } });
   }

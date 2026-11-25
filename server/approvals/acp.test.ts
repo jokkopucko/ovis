@@ -65,14 +65,14 @@ describe.skipIf(!keeperBuilt)("the prompt routes for an ACP child", () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   });
 
-  async function child() {
+  async function child(harness = "fake") {
     const root = keeperRoot();
     const keeper = await startKeeper(root);
-    const client = new KeeperClient(root);
+    const client = new KeeperClient(root, { questionHarness: harness });
     cleanups.push(() => rmSync(dirname(root), { recursive: true, force: true }), keeper.stop, () => client.close());
     await client.ready();
     await until(client, "session", () => client.session !== null);
-    return { harness: "fake", client };
+    return { harness, client };
   }
 
   const read = async (acp: AcpCards, paneId: string, readOnly = false) => {
@@ -85,6 +85,48 @@ describe.skipIf(!keeperBuilt)("the prompt routes for an ACP child", () => {
     const response = await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify(body) }), url, { acp });
     return { status: response!.status, body: await response!.json() as { error?: { code: string } } };
   };
+
+  const select = (...pairs: string[][]) => ({ type: "string", oneOf: pairs.map(([value, title]) => ({ const: value, title })) });
+  async function elicit(harness: string, properties: object, toolCallId?: string, message = "Choose") {
+    const target = await child(harness);
+    const acp = { forPane: () => target };
+    const { client } = target;
+    await client.submit(`elicit ${JSON.stringify({ mode: "form", message, toolCallId, requestedSchema: { type: "object", properties } })}`);
+    await until(client, "an elicitation", () => client.questions.current !== null);
+    return { client, acp };
+  }
+  it.each([
+    { harness: "gjc", properties: { value: select(["option:0", "Accept"], ["option:1", "Decline"]) }, key: "value", tool: undefined, value: "option:1", labels: ["Accept", "Decline"] },
+    { harness: "claude", properties: { choice: select(["retry_fallback", "Retry with Opus"], ["cancelled", "Keep the refusal"]) }, key: "choice", tool: undefined, value: "cancelled", labels: ["Retry with Opus", "Keep the refusal"] },
+    { harness: "claude", properties: { question_0: select(["Yes", "Download"], ["No", "Do not download"]) }, key: "question_0", tool: "confirm_42", value: "No", labels: ["Download", "Do not download"] },
+  ])("reserves $harness consent ($key) for the person and sends their actual selection", async ({ harness, properties, key, tool, value, labels }) => {
+    const { client, acp } = await elicit(harness, properties, tool);
+    expect(client.questions.current?.parent).toBe(false);
+    const card = (await read(acp, "t7")).prompt;
+    expect(card?.options.map(o => o.label)).toEqual([...labels]);
+    expect((await answer(acp, { pane_id: "t7", prompt_id: card?.id, option_index: 1 })).status).toBe(200);
+    await until(client, "answer received", () => client.turn?.running === false);
+    expect(JSON.parse(client.turn?.text ?? "null")).toEqual({ action: "accept", content: { [key]: value } });
+  });
+  it.each(["claude", "agy"])("lets the person skip an optional field or combine a write-in with checks (%s)", async harness => {
+    const field = select(["1", "Red"], ["2", "Blue"]);
+    const properties = harness === "claude" ? { question_0: field, question_1: field }
+      : { q1: { type: "array", title: "Color", items: { anyOf: field.oneOf } }, q1_other: { type: "string" } };
+    const { acp, client } = await elicit(harness, properties, "call_1");
+    expect(client.questions.handoff(client.questions.current?.id ?? "")).toBe(true);
+    const card = (await read(acp, "t7")).prompt;
+    if (harness === "claude") {
+      expect(card?.optional).toBe(true);
+      expect((await answer(acp, { pane_id: "t7", prompt_id: card?.id, custom_text: "" })).status).toBe(200);
+      const next = (await read(acp, "t7")).prompt;
+      expect((await answer(acp, { pane_id: "t7", prompt_id: next?.id, option_index: 1 })).status).toBe(200);
+    } else {
+      expect(card?.checks_with_text).toBe(true);
+      expect((await answer(acp, { pane_id: "t7", prompt_id: card?.id, option_indices: [0, 1], custom_text: "green" })).status).toBe(200);
+    }
+    await until(client, "answer received", () => client.turn?.running === false);
+    expect(JSON.parse(client.turn?.text ?? "null")).toEqual({ action: "accept", content: harness === "claude" ? { question_1: "2" } : { q1: ["1", "2"], q1_other: "green" } });
+  });
 
   it("sends the visible reject choice, not the option that used to be at its index", async () => {
     const acpChild = await child();

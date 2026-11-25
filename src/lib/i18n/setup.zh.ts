@@ -89,7 +89,5 @@ export const SETUP_ZH: Record<string, string> = {
   "Let agents call other agents": "允许 Agent 调用其他 Agent",
   "On this PC only. Only you can approve requests.": "仅限此电脑。只有你能批准权限请求。",
   "Agents they may call": "可调用的 Agent",
-  "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "你在 {agents} 中设置的允许规则（包括项目文件夹中的）在被调用时同样适用。",
-  "{agents} searches the web without asking.": "{agents} 会不经询问直接进行网页搜索。",
   "Not saved: this PC did not answer. Try again.": "未保存：此 PC 没有响应。请重试。",
 };

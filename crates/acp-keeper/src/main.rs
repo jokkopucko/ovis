@@ -36,6 +36,7 @@ pub struct Opts {
     pub mcp_servers: Vec<Value>,
     pub config_options: Option<Vec<Value>>,
     pub announce_subagents: bool,
+    pub question_forms: bool,
     pub ask_every_time: bool,
     pub load: Option<String>,
     pub headless: bool,
@@ -239,6 +240,7 @@ pub(crate) fn parse(args: Vec<String>) -> Result<Opts, String> {
         mcp_servers: Vec::new(),
         config_options: None,
         announce_subagents: false,
+        question_forms: false,
         ask_every_time: false,
         load: None,
         headless: false,
@@ -257,6 +259,7 @@ pub(crate) fn parse(args: Vec<String>) -> Result<Opts, String> {
             "--mcp-servers" => opts.mcp_servers = serde_json::from_str(&value()?).map_err(|e| format!("--mcp-servers needs a JSON array: {e}"))?,
             "--config-options" => opts.config_options = Some(serde_json::from_str(&value()?).map_err(|e| format!("--config-options needs a JSON array: {e}"))?),
             "--announce-subagents" => opts.announce_subagents = true,
+            "--question-forms" => opts.question_forms = true,
             "--ask-every-time" => opts.ask_every_time = true,
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }

@@ -34,7 +34,7 @@ function ended(foreground: { pid: number; birth: string }): boolean {
 
 export class RunStore {
   private readonly entries = new Map<string, Saved>();
-  private readonly pending = new Map<string, { depth: number; hash: string; ceiling?: string }>();
+  private readonly pending = new Map<string, { depth: number; hash: string }>();
   private readonly panes = new Map<string, PaneSaved>();
   constructor(readonly dir: string, private readonly paneRunEpoch: () => string | null = () => null) {
     privateDir(dir);
@@ -89,7 +89,7 @@ export class RunStore {
   }
   /** Whether Ovis launched this pane's program with a token of its own: such a pane is never also a tokenless one. */
   tokenManaged(self: string): boolean { return [...this.entries.values()].some(({ run }) => run.self === self); }
-  reserve(depth = 0, ceiling?: string) {
+  reserve(depth = 0) {
     const id = randomBytes(8).toString("hex");
     const dir = join(this.dir, "tokens");
     privateDir(dir);
@@ -97,7 +97,7 @@ export class RunStore {
     const token = `ovr1.${id}.${randomBytes(32).toString("base64url")}`;
     const hash = digest(token).toString("hex");
     writePrivate(tokenFile, token);
-    this.pending.set(id, { depth, hash, ceiling });
+    this.pending.set(id, { depth, hash });
     return { id, tokenFile, cancel: () => this.revoke(id),
       bind: (claims: Omit<Run, "id" | "created_ms">): Run => {
         if (!this.pending.delete(id)) throw new Error("Agent tool reservation has been revoked.");
