@@ -62,11 +62,13 @@ this device reached through the relay is held too), until the connection answers
 with the network back (`HerdrSocket.takesKey` in `src/lib/ws.ts`). A key typed then, or queued
 before then and not yet sent (an idle pane's attach, a new terminal's first keys), stays in the
 draft; keys queued behind a held one stay with it, Enter included. A file's path counts as typed at
-the pick, drop or paste that started its upload. Known limit: text an input method, dictation or a
-paste lets out of the terminal's field (a composition's commit, a replacement, a key reported as
-229) counts as typed when it comes out, so text begun while the link was down and let out after the
-connection answered is sent as usual. Keys the terminal takes as they are typed, Enter included,
-are always held. A connection that stalls while the browser still reports a network and the
+the pick, drop or paste that started its upload. Text an input method, dictation or a paste lets
+out of the terminal's field later (a composition's commit, a key reported as 229) counts as typed
+when it began (its `compositionstart` or `paste`), so text begun while the link was down is held
+and text begun after the connection answered is sent. Known limit: text that comes with no start
+event (Safari's dictation as a `beforeinput` replacement, a lone key reported as 229) still counts
+as typed when it comes out. Keys the terminal takes as they are typed,
+Enter included, are always held. A connection that stalls while the browser still reports a network and the
 socket stays open is known to be down only when its liveness probe goes unanswered: after 20 s of
 silence, two pings 3 s apart, or 6 s and then 12 s apart after earlier unanswered probes, until an
 answered probe resets this. Keys typed before its probe starts are sent as usual, and reach the pane

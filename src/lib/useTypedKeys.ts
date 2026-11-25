@@ -5,7 +5,7 @@ import { keyBarInputSequence, type KeyBarKeyItem } from "./keyBar.ts";
 import { DOUBLE_ESCAPE_GAP_MS, hermesCtrlCTooSoon, stopKey } from "./hermesStop.ts";
 import { terminalScreen } from "./terminalScreen.ts";
 import type { Translate } from "./i18n.ts";
-import type { HerdrSocket } from "./ws.ts";
+import { markTyped, type HerdrSocket } from "./ws.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 
 export interface TypedKeysDeps {
@@ -26,7 +26,7 @@ export interface TypedKeysDeps {
   reassertIfStaleRef: RefObject<() => void>;
   setInputError: Dispatch<SetStateAction<string | null>>;
   socketRef: RefObject<HerdrSocket | null>;
-  stopKeyRef: RefObject<boolean>;
+  stopKeyRef: RefObject<number | null>;
   tRef: RefObject<Translate>;
   termRef: RefObject<Terminal | null>;
 }
@@ -100,9 +100,11 @@ export function useTypedKeys(deps: TypedKeysDeps) {
       hermesStopSentRef.current = true;
       hermesCtrlCAtRef.current = now;
     }
+    // both Escapes of a Stop carry its mark: the second, sent after a gap, is refused if the link was lost since
+    const pressedAt = markTyped();
     const press = (sent: string): void => {
-      stopKeyRef.current = true;
-      try { term.input(sent); } finally { stopKeyRef.current = false; }
+      stopKeyRef.current = pressedAt;
+      try { term.input(sent); } finally { stopKeyRef.current = null; }
     };
     if (key !== "\u001b\u001b") return press(key);
     // two Escapes as two key presses: written together they read as one Alt+Escape

@@ -291,10 +291,6 @@ export class HerdrSocket {
     }));
   }
 
-  get connectedSince(): number | null {
-    return this.openedAt;
-  }
-
   get lostSince(): number | null {
     return this.lostAt;
   }
@@ -1107,6 +1103,12 @@ export class HerdrSocket {
    * reads OPEN) is found only by the liveness probe: keys typed before the probe starts go as usual, and keys typed
    * while it waits for its pong are held.
    */
+  /** whether this connection's link has been up since `typedAt` (markTyped) without a loss: a key captured then may go */
+  linkedSince(typedAt: number): boolean {
+    this.noteNetwork();
+    return this.linkUpAt !== null && typedAt > this.linkUpAt;
+  }
+
   private takesKey(paneId: string, typedAt?: number): boolean {
     this.noteNetwork();
     return this.linkUpAt !== null && (typedAt === undefined || typedAt > this.linkUpAt)

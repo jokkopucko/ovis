@@ -320,7 +320,8 @@ export function PaneTerminal({
     try { termRef.current?.finishComposition(); } finally { compositionCommitPendingRef.current = false; }
   }, []);
   const barKeyRef = useRef<{ key: string; chord: string | null } | null>(null);
-  const stopKeyRef = useRef(false);
+  // the mark (markTyped) of the Stop whose Escape xterm is emitting, null for any other input
+  const stopKeyRef = useRef<number | null>(null);
   const modifiersRef = useRef<StickyModifiers>(NO_STICKY_MODIFIERS);
   const lockedRef = useRef<StickyModifiers>(NO_STICKY_MODIFIERS);
   const [modifiers, setModifiers] = useState<StickyModifiers>(NO_STICKY_MODIFIERS);
