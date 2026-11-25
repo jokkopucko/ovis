@@ -477,7 +477,8 @@ Only providers with a sign-in, or with another tool's record of one (below), are
   adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
   and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
   when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
-  set). It also stores each session’s model and context limit under `~/.herdr/statusline-context/`,
+  set). Turning capture on refreshes a recognized older helper in place and preserves the saved status line and current settings. If the switch already shows On, turn it off and on again. If an old unmarked `~/.herdr/statusline-last.json` blocks new quota readings, move it aside. The next Claude render can then write a new reading.
+  The wrapper also stores each session’s model and context limit under `~/.herdr/statusline-context/`,
   using a profile hash prefix so Claude config directories do not share session files. Context capture
   requires a real directory owned by your uid without group/other permissions; it never changes that
   directory’s permissions. Chat requires the installer’s mark, matching profile, session and model,
@@ -494,7 +495,7 @@ Only providers with a sign-in, or with another tool's record of one (below), are
   by you. A reading counts only for the account that drew it and only until its window resets, and an
   answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
   deletes its marked files; context removal checks the profile too and removes the context directory
-  only when empty. Unmarked files are left alone under normal, nonconcurrent use. If you have
+  only when empty. The upgrade recognizes only known unmarked helpers and their matching install records. Unmarked readings stay in place. If you have
   since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
   and says so: set the status line yourself first. A watching device sees the switch and cannot turn it. It is not available on
   Windows.

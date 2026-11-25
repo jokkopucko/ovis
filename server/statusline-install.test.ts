@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installStatusline, removeStatusline, statuslineInstallState } from "./statusline-install.ts";
@@ -46,6 +46,15 @@ function draw(payload: string, configDir?: string) {
   return result.stdout.toString();
 }
 const settingsCommand = (configDir?: string): string => readSettings(configDir).statusLine.command;
+const helper = () => join(own(), "statusline-capture.ts");
+const installRecord = () => join(own(), "install.json");
+/** The unmarked helper and record from the pre-marker installer. Its wrapper already had a mark. */
+function installLegacy() {
+  install();
+  const { generatedBy: _generatedBy, ...record } = JSON.parse(readFileSync(installRecord(), "utf8"));
+  writeFileSync(installRecord(), `${JSON.stringify(record, null, 2)}\n`);
+  writeFileSync(helper(), readFileSync(new URL("./fixtures-statusline/legacy-context.ts.txt", import.meta.url)));
+}
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "ovis-statusline-install-"));
   mkdirSync(join(home, ".claude"));
@@ -55,6 +64,76 @@ beforeEach(() => {
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 describe("status-line switch and capture", () => {
+  it("upgrades a pre-marker install and restores its original status line on removal", () => {
+    const original = readSettings().statusLine;
+    installLegacy();
+    const input = (used: number) => JSON.stringify({
+      session_id: "legacy", model: { id: "claude-test" }, context_window: { context_window_size: 1_000_000 },
+      rate_limits: { five_hour: { used_percentage: used } },
+    });
+    expect(draw(input(12))).toBe(input(12));
+    const oldQuota = readFileSync(capture(), "utf8");
+    const oldContext = join(home, ".herdr", "statusline-context", "legacy.json");
+    const oldReading = readFileSync(oldContext, "utf8");
+    expect(readStatuslineContext(home, "legacy", "claude-test")).toBeNull();
+    const edited = readFileSync(settings(), "utf8").replace('"dark"', '"light"');
+    writeFileSync(settings(), edited);
+
+    install();
+    expect(readFileSync(settings(), "utf8")).toBe(edited);
+    expect(statuslineInstallState({ home }).installed).toBe(true);
+    expect(draw(input(42))).toBe(input(42));
+    expect(readStatuslineContext(home, "legacy", "claude-test")).toBe(1_000_000);
+    expect(readFileSync(capture(), "utf8")).toBe(oldQuota);
+    renameSync(capture(), capture() + ".backup");
+    expect(draw(input(42))).toBe(input(42));
+    expect(readStatusline(home)?.fiveHour?.usedPercent).toBe(42);
+    expect(run([]).stdout).toStartWith("already installed");
+    install("--remove");
+    expect(readSettings()).toEqual({ theme: "light", statusLine: original });
+    expect(readFileSync(oldContext, "utf8")).toBe(oldReading);
+  });
+
+  it("refreshes a marked helper and its Bun path even when capture is already on", () => {
+    const oldBun = join(home, "old bun");
+    installStatusline({ home, bunPath: oldBun });
+    const installed = readFileSync(settings(), "utf8");
+    const script = readFileSync(helper(), "utf8");
+    writeFileSync(helper(), script.slice(0, script.indexOf("\n") + 1));
+    install();
+    expect(readFileSync(settings(), "utf8")).toBe(installed);
+    expect(readFileSync(tee(), "utf8")).not.toContain(oldBun);
+    const input = JSON.stringify({ rate_limits: { five_hour: { used_percentage: 42 } } });
+    expect(draw(input)).toBe(input);
+    expect(readStatusline(home)?.fiveHour?.usedPercent).toBe(42);
+  });
+
+  it("resumes a legacy upgrade whose helper was already replaced", () => {
+    const original = readFileSync(settings(), "utf8");
+    installLegacy();
+    const legacyRecord = readFileSync(installRecord());
+    install();
+    writeFileSync(installRecord(), legacyRecord);
+    install();
+    install("--remove");
+    expect(readFileSync(settings(), "utf8")).toBe(original);
+  });
+
+  it("refuses unknown unmarked code or a mismatched undo record in an active legacy install", () => {
+    installLegacy();
+    const before = readFileSync(settings(), "utf8");
+    const record = readFileSync(installRecord(), "utf8");
+    const script = readFileSync(helper(), "utf8");
+    for (const [saved, code] of [[record, script + "\n// user edit\n"], [record.replace('"statusLine":', '"other":'), script]] as const) {
+      writeFileSync(installRecord(), saved);
+      writeFileSync(helper(), code);
+      expect(run([]).exitCode).toBe(1);
+      expect(readFileSync(settings(), "utf8")).toBe(before);
+      expect(readFileSync(installRecord(), "utf8")).toBe(saved);
+      expect(readFileSync(helper(), "utf8")).toBe(code);
+    }
+  });
+
   it("wraps the tilde command from HOME and forwards the original payload unchanged", () => {
     install();
     writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "default-account" } }));

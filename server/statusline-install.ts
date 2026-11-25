@@ -9,15 +9,15 @@
  * settings.json at the wrapper there (creating settings.json when Claude has none yet). The wrapper
  * runs the command that was set before exactly as Claude ran it (`sh -c`, arguments and all), so the
  * line Claude draws stays the same; where no status line was set it draws none. Each file it writes
- * starts with its own mark (MARK), and a file there without it is the user's whatever its name: an
- * install refuses to replace it and a removal leaves it. Only the
+ * starts with its own mark (MARK). An active pre-marker installation can be refreshed when its
+ * wrapper, saved settings edit, and helper identify it. Other unmarked files stay. Only the
  * `statusLine` member of settings.json is edited, in place, so the rest of the file keeps its bytes.
  *
  * Removing it writes settings.json back byte for byte when nothing else in it changed since the
  * install (deleting it when the install created it), and otherwise puts back only the status line
  * it replaced (or its absence). It then deletes the installer's own files and the captured payload.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { contextDirectorySafe, contextProfile, removeContextFile } from "./statusline-context.ts";
@@ -291,18 +291,16 @@ function writeSettings(path: string, content: string): void {
 
 /**
  * The installer's directory is used only while it holds nothing but the installer's own files, each
- * a regular file with its mark: a link there could point a write anywhere, and anything else there,
- * even under one of its names, is the user's.
+ * a regular file with its mark or a verified legacy file. A link there could point a write anywhere.
  */
-function checkOwnDirectory(own: string): "missing" | "owned" {
+function checkOwnDirectory(own: string, legacy: readonly string[] = []): void {
   let entry;
-  try { entry = lstatSync(own); } catch (error) { if (isMissing(error)) return "missing"; throw error; }
+  try { entry = lstatSync(own); } catch (error) { if (isMissing(error)) return; throw error; }
   if (!entry.isDirectory()) throw new StatuslineInstallError(`${own} is not a directory this installer made; move it away first`);
   for (const name of readdirSync(own)) {
     if (LEFTOVER.test(name) && ownLeftover(join(own, name))) { rmSync(join(own, name)); continue; }
-    if (!(OWN_FILES as readonly string[]).includes(name) || !ownFile(join(own, name))) throw new StatuslineInstallError(`${own} holds ${name}, which this installer did not write; move it away first`);
+    if (!(OWN_FILES as readonly string[]).includes(name) || (!legacy.includes(name) && !ownFile(join(own, name)))) throw new StatuslineInstallError(`${own} holds ${name}, which this installer did not write; move it away first`);
   }
-  return "owned";
 }
 
 function readSettings(path: string): { text: string | null; value: Record<string, unknown> } {
@@ -361,6 +359,86 @@ const sourceOf = (name: "statusline-context.ts" | "statusline-capture.ts"): stri
   typeof OVIS_STATUSLINE_SOURCES === "undefined" ? readFileSync(new URL(`./${name}`, import.meta.url), "utf8") : OVIS_STATUSLINE_SOURCES[name];
 const CAPTURE_SOURCE = (): string => sourceOf("statusline-context.ts").replace(/^export /gm, "")
   + "\n" + sourceOf("statusline-capture.ts").replace('import { contextProfile, publishContext } from "./statusline-context.ts";\n', "");
+
+// Exact helper sources from the pre-marker installer (7d6ccdb3e and fa87b9576).
+const LEGACY_CAPTURE_HASHES = new Set([
+  "883c96f456b268a488d7dc6049c21414bdcc2767026c6af738ba888290f823ad",
+  "997d723ac505c52969ab3045cd5ac274666cf0b4d26c197301636131791623fb",
+]);
+
+function legacyCapture(path: string): boolean {
+  const info = lstatSync(path, { throwIfNoEntry: false });
+  if (!info?.isFile() || info.size > 8192) return false;
+  return LEGACY_CAPTURE_HASHES.has(createHash("sha256").update(readFileSync(path)).digest("hex"));
+}
+
+const previousCommand = (current: unknown): string | null => {
+  const command = commandOf(current);
+  return command !== null && command.trim() !== "" ? command : null;
+};
+
+function settingsRecord(original: string | null, current: unknown, command: string): InstallRecord {
+  const statusLine = JSON.stringify({ ...(isObject(current) ? current : {}), type: "command", command });
+  const member = original === null ? undefined : members(original).found.get(KEY);
+  const installed = original === null ? `{\n  "${KEY}": ${statusLine}\n}\n` : withStatusLine(original, statusLine);
+  return { generatedBy: GENERATED, original, installed, statusLine: member && original !== null ? original.slice(member.valueStart, member.valueEnd) : null, command };
+}
+
+/**
+ * Recognize the unmarked record only by the exact settings edit the old installer made.
+ * Check the saved original command against the marked wrapper before trusting that record.
+ */
+function upgradeRecord(raw: string, marked: boolean, command: string, script: string): { record: InstallRecord; previous: string | null } | null {
+  try {
+    const saved: unknown = JSON.parse(raw);
+    if (!isObject(saved) || saved["command"] !== command) return null;
+    const original = saved["original"];
+    if (original !== null && typeof original !== "string") return null;
+    const value: unknown = original === null ? {} : JSON.parse(original);
+    if (!isObject(value)) return null;
+    const record = settingsRecord(original, value[KEY], command);
+    const previous = previousCommand(value[KEY]);
+    if (marked) {
+      if (saved["installed"] !== record.installed || saved["statusLine"] !== record.statusLine) return null;
+    } else {
+      const { generatedBy: _generatedBy, ...legacy } = record;
+      if (raw !== `${JSON.stringify(legacy, null, 2)}\n`) return null;
+      const forwarded = previous === null ? "" : `printf '%s' "$payload" | sh -c ${shellQuote(previous)}\n`;
+      if (!script.endsWith(`>/dev/null 2>&1 &\n${forwarded}`)) return null;
+    }
+    return { record, previous };
+  } catch {
+    return null;
+  }
+}
+
+/** Refresh an active wrapper in place. Each write leaves an installation that can be retried. */
+function refreshInstalled(where: ReturnType<typeof locations>, command: string): string | null {
+  if (!lstatSync(where.own, { throwIfNoEntry: false })?.isDirectory() || !ownFile(where.tee)
+    || !lstatSync(where.record, { throwIfNoEntry: false })?.isFile()) return null;
+  const words = shellWords(command, where.home);
+  if (words.length !== 1 || shellQuote(words[0]!) !== command || !runsWrapper(words[0]!, where.tee)) return null;
+
+  const marked = ownFile(where.record);
+  const raw = readFileSync(where.record, "utf8");
+  const script = readFileSync(where.tee, "utf8");
+  const restored = upgradeRecord(raw, marked, command, script);
+  if (!restored) return null;
+  const { record, previous } = restored;
+  if (previous !== null && namesAWrapper(previous, where.tee, where.home)) return null;
+  const captureMarked = ownFile(where.capture);
+  if (!captureMarked && (marked || !legacyCapture(where.capture))) return null;
+  checkOwnDirectory(where.own, marked ? [] : captureMarked ? ["install.json"] : ["install.json", "statusline-capture.ts"]);
+
+  const nextCapture = MARK["statusline-capture.ts"] + CAPTURE_SOURCE();
+  const nextScript = wrapper(previous, join(dirname(words[0]!), "statusline-capture.ts"), where.bun);
+  const captureChanged = !captureMarked || readFileSync(where.capture, "utf8") !== nextCapture;
+  if (captureChanged) writeAtomically(where.capture, nextCapture, 0o600);
+  if (script !== nextScript) writeAtomically(where.tee, nextScript, 0o700);
+  // Publish the marked undo record last so an interrupted migration can still recognize the old record.
+  if (!marked) writeAtomically(where.record, `${JSON.stringify(record, null, 2)}\n`, 0o600);
+  return `${captureChanged || script !== nextScript || !marked ? "refreshed" : "already installed"}: ${where.settings} runs ${command}`;
+}
 
 const isCode = (error: unknown, code: string): boolean => error !== null && typeof error === "object" && "code" in error && error.code === code;
 
@@ -436,17 +514,14 @@ function installUnlocked(options: StatuslineInstallOptions): string {
   const current = value[KEY];
   const command = commandOf(current);
   if (command !== null && namesAWrapper(command, where.tee, where.home)) {
-    const words = shellWords(command, where.home);
-    if (ownFile(where.record) && words.length === 1 && runsWrapper(words[0]!, where.tee)) return `already installed: ${where.settings} runs ${command}`;
+    const refreshed = refreshInstalled(where, command);
+    if (refreshed !== null) return refreshed;
     throw new StatuslineInstallError(`${where.settings} already runs a status-line wrapper of this installer: turn it off with the CLAUDE_CONFIG_DIR it was turned on with, or set statusLine yourself`);
   }
   checkOwnDirectory(where.own);
 
-  const previous = isObject(current) && typeof current["command"] === "string" && current["command"].trim() !== "" ? current["command"] : null;
-  const statusLine = JSON.stringify({ ...(isObject(current) ? current : {}), type: "command", command: where.command });
-  const member = text === null ? undefined : members(text).found.get(KEY);
-  const installed = text === null ? `{\n  "${KEY}": ${statusLine}\n}\n` : withStatusLine(text, statusLine);
-  const record: InstallRecord = { generatedBy: GENERATED, original: text, installed, statusLine: member && text !== null ? text.slice(member.valueStart, member.valueEnd) : null, command: where.command };
+  const previous = previousCommand(current);
+  const record = settingsRecord(text, current, where.command);
 
   mkdirSync(where.own, { recursive: true, mode: 0o700 });
   chmodSync(where.own, 0o700);
@@ -454,8 +529,8 @@ function installUnlocked(options: StatuslineInstallOptions): string {
   writeAtomically(where.tee, wrapper(previous, where.capture, where.bun), 0o700);
   // the record goes before settings.json: an install cut short still leaves what removing it needs
   writeAtomically(where.record, `${JSON.stringify(record, null, 2)}\n`, 0o600);
-  if (text === null) writeAtomically(where.settings, installed, 0o600);
-  else writeSettings(where.settings, installed);
+  if (text === null) writeAtomically(where.settings, record.installed, 0o600);
+  else writeSettings(where.settings, record.installed);
   return `installed: ${where.settings} runs ${where.command}, which keeps the limits in ~/.herdr/statusline-last.json`
     + (previous === null ? " (no status line was set, so it draws none)" : ` and then runs ${previous}`);
 }
