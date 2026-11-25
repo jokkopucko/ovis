@@ -1,8 +1,9 @@
 /**
  * What an OpenCode v2 pane's own service says, read only from a service that already runs and that
  * /api/info proves is the one service.json names (never started or ensured here): the command and
- * skill rows for the pane's directory, and the skill-activation and turn-completion events of the
- * pane's exact session, which settle a Chat send's outcome as native evidence.
+ * skill rows for the pane's directory, the skill-activation and turn-completion events of the
+ * pane's exact session, which settle a Chat send's outcome as native evidence, and the permission
+ * events that tell a prompt watch to read the pane's requests again.
  */
 import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
 import { resolveAgent, typingRoots } from "./pane-context.ts";
@@ -144,6 +145,26 @@ function onEvent(event: OpenCodeEvent): void {
   }
 }
 
+/**
+ * Told the verified panes whose permission requests changed: `permission.asked` and `permission.replied` (recorded on
+ * 2.2.2, server/fixtures/opencode-permission-2.2.2.json) name the session. Each stream's open names every pane on it,
+ * as events missed while it was down are gone. Only a wake: the listener reads the requests again from the service.
+ */
+const permissionListeners = new Set<(paneId: string) => void>();
+const PERMISSION_EVENTS = new Set(["permission.asked", "permission.replied"]);
+
+export function onOpenCodePermissionChange(listener: (paneId: string) => void): () => void {
+  permissionListeners.add(listener);
+  return () => { permissionListeners.delete(listener); };
+}
+
+function wakePanes(key: string, sessionID?: string): void {
+  for (const [paneId, entry] of verifiedPanes) {
+    if (entry.key !== key || (sessionID !== undefined && entry.sessionID !== sessionID)) continue;
+    for (const listener of permissionListeners) listener(paneId);
+  }
+}
+
 function ensureStream(service: OpenCodeService): Stream {
   const key = JSON.stringify(service.config);
   if (stream?.key === key) return stream;
@@ -153,9 +174,13 @@ function ensureStream(service: OpenCodeService): Stream {
   for (const [paneId, entry] of verifiedPanes) if (entry.key !== key) verifiedPanes.delete(paneId);
   const next: Stream = { key, connected: false, close: () => {} };
   const subscription = subscribeOpenCodeEvents(service.config, {
-    onOpen: () => { catalogs.clear(); next.connected = true; },
+    onOpen: () => { catalogs.clear(); next.connected = true; if (stream === next) wakePanes(key); },
     onClose: () => { catalogs.clear(); next.connected = false; },
-    onEvent,
+    onEvent: (event) => {
+      onEvent(event);
+      const sessionID = event.data.sessionID;
+      if (stream === next && PERMISSION_EVENTS.has(event.type) && typeof sessionID === "string") wakePanes(key, sessionID);
+    },
   });
   next.close = () => subscription.close();
   stream = next;
@@ -252,17 +277,17 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
     if (own?.size === 0) inFlightByPane.delete(paneId!);
   }
   if (verification.cancelled || released) return null;
+  // a newer verification already bound the pane: this older one neither releases it nor replaces its session, its
+  // process or its stream
+  const superseded = paneId !== undefined && (verifiedPanes.get(paneId)?.started ?? 0) > verification.started;
   if (!held) {
-    if (paneId !== undefined && verifiedPanes.has(paneId)) releaseOpenCodePane(paneId);
+    if (paneId !== undefined && verifiedPanes.has(paneId) && !superseded) releaseOpenCodePane(paneId);
     return null;
   }
-  if (paneId === undefined) return { service: service!, sessionID };
+  if (paneId === undefined || superseded) return { service: service!, sessionID };
   const live = ensureStream(service!);
-  const earlier = verifiedPanes.get(paneId);
-  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid : pid;
-  const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid, started: verification.started });
   for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();
   return { service: service!, sessionID };

@@ -533,13 +533,13 @@ describe("OpenCode permission card", () => {
     });
   });
 
-  it("drops the card once the request is answered elsewhere, and refuses an answer to it", async () => {
+  it("drops the card once the request is answered elsewhere, with no fallback card while herdr still says blocked, and refuses an answer to it", async () => {
     await fixture(async (f) => {
       f.forms = [];
       f.permissions = [asked("edit")];
       const prompt = await f.read();
       f.permissions = [];
-      expect((await f.read())?.id).not.toBe(prompt.id);
+      expect(await f.read()).toBeNull();
       expect((await f.answer(prompt, { option_index: 0 })).status).toBe(409);
       expect(f.permissionReplies).toEqual([]);
     });
