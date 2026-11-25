@@ -46,6 +46,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       browser: ${{ steps.filter.outputs.browser }}
       draft: ${{ steps.filter.outputs.draft }}
+      server: ${{ steps.filter.outputs.server }}
       linux: ${{ steps.route.outputs.linux }}
       fast: ${{ steps.route.outputs.fast }}
       integration: ${{ steps.route.outputs.integration }}
@@ -155,6 +156,9 @@ jobs:
           # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name); one that
           # changed the server alone runs them without the demo-only scripts (browser=live).
           printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
+          # Only a pull request may skip herdr-core live contract, Rust PTY host and Native macOS session identity, and
+          # only when it changes nothing but the client (scripts/ci-server-reach.sh); unset, as in every other event, they run.
+          printf '%s\n' "$CHANGED" | bash scripts/ci-server-reach.sh >> "$GITHUB_OUTPUT"
   windows-install:
     name: Native Windows install
     needs: changes
@@ -192,7 +196,7 @@ jobs:
   macos-session:
     name: Native macOS session identity
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
     # mac: fork pull requests stay on macos-15
     runs-on: ${{ inputs.hosted_only && 'macos-15' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(github.workflow == 'CI' && vars.CI_MAC_LABELS || '"macos-15"') }}
     timeout-minutes: 5
@@ -230,7 +234,7 @@ jobs:
     # GitHub's image, which has Rust too, when those runners are busy or gone.
     name: Rust PTY host
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
     runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.rust) }}
     timeout-minutes: 10
     env:
@@ -270,7 +274,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         env:
           OVIS_REQUIRE_ACP_KEEPER: '1'
-        run: bun test server/acp server/agent-tools/turns.test.ts server/agent-tools/child.contract.test.ts server/agent-tools/pane.test.ts server/agent-tools/stop.contract.test.ts server/approvals/acp.test.ts server/core/acp-composer.test.ts
+        run: bun test ./server/acp ./server/agent-tools/turns.test.ts ./server/agent-tools/child.contract.test.ts ./server/agent-tools/pane.test.ts ./server/agent-tools/stop.contract.test.ts ./server/approvals/acp.test.ts ./server/core/acp-composer.test.ts
       - name: PtySession on both hosts
         if: needs.changes.outputs.draft != 'true'
         run: bun test ./server/pty/host.test.ts
@@ -287,7 +291,7 @@ jobs:
     # a matrix would rename the job's check run, which scripts/release-ci-reuse.ts looks up by name.
     name: herdr-core live contract
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
     # GitHub-hosted: it runs there faster than on the self-hosted pool, where it took a slot of every run. The repository
     # variable CI_HC_LIVE_LABELS (a self-hosted label list) moves it back; fork pull requests stay GitHub-hosted whatever
     # it says (scripts/light-runner-workflow.test.ts)
