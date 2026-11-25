@@ -5,18 +5,26 @@ import type { GhosttyOverlay } from "./overlay.ts";
 
 /** bytes held for libghostty while its module loads: a herdr-core history replay fits many times over */
 const HELD_BYTES_MAX = 32 * 1024 * 1024;
-/** "on" or "off": whether libghostty alone parses this browser's terminals (overlay `only`); off unless set */
+/** "on" or "off": whether libghostty alone parses this browser's terminals (overlay `only`), over the device's default */
 export const GHOSTTY_ONLY_KEY = "ovis:ghostty-only";
 
-function ghosttyOnly(): boolean {
+/**
+ * Whether libghostty alone parses a terminal: by default on a phone or tablet (a coarse pointer), where parsing every
+ * byte twice cost the most. It is decided before the first byte, when the server's kind may not be known yet, so the
+ * default does not depend on it. "on" or "off" under GHOSTTY_ONLY_KEY decides instead.
+ */
+export function ghosttyOnly(coarse: boolean): boolean {
   // a browser that refuses storage leaves the default
-  try { return globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY) === "on"; } catch { return false; }
+  let choice: string | null | undefined = null;
+  try { choice = globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY); } catch { /* the default */ }
+  if (choice === "on" || choice === "off") return choice === "on";
+  return coarse;
 }
 
 export function captureForGhostty(
   term: Terminal, socket: HerdrSocket, host: HTMLElement, questionOwner: () => (() => boolean) = () => () => true,
 ): () => void {
-  const only = ghosttyOnly();
+  const only = ghosttyOnly(globalThis.matchMedia?.("(pointer: coarse)").matches === true);
   let held: (string | Uint8Array)[] | null = [];
   const questions: DeferredQuestions[] = [];
   let scan = controlScanner();
