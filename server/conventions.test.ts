@@ -248,6 +248,7 @@ describe("herdr socket", () => {
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
+    "server/omo-control.ts": "OmO's own terminal-control socket, the one the pane's OmO process listens on, not herdr's: one request per connection",
     "server/acp/client.ts": "an ACP keeper's own socket in this server's state folder (crates/acp-keeper), not herdr's: one connection the keeper streams its log on",
   };
 

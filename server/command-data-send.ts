@@ -4,19 +4,28 @@
  * is typed as before. Once a request may have reached the agent, the command is never typed as well.
  */
 import type { HerdrPane } from "../shared/protocol.ts";
+import { paneProcessRoots } from "./conversation.ts";
 import { HerdrError, paneGet } from "./herdr/client.ts";
+import { omoControlCall, omoControlSocket } from "./omo-control.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { openCodePaneService } from "./opencode-native.ts";
 import { compactOpenCodeSession, openCodePermissionsRead, runOpenCodeCommand } from "./opencode-service.ts";
 import type { CommandSend } from "./outcome.ts";
 import { openCodeTuiCommand } from "./skills/opencode.ts";
 
-/** A command a data route can carry: OpenCode 2's `/compact`, or one of its server commands by name. */
-export type CommandDataRoute = { agent: "opencode"; kind: "compact" } | { agent: "opencode"; kind: "command"; name: string; text: string };
+/** A command a data route can carry: OpenCode 2's `/compact` or one of its server commands by name, or OmO's `/efforts <level>` on its control socket. */
+export type CommandDataRoute = { agent: "opencode"; kind: "compact" } | { agent: "opencode"; kind: "command"; name: string; text: string }
+  | { agent: "omo"; kind: "effort"; level: string };
 
 /** The data route for a chat send that is exactly one command, or null to type it. */
 export function commandDataRoute(command: CommandSend, text: string): CommandDataRoute | null {
-  if (command.agent !== "opencode" || command.invocations.length !== 1) return null;
+  if ((command.agent !== "opencode" && command.agent !== "omo" && command.agent !== "pi") || command.invocations.length !== 1) return null;
+  if (command.agent === "omo" || command.agent === "pi") {
+    // herdr names an OmO pane `pi`; a plain pi has no control socket, so it is typed. OmO's own parse: the name, a
+    // space, then a single argument (reasoning extension parseSingleArgument)
+    const level = /^\/efforts +(\S+) *$/u.exec(text)?.[1];
+    return level !== undefined && command.invocations[0]!.name === "efforts" ? { agent: "omo", kind: "effort", level } : null;
+  }
   // an @skill rides with the typed text, where the TUI attaches it (opencode-skill-attach.ts)
   if (/(?:^|\s)@\S/u.test(text)) return null;
   // as OpenCode's TUI reads it (parseSlashHead): the slash first, the name up to the first white space, the rest as is
@@ -27,7 +36,7 @@ export function commandDataRoute(command: CommandSend, text: string): CommandDat
   return openCodeTuiCommand(name) ? null : { agent: "opencode", kind: "command", name, text: argument };
 }
 
-/** A command sent by data: when it went, and whether the answer itself shows it ran (an OpenCode command's callback). */
+/** A command sent by data: when it went, and whether the answer itself shows it ran (an OpenCode command's callback, OmO's control answer). */
 export interface DataSent { at: number; ran: boolean }
 
 /**
@@ -37,6 +46,7 @@ export interface DataSent { at: number; ran: boolean }
  * `mayWrite` asks the sender once more right before the request's bytes leave; false sends nothing (null).
  */
 export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute, mayWrite: () => boolean, openCodeStateDir?: string): Promise<DataSent | null> {
+  if (route.agent === "omo") return await omoEffort(pane, route.level, mayWrite);
   if (process.platform === "win32") return null;
   const bound = await openCodePaneService(pane, undefined, openCodeStateDir);
   // only the 2.x API measured; and only the session the pane shows now, not one an older check bound
@@ -54,4 +64,34 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
     throw new HerdrError("command_failed", `OpenCode could not run ${route.kind === "compact" ? "/compact" : `/${route.name}`} (HTTP ${answer.status})`);
   }
   return { at, ran: route.kind === "command" };
+}
+
+/**
+ * `/efforts <level>`: a level the model offers, never `off` (that is `/reasoning off`'s), through `set_thinking_level`
+ * on the pane's control socket, for this session only (`scope: "turn"`). Without a scope the socket would also make it
+ * the default of every later session, which the typed command never does; the typed one also remembers it as the
+ * model's own level, which this does not (interactive-mode.js applyThinkingLevel at senpi 2026.11.19-5). Anything OmO
+ * would refuse is typed, so it says why.
+ */
+async function omoEffort(pane: HerdrPane, level: string, mayWrite: () => boolean): Promise<DataSent | null> {
+  const roots = await paneProcessRoots(pane.pane_id, "omo");
+  const agentDir = roots.omo?.agentDir;
+  const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
+  if (socket === null || level === "off") return null;
+  // the session the send was made for, as herdr reports it now
+  const now = await paneGet(pane.pane_id);
+  if (now.terminal_id !== pane.terminal_id || JSON.stringify(now.agent_session ?? null) !== JSON.stringify(pane.agent_session ?? null)) return null;
+  // last before the write: the levels the model offers now (OmO clamps an unoffered level rather than refusing it)
+  const offered = await omoControlCall(socket, { type: "get_available_thinking_levels" });
+  const levels = typeof offered === "object" && typeof offered["data"] === "object" && offered["data"] !== null ? (offered["data"] as { levels?: unknown }).levels : undefined;
+  if (!Array.isArray(levels)) return null;
+  // OmO's /efforts refuses a model without reasoning or with one level besides off (thinking-levels.js
+  // classifyReasoningCapability): those are typed, so OmO says why
+  const graded = levels.filter((offered) => offered !== "off");
+  if (!graded.includes(level) || (levels.includes("off") && graded.length < 2)) return null;
+  const at = Date.now();
+  const answer = await omoControlCall(socket, { type: "set_thinking_level", level, scope: "turn" }, mayWrite);
+  if (answer === "unsent") return null;
+  if (answer === "unknown" || typeof answer["success"] !== "boolean") throw new HerdrError("timeout", "OmO did not answer the effort sent to its terminal; check the terminal before sending it again");
+  return answer["success"] ? { at, ran: true } : null;
 }

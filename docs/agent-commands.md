@@ -42,6 +42,7 @@ types it otherwise. Only a send that is exactly one command, with no `@skill`, i
 | --- | --- | --- | --- |
 | OpenCode 2 | a server command (`GET /api/command`: `init`, `review`, `goal`, user commands), not one the TUI runs itself | `POST /api/session/{id}/command {name, text, delivery: "steer"}`, as the TUI's Enter does | the 204 answers once the command's callback ran: `native` evidence |
 | OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it, so the send stays `accepted` as a typed `/compact` does |
+| OmO (and a pi that has its control socket), Linux | `/efforts <level>`, a level `get_available_thinking_levels` offers, never `off` | `set_thinking_level {level, scope: "turn"}` on the control socket the pane's own process listens on (`<agentDir>/rpc/tui/`, found through `/proc`; [`server/omo-control.ts`](../server/omo-control.ts)): this session only, so unlike the typed command it is not remembered as the model's level, and never made every session's default | the socket's success: `native` evidence (OmO writes `thinking_level_change` only when the level changes) |
 
 The pane's session must be the one its verified OpenCode 2 service holds (`openCodePaneService`)
 and the one herdr still reports for the pane right before the request, never on Windows. The
@@ -233,9 +234,9 @@ Recognized Hermes informational result cards remain available.
   after this send's own echo and was not on screen when it was sent. Hermes `/help`, `/status`,
   `/version`, `/profile` and `/reload-skills` work this way, and the text is shown verbatim on a
   card with a **Dismiss** that sends no keys.
-- `native`: the agent's own event stream or API answer. Today only OpenCode v2, whose service
+- `native`: the agent's own event stream or API answer: OpenCode v2, whose service
   announces the session's message and the end of its execution, and answers a server command sent
-  as data once its callback ran.
+  as data once its callback ran; and OmO's answer to an `/efforts` sent to its control socket.
 - `side-store`: reserved for an agent's own side store, such as omp's saved BTW answers. Nothing
   produces it yet, so omp `/btw` is a terminal command.
 
@@ -414,7 +415,7 @@ There is no single place for a new agent. These files each need it:
 
 ## Not done yet
 
-These are tracked as issues rather than built: data routes for agents other than OpenCode, a
+These are tracked as issues rather than built: data routes for other agents and commands, a
 link between a Codex pane and its thread, opt-in companions that would let an agent report its
 own runtime commands, probes that are certified free of side effects, versions for the nine
 agents whose stores do not record one, translations of card labels the server writes,
