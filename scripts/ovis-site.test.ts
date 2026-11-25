@@ -10,9 +10,7 @@ const PAGES = files("ovis-site/**/*.html");
 const HOME = "ovis-site/index.html";
 const PLAY = "https://play.google.com/store/apps/details?id=sh.ovis.app";
 const APP_STORE = "https://apps.apple.com/app/id6824664162";
-const LEFT_OUT: Record<string, string> = {
-  "How much does Ovis cost?": "its \"no analytics\" sentence is under review: the PC side sends anonymous usage counts by default",
-};
+const LEFT_OUT: Record<string, string> = {};
 const UNSTATED = ["aggregateRating", "review", "reviewRating", "softwareVersion", "datePublished", "dateModified", "dateCreated", "releaseNotes", "downloadUrl", "installUrl", "fileSize"];
 
 const decode = (text: string): string =>
