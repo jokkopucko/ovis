@@ -83,7 +83,7 @@ export const RELAY_JA: Record<string, string> = {
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "アカウントに参加したデバイスは数分以内に追加されます。少ししてからもう一度お試しください。",
   "No number on {name}? Cancel, then tap {name} in your list.": "{name} に番号が出ていませんか？キャンセルして、一覧の {name} をタップしてください。",
   "Only the PC itself shows its ID, at the top of Settings → Devices and PCs. Marked groups differ.": "ID を表示するのは PC 自身だけです。「設定 → デバイスと PC」の一番上にあります。印の付いたまとまりが異なります。",
-  "The PC shows its ID at the top of Settings → Devices and PCs. Pair only if every group matches.": "PC は「設定 → デバイスと PC」の一番上に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
+  "The PC shows its ID under the code. Pair only if every group matches. On older versions, check Settings → Devices and PCs → Connected to this PC, or go back and use a code from Settings → Agents → Setup guide → Other ways → Show a code to type.": "PC の ID はコードの下に表示されます。すべてのまとまりが一致する場合だけペアリングしてください。旧バージョンでは「設定 → デバイスと PC → このPCにつながっているもの」で確認するか、前の画面に戻って「設定 → エージェント → セットアップガイド → ほかの方法 → 入力用のコードを表示」のコードを使ってください。",
   "this PC": "このPC",
   "It matches": "一致しています",
   "Does {name}'s screen show this ID?": "{name} の画面にこの ID が表示されていますか？",

@@ -133,7 +133,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
             <CodeEntry omitHeading formId={codeFormId} failure={state.kind === "code-entry" ? state.failure : null} looking={looking} onSubmit={onCodeSubmit} />
           ) : mode === "compare" && state.kind === "code-compare" ? (
             <>
-              <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs. Pair only if every group matches.")}</p>
+              <p className="relay-shell-copy">{t("The PC shows its ID under the code. Pair only if every group matches. On older versions, check Settings → Devices and PCs → Connected to this PC, or go back and use a code from Settings → Agents → Setup guide → Other ways → Show a code to type.")}</p>
               <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
             </>
           ) : (

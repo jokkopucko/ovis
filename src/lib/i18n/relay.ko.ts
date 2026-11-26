@@ -83,7 +83,7 @@ export const RELAY_KO: Record<string, string> = {
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "계정에 새 기기가 들어오면 몇 분 안에 추가됩니다. 잠시 뒤 다시 시도하세요.",
   "No number on {name}? Cancel, then tap {name} in your list.": "{name}에 숫자가 없나요? 취소한 뒤 목록의 {name} 항목을 누르세요.",
   "Only the PC itself shows its ID, at the top of Settings → Devices and PCs. Marked groups differ.": "PC 자신만 자기 ID를 보여 줍니다. 설정 → 기기와 PC 맨 위에 있습니다. 표시된 묶음이 다릅니다.",
-  "The PC shows its ID at the top of Settings → Devices and PCs. Pair only if every group matches.": "PC는 설정 → 기기와 PC 맨 위에 자기 ID를 보여 줍니다. 모든 묶음이 같을 때만 페어링하세요.",
+  "The PC shows its ID under the code. Pair only if every group matches. On older versions, check Settings → Devices and PCs → Connected to this PC, or go back and use a code from Settings → Agents → Setup guide → Other ways → Show a code to type.": "PC ID는 코드 아래에 표시됩니다. 모든 묶음이 같을 때만 페어링하세요. 이전 버전에서는 설정 → 기기와 PC → 이 PC에 연결된 것에서 확인하세요. 또는 이전 화면으로 돌아가 설정 → 에이전트 → 에이전트 설치·연결 → 다른 방법 → 입력할 코드 보기에서 나온 코드를 입력하세요.",
   "this PC": "이 PC",
   "It matches": "같습니다",
   "Does {name}'s screen show this ID?": "{name} 화면에 이 ID가 보이나요?",
