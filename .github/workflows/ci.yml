@@ -45,6 +45,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       browser: ${{ steps.filter.outputs.browser }}
+      installer: ${{ steps.filter.outputs.installer }}
       draft: ${{ steps.filter.outputs.draft }}
       server: ${{ steps.filter.outputs.server }}
       linux: ${{ steps.route.outputs.linux }}
@@ -120,6 +121,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ "$PR_DRAFT" = "true" ]; then
             echo "draft=true" >> "$GITHUB_OUTPUT"
@@ -156,6 +160,12 @@ jobs:
           # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name); one that
           # changed the server alone runs them without the demo-only scripts (browser=live).
           printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
+          # A pull request that changes the Windows installer, or what it runs and checks it with, runs it for real in
+          # Native Windows install at its head (installer: that commit); the Windows install workflow runs the published
+          # one on a schedule. Not a fork's: its head is not among this repository's refs, which herdr's plugin install clones
+          if [ "$HEAD_REPO" = "$REPOSITORY" ] && [ -n "$HEAD_SHA" ] && grep -qE '^(install\.ps1|herdr-plugin\.toml|scripts/(plugin\.ps1|plugin-launch\.ts|windows-install-e2e\.ps1))$' <<< "$CHANGED"; then
+            echo "installer=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
           # Only a pull request may skip herdr-core live contract, Rust PTY host and Native macOS session identity, and
           # only when it changes nothing but the client (scripts/ci-server-reach.sh); unset, as in every other event, they run.
           printf '%s\n' "$CHANGED" | bash scripts/ci-server-reach.sh >> "$GITHUB_OUTPUT"
@@ -165,7 +175,8 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     # winvm when its runner waits for a job, else windows-latest; forks always windows-latest (scripts/ci-runner-route.sh)
     runs-on: ${{ inputs.hosted_only && 'windows-latest' || fromJSON(needs.changes.outputs.windows) }}
-    timeout-minutes: 10
+    # the installer's own run (below) adds a few minutes where a pull request changes it
+    timeout-minutes: 20
     env:
       HERDR_TEST_MODE: unit
     steps:
@@ -193,6 +204,16 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-stop-forms.test.ts ./scripts/plugin-stop-identity.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
         if: needs.changes.outputs.draft != 'true'
+      # This pull request's install.ps1 run on this runner as a user runs it, its plugin installed from the pull request's
+      # head (scripts/windows-install-e2e.ps1): with herdr stopped (one an earlier step left is stopped first) it must
+      # leave herdr and Ovis running, set to start at sign-in; -NoService takes the sign-in start away; -Account of another
+      # shape is refused at once, and fails the install with the add's own words when the add cannot run; run from session
+      # 0 as over SSH (an S4U task, where the runner runs one), it must start herdr in the desktop session
+      - name: The installer leaves Ovis running
+        if: needs.changes.outputs.draft != 'true' && needs.changes.outputs.installer != ''
+        env:
+          HEAD_SHA: ${{ needs.changes.outputs.installer }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install-e2e.ps1 -Ref $env:HEAD_SHA -StopHerdr
   macos-session:
     name: Native macOS session identity
     needs: changes

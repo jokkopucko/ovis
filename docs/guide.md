@@ -80,6 +80,8 @@ On a first install it mentions a GitHub star, once, unless the account the [gh C
 <details>
 <summary>Other ways to install</summary>
 
+**On Windows** (x64), in PowerShell: `irm https://ovis.sh/install.ps1 | iex`. It needs Git for Windows and installs what is missing (herdr, Bun) for your user only. Where herdr is not running, it starts herdr's server with no window, and the app with it, in your signed-in desktop, also when you run it over SSH, and sets herdr to start at your sign-in: **Ovis** in Task Manager's Startup apps, the same entry the [Ovis app for Windows](../app/windows/README.md) sets, which a PowerShell window may flash for at sign-in. No administrator, no Windows service. Signing out of Windows ends herdr with every terminal in it; lock the PC instead. Arguments go through a script block, since `irm | iex` passes none (or set the variable named with each): `& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -NoService` starts herdr once and sets up no sign-in start (`OVIS_NO_SERVICE=1`); `-Headless` (`OVIS_HEADLESS=1`), over SSH with nobody signed in at the PC, starts herdr without a desktop, where programs in its terminals cannot use the desktop and Codex commands that need their sandbox's own desktop can fail (without it, herdr starts at your next sign-in); `-Add -Account <id>` (`OVIS_ADD_ACCOUNT=<id>`) adds the PC to your Ovis account with no terminal, as `--add --account` does below, and `-Add` alone asks at a terminal. With an invite a device of your account made (one line, `ovis-join:1:…`), `-JoinFile <file> -Account <id>` (or the line in `OVIS_JOIN`, which the installer takes out of the session once read) joins the PC with no sign-in, through `ovis join`, and fails unless it joined (without `-Account` it asks at a terminal, and where nobody can answer it refuses before installing anything); `-Join <line>` works too, but a command line that holds the line shows in the process list. `-Help` lists them all.
+
 **The plugin alone**, when herdr, Bun and Node are there already. After installing, choose
 the plugin's **Phone setup** action inside herdr to see the address, QR and a pairing code.
 
@@ -220,6 +222,8 @@ herdr plugin action invoke devswha.ovis.stop
 Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (see [Configuration](#configuration)), add `KEY=value` lines to the `env` file (no dot) in the directory that `herdr plugin config-dir devswha.ovis` prints. A plugin checkout from 0.3.25 on also reads `.env` there, which wins where both set a key; an older one needs a plugin reinstall first, since in-app updates do not replace the checkout. The plugin's `status` prints the files it read. Protect that file if it holds a token.
 
 ### Uninstall
+
+On Windows the actions end in `-windows` (`devswha.ovis.stop-windows`). Where `install.ps1` set herdr to start at your sign-in, remove that too, only when it is the installer's (the Ovis app's **Remove** takes away its own); herdr keeps running: `$run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; if ("$((Get-ItemProperty $run -Name Ovis -ErrorAction SilentlyContinue).Ovis)" -like '*\ovis\start-herdr.ps1"') { Remove-ItemProperty $run -Name Ovis }`.
 
 ```bash
 # an install from before the rename runs, or is registered, under its old id until the installer moves it

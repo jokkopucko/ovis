@@ -149,6 +149,64 @@ On Windows it starts on herdr even where herdr-core is installed; **Settings →
 then switches to the Herdr app's terminals (herdr-core).
 `OVIS_REF` selects a branch or tag for testing; otherwise it installs the latest release.
 
+Where herdr is not running, the Windows installer starts herdr's server with no window, and the app
+with it, in the user's signed-in desktop: through a one-shot task of the user's own, with ordinary
+rights and no stored password, removed once herdr runs, so herdr outlives the SSH session or the
+agent's command that ran the installer. It also sets herdr to start at the user's sign-in: the value
+`Ovis` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, the one the Ovis app for Windows
+sets, shown in Task Manager's Startup apps (it runs `%LOCALAPPDATA%\ovis\start-herdr.ps1` in a
+hidden Windows PowerShell, which may show a window for a moment). It installs no Windows service,
+leaves no task behind and asks for no administrator. A value `Ovis` it did not write (the Ovis app's
+among them) is left as it is. Signing out of Windows ends that herdr with every terminal in it (lock
+the PC instead), and nothing starts it before the next sign-in. Run over SSH with nobody of the
+account signed in at the PC, it starts nothing (herdr starts at the next sign-in) unless given
+`-Headless` (`OVIS_HEADLESS=1`): herdr then runs without a desktop until the PC restarts, where
+programs in its terminals cannot use the desktop and Codex commands that need their sandbox's own
+desktop can fail, so ask the user first. `-NoService` (`OVIS_NO_SERVICE=1`) starts herdr once and
+sets up no sign-in start; a later run with it removes the one an earlier run set up. Say so when you
+**Ask**, and pass `-NoService` if the user does not want it. Nothing stops herdr, and a herdr that
+runs is left as it is. `irm | iex` passes no arguments: give them as
+`& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -NoService`, or as the variables.
+
+To add a Windows PC to the user's Ovis account in the same run, with no terminal, pass the account's
+id as for `install.sh` (the user reads it from `ovis status` on a PC already in the account, or
+**Settings → Manage account**; never guess it, and do not sign in for the user):
+`& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -Add -Account <id>`, or
+`$env:OVIS_ADD_ACCOUNT = '<id>'` before `irm https://ovis.sh/install.ps1 | iex`. It runs
+`ovis add --account <id>` with no input, on a release whose add checks that account (0.5.10 and
+later), and fails when the PC was not added. It waits up to 10 minutes for the user, and the sign-in
+address and code it prints are needed while it waits, so start it in the background with its output
+in a file (your tool's own background run, where it ends what its commands start):
+
+```powershell
+$env:OVIS_ADD_ACCOUNT = '<id>'
+Start-Process powershell -WindowStyle Hidden -RedirectStandardOutput "$HOME\ovis-install.log" -RedirectStandardError "$HOME\ovis-install.err" -ArgumentList '-NoProfile -Command try { irm https://ovis.sh/install.ps1 | iex; Write-Output install-exit=0 } catch { Write-Output $_; Write-Output install-exit=1 }'
+```
+
+(One string for `-ArgumentList`, with no double quotes in it: Windows PowerShell joins a list unquoted, and the
+command line would lose them.)
+
+Then read `~\ovis-install.log` every few seconds, give the user the address and code as soon as it
+shows `1. On any device, open: <address>` and `2. Enter this code: <code>`, and keep reading until it
+ends with `install-exit=<n>`, for at most 15 minutes: `install-exit=0` means the PC was added, and
+`ovis status --json` on it then names the account (`account`) and says when its relay is online
+(`relay.connected`). `-Add` alone runs `ovis add` at a terminal, where the user answers it.
+
+With an invite the user made on a device of their account (one line, `ovis-join:1:…`, single use, 15
+minutes), the PC joins with no sign-in: put the line in a file only the user can read, with your file
+tool (never in a command line or a log), and pass `-JoinFile <file> -Account <id>`:
+`& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -JoinFile $HOME\ovis-invite.txt -Account <id>`.
+The background recipe above runs `irm … | iex`, which takes no arguments: there, set
+`$env:OVIS_JOIN = Get-Content -Raw "$HOME\ovis-invite.txt"` beside `$env:OVIS_ADD_ACCOUNT`, and
+afterwards `Remove-Item Env:\OVIS_JOIN` in your own session (the installer takes it out of its own). It runs `ovis join` once Ovis runs, with the line in its
+environment only, and fails unless the PC joined, its last `Ovis:` line saying why (a used or expired
+invite needs a new one). An invite that needs **Add** waits up to 10 minutes: when the log says
+`press Add for <name>`, tell the user to press it. `-Join <line>` works too, but a command line that
+holds the line shows in the process list. Without `-Account` the join runs only at a terminal, where it
+asks the user whether the invite's account is theirs; where nobody can answer (no terminal, as from your
+tool) the installer refuses before installing anything and names `-Account <id>`. `-Help` lists the
+options.
+
 ## 3A. Install as a herdr plugin
 
 ```bash
@@ -385,6 +443,16 @@ bun ~/.local/share/ovis/app/scripts/plugin.ts stop
 systemctl --user disable --now ovis && rm ~/.config/systemd/user/ovis.service   # Linux
 launchctl bootout gui/$(id -u)/sh.ovis.server; rm ~/Library/LaunchAgents/sh.ovis.server.plist   # macOS
 rm -rf ~/.local/share/ovis/app
+```
+
+On Windows the actions are `devswha.ovis.stop-windows` and the uninstall the same. Where the
+installer set herdr to start at sign-in, remove that too, and only that (the Ovis app's **Remove**
+removes its own); herdr keeps running:
+
+```powershell
+$run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if ("$((Get-ItemProperty $run -Name Ovis -ErrorAction SilentlyContinue).Ovis)" -like '*\ovis\start-herdr.ps1"') { Remove-ItemProperty $run -Name Ovis }
+Remove-Item "$env:LOCALAPPDATA\ovis\start-herdr.ps1" -ErrorAction SilentlyContinue
 ```
 
 Uninstall removes herdr's managed checkout. It does not touch `~/.config/ovis` (push
