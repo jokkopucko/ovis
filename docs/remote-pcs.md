@@ -261,7 +261,8 @@ and herdr's default session only.
 - An SSH PC whose own Ovis was started by hand (`bun run server`, not its updater) offers
   `ovis_update.how: "install"`: its `steps` name the process it stops; Ovis is installed as a herdr
   plugin that updates itself (`OVIS_RUNTIME=herdr`), started (herdr is started headless when it is
-  not running, which starts the plugin), and the PC connected again. As when it is run by hand, the
+  not running, which starts the plugin: the installer starts it, and sets up a user service that starts
+  it again at boot where lingering is on or can be turned on), and the PC connected again. As when it is run by hand, the
   installer adds what is missing for that account (herdr, Bun, which may add itself to the shell's
   startup file) and serves Ovis to the tailnet when Tailscale runs there; the steps say so first. An
   Ovis already installed there (a herdr plugin or its user service) is started that way instead, since

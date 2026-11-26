@@ -3,7 +3,9 @@
  *
  * ONE_LINE=1 is the other door: a box with curl and git but no Node, herdr or Bun, and this
  * checkout's install.sh piped into sh as `curl … | sh` would, before herdr ever runs. It installs
- * the plugin at `ref` (install.sh reads OVIS_REF), and the startup hook brings the app up.
+ * the plugin at `ref` (install.sh reads OVIS_REF), starts herdr (the box has no service manager:
+ * once, in the background), and the startup hook brings the app up. install-service-docker.ts
+ * covers a PC with systemd.
  *
  *   bun scripts/fresh-install-docker.ts [owner/repo] [ref]      KEEP=1 leaves the container behind
  */
@@ -62,11 +64,11 @@ async function oneLineInstall(): Promise<void> {
   assert.match(out, /exit=0/, `install.sh failed:\n${out.slice(-2500)}`);
   assert.match(out, /Installed /, `the plugin install did not finish:\n${out.slice(-2500)}`);
   assert.doesNotMatch(out, /gyp ERR|node-gyp/, "nothing compiled");
-  assert.match(out, /herdr is not running/, "no herdr yet, so no start");
+  // no service manager in the box: install.sh starts herdr once in the background, and the app with it
+  assert.match(out, /in herdr, which was started in the background: this PC has no user service manager/, `install.sh left the app running:\n${out.slice(-1500)}`);
   assert.match(out, /install Tailscale/, `the phone step names what is missing:\n${out.slice(-1500)}`);
   assert.doesNotMatch(await asUser("herdr --version; bun --version; command -v node || true"), /\.local\/bin\/node/, "install.sh puts no node on a new terminal's PATH (#596)");
-  await step("herdr starts, and the app with it", async () => {
-    await asUser("setsid nohup herdr server > ~/herdr-server.log 2>&1 < /dev/null &");
+  await step("the app answers, herdr started by install.sh", async () => {
     const health = await asUser('for i in $(seq 1 30); do if curl -sf http://127.0.0.1:7317/api/health >/dev/null; then echo "up after ${i}s"; exit 0; fi; sleep 1; done; echo TIMEOUT; herdr plugin log list 2>&1 | tail -c 1500; exit 1');
     console.log(`  ${/up after \d+s/.exec(health)?.[0] ?? health.trim().split("\n").pop()}`);
   });

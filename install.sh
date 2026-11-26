@@ -12,6 +12,12 @@
 #    SHA-256; where it cannot run, they are mirrored.
 # 2. Installs Ovis as a herdr plugin (a small plugin folder, ~/.local/share/ovis/plugin, that herdr
 #    links and that runs the binary), so it starts with herdr, and starts it now when herdr is running.
+#    When herdr is not running (just installed, or installed and stopped), starts herdr's server headless,
+#    and the app with it, and has a user service start it again: on a Linux PC used without a desktop,
+#    ovis-herdr.service, where lingering is on or can be turned on without a password, so at boot and past
+#    every logout; on a Mac, at the screen or over SSH, the Mac app's LaunchAgent sh.ovis.herdr-server, at
+#    login, inside the person's login session. Elsewhere (a Linux desktop, no lingering, --no-service) herdr
+#    is started once and outlives a logout. No service stops herdr.
 #
 # A release from before the compiled server, a branch (OVIS_REF), an install from source that is
 # already here, or OVIS_FROM_SOURCE=1 keep the earlier way instead: Bun (its own installer, into
@@ -31,7 +37,20 @@
 #
 #   curl -fsSL https://ovis.sh/install.sh | sh -s -- --add
 #
-# That step needs a terminal to sign in and answer at; without one the installer says what to run.
+# That step needs a terminal to sign in and answer at; without one the installer says what to run. With
+# the account named, it needs none, so a script or a coding agent can run it, and the installer then exits
+# non-zero when the PC was not added:
+#
+#   curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>
+#
+# Or the PC joins the account with an invite a device signed in to it made (one line, ovis-join:1:…), with no sign-in
+# here: the installer ends with `ovis join`, which takes the line in its environment, never on a command line. The line
+# is a key, so give it in a file (--join-file <path>) or in OVIS_JOIN: `--join <line>` works too, but shows in the process
+# list to every user of this PC while the install runs. `ovis join` asks at a terminal whether the invite's account is
+# yours; --account <id> answers that where nobody can type (without it there, nothing is installed), and the installer
+# then exits non-zero unless the PC joined:
+#
+#   curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ./ovis-invite.txt --account <id>
 #
 # On a PC with herdr-core (hc, the core the Herdr app runs on) and no herdr, steps 1 and 2 are instead:
 # the compiled server alone (from source: Bun, and Ovis in its own checkout, ~/.local/share/ovis/app),
@@ -46,6 +65,10 @@
 #   OVIS_RUNTIME=herdr|herdr-core   pick the runtime instead of going by what is installed
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
 #   OVIS_ADD=1   the same as --add, for where the installer's arguments cannot be given
+#   OVIS_ADD_ACCOUNT=<id>   the same as --account <id>
+#   OVIS_JOIN=<line>   the same as --join <line>, kept out of the process list; the installer removes it from what it starts
+#   OVIS_NO_SERVICE=1   the same as --no-service: where herdr is not running, start it once and set up no service or
+#     lingering, so it starts again only when you open it
 set -eu
 
 REPO="devswha/ovis"
@@ -57,11 +80,23 @@ LEGACY_NODE_DIR="$HOME/.local/share/herdr-web-ui/node"
 APP_DIR="$HOME/.local/share/ovis/app"
 SERVICE="ovis"
 AGENT_LABEL="sh.ovis.server"
+HERDR_SERVICE="ovis-herdr"
+# the unit's own line, which tells a unit this installer wrote from one of the same name that is someone else's
+HERDR_UNIT_DESCRIPTION="herdr for Ovis: herdr's server, headless, which starts Ovis"
+# the Mac app's (app/mac/Sources/OvisMac/Run.swift, Ovis.agentLabel): one LaunchAgent, whichever of the two set it up
+HERDR_AGENT_LABEL="sh.ovis.herdr-server"
+# the first release whose `ovis add` takes --account (scripts/plugin-link.ts): an older one would not check the account
+ACCOUNT_SINCE="0.5.10"
+# the first release with `ovis join` (scripts/plugin-join.ts), and the shape of the line it takes
+# (shared/account-list-join.ts: JOIN_LINE_PREFIX, then base64url, JOIN_LINE_MAX_CHARS in all)
+JOIN_SINCE="0.5.10"
+JOIN_PREFIX="ovis-join:1:"
+JOIN_MAX=1024
 # Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
 NODE_VERSION="v22.23.2"
 # the second line of the `ovis` launcher this installer writes: a file of that name without it is not ours
 LAUNCHER_MARK="# ovis launcher, written by install.sh"
-USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add]"
+USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add | --join-file <path>] [--account <id>] [--no-service] [--help]"
 OVIS_HOME="$HOME/.local/share/ovis"
 # The public half of the key every release's ovis-server.json is signed with: scripts/server-manifest.ts
 # RELEASE_PUBLIC_KEY, which the release jobs check against too. Nothing else can stand in for it.
@@ -411,6 +446,17 @@ case "${1:-}" in
       fi
     fi
     ;;
+  join)
+    # a checkout from before ovis join: the release Settings → Updates installed may have it
+    if [ ! -f "$root/scripts/plugin-join.ts" ]; then
+      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
+      [ -n "$code" ] || code=$root
+      if [ ! -f "$code/scripts/plugin-join.ts" ]; then
+        echo "ovis: this Ovis is from before ovis join. Update it in Settings → Updates, then run this again" >&2
+        exit 1
+      fi
+    fi
+    ;;
 esac
 exec bun "$code/scripts/plugin.ts" "$@"
 EOF
@@ -530,6 +576,19 @@ add_command() {
   else
     printf '%s' "$(ovis_command) $add_name"
   fi
+  [ -z "${account:-}" ] || printf ' --account %s' "$(quoted "$account")"
+}
+
+# Whether the add step that would run checks the account --account names: one from before it would not check it, so
+# it is not started for --account. From source that is the release that runs, as add_reads_answers reads it: the
+# checkout's script hands the add on to it (scripts/plugin.ts, linkCommand), and Settings → Updates may have made it
+# newer, or the checkout newer than it.
+add_takes_account() {
+  if [ "${binary:-0}" = 1 ]; then
+    at_least "$ACCOUNT_SINCE" "$version"
+  else
+    grep -qs '"--account"' "${code:-$root}/scripts/plugin-link.ts"
+  fi
 }
 
 # Whether this install holds the terminal's foreground: a background job that read from the terminal
@@ -572,6 +631,8 @@ discard_typed() {
 # (discard_typed), and where it cannot be, the add does not run: nothing typed for something else
 # answers it. Nor does it run on a release whose add step would take a line typed ahead for its answer
 # (add_reads_answers; $add_old says so): the closing lines then say to update first.
+# With the account named ($account: --account, OVIS_ADD_ACCOUNT) nothing is asked, so it runs anywhere, reading nothing,
+# on a release whose add checks that account (add_takes_account; $add_old says so otherwise).
 # Who counts as this PC is said before it starts, while the token can still be set first ($token_said).
 add_pc() {
   add_result=none
@@ -581,12 +642,27 @@ add_pc() {
   find_add_name
   [ "$add" = 1 ] || return 0
   [ -n "$add_name" ] || return 0
-  if ! add_reads_answers; then
+  if { [ -n "${account:-}" ] && ! add_takes_account; } || { [ -z "${account:-}" ] && ! add_reads_answers; }; then
     add_old=1
     return 0
   fi
   if ! { if [ "${binary:-0}" = 1 ]; then ovis_cli status; else bun "$root/scripts/plugin.ts" status; fi; } </dev/null 2>/dev/null | grep -q '^running'; then
     add_waits=1
+    return 0
+  fi
+  if [ -n "${account:-}" ]; then
+    echo
+    token_line
+    token_said=1
+    add_result=done
+    # Ctrl-C ends the add, not the install, as at a terminal below
+    trap ':' INT
+    if [ "${binary:-0}" = 1 ]; then
+      ovis_cli "$add_name" --account "$account" </dev/null || add_result=failed
+    else
+      bun "$add_code/scripts/plugin.ts" "$add_name" --account "$account" </dev/null || add_result=failed
+    fi
+    trap - INT
     return 0
   fi
   [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
@@ -610,19 +686,186 @@ add_pc() {
   trap - INT
 }
 
+# Whether the release that runs has `ovis join`: from source, as add_takes_account reads it, since the checkout's script
+# hands a command on to the release that runs. $join_code: the script that runs it, the checkout's where that has it.
+join_takes() {
+  if [ "${binary:-0}" = 1 ]; then
+    at_least "$JOIN_SINCE" "$version"
+  else
+    join_code=$root
+    [ -f "$root/scripts/plugin-join.ts" ] || join_code=${code:-$root}
+    [ -f "${code:-$root}/scripts/plugin-join.ts" ]
+  fi
+}
+
+# Whether a person can answer `ovis join`'s question here: a terminal that shows the installer's words and can be read
+# from, in its foreground (a background job that read it would be stopped), and no install run for someone else
+# (OVIS_NO_OPEN, which the app's SSH installer sets).
+join_answerable() {
+  [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 1
+  (exec 3<>/dev/tty) 2>/dev/null || return 1
+  in_foreground
+}
+
+# `ovis join` as a person runs it again: from the file the invite came in, never with the line itself.
+join_command() {
+  printf '%s join --invite-file ' "$(ovis_command)"
+  if [ "${join_given:-}" = file ]; then quoted "$join_path"; else printf '%s' '<a file holding the invite>'; fi
+  [ -z "${account:-}" ] || printf ' --account %s' "$(quoted "$account")"
+}
+
+# The join, once Ovis runs (an invite's line: --join-file, OVIS_JOIN or --join): `ovis join` lists this PC in the invite's
+# account on its own key's proof, with no sign-in here. The line goes to it in its environment (OVIS_INVITE), never on a
+# command line, and to nothing else. Whoever handed the invite over chose the account, so it is confirmed here first:
+# with --account (OVIS_ADD_ACCOUNT), and nothing is read, as a script or an agent runs it; or at a terminal, where `ovis
+# join` asks for yes, once what was typed before is discarded, as for the add. Where nobody can answer, main refused the
+# join before the install; unconfirmed is left for a terminal whose typing cannot be discarded. $join_result: none (no invite), old (a
+# release without it), waits (Ovis does not run), unconfirmed (nobody can confirm the account), or the exit code of
+# `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
+join_pc() {
+  join_result=none
+  [ -n "${join_given:-}" ] || return 0
+  if ! join_takes; then
+    join_result=old
+    return 0
+  fi
+  if ! { if [ "${binary:-0}" = 1 ]; then ovis_cli status; else bun "$root/scripts/plugin.ts" status; fi; } </dev/null 2>/dev/null | grep -q '^running'; then
+    join_result=waits
+    return 0
+  fi
+  join_input=/dev/null
+  set -- join
+  if [ -n "${account:-}" ]; then
+    set -- join --account "$account"
+  else
+    join_result=unconfirmed
+    join_answerable || return 0
+    trap ':' INT
+    if ! discard_typed; then
+      trap - INT
+      return 0
+    fi
+    join_input=/dev/tty
+  fi
+  echo
+  token_line
+  token_said=1
+  join_result=0
+  # Ctrl-C ends the join, not the install
+  trap ':' INT
+  if [ "${binary:-0}" = 1 ]; then
+    OVIS_INVITE=$join_line "$OVIS_HOME/bin/ovis-server" plugin "$@" <"$join_input" || join_result=$?
+  else
+    OVIS_INVITE=$join_line bun "$join_code/scripts/plugin.ts" "$@" <"$join_input" || join_result=$?
+  fi
+  trap - INT
+}
+
+# What became of the join, in one line ($join_result): what `ovis join` said is above it.
+join_lines() {
+  case "${join_result:-none}" in
+    none) ;;
+    old) say "this Ovis release has no ovis join (it came in $JOIN_SINCE), so this PC did not join your Ovis account. Update Ovis in Settings → Updates, then run on this PC: $(join_command)" ;;
+    waits) say "the app is not running, so this PC did not join your Ovis account. Once it runs, run on this PC: $(join_command)" ;;
+    unconfirmed) say "nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used. Name that account: run this again with --account <id> (the id shown with the invite, or ovis status --json on a PC already in it), or run in a terminal on this PC: $(join_command)" ;;
+    0) say "this PC is in the Ovis account the invite is for. Check: $(ovis_command) status --json" ;;
+    3) say "the invite did not work: it is mistyped, used or expired (an invite works once, for 15 minutes), or for another account service. Ask for a new one on a device signed in to your account" ;;
+    4) say "the account the invite is for was not confirmed, so this PC did not join it, and the invite was not used" ;;
+    5) say "the invite is for another Ovis account than --account names, so this PC did not join it, and the invite was not used" ;;
+    6) say "this PC is in another Ovis account, so it did not join the invite's, and the invite was not used. To move it: $(ovis_command) logout, then run on this PC: $(join_command)" ;;
+    7) say "the account service asks this PC to wait, so it did not join your Ovis account yet; what ovis join said is above" ;;
+    8) say "your Ovis account has added as many PCs as it may for now, so this PC did not join it, and the invite was not used; what ovis join said is above" ;;
+    9) say "your Ovis account holds as many PCs as it can, so this PC did not join it: remove one in the Ovis app, then try again with a new invite" ;;
+    10) say "the account service did not answer, so this PC did not join your Ovis account. Try again in a moment (the invite works for 15 minutes): $(join_command)" ;;
+    12) say "the relay or the account service is off on this PC, so it did not join your Ovis account; what ovis join said is above" ;;
+    13) say "the app stopped running, so this PC did not join your Ovis account. Once it runs, run on this PC: $(join_command)" ;;
+    14) say "nobody pressed Add for this PC while its card showed, so it did not join your Ovis account. Ask for a new invite" ;;
+    *) say "this PC did not join your Ovis account; what ovis join said is above" ;;
+  esac
+}
+
 # Who counts as this PC while it has no token: said before the PC is added, by whichever adds it.
 token_line() {
   say "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC ($(link "https://github.com/$REPO/blob/main/docs/relay.md#a-pc-with-no-screen"))"
 }
 
+# What runs now, how to see it and how to stop it, as the install leaves it ($herdr_kept: how start_herdr kept herdr).
+running_lines() {
+  running_at=$(ovis_cli status </dev/null 2>/dev/null | awk '$1 == "running" { print $2 }') || running_at=""
+  [ -n "$running_at" ] || return 0
+  if [ "${runtime:-herdr}" != herdr ]; then
+    say "Ovis runs now at $(link "$running_at"). See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
+    return 0
+  fi
+  herdr_again=""
+  case "${herdr_kept:-}" in
+    systemd)
+      herdr_way="the user service $HERDR_SERVICE starts whenever this PC starts, with nobody logged in"
+      herdr_again="until this PC starts again"
+      ;;
+    launchd)
+      herdr_way="launchd starts at your login ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)"
+      herdr_again="until your next login"
+      ;;
+    login) herdr_way="was started in the background, and launchd starts from your next login at this Mac's screen ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)" ;;
+    linger-off) herdr_way="was started in the background and keeps running after you log out. Nothing starts it after a restart: lingering is off for $(id -un), and turning it on needs an administrator (sudo loginctl enable-linger $(id -un)); then run this installer again and herdr starts whenever this PC starts" ;;
+    desktop) herdr_way="was started for now: this PC has ${desktop_found:-a desktop session}, so after a restart herdr starts when you open it there, as before" ;;
+    declined) herdr_way="was started for now, with no service (--no-service): after a restart herdr starts when you open it" ;;
+    once) herdr_way="was started in the background: this PC has no user service manager, so after a restart run this installer again" ;;
+    *) herdr_way="" ;;
+  esac
+  if [ -z "$herdr_way" ]; then
+    say "Ovis runs now at $(link "$running_at"), and starts whenever herdr does. See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
+    [ "${herdr_doomed:-0}" != 1 ] || say "this herdr was started at this login by the user service $HERDR_SERVICE, inside your service manager, and lingering is off for $(id -un): it ends when you log out, with every terminal in it. The installer removed that service. To have herdr outlive the logout, stop it ($(herdr_command) server stop) and run this installer again; to have it start whenever this PC starts, an administrator turns lingering on (sudo loginctl enable-linger $(id -un)), then run this installer again"
+    [ "${herdr_doomed:-0}" = 1 ] || unit_gone_line
+    mac_agent_line
+    return 0
+  fi
+  say "Ovis runs now at $(link "$running_at"), in herdr, which $herdr_way"
+  say "see them: $(ovis_command) status, $(herdr_command) status server. Stop Ovis: $(ovis_command) stop (it starts again with herdr). Stop herdr and every terminal in it: $(herdr_command) server stop"
+  # the service starts herdr; it does not watch it
+  [ -z "$herdr_again" ] || say "a herdr that stops or crashes is not started again $herdr_again, or until this installer runs again"
+  [ "${lingering:-}" != turned-on ] || say "lingering is on for $(id -un) now, so herdr runs with nobody logged in; the guide's Uninstall turns it off again"
+  unit_gone_line
+  mac_agent_line
+}
+
+# Why the unit an earlier run wrote is gone ($herdr_unit_gone: forget_herdr_unit's reason).
+unit_gone_line() {
+  case "${herdr_unit_gone:-}" in
+    linger-off) say "removed the user service $HERDR_SERVICE an earlier run set up: lingering is off for $(id -un) now, so it would start herdr at each login inside your service manager, which ends herdr with that login" ;;
+    declined) say "removed the user service $HERDR_SERVICE an earlier run set up, as --no-service asks: nothing starts herdr at boot now; herdr runs on until you stop it" ;;
+    desktop) say "removed the user service $HERDR_SERVICE an earlier run set up: this PC has ${desktop_found:-a desktop session}, and herdr started at boot would give its terminals no display; herdr runs on until you stop it" ;;
+  esac
+}
+
+# --no-service sets up no LaunchAgent, and leaves one that is there: the Mac app sets up the same one, and nothing tells
+# whose it is, so the person removes it, with the guide's Uninstall line.
+mac_agent_line() {
+  [ "${no_service:-0}" = 1 ] && [ "${os:-}" = darwin ] && [ -f "$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist" ] || return 0
+  say "the LaunchAgent $HERDR_AGENT_LABEL is still there and starts herdr at your login: --no-service leaves it, since the Mac app sets up the same one. To have none: launchctl disable gui/$(id -u)/$HERDR_AGENT_LABEL; rm $(quoted "$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist")"
+}
+
+# herdr as a command typed here runs it: by its name where the user's PATH finds this one, else by its path
+herdr_command() {
+  if [ "$(PATH="${original_path:-}"; command -v herdr 2>/dev/null || true)" = "$herdr_bin" ]; then printf herdr; else quoted "$herdr_bin"; fi
+}
+
 closing_lines() {
   echo
-  if [ "$add_result" = done ]; then
+  running_lines
+  if [ -n "${join_given:-}" ]; then
+    join_lines
+  elif [ "$add_result" = done ]; then
     :
   elif [ -z "$add_name" ]; then
     say "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again"
+  elif [ "$add" = 1 ] && [ "${add_old:-0}" = 1 ] && [ -n "${account:-}" ]; then
+    say "this Ovis release does not check the account --account names, so the installer does not add this PC with it. Update Ovis in Settings → Updates, then run on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "${add_old:-0}" = 1 ]; then
     say "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: $(add_command)"
+  elif [ "$add_result" = failed ] && [ -n "${account:-}" ]; then
+    say "this PC was not added to your Ovis account; what the add said is above. To try again: $(add_command)"
   elif [ "$add" = 1 ] && [ "${add_waits:-0}" = 1 ]; then
     say "the app is not running yet, so this PC was not added to your Ovis account. Once it runs, run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "$add_result" = none ]; then
@@ -1318,6 +1561,227 @@ EOF
   fi
 }
 
+herdr_running() { herdr status server --json 2>/dev/null </dev/null | grep -q '"running":true'; }
+
+# Lingering keeps this user's service manager, and so herdr, running with nobody logged in, and starts it at boot. It
+# is turned on only after an explicit "no" and only where no password is asked; the installer notes that it did
+# ($OVIS_HOME/lingering), so the guide's Uninstall turns it off again. $lingering: on, turned-on, off or unknown.
+keep_lingering() {
+  linger_user=$(id -un)
+  lingering=$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null </dev/null) || lingering=""
+  case "$lingering" in
+    yes) lingering=on ;;
+    no)
+      lingering=off
+      if loginctl --no-ask-password enable-linger "$linger_user" </dev/null >/dev/null 2>&1; then
+        mkdir -p "$OVIS_HOME"
+        printf '%s\n' "$linger_user" >"$OVIS_HOME/lingering"
+        lingering=turned-on
+      fi
+      ;;
+    *) lingering=unknown ;;
+  esac
+}
+
+# Whether this PC is used with a desktop: there herdr is the person's to open, as before, and a login service would
+# start it at boot, before the desktop gives the person's session its display, so its terminals would lack it. Told from
+# this login (XDG_SESSION_TYPE x11, wayland or mir; where no session type is set, an X or Wayland display: forwarded X
+# alone, in an SSH login's tty session, does not count) and from the machine, for an SSH login into a desktop PC: a
+# display manager is enabled, or this user has a graphical session. systemd's default target says nothing: Debian and
+# Ubuntu ship graphical.target as the default on servers too. $desktop_found names what was found.
+desktop_pc() {
+  case "${XDG_SESSION_TYPE:-}" in
+    x11 | wayland | mir) desktop_found="a desktop session"; return 0 ;;
+    "") if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then desktop_found="a desktop session"; return 0; fi ;;
+  esac
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet display-manager.service </dev/null 2>/dev/null; then
+    desktop_found="a display manager (a desktop's login screen)"
+    return 0
+  fi
+  command -v loginctl >/dev/null 2>&1 || return 1
+  desktop_found="a graphical session of yours"
+  [ -z "$(loginctl show-user "$(id -un)" -p Display --value 2>/dev/null </dev/null || true)" ] || return 0
+  for desktop_id in $(loginctl list-sessions --no-legend 2>/dev/null </dev/null | awk '{ print $1 }'); do
+    case "$(loginctl show-session "$desktop_id" -p Type --value 2>/dev/null </dev/null || true)" in
+      x11 | wayland | mir) desktop_found="a graphical session"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# The PATH a service gives herdr, and so its terminals: the user's own, in its order, with the folders this installer
+# puts herdr and Bun in added at the end where it lacks them (the plugin finds Ovis's own Node itself).
+service_path() {
+  service_path=${original_path:-$PATH}
+  for service_dir in "$BIN_DIR" "$HOME/.bun/bin"; do
+    case ":$service_path:" in *":$service_dir:"*) ;; *) service_path="$service_path:$service_dir" ;; esac
+  done
+}
+
+# A locale's name that says UTF-8 (en_US.UTF-8, C.utf8, ko_KR.UTF-8@euro).
+utf8_locale() { case "$1" in *.[Uu][Tt][Ff]-8 | *.[Uu][Tt][Ff]8 | *.[Uu][Tt][Ff]-8@* | *.[Uu][Tt][Ff]8@*) return 0 ;; esac; return 1; }
+
+# Whether the unit at its fixed path is the one this installer writes (its description), not someone else's.
+herdr_unit_ours() {
+  herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
+  grep -qsxF "Description=$HERDR_UNIT_DESCRIPTION" "$herdr_unit"
+}
+
+# The unit an earlier run wrote, where none is wanted now ($1, said in the closing lines as $herdr_unit_gone): lingering
+# is off (turned off since, or refused), so at every login it would start herdr inside the user's service manager, which
+# logind ends with that login and every terminal with it, and a herdr the person starts would attach to that one instead
+# of starting one that outlives the logout; --no-service; or this PC has a desktop. It is disabled and removed, never
+# stopped (a stop would end nothing anyway). The note that the installer turned lingering on goes only when lingering is
+# off: otherwise it is still on, and the guide's Uninstall turns it off. Fails where there is no such unit of ours.
+forget_herdr_unit() {
+  herdr_unit_ours || return 1
+  systemctl --user disable "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1 || true
+  rm -f "$herdr_unit"
+  [ "$1" != linger-off ] || rm -f "$OVIS_HOME/lingering"
+  systemctl --user daemon-reload </dev/null >/dev/null 2>&1 || true
+  herdr_unit_gone=$1
+}
+
+# herdr runs (nothing is started or stopped then), but the unit an earlier run wrote goes where none is wanted now:
+# --no-service, a desktop, or lingering off (forget_herdr_unit). With lingering off and the unit run at this login, the
+# herdr that runs is most likely the one it started, inside the service manager: $herdr_doomed says so, and the closing
+# lines say what that means.
+unit_not_wanted() {
+  [ "$os" = linux ] && herdr_unit_ours || return 0
+  herdr_bin=$(command -v herdr)
+  if [ "${no_service:-0}" = 1 ]; then
+    forget_herdr_unit declined || true
+  elif desktop_pc; then
+    forget_herdr_unit desktop || true
+  elif [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null </dev/null || true)" != yes ]; then
+    herdr_unit_ran=$(systemctl --user is-active "$HERDR_SERVICE.service" 2>/dev/null </dev/null || true)
+    forget_herdr_unit linger-off || return 0
+    [ "$herdr_unit_ran" != active ] || herdr_doomed=1
+  fi
+}
+
+# herdr's server, started headless where none runs (herdr just installed, or installed and stopped): the plugin starts
+# with it (its startup hook), so the app runs now. The user's service manager starts it again: on macOS the Mac app's
+# LaunchAgent (app/mac/README.md) at login; on a Linux PC used without a desktop ovis-herdr.service, only where
+# lingering is on (turned on here when no password is asked), so at boot and past every logout. Without lingering a
+# user service would run herdr inside the user's manager, which logind stops with the last session, and every terminal
+# with it: there, as on a PC with a desktop (desktop_pc), with --no-service, or without a service manager, herdr is
+# started once in a session of its own, which outlives a logout as a herdr started by hand does, and nothing starts it
+# after a restart; a unit an earlier run wrote goes (forget_herdr_unit). On a Mac the agent is set up at the screen too:
+# launchd runs it inside the person's login, with that login's window server and keychain, as the Mac app's does.
+# Neither service ever stops herdr: herdr's own update hands its terminals to a new server and exits, and a service that
+# took that exit for the end of herdr would stop the new server with them; disabling it (the guide's Uninstall) leaves
+# herdr running. herdr's output (as the services') stays away from this installer's, which a script may be reading to
+# its end. $herdr_kept says how: systemd, launchd, login (launchd from the next login), linger-off, desktop, declined or
+# once. Fails when herdr does not answer within 20 s.
+start_herdr() {
+  herdr_bin=$(command -v herdr)
+  service_path
+  case "$service_path$HOME$herdr_bin${HERDR_SESSION:-}${LANG:-}${LC_ALL:-}${LC_CTYPE:-}" in *'
+'*) fail "a newline in PATH, HOME, HERDR_SESSION or the locale cannot go into a service file; remove it and run this again" ;; esac
+  if [ "${no_service:-0}" = 1 ]; then
+    herdr_kept=declined
+  elif [ "$os" = darwin ]; then
+    herdr_kept=login
+    herdr_agent="$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist"
+    mkdir -p "$(dirname "$herdr_agent")" "$HOME/Library/Logs/Ovis"
+    # the Mac app's keys: launchd gives a job no locale, and the panes' shells read Korean and emoji as bytes without
+    # LC_CTYPE; AbandonProcessGroup, or launchd would end the server herdr hands its terminals to when herdr exits
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0">' '<dict>'
+      printf '  <key>Label</key><string>%s</string>\n' "$HERDR_AGENT_LABEL"
+      printf '  <key>ProgramArguments</key><array><string>%s</string><string>server</string></array>\n' "$(xml_text "$herdr_bin")"
+      printf '%s\n' '  <key>RunAtLoad</key><true/>'
+      printf '  <key>WorkingDirectory</key><string>%s</string>\n' "$(xml_text "$HOME")"
+      printf '%s\n' '  <key>EnvironmentVariables</key><dict>'
+      printf '    <key>PATH</key><string>%s</string>\n' "$(xml_text "$service_path")"
+      printf '    <key>HOME</key><string>%s</string>\n' "$(xml_text "$HOME")"
+      printf '%s\n' '    <key>LC_CTYPE</key><string>UTF-8</string>'
+      [ -z "${HERDR_SESSION:-}" ] || printf '    <key>HERDR_SESSION</key><string>%s</string>\n' "$(xml_text "$HERDR_SESSION")"
+      printf '%s\n' '  </dict>' '  <key>AbandonProcessGroup</key><true/>'
+      printf '  <key>StandardOutPath</key><string>%s</string>\n' "$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")"
+      printf '  <key>StandardErrorPath</key><string>%s</string>\n' "$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")"
+      printf '%s\n' '  <key>ProcessType</key><string>Interactive</string>' '</dict>' '</plist>'
+    } >"$herdr_agent.new"
+    mv -f "$herdr_agent.new" "$herdr_agent"
+    herdr_job="gui/$(id -u)/$HERDR_AGENT_LABEL"
+    # an agent the Mac app's Remove disabled stays off until enabled; a loaded one is kicked, never booted out
+    launchctl enable "$herdr_job" </dev/null >/dev/null 2>&1 || true
+    if launchctl print "$herdr_job" </dev/null >/dev/null 2>&1; then
+      ! launchctl kickstart "$herdr_job" </dev/null >/dev/null 2>&1 || herdr_kept=launchd
+    elif launchctl bootstrap "gui/$(id -u)" "$herdr_agent" </dev/null >/dev/null 2>&1; then
+      herdr_kept=launchd
+    fi
+    # otherwise no login at this Mac's screen (reached over SSH alone): launchd loads the agent at the next one
+  elif desktop_pc; then
+    herdr_kept=desktop
+  elif ! { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }; then
+    herdr_kept=once
+  elif keep_lingering; [ "$lingering" != on ] && [ "$lingering" != turned-on ]; then
+    herdr_kept=linger-off
+  else
+    herdr_kept=once
+    herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
+    mkdir -p "$(dirname "$herdr_unit")"
+    # a UTF-8 locale, as the Mac app gives launchd's job: the installer's own when it has one, else C.UTF-8
+    herdr_ctype=C.UTF-8
+    for herdr_locale in "${LC_ALL:-}" "${LC_CTYPE:-}" "${LANG:-}"; do
+      if utf8_locale "$herdr_locale"; then herdr_ctype=$herdr_locale; break; fi
+    done
+    # oneshot that stays active and starts herdr in the background: systemd follows no process of it, and with
+    # KillMode=process and no ExecStop a stop or restart of the unit ends nothing that runs. herdr runs in the home
+    # folder, as from a login, not in systemd's /, and its output goes to the journal (journalctl --user -u ovis-herdr)
+    {
+      printf '%s\n' '[Unit]' "Description=$HERDR_UNIT_DESCRIPTION" '' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'KillMode=process' 'WorkingDirectory=~'
+      printf 'Environment="PATH=%s"\n' "$(unit_text "$service_path")"
+      printf 'Environment="LC_CTYPE=%s"\n' "$(unit_text "$herdr_ctype")"
+      ! utf8_locale "${LANG:-}" || printf 'Environment="LANG=%s"\n' "$(unit_text "$LANG")"
+      [ -z "${HERDR_SESSION:-}" ] || printf 'Environment="HERDR_SESSION=%s"\n' "$(unit_text "$HERDR_SESSION")"
+      # shellcheck disable=SC2016 # $$0 is systemd's escape for the $0 of sh -c
+      printf 'ExecStart=/bin/sh -c '\''"$$0" server </dev/null &'\'' "%s"\n' "$(unit_text "$herdr_bin" exec)"
+      printf '%s\n' '' '[Install]' 'WantedBy=default.target'
+    } >"$herdr_unit.new"
+    mv -f "$herdr_unit.new" "$herdr_unit"
+    # restart, not start: a unit still active from an earlier start whose herdr was stopped since would start nothing
+    if systemctl --user daemon-reload </dev/null >/dev/null 2>&1 && systemctl --user enable "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1 \
+      && systemctl --user restart "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1; then
+      herdr_kept=systemd
+    else
+      say "systemd did not take $herdr_unit, so herdr does not start by itself"
+    fi
+  fi
+  # a unit an earlier run wrote, where none is wanted now (lingering off, --no-service, a desktop)
+  case "$os:$herdr_kept" in linux:linger-off | linux:declined | linux:desktop) forget_herdr_unit "$herdr_kept" || true ;; esac
+  herdr_pid=""
+  if [ "$herdr_kept" != systemd ] && [ "$herdr_kept" != launchd ]; then
+    if command -v setsid >/dev/null 2>&1; then herdr_detach=setsid; elif command -v nohup >/dev/null 2>&1; then herdr_detach=nohup; else herdr_detach=""; fi
+    # shellcheck disable=SC2086 # no word when there is neither
+    (cd "$HOME" && exec $herdr_detach "$herdr_bin" server </dev/null >/dev/null 2>&1) &
+    herdr_pid=$!
+  fi
+  herdr_waited=0
+  until herdr_running; do
+    # a herdr started here that ended (a zombie until this shell reaps it) answers no more: said at once, not after the bound
+    if [ -n "$herdr_pid" ] && { ! kill -0 "$herdr_pid" 2>/dev/null || ps -o stat= -p "$herdr_pid" 2>/dev/null | grep -q '^Z'; }; then
+      herdr_running && break
+      return 1
+    fi
+    herdr_waited=$((herdr_waited + 1))
+    [ "$herdr_waited" -lt 20 ] || return 1
+    sleep 1
+  done
+}
+
+# Why herdr did not start, where to read it.
+herdr_failed() {
+  case "${herdr_kept:-once}" in
+    systemd) herdr_log="journalctl --user -u $HERDR_SERVICE" ;;
+    launchd) herdr_log="$HOME/Library/Logs/Ovis/herdr-server.log" ;;
+    *) herdr_log="run $(quoted "$herdr_bin") server" ;;
+  esac
+  say "herdr did not start, so neither did the app; to see why: $herdr_log"
+}
+
 ref_not_moved() {
   [ -n "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || return 0
   # What git answers, by the rule scripts/plugin-launch.ts (checkoutCommit) and install.ps1 read the installed commit
@@ -1473,24 +1937,30 @@ install_plugin() {
   fi
   node_link "$code" "$needs_node"
 
-  if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
-    # the action only queues the start (its output goes to herdr's plugin log), so wait for it here
+  # the action only queues the start (its output goes to herdr's plugin log), and a herdr started here starts the app
+  # itself once it is up (the plugin's startup hook): either way, wait for it here
+  ovis_wait=25
+  if herdr_running; then
+    unit_not_wanted
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
-    tries=0
-    until bun "$root/scripts/plugin.ts" status </dev/null | grep -q '^running'; do
-      tries=$((tries + 1))
-      [ "$tries" -lt 25 ] || {
-        say "did not start within 25 s; see: herdr plugin log list"
-        # the start ran inside herdr, so what it said is in herdr's plugin log, not on this terminal
-        # shellcheck disable=SC2016 # JavaScript, not shell
-        herdr plugin log list 2>/dev/null </dev/null | bun -e 'const logs = JSON.parse(await Bun.stdin.text()).result.logs.filter((log) => log.plugin_id === process.argv[1] && log.stderr); if (logs.length > 0) console.error(logs.at(-1).stderr.trim())' "$PLUGIN" || true
-        break
-      }
-      sleep 1
-    done
+  elif start_herdr; then
+    ovis_wait=60
   else
-    say "herdr is not running, so neither is the app yet: it starts with herdr. Run: herdr"
+    herdr_failed
+    return 0
   fi
+  tries=0
+  until bun "$root/scripts/plugin.ts" status </dev/null | grep -q '^running'; do
+    tries=$((tries + 1))
+    [ "$tries" -lt "$ovis_wait" ] || {
+      say "did not start within $ovis_wait s; see: herdr plugin log list"
+      # the start ran inside herdr, so what it said is in herdr's plugin log, not on this terminal
+      # shellcheck disable=SC2016 # JavaScript, not shell
+      herdr plugin log list 2>/dev/null </dev/null | bun -e 'const logs = JSON.parse(await Bun.stdin.text()).result.logs.filter((log) => log.plugin_id === process.argv[1] && log.stderr); if (logs.length > 0) console.error(logs.at(-1).stderr.trim())' "$PLUGIN" || true
+      break
+    }
+    sleep 1
+  done
 }
 
 # old_shape_valid <manifest>: the release's ovis-server.json.sig is a valid signature of it by RELEASE_PUBLIC_KEY, and
@@ -1606,6 +2076,16 @@ EOF
   mv -f "$OVIS_HOME/plugin/.herdr-plugin.toml.new" "$OVIS_HOME/plugin/herdr-plugin.toml"
 }
 
+# The plugin's own Ovis, by the state dir herdr gives the plugin (scripts/plugin-state.ts): without it, `stop` takes
+# ~/.local/state/ovis whenever a live server is recorded there, which is Ovis on herdr-core's, or one started by hand.
+stop_plugin_server() {
+  (
+    HERDR_PLUGIN_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/$PLUGIN"
+    export HERDR_PLUGIN_STATE_DIR
+    ovis_cli stop </dev/null >/dev/null 2>&1
+  ) || true
+}
+
 install_plugin_binary() {
   install_binary "$version"
   write_plugin
@@ -1622,18 +2102,24 @@ install_plugin_binary() {
       fail "herdr could not link the plugin in $OVIS_HOME/plugin; its output is above"
     fi
   fi
-  if herdr status server --json 2>/dev/null </dev/null | grep -q '"running":true'; then
-    [ "$binary_changed" = 0 ] || ovis_cli stop </dev/null >/dev/null 2>&1 || true
+  ovis_wait=25
+  # the release's server outlives a stopped herdr: one from the binary before keeps serving unless stopped first
+  [ "$binary_changed" = 0 ] || stop_plugin_server
+  if herdr_running; then
+    unit_not_wanted
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
-    tries=0
-    until ovis_cli status </dev/null 2>/dev/null | grep -q '^running'; do
-      tries=$((tries + 1))
-      [ "$tries" -lt 25 ] || { say "did not start within 25 s; see: herdr plugin log list"; break; }
-      sleep 1
-    done
+  elif start_herdr; then
+    ovis_wait=60
   else
-    say "herdr is not running, so neither is the app yet: it starts with herdr. Run: herdr"
+    herdr_failed
+    return 0
   fi
+  tries=0
+  until ovis_cli status </dev/null 2>/dev/null | grep -q '^running'; do
+    tries=$((tries + 1))
+    [ "$tries" -lt "$ovis_wait" ] || { say "did not start within $ovis_wait s; see: herdr plugin log list"; break; }
+    sleep 1
+  done
 }
 
 install_core_binary() {
@@ -1652,16 +2138,99 @@ install_core_binary() {
   ovis_cli start </dev/null || say "Ovis did not start; what it said is above. Start it again with: $start_line"
 }
 
+usage_help() {
+  cat <<EOF
+$USAGE
+
+Installs Ovis for this user (and herdr where it is missing), and leaves it running.
+
+  --add               end with \`ovis add\`: this PC signs in to your Ovis account, at a terminal you answer at
+  --account <id>      your Ovis account's id (ovis status on a PC already in it shows it): the add asks nothing
+                      (alone, it means --add), and a join checks the invite is for that account
+  --join-file <path>  join your Ovis account with an invite a device signed in to it made: a file holding its one
+                      line ($JOIN_PREFIX…). Nothing is signed in to on this PC
+  --join <line>       the same with the line itself, which then shows in the process list to every user of this PC:
+                      use --join-file or OVIS_JOIN instead
+  --no-service        where herdr is not running, start it once and set up no service or lingering
+  --help              this text
+
+Where arguments cannot be given, the same as variables: OVIS_ADD=1, OVIS_ADD_ACCOUNT=<id>, OVIS_JOIN=<line>,
+OVIS_NO_SERVICE=1. Also OVIS_REF=<branch or tag>, OVIS_FROM_SOURCE=1, OVIS_RUNTIME=herdr|herdr-core and
+OVIS_TAILSCALE_HTTPS_PORT=<port>. More: https://github.com/$REPO/blob/main/docs/guide.md#quick-start
+EOF
+}
+
+# The invite's line, from where it was given ($join_given: argument, file or env), trimmed as `ovis join` trims it, and
+# refused before anything is installed unless it has a join line's shape (shared/account-list-join.ts): its prefix,
+# then base64url only, at most JOIN_MAX characters. `ovis join` reads the rest. Nothing of it is ever printed: it holds the
+# invite's key. A file is read only when it is a regular file (a FIFO would hold the install), and never named back.
+read_join() {
+  if [ "$join_given" = file ]; then
+    case "$join_file" in /*) join_path=$join_file ;; *) join_path="$(pwd)/$join_file" ;; esac
+    [ -f "$join_path" ] && [ -r "$join_path" ] || fail "--join-file names no file you can read (a file holding the invite's line). Nothing was installed. $USAGE"
+    join_line=$(dd if="$join_path" bs=4097 count=1 2>/dev/null) || fail "could not read the file --join-file names. Nothing was installed. $USAGE"
+  fi
+  join_line=$(printf '%s\n' "$join_line" | awk '{ sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, ""); if ($0 != "") { out = out (n++ ? "\n" : "") $0 } } END { printf "%s", out }')
+  join_shaped=1
+  case "$join_line" in "$JOIN_PREFIX"?*) ;; *) join_shaped=0 ;; esac
+  case "${join_line#"$JOIN_PREFIX"}" in *[!A-Za-z0-9_-]*) join_shaped=0 ;; esac
+  [ "${#join_line}" -le "$JOIN_MAX" ] || join_shaped=0
+  [ "$join_shaped" = 1 ] || fail "that is not an Ovis invite: an invite is one line that starts with $JOIN_PREFIX, made on a device signed in to your account. Nothing was installed. $USAGE"
+}
+
 main() {
   # before anything is installed: a misspelt option must not install without what it asked for
   add=0
   [ "${OVIS_ADD:-}" != 1 ] || add=1
-  for option in "$@"; do
-    case "$option" in
+  account=${OVIS_ADD_ACCOUNT:-}
+  case "$account" in -*) fail "OVIS_ADD_ACCOUNT takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
+  no_service=0
+  [ "${OVIS_NO_SERVICE:-}" != 1 ] || no_service=1
+  join_given=""
+  join_line=""
+  join_file=""
+  join_path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
       --add) add=1 ;;
-      *) fail "does not know the option '$option'. $USAGE" ;;
+      --account | --account=*)
+        if [ "$1" = --account ]; then account=${2:-}; [ $# -lt 2 ] || shift; else account=${1#--account=}; fi
+        case "$account" in "" | -*) fail "--account takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
+        ;;
+      # the line itself is never named back, in any refusal
+      --join | --join=*)
+        [ -z "$join_given" ] || fail "give the invite one way only: --join-file <path>, OVIS_JOIN, or --join <line>. $USAGE"
+        if [ "$1" = --join ]; then join_line=${2:-}; [ $# -lt 2 ] || shift; else join_line=${1#--join=}; fi
+        case "$join_line" in "" | -*) fail "--join takes the invite's line, which starts with $JOIN_PREFIX. $USAGE" ;; esac
+        join_given=argument
+        ;;
+      --join-file | --join-file=*)
+        [ -z "$join_given" ] || fail "give the invite one way only: --join-file <path>, OVIS_JOIN, or --join <line>. $USAGE"
+        if [ "$1" = --join-file ]; then join_file=${2:-}; [ $# -lt 2 ] || shift; else join_file=${1#--join-file=}; fi
+        case "$join_file" in "" | -*) fail "--join-file takes the path of a file holding the invite's line. $USAGE" ;; esac
+        join_given=file
+        ;;
+      --no-service) no_service=1 ;;
+      --help | -h)
+        usage_help
+        exit 0
+        ;;
+      *) fail "does not know the option '$1'. $USAGE" ;;
     esac
+    shift
   done
+  if [ -z "$join_given" ] && [ -n "${OVIS_JOIN:-}" ]; then
+    join_line=$OVIS_JOIN
+    join_given=env
+  fi
+  # the line is the installer's alone from here: nothing it starts (herdr, and so every terminal in it) is given it
+  unset OVIS_JOIN
+  if [ -n "$join_given" ]; then
+    [ "$add" = 0 ] || fail "a join adds this PC with an invite, and --add (OVIS_ADD=1) with a sign-in: give one of them. $USAGE"
+    read_join
+  fi
+  # the account named is the add asked for, or with an invite, the account the invite must be for
+  [ -z "$account" ] || [ -n "$join_given" ] || add=1
   case "$(uname -s)" in
     Linux) os=linux ;;
     Darwin) os=darwin ;;
@@ -1675,6 +2244,11 @@ main() {
   platform="$os-$arch"
   terminal=0
   [ ! -t 1 ] || terminal=1
+  # a join with no account named is confirmed by the person at this terminal: where nobody can answer, it is refused now,
+  # not after the install
+  if [ -n "$join_given" ] && [ -z "$account" ] && ! join_answerable; then
+    fail "a join where nobody can answer needs the account the invite is for: add --account <id> (the id shown with the invite, or ovis status --json on a PC already in it; OVIS_ADD_ACCOUNT=<id> where arguments cannot be given). Nothing was installed. $USAGE"
+  fi
   if [ "$os" = linux ] && ldd --version 2>&1 | grep -qi musl; then
     fail "the terminal addon has no build for musl (Alpine); use a glibc distribution"
   fi
@@ -1684,6 +2258,10 @@ main() {
   original_path="$PATH"
   installed_here=""
   new_install=0
+  herdr_kept=""
+  lingering=""
+  herdr_unit_gone=""
+  herdr_doomed=0
   PATH="$BIN_DIR:$HOME/.bun/bin:$NODE_DIR/bin:$LEGACY_NODE_DIR/bin:$PATH"
   export PATH
 
@@ -1758,6 +2336,7 @@ main() {
 
   open_app
   add_pc
+  join_pc
 
   case ":$original_path:" in
     *":$BIN_DIR:"*) ;;
@@ -1772,7 +2351,8 @@ main() {
         say "installed$installed_here into $BIN_DIR, which your shell does not put on its PATH. Add it, for example:"
         # shellcheck disable=SC2016 # the line to paste, $HOME and $PATH unexpanded
         printf '    echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.profile\n'
-        say "and start herdr from a new terminal, so it and the app find them."
+        # a herdr started here has them on its PATH already
+        if [ -n "$herdr_kept" ]; then say "then open a new terminal, so your shell finds them."; else say "and start herdr from a new terminal, so it and the app find them."; fi
       fi
       ;;
   esac
@@ -1787,6 +2367,10 @@ main() {
       [ "$star" != no ] || offer_star
     fi
   fi
+  # --account is a script's add, or an agent's, and a join was asked for with a key: the exit status tells whether this
+  # PC was added, or joined
+  [ -z "$account" ] || [ -n "$join_given" ] || [ "$add_result" = done ] || exit 1
+  [ -z "$join_given" ] || [ "$join_result" = 0 ] || exit 1
 }
 
 # the whole script is read before anything runs: under `curl | sh`, a command that reads stdin

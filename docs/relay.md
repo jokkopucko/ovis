@@ -335,8 +335,35 @@ The installer runs `ovis add` as its last step when it is given `--add`
 (`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add`), at a terminal you can answer at and
 while the app runs. What was typed in that terminal while the installer worked is discarded before
 the step starts, so it answers nothing the step asks; where the installer cannot discard it, it
-prints the command instead. On a PC where it has just installed herdr the app is not up yet: start
-herdr, then run `ovis add`, as its last lines say.
+prints the command instead. On a PC where herdr was not running (installed just now, or stopped),
+the installer first starts it, so the app is up for the add, and on a server sets up what starts it
+again at boot ([Quick start](guide.md#quick-start)). With the account named, nothing is asked, so one
+line adds a new server from a script or a coding agent, with no terminal
+([INSTALL.md](../INSTALL.md) says how an agent runs it and relays the sign-in code):
+
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>
+```
+
+It runs `ovis add --account <id>` and exits non-zero when the PC was not added. A release whose add
+does not take `--account` (before 0.5.10) is not started that way, since it would not check the
+account; the installer says to update first. Afterwards `ovis status --json` on the PC names the
+account it is in.
+
+With an invite instead (`ovis join`, below), nothing is signed in to on the PC, and the installer runs
+`ovis join` with the line in its environment (`OVIS_INVITE`), never on a command line:
+
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ./ovis-invite.txt --account <id>
+```
+
+`OVIS_JOIN=<line>` does the same where arguments cannot be given; `--join <line>` too, but the line then
+shows in the process list while the installer runs. A line that is not one (`ovis-join:1:` and
+base64url) is refused before anything is installed, and so is `--join` with `--add`. `--account` is
+the account the invite must be for; without it the installer runs `ovis join` at a terminal, which
+asks, and where nobody can answer it refuses before installing anything, naming `--account <id>`. It exits non-zero unless the PC joined, with one line for what
+`ovis join` reported (a used or expired invite, a PC in another account, an account service that did
+not answer, …).
 
 `login`, `add` and `link` are one command under three names. On a desktop, `login` opens the sign-in
 page in the browser itself, as `codex login` does; the address and code stay on screen for another device. Every way turns the relay on first when

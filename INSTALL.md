@@ -47,7 +47,7 @@ git --version
 | --- | --- | --- |
 | **A. herdr plugin** (default) | The user wants it to start with herdr | In-app: Settings → About |
 | **B. Source checkout** | The user wants to develop it, or asks for a clone | In-app, while the checkout stays on a clean `main` |
-| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer) and to let Tailscale serve the app | In-app, like A |
+| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer), to let Tailscale serve the app, and, where herdr is not running, to have herdr started at login (and at boot, with lingering) | In-app, like A |
 
 Use A unless the user says otherwise. C is A plus the prerequisites and step 5 in one command,
 `curl -fsSL https://ovis.sh/install.sh | sh`: it installs herdr for the user only (no sudo) when it
@@ -57,7 +57,71 @@ size and SHA-256 it names; nothing there changes when a check fails), with no Bu
 small plugin folder that runs that binary into herdr, starts it when herdr
 runs, and, when Tailscale runs on the PC, serves the app to the tailnet (`tailscale serve`) and
 prints the address as a QR code. It changes the user's Tailscale configuration, so it needs the
-same **Ask** as step 5. Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
+same **Ask** as step 5. Where herdr is not running (C just installed it, or it is stopped), C starts
+herdr's server headless, and the app with it, and sets up what starts herdr again. On a Linux PC used
+without a desktop, that is the user service `ovis-herdr` (`systemctl --user`), only where lingering is
+on or can be turned on without a password (`loginctl enable-linger`; it records that it did in
+`~/.local/share/ovis/lingering`), so herdr starts at boot and runs after a logout. A desktop is told
+from the session it runs in and from the machine (an enabled display manager, or a graphical session
+of the user's), so a desktop PC set up over SSH gets no service. On a Mac, at the screen or over SSH,
+it is the `sh.ovis.herdr-server` LaunchAgent, at login, which launchd runs inside the user's login
+session. Where lingering is not on, on a Linux desktop, without a service manager, or with
+`--no-service` (`OVIS_NO_SERVICE=1`), it starts herdr once (it outlives a logout) and sets up nothing.
+A later run removes the service an earlier one set up where none is wanted now (lingering turned off
+since, `--no-service`, a desktop) without stopping herdr, and the closing lines say so; `--no-service`
+leaves a Mac's LaunchAgent, which the Mac app shares, and says how to remove it. That is a service and possibly lingering for the user's
+account: say so when you **Ask**, and pass `--no-service` if the user does not want them. The service
+never stops herdr, and a herdr that runs is left as it is. It ends by saying what runs and what starts
+it again, `ovis status` to see it and `ovis stop` to stop it.
+
+To add the PC to the user's Ovis account in the same line, with no terminal, pass the account's id
+(the user reads it from `ovis status` on a PC already in the account, or **Settings → Manage account**).
+Never guess the id, and do not sign in for the user. The run takes the install plus up to 10 minutes
+of waiting for the user, and the sign-in address and code it prints are needed while it waits: a
+command run in the foreground of a tool call shows its output only when it ends, and may be cut off
+before. So start it in the background with its output in a file:
+
+```bash
+log=~/ovis-install.log
+nohup sh -c 'curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>; echo "install-exit=$?"' >"$log" 2>&1 </dev/null &
+```
+
+Then read the file every few seconds (`tail -n 30 ~/ovis-install.log`). As soon as it shows
+`1. On any device, open: <address>` and `2. Enter this code: <code>` (or `Opening your browser at:`
+on a PC with a desktop), give the user that address and code at once: they sign in there with GitHub
+or Google, then press **Add** for this PC in Ovis on a device of that account. Keep reading until the
+file ends with `install-exit=<n>`, for at most 15 minutes: `install-exit=0` means the PC was added
+(`Added. Open (this PC) from My PCs.`), anything else means it was not, and the lines above it say why.
+After `install-exit=0` the user sees the PC in **My PCs** on their devices, and the installer's last
+lines say what runs (`Ovis runs now at …`). To confirm it yourself, run `ovis status --json` on the PC:
+`account` is the account's id (compare it with the one the user gave you), and `relay.connected` turns
+`true` once its relay is online, within seconds (the PC is in the account either way).
+
+**Set up a PC from an agent.** The way with nothing for the user to relay is an invite: the user makes
+one on a device signed in to their account (one line, `ovis-join:1:…`, which works once, for 15
+minutes) and gives it to you with the account's id. The line is a key: put it in a file only the user
+can read, with your file tool, never in a command line (that shows in the process list) or a log. Then
+run the one line for the PC's system, in the background with its output in a file, as above:
+
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ~/ovis-invite.txt --account <id>
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -JoinFile $HOME\ovis-invite.txt -Account <id>
+```
+
+The PC joins with no sign-in. An invite made to add the PC at once ends within seconds; any other waits
+up to 10 minutes for **Add**: when the file says `press Add for <name>`, tell the user to press it on a
+device of that account. The file ends with `install-exit=0` once the PC is in the account (`this PC
+is in the Ovis account the invite is for`), and `ovis status --json` confirms it as above; anything
+else means it did not join, and the last `Ovis:` line says why (a used or expired invite needs a new
+one). `OVIS_JOIN=<line>` gives the line where arguments cannot be given; `--join <line>` works too but
+puts it in the process list. Without `--account` the installer asks at a terminal whether the
+invite's account is the user's; where nobody can answer (no terminal, as from your tool) it refuses
+before installing anything and names the flag to add. Never guess the id.
+
+Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
 take turns through an install lock in `~/.local/share/ovis`: a waiter breaks the lock once the holder's pid no
 longer runs, one breaker at a time. A release
 from before the compiled server, a branch in `OVIS_REF`, an install from source already on the PC, or
@@ -300,6 +364,19 @@ The old `HERDR_WEB_*` names still work. The [user guide](docs/guide.md#configura
 herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
 herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
 ```
+
+Where the one-line installer started herdr, also remove its service, without stopping herdr (it may
+hold the user's agents), and turn lingering off only where the installer turned it on:
+
+```bash
+systemctl --user disable ovis-herdr; rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ovis-herdr.service"; systemctl --user daemon-reload   # Linux
+launchctl disable gui/$(id -u)/sh.ovis.herdr-server; rm -f ~/Library/LaunchAgents/sh.ovis.herdr-server.plist   # macOS
+if [ -f ~/.local/share/ovis/lingering ]; then loginctl disable-linger && rm ~/.local/share/ovis/lingering; fi
+```
+
+A herdr the service started ends at the user's next logout once lingering is off. Ask before turning
+lingering off: something else on the PC may rely on it. `launchctl disable` leaves the label listed as
+disabled in launchd's per-user overrides, which is harmless.
 
 An install on herdr-core (no herdr) has no plugin: stop it and remove its service and checkout.
 

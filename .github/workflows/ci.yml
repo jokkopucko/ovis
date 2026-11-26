@@ -220,7 +220,7 @@ jobs:
           exit 0
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/herdr-discovery.test.ts ./server/remote-entry.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts
+      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/herdr-discovery.test.ts ./server/remote-entry.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts ./scripts/install-herdr-service.test.ts
         if: needs.changes.outputs.draft != 'true'
       # The Mac runner's job-started.sh (scripts/self-hosted-runner/README.md "Mac runner") under macOS's bash and
       # jq: the job it allows, alone. Its refusals may kill and run only isolated, never on this host: in the Linux
