@@ -416,6 +416,7 @@ const BASE: Record<string, string> = {
   "Files": "파일",
   "This image is {size}; download it to view.": "이 이미지는 {size}입니다. 보려면 다운로드하세요.",
   "Download": "내려받기",
+  "Saved to Downloads.": "다운로드 폴더에 저장했습니다.",
   "Open {path}": "{path} 열기",
 
   "Continue": "계속",

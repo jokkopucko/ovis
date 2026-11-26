@@ -27,6 +27,21 @@ final class SavedImage {
         return type != null && type.matches("image/[A-Za-z0-9.+-]+");
     }
 
+    /** A well-formed MIME type (`type/subtype`, parameters dropped by the page), of any kind. */
+    static boolean isFileType(String type) {
+        return type != null && type.matches("[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}");
+    }
+
+    /**
+     * The type Downloads files `name` under: the one its extension stands for in `byExtension`
+     * (Android's MimeTypeMap), so Downloads keeps the name as given, or application/octet-stream.
+     */
+    static String typeForName(String name, java.util.function.Function<String, String> byExtension) {
+        int dot = name.lastIndexOf('.');
+        String mapped = dot > 0 && dot < name.length() - 1 ? byExtension.apply(name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT)) : null;
+        return isFileType(mapped) ? mapped : "application/octet-stream";
+    }
+
     static byte[] decode(String data) {
         if (data == null || data.isEmpty() || data.length() / 4 * 3 > MAX_BYTES + 3) return null;
         try {
@@ -43,6 +58,11 @@ final class SavedImage {
      * nothing is left.
      */
     static String fileName(String name) {
+        return fileName(name, "image");
+    }
+
+    /** `name` as a file name Downloads takes, or `fallback` when nothing of it is left. */
+    static String fileName(String name, String fallback) {
         String last = name == null ? "" : name.substring(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
         String clean = last.replaceAll("[\\p{Cntrl}:*?\"<>|]", "").trim().replaceFirst("^\\.+", "");
         if (utf8(clean) > MAX_NAME_BYTES) {
@@ -58,7 +78,7 @@ final class SavedImage {
             }
             clean = stem.substring(0, end) + extension;
         }
-        return clean.isEmpty() ? "image" : clean;
+        return clean.isEmpty() ? fallback : clean;
     }
 
     private static int utf8(String text) {

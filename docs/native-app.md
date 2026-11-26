@@ -796,7 +796,11 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   through the relay), to `SaveImagePlugin` (`OvisSave`), which writes them to Downloads through
   MediaStore with no storage permission, as Chrome saves a download. Android 8 and 9 give an app
   that without the storage permission, so there it opens the share sheet with the picture instead.
-  An app built before the plugin makes the viewer say it couldn't save.
+  An app built before the plugin makes the viewer say it couldn't save. Download in the file
+  viewer takes the same way for a file of any type (`saveFile`): the page reads the file through
+  its transport and hands its bytes over, up to the plugin's 20 MB (a larger file is not offered:
+  the viewer says to download it on the PC). An app without `saveFile` makes the viewer ask for
+  an update.
 - A PC's link on the hosted shell tapped outside the app (a message, the camera app reading the
   PC's QR code) opens in the app: the manifest's `autoVerify` intent-filter takes
   `https://app.ovis.sh/s/`, which Android verifies against

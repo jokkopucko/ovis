@@ -242,7 +242,6 @@ export const CHAT_JA: Record<string, string> = {
   "{n} of {count}": "{count} 枚中 {n} 枚目",
   "Couldn't copy the image. Download it instead.": "画像をコピーできませんでした。代わりにダウンロードしてください。",
   "Couldn't save the image.": "画像を保存できませんでした。",
-  "Saved to Downloads.": "ダウンロードに保存しました。",
   "Conversation turns": "会話のターン",
   "Go to turn {n}": "ターン {n} へ移動",
   "Show full message": "メッセージ全体を表示",

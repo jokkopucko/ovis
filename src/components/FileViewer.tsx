@@ -30,6 +30,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { MAX_INLINE_IMAGE_BYTES, markdownImagePreview } from "../lib/markdownImages.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useAppWindow } from "../lib/install.ts";
+import { fileFromResponse, FileSaveTooLargeError, fileSaveRoute, pcFile, SAVE_MAX_BYTES, saveInApp, shareFile } from "../lib/saveImage.ts";
 import type { MarkdownBlock } from "../../shared/markdown.ts";
 import { knownPreview, parsePreviewOffThread } from "../lib/markdownPreview.ts";
 import { outlineOf } from "../lib/markdownOutline.ts";
@@ -142,6 +143,8 @@ function selectSource(element: HTMLElement): void {
   else selectContents(element);
 }
 
+const failedSave = (error: unknown) => error instanceof FileSaveTooLargeError ? "too-large" : "failed";
+
 export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActive = true, page = false, docked = false, panelStart, onKind, onTogglePresentation, editable = false }: FileViewerProps) {
   const t = useT();
   const { settings } = useSettings();
@@ -179,6 +182,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   useOpeningPaneLane(surface, paneId === null ? null : paneStorageId(machineId, paneId));
   const [error, setError] = useState<FileFailure | null>(null);
   const [loaded, setLoaded] = useState<FilePreviewText | null>(null);
+  const [saveRoute] = useState(fileSaveRoute);
+  const [prepared, setPrepared] = useState<{ info: FileInfo; result: File | "too-large" | "failed" } | null>(null);
   const [chosen, setChosen] = useState<{ path: string; mode: TextViewMode } | null>(null);
   const mode = chosen?.path === path ? chosen.mode : target.line === null ? "preview" : "code";
   const sourceRef = useRef<HTMLElement>(null);
@@ -213,18 +218,33 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       if (next.kind !== "text") return;
       const budget = readBudget(languageForPath(next.path), next.size);
       const started = Date.now();
+      const shareText = saveRoute === "share" && next.size > 0 && next.size <= SAVE_MAX_BYTES;
+      let preparing = false;
       deadline = setTimeout(() => abort.abort(), budget.timeoutMs);
       try {
-        const response = await getTransport().fetch(fileUrl(next.path, paneId), { signal: abort.signal, headers: { range: `bytes=0-${budget.bytes - 1}` } });
+        const response = await getTransport().fetch(fileUrl(next.path, paneId), { signal: abort.signal, headers: { range: `bytes=0-${shareText ? SAVE_MAX_BYTES : budget.bytes - 1}` } });
         if (!response.ok && !(response.status === 416 && response.headers.get("content-range")?.trim() === "bytes */0")) {
           if (response.headers.get("content-type")?.includes("application/json")) throw await errorFrom(fileUrl(next.path, paneId), response);
           await response.body?.cancel();
           throw new ApiError(fileUrl(next.path, paneId), response.status, response.statusText, null);
         }
         clearTimeout(deadline);
+        if (shareText) {
+          // A second request can read a different revision. Keep the original bytes to share,
+          // but let the preview still stop at its own byte, line and time budgets.
+          const file = fileFromResponse(response.clone(), next.name, next.mime.split(";")[0]?.trim() ?? "");
+          preparing = true;
+          void file.then(
+            (result) => { if (!cancelled) setPrepared({ info: next, result }); },
+            (reason: unknown) => { if (!cancelled) setPrepared({ info: next, result: failedSave(reason) }); },
+          );
+        }
         const timeoutMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
         const body = await readFilePreviewText(response, budget.bytes, { signal: abort.signal, maxLines: budget.lines, timeoutMs, partialOnTimeout: true });
         if (!cancelled) setLoaded(body);
+      } catch (reason) {
+        if (!cancelled && shareText && !preparing) setPrepared({ info: next, result: failedSave(reason) });
+        throw reason;
       } finally { clearTimeout(deadline); }
     }).catch(async (reason: unknown) => {
       if (cancelled) return;
@@ -239,7 +259,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       setError(fileFailure(reason));
     });
     return () => { cancelled = true; clearTimeout(deadline); abort.abort(); };
-  }, [target.path, paneId, fetchFileInfo, fileUrl, fetchDirectories, remote, saves]);
+  }, [target.path, paneId, fetchFileInfo, fileUrl, fetchDirectories, remote, saves, saveRoute]);
 
   useEffect(() => {
     if ((info === null && directory === null) || reportedKind.current === path) return;
@@ -322,11 +342,71 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const pageSrc = useResourceUrl(!relay && htmlPage && !source ? pageUrl : null);
   const image = useResourceUrlState(info?.kind === "image" && info.size <= MAX_INLINE_IMAGE_BYTES ? `${url}&revision=${encodeURIComponent(`${info.modified}:${info.size}`)}` : null);
   const imageSrc = image.url;
+  const savedHere = saveRoute !== "link";
   // The same inert media body can be saved through the download attribute. In blob mode this
   // avoids fetching and retaining a second complete video/PDF merely to draw its download link.
   const mediaDownload = relay && (info?.kind === "video" || info?.kind === "audio" || info?.kind === "pdf");
-  const download = useResourceUrlState(info === null || mediaDownload ? null : fileUrl(info.path, paneId, true));
+  const download = useResourceUrlState(savedHere || info === null || mediaDownload ? null : fileUrl(info.path, paneId, true));
   const downloadHref = mediaDownload ? resource.url : download.url;
+  // Where a download link saves nothing (the Android app's WebView drops it) or would load the file
+  // over the app (the iOS app, a home-screen app), Download is a button: the file is read through
+  // the transport, then saved by the Android app to Downloads or handed to the share sheet, as the
+  // image viewer's Download does (lib/saveImage.ts). Its bytes cross the app's bridge at once, so a
+  // file past SAVE_MAX_BYTES is not offered there: the viewer says to download it on the PC.
+  const savePath = info?.path ?? null;
+  const saveSrc = info === null ? null : fileUrl(info.path, paneId, false);
+  const saveName = info?.name ?? "file";
+  const saveType = info?.mime.split(";")[0]?.trim() ?? "";
+  const saveFits = info !== null && info.size > 0 && info.size <= SAVE_MAX_BYTES;
+  const [saveNote, setSaveNote] = useState<{ path: string; state: "saved" | "failed" | "too-large" | "update" } | null>(null);
+  // a note is about the tap that made it: another file, or this one opened again, starts without it
+  useEffect(() => setSaveNote(null), [savePath]);
+  // The share sheet opens only within the tap. Non-text previews don't read their bytes here,
+  // so prepare those files separately.
+  const [prepareRetry, setPrepareRetry] = useState(0);
+  const saving = useRef(false);
+  useEffect(() => {
+    if (saveRoute !== "share" || info === null || info.kind === "text" || saveSrc === null || !saveFits) return;
+    const abort = new AbortController();
+    pcFile(saveSrc, saveName, saveType, abort.signal).then(
+      (file) => { if (!abort.signal.aborted) setPrepared({ info, result: file }); },
+      (error: unknown) => { if (!abort.signal.aborted) setPrepared({ info, result: failedSave(error) }); },
+    );
+    return () => abort.abort();
+  }, [saveRoute, info, saveSrc, saveName, saveType, saveFits, prepareRetry]);
+  const shareReady = prepared?.info === info ? prepared : null;
+  // on the share route Download waits for the read; a file it never reads (too large, empty) says why at once
+  const saveWaits = saveRoute === "share" && saveFits && shareReady === null;
+  const saveHere = (): void => {
+    if (savePath === null || saveSrc === null || saving.current) return;
+    const note = (state: "saved" | "failed" | "too-large" | "update" | null) => setSaveNote(state === null ? null : { path: savePath, state });
+    if (saveRoute === "update") { note("update"); return; }
+    if (!saveFits) { note(info !== null && info.size > SAVE_MAX_BYTES ? "too-large" : "failed"); return; }
+    let file: Promise<File>;
+    if (saveRoute === "share") {
+      if (shareReady === null) return;
+      if (shareReady.result === "failed") {
+        note("failed");
+        setPrepared(null);
+        if (info?.kind === "text") setSaves((count) => count + 1);
+        else setPrepareRetry((attempt) => attempt + 1);
+        return;
+      }
+      if (shareReady.result === "too-large") { note("too-large"); return; }
+      file = Promise.resolve(shareReady.result);
+    } else file = pcFile(saveSrc, saveName, saveType);
+    saving.current = true;
+    note(null);
+    void file.then((read) => saveRoute === "app" ? saveInApp(read, "saveFile") : shareFile(read), failedSave).then((result) => {
+      saving.current = false;
+      if (result === "saved" || result === "failed" || result === "too-large") note(result);
+    });
+  };
+  const shownSaveNote = saveNote !== null && saveNote.path === savePath ? saveNote.state : null;
+  const saveNoteLine = shownSaveNote === null ? null : shownSaveNote === "saved"
+    ? <p className="file-viewer-note is-done" role="status">{t("Saved to Downloads.")}</p>
+    : <p className="file-viewer-note" role="alert">{shownSaveNote === "update" ? t("Update the Ovis app to download files.")
+      : shownSaveNote === "too-large" ? t("Too large to save on the phone - download on the PC") : t("Couldn't save the file.")}</p>;
   const modes = <div className="segmented file-viewer-modes" role="group" aria-label={t("Show the HTML file as")}>
     <button type="button" aria-pressed={!source} onClick={() => setSource(false)}>{t("Page")}</button>
     <button type="button" aria-pressed={source} onClick={() => setSource(true)}>{t("Source")}</button>
@@ -424,7 +504,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       ? <p className="file-viewer-note" role="alert">{t("Too large to open on the phone - download on the PC")}</p>
       : <>
         <p className="file-viewer-note" role="alert">{fileFailureText(fileFailure(resourceError), t)}</p>
-        {fileFailure(resourceError) === "unreadable" && downloadHref !== null && <p className="file-viewer-note file-viewer-note-hint">{t("Download it or open the raw file.")}</p>}
+        {fileFailure(resourceError) === "unreadable" && (savedHere || downloadHref !== null) && <p className="file-viewer-note file-viewer-note-hint">{t("Download it or open the raw file.")}</p>}
       </>;
     switch (info.kind) {
       case "image":
@@ -503,7 +583,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     {!page && !appWindow && <ExternalLink kind="ovis" referrer className="icon-button file-viewer-action file-viewer-wide" href={newTabSrc ?? undefined} aria-label={t("Open in a new tab")} title={t("Open in a new tab")}><ExternalLinkIcon aria-hidden="true" /></ExternalLink>}
     {(page || markdown) && !appWindow && <ExternalLink kind="ovis" referrer className="icon-button file-viewer-action file-viewer-wide" href={rawSrc ?? undefined} aria-label={t("Open raw file")} title={t("Open raw file")}><Code aria-hidden="true" /></ExternalLink>}
     {!page && appWindow && <CopyLinkButton href={newTabHref} />}
-    <a className="icon-button file-viewer-action file-viewer-wide" href={downloadHref ?? undefined} download={info?.name ?? true} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>
+    {savedHere
+      ? <button type="button" className="icon-button file-viewer-action file-viewer-wide" onClick={saveHere} disabled={info === null || saveWaits} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></button>
+      : <a className="icon-button file-viewer-action file-viewer-wide" href={downloadHref ?? undefined} download={info?.name ?? true} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>}
     {canEdit && !editing && <button type="button" className="icon-button file-viewer-action" aria-label={t("Edit file")} title={t("Edit file")} onClick={() => setEditing(true)}><Pencil aria-hidden="true" /></button>}
     {copyable && !editing && <CopyFileButton text={loaded.text} sourceRef={sourceRef} onShowSource={showSourceToSelect} />}
     {!docked && <div className="file-viewer-more" ref={moreRef}>
@@ -513,7 +595,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
         {!page && !appWindow && <ExternalLink kind="ovis" referrer role="menuitem" className="file-viewer-more-item" href={newTabSrc ?? undefined} onClick={() => closeMore(true)}><ExternalLinkIcon aria-hidden="true" />{t("Open in a new tab")}</ExternalLink>}
         {(page || markdown) && !appWindow && <ExternalLink kind="ovis" referrer role="menuitem" className="file-viewer-more-item" href={rawSrc ?? undefined} onClick={() => closeMore(true)}><Code aria-hidden="true" />{t("Open raw file")}</ExternalLink>}
         {!page && appWindow && <CopyLinkButton href={newTabHref} menuItem onDone={() => closeMore(true)} />}
-        <a role="menuitem" className="file-viewer-more-item" href={downloadHref ?? undefined} download={info?.name ?? true} onClick={() => closeMore(true)}><Download aria-hidden="true" />{t("Download")}</a>
+        {savedHere
+          ? <button type="button" role="menuitem" className="file-viewer-more-item" disabled={info === null || saveWaits} onClick={() => { saveHere(); closeMore(true); }}><Download aria-hidden="true" />{t("Download")}</button>
+          : <a role="menuitem" className="file-viewer-more-item" href={downloadHref ?? undefined} download={info?.name ?? true} onClick={() => closeMore(true)}><Download aria-hidden="true" />{t("Download")}</a>}
       </div>}
     </div>}
   </>;
@@ -552,6 +636,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   if (page) return (
     <main ref={surface} className="file-reader">
       {header}
+      {saveNoteLine}
       {withOutline(<div ref={bodyRef} className={`${bodyClass} file-reader-body`} tabIndex={-1}>{body}{openingNote}</div>)}
     </main>
   );
@@ -562,6 +647,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       <section className="file-viewer file-viewer-docked">
         {header}
         {toolbar}
+        {saveNoteLine}
         {withOutline(<div ref={bodyRef} className={bodyClass}>{body}</div>)}
       </section>
     </aside>
@@ -571,6 +657,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     <div className="modal-scrim file-viewer-scrim" onMouseDown={(event) => event.target === event.currentTarget && !editChanged && onClose()}>
       <section className={virtual !== null && view === "code" ? "modal file-viewer file-viewer-virtual" : "modal file-viewer"} role="dialog" aria-modal="true" aria-label={info?.name ?? path} ref={surface} tabIndex={-1}>
         {header}
+        {saveNoteLine}
         {withOutline(<div ref={bodyRef} className={bodyClass} tabIndex={-1}>{body}{openingNote}</div>)}
       </section>
     </div>

@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.webkit.MimeTypeMap;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -20,14 +21,15 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.UnaryOperator;
 
 /**
- * Download in the chat's image viewer (src/lib/saveImage.ts). The WebView has no download handler
- * and no Web Share, so a download link did nothing (#3153). The page hands the picture's bytes over
+ * Download in the chat's image viewer and the file viewer (src/lib/saveImage.ts). The WebView has no download handler
+ * and no Web Share, so a download link did nothing (#3153). The page hands the file's bytes over
  * instead, already read through its own transport (a relay PC's blob: pictures, a PC's signed-in
- * file route), and the picture lands in Downloads, as a download in Chrome does. Android 8 and 9
+ * file route), and the file lands in Downloads, as a download in Chrome does. Android 8 and 9
  * write to Downloads only with the storage permission, which the app does not ask for: there the
- * picture goes to the share sheet. Only the PC's own page has the bridge; still, one save runs at a
+ * file goes to the share sheet. Only the PC's own page has the bridge; still, one save runs at a
  * time and SavedImage caps their size and number for each instance of this plugin (up to 500 MiB),
  * so a page cannot write without limit. It is a budget, not a guarantee: a phone with less free
  * space can still fill, and a new instance (the activity restarted) starts a new budget.
@@ -47,22 +49,39 @@ public class SaveImagePlugin extends Plugin {
             call.reject("Only a picture can be saved.");
             return;
         }
+        save(call, name -> type, "image");
+    }
+
+    /**
+     * Download in the file viewer (src/components/FileViewer.tsx): any file the page read, of any
+     * type, as Chrome would download it. Its type is the one its name's extension stands for (or
+     * application/octet-stream), not the PC's: Downloads appends the extension of a type that does
+     * not match the name, so `notes.md` sent as text/plain would land as `notes.md.txt`.
+     */
+    @PluginMethod
+    public void saveFile(PluginCall call) {
+        MimeTypeMap types = MimeTypeMap.getSingleton();
+        save(call, name -> SavedImage.typeForName(name, types::getMimeTypeFromExtension), "file");
+    }
+
+    private void save(PluginCall call, UnaryOperator<String> typeOf, String fallbackName) {
         if (!saving.compareAndSet(false, true)) {
-            call.reject("Another picture is being saved.");
+            call.reject("Another file is being saved.");
             return;
         }
         boolean handedOn = false;
         try {
             byte[] bytes = SavedImage.decode(call.getString("data"));
             if (bytes == null) {
-                call.reject("The picture is empty, too large or not base64.");
+                call.reject("The file is empty, too large or not base64.");
                 return;
             }
             if (!budget.take(SystemClock.elapsedRealtime(), bytes.length)) {
-                call.reject("Too many pictures saved; try again later.");
+                call.reject("Too many files saved; try again later.");
                 return;
             }
-            String name = SavedImage.fileName(call.getString("name"));
+            String name = SavedImage.fileName(call.getString("name"), fallbackName);
+            String type = typeOf.apply(name);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 toDownloads(name, type, bytes);
                 JSObject result = new JSObject();
@@ -73,7 +92,7 @@ public class SaveImagePlugin extends Plugin {
                 handedOn = true;
             }
         } catch (IOException | RuntimeException failed) {
-            call.reject("The picture could not be saved.", failed);
+            call.reject("The file could not be saved.", failed);
         } finally {
             if (!handedOn) saving.set(false);
         }
@@ -87,7 +106,7 @@ public class SaveImagePlugin extends Plugin {
         // hidden from other apps until it is whole
         values.put(MediaStore.MediaColumns.IS_PENDING, 1);
         Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-        if (uri == null) throw new IOException("Downloads refused the picture");
+        if (uri == null) throw new IOException("Downloads refused the file");
         try {
             try (OutputStream out = resolver.openOutputStream(uri)) {
                 if (out == null) throw new IOException("Downloads gave nothing to write to");
@@ -95,7 +114,7 @@ public class SaveImagePlugin extends Plugin {
             }
             values.clear();
             values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-            if (resolver.update(uri, values, null, null) != 1) throw new IOException("Downloads did not take the picture");
+            if (resolver.update(uri, values, null, null) != 1) throw new IOException("Downloads did not take the file");
         } catch (IOException | RuntimeException failed) {
             try {
                 resolver.delete(uri, null, null);
@@ -117,7 +136,7 @@ public class SaveImagePlugin extends Plugin {
         long now = System.currentTimeMillis();
         if (earlier != null) for (File folder : earlier) if (now - folder.lastModified() > SHARE_KEPT_MS) remove(folder);
         File folder = new File(root, UUID.randomUUID().toString());
-        if (!folder.mkdirs()) throw new IOException("no folder for the picture");
+        if (!folder.mkdirs()) throw new IOException("no folder for the file");
         File file = new File(folder, name);
         Uri uri;
         try {

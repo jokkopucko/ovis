@@ -418,6 +418,7 @@ const BASE: Record<string, string> = {
   "Files": "ファイル",
   "This image is {size}; download it to view.": "この画像は {size} です。表示するにはダウンロードしてください。",
   "Download": "ダウンロード",
+  "Saved to Downloads.": "ダウンロードに保存しました。",
   "Open {path}": "{path} を開く",
 
   "Continue": "続行",

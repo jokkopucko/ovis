@@ -419,6 +419,7 @@ const BASE: Record<string, string> = {
   "Files": "文件",
   "This image is {size}; download it to view.": "此图片大小为 {size}；请下载后查看。",
   "Download": "下载",
+  "Saved to Downloads.": "已保存到“下载”。",
   "Open {path}": "打开 {path}",
 
   "Continue": "继续",

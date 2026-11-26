@@ -242,7 +242,6 @@ export const CHAT_ZH: Record<string, string> = {
   "{n} of {count}": "第 {n} 张，共 {count} 张",
   "Couldn't copy the image. Download it instead.": "无法复制图片。请改为下载。",
   "Couldn't save the image.": "无法保存图片。",
-  "Saved to Downloads.": "已保存到“下载”。",
   "Conversation turns": "对话轮次",
   "Go to turn {n}": "跳到第 {n} 轮",
   "Show full message": "显示完整消息",

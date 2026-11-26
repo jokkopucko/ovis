@@ -242,7 +242,6 @@ export const CHAT_KO: Record<string, string> = {
   "{n} of {count}": "{count}개 중 {n}번째",
   "Couldn't copy the image. Download it instead.": "이미지를 복사하지 못했습니다. 대신 내려받으세요.",
   "Couldn't save the image.": "이미지를 저장하지 못했습니다.",
-  "Saved to Downloads.": "다운로드 폴더에 저장했습니다.",
   "Conversation turns": "대화 턴",
   "Go to turn {n}": "{n}번째 턴으로 이동",
   "Show full message": "전체 메시지 보기",
