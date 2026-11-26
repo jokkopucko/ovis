@@ -1097,7 +1097,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // (a new one would cancel the turn that person started), and one that cannot take it is named
       let children;
       try { children = await acp.childrenOf(body.pane_id); } catch (error) { return errorResponse(error); }
-      const tried = await Promise.allSettled(children.map(async child => {
+      const tried = await Promise.allSettled(children.ready.map(async child => {
         if (!child.client.connected || !child.client.session) throw new Error("not connected");
         if (child.client.holdGeneration !== null) return { pane_id: child.terminal, child_id: child.id, generation: child.client.holdGeneration };
         return { pane_id: child.terminal, child_id: child.id, generation: await child.client.hold(child.client.session) };
@@ -1105,7 +1105,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       return jsonResponse({
         ok: true,
         held: tried.flatMap(outcome => outcome.status === "fulfilled" ? [outcome.value] : []),
-        failed: children.filter((_, index) => tried[index]?.status === "rejected").map(child => child.terminal),
+        failed: [...children.opening, ...children.ready.filter((_, index) => tried[index]?.status === "rejected").map(child => child.terminal)],
       });
     }
     const child = acp.forPane(body.pane_id);

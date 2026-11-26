@@ -163,6 +163,7 @@ export class AcpChildren {
   }
 
   private readonly children = new Map<string, AcpChild>();
+  private readonly opening = new Map<string, string | undefined>();
 
   constructor(private readonly dir: string, private readonly options: AcpChildrenOptions = {}) {}
 
@@ -205,6 +206,12 @@ export class AcpChildren {
       ...(questionForms ? ["--question-forms"] : []),
       "--", ...start.argv,
     ];
+    this.opening.set(id, start.parentPane);
+    try { return await this.open(start, id, root, argv, questionForms); }
+    finally { this.opening.delete(id); }
+  }
+
+  private async open(start: AcpStart, id: string, root: string, argv: string[], questionForms: boolean): Promise<AcpChild> {
     const displayName = start.name?.trim();
     let terminal: string;
     try {
@@ -293,10 +300,23 @@ export class AcpChildren {
     return undefined;
   }
 
-  /** This server's children whose keeper's terminal hc runs under `parentPane`. */
-  async childrenOf(parentPane: string): Promise<AcpChild[]> {
+  /** This server's children under `parentPane`, including live terminals not yet able to take a hold. */
+  async childrenOf(parentPane: string): Promise<{ ready: AcpChild[]; opening: string[] }> {
+    // A child can open and receive its first task while we wait for the core's list.
+    const openingAtStart = new Map(this.opening);
     const under = (await this.terminals()).filter(terminal => terminal.state === "live" && terminal.parent === parentPane);
-    return [...this.children.values()].filter(child => under.some(terminal => terminal.address === child.terminal && terminal.labels[LABEL] === child.id));
+    const ready: AcpChild[] = [], opening: string[] = [];
+    for (const terminal of under) {
+      const id = terminal.labels[LABEL];
+      if (id === undefined) continue;
+      if (openingAtStart.get(id) === parentPane) {
+        opening.push(terminal.address);
+        continue;
+      }
+      const child = this.children.get(id);
+      if (child?.terminal === terminal.address) ready.push(child);
+    }
+    return { ready, opening };
   }
 
   cancelTurn(id: string): void {

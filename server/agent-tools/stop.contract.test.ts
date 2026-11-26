@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HARNESS_CONTRACT, HARNESS_TOOL_OFF, isRecord, type HarnessToolSetting } from "../../shared/harness-tool.ts";
-import { AcpChildren } from "../acp/children.ts";
+import { AcpChildren, type AcpHc } from "../acp/children.ts";
 import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt, until } from "../acp/keeper.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { FakeHcCore } from "../herdr-core/core.fake.ts";
@@ -12,6 +12,44 @@ import { createServer } from "../index.ts";
 import { lineCall } from "../line-call.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { AgentToolHub } from "./hub.ts";
+
+it("names a child whose terminal is live but whose ACP session is still opening (#4677, #4626)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "as-"));
+  const fake = new FakeHcCore();
+  const hc = new HcConnection(() => fake.transport());
+  const appeared = Promise.withResolvers<string>();
+  const runReceipt = Promise.withResolvers<void>();
+  fake.onStart = ({ address }) => appeared.resolve(address);
+  const call: AcpHc["call"] = async (method, params) => {
+    const result = await hc.call(method, params);
+    if (method === "terminal.run") await runReceipt.promise;
+    return result;
+  };
+  serveRuntime(HERDR_CORE);
+  const acp = new AcpChildren(join(dir, "acp"), { keeperBin: () => KEEPER_BUILD, hc: { call }, socketMs: 0 });
+  const starting = acp.start({ harness: "fixture", argv: [FAKE_AGENT], cwd: dir, parentPane: "parent" }).catch(() => {});
+  serveRuntime(null);
+  const registry = spyOn(runtime, "coreAcp").mockReturnValue(acp);
+  const credential = "fixture-driver";
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: credential, machines: false, sidecar: false, tailscaleOwner: null });
+  try {
+    const terminal = await appeared.promise;
+    const response = await fetch(`http://127.0.0.1:${app.port}/api/pane/turn/cancel-children`, {
+      method: "POST", headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" },
+      body: JSON.stringify({ pane_id: "parent" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, held: [], failed: [terminal] });
+  } finally {
+    runReceipt.resolve();
+    await starting;
+    app.stop();
+    registry.mockRestore();
+    acp.close();
+    hc.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe.skipIf(!keeperBuilt)("stopping delegated work", () => {
   let dir: string, hc: HcConnection, acp: AcpChildren;
