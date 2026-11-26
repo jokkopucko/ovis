@@ -8,7 +8,7 @@ import { DeviceJournal, JOURNAL_MAX } from "../server/account/device-journal.ts"
 import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-api.ts";
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
-import type { PendingKey } from "../shared/machines.ts";
+import type { OwnJoinRequest, PendingKey } from "../shared/machines.ts";
 import type { DeviceRole } from "../shared/access.ts";
 import { App } from "./App.tsx";
 import { indexedAccountService } from "./lib/account/service.ts";
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly deskFeatures?: Parameters<DeviceNoticeWire["snapshot"]>[0]; readonly admission?: Partial<DeviceNotice>; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole },
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly deskFeatures?: Parameters<DeviceNoticeWire["snapshot"]>[0]; readonly admission?: Partial<DeviceNotice>; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole; readonly ownJoins?: () => Response | Promise<Response> },
   check: (fixture: { readonly page: Page; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
     readonly admission: DeviceNotice; readonly blockPosted: Promise<void>;
     readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
@@ -102,8 +102,9 @@ async function withDeviceNotices(
     }
     if (url.origin === "https://account.example" && pathname === "/v1/signout") return service.fetch(url, init);
     if (pathname === "/api/devices/pending/decline" && options.decline !== undefined) return options.decline();
+    if (pathname === "/api/relay/joins" && options.ownJoins !== undefined) return options.ownJoins();
     if (pathname === "/api/health") return Response.json({
-      auth: { required: false, authenticated: true, role: options.role?.() ?? "drive" },
+      auth: { required: false, authenticated: true, role: options.role?.() ?? "drive", ...(options.ownJoins === undefined ? {} : { via: "local" }) },
       web_ui: { boot_id: null, revision: null, server_id: options.laptopId },
     });
     if (pathname === "/api/machines") return Response.json({ machines: [
@@ -171,6 +172,66 @@ it("T57, P15: Laptop's pane never shows Desk's device notice", async () => {
     expect(page.container.textContent).not.toContain("Desk phone");
     expect(laptop.seen()).toEqual([{ type: "notice-seen", seq: 1 }]);
     expect(desk.seen()).toEqual([]);
+  });
+});
+
+it.each(["local link reconnects", "page becomes visible"])("#4457: shows a waiting join without the next poll when the %s", async (trigger) => {
+  jest.useFakeTimers();
+  let waiting: readonly OwnJoinRequest[] = [];
+  await withDeviceNotices({ ownJoins: () => Response.json({ joins: waiting }) }, async (fixture) => {
+    const { page, laptop } = fixture;
+    const cards = () => page.container.querySelectorAll('[data-testid="own-join-card"]');
+    expect(cards()).toHaveLength(0);
+    if (trigger === "local link reconnects") {
+      await act(async () => { laptop.close(); jest.advanceTimersByTime(backoffDelay(0)); });
+      expect(fixture.laptop).not.toBe(laptop);
+    } else {
+      Object.defineProperty(page.window.document, "hidden", { configurable: true, value: true });
+      await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+    }
+    waiting = [{ id: "waiting-join", label: "Phone", asked_at: new Date().toISOString(), left_ms: 60_000 }];
+    await act(async () => {
+      if (trigger === "local link reconnects") fixture.laptop.open();
+      else {
+        Object.defineProperty(page.window.document, "hidden", { configurable: true, value: false });
+        page.window.document.dispatchEvent(new page.window.Event("visibilitychange"));
+      }
+    });
+    expect([...cards()].map((card) => card.getAttribute("data-join"))).toEqual(["waiting-join"]);
+  });
+});
+
+it.each([
+  ["locked before reconnect", "locked", true],
+  ["locked while reconnect read is pending", "locked", false],
+  ["own window refusal while reconnect read is pending", "own_window_required", false],
+] as const)("#4457: a waiting join still appears after %s", async (_scenario, code, answerBeforeReconnect) => {
+  jest.useFakeTimers();
+  let readJoins: () => Response | Promise<Response> = () => Response.json({ joins: [] });
+  await withDeviceNotices({ ownJoins: () => readJoins() }, async (fixture) => {
+    const { page, laptop } = fixture;
+    await act(async () => { laptop.close(); jest.advanceTimersByTime(backoffDelay(0)); });
+    expect(fixture.laptop).not.toBe(laptop);
+    const visibility = Promise.withResolvers<Response>();
+    const reconnect = Promise.withResolvers<Response>();
+    let reconnectReads = 0;
+    readJoins = () => visibility.promise;
+    const show = () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); };
+    const refuse = () => { visibility.resolve(Response.json({ error: { code } }, { status: 403 })); };
+    await act(async () => { show(); });
+    if (answerBeforeReconnect) await act(async () => { refuse(); });
+    readJoins = () => { reconnectReads++; return reconnect.promise; };
+    await act(async () => { fixture.laptop.open(); });
+    if (!answerBeforeReconnect) await act(async () => { refuse(); });
+    await act(async () => {
+      reconnect.resolve(Response.json({ joins: [{ id: "waiting-join", label: "Phone", asked_at: new Date().toISOString(), left_ms: 60_000 }] }));
+    });
+    const card = '[data-testid="own-join-card"]';
+    expect(reconnectReads).toBe(1);
+    expect([...page.container.querySelectorAll(card)].map((node) => node.getAttribute("data-join"))).toEqual(["waiting-join"]);
+    readJoins = () => Response.json({ joins: [] });
+    await act(async () => { show(); });
+    expect(page.container.querySelectorAll(card)).toHaveLength(0);
   });
 });
 

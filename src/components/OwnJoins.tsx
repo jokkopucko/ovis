@@ -8,30 +8,50 @@ import type { OwnJoinRequest } from "../../shared/machines.ts";
 import { ApiError, approveOwnJoin, fetchOwnJoins } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
+import type { MachineSessionRegistry } from "../lib/machineSession.ts";
 import { ADDED_POLL_MS } from "./AccountSection.tsx";
 
 /**
  * The account joins waiting for this PC's own window (server/relay/routes.ts, /api/relay/joins), read every
- * ADDED_POLL_MS while `enabled` and the page shows, and at once whenever `again` changes. A 403, 404 or 405 is final:
- * a window that is not the PC's own, or a PC without the route, is not asked again.
+ * ADDED_POLL_MS while `enabled` and visible. Also read when the page becomes visible, the local
+ * socket opens, or `again` changes. A current 404, 405 or 403 other than `locked` stops further reads.
  */
-export function useOwnJoins(enabled: boolean, again = 0): readonly OwnJoinRequest[] {
+export function useOwnJoins(enabled: boolean, again = 0, machineSessions?: MachineSessionRegistry): readonly OwnJoinRequest[] {
   const [joins, setJoins] = useState<readonly OwnJoinRequest[]>([]);
   useEffect(() => {
     if (!enabled) { setJoins([]); return; }
     let live = true;
     let refused = false;
+    let issued = 0;
+    let applied = 0;
     const read = (): void => {
       if (refused || document.hidden) return;
-      fetchOwnJoins().then((next) => { if (live) setJoins(next); }, (error: unknown) => {
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) refused = true;
-        else console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
+      const seq = ++issued;
+      fetchOwnJoins().then((next) => {
+        if (!live || refused || seq < applied) return;
+        applied = seq;
+        setJoins(next);
+      }, (error: unknown) => {
+        // An older refusal must not shut out a newer read that is still in flight.
+        if (!live || seq !== issued) return;
+        if (error instanceof ApiError) {
+          if (error.status === 403 && error.code === "locked") return;
+          if (error.status === 403 || error.status === 404 || error.status === 405) { refused = true; return; }
+        }
+        console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
       });
     };
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
-  }, [enabled, again]);
+    const offOpen = machineSessions?.get("local").socket.onBeforeReplay(read);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      offOpen?.();
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [enabled, again, machineSessions]);
   return joins;
 }
 

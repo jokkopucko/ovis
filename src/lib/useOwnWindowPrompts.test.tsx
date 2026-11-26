@@ -37,7 +37,7 @@ let page: Page;
 let prompts: readonly PromptPairing[] = [];
 let joins: readonly { id: string }[] = [];
 function Probe({ pairings, ownWindow = true, unlocked = true }: { pairings: readonly RelayPairingRequest[]; ownWindow?: boolean; unlocked?: boolean }) {
-  ({ prompts, joins } = useOwnWindowPrompts(pairings, [], ownWindow, unlocked));
+  ({ prompts, joins } = useOwnWindowPrompts(pairings, [], { ownWindow, unlocked }));
   return null;
 }
 

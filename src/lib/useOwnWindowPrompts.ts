@@ -4,6 +4,7 @@ import type { OwnJoinRequest, PendingKey, RelayPairingRequest } from "../../shar
 import { useOwnJoins } from "../components/OwnJoins.tsx";
 import { firstJoinPrompts, listAddPrompts, pendingKeyPrompts, tailnetPrompts, type PromptPairing } from "../components/RelayPairingPrompt.tsx";
 import { listNumberHeld, onListNumbersHeld } from "./account/addThisPc.ts";
+import type { MachineSessionRegistry } from "./machineSession.ts";
 import { useListAdd } from "./useListAdd.ts";
 import { useTailnetNodes } from "./useTailnetNodes.ts";
 
@@ -15,10 +16,14 @@ import { useTailnetNodes } from "./useTailnetNodes.ts";
  * only: the routes and the confirm page enforce their own rules. `joins`: the account joins waiting for the own window
  * (OwnJoinCard takes those without digits), read only while `unlocked`, and `reread` reads them, and the add, again at once.
  */
-export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[], pendingKeys: readonly PendingKey[], ownWindow: boolean, unlocked = true): { readonly prompts: readonly PromptPairing[]; readonly joins: readonly OwnJoinRequest[]; readonly reread: () => void } {
+export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[], pendingKeys: readonly PendingKey[], { ownWindow, unlocked = true, machineSessions }: {
+  readonly ownWindow: boolean;
+  readonly unlocked?: boolean;
+  readonly machineSessions?: MachineSessionRegistry;
+}): { readonly prompts: readonly PromptPairing[]; readonly joins: readonly OwnJoinRequest[]; readonly reread: () => void } {
   const [reads, setReads] = useState(0);
   // a locked PC refuses the list: it is read again once the lock is gone
-  const joins = useOwnJoins(ownWindow && unlocked, reads);
+  const joins = useOwnJoins(ownWindow && unlocked, reads, machineSessions);
   // a first join's deadline is counted from its own read: an unrelated update rebuilds the list, never that deadline
   const firstJoins = useMemo(() => firstJoinPrompts(joins), [joins]);
   const tailnet = useTailnetNodes(ownWindow)?.pending ?? null;
