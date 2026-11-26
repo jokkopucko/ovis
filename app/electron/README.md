@@ -228,7 +228,7 @@ with its production packages into `stage/`. Each build checks the cached downloa
 pins again and unpacks them afresh. It also adds the release's Rust PTY host
 (`scripts/pty-sidecar.ts install`, checked against the release manifest) when the release named
 by `package.json` was built from this checkout's PTY host sources, as on a release tag; otherwise
-the server uses Node for the few things that need a PTY host of its own, where the PC has Node. `bun run start` then runs the app from `stage/`
+the app has none, and a sign-in from Settings offers a terminal tab instead of a private one (its terminals run in hc either way; the app carries no Node or node-pty). `bun run start` then runs the app from `stage/`
 without packaging it. Nothing downloaded is committed.
 
 On macOS, run `OVIS_BUILD_STAGING=1 bun run dist` for a staging preview. If you stage and package

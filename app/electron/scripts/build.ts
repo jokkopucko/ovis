@@ -85,11 +85,12 @@ async function stageAll(): Promise<void> {
   if (tag && tag !== "v" + version) throw new Error("Release tag does not match package version");
   if (!tag && !windows) await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
   const helpers = windows ? {} : tag ? await releaseHelpers(cache, target, { version, at: "https://github.com/devswha/ovis/releases/download/" + tag }) : installedHelpers(join(repo, "bin"));
-  if (!helpers.ptySidecar) console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
+  // the app's terminals run in hc; only a private sign-in terminal needs a PTY host of the server's own
+  if (!helpers.ptySidecar && !windows) console.log("no Rust PTY host for this version: a sign-in from Settings offers a terminal tab instead of a private one");
   await stageServerArtifact({
     platform: windows ? "windows-x64" : target,
     dir: join(stage, "server"),
-    nodePty: true,
+    nodePty: false,
     downloads: join(cache, "server-downloads"),
     ...helpers,
   });
