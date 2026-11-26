@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
-import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts";
+import { closePcNotice, newPcNoticeKey, pcNoticeClosed } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
@@ -90,7 +90,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const addedSinceJoin = (pc: NewPc): boolean => joinedAt === null || pc.admitted_at === null || !(Date.parse(pc.admitted_at) < joinedAt);
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now && addedSinceJoin(pc)));
         // a notice this device already closed is nothing left to tell
-        telling = told.some((pc) => pc.server_id !== ownWindowOf && !newPcNoticeClosed(newPcNoticeKey(session.account, pc)));
+        telling = told.some((pc) => pc.server_id !== ownWindowOf && !pcNoticeClosed(newPcNoticeKey(session.account, pc)));
         // each notice keeps the row of the list it was drawn from (heldRemoval): its "I didn't add this" is for that
         // row, in that list, and for no other the page may hold by the time it is pressed
         const held = new Map(told.map((pc) => [pc.server_id, heldRemoval(session.account, pc.server_id)]));
@@ -143,7 +143,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved, held }: {
 }) {
   const t = useT();
   const expiresAt = pc.admitted_before_you ? Number.POSITIVE_INFINITY : Date.parse(pc.new_until ?? "");
-  const [hidden, setHidden] = useState(() => newPcNoticeClosed(dismissalKey));
+  const [hidden, setHidden] = useState(() => pcNoticeClosed(dismissalKey));
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -178,8 +178,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved, held }: {
   /** told once on this device, per PC and admission: closed, or answered Yes */
   const close = () => {
     setHidden(true);
-    try { localStorage.setItem(dismissalKey, "1"); }
-    catch (error) { if (!(error instanceof DOMException)) throw error; }
+    closePcNotice(dismissalKey);
   };
   const failure = failed !== null && <span className="account-error" role="alert">{failed}</span>;
   if (pc.admitted_before_you) {

@@ -373,4 +373,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "確認のあとに、選んだもののひとつが新しいキーに移りました。何も削除していません。削除するにはもう一度「削除」を押してください。",
   "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.": "PC を追加する招待をエージェントに渡すには、Ovis のスマートフォンアプリか app.ovis.sh で作成してください: PC を追加 → Ovis リレー → PC を招待。",
   "This device keeps its place in your account's list: signed in again here, it opens your PCs with no Allow. To take it out too, use Disconnect on its own row.": "このデバイスはアカウントの名簿に残ります。ここでもう一度サインインすると、許可なしで PC を開けます。このデバイスも外すには、このデバイスの行の「切断」を使ってください。",
+  "Not added: listed with a sign-in code": "未追加: サインインコードで登録された PC",
+  "{name} was listed in your account with a sign-in code and never added. It leaves your account; to add it later, start again on {name}.": "{name} はサインインコードでアカウントに登録されましたが、追加されていません。アカウントから外れます。後で追加するには {name} でやり直してください。",
 };

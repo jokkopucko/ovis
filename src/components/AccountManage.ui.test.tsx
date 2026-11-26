@@ -21,6 +21,9 @@ const device = (id: string, extra: Partial<PairedDevice> = {}): PairedDevice => 
 
 let devices: PairedDevice[] = [];
 let pcs: Service.DirectoryPc[] = [];
+/** PCL-1: the PCs a sign-in code listed and no one added, which only an app's own sign-in (`own`) is given */
+let waiting: Service.DirectoryPc[] = [];
+let own = true;
 const calls: string[] = [];
 let deleteFails = false;
 /** PCR-1: the service wants a fresh sign-in for a removal, which only the sign-in again below ("fresh") has */
@@ -36,11 +39,13 @@ await mock.module("../lib/account/leave.ts", () => ({ ...Leave, removeFromAccoun
 await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountStore: { ...Store.indexedAccountStore, key: async () => ({ public_spki: MY_KEY }), get: async (name: string) => name === "session" ? SESSION : undefined } }));
 class FakeService {
   async listPcs() { if (readsFail) throw new Error("503 from the service"); return pcs; }
+  async ownSignIn() { return own; }
+  async listUnconfirmedPcs() { return waiting; }
   async session() { return { account: "acct" }; }
-  forSignIn(signIn: { sign_in_id?: string }) { return { deletePc: async (id: string) => {
+  forSignIn(signIn: { sign_in_id?: string }) { return { deletePc: async (id: string, listing?: string) => {
     if (deleteFails) throw new Error("502 from the service");
     if (refuseStale && signIn.sign_in_id !== "fresh") throw new Service.AccountServiceError(403, "reauth_required", "Sign in again first");
-    calls.push(`remove ${id}`);
+    calls.push(`remove ${id}${listing === undefined ? "" : ` listing ${listing}`}`);
   } }; }
 }
 await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
@@ -77,6 +82,8 @@ describe("Manage account's devices and PCs", () => {
     refuseStale = false;
     readsFail = false;
     deviceReads = 0;
+    waiting = [];
+    own = true;
     devices = [
       device("me", { current: true, account: "acct", account_key: MY_KEY, connection: { route: "relay", rtt_ms: 9 } as PairedDevice["connection"] }),
       device("Lost phone", { account: "acct", account_key: "phone-key" }),
@@ -145,6 +152,46 @@ describe("Manage account's devices and PCs", () => {
     await act(async () => { await press(root, "Disconnect"); });
     expect(calls).toEqual(["disconnect phone-key"]);
     expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+  });
+
+  it("lists a PC a sign-in code listed and no one added, whose card may be closed, and removes that listing after one confirm, forgetting no pairing", async () => {
+    inShell = true;
+    waiting = [{ server_id: "c".repeat(32), label: "Stranger", public_key: null, relay: null, added_at: ago(60 * 24), last_seen_at: null, unconfirmed: true, listing_id: "l1" }] as Service.DirectoryPc[];
+    try {
+      const root = await mount();
+      expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove", "Stranger · Not added: listed with a sign-in codeRemove"]);
+      await act(async () => { root.find((node) => node.props["data-unconfirmed-pc-row"] !== undefined).find((node) => node.type === "button").props.onClick(); });
+      expect(textOf(dialog(root))).toContain("Stranger was listed in your account with a sign-in code and never added.");
+      await act(async () => { await press(root, "Remove"); });
+      expect(calls).toEqual([`remove ${"c".repeat(32)} listing l1`]);
+    } finally { inShell = false; }
+  });
+
+  it("removes the listing it was asked for by the account service alone, even once the account's list holds that PC (another device added it meanwhile)", async () => {
+    const LIST = "5c".repeat(32);
+    const view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [],
+      pcs: [{ endpoint: "c".repeat(64), server_id: "c".repeat(32), how: "added", allows: true, name: { label: "Stranger", os: null }, seq: 1, by: null, new_at: null }] } as unknown as AccountListView;
+    waiting = [{ server_id: "c".repeat(32), label: "Stranger", public_key: null, relay: null, added_at: ago(60), last_seen_at: null, unconfirmed: true, listing_id: "l1" }] as Service.DirectoryPc[];
+    const root = await mount();
+    await act(async () => { root.find((node) => node.props["data-unconfirmed-pc-row"] !== undefined).find((node) => node.type === "button").props.onClick(); });
+    setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
+    try {
+      await act(async () => { await press(root, "Remove"); });
+      expect(calls).toEqual([`remove ${"c".repeat(32)} listing l1`]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("offers no Remove for a waiting PC the account service names no listing of, which only a removal of the whole PC could end", async () => {
+    waiting = [{ server_id: "c".repeat(32), label: "Stranger", public_key: null, relay: null, added_at: ago(60), last_seen_at: null, unconfirmed: true }] as Service.DirectoryPc[];
+    const root = await mount();
+    expect(rows(root, "account-pcs").at(-1)).toBe("Stranger · Not added: listed with a sign-in code");
+  });
+
+  it("lists no unconfirmed PC for a device code's sign-in, which removes none", async () => {
+    own = false;
+    waiting = [{ server_id: "c".repeat(32), label: "Stranger", public_key: null, relay: null, added_at: ago(5), last_seen_at: null, unconfirmed: true }] as Service.DirectoryPc[];
+    const root = await mount();
+    expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove"]);
   });
 
   it("offers Remove on an offline PC whatever its age, never on one heard from lately, and removes it after one confirm", async () => {

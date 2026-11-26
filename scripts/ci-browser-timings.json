@@ -73,6 +73,7 @@
   "scripts/terminal-viewport-regression.ts": 37,
   "scripts/reconnect-header-demo-regression.ts": 35,
   "scripts/relay-account-pcs-regression.ts": 35,
+  "scripts/unconfirmed-pc-notice-regression.ts": 35,
   "scripts/relay-second-device-join-regression.ts": 35,
   "scripts/pane-paging-demo-regression.ts": 34,
   "scripts/opencode-prompt-regression.ts": 34,

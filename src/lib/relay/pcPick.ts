@@ -1,6 +1,6 @@
 /** Which saved PCs the hosted shell opens by itself (shell.tsx): a launch, and a move off a PC that went away. */
 import { isNewAccountPc, type MyPc } from "../account/myPcs.ts";
-import { newPcNoticeClosed, newPcNoticeKey } from "../account/newPcNotice.ts";
+import { newPcNoticeKey, pcNoticeClosed } from "../account/newPcNotice.ts";
 import type { RelayDevice } from "./device.ts";
 import type { ProbeTarget } from "./pcStatus.ts";
 
@@ -28,7 +28,7 @@ export function openablePcs(devices: readonly RelayDevice[]): RelayDevice[] {
 export function accountOpenablePcs(pcs: readonly MyPc[], here: { readonly account: string; readonly devices: readonly RelayDevice[]; readonly now: number }): ProbeTarget[] {
   const saved = new Set(here.devices.map((device) => device.server_id));
   const noticeOpen = (pc: MyPc): boolean => pc.admitted_before_you === true
-    && !newPcNoticeClosed(newPcNoticeKey(here.account, { server_id: pc.server_id, admitted_at: pc.admitted_at ?? null, new_until: pc.new_until ?? null }));
+    && !pcNoticeClosed(newPcNoticeKey(here.account, { server_id: pc.server_id, admitted_at: pc.admitted_at ?? null, new_until: pc.new_until ?? null }));
   return pcs.flatMap((pc) => !pc.paired && pc.join !== undefined && pc.accountOpen === true
     && (pc.last_seen_at !== null || pc.byList === true)
     && pc.notInList !== true

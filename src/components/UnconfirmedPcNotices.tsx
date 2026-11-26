@@ -1,4 +1,4 @@
-import { Monitor } from "lucide-react";
+import { Monitor, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "../../shared/account-asker.ts";
 import { addPostedPc, NUMBER_TRIES, numberWith, postedPcs, type AddNumber, type AddPcOutcome, type NumberRefusal } from "../lib/account/listAdd.ts";
@@ -10,7 +10,7 @@ import type { ListWriter } from "../lib/account/accountList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { noteAct } from "../lib/account/seenPcs.ts";
-import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
+import { closePcNotice, newPcNoticeKey, pcNoticeClosed, unconfirmedPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
@@ -68,6 +68,15 @@ function askerLine(asker: AccountAsker | undefined, language: string): string | 
   return parts.length === 0 ? null : parts.join(" · ");
 }
 
+/** When a PC was listed: the time alone today, the date beside it on any other day ("Nov 25, 10:36 PM") */
+export function listedWhen(at: number, now: number, language: string): string {
+  const date = new Date(at);
+  const today = new Date(now);
+  const sameDay = date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate();
+  return sameDay ? date.toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleString(language, { ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }), month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 /** What the card says when its number ran out: a new one at Add, while the card has tries left. */
 const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC."), signInAgain: false });
 
@@ -122,6 +131,10 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   const [listing, setListing] = useState<Listing | null>(null);
   const [confirmed, setConfirmed] = useState<readonly DirectoryPc[]>([]);
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+  // a card closed on this device stays closed for that listing (unconfirmedPcNoticeKey); the PC stays unconfirmed in the
+  // account, and Manage account's PCs still lists it with Remove
+  // (kept here too, so a browser that keeps nothing still closes it for this page)
+  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
   // The cards whose Add is placing a PC, with what they place, held here from before the admission: once the account
   // admitted the PC its directory no longer lists it as asking, and a read of it while the entry goes out would take
   // the card away. They stay until the device's own copy holds the PC or the person says No (`admitted`: the account
@@ -172,13 +185,14 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   const cards = [...listing.pcs, ...kept.map((each) => each.pc).filter((pc) => !asking.has(pc.server_id))];
   return (
     <>
-      {cards.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id)).map((pc) => (
+      {cards.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id) && !closed.has(unconfirmedPcNoticeKey(session.account, pc)) && !pcNoticeClosed(unconfirmedPcNoticeKey(session.account, pc))).map((pc) => (
         <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}:${pc.listing_id ?? pc.added_at}`} pc={pc} session={session} service={service} now={now} retry={pendingFor(listing.pending, pc)} numberWaitMs={numberWaitMs}
           {...(onSignInAgain ? { onSignInAgain } : {})}
           onConfirmed={(row) => setConfirmed((prior) => [...prior.filter((each) => each.server_id !== row.server_id), row])}
           placing={kept.find((each) => each.pc.server_id === pc.server_id && each.admitted)?.placing ?? null}
           onHold={(placing, admitted) => setKept((prior) => [...prior.filter((each) => each.pc.server_id !== pc.server_id), { pc, placing, admitted }])}
           onRelease={() => release(pc.server_id)}
+          onClose={() => { const key = unconfirmedPcNoticeKey(session.account, pc); closePcNotice(key); setClosed((prior) => new Set([...prior, key])); }}
           onRemoved={() => { setRemoved((prior) => new Set([...prior, pc.server_id])); release(pc.server_id); }} />
       ))}
       {tellConfirmed && confirmed.map((pc) => <NewPcNotice key={`${session.account}:new:${pc.server_id}`} pc={pc} session={session} dismissalKey={newPcNoticeKey(session.account, pc)} />)}
@@ -194,7 +208,7 @@ export function invitedTitle(t: Translate, invited: Pick<InvitedPc, "by">, membe
   return name === undefined ? t("Add this PC to your account? (joined with an invite of your account)") : t("Add this PC to your account? (joined with the invite from {device})", { device: name });
 }
 
-function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, placing, onHold, onRelease, onRemoved }: {
+function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, placing, onHold, onRelease, onRemoved, onClose }: {
   readonly pc: DirectoryPc;
   readonly session: AccountSession;
   readonly service: AccountService;
@@ -210,6 +224,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   readonly onHold: (placing: Placing, admitted: boolean) => void;
   readonly onRelease: () => void;
   readonly onRemoved: () => void;
+  /** hides the card on this device; the PC stays in the account, unconfirmed */
+  readonly onClose: () => void;
 }) {
   const t = useT();
   const { resolvedLanguage } = useSettings();
@@ -445,7 +461,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   latestAdd.current = add;
   useEffect(() => { if (retry) void latestAdd.current(); }, [retry]);
 
-  const time = new Date(added).toLocaleTimeString(resolvedLanguage, { hour: "2-digit", minute: "2-digit" });
+  const time = listedWhen(added, now(), resolvedLanguage);
   const asker = askerLine(pc.asking, resolvedLanguage);
   return (
     <div className="update-notice is-paired device-notice" role="status" data-unconfirmed-pc={pc.server_id} {...(asking ? { "data-asking": young ? "open" : "ran-out" } : {})}>
@@ -488,6 +504,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
             <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
           </>
         ) : <button type="button" className="btn" disabled={busy} onClick={remove}>{ranOut ? t("No|account pc") : t("Remove from my account")}</button>}
+        {/* a PC the account admitted already waits on Try again or No: that card is not closed */}
+        {placing === null && <button type="button" className="icon-button update-notice-dismiss" disabled={busy} aria-label={t("Close")} title={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>}
       </div>
     </div>
   );

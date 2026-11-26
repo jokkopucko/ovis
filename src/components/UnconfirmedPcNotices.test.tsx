@@ -22,7 +22,7 @@ import { readSeenPcs } from "../lib/account/seenPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
 import { translate } from "../lib/i18n.ts";
-import { invitedTitle, UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
+import { invitedTitle, listedWhen, UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 
 const ORIGIN = "https://account.ovis.sh";
 const ACCOUNT = "acct_owner";
@@ -40,7 +40,9 @@ let service: AccountService;
 let signInsAgain: AccountProvider[] = [];
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
-const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map((node) => textOf(node).trim());
+/** the card's worded buttons; its close (X) is `closes` */
+const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] !== "Close").map((node) => textOf(node).trim());
+const closes = (): ReactTestInstance[] => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Close");
 const press = async (label: string): Promise<void> => {
   const found = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
   if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`);
@@ -141,6 +143,64 @@ afterEach(async () => {
     else Object.defineProperty(globalThis, name, descriptor);
   }
   globals.clear();
+});
+
+describe("closing the card of a PC the account lists unconfirmed", () => {
+  const cards = (): string[] => renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] !== undefined && node.type === "div").map((node) => node.props["data-unconfirmed-pc"] as string);
+
+  it("hides it on this device for good, while the PC stays in the account unconfirmed", async () => {
+    await signIn();
+    await listedByDeviceCode();
+    await mount();
+    expect(cards()).toEqual([PC]);
+    expect(closes()).toHaveLength(1);
+    await act(async () => { closes()[0]!.props.onClick(); });
+    expect(cards()).toEqual([]);
+    // read again (focus) and drawn anew (a reload): still closed
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await mount();
+    expect(cards()).toEqual([]);
+    // nothing was asked of the account service: the PC is listed as before, and removable from Manage account
+    expect((await service.forSignIn((await store.get("session"))!).listUnconfirmedPcs()).map((pc) => pc.server_id)).toEqual([PC]);
+    expect(fake.requests.some((line) => line.startsWith("DELETE "))).toBe(false);
+  });
+
+  it("shows the card again for a new listing: the same PC listing itself anew, or another PC", async () => {
+    await signIn();
+    await listedByDeviceCode();
+    await mount();
+    await act(async () => { closes()[0]!.props.onClick(); });
+    expect(cards()).toEqual([]);
+    // another PC types a sign-in code into the account
+    const otherKey = generateKeyPair().publicKey;
+    const response = await fake.fetch(`${ORIGIN}/v1/pcs/${deriveServerId(otherKey)}`, {
+      method: "PUT", headers: { authorization: `Bearer ${fake.issueToken(ACCOUNT, { device: true })}`, "content-type": "application/json" },
+      body: JSON.stringify({ label: "Laptop", public_key: Buffer.from(otherKey).toString("hex"), relay: "wss://relay.ovis.sh" }),
+    });
+    expect(response.ok).toBe(true);
+    await mount();
+    expect(cards()).toEqual([deriveServerId(otherKey)]);
+    // the closed PC's listing is ended, and it lists itself again: a new listing, told of anew
+    const listing = fake.pcs(ACCOUNT).find((pc) => pc.server_id === PC)!;
+    listing.listing_id = "f".repeat(32);
+    listing.added_at = new Date(now).toISOString();
+    await mount();
+    expect(cards().sort()).toEqual([PC, deriveServerId(otherKey)].sort());
+  });
+});
+
+describe("when a PC was listed", () => {
+  const at = new Date(2026, 10, 25, 22, 36).getTime();
+  it("says the time alone on the same day", () => {
+    const said = listedWhen(at, new Date(2026, 10, 25, 23, 50).getTime(), "en");
+    expect(said).toContain("10:36");
+    expect(said).not.toContain("Nov");
+  });
+  it("says the date beside the time on any other day, the year only in another year", () => {
+    expect(listedWhen(at, new Date(2026, 10, 26, 9, 0).getTime(), "en")).toMatch(/^Nov 25.*10:36/);
+    expect(listedWhen(at, new Date(2026, 10, 26, 9, 0).getTime(), "ko")).toMatch(/^11월 25일 .*10:36$/);
+    expect(listedWhen(at, new Date(2027, 0, 2, 9, 0).getTime(), "en")).toContain("2026");
+  });
 });
 
 describe("a PC the account lists unconfirmed", () => {

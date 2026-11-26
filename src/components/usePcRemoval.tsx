@@ -101,7 +101,10 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     if (pageListUnread(session.account)) throw new ListPcRemovalError("blocked");
     const list = pageAccountList();
     // the row the question was asked for; where the page had not read its list then, the row as that read shows it
-    const bound = held ?? heldRemoval(session.account, serverId);
+    // A listing named by its ID (account#67) is one no one added: never the list's, whatever the list holds for that
+    // PC by now (another device may have added it meanwhile), so it leaves by the directory alone, which refuses it once
+    // that listing is no longer the one waiting
+    const bound = listingId !== undefined ? null : held ?? heldRemoval(session.account, serverId);
     if (list !== null && bound !== null) {
       // For the account, the list, the member key and the relay key of the row the person pressed: another tab's
       // sign-in changes none of them under it, and a PC that another member put out meanwhile is found out already.
