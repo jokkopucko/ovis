@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
-import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
+import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, OutputWindow, ReplayBuffer, wireBytes } from "../output-window.ts";
 import { connectionData, send } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
+import { ATTACH_BATCH_MAX_MS, ATTACH_BATCH_QUIET_MS } from "./attach-batch.ts";
 import * as pty from "../pty/session.ts";
 import * as coreAttach from "../herdr-core/attach-session.ts";
 import type { CoreAttachOptions } from "../herdr-core/attach-session.ts";
+import { HcConnection } from "../herdr-core/connection.ts";
+import * as coreRuntime from "../herdr-core/runtime.ts";
 import * as herdr from "../herdr/client.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
+import { LIMITS_V1 } from "../../shared/relay-mux.ts";
 
 let attachment: PaneAttachment;
 beforeEach(() => {
@@ -437,6 +441,7 @@ async function resizableAttach() {
     attach, pty: attempts[0], core: coreAttaches[0], ended, writes,
     ready: (): boolean => frames.some((frame) => frame.type === "input-ready" && frame.ready !== false),
     painted: (): string => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []).join(""),
+    sent: (): string[] => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []),
     resize: (cols: number, rows: number) => registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols, rows }),
     [Symbol.dispose]() {
       jest.useRealTimers();
@@ -521,6 +526,7 @@ for (const onCore of [true, false]) {
       const setup = "\x1b[?1049h";
       pane.attach.onData(query + setup);
       if (onCore) {
+        jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
         expect(pane.painted()).toBe(query + setup);
         expect(pane.ready()).toBe(true);
         expect(pane.writes).toEqual([]);
@@ -543,6 +549,250 @@ for (const onCore of [true, false]) {
     }
   });
 }
+
+it("sends a herdr-core attach's history replay as one frame, so a viewer opens it at its newest rows, then output as it comes", async () => {
+  serveRuntime(HERDR_CORE);
+  try {
+    using pane = await resizableAttach();
+    for (const chunk of ["\x1b[3Jhistory 1\r\n", "history 2\r\n", "screen"]) {
+      pane.attach.onData(chunk);
+      jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS - 1);
+    }
+    expect(pane.ready()).toBe(true);
+    expect(pane.sent()).toEqual([]);
+    jest.advanceTimersByTime(1);
+    expect(pane.sent()).toEqual(["\x1b[3Jhistory 1\r\nhistory 2\r\nscreen"]);
+    pane.attach.onData("live");
+    expect(pane.sent().at(-1)).toBe("live");
+  } finally {
+    serveRuntime(null);
+  }
+});
+
+function corePane() {
+  mock.restore();
+  serveRuntime(HERDR_CORE);
+  jest.useFakeTimers();
+  const pane = { pane_id: "p", terminal_id: "term_0", workspace_id: "w", tab_id: "t", cwd: "/fixture", focused: false, revision: 0, agent_status: "idle" as const };
+  const snapshot = { panes: [pane], layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture" };
+  const lookup = spyOn(herdr, "sessionSnapshot").mockResolvedValue(snapshot);
+  spyOn(Bun, "which").mockReturnValue("/fixture/hc");
+  const hc = new HcConnection(() => { throw new Error("fixture must not open a real transport"); });
+  const closed = Promise.withResolvers<void>();
+  const close = mock(() => closed.promise);
+  const open = spyOn(hc, "open").mockResolvedValue({
+    result: { channel: 1, automatic_input: false, resize_notifications: false, terminal: {
+      address: "term_0", argv: [], cols: 80, created_ms: 0, cwd: pane.cwd, labels: {}, rows: 24, screen: "", state: "running",
+    } },
+    channel: { id: 1, automaticInput: false, close, credit() {}, resize() {}, write() {}, writeAutomatic() {}, focus() {}, facts() {} },
+  });
+  let opening = Promise.withResolvers<void>();
+  spyOn(coreRuntime, "coreConnection").mockImplementation(() => {
+    opening.resolve();
+    opening = Promise.withResolvers<void>();
+    return hc;
+  });
+  const channel = () => {
+    const handlers = open.mock.calls.at(-1)?.[2];
+    if (!handlers) throw new Error("no core stream was opened");
+    return handlers;
+  };
+  const viewer = () => {
+    const frames: ServerMessage[] = [];
+    const exited = Promise.withResolvers<void>();
+    return {
+      frames, exited: exited.promise,
+      data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+      getBufferedAmount: () => 0, close() {},
+      send(raw: string) {
+        const frame = JSON.parse(raw) as ServerMessage;
+        frames.push(frame);
+        if (frame.type === "pty-exit") exited.resolve();
+        return Buffer.byteLength(raw);
+      },
+    };
+  };
+  const client = viewer();
+  const clients = new Set([client]);
+  const registry = createTerminalRegistry({
+    options: {}, clients, stopped: () => false, terminalAttach: async () => true,
+    holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 5_000,
+    holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+  });
+  const join = (member = client) => {
+    clients.add(member);
+    return registry.terminalFrames.attach(member, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true, flow_control: "ack" });
+  };
+  return {
+    client, registry, viewer, join, close,
+    data: (text: string | Uint8Array) => channel().onData(typeof text === "string" ? Buffer.from(text) : text),
+    async replace() {
+      const opened = opening.promise;
+      channel().onClose?.({ exit_code: 0 });
+      await opened;
+    },
+    removePane() {
+      lookup.mockResolvedValue({ ...snapshot, panes: [] });
+      channel().onClose?.({ exit_code: 0 });
+    },
+    [Symbol.dispose]() {
+      registry.closeAttachments();
+      registry.conversations.stop();
+      closed.resolve();
+      jest.useRealTimers();
+      serveRuntime(null);
+    },
+  };
+}
+
+const coreOutput = (frames: readonly ServerMessage[]) => frames.filter((frame) => frame.type === "pty-data");
+
+it("replays pre-join core bytes only to the joining viewer and delivers post-join bytes live", async () => {
+  using pane = corePane();
+  await pane.join();
+  pane.client.frames.length = 0;
+  pane.data("before join");
+  const peer = pane.viewer();
+  await pane.join(peer);
+  pane.data("after join");
+  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+
+  const [before, after, ...rest] = coreOutput(peer.frames);
+  expect(before).toMatchObject({ replay: true });
+  expect(before?.data).toEndWith("before join");
+  expect(after?.data).toBe("after join");
+  expect(after?.replay).toBeUndefined();
+  expect(rest).toEqual([]);
+  expect(coreOutput(pane.client.frames).map(({ replay }) => replay)).toEqual([undefined, undefined]);
+});
+
+it("delivers held core output before changing the viewer's grid", async () => {
+  using pane = corePane();
+  await pane.join();
+  const peer = pane.viewer();
+  await pane.join(peer);
+  peer.frames.length = 0;
+  pane.data("old grid");
+  await pane.registry.terminalFrames.resize(pane.client, { type: "resize", pane_id: "p", cols: 40, rows: 24 });
+  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+
+  expect(peer.frames.map((frame) => frame.type)).toEqual(["pty-data", "pane-geometry"]);
+  expect(coreOutput(peer.frames)[0]?.data).toEndWith("old grid");
+});
+
+it("publishes replacement core output before input-ready and includes it in a joiner's replay", async () => {
+  using pane = corePane();
+  await pane.join();
+  pane.data("old screen");
+  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  await pane.replace();
+  pane.client.frames.length = 0;
+  pane.data("replacement screen");
+  const peer = pane.viewer();
+  await pane.join(peer);
+
+  expect(pane.client.frames.map((frame) => frame.type)).toEqual(["pty-data", "input-ready"]);
+  expect(coreOutput(peer.frames)[0]).toMatchObject({ replay: true });
+  expect(coreOutput(peer.frames)[0]?.data).toEndWith("replacement screen");
+});
+
+it("keeps batching the first core history after a display query has been quiet for 15 ms", async () => {
+  using pane = corePane();
+  await pane.join();
+  jest.advanceTimersByTime(16);
+  pane.data("history one");
+  jest.advanceTimersByTime(1);
+  pane.data("history two");
+  pane.data("screen");
+  const historyFrames = () => coreOutput(pane.client.frames).filter(({ data }) => data.includes("history") || data.includes("screen"));
+  expect(historyFrames()).toEqual([]);
+  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  expect(historyFrames().map(({ data }) => data.slice(data.indexOf("history")))).toEqual(["history onehistory twoscreen"]);
+});
+
+it("splits control-heavy core batches below the legacy relay limit without losing a UTF-8 character", async () => {
+  using pane = corePane();
+  await pane.join();
+  // Leave one byte after hc's clear so the next character straddles the 40 KiB split.
+  const beforeEmoji = 40 * 1024 - Buffer.byteLength(coreAttach.CLEAR_HISTORY) - 1;
+  const history = Buffer.from("\x1b".repeat(beforeEmoji) + "🍏" + "\0".repeat(OUTPUT_HIGH_BYTES));
+  for (let at = 0; at < history.length; at += 16 * 1024) pane.data(history.subarray(at, at + 16 * 1024));
+  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  const frames = coreOutput(pane.client.frames);
+
+  expect(Math.max(...frames.map((frame) => Buffer.byteLength(JSON.stringify(frame))))).toBeLessThan(LIMITS_V1.max_ws_message_bytes);
+  expect(Math.max(...frames.map(({ data }) => Buffer.byteLength(data)))).toBeLessThanOrEqual(40 * 1024);
+  expect(frames.map(({ data }) => data).join("")).toEndWith(history.toString());
+});
+
+it("lets a healthy shared viewer drain an ANSI-heavy core batch before the pause limit", async () => {
+  using pane = corePane();
+  await pane.join();
+  const line = "\x1b[31m" + "text".repeat(2) + "\r\n";
+  const history = Buffer.from(line.repeat(Math.ceil(OUTPUT_HIGH_BYTES / line.length)).slice(0, OUTPUT_HIGH_BYTES));
+  for (let at = 0; at < history.length; at += 16 * 1024) pane.data(history.subarray(at, at + 16 * 1024));
+  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  const window = new OutputWindow();
+  const acks = coreOutput(pane.client.frames).map(({ data }) => ({
+    offset: window.write(Buffer.byteLength(data), wireBytes(data)), wire: wireBytes(data),
+  }));
+  expect(window.check(0)).toBe("pause");
+  let crossed = 0;
+  let elapsed = 0;
+  for (const { offset, wire } of acks) {
+    crossed += wire;
+    const next = crossingMs(crossed);
+    if (next >= OUTPUT_PAUSE_MAX_MS) break;
+    jest.advanceTimersByTime(next - elapsed);
+    elapsed = next;
+    window.acknowledge(window.id, offset);
+  }
+  jest.advanceTimersByTime(OUTPUT_PAUSE_MAX_MS - elapsed);
+  expect(window.check(0)).toBe("flow");
+});
+
+for (const action of ["detach", "disconnect"] as const) {
+  it(`cancels held core output timers on last-viewer ${action} without waiting for hc`, async () => {
+    using pane = corePane();
+    await pane.join();
+    pane.data("held");
+    expect(jest.getTimerCount()).toBe(2);
+
+    if (action === "detach") pane.registry.terminalFrames.detach(pane.client, { type: "detach", pane_id: "p" });
+    else pane.registry.detachClaimed(pane.client);
+    expect(pane.close).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+}
+
+it("passes on a herdr-core attach's first output at its deadline though the program never goes quiet", async () => {
+  using pane = corePane();
+  await pane.join();
+  pane.client.frames.length = 0;
+  const interval = ATTACH_BATCH_QUIET_MS - 1;
+  for (let at = 0; at < ATTACH_BATCH_MAX_MS; at += interval) {
+    pane.data("line\r\n");
+    jest.advanceTimersByTime(Math.min(interval, ATTACH_BATCH_MAX_MS - 1 - at));
+  }
+  expect(coreOutput(pane.client.frames)).toEqual([]);
+  jest.advanceTimersByTime(1);
+  expect(coreOutput(pane.client.frames).map(({ data }) => data.slice(data.indexOf("line"))))
+    .toEqual(["line\r\n".repeat(Math.ceil(ATTACH_BATCH_MAX_MS / interval))]);
+  pane.data("next");
+  expect(coreOutput(pane.client.frames).at(-1)?.data).toBe("next");
+});
+
+it("passes on a herdr-core attach's held output before pty-exit when the pane is gone", async () => {
+  using pane = corePane();
+  await pane.join();
+  pane.client.frames.length = 0;
+  pane.data("last words");
+  pane.removePane();
+  await pane.client.exited;
+  expect(coreOutput(pane.client.frames).map(({ data }) => data.endsWith("last words"))).toEqual([true]);
+  expect(pane.client.frames.filter((frame) => frame.type === "pty-data" || frame.type === "pty-exit").map(({ type }) => type))
+    .toEqual(["pty-data", "pty-exit"]);
+});
 
 it("attaches with herdr's own command where OVIS_RUNTIME names herdr-core but no runtime was started", async () => {
   const previous = process.env["OVIS_RUNTIME"];

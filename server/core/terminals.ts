@@ -149,6 +149,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     if (!attachment) return;
     for (const member of attachment.clients) holdPending(member, paneId);
     attachments.delete(paneId);
+    if (attachment.kind === "pty") attachment.history?.cancel();
     clearTimeout(attachment.retry);
     clearTimeout(attachment.relookup);
     clearTimeout(attachment.recovery);
@@ -187,7 +188,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     if (from === to) return;
     if (drainingAttachments.has(from)) closeAttachment(from);
     const retire = (): Promise<void> | undefined => {
-      if (attachments.has(from)) {
+      const attachment = attachments.get(from);
+      if (attachment) {
+        if (attachment.kind === "pty") attachment.history?.flush();
         broadcast(from, { type: "pty-exit", pane_id: from, code: null });
         closeAttachment(from);
       }
@@ -236,6 +239,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   function resizePty(paneId: string, cols: number, rows: number): void {
     const attachment = attachments.get(paneId);
     if (!attachment || attachment.kind === "mirror" || (attachment.cols === cols && attachment.rows === rows)) return;
+    attachment.history?.flush();
+    if (attachments.get(paneId) !== attachment) return;
     attachment.cols = cols;
     attachment.rows = rows;
     attachment.resizes = (attachment.resizes ?? 0) + 1;
@@ -359,6 +364,12 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
         releaseUnclaimed(message.pane_id, attachment);
         return;
       }
+      const alreadyAttached = attachment.clients.has(client);
+      if (!alreadyAttached && attachment.kind === "pty" && attachments.get(message.pane_id) === attachment) {
+        // Keep already received bytes live for existing viewers and replay-only for the newcomer.
+        attachment.history?.flush();
+      }
+      if (connectionOf(client).closing || client.data.attached.get(message.pane_id) !== claim) return;
       if (attachments.get(message.pane_id) !== attachment) {
         client.data.attached.delete(message.pane_id);
         client.data.conversationInterests.delete(message.pane_id);
@@ -366,7 +377,6 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
         send(client, { type: "pty-exit", pane_id: message.pane_id, code: null });
         return;
       }
-      const alreadyAttached = attachment.clients.has(client);
       attachment.clients.add(client);
       if (!alreadyAttached && message.flow_control === "ack") client.data.output.set(message.pane_id, new OutputWindow());
       // a mirrored screen is drawn for the pane's own grid: the client takes that size

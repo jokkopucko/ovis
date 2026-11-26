@@ -74,7 +74,7 @@ export interface CoreAttachOptions {
   terminal: string;
   cols: number;
   rows: number;
-  onData: (data: string) => void;
+  onData: (data: string, source?: "display-query") => void;
   onExit: (code: number | null) => void;
 }
 
@@ -118,7 +118,7 @@ export class CoreAttachSession {
   constructor(options: CoreAttachOptions) {
     this.cols = options.cols;
     this.rows = options.rows;
-    this.ask = (focusOn = false) => options.onData((focusOn ? FOCUS_ON : "") + ASK_DISPLAY);
+    this.ask = (focusOn = false) => options.onData((focusOn ? FOCUS_ON : "") + ASK_DISPLAY, "display-query");
     const { promise, resolve } = Promise.withResolvers<void>();
     this.exited = promise;
     const decoder = new TextDecoder();
