@@ -22,6 +22,7 @@ test("a staging marker supplies the launcher defaults and profile", () => {
       OVIS_RELAY_URL: "wss://ovis-relay-staging.devswha.workers.dev",
       OVIS_RELAY_STAGING: "1",
       OVIS_RELAY_APP_URL: "https://relay-0510.ovis-app.pages.dev",
+      OVIS_PREVIEW_PROFILE: "1",
     },
     userData: "/Users/preview/.ost/app",
   });
@@ -51,6 +52,7 @@ test("explicit environment settings win over staging defaults, including empty v
     OVIS_RELAY_URL: "wss://relay.example.test",
     OVIS_RELAY_STAGING: "0",
     OVIS_RELAY_APP_URL: "",
+    OVIS_PREVIEW_PROFILE: "0",
     PATH: "/bin",
   };
   expect(readStagingProfile({ resources, user, env })).toEqual({

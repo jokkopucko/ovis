@@ -41,7 +41,7 @@ const managedOffer = (patch: Partial<UpdateStatus> = {}): UpdateStatus => ({ ...
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
-function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolean; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number } } = {}) {
+function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolean; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number }; previewProfile?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-own-update-"));
   let descriptor = { pid: 4242, port: REGISTERED_PORT, token: OLD_TOKEN, socket_path: SOCKET, managed_remote: remote.managed ?? false, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: remote.bundle ?? "35" };
   let heldBridge: { reached: ReturnType<typeof Promise.withResolvers<void>>; gate: ReturnType<typeof Promise.withResolvers<void>> } | null = null;
@@ -170,7 +170,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   if (options.autoUpdate === false) writeFileSync(join(dir, "machine-settings.json"), JSON.stringify({ auto_update_bridges: false }));
   if (options.registered !== false) writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id: MACHINE_ID, name: "Home server", target: { destination: "fixture@pc.invalid" }, enabled: true }]));
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("local offline"); },
-    { ...(options.ownUpdate ? { ownUpdate: options.ownUpdate } : {}), ...(options.now ? { now: options.now } : {}) });
+    { ...(options.ownUpdate ? { ownUpdate: options.ownUpdate } : {}), ...(options.now ? { now: options.now } : {}), ...(options.previewProfile ? { previewProfile: true } : {}) });
   cleanups.push(() => manager.stop());
   const shown: Machine[] = [];
   cleanups.push(manager.subscribe((event) => {
@@ -467,6 +467,25 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     expect(waiting.action_required ?? null).toBeNull();
     expect(operations).toEqual([]);
     expect(installs).toEqual([]);
+  });
+});
+
+describe("a preview app, whose own Ovis lives in a home of its own", () => {
+  it("neither connects to nor updates the released Ovis it finds on a PC over SSH", async () => {
+    const { installs, operations, requests, until } = pc({ status: managedOffer(), access: { port: OWN_PORT, tailscale: { serving_url: null } } }, { previewProfile: true });
+    const refused = await until((machine) => machine.action_required === "setup");
+    expect(refused.state).not.toBe("connected");
+    expect(refused.remote_ovis ?? null).toBeNull();
+    expect(installs).toEqual([]);
+    expect(operations).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it("adds no PC to its account over SSH, and installs or starts no Ovis on one", () => {
+    const { manager, operations } = pc({ status: managedOffer() }, { registered: false, previewProfile: true });
+    expect(() => manager.setup({ destination: "fixture@pc.invalid", account_add: true })).toThrow("preview");
+    expect(() => manager.install({ destination: "fixture@pc.invalid" })).toThrow("preview");
+    expect(operations).toEqual([]);
   });
 });
 

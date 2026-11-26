@@ -218,6 +218,11 @@ function pastThisApp(offer: { updatable: boolean; latest_version: string | null 
   if (!offer?.updatable) return null;
   return !offer.latest_version ? UNKNOWN_RELEASE : newerThanThisApp(offer.latest_version) ? NEWER_THAN_APP : null;
 }
+// A preview app (the Mac staging profile) runs its own Ovis in a home of its own, so the Ovis it finds on a PC over SSH
+// is always another, released one: it never connects to that one, updates it or takes it into the preview's account
+const PREVIEW_LEAVES_OWN_OVIS = "This PC runs its own Ovis, which this preview app leaves alone: it neither connects to that Ovis nor updates it. Use the released Ovis app for this PC.";
+const PREVIEW_INSTALLS_NOTHING = "A preview app installs and starts no Ovis on another PC: install it on that PC itself.";
+const PREVIEW_NO_ACCOUNT_ADD = "A preview app adds no PC to its account over SSH: it would take that PC's own Ovis into the preview's test account.";
 const NOT_CONNECT_APPROVED = "Connect this PC first: it was added from herdr, and connecting it here was not approved yet.";
 const NOT_BRIDGE_APPROVED = "Review the bridge update in this PC's dialog first: it was added from herdr without approving this app's bridge.";
 /**
@@ -443,13 +448,16 @@ export class MachineManager {
   private serverId?: () => string | undefined;
   private readonly tailnet: TailnetPcs;
   private readonly sshCandidateOptions: SshCandidatesOptions;
+  /** a preview app's server (OVIS_PREVIEW_PROFILE): it leaves every PC's own Ovis alone */
+  private readonly previewProfile: boolean;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
-    options: { restoreReplaced?: () => boolean; installer?: string; bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number }; moveOfferMs?: { idle: number; active: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
+    options: { restoreReplaced?: () => boolean; installer?: string; bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number }; moveOfferMs?: { idle: number; active: number }; previewProfile?: boolean; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
     this.bootId = options.bootId;
     this.tailnet = new TailnetPcs(options.tailnet);
     this.sshCandidateOptions = options.sshCandidates ?? (options.tailnet?.readStatus === undefined ? {} : { readStatus: options.tailnet.readStatus });
     this.serverId = options.serverId;
+    this.previewProfile = options.previewProfile === true;
     this.relaySocket = options.relaySocket;
     this.relayDirectSocket = options.relayDirectSocket;
     this.localFinishEpoch = options.localFinishEpoch;
@@ -910,6 +918,7 @@ export class MachineManager {
   }
   install(request: PcInstallRequest, shown?: string): PcInstallJob {
     if (this.stopped) throw new Error("Server stopping");
+    if (this.previewProfile) throw new PcUpdateRefused(PREVIEW_INSTALLS_NOTHING);
     const name = "name" in request ? request.name : undefined;
     if (name !== undefined && (typeof name !== "string" || name.length > 100)) throw new Error("PC name must be at most 100 characters");
     if (request.machine_id !== undefined) {
@@ -1152,6 +1161,7 @@ export class MachineManager {
     if (accountAdd && (target.herdr_socket || target.start_new_herdr)) throw new Error("An account add connects to that PC's own Ovis, not to a herdr session");
     // the owner's socket is forwarded over a multiplexed connection, which this app has on Linux and macOS only
     if (accountAdd && process.platform === "win32") throw new Error("Adding a PC to your account over SSH from Windows is not supported yet.");
+    if (accountAdd && this.previewProfile) throw new Error(PREVIEW_NO_ACCOUNT_ADD);
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
     if (existing?.machine.kind === "address") throw new Error(ADDRESS_PC_UPDATES);
     if (existing?.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
@@ -1514,8 +1524,9 @@ export class MachineManager {
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
     const { platform } = inspection;
     let expectedSocket = inspection.expectedSocket;
+    if (target.own_ovis && this.previewProfile) throw new MachineActionRequired(PREVIEW_LEAVES_OWN_OVIS, "setup");
     if (target.own_ovis && host.kind !== "posix") throw new MachineActionRequired("Choosing this PC's Ovis server over SSH requires Linux or macOS", "setup");
-    const candidates = inspection.descriptors.filter((d) => d?.managed_remote === false && typeof d.socket_path === "string" && d.socket_path !== expectedSocket);
+    const candidates = this.previewProfile ? [] : inspection.descriptors.filter((d) => d?.managed_remote === false && typeof d.socket_path === "string" && d.socket_path !== expectedSocket);
     // what already serves the expected socket (a live bridge registered for it, or herdr answering there) is connected as
     // before: a saved PC that reconnects to it is never stopped by a choice nobody asked for.
     const servedAlready = async (): Promise<false | "bridge" | "herdr" | "socket"> => {
@@ -1625,6 +1636,7 @@ export class MachineManager {
       descriptor = undefined;
     }
     if (target.own_ovis && !descriptor) throw await ownOvisGone();
+    if (this.previewProfile && descriptor && !descriptor.managed_remote) throw new MachineActionRequired(PREVIEW_LEAVES_OWN_OVIS, "setup");
     // an account add lands only on that PC's own Ovis: never on a bridge this app runs there, nor one it would install
     // or start in its place (nothing below installs or starts anything for it)
     if (job?.accountAdd && descriptor?.managed_remote !== false) {
@@ -1768,6 +1780,8 @@ export class MachineManager {
         for (let i = 0; i < pollLimit; i++) {
           if (job?.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
           descriptor = (await host.descriptors(ssh)).find((d) => d.socket_path === expectedSocket && d.pid !== stalePid);
+          // a PC's own Ovis that registered there meanwhile is not the bridge started here: a preview leaves it alone
+          if (descriptor && this.previewProfile && !descriptor.managed_remote) throw new MachineActionRequired(PREVIEW_LEAVES_OWN_OVIS, "setup");
           if (descriptor) break;
           const found = await host.foundSessions?.(ssh, inspection);
           if (found?.gone) throw new MachineActionRequired("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", "choose_herdr", false, found.sessions);

@@ -60,5 +60,7 @@ export function readStagingProfile({ resources, env, user }: {
   const stagingHome = socketLength > CORE_SOCKET_LIMIT ? `/tmp/ost-${uid}` : preferred;
   if (env["HOME"] === undefined || env["HOME"] === homedir) resolved["HOME"] = stagingHome;
   resolved["CFFIXED_USER_HOME"] ??= stagingHome;
+  // its own Ovis lives in that home, so the one it finds on a PC over SSH is a released one: the server leaves it alone
+  resolved["OVIS_PREVIEW_PROFILE"] ??= "1";
   return { env: resolved, userData: posix.join(stagingHome, "app") };
 }
