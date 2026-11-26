@@ -21,6 +21,11 @@ export function inNativeApp(): boolean {
   return bridge()?.isNativePlatform?.() === true;
 }
 
+/** An iPhone or iPad: iPadOS reports a Mac user agent, and touch points tell the two apart. */
+export function onIos(env: { userAgent: string; maxTouchPoints: number }): boolean {
+  return /iPhone|iPad|iPod/.test(env.userAgent) || (/Macintosh/.test(env.userAgent) && env.maxTouchPoints > 1);
+}
+
 export function inMacApp(): boolean {
   return typeof navigator !== "undefined" && /\bOvisMac\//.test(navigator.userAgent);
 }

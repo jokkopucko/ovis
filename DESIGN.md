@@ -3742,6 +3742,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   WKWebView do, and keep theirs: the sheet follows Android Chrome's link menu, cut to those three.
   Only the WebView's own long press (its `contextmenu`, not a mouse's) opens it, so a tap, a swipe
   and a press on other words keep their meaning.
+  In the iPhone and iPad Home Screen web app on iOS or iPadOS 17 and later, an HTTPS link to
+  another site opens in Safari, where the user is signed in, not in the app's own view.
+  `safariLinks.ts` uses Safari's undocumented `x-safari-https:` for `ExternalLink` taps and terminal links alike, a
+  sign-in page's link included; a sign-in its button opens through `reserveTab` stays in the app's
+  view, and both finish, since the app polls for the code. A plain http link and a link to the app's
+  own origin stay in the app; iOS 16, unknown versions, Safari tabs, native apps and other systems
+  are unchanged. A native coding-agent app can open a link in Apple's in-app Safari view
+  (`SFSafariViewController`); a Home Screen web app has no such view, so it hands the link to Safari
+  instead.
   Markdown files use the same renderer in the file viewer. **Open in a new tab** opens an
   app link to the resolved absolute file on its own PC, independent of the originating pane.
   **Open raw file** (Code glyph) opens the original bytes; Download still saves those bytes.
