@@ -238,6 +238,7 @@ export function Composer({
   }, [autoFocus]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<Attachment[]>([]);
+  const attachmentPreviews = useRef(new Map<number, string>());
   const removedAttachments = useRef(new Set<number>());
   const fileRequest = useRef(0);
   const draftKey = composerDraftKey(paneStorageId(machineId, paneId));
@@ -350,7 +351,8 @@ export function Composer({
       for (const release of [...openClaims.current]) release();
       uploadQueue.current = [];
       waitingMentions.current = [];
-      for (const attachment of attachmentsRef.current) URL.revokeObjectURL(attachment.previewUrl);
+      for (const url of attachmentPreviews.current.values()) URL.revokeObjectURL(url);
+      attachmentPreviews.current.clear();
     };
   }, []);
 
@@ -669,10 +671,20 @@ export function Composer({
       const attachment = uploadQueue.current.shift()!;
       if (removedAttachments.current.has(attachment.id)) continue;
       uploadsRunning.current += 1;
-      void onUploadImage(attachment.file)
+      void normalizeComposerImageFile(attachment.file)
+        .then((preview) => {
+          if (!mounted.current || removedAttachments.current.has(attachment.id)) return;
+          if (preview !== attachment.file && !attachmentPreviews.current.has(attachment.id)) {
+            const previewUrl = URL.createObjectURL(preview);
+            attachmentPreviews.current.set(attachment.id, previewUrl);
+            setAttachments((current) => current.map((item) => item.id === attachment.id ? { ...item, previewUrl } : item));
+          }
+          // If JPEG preparation fails, it must still have the original file and type.
+          return onUploadImage(preview.type === "image/jpeg" ? attachment.file : preview);
+        })
         .then(
           (path) => {
-            if (!mounted.current || removedAttachments.current.has(attachment.id)) return;
+            if (path === undefined || !mounted.current || removedAttachments.current.has(attachment.id)) return;
             waitingMentions.current.push({ id: attachment.id, path, name: attachment.file.name });
             placeWaitingMentions();
           },
@@ -705,13 +717,13 @@ export function Composer({
         ? t("Only the first {count} of {total} files were taken.", { count: images.length, total: incoming.length })
         : null;
       const added = images.map<Attachment>((file) => {
-        const uploadFile = normalizeComposerImageFile(file);
+        const id = ++attachmentSequence;
+        const previewUrl = (PREVIEW_TYPES as readonly string[]).includes(file.type) ? URL.createObjectURL(file) : "";
+        if (previewUrl) attachmentPreviews.current.set(id, previewUrl);
         return {
-          id: ++attachmentSequence,
-          file: uploadFile,
-          previewUrl: (PREVIEW_TYPES as readonly string[]).includes(uploadFile.type)
-            ? URL.createObjectURL(uploadFile)
-            : "",
+          id,
+          file,
+          previewUrl,
           path: null,
           state: "uploading",
           leftOut,
@@ -735,7 +747,9 @@ export function Composer({
   const removeAttachment = useCallback((attachment: Attachment) => {
     removedAttachments.current.add(attachment.id);
     placedMentions.current.delete(attachment.id);
-    URL.revokeObjectURL(attachment.previewUrl);
+    const previewUrl = attachmentPreviews.current.get(attachment.id);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    attachmentPreviews.current.delete(attachment.id);
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
     setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
     if (attachment.path) {
@@ -785,7 +799,11 @@ export function Composer({
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); placedMentions.current.delete(attachment.id); }
+      for (const attachment of sentAttachments) {
+        URL.revokeObjectURL(attachment.previewUrl);
+        attachmentPreviews.current.delete(attachment.id);
+        placedMentions.current.delete(attachment.id);
+      }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };

@@ -120,14 +120,14 @@ it("refuses a 40 MiB file in the browser with the 32 MB limit named, before uplo
   expect(MAX_ATTACHMENT_BYTES).toBe(32 * 1024 * 1024);
 });
 
-it("uploads an iPhone's HEIC photo as the JPEG the browser drew, scaled to 4096 a side and never up", async () => {
+it("uploads an iPhone's HEIC or JPEG photo as the JPEG the browser drew, scaled to 2048 a side and never up", async () => {
   const bodies: { content_type: string; name: string; data_base64: string }[] = [];
   globalThis.fetch = (async (_url: string, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init?.body)));
     return Response.json({ ok: true, path: "/work/.ovis/paste-20261123-212127-ee17a8b2.jpg" });
   }) as typeof fetch;
-  const drawn: number[][] = [], types: string[] = [], revoked: string[] = [];
-  const sizes: [number, number][] = [[8064, 6048], [4032, 3024]];
+  const drawn: number[][] = [], encoded: unknown[][] = [], revoked: string[] = [];
+  const sizes: [number, number][] = [[8064, 6048], [4032, 3024], [1024, 768]];
   const saved = { Image: globalThis.Image, document: globalThis.document, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
   Object.assign(globalThis, {
     // a browser's image has no size until it is decoded
@@ -135,25 +135,28 @@ it("uploads an iPhone's HEIC photo as the JPEG the browser drew, scaled to 4096 
     document: { createElement: () => ({
       width: 0, height: 0,
       getContext() { return { drawImage: (_image: unknown, ...box: number[]) => drawn.push(box) }; },
-      toBlob(resolve: (blob: Blob) => void, type: string) { types.push(type); resolve(new Blob(["jpeg"], { type: "image/jpeg" })); },
+      toBlob(resolve: (blob: Blob) => void, ...format: unknown[]) { encoded.push(format); resolve(new Blob(["jpeg"], { type: "image/jpeg" })); },
     }) },
   });
   URL.createObjectURL = () => "blob:photo";
   URL.revokeObjectURL = (url: string) => { revoked.push(url); };
   const stillHeic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63]);
   try {
-    for (const name of ["IMG_0001.HEIC", "IMG_0002.HEIC"]) {
-      expect(await uploadPaneImage("p1", new File([stillHeic], name, { type: "image/heic" }))).toBe("/work/.ovis/paste-20261123-212127-ee17a8b2.jpg");
-    }
+    const paths = [
+      await uploadPaneImage("p1", new File([stillHeic], "IMG_0001.HEIC", { type: "image/heic" })),
+      await uploadPaneImage("p1", new File([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], "IMG_3718.jpeg", { type: "image/jpeg" })),
+      await uploadPaneImage("p1", new File([stillHeic], "IMG_0002.HEIC", { type: "image/heic" })),
+    ];
+    expect(paths).toEqual(Array(3).fill("/work/.ovis/paste-20261123-212127-ee17a8b2.jpg"));
   } finally {
     Object.assign(globalThis, { Image: saved.Image, document: saved.document });
     URL.createObjectURL = saved.createObjectURL;
     URL.revokeObjectURL = saved.revokeObjectURL;
   }
-  expect(drawn).toEqual([[0, 0, 4096, 3072], [0, 0, 4032, 3024]]);
-  expect(types).toEqual(["image/jpeg", "image/jpeg"]);
-  expect(revoked).toEqual(["blob:photo", "blob:photo"]);
-  expect(bodies.map(({ content_type, name, data_base64 }) => [content_type, name, atob(data_base64)])).toEqual([["image/jpeg", "IMG_0001.jpg", "jpeg"], ["image/jpeg", "IMG_0002.jpg", "jpeg"]]);
+  expect(drawn).toEqual([[0, 0, 2048, 1536], [0, 0, 2048, 1536], [0, 0, 1024, 768]]);
+  expect(encoded).toEqual(Array(3).fill(["image/jpeg", 0.85]));
+  expect(revoked).toEqual(["blob:photo", "blob:photo", "blob:photo"]);
+  expect(bodies.map(({ content_type, name, data_base64 }) => [content_type, name, atob(data_base64)])).toEqual([["image/jpeg", "IMG_0001.jpg", "jpeg"], ["image/jpeg", "IMG_3718.jpg", "jpeg"], ["image/jpeg", "IMG_0002.jpg", "jpeg"]]);
 });
 
 it("falls back to the original HEIC file without encoding a blank JPEG when canvas 2D context is unavailable", async () => {

@@ -54,6 +54,25 @@ afterEach(() => {
 const note = () => renderer!.root.findAll((node) => node.props.className === "composer-note-text").map((node) => node.children.filter((child) => typeof child === "string").join(""))[0] ?? null;
 const details = () => renderer!.root.findAllByType("code").map((node) => node.children.join(""));
 
+it("posts non-images named .jpe and .jfif as ordinary attachments", async () => {
+  const requests: { name: string; content_type: string; data_base64: string }[] = [];
+  const capture: typeof fetch = Object.assign(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return Response.json({ path: "/work/.ovis/meeting-notes" });
+  }, { preconnect: globalThis.fetch.preconnect });
+  spyOn(globalThis, "fetch").mockImplementation(capture);
+  await act(async () => {
+    renderer = create(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={(file) => uploadPaneImage(pane, file)} />);
+  });
+  const input = renderer!.root.find((node) => node.type === "input" && node.props.type === "file");
+  const names = ["notes.jpe", "notes.jfif"];
+  const files = names.map((name) => new File(["meeting notes"], name, { type: "application/octet-stream" }));
+  await act(async () => { input.props.onChange({ currentTarget: { files, value: "" } }); });
+  expect(requests.map(({ name, content_type, data_base64 }) => [name, content_type, atob(data_base64)]).sort()).toEqual(
+    names.map((name) => [name, "application/octet-stream", "meeting notes"]).sort(),
+  );
+});
+
 it.each([
   ["the connection's own words", new TypeError("Relay request failed"), "IMG_4242.jpg could not be attached: Relay request failed", []],
   ["the HTTP status of an answer with no words", new ApiError("/api/pane/image", 502, "", null), "IMG_4242.jpg could not be attached: HTTP 502", []],
