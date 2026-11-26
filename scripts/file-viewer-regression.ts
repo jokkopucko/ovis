@@ -106,6 +106,19 @@ async function activateWithPaneDiagnostic(page: Page, link: Locator, expectedPan
   }
 }
 
+/**
+ * Isolation from the app's service worker, which answers every /assets/ file a page loads: on a loaded runner a page it
+ * controlled stayed on "Loading Ovis" because a module preload it was answering failed (net::ERR_ABORTED, cancelled by
+ * a cause the trace does not show) and the module graph never ran. No check here is about the worker
+ * (scripts/pwa-update-browser-qa.ts is), so these pages take the app's no-worker paths, as on a plain-http address
+ * (src/pwa.ts). Playwright's `serviceWorkers: "block"` is no substitute: its init script reads navigator.serviceWorker,
+ * which throws in the viewer's sandboxed frames, a page error.
+ */
+async function withoutWorker(context: BrowserContext): Promise<BrowserContext> {
+  await context.addInitScript(() => { delete (Navigator.prototype as { serviceWorker?: unknown }).serviceWorker; });
+  return context;
+}
+
 const root = mkdtempSync(join(tmpdir(), "ovis-file-back-"));
 const reportServer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(
   '<!doctype html><h1>Same-host report</h1><a href="#details">Report details</a><section id="details">Details</section>',
@@ -159,7 +172,9 @@ writeFileSync(sideTranscript, [
 db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli', ?)").run(sideThread, sideTranscript, side, "Where are the side notes?");
 db.close();
 const standIn = join(root, "codex");
-writeFileSync(standIn, "#!/bin/sh\nsleep 600\n");
+// it lives until its pane closes: a clock of its own (it slept 600 s) ran out under a loaded runner before the last
+// checks, herdr then reported a shell, and those pages opened the terminal instead of the chat they wait on
+writeFileSync(standIn, "#!/bin/sh\nwhile read -r line; do :; done\n");
 chmodSync(standIn, 0o755);
 copyFileSync(join(import.meta.dir, "fixtures", "file-preview.webm"), join(root, "preview.webm"));
 writeFileSync(join(root, "notes.txt"), "File preview history regression\n");
@@ -264,7 +279,7 @@ try {
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), codexHome, tailnetPcs: { readStatus: async () => null }, sshCandidates: { sshDir: join(root, "no-ssh"), readStatus: async () => null } });
   const origin = `http://127.0.0.1:${server.port}`;
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const context = await withoutWorker(await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   await drawsNoDroplet(context);
   const page = await context.newPage();
   await page.addInitScript(() => {
@@ -1319,7 +1334,7 @@ try {
 
   for (const width of [390, 1440]) {
     for (const theme of ["dark", "light"]) {
-      const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width === 390, hasTouch: width === 390 });
+      const context = await withoutWorker(await browser.newContext({ viewport: { width, height: 900 }, isMobile: width === 390, hasTouch: width === 390 }));
       await drawsNoDroplet(context);
       await context.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })), theme);
       const page = await context.newPage();
@@ -1402,7 +1417,7 @@ try {
     }
   }
   for (const width of [1280, 601, 600, 390]) {
-    const readerContext = await browser.newContext({ viewport: { width, height: 800 } });
+    const readerContext = await withoutWorker(await browser.newContext({ viewport: { width, height: 800 } }));
     await drawsNoDroplet(readerContext);
     try {
       const readerPage = await readerContext.newPage();
@@ -1458,7 +1473,7 @@ try {
   assert.ok(local?.snapshot);
   const remote: Machine = { ...local, id: "remote-fixture", name: "Remote fixture", snapshot: { ...local.snapshot, panes: [], workspaces: [], tabs: [], layouts: [], agents: [] } };
   for (const target of ["remote-fixture", "local", "missing-fixture"]) {
-    const ownerContext = await browser.newContext();
+    const ownerContext = await withoutWorker(await browser.newContext());
     await drawsNoDroplet(ownerContext);
     const fileRequests: string[] = [];
     await ownerContext.addInitScript(({ stored, pane }) => {
@@ -2000,8 +2015,13 @@ try {
   await browser?.close();
   reportServer.stop(true);
   server?.stop();
-  if (otherWorkspace) await workspaceClose(otherWorkspace);
-  if (sideWorkspace) await workspaceClose(sideWorkspace);
-  if (workspace) await workspaceClose(workspace);
+  // each one closes even when another's close fails: a stand-in ends only when its pane closes
+  const closed = await Promise.allSettled([otherWorkspace, sideWorkspace, workspace].flatMap((id) => id ? [workspaceClose(id)] : []));
   rmSync(root, { recursive: true, force: true });
+  const failed = closed.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  // not thrown: a throw here would replace the failure that brought the run to this cleanup
+  if (failed.length > 0) {
+    console.error(new AggregateError(failed, "workspace cleanup failed"));
+    process.exitCode = 1;
+  }
 }
