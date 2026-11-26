@@ -5,6 +5,13 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_JA: Record<string, string> = {
+  "Chat Markdown": "チャットの Markdown",
+  "How assistant Markdown replies are styled in Chat, using the active theme's colors. The choice applies on every device.": "チャットでのアシスタントの Markdown 返信に、現在のテーマの色をどう適用するかを選びます。すべてのデバイスに適用されます。",
+  "markdown style prose headings inline code colors editorial tinted colorful plain": "マークダウン スタイル 見出し インラインコード 色 エディトリアル ティント カラフル プレーン",
+  "Editorial": "エディトリアル",
+  "Tinted": "ティント",
+  "Colorful": "カラフル",
+  "Plain": "プレーン",
   "Forget": "削除",
   "Finished": "完了",
   "Direct typing": "直接入力",

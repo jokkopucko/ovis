@@ -525,6 +525,25 @@ describe("preferences sync real send path", () => {
     expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
   });
 
+  it("a tab that missed a Chat Markdown pick does not send it back over a newer one when it hears from the server again", async () => {
+    const a = await open();
+    const b = await open();
+    // b's event stream is down: it hears of a's pick only through the browser's storage
+    clients.splice(clients.indexOf(b), 1);
+    await act(async () => { a.update({ markdownStyle: "tinted" }); });
+    await send();
+    await act(async () => { pageEvents.dispatchEvent(Object.assign(new Event("storage"), { key: "ovis:markdown-style", storageArea: window.localStorage })); });
+    clients.splice(clients.indexOf(a), 1);
+    store.set({ settings: { markdownStyle: "colorful" } });
+    clients.push(b);
+    await act(async () => { b.receive(store.get()); });
+    await windows(3);
+
+    expect(b.settings.markdownStyle).toBe("colorful");
+    expect(store.get().settings.markdownStyle).toBe("colorful");
+    expect(sent.map((body) => body.settings.markdownStyle)).toEqual(["tinted"]);
+  });
+
   it("a save answered after its page's settings tree is gone leaves what another tab stored since", async () => {
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;

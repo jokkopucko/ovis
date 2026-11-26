@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeft, AudioLines, Ban, Bell, Bot, Box, Brain, NotebookPen, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink as ExternalLinkIcon, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
+import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeft, AudioLines, Ban, Bell, Bot, Box, Brain, NotebookPen, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink as ExternalLinkIcon, FileClock, FilePen, FileText, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -18,7 +18,7 @@ import { herdrKeys, loadHerdrUi } from "../lib/herdrUi.ts";
 import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "../../shared/herdr-keys.ts";
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
-import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, phoneInboxOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
+import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, MARKDOWN_STYLES, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, phoneInboxOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type MarkdownStyle, type VoiceButton } from "../lib/settings.ts";
 import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { chosenTheme, customRow, customRowId, type CustomTheme } from "../lib/customThemes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
@@ -447,6 +447,73 @@ function InterfaceFontRows() {
   );
 }
 
+function markdownStyleName(t: Translate, style: MarkdownStyle): string {
+  switch (style) {
+    case "editorial": return t("Editorial");
+    case "tinted": return t("Tinted");
+    case "colorful": return t("Colorful");
+    case "plain": return t("Plain");
+  }
+}
+
+function MarkdownStylePicker() {
+  const { settings, update } = useSettings();
+  const t = useT();
+  const strip = useRef<HTMLDivElement>(null);
+  const current = settings.markdownStyle;
+  const pick = (markdownStyle: MarkdownStyle): void => update({ markdownStyle });
+  const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+    const cards = [...(strip.current?.querySelectorAll<HTMLElement>("[data-markdown-style-card]") ?? [])];
+    const at = cards.indexOf(document.activeElement as HTMLElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? cards.length - 1 : (at + (event.key === "ArrowRight" ? 1 : -1) + cards.length) % cards.length;
+    event.preventDefault();
+    const id = cards[next]?.dataset["markdownStyleCard"] as MarkdownStyle | undefined;
+    if (id && MARKDOWN_STYLES.includes(id)) pick(id);
+    cards[next]?.focus();
+    cards[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  return (
+    <>
+      <SettingsRow icon={FileText} label={t("Chat Markdown")} description={t("How assistant Markdown replies are styled in Chat, using the active theme's colors. The choice applies on every device.")}
+        keywords={t("markdown style prose headings inline code colors editorial tinted colorful plain")} reset={["markdownStyle"]}>
+        <span className="settings-condition">{markdownStyleName(t, current)}</span>
+      </SettingsRow>
+      <div className="settings-item theme-strip">
+        <div className="theme-strip-frame">
+          <div ref={strip} className="theme-cards" role="radiogroup" aria-label={t("Chat Markdown")} onKeyDown={step}>
+            {MARKDOWN_STYLES.map((style) => {
+              const name = markdownStyleName(t, style);
+              const checked = current === style;
+              return (
+                <button key={style} type="button" role="radio" aria-checked={checked} title={name} tabIndex={checked ? 0 : -1}
+                  className="theme-card" data-markdown-style-card={style} onClick={() => pick(style)}>
+                  <span className={`markdown-style-art is-${style}`} aria-hidden="true">
+                    <span className="markdown-style-art-head">
+                      <span className="markdown-style-art-h" />
+                      <span className="markdown-style-art-rule" />
+                    </span>
+                    <span className="markdown-style-art-line">
+                      <span className="markdown-style-art-text" />
+                      <span className="markdown-style-art-em" />
+                      <span className="markdown-style-art-code" />
+                    </span>
+                    <span className="markdown-style-art-quote">
+                      <span className="markdown-style-art-dot" />
+                      <span className="markdown-style-art-text" />
+                    </span>
+                  </span>
+                  <span className="theme-card-name">{name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function AppearancePage() {
   const { settings, update } = useSettings();
   const t = useT();
@@ -457,6 +524,7 @@ function AppearancePage() {
         <Segmented label={t("Theme")} value={settings.theme} onChange={(theme) => update({ theme })} options={[{ value: "dark", label: t("Dark") }, { value: "light", label: t("Light") }, { value: "system", label: t("System") }]} />
       </SettingsRow>
       <ThemePicker />
+      <MarkdownStylePicker />
     </SettingsGroup>
 
     <SettingsGroup title={t("Typography")} section="typography">

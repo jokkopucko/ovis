@@ -16,10 +16,10 @@ import { chatFontStack, sanitizeFontFamily } from "./fontFamily.ts";
 import { fontScale, sanitizeUiFontSize, uiFontStack } from "./typography.ts";
 import { sanitizeKeyBarExtras, type KeyBarExtra } from "./keys.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems, sanitizeKeyBarItems, type KeyBarItem } from "./keyBar.ts";
-import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DARK_QUERY, defaultThemeSetting, readStoredAppearance, resolveTheme, sanitizeAppearance, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
+import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DARK_QUERY, DEFAULT_MARKDOWN_STYLE, defaultThemeSetting, MARKDOWN_STYLE_STORAGE_KEY, MARKDOWN_STYLES, readStoredAppearance, resolveTheme, sanitizeAppearance, sanitizeMarkdownStyle, savedMarkdownStyle, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type MarkdownStyle, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
 
-export { resolveTheme };
-export type { ResolvedTheme, ThemeSetting };
+export { DEFAULT_MARKDOWN_STYLE, MARKDOWN_STYLE_STORAGE_KEY, MARKDOWN_STYLES, resolveTheme };
+export type { MarkdownStyle, ResolvedTheme, ThemeSetting };
 export type Density = "compact" | "comfortable";
 export type PhoneTabs = "row" | "header";
 export type SidebarRows = "one" | "two";
@@ -95,6 +95,7 @@ export interface Settings {
   darkTheme: ThemeId;
   lightTheme: ThemeId;
   customThemes: CustomThemes;
+  markdownStyle: MarkdownStyle;
   terminalFontSize: number;
   /** mouse reports sent to herdr per wheel event in the terminal: 1 is what xterm sends by itself */
   terminalWheelSpeed: number;
@@ -217,7 +218,7 @@ type TelemetrySourceSettings = Omit<Settings,
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
   | "agentHarnessTool"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
-  | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
+  | "expandThinking" | "foldWork" | "customThemes" | "markdownStyle" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -284,7 +285,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
 }
 
 export const SETTING_SCOPE = {
-  theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
+  theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", markdownStyle: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
   agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", ompHeldFiles: "shared", restoreReplacedServer: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared", builtInBrowser: "shared", browserBlockedSites: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
@@ -363,6 +364,7 @@ export const DEFAULT_SETTINGS: Settings = {
   darkTheme: DEFAULT_THEME,
   lightTheme: DEFAULT_THEME,
   customThemes: NO_CUSTOM_THEMES,
+  markdownStyle: DEFAULT_MARKDOWN_STYLE,
   terminalFontSize: 13,
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
@@ -571,6 +573,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     darkTheme,
     lightTheme,
     customThemes: sanitizeCustomThemes(record["customThemes"]),
+    markdownStyle: sanitizeMarkdownStyle(record["markdownStyle"]),
     palette: mirrorPalette(theme, darkTheme, lightTheme),
     paletteLight: lightTheme,
     paletteDark: darkTheme,
@@ -897,7 +900,8 @@ export function loadSettings(): Settings {
     terminalAttachButton: readChatFold(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
     terminalKeyboardOnRequest: readChatFold(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest),
     terminalFoldKeyBar: readChatFold(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar),
-    customThemes: readCustomThemes() };
+    customThemes: readCustomThemes(),
+    markdownStyle: savedMarkdownStyle(() => window.localStorage) };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -908,8 +912,9 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, sidebarAgentTree, phoneInbox, foldHelpers, pcLoad, voiceEngine, agentGroups, agentGroupSort, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, customThemes, phoneTabs, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, sidebarAgentTree, phoneInbox, foldHelpers, pcLoad, voiceEngine, agentGroups, agentGroupSort, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, customThemes, markdownStyle, phoneTabs, ...main } = mirrored;
     window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(customThemes));
+    window.localStorage.setItem(MARKDOWN_STYLE_STORAGE_KEY, JSON.stringify(markdownStyle));
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(PHONE_TABS_STORAGE_KEY, JSON.stringify(phoneTabs));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
@@ -978,6 +983,7 @@ export function applyToDocument(settings: Settings, entry: DrawnTheme, language:
   root.dataset["density"] = settings.density;
   root.dataset["chatWidth"] = settings.chatWidth;
   root.dataset["marks"] = settings.agentMarks;
+  root.dataset["markdownStyle"] = settings.markdownStyle;
   const uiPx = uiFontSize(settings);
   root.style.setProperty("--ui-scale", String(fontScale(uiPx, BODY_FONT[settings.density])));
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));

@@ -821,6 +821,21 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
 - `palette`: the legacy mirror of the drawn side's theme for older app versions; default `codex`.
   A record with no palette (saved before palettes) or a removed one (`report`, `lilac`, `forest`)
   loads as `amber`.
+- `markdownStyle`: `editorial`, `tinted`, `colorful`, or `plain`; default `editorial`, shared across
+  devices (`SHARED_SETTING_KEYS`) and stored in its own key (`ovis:markdown-style`, applied at cold
+  boot via `data-markdown-style` on `<html>`). Picked from a row of four miniature preview cards
+  under Settings → Appearance → Chat Markdown (following the Theme picker's card strip rather than a
+  binary toggle). Scoped to assistant chat turns only (`.chat-turn-agent .markdown`); user bubbles,
+  file previews, fenced code blocks, and clickable file/link chips (`.markdown-file`,
+  `.markdown-code-link`, `a > code`) keep their own affordances. `editorial` follows Claude and
+  Linear's restrained typography (neutral headings with a hairline rule under `h2`, single-accent
+  tints on bullets while ordered numbers keep the text color, one blockquote rail/wash however deep
+  the quote, and non-file inline code pills in `--text-strong`, never a mix of two text colors, so an
+  imported theme keeps it readable); `tinted` adds soft
+  two-tone theme heading and inline-code tints; `colorful` uses the active theme's `--syntax-*`
+  roles across headings, emphasis, and inline code (following the syntax-colored Markdown direction
+  proposed in #4262); `plain` keeps the original monochrome Markdown. Every preset's foreground and
+  surface mixes meet WCAG AA (4.5:1) across all built-in dark and light themes (`themes.contrast.test.ts`).
 - `density`: `comfortable` or `compact`; default `comfortable`.
 - `sidebarRows`: `one` or `two`; default `one`.
 - Terminal font size is independent: default `13px`, clamped to `10–22px`.

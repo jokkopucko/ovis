@@ -676,7 +676,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     const reset = (row: string) => page.getByRole("button", { name: `Restore defaults: ${row}`, exact: true });
     await page.goto(`${url}?settings=appearance`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     const mode = page.getByRole("group", { name: "Theme", exact: true });
     await mode.getByRole("button", { name: "Light", exact: true }).click();
     await page.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
@@ -703,7 +703,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     await custom.waitFor({ state: "detached" });
     assert.equal(await uiFont.inputValue(), "default", "the select shows Default once the font is put back");
     await page.goto(`${url}?settings=appearance`);
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     assert.equal(await page.getByLabel("Interface font", { exact: true }).inputValue(), "default", "the font put back stays put back after a reload");
 
     const dark = themeSide(page, "dark");
@@ -742,7 +742,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
   const appearance = async (page: Page, query = ""): Promise<void> => {
     await page.goto(`${url}?settings=appearance${query}`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
   };
 
   const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });

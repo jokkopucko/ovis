@@ -5,6 +5,13 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_ZH: Record<string, string> = {
+  "Chat Markdown": "聊天 Markdown",
+  "How assistant Markdown replies are styled in Chat, using the active theme's colors. The choice applies on every device.": "选择聊天中助手 Markdown 回复应用当前主题配色的风格。此选择应用于所有设备。",
+  "markdown style prose headings inline code colors editorial tinted colorful plain": "markdown 样式 标题 行内代码 配色 报刊 浅色 彩色 简洁",
+  "Editorial": "报刊",
+  "Tinted": "浅色",
+  "Colorful": "彩色",
+  "Plain": "简洁",
   "Forget": "忘记",
   "Finished": "完成",
   "Direct typing": "直接输入",

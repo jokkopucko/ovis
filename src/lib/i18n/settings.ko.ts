@@ -5,6 +5,13 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_KO: Record<string, string> = {
+  "Chat Markdown": "채팅 마크다운",
+  "How assistant Markdown replies are styled in Chat, using the active theme's colors. The choice applies on every device.": "채팅에서 어시스턴트 Markdown 답변에 현재 테마 색상을 적용하는 스타일입니다. 모든 기기에 적용됩니다.",
+  "markdown style prose headings inline code colors editorial tinted colorful plain": "마크다운 스타일 본문 제목 인라인 코드 색상 에디토리얼 은은한 컬러풀 기본",
+  "Editorial": "에디토리얼",
+  "Tinted": "은은한 톤",
+  "Colorful": "컬러풀",
+  "Plain": "기본(무채색)",
   "Forget": "잊기",
   "Finished": "완료",
   "Direct typing": "직접 입력",
