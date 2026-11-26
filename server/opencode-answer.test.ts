@@ -4,8 +4,8 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
-import { handlePromptRequest, promptWaitEnded } from "./prompt.ts";
+import type { HerdrPane, InteractivePrompt, PromptAnswer } from "../shared/protocol.ts";
+import { handlePromptRequest, OpenCodePromptState, promptWaitEnded, shownPromptText } from "./prompt.ts";
 import * as service from "./opencode-service.ts";
 import type { OpenCodeFormInfo } from "./opencode-service.ts";
 
@@ -33,6 +33,8 @@ async function fixture(run: (f: {
   working(): void;
   readResponse(): Promise<Response>;
   read(): Promise<InteractivePrompt>;
+  /** a prompt watch's read of its own state, of the pane as it ran the given session */
+  watch(state: OpenCodePromptState, session: string): Promise<string | null | undefined>;
   answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal): Promise<Response>;
   /** answers delivered, by the way they went */
   counted: { answers: number; ways: (string | null)[] };
@@ -75,6 +77,10 @@ async function fixture(run: (f: {
       expect(text).not.toContain(service.url.origin);
       const { prompt } = JSON.parse(text) as { prompt: InteractivePrompt };
       return prompt;
+    },
+    watch(state: OpenCodePromptState, value: string) {
+      const pane = { pane_id: paneId, agent: "opencode", agent_status: "blocked", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value } } as HerdrPane;
+      return shownPromptText(pane, [pane], { openCodeStateDir: root, openCodeState: state, ompLookups: new Map() });
     },
     async answer(prompt: InteractivePrompt, choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, signal?: AbortSignal) {
       const response = await handlePromptRequest(new Request(answerUrl, {
@@ -509,7 +515,62 @@ describe("OpenCode answer ordering", () => {
       } finally { release.resolve(Response.json(f.forms)); }
     });
   }, 3_000);
+
+  it("drops the card once the form is answered or cancelled elsewhere, with no fallback card while herdr still says blocked", async () => {
+    for (const [form, gone] of questions) {
+      await fixture(async (f) => {
+        f.forms = [form];
+        const prompt = await f.read();
+        expect(prompt).toMatchObject({ agent: "opencode", options: [{ label: "Red" }, { label: "Blue" }, {}] });
+        f.forms = [];
+        expect(await f.read(), gone).toBeNull();
+        expect((await f.answer(prompt, { option_index: 0 })).status).toBe(409);
+        expect(f.replies).toEqual([]);
+      });
+    }
+  });
+
+  it("keeps the fallback card of a permission it cannot show when a form beside it closes", async () => {
+    await fixture(async (f) => {
+      f.forms = [questions[0]![0]];
+      f.permissions = [asked("shell")];
+      f.messages = {};
+      expect((await f.read()).fallback).toBe(true);
+      f.forms = [];
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
+
+  it("keeps the fallback card when a form closes on a read whose permission list failed", async () => {
+    await fixture(async (f) => {
+      f.forms = [questions[0]![0]];
+      expect((await f.read()).fallback).toBeUndefined();
+      f.forms = [];
+      f.permissionListing = async () => new Response(null, { status: 503 });
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
+
+  it("keeps another session's fallback card when a watch still reading the pane's earlier session sees that session's form go", async () => {
+    await fixture(async (f) => {
+      const watch = new OpenCodePromptState();
+      f.forms = [questions[0]![0]];
+      expect(await f.watch(watch, "ses_fixture01")).toEqual(expect.any(String));
+      f.session = "ses_fixture02";
+      expect((await f.read()).fallback).toBe(true);
+      f.forms = [];
+      await f.watch(watch, "ses_fixture01");
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
 });
+
+/** The question forms a real OpenCode 2.2.2 asked (server/fixtures/opencode-form-2.2.2.json), moved to the fixture's session, each with how it ended. */
+const formEvents = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-form-2.2.2.json"), "utf8")) as { events: { type: string; data: { id?: string; form?: OpenCodeFormInfo } }[] }).events;
+const questions = formEvents.filter((event) => event.type === "form.created").map((event) => [
+  { ...event.data.form!, sessionID: "ses_fixture01" },
+  formEvents.find((ended) => ended.type !== "form.created" && ended.data.id === event.data.form!.id)!.type,
+] as const);
 
 /** The permission requests a real OpenCode 2.2.2 asked (server/fixtures/opencode-permission-2.2.2.json), moved to the fixture's session. */
 const recorded: Record<string, unknown>[] = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-permission-2.2.2.json"), "utf8")) as { events: { type: string; data: Record<string, unknown> }[] })

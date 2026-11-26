@@ -5,16 +5,24 @@ import { join } from "node:path";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import * as herdr from "./herdr/client.ts";
-import { closeOpenCodeNative, onOpenCodePermissionChange, openCodePaneService } from "./opencode-native.ts";
+import { closeOpenCodeNative, onOpenCodePromptChange, openCodePaneService } from "./opencode-native.ts";
 import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-service.ts";
 import recording from "./fixtures/opencode-permission-2.2.2.json";
+import forms from "./fixtures/opencode-form-2.2.2.json";
 
 /**
- * The permission events of OpenCode 2.2.2's GET /api/event, replayed as recorded: two sessions of one directory, each
- * request asked and then replied. A wake names the verified pane of the event's session; the stream's every open
- * names every pane on it, since what it missed while down is gone.
+ * The permission and question form events of OpenCode 2.2.2's GET /api/event, replayed as recorded: two sessions of one
+ * directory, each request asked and then replied, each form created and then replied or cancelled. A wake names the
+ * verified pane of the event's session; the stream's every open names every pane on it, since what it missed while
+ * down is gone.
  */
 const [first, second] = [...new Set(recording.events.map((event) => event.data.sessionID))] as [string, string];
+/** the form events, moved to the permission recording's two sessions: form.created names its session in data.form */
+const [formFirst, formSecond] = [...new Set(forms.events.map((event) => event.data.form?.sessionID ?? event.data.sessionID))];
+const moved = (session: string | undefined) => session === formFirst ? first : session === formSecond ? second : session;
+const formEvents = forms.events.map((event) => event.data.form
+  ? { ...event, data: { form: { ...event.data.form, sessionID: moved(event.data.form.sessionID) } } }
+  : { ...event, data: { ...event.data, sessionID: moved(event.data.sessionID) } });
 const root = mkdtempSync(join(tmpdir(), "opencode-permission-wake-"));
 const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
 afterAll(() => {
@@ -67,7 +75,7 @@ const within = <T>(promise: Promise<T>, what: string, ms = 3_000): Promise<T> =>
 function wakes() {
   const seen: string[] = [];
   let waiting: { count: number; resolve(): void } | null = null;
-  const stop = onOpenCodePermissionChange((paneId) => {
+  const stop = onOpenCodePromptChange((paneId) => {
     seen.push(paneId);
     if (waiting && seen.length >= waiting.count) { waiting.resolve(); waiting = null; }
   });
@@ -103,12 +111,24 @@ async function verified(name: string) {
   return { service, stream, woken };
 }
 
-describe("OpenCode 2.2.2 permission events wake the prompt watch of their session's pane", () => {
+describe("OpenCode 2.2.2 permission and question form events wake the prompt watch of their session's pane", () => {
   it("wakes the pane of each recorded event's session only, two sessions of one directory apart", async () => {
     const { service, stream, woken } = await verified("replay");
     service.send(stream, { type: "session.execution.succeeded", created: 1, data: { sessionID: first } }, ...recording.events);
     await woken.reach(recording.events.length);
     expect(woken.seen).toEqual(recording.events.map((event) => event.data.sessionID === first ? "p_first" : "p_second"));
+  });
+
+  it("wakes the pane of each recorded question form's session, as it is created and as it is replied or cancelled", async () => {
+    const { service, stream, woken } = await verified("forms");
+    // each followed by the other session's recorded permission event, so a missed or a doubled wake shows in the order
+    const [ofFirst, ofSecond] = [recording.events[0]!, recording.events.at(-1)!];
+    for (const [index, event] of formEvents.entries()) {
+      const { form, sessionID } = event.data as { form?: { sessionID?: string }; sessionID?: string };
+      service.send(stream, event, (form?.sessionID ?? sessionID) === first ? ofSecond : ofFirst);
+      await woken.reach(2 * (index + 1));
+    }
+    expect(woken.seen).toEqual(["p_first", "p_second", "p_first", "p_second", "p_second", "p_first", "p_second", "p_first"]);
   });
 
   it("wakes again for a duplicate, and for a reply that comes before its ask; a session no pane holds wakes none", async () => {

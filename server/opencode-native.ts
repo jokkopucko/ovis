@@ -3,8 +3,8 @@
  * /api/info proves is the one service.json names (never started or ensured here): the command and
  * skill rows for the pane's directory, the skill-activation and turn-completion events of the
  * pane's exact session, which settle a Chat send's outcome as native evidence (and, for the TUI's own
- * /compact, the compaction it asked for), and the permission
- * events that tell a prompt watch to read the pane's requests again.
+ * /compact, the compaction it asked for), and the permission and question form
+ * events that tell a prompt watch to read the pane's requests and forms again.
  */
 import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
 import { resolveAgent, typingRoots } from "./pane-context.ts";
@@ -166,22 +166,28 @@ function onEvent(event: OpenCodeEvent): void {
 }
 
 /**
- * Told the verified panes whose permission requests changed: `permission.asked` and `permission.replied` (recorded on
- * 2.2.2, server/fixtures/opencode-permission-2.2.2.json) name the session. Each stream's open names every pane on it,
- * as events missed while it was down are gone. Only a wake: the listener reads the requests again from the service.
+ * Told the verified panes whose permission requests or question forms changed: `permission.asked`, `permission.replied`
+ * (recorded on 2.2.2, server/fixtures/opencode-permission-2.2.2.json), `form.replied` and `form.cancelled` name the
+ * session in `data`, `form.created` in `data.form` (server/fixtures/opencode-form-2.2.2.json). Each stream's open names
+ * every pane on it, as events missed while it was down are gone. Only a wake: the listener reads the requests and forms
+ * again from the service.
  */
-const permissionListeners = new Set<(paneId: string) => void>();
-const PERMISSION_EVENTS = new Set(["permission.asked", "permission.replied"]);
+const promptListeners = new Set<(paneId: string) => void>();
+const PROMPT_EVENTS = new Set(["permission.asked", "permission.replied", "form.created", "form.replied", "form.cancelled"]);
 
-export function onOpenCodePermissionChange(listener: (paneId: string) => void): () => void {
-  permissionListeners.add(listener);
-  return () => { permissionListeners.delete(listener); };
+export function onOpenCodePromptChange(listener: (paneId: string) => void): () => void {
+  promptListeners.add(listener);
+  return () => { promptListeners.delete(listener); };
+}
+
+function promptEventSession({ data }: OpenCodeEvent): unknown {
+  return typeof data.form === "object" && data.form !== null ? (data.form as { sessionID?: unknown }).sessionID : data.sessionID;
 }
 
 function wakePanes(key: string, sessionID?: string): void {
   for (const [paneId, entry] of verifiedPanes) {
     if (entry.key !== key || (sessionID !== undefined && entry.sessionID !== sessionID)) continue;
-    for (const listener of permissionListeners) listener(paneId);
+    for (const listener of promptListeners) listener(paneId);
   }
 }
 
@@ -203,8 +209,9 @@ function ensureStream(service: OpenCodeService): Stream {
     },
     onEvent: (event) => {
       onEvent(event);
-      const sessionID = event.data.sessionID;
-      if (stream === next && PERMISSION_EVENTS.has(event.type) && typeof sessionID === "string") wakePanes(key, sessionID);
+      if (stream !== next || !PROMPT_EVENTS.has(event.type)) return;
+      const sessionID = promptEventSession(event);
+      if (typeof sessionID === "string") wakePanes(key, sessionID);
     },
   });
   next.close = () => subscription.close();

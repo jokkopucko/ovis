@@ -7,7 +7,7 @@ import type { HerdrPane } from "../shared/protocol.ts";
 import * as herdr from "./herdr/client.ts";
 import * as prompt from "./prompt.ts";
 import { commandInvocations, type CommandSend } from "./outcome.ts";
-import { closeOpenCodeNative, onOpenCodePermissionChange, openCodePaneService, startOpenCodeWatch } from "./opencode-native.ts";
+import { closeOpenCodeNative, onOpenCodePromptChange, openCodePaneService, startOpenCodeWatch } from "./opencode-native.ts";
 import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-service.ts";
 import recording from "./fixtures/opencode-result-events-2.2.2.json";
 
@@ -71,7 +71,7 @@ async function replaying(name: string) {
   // a permission event wakes the pane once every event before it was read; the stream's open wakes it first
   let woken = 0;
   let waiting: { count: number; resolve(): void } | null = null;
-  listeners.push(onOpenCodePermissionChange(() => { woken += 1; if (waiting && woken >= waiting.count) { waiting.resolve(); waiting = null; } }));
+  listeners.push(onOpenCodePromptChange(() => { woken += 1; if (waiting && woken >= waiting.count) { waiting.resolve(); waiting = null; } }));
   const wakes = (count: number): Promise<void> => {
     if (woken >= count) return Promise.resolve();
     const { promise, resolve } = Promise.withResolvers<void>();

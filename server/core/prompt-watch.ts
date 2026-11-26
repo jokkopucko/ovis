@@ -1,6 +1,6 @@
 import type { ClientMessage } from "../../shared/protocol.ts";
 import { sessionSnapshot } from "../herdr/client.ts";
-import { onOpenCodePermissionChange } from "../opencode-native.ts";
+import { onOpenCodePromptChange } from "../opencode-native.ts";
 import { PromptMonitor, type PromptReader } from "../prompt-monitor.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 
@@ -21,7 +21,7 @@ export function createPromptWatch({ clients, read }: { clients: Set<Client>; rea
     }
   });
   // the polling stays: a pane that holds no verified OpenCode stream, or an event the stream missed, is read on the tick
-  const stopOpenCodeWakes = onOpenCodePermissionChange((paneId) => monitor.wake(paneId));
+  const stopOpenCodeWakes = onOpenCodePromptChange((paneId) => monitor.wake(paneId));
 
   function release(paneId: string): void {
     for (const client of clients) if (open(client) && client.data.promptWatches.has(paneId)) return;
