@@ -14,14 +14,9 @@ import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 /** How long this PC's screen keeps an asked act open (server/account/local-confirm.ts); the app shows its deadline. */
 export const CONFIRM_MS = 2 * 60_000;
 
-export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
+export { accountOpensAll, OVIS_ACCOUNT_OPENS_ALL } from "./account-opens-all.ts";
 /** The capability a PC advertises while Step 2 is on; an app shows nothing of Step 2 for a PC without it. */
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
-
-export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
-  // Require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
-  return value !== "0";
-}
 
 export class AccountDevicesApiError extends Error {
   readonly code = "request_invalid";
@@ -145,6 +140,7 @@ export type RecoveryAction =
   | { readonly act: "undo"; readonly rows: readonly string[] | null }
   | { readonly act: "remove"; readonly targets: readonly string[] }
   | { readonly act: "revoke_all" }
+  | { readonly act: "restamp"; readonly confirm?: string }
   | { readonly act: "lift"; readonly blocks: readonly string[] }
   | { readonly act: "admit"; readonly pending: string; readonly fingerprint: string }
   // adding this PC to its owner's account from another PC over SSH (docs/account.md, "Adding a PC over SSH")
@@ -213,7 +209,7 @@ export function parseBlockReceipt(value: unknown): BlockReceipt {
 
 /** Device table R11: one recovery act; throws AccountDevicesApiError. Every list names 1-64 entries. */
 export function parseRecoveryAction(value: unknown): RecoveryAction {
-  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "account", "server_id", "list", "adder"]);
+  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "account", "server_id", "list", "adder", "confirm"]);
   const only = (...fields: string[]) => Object.keys(action).every((name) => name === "act" || fields.includes(name));
   const ok = (() => {
     switch (action.act) {
@@ -221,6 +217,7 @@ export function parseRecoveryAction(value: unknown): RecoveryAction {
       case "account_add_take": return (only("account", "server_id") || (only("account", "server_id", "list", "adder") && typeof action.list === "string" && isListHash(action.list)
         && typeof action.adder === "string" && isListKeyEncoding(action.adder))) && typeof action.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(action.account)
         && typeof action.server_id === "string" && HEX32.test(action.server_id);
+      case "restamp": return only("confirm") && (!("confirm" in action) || (typeof action.confirm === "string" && HEX32.test(action.confirm)));
       case "release": return only("rows") && ids(action.rows, ROW_ID);
       case "undo": return only("rows") && (action.rows === null || ids(action.rows, ROW_ID));
       // a row id or an account key, nothing in between

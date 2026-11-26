@@ -114,7 +114,7 @@ const SPECS: Readonly<Record<string, Spec>> = {
   recover: {
     command: "recover", gated: true, passThrough: true,
     summary: "List the devices this PC holds back; release, admit or remove them",
-    usage: "ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all]",
+    usage: "ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all | --restamp]",
   },
   confirm: {
     command: "confirm", gated: true,

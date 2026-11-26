@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writePrivateState } from "../private-state.ts";
 import { isAccountKeyEncoding } from "../../shared/account-records.ts";
-import { parseEvidence, REMOVAL_FILE, RemovalEvidence, type Marker, type Removal, type Revoke, type Unrevoke } from "./removal-evidence.ts";
+import { parseEvidence, REMOVAL_FILE, RemovalEvidence, type Marker, type Removal } from "./removal-evidence.ts";
 
 const ENROLLING_FILE = "account-enrolling.json";
 const HELD_FILE = "account-held.json";
@@ -30,25 +30,9 @@ function read(dir: string, file: string): Read {
 
 const byId = <T extends { id: string }>(lists: readonly (readonly T[])[]): T[] => [...new Map(lists.flat().map((item) => [item.id, item])).values()];
 
-function mergeEvidence(active: string, sibling: string): void {
-  // each folder's evidence by the evidence reader's own verdict: what it refuses (writable by others, missing beside a
-  // journal, unreadable) is refused here too, and the PC fails closed (T28, S19)
-  for (const dir of [active, sibling]) {
-    const refused = RemovalEvidence.open(dir, null).strict;
-    if (refused !== null) throw new Error(refused);
-  }
-  const docs = [read(active, REMOVAL_FILE), read(sibling, REMOVAL_FILE)].flatMap((doc) => doc === "missing" ? [] : [doc.value]);
-  // evidence of a form this PC does not know is refused, never copied or rewritten as valid (T28, S19)
-  if (docs.some((doc) => parseEvidence(doc) === null)) throw new Error(`${REMOVAL_FILE} is not this PC's removal evidence`);
-  if (docs.length < 2) {
-    if (docs.length === 1) for (const dir of [active, sibling]) if (!existsSync(join(dir, REMOVAL_FILE))) {
-      const { row_drops: _local, ...shared } = docs[0] ?? {};
-      writePrivateState(join(dir, REMOVAL_FILE), shared);
-    }
-    return;
-  }
+export function mergedRemovalEvidence(docs: readonly NonNullable<ReturnType<typeof parseEvidence>>[]): NonNullable<ReturnType<typeof parseEvidence>> {
   const markers = new Map<string, Marker>();
-  for (const marker of docs.flatMap((doc) => doc.markers as Marker[])) {
+  for (const marker of docs.flatMap((doc) => doc.markers)) {
     const at = JSON.stringify([marker.key, marker.account]);
     const kept = markers.get(at);
     if (kept === undefined) { markers.set(at, marker); continue; }
@@ -59,7 +43,30 @@ function mergeEvidence(active: string, sibling: string): void {
     }
     markers.set(at, { ...kept, removals: [...removals.values()] });
   }
-  const merged = { v: 1, markers: [...markers.values()], revokes: byId(docs.map((doc) => doc.revokes as Revoke[])), unrevokes: byId(docs.map((doc) => doc.unrevokes as Unrevoke[])) };
+  return { v: 1, markers: [...markers.values()], revokes: byId(docs.map((doc) => doc.revokes)), unrevokes: byId(docs.map((doc) => doc.unrevokes)) };
+}
+
+function mergeEvidence(active: string, sibling: string): void {
+  // each folder's evidence by the evidence reader's own verdict: what it refuses (writable by others, missing beside a
+  // journal, unreadable) is refused here too, and the PC fails closed (T28, S19)
+  for (const dir of [active, sibling]) {
+    const refused = RemovalEvidence.open(dir, null).strict;
+    if (refused !== null) throw new Error(refused);
+  }
+  const docs = [read(active, REMOVAL_FILE), read(sibling, REMOVAL_FILE)].flatMap(doc => {
+    if (doc === "missing") return [];
+    const parsed = parseEvidence(doc.value);
+    if (parsed === null) throw new Error(`${REMOVAL_FILE} is not this PC's removal evidence`);
+    return [parsed];
+  });
+  if (docs.length < 2) {
+    if (docs.length === 1) for (const dir of [active, sibling]) if (!existsSync(join(dir, REMOVAL_FILE))) {
+      const { row_drops: _local, ...shared } = docs[0] ?? {};
+      writePrivateState(join(dir, REMOVAL_FILE), shared);
+    }
+    return;
+  }
+  const merged = mergedRemovalEvidence(docs);
   // Each folder numbers its own admissions and journal: a sibling's receipt cannot acknowledge this folder's drop.
   for (const [index, dir] of [active, sibling].entries()) writePrivateState(join(dir, REMOVAL_FILE), { ...merged, row_drops: docs[index]?.row_drops });
 }

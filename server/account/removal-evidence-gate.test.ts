@@ -45,6 +45,29 @@ function rePair(devices: DeviceStore, dir: string, k: string, label = "Again"): 
 }
 
 describe("removal evidence holds through crashes, siblings and damaged files (P13, T26, T48, S19)", () => {
+  test("S19: a corrupt sibling tombstone store closes a PC with a paired device", async () => {
+    const [active, sibling] = [stateDir(), stateDir()];
+    put(active, "devices.json", { gate_closed_at: null, devices: [row("aaaaaaaaaaaaaaaa", await key())] });
+    const damaged = join(sibling, "account-tombstones.json");
+    writeFileSync(damaged, "{broken", { mode: 0o600 });
+
+    expect(start(active, sibling).failsClosed).toBe(true);
+    expect(readFileSync(damaged, "utf8")).toBe("{broken");
+  });
+
+  test("S19: startup reports corrupt sibling tombstones even when restamp was never used", () => {
+    const [active, sibling] = [stateDir(), stateDir()];
+    const damaged = join(sibling, "account-tombstones.json");
+    writeFileSync(damaged, "{broken", { mode: 0o600 });
+    for (const dir of [active, sibling]) expect(existsSync(join(dir, "restamp.json"))).toBe(false);
+
+    const devices = start(active, sibling);
+    expect({ closed: devices.failsClosed, reason: devices.accountError }).toEqual({
+      closed: true,
+      reason: `Cannot read ${damaged}: account records are refused until it is restored or fixed.`,
+    });
+  });
+
   test("P13, T48: a local Revoke stands beside a sibling's account tombstone of the same key; the revoked row stays out", async () => {
     const [active, sibling] = [stateDir(), stateDir()];
     const k = await key();

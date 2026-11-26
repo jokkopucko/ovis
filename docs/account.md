@@ -2327,6 +2327,17 @@ open confirm. What this does not prove: that a person sat there. A program that 
 on this PC, a terminal that a driving device opened included, or anyone who logs in to this PC,
 reaches the same screen as you do.
 
+### Recovery at the PC
+
+Needs Step 2, which is on unless `OVIS_ACCOUNT_OPENS_ALL=0`. Run `ovis recover` in a terminal on
+this PC, as the user who runs Ovis. On Windows the command is not available.
+
+- `ovis recover --restamp` shows which timestamps this PC wrote too far ahead and asks you to
+  confirm. It queues the repair without changing device or account records. Restart Ovis as
+  the command directs to apply it. Past timestamps and removals are kept. If a repair was
+  interrupted and another write changed a timestamp, Ovis stays closed. Run the command again
+  to review and confirm keeping the independently changed times, then restart to finish rollback.
+
 ### Limits of this release
 
 These limits apply while Step 2 is on, which is the default.
@@ -2351,7 +2362,9 @@ These limits apply while Step 2 is on, which is the default.
 - **A legacy pairing made with a clock more than a day ahead keeps its existing connection but
   cannot authorize Step 2 actions.** Correcting the clock does not give that old timestamp
   authority. Other phones and account reconciliation are unaffected. A clock fault in new Step 2
-  state still makes the PC refuse account access until that state can be read safely.
+  state still makes the PC refuse account access until that state can be read safely. For a
+  future time this PC wrote in Step 2, run `ovis recover --restamp` on this PC and restart Ovis
+  after confirming the repair.
 - **A locked PC is driven only from the PC itself.** While strict mode is on, the PC takes its
   orders only from the desktop app that started it (its owner channel) or from the confirm page
   on its own screen. No other device, browser window, access token or relay connection can change

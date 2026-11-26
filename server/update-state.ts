@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { accountOpensAll } from "../shared/account-opens-all.ts";
+import { RESTAMP_PARTICIPANT, RESTAMP_PLAN, RESTAMP_ROLLBACK } from "./account/restamp-files.ts";
 
 type SupervisorRelease = { readonly root: string; readonly port: number; readonly directory: string };
 
@@ -88,6 +90,14 @@ export function currentStateDir(legacy: string, next: string): string {
   return holdsOwnState(legacy, next) ? legacy : next;
 }
 
+/** Restamp runs only with Step 2 on; with it off a leftover plan pins nothing, as on a build without restamp. */
+function restampPinsFolders(legacy: string, next: string): boolean {
+  return accountOpensAll() && [legacy, next].some(dir => [RESTAMP_PLAN, RESTAMP_ROLLBACK, RESTAMP_PARTICIPANT].some(file => {
+    try { return lstatSync(join(dir, file), { throwIfNoEntry: false }) !== undefined; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOTDIR"; }
+  }));
+}
+
 /**
  * A launcher from before 0.4.16 takes an old dir that is not empty for the state, the bridge
  * registry alone included, and an update never replaces a running launcher, nor the one its
@@ -98,6 +108,7 @@ export function currentStateDir(legacy: string, next: string): string {
  * meanwhile gets a closed copy of the paired devices from every server start (state-merge.ts).
  */
 export function linkLegacyRegistry(legacy: string, next: string): void {
+  if (restampPinsFolders(legacy, next)) return;
   finishInterruptedLink(legacy, next);
   if (legacyContents(legacy, next) !== "registry" || !isDir(next)) return;
   try { if (lstatSync(legacy).isSymbolicLink()) return; } catch { return; }
@@ -236,6 +247,7 @@ export function moveLegacyStateDir(env: Record<string, string | undefined> = pro
 
 /** A link at `legacy` moves as a link, so state kept elsewhere stays there. */
 export function adoptLegacyDir(legacy: string, next: string): void {
+  if (restampPinsFolders(legacy, next)) return;
   const contents = legacyContents(legacy, next);
   if (contents === null) return;
   if (contents === "registry" && isDir(next) && readdirSync(next).length > 0) return linkLegacyRegistry(legacy, next);

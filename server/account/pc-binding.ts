@@ -23,7 +23,7 @@ import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
  */
 export function listPinOnDisk(stateDir: string): boolean {
   try {
-    const doc = parseDoc(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
+    const doc = parsePcAccount(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
     if (typeof doc === "string") return false;
     const { binding } = doc;
     return binding !== null && binding.pending !== true && binding.list !== undefined && !doc.clears.some((clear) => clear.bind_id === binding.bind_id);
@@ -38,7 +38,7 @@ export function listPinOnDisk(stateDir: string): boolean {
 export function listRemovalOnDisk(stateDir: string, serverId: string | undefined): boolean {
   if (serverId === undefined) return false;
   try {
-    const doc = parseDoc(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
+    const doc = parsePcAccount(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
     return typeof doc !== "string" && doc.clears.some((clear) => clear.removed_as?.server_id === serverId);
   } catch { return false; }
 }
@@ -123,7 +123,7 @@ const ID = /^[0-9a-f]{32}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
 const LIST = /^[0-9a-f]{64}$/;
 
-function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
+export function parsePcAccount(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "it is not this PC's account state";
   const doc = value as Partial<PcDoc>;
   if (doc.v !== 1 && doc.v !== 2) return "unknown version";
@@ -153,6 +153,54 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (doc.gen === undefined) return { ...doc, gen: 0 } as PcDoc;
   if (!Number.isSafeInteger(doc.gen) || doc.gen < 0) return "invalid gen";
   return doc as PcDoc;
+}
+
+export function memberBindingProblem(path: string, bound: string | null, accounts: readonly string[]): string | null {
+  const other = accounts.find(account => account !== bound);
+  return other === undefined ? null : `this PC's devices name ${other}, and ${path} binds it to ${bound ?? "no account"}`;
+}
+
+export function rowNumberProblem(path: string, next: number | null, rows: readonly { readonly origin?: RowOrigin | undefined }[]): string | null {
+  const highest = Math.max(0, ...rows.flatMap(row => !row.origin || row.origin.from === "legacy" ? [] : [row.origin.admit_no]));
+  return highest === 0 ? null : next === null ? `${path} is missing beside rows this PC numbered`
+    : highest >= next ? `${path} is behind the number ${highest} a row here carries` : null;
+}
+
+/** Project the binding merge without writing either folder. Pending links are not standing during a merge. */
+export function mergePcBinding(ownDoc: PcDoc | null, sibling: PcDoc) {
+  const clears = mergeClears(ownDoc?.clears ?? [], sibling.clears);
+  const kept = (binding: AccountBinding | null) => binding !== null && !clears.some(clear => clear.bind_id === binding.bind_id) ? binding : null;
+  const own = kept(ownDoc?.binding ?? null);
+  const other = kept(sibling.binding);
+  const standing = own?.pending ? null : own;
+  const inherited = other?.pending ? null : other;
+  return { clears, inherited, binding: standing ?? inherited, ownBinding: own, siblingBinding: other,
+    conflict: standing !== null && inherited !== null && standing.account !== inherited.account };
+}
+
+type Member = { readonly account?: string | undefined; readonly relay_public_key?: string | undefined };
+
+function settleLink(binding: AccountBinding | null, firstKey: string | null, rows: readonly Member[]): AccountBinding | null {
+  if (binding?.pending !== true) return binding;
+  if (!rows.some(row => row.account === binding.account && row.relay_public_key === firstKey)) return null;
+  const { pending: _, ...standing } = binding;
+  return standing;
+}
+
+/** The same projection and pending-link decision startup uses, before a recovery writer touches the rows. */
+export function restampMemberProblem(path: string, pc: (PcDoc & { counterOnly?: true }) | null, sibling: PcDoc | null, rows: readonly Member[]): string | null {
+  const merge = sibling === null ? null : mergePcBinding(pc, sibling);
+  if (merge?.conflict) return "The two folders bind this PC to two accounts";
+  if (merge?.inherited?.list !== undefined && (merge.ownBinding?.pending || merge.ownBinding?.list !== merge.inherited.list || merge.ownBinding.bind_id !== merge.inherited.bind_id)) {
+    return "The folders do not hold the same signed-list binding";
+  }
+  if (merge?.ownBinding && merge.siblingBinding && merge.ownBinding.account !== merge.siblingBinding.account) {
+    return "A pending binding names a different account from the other folder's binding";
+  }
+  const binding = merge === null ? settleLink(pc?.binding ?? null, pc?.first?.key ?? null, rows) : merge.binding;
+  const accounts = rows.flatMap(row => row.account === undefined ? [] : [row.account]);
+  const migrating = pc === null || pc.counterOnly === true;
+  return memberBindingProblem(path, (migrating ? merge?.inherited?.account ?? accounts[0] : binding?.account) ?? null, accounts);
 }
 
 /** A lock file nobody removed for this long was left by a server that ended while it wrote. */
@@ -201,8 +249,8 @@ function docOnDisk(path: string): PcDoc | null {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error(`${path} cannot be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
   }
-  let parsed: ReturnType<typeof parseDoc>;
-  try { parsed = parseDoc(JSON.parse(text)); } catch { throw new Error(`${path} is not JSON`); }
+  let parsed: ReturnType<typeof parsePcAccount>;
+  try { parsed = parsePcAccount(JSON.parse(text)); } catch { throw new Error(`${path} is not JSON`); }
   if (typeof parsed === "string") throw new Error(`${path} cannot be trusted: ${parsed}`);
   const { counterOnly: _counterOnly, ...doc } = parsed;
   return doc;
@@ -352,7 +400,7 @@ export class PcAccountState {
     }
     let value: unknown;
     try { value = JSON.parse(text); } catch { state.problem = `${state.path} is not JSON`; return state; }
-    const parsed = parseDoc(value);
+    const parsed = parsePcAccount(value);
     if (typeof parsed === "string") state.problem = `${state.path} cannot be trusted: ${parsed}`;
     else {
       const { counterOnly, ...doc } = parsed;
@@ -367,28 +415,25 @@ export class PcAccountState {
    * a row it numbered, or one at or behind such a number, is damage. Run before the merge.
    */
   checkRows(rows: readonly { readonly origin?: RowOrigin | undefined }[]): void {
-    const numbers = rows.flatMap((row) => row.origin === undefined || row.origin.from === "legacy" ? [] : [row.origin.admit_no]);
-    if (numbers.length === 0) return;
-    if (this.fresh) this.missingBeside();
-    else this.checkAbove(numbers);
+    if (this.problem !== null) return;
+    this.problem = rowNumberProblem(this.path, this.fresh ? null : this.doc.next_admit, rows);
+    if (this.problem !== null) this.fresh = false;
   }
 
   /**
    * A first link's binding left pending by a stop (T13): it stands when its row reached the disk, and bound nothing
    * when it did not.
    */
-  settlePending(rowOnDisk: (binding: AccountBinding, firstKey: string | null) => boolean): void {
+  settlePending(rows: readonly Member[]): void {
     const binding = this.doc.binding;
     if (binding?.pending !== true || this.problem !== null) return;
-    const { pending: _left, ...standing } = binding;
-    this.write(rowOnDisk(standing, this.doc.first?.key ?? null) ? { ...this.doc, binding: standing } : { ...this.doc, binding: null, first: null });
+    const standing = settleLink(binding, this.doc.first?.key ?? null, rows);
+    this.write(standing ? { ...this.doc, binding: standing } : { ...this.doc, binding: null, first: null });
   }
 
   /** Member rows of an account this PC is not in: the binding and the rows disagree, which is damage (P12, S19). */
   checkMembers(accounts: readonly string[]): void {
-    const bound = this.doc.binding?.account ?? null;
-    const other = accounts.find((account) => account !== bound);
-    if (this.problem === null && other !== undefined) this.problem = `this PC's devices name ${other}, and ${this.path} binds it to ${bound ?? "no account"}`;
+    this.problem ??= memberBindingProblem(this.path, this.doc.binding?.account ?? null, accounts);
   }
 
   /** A row numbered at or past the next number: the file is behind its rows, which is damage (P21). */
@@ -418,6 +463,14 @@ export class PcAccountState {
 
   get migrating(): boolean { return (this.fresh || this.upgrading) && this.problem === null; }
 
+  /** Give a recovery audit its required companion without migrating any member rows during rollback. */
+  ensureRestampAudit(): void {
+    if (!this.fresh || this.problem !== null) return;
+    writePrivateState(this.path, { v: 1, next_admit: this.doc.next_admit });
+    this.fresh = false;
+    this.upgradingFrom = true;
+  }
+
   /** S2-03's counter file, read: the rows are numbered already, and only the binding is migrated (T50). */
   get upgrading(): boolean { return this.upgradingFrom && this.problem === null; }
   private upgradingFrom = false;
@@ -437,8 +490,8 @@ export class PcAccountState {
   takeSibling(siblingDir: string): void {
     if (this.problem !== null) return;
     const path = join(realFolder(siblingDir), ADMISSION_FILE);
-    let parsed: ReturnType<typeof parseDoc>;
-    try { parsed = parseDoc(JSON.parse(readFileSync(path, "utf8"))); } catch (error) {
+    let parsed: ReturnType<typeof parsePcAccount>;
+    try { parsed = parsePcAccount(JSON.parse(readFileSync(path, "utf8"))); } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       this.problem = `${path} cannot be read (${error instanceof Error ? error.message : String(error)})`;
       return;

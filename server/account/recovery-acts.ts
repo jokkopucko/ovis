@@ -21,6 +21,7 @@ export interface RecoverySeams {
   removeKey(input: { target: string; by: "local"; user: string }): { removed: string[] } | { refused: string };
   appendLift(id: string, forget: boolean, user: string): { readonly outcome: string; readonly journalWarning?: string };
   revokeAll(user: string): string[];
+  restamp?(confirm: string | undefined, user: string): unknown;
 }
 
 const UNREADABLE = { error: "This PC cannot read its safety log, so nothing is changed: log_unreadable" };
@@ -49,6 +50,7 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
       if (error instanceof AccountDevicesApiError) return { error: error.message };
       throw error;
     }
+    if (action.act === "restamp") return options.seams?.restamp?.(action.confirm, options.user) ?? { error: "Restamp is not available on this PC." };
     const pc = { logReadable: options.logReadable(action.act) };
     // Read the log for each request (S19), before any write can inspect or change its targets.
     if (action.act !== "list" && !pc.logReadable) {

@@ -14,6 +14,7 @@ import { takeByList, takeForAccount } from "./one-press.ts";
 import { recoveryActs, type AccountAddSeams, type RecoverySeams } from "./recovery-acts.ts";
 import { openRecoverySocket, type RecoveryReleases } from "./recovery.ts";
 import { pcRecordId, SafetyLog } from "./safety-log.ts";
+import { restampAct } from "./restamp.ts";
 
 /** Wire the PC's stores into its local recovery socket. */
 export function openPcRecovery(options: {
@@ -25,6 +26,9 @@ export function openPcRecovery(options: {
   readonly releases: RecoveryReleases;
   readonly pending: PendingRedemptions | undefined;
   readonly pairings: KeyProofPairings | undefined;
+  readonly sibling?: string | null | undefined;
+  readonly retryRestamp?: boolean;
+  readonly restampEnabled: boolean;
   readonly relay: RelayService;
   readonly accountMailbox: AccountMailbox;
   /** the account's signed list as this PC follows it: a take that names a list joins by it */
@@ -44,6 +48,11 @@ export function openPcRecovery(options: {
     return ids;
   };
   const seams: RecoverySeams = {
+    restamp: restampAct({
+      stateDir, sibling: options.sibling, journal,
+      install: process.env["OVIS_DESKTOP_APP"] === "1" ? "desktop" : process.env["HERDR_PLUGIN_ROOT"] ? "plugin" : "other",
+      problem: () => options.restampEnabled ? devices.restampRefusal(options.retryRestamp === true) : "Restamp is not available on this PC.",
+    }),
     pendingList: () => (pending?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
     standing,
     admitPending: (id, fingerprint) => {
@@ -113,6 +122,7 @@ export function openPcRecovery(options: {
   const handle = recoveryActs({ releases, logReadable: act => {
     if (!SafetyLog.open(stateDir).readable) return false;
     switch (act) {
+      case "restamp": return devices.restampRefusal(options.retryRestamp === true) === null;
       case "revoke_all": return devices.revokeAllError === null;
       case "release": case "admit": case "lift": case "account_add_inspect": case "account_add_take": return devices.accountError === null;
       case "list": case "undo": case "remove": return !devices.failsClosed;

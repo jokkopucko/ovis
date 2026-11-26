@@ -21,7 +21,7 @@ import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
 import { RevokeAllIntent } from "./account/revoke-all-intent.ts";
 import type { RecoveryCandidate, RecoveryReleases } from "./account/recovery.ts";
-import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device-journal.ts";
+import { endedJournalRows, type DeviceJournal, type JournalEntry, type JournalInput } from "./account/device-journal.ts";
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
@@ -343,9 +343,9 @@ export function isDeviceRole(value: unknown): value is DeviceRole {
  */
 export type DeviceRegistry = { kind: "missing" } | { kind: "ok"; gateClosedAt: string | null; devices: StoredDevice[]; placeholder: boolean } | { kind: "bad" };
 
-export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): DeviceRegistry {
+export function readDeviceRegistry(path: string, opensAll = accountOpensAll(), repair = true): DeviceRegistry {
   // one another account could write is as unreadable as a damaged one: the gate stays closed
-  const refused = privateStateRefusal(path);
+  const refused = privateStateRefusal(path, undefined, undefined, repair);
   if (refused !== null) {
     console.error(`devices.json is not trusted: ${refused}`);
     return { kind: "bad" };
@@ -356,6 +356,10 @@ export function readDeviceRegistry(path: string, opensAll = accountOpensAll()): 
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" } : { kind: "bad" };
   }
+  return parseDeviceRegistry(parsed, opensAll);
+}
+
+export function parseDeviceRegistry(parsed: unknown, opensAll: boolean): Exclude<DeviceRegistry, { kind: "missing" }> {
   if (!isJsonObject(parsed) || !Array.isArray(parsed.devices)
     || !(parsed.gate_closed_at === null || typeof parsed.gate_closed_at === "string")
     || !parsed.devices.every((d) => isJsonObject(d) && typeof d.id === "string"
@@ -407,7 +411,16 @@ function withRecords(records: readonly unknown[] | undefined, more: readonly unk
 
 /** Every tombstone a folder holds, its pending file's included, as read before any merge coalesces them (T48). */
 export function folderTombstones(dir: string): AccountTombstone[] {
+  // An unreadable file is refused where it is read for real: by mergeAccountTombstones or by its own folder's store.
   return ["account-tombstones.json", "account-tombstones.pending.json"].flatMap((file) => readTombstones(join(dir, file)) ?? []);
+}
+
+/** The same file shape for startup recovery, without opening a DeviceStore. */
+export function parseTombstones(value: unknown): AccountTombstone[] | null {
+  if (!isJsonObject(value) || value.v !== 1 || !Array.isArray(value.tombstones)
+    || !value.tombstones.every((t) => isJsonObject(t) && typeof t.key === "string" && typeof t.account === "string"
+      && typeof t.record_id === "string" && typeof t.removed_at === "string" && (t.records === undefined || Array.isArray(t.records)))) return null;
+  return value.tombstones as AccountTombstone[];
 }
 
 /** Null for a file that exists and will not parse; an absent file holds no tombstones. */
@@ -416,10 +429,7 @@ function readTombstones(path: string): AccountTombstone[] | null {
   try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
   }
-  if (!isJsonObject(parsed) || parsed.v !== 1 || !Array.isArray(parsed.tombstones)
-    || !parsed.tombstones.every((t) => isJsonObject(t) && typeof t.key === "string" && typeof t.account === "string"
-      && typeof t.record_id === "string" && typeof t.removed_at === "string" && (t.records === undefined || Array.isArray(t.records)))) return null;
-  return parsed.tombstones as AccountTombstone[];
+  return parseTombstones(parsed);
 }
 
 /**
@@ -495,6 +505,22 @@ interface WaitingRows {
  * row an account record or a remote approval made (`added_by`), and not one a `link` moved onto the key from the
  * key it was paired with, which never paired this key here. A link that kept the paired key changes nothing.
  */
+export function repairEvidenceRows(rows: readonly StoredDevice[], latest: number) {
+  return rows.map(row => ({ relay_public_key: row.relay_public_key, created_at: row.created_at,
+    pairedHere: pairedHere(row) && !row.imported && !row.invalid_origin && row.untrusted_created_at !== row.created_at
+      && isIsoTime(row.created_at) && Date.parse(row.created_at) <= latest }));
+}
+
+function unnumberedPairing(row: StoredDevice, entries: readonly JournalEntry[]): boolean {
+  return row.origin === undefined && !row.imported && !row.invalid_origin && row.held === undefined
+    && row.carried_notice === undefined && row.paired_over === undefined && isIsoTime(row.created_at)
+    && !entries.some(entry => entry.row === row.id);
+}
+
+export function futureLegacyPairing(row: StoredDevice, entries: readonly JournalEntry[], now: number): boolean {
+  return !row.imported && (row.origin?.from === "legacy" || unnumberedPairing(row, entries)) && isIsoTime(row.created_at) && Date.parse(row.created_at) > now + DAY_MS;
+}
+
 function pairedHere(device: StoredDevice): boolean {
   return device.added_by === undefined && device.link_moved_key !== true;
 }
@@ -612,7 +638,9 @@ export class DeviceStore {
   private readonly revokeAllIntent: RevokeAllIntent | null;
   /** A restored file is not part of this process's view until the next open. */
   private waitingForListedRestore = false;
-  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | ((devices: DeviceStore) => AccountRowSource | null) | null; held?: (key: string) => boolean; siblingLegacyCredential?: (row: StoredDevice) => boolean } = {}) {
+  private futureProblem: string | null = null;
+  private readonly restampProblem: string | null;
+  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | ((devices: DeviceStore) => AccountRowSource | null) | null; held?: (key: string) => boolean; restampProblem?: string | undefined; restampRetry?: boolean; reconcileRestamp?: boolean; revokeAllOnly?: boolean; siblingLegacyCredential?: (row: StoredDevice) => boolean } = {}) {
     this.joinedRows = typeof account.joinedRows === "function" ? account.joinedRows(this) : account.joinedRows ?? null;
     this.safety = account.safety ?? null;
     this.handedLifts = new HandedLifts(stateDir);
@@ -628,6 +656,7 @@ export class DeviceStore {
     if (this.evidence !== null && this.pc?.evidenceWritten() === true) this.evidence.missingAfterWritten();
     this.carried = account.carried ?? [];
     this.journal = account.journal ?? null;
+    this.restampProblem = account.restampProblem ?? null;
     this.path = join(stateDir, "devices.json");
     this.tombstonePath = join(stateDir, "account-tombstones.json");
     this.pendingTombstonePath = join(stateDir, "account-tombstones.pending.json");
@@ -641,7 +670,7 @@ export class DeviceStore {
       this.accountProblem = `Cannot read ${this.tombstonePath}: account records are refused until it is restored or fixed.`;
       this.tombstones = pending;
     } else this.tombstones = [...tombstones, ...pending.filter((t) => !tombstones.some((own) => own.key === t.key))];
-    const read = readDeviceRegistry(this.path, this.opensAll());
+    const read = readDeviceRegistry(this.path, this.opensAll(), this.restampProblem === null);
     if (read.kind === "ok") {
       this.gateClosedAt = read.gateClosedAt;
       this.devices = read.devices;
@@ -659,6 +688,14 @@ export class DeviceStore {
     // a Revoke all that stopped half way is finished before anything is served, whatever else could not be read (P8, T41)
     this.revokeAllIntent = this.evidence === null ? null : new RevokeAllIntent(stateDir, this.revokeAllRows());
     if (this.evidence) this.journal?.checkRowReceipts(this.evidence.rowDrops);
+    if (this.restampProblem !== null) {
+      // A sibling that finished rolling back may not yet have its own journal companions.
+      if (account.restampRetry && this.restampRefusal(true) === null) {
+        if (!account.reconcileRestamp) this.migrate();
+        this.prepareRestampAudit();
+      }
+      return;
+    }
     if (this.journal?.strict || this.evidence?.strict) return;
     // an account registry that will not read is not empty: every intent stays and nothing is written until it reads
     if (this.joinedRows?.blocked()) return;
@@ -671,13 +708,14 @@ export class DeviceStore {
         this.gateClosedAt ??= new Date().toISOString();
       }
     }
+    if (account.revokeAllOnly) return;
     // a strict order changes nothing else on disk, not even a repair: its damage stays visible (S29)
     // a damaged pending file beside a readable tombstone file: the Revokes the readable one holds are evidence at once,
     // and neither file is touched until the damaged one is repaired (T26, S19)
     const now = Date.now();
     if (this.error === null && this.evidence !== null && this.evidence.strict === null && this.safety?.strict == null && this.pc?.strict == null) {
       if (this.accountProblem === null) this.quarantineLegacyClock(now);
-      if (pendingRead === null && tombstones !== null) this.evidence.takeIn([...this.carried, ...tombstones], this.repairEvidenceRows(), now);
+      if (pendingRead === null && tombstones !== null) this.evidence.importDenials([...this.carried, ...tombstones]);
     }
     // Malformed legacy tombstones are damaged evidence. Valid Step 1 dates retain the denial
     // without making its wall clock authoritative for Step 2 (S19, P13).
@@ -685,9 +723,9 @@ export class DeviceStore {
       const invalidRevoke = [...this.carried, ...this.tombstones]
         .find(t => t.record_id === "local" && !isIsoTime(t.removed_at));
       const ahead = invalidRevoke?.removed_at ?? this.ownTimes().find(t => !isIsoTime(t) || Date.parse(t) > now + DAY_MS);
-      if (ahead !== undefined) this.accountProblem ??= `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
+      if (ahead !== undefined) this.futureProblem = `A time this PC wrote lies in the future (${ahead}): account records are refused until it is repaired.`;
     }
-    if (this.error === null && this.accountProblem === null && this.pc?.strict == null && !this.revokeAllIntent?.strict) {
+    if (this.error === null && this.accountProblem === null && this.futureProblem === null && this.pc?.strict == null && !this.revokeAllIntent?.strict) {
       if (this.evidence !== null) {
         const evidence = this.evidence;
         evidence.recover(() => {
@@ -715,9 +753,22 @@ export class DeviceStore {
     }
     // the one-time legacy pass asks only whether the registry could be read: nothing is admitted before it (T50)
     if (this.error === null) this.migrate();
+    if (this.futureProblem !== null && this.restampRefusal(false) === null) {
+      // Normally replay makes the journal's companions. A clock-blocked startup skips replay, but the first
+      // restamp audit still needs both companions to exist before the recovery socket can take a request.
+      this.prepareRestampAudit();
+    }
     if (this.error === null && this.accountError === null) this.applyWaitingBlocks();
     // evidence on disk at start counts as written, also for a PC that wrote it before this mark existed (S19)
     if (this.error === null && this.evidence?.onDisk === true && this.evidence.strict === null) this.pc?.noteEvidenceWritten();
+  }
+
+  private prepareRestampAudit(): void {
+    this.evidence?.recover(() => {
+      this.pc?.ensureRestampAudit();
+      this.evidence?.ensureFile();
+      this.safety?.ensureFile();
+    });
   }
 
   /**
@@ -738,9 +789,7 @@ export class DeviceStore {
    */
   private journalEnded(id: string): boolean {
     if (this.journalEndedRows === null) {
-      const last = new Map<string, string>();
-      for (const entry of this.journal?.strict === null ? this.journal.entries() : []) if (entry.row !== null) last.set(entry.row, entry.kind);
-      this.journalEndedRows = new Set([...last].flatMap(([row, kind]) => kind === "drop" || kind === "remove" ? [row] : []));
+      this.journalEndedRows = endedJournalRows(this.journal?.strict === null ? this.journal.entries() : []);
     }
     return this.journalEndedRows.has(id);
   }
@@ -765,7 +814,7 @@ export class DeviceStore {
     // evidence that cannot be trusted is never written over, and nothing is taken in while the safety log cannot be
     // read: a removal would record no forgettings it outranks, and an old forget redelivered later would end it (S19, T61)
     if (this.evidence!.strict !== null || this.safety?.strict != null) return;
-    this.evidence!.takeIn([...this.carried, ...found], this.repairEvidenceRows(), Date.now());
+    this.evidence!.takeIn([...this.carried, ...found], repairEvidenceRows(this.devices, Date.now() + DAY_MS), Date.now());
     // the tombstone file is written from the evidence before the pending file goes, so nothing pending is lost (T26)
     this.writeTombstones(this.evidence!.tombstones());
     rmSync(this.pendingTombstonePath, { force: true });
@@ -800,16 +849,11 @@ export class DeviceStore {
   }
 
   /** An unstamped Step-1 registry row, including a pairing written during rollback. */
-  private legacyFromRegistry(row: StoredDevice): boolean {
-    return row.origin === undefined && !row.imported && !row.invalid_origin && row.held === undefined
-      && row.carried_notice === undefined && row.paired_over === undefined && isIsoTime(row.created_at)
-      && !this.journal?.entries().some(entry => entry.row === row.id);
-  }
+  private legacyFromRegistry(row: StoredDevice): boolean { return unnumberedPairing(row, this.journal?.entries() ?? []); }
 
   private quarantineLegacyClock(now: number): void {
     const marked = this.devices.map(row => {
-      const legacy = !row.imported && (row.origin?.from === "legacy" || this.legacyFromRegistry(row));
-      return legacy && isIsoTime(row.created_at) && Date.parse(row.created_at) > now + DAY_MS && row.untrusted_created_at !== row.created_at
+      return futureLegacyPairing(row, this.journal?.entries() ?? [], now) && row.untrusted_created_at !== row.created_at
         ? { ...row, untrusted_created_at: row.created_at } : row;
     });
     const bad = marked.find(row => row.untrusted_created_at === row.created_at);
@@ -821,13 +865,6 @@ export class DeviceStore {
       if (!(error instanceof Error)) throw error;
       this.accountProblem ??= `Cannot record an untrusted pairing time: ${error.message}`;
     }
-  }
-
-  private repairEvidenceRows() {
-    const latest = Date.now() + DAY_MS;
-    return this.devices.map(row => ({ relay_public_key: row.relay_public_key, created_at: row.created_at,
-      pairedHere: pairedHere(row) && !row.imported && !row.invalid_origin && row.untrusted_created_at !== row.created_at
-        && isIsoTime(row.created_at) && Date.parse(row.created_at) <= latest }));
   }
 
   nextStamp(now: number): string {
@@ -848,14 +885,7 @@ export class DeviceStore {
    * that row names no account and was paired here knowing every standing removal of the marker (`paired_over`).
    */
   private coveredByEvidence(device: Pick<StoredDevice, "relay_public_key" | "account" | "paired_over">): boolean {
-    const key = device.relay_public_key;
-    if (key === undefined || this.evidence === null) return false;
-    if (this.evidence.standingRevokes(key).length > 0) return true;
-    return this.evidence.standingMarkers(key).some(({ marker, standing }) => {
-      const ofAccount = device.account === marker.account || (device.account === undefined && this.account() === marker.account);
-      if (!ofAccount) return false;
-      return !(device.account === undefined && standing.every((removal) => device.paired_over?.includes(removal.id)));
-    });
+    return this.evidence?.covers(device, this.account()) ?? false;
   }
 
   /**
@@ -925,7 +955,7 @@ export class DeviceStore {
   }
 
   private get revokeIntegrityError(): string | null {
-    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.accountProblem;
+    return this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.accountProblem ?? this.restampProblem ?? this.futureProblem;
   }
 
   private get accountIntegrityError(): string | null {
@@ -935,6 +965,13 @@ export class DeviceStore {
   /** A failed deny shuts out devices, not the PC's retry of a device removal. */
   localRemovalRetry(): boolean {
     return this.denyProblem !== null && this.revokeIntegrityError === null && this.error === null;
+  }
+
+  /** Restamp is not a repair for any other unreadable account or registry state. */
+  restampRefusal(retry: boolean): string | null {
+    return this.error ?? this.safety?.strict ?? this.pc?.strict ?? this.evidence?.strict ?? this.journal?.strict ?? this.denyProblem
+      ?? this.accountProblem ?? this.revokeAllIntent?.strict ?? this.joinedRows?.blocked()
+      ?? (retry ? null : this.restampProblem ?? (this.futureProblem === null ? "This PC is not closed by a future timestamp." : null));
   }
 
   /** No device gets in by a row or a code when the PC cannot trust its account state. */
@@ -957,10 +994,16 @@ export class DeviceStore {
    */
   private migrate(): void {
     if (this.pc === null || this.error !== null) return;
+    // When removal replay was postponed, recovery checks the projected survivors,
+    // not the stale members on disk. A migrated binding needs no startup write.
+    if (this.futureProblem !== null && !this.pc.migrating) return;
+    const rows = this.futureProblem === null ? this.devices : this.devices.filter(row =>
+      !this.journalEnded(row.id) && !this.lockHeld.has(row.id) && !this.coveredByEvidence(row));
     const numbered = this.devices.flatMap((d) => d.origin === undefined || d.origin.from === "legacy" ? [] : [d.origin.admit_no]);
-    try { this.pc.settlePending((binding, key) => this.devices.some((d) => d.account === binding.account && d.relay_public_key === key)); }
+    try { this.pc.settlePending(rows); }
     catch (error) { this.pc.unwritten(error); return; }
-    const members = [...new Set(this.devices.flatMap((d) => d.account === undefined ? [] : [d.account]))];
+    // a row the journal already ended is no member, also on a start that could not replay its removal yet (P24)
+    const members = [...new Set(rows.flatMap((d) => d.account === undefined || this.journalEnded(d.id) ? [] : [d.account]))];
     if (!this.pc.migrating) {
       this.pc.checkAbove(numbered);
       this.pc.checkMembers(members);
@@ -971,14 +1014,14 @@ export class DeviceStore {
     // S2-03's counter file: the rows are numbered already, and only the binding is migrated (T50)
     if (this.pc.upgrading) {
       this.pc.checkAbove(numbered);
-      const account = this.pc.migrationAccount(this.devices);
+      const account = this.pc.migrationAccount(rows);
       if (this.pc.strict !== null) return;
       try { this.pc.migrate(account, hadDevices); } catch (error) { this.pc.unwritten(error); }
       return;
     }
     // a row numbered here means this folder had an account file: its loss is damage, and nothing is stamped (P21)
     if (numbered.length > 0) { this.pc.missingBeside(); return; }
-    const account = this.pc.migrationAccount(this.devices);
+    const account = this.pc.migrationAccount(rows);
     if (this.pc.strict !== null) return;
     if (!this.stampLegacyRows()) return;
     try { this.pc.migrate(account, hadDevices); } catch (error) { this.pc.unwritten(error); }
@@ -3807,7 +3850,7 @@ export class DeviceStore {
     // a deny that failed earlier does not keep a removal from trying again: its landing is what ends the closing (P8)
     if (this.evidence !== null) {
       this.assertWritable();
-      const refused = this.safety?.strict ?? this.pc?.strict ?? this.evidence.strict ?? this.accountProblem;
+      const refused = this.safety?.strict ?? this.pc?.strict ?? this.evidence.strict ?? this.accountProblem ?? this.restampProblem ?? this.futureProblem;
       if (refused !== null) throw new Error(refused);
     } else this.assertAccountWritable();
     if (this.evidence !== null) {
@@ -3997,7 +4040,7 @@ export class DeviceStore {
       ...keys.map((key) => ({ key, account: rows.find((d) => d.relay_public_key === key)?.account ?? "", record_id: "local", removed_at: removedAt }))];
     if (keys.length) {
       // with the main file unreadable the revoke still wins: its tombstone waits beside it
-      if (this.accountProblem !== null) {
+      if (this.accountProblem !== null || this.restampProblem !== null || this.futureProblem !== null) {
         writePrivateState(this.pendingTombstonePath, { v: 1, tombstones: next });
         this.tombstones = next;
       } else this.writeTombstones(next);
