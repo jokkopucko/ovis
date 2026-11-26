@@ -13,7 +13,7 @@ import { PendingInputs } from "../pending-input.ts";
 import type { AlertTiming } from "../push.ts";
 import { connectionData, type Client } from "./connections.ts";
 
-type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string, status?: AgentStatus) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
+type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[], newer?: ReadonlySet<string>) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string, status?: AgentStatus) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
 export const originalCollector = collector.startStatusCollector;

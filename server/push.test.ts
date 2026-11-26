@@ -1462,6 +1462,24 @@ describe("push resync after lost status events", () => {
   });
 });
 
+it("rekeys a finish already under way even when the destination reported work before the move", async () => {
+  const asked = Promise.withResolvers<void>();
+  const looked = Promise.withResolvers<void>();
+  const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
+    lookupPane: async () => { asked.resolve(); await looked.promise; return { title: "claude" }; } });
+  push.subscribe(fake.subscription);
+  push.seed([pane("w1:p1", "working", "claude")]);
+  await push.onStatus("w1:p1", "done");
+  await asked.promise;
+  try {
+    await push.onStatus("w2:p1", "working");
+    push.moved("w1:p1", "w2:p1", "done");
+  } finally { looked.resolve(); }
+
+  await push.settled();
+  expect(fake.received.map(({ payload }) => [payload.kind, payload.pane_id])).toEqual([["done", "w2:p1"]]);
+});
+
 describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {
   function mutable(timing = { short: 0, long: 0, longTurn: 0 }) {
     const list: string[] = [];
