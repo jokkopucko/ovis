@@ -31,6 +31,7 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
+import { plainText } from "../lib/plainText.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
@@ -256,20 +257,13 @@ function conversationState(conversation: ConversationResponse): ChatState {
 }
 
 
-function plainText(markdown: string): string {
-  return markdown
-    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1")
-    .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
-    .replace(/(?:\*\*|__|~~|`)(.*?)(?:\*\*|__|~~|`)/g, "$1")
-    .replace(/^#{1,3}\s+/gm, "")
-    .replace(/^>\s?/gm, "");
-}
-
-function CopyButton({ text, label, className = "icon-button chat-copy", children, onResult }: { text: string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
+function CopyButton({ text, getText, label, className = "icon-button chat-copy", children, onResult }: { text?: string; getText?: () => string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async (): Promise<void> => {
-    const ok = await copyText(text);
+    // Derive lazily when a getter is supplied (e.g. an answer's plain text): the conversion runs
+    // synchronously inside the click gesture, never while the row renders (TASK-002).
+    const ok = await copyText(getText !== undefined ? getText() : text!);
     setCopied(ok);
     onResult(ok);
     if (ok) window.setTimeout(() => setCopied(false), 1500);
@@ -1160,7 +1154,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
       <CopyButton className="chat-meta-btn" text={answerText} label={t("Copy as markdown")} onResult={copied}><span className="chat-meta-fmt">MD</span></CopyButton>
-      <CopyButton className="chat-meta-btn chat-meta-plain" text={plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
+      <CopyButton className="chat-meta-btn chat-meta-plain" getText={() => plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
       {time}
     </div>}
     {copyError}
