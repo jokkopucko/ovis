@@ -802,6 +802,23 @@ export async function claudeProcessSession(
   table: () => Promise<ProcessRow[]> = recentProcessTable,
   unreadable: "none" | "throw" = "none",
 ): Promise<string | null> {
+  return (await claudeProcessRecord(home, pid, configDir, platform, table, unreadable))?.sessionId ?? null;
+}
+
+/**
+ * What a Claude process's PID record says of it (claudeProcessSession): its session, and what it waits on, where it
+ * says so. Claude Code 2.1.330 writes `status` (idle, busy or waiting) and, while waiting, `waitingFor`: `permission
+ * prompt` for an approval, `input needed` for a question, `dialog open` for any other dialog (its rewind list, `/model`,
+ * `/add-dir`'s confirmation), the same as `claude agents --json` reads from it (measured in an isolated config).
+ */
+async function claudeProcessRecord(
+  home: string,
+  pid: number,
+  configDir = join(home, ".claude"),
+  platform: string = process.platform,
+  table: () => Promise<ProcessRow[]> = recentProcessTable,
+  unreadable: "none" | "throw" = "none",
+): Promise<{ sessionId: string; waitingFor: string | null } | null> {
   if ((platform !== "linux" && platform !== "darwin" && platform !== "win32") || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     const path = join(configDir, "sessions", `${pid}.json`);
@@ -829,7 +846,8 @@ export async function claudeProcessSession(
       const started = fileTimeMs(record.procStart);
       if (started === null || (await table()).find((row) => row.pid === pid)?.started !== started) return null;
     } else if (await darwinProcessStart(pid) !== record.procStart.replace(/\s+/g, " ").trim()) return null;
-    return record.sessionId;
+    const waiting = "status" in record && record.status === "waiting" && "waitingFor" in record && typeof record.waitingFor === "string" ? record.waitingFor : null;
+    return { sessionId: record.sessionId, waitingFor: waiting };
   } catch (error) {
     if (error instanceof UnreadableClaudeRecord) throw error;
     // A closed process, absent/older native store or a torn write gives no identity.
@@ -1215,6 +1233,28 @@ export async function claudeForegroundSession(
     return await claudeProcessSession(home, only.pid, dir);
   } catch {
     // two stores claim the process, or one cannot be read: no session to pin
+    return null;
+  }
+}
+
+/**
+ * What the pane's one Claude process says in its PID record it waits on in its terminal (claudeProcessRecord), or null:
+ * none said, no single Claude process, a `claude attach` client (which keeps no record), or a record that cannot be
+ * trusted.
+ */
+export async function claudeForegroundWaiting(
+  processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null }[],
+  home = userHome(),
+): Promise<string | null> {
+  const claude = processes.filter((entry) => isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined }));
+  if (claude.length !== 1) return null;
+  const only = claude[0]!;
+  try {
+    const dir = await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) || defaultClaudeConfigDir(home);
+    // as claudeForegroundSession tells them: `attach` behind options in a background session's own Claude is no client
+    if (await claudeAttachSession(dir, only.pid, only.argv) !== null) return null;
+    return (await claudeProcessRecord(home, only.pid, dir))?.waitingFor ?? null;
+  } catch {
     return null;
   }
 }
