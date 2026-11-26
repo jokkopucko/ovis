@@ -40,7 +40,8 @@ import { authorizedTranscript } from "./transcript-store.ts";
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
-import { servedStatus } from "./approvals/codex.ts";
+import { followServedThread, servedStatus } from "./approvals/codex.ts";
+import type { ServedThreadSettings } from "./approvals/codex-status.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, paneCodexProcess, parseCodexTranscript, readRange, rolloutThread } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
@@ -143,6 +144,24 @@ export function readToldModes(read: ((paneId: string) => ToldMode | null) | null
 export function withToldMode<T extends Pick<RecognizedConversation, "metadata" | "version">>(answer: T, told: ToldMode | null, session: string): T {
   if (told === null || told.session !== session || told.mode === answer.metadata.permission_mode) return answer;
   return { ...answer, metadata: { ...answer.metadata, permission_mode: told.mode }, version: answerVersion(answer.version, told.mode) };
+}
+
+/**
+ * The rollout records the model requested for a turn, and its effort only once that turn starts.
+ * The server can name a reroute or a settings change without writing the rollout. Reuse the
+ * existing Plan icon's metadata value, but leave other Codex modes unmarked.
+ */
+function withServedCodex(answer: RecognizedConversation, settings: ServedThreadSettings | undefined, reroutedModel?: string | null): RecognizedConversation {
+  const { metadata } = answer;
+  const model = reroutedModel ?? settings?.model ?? metadata.model;
+  const reasoning_effort = settings?.effort ?? metadata.reasoning_effort;
+  const plan = settings?.plan;
+  const permission_mode = plan === true ? "plan" : plan === false ? undefined : metadata.permission_mode;
+  if (model === metadata.model && reasoning_effort === metadata.reasoning_effort && permission_mode === metadata.permission_mode) return answer;
+  const current = { ...metadata, model, reasoning_effort };
+  if (permission_mode === undefined) delete current.permission_mode;
+  else current.permission_mode = permission_mode;
+  return { ...answer, metadata: current, version: answerVersion(answer.version, JSON.stringify([model, reasoning_effort, permission_mode])) };
 }
 
 const cache = new Map<string, { source: RecognizedConversation["source"]; signature: string; turns: ConversationTurn[]; metadata: ConversationMetadata; cursor: string | null; abandoned?: { count: number; branches: number; summary: string | null } }>();
@@ -2175,7 +2194,12 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId, freshKimi, kimiFreshAfter));
+  const resolved = noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId, freshKimi, kimiFreshAfter));
+  if (resolved.source === "codex-transcript") {
+    const threadId = rolloutThread(resolved.path);
+    if (threadId !== null && herdrSocketPath() === socket) followServedThread(paneId, threadId);
+  }
+  return resolved;
 }
 
 const AGY_WRITE_RACE_MS = 5000;
@@ -2222,7 +2246,16 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
     // agy's greeting names a model only from the frame its unused session was proven on (passed in
     // as `read`): a later frame can already show another conversation, or another agy's.
     const metadata = read ?? (screen && source !== "agy-transcript" ? await screenMetadata(source) : { model: null, reasoning_effort: null });
-    return { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
+    const answer: RecognizedConversation = { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
+    // Before there is a rollout, only a proven empty Codex session (or our own pending launch)
+    // can reach here, so there is no other thread's transcript to check the settings against.
+    if (source !== "codex-transcript") return answer;
+    const settings = servedStatus(paneId)?.settings;
+    // The greeting's live footer can be newer than thread/started. Codex does not publish
+    // Plan to this connection until there is a rollout to subscribe to.
+    return withServedCodex(answer, settings?.initial
+      ? { ...settings, model: metadata.model ?? settings.model, effort: metadata.reasoning_effort ?? settings.effort }
+      : settings);
   };
 
   const onNotStarted = async (error: ConversationNotStarted): Promise<RecognizedConversation> => {
@@ -2475,13 +2508,10 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
     };
   }
   if (resolved.source === "codex-transcript") {
-    // Codex writes the model it was asked for; a turn it moved to another model is said only by its server
     const served = servedStatus(paneId);
-    if (served?.model && rolloutThread(resolved.path) === served.threadId.toLowerCase() && served.model !== answer.metadata.model) return {
-      ...answer,
-      metadata: { ...answer.metadata, model: served.model },
-      version: answerVersion(answer.version, served.model),
-    };
+    if (served !== null && rolloutThread(resolved.path) === served.threadId.toLowerCase()) {
+      answer = withServedCodex(answer, served.settings, served.model);
+    }
   }
   if (resolved.source === "cmd-transcript") {
     const herdrAgent = snapshot.agents.find((agent) => agent.pane_id === paneId);

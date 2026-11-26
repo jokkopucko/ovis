@@ -819,7 +819,8 @@ export interface ConversationMetadata {
   provider?: string;
   /**
    * Claude Code's permission mode (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), as its
-   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it.
+   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it. For a
+   * Codex Ovis started, `plan` while its own server says the thread is in Plan mode, else absent.
    */
   permission_mode?: string;
 }

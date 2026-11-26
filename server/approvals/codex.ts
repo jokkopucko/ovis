@@ -29,7 +29,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import type { PaneContext } from "../../shared/protocol.ts";
 import { shellCommandLine } from "../shell-agent.ts";
-import { askOf, tokenContext, type CodexAsk, type ServedStatus } from "./codex-status.ts";
+import { askOf, tokenContext, type CodexAsk, type ServedStatus, type ServedThreadSettings } from "./codex-status.ts";
 import type { ApprovalDecision, ApprovalHub, ApprovalRequest, ApprovalSource } from "./hub.ts";
 
 /** The Codex versions measured with a TUI on its own server; any other runs as before. */
@@ -305,6 +305,7 @@ export function privateFolder(folder: string): string | null {
 
 type TurnEnd = "running" | "answered" | "failed";
 
+interface ThreadBinding { readonly threadId: string }
 
 
 /** Ovis's connection to one pane's Codex server. */
@@ -320,10 +321,12 @@ class Connection {
   private readonly subagents = new Set<string>();
   private readonly changes = new Map<string, FileChange[]>();
   private readonly asks = new Map<string, CodexAsk>();
+  private following: ThreadBinding | null = null;
+  private ready = false;
   turn: TurnEnd | null = null;
   /**
-   * The pane's own thread, the last one Codex started or ran a turn in that is no subagent's; `sure` once Codex said so,
-   * not when only guessed from the threads loaded as Ovis connected.
+   * The pane's own thread: the one Ovis bound to its chat, or the last main thread Codex started
+   * or ran a turn in. `sure` excludes a guess from the threads loaded when Ovis connected.
    */
   private thread: string | null = null;
   private sure = false;
@@ -335,6 +338,7 @@ class Connection {
   private rerouted: { turnId: string; model: string } | null = null;
   /** The model the pane's own thread runs, as the server said on resume or in its settings. */
   private model: string | null = null;
+  private settings: ServedThreadSettings | undefined;
   /** Whether the pane's own thread is known to run no turn: what the server said of it last, never assumed. */
   private idle = false;
   closed = false;
@@ -395,10 +399,14 @@ class Connection {
   private async within(method: string, params: Json): Promise<Json | "unknown"> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<"unknown">((resolve) => { timer = setTimeout(() => resolve("unknown"), COMMAND_MS); });
+    const id = this.next;
     try {
       const answer = await Promise.race([this.call(method, params), late]);
       return answer === "unknown" || answer["closed"] === true ? "unknown" : answer;
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      this.calls.delete(id);
+    }
   }
 
   /** Steer only the pane's one loaded thread. The RPC id acknowledges this request, not a TUI echo. */
@@ -433,23 +441,75 @@ class Connection {
     const loaded = await this.call("thread/loaded/list", {});
     const ids = isObject(loaded["result"]) && Array.isArray(loaded["result"]["data"]) ? loaded["result"]["data"] : [];
     for (const id of ids) if (typeof id === "string") void this.subscribe(id);
+    this.ready = true;
   }
 
-  /** A thread's requests come only to its subscribers; Codex refuses one that has not run yet (no rollout), tried again as it runs. */
-  private async subscribe(threadId: string): Promise<void> {
-    if (this.subscribed.has(threadId)) return;
+  /**
+   * A thread's settings updates go only to its subscribers. In 0.171, resume refuses an unwritten
+   * thread; thread/started and thread/read can name model and effort but cannot name Plan mode.
+   * The first successful resume (retried as the thread runs) supplies the missing live settings.
+   */
+  private async subscribe(threadId: string, following?: ThreadBinding): Promise<void> {
+    const already = this.subscribed.has(threadId);
+    if (already && following === undefined) return;
     this.subscribed.add(threadId);
-    const answer = await this.call("thread/resume", { threadId, excludeTurns: true });
-    if (answer["error"] !== undefined) this.subscribed.delete(threadId);
-    else this.resumed.add(threadId);
-    // a thread already running as Ovis connects is known by what the server answers of it
-    const thread = isObject(answer["result"]) && isObject(answer["result"]["thread"]) ? answer["result"]["thread"] : null;
-    if (thread !== null) this.started(thread, false);
-    if (thread !== null && thread["id"] === this.thread && isObject(answer["result"])) {
-      this.model = text(answer["result"]["model"]) ?? this.model;
+    const before = this.settings;
+    const params = { threadId, excludeTurns: true };
+    const answer = following === undefined ? await this.call("thread/resume", params) : await this.within("thread/resume", params);
+    if (answer === "unknown" || answer["error"] !== undefined) {
+      if (!already && !this.resumed.has(threadId)) this.subscribed.delete(threadId);
+      return;
+    }
+    this.subscribed.add(threadId);
+    this.resumed.add(threadId);
+    const result = answer["result"];
+    if (!isObject(result) || !isObject(result["thread"]) || result["thread"]["id"] !== threadId) return;
+    const thread = result["thread"];
+    if (following !== undefined && this.following !== following && this.thread !== threadId) return;
+    this.started(thread, following !== undefined);
+    if (this.thread === threadId) {
       this.idle = isObject(thread["status"]) && thread["status"]["type"] === "idle";
       this.resumedActive = isObject(thread["status"]) && thread["status"]["type"] === "active";
+      // The reply seeds the snapshot; don't replace a live notification received in the meantime.
+      if (this.settings === before || this.settings === undefined || this.settings.initial) this.tellSettings(result, "resume");
     }
+  }
+
+  /**
+   * An idle TUI /resume does not announce which thread the TUI now shows. Only the rollout the
+   * pane reader bound to this pane can say so. Rejoin a thread already loaded by the TUI, never
+   * load an arbitrary saved thread, and refresh its settings even if Ovis once subscribed to it.
+   */
+  observe(threadId: string): void {
+    if (!this.ready || this.following?.threadId === threadId) return;
+    this.following = null;
+    if (this.thread === threadId || this.subagents.has(threadId)) return;
+    const following = { threadId };
+    this.following = following;
+    void this.within("thread/loaded/list", {}).then(async (answer) => {
+      if (this.following !== following || answer === "unknown" || !isObject(answer["result"])) return;
+      const loaded = answer["result"]["data"];
+      if (Array.isArray(loaded) && loaded.includes(threadId)) await this.subscribe(threadId, following);
+    }).finally(() => {
+      if (this.following === following) this.following = null;
+    });
+  }
+
+  private tellSettings(value: Json, source: "start" | "resume" | "update"): void {
+    const model = text(value["model"]) ?? this.model;
+    const effort = text(value[source === "update" ? "effort" : "reasoningEffort"]);
+    const mode = value["collaborationMode"];
+    const kind = isObject(mode) ? mode["mode"] : null;
+    const plan = kind === "plan" ? true : kind === "default" ? false : null;
+    const initial = source === "start" ? true as const : undefined;
+    // A completed turn's reroute cannot name the model selected from the menu for the next turn.
+    if (source === "update" && this.idle && model !== this.model) this.rerouted = null;
+    this.model = model;
+    if (model === (this.settings?.model ?? null) && effort === (this.settings?.effort ?? null)
+      && plan === (this.settings?.plan ?? null) && initial === this.settings?.initial) return;
+    this.settings = model === null && effort === null && plan === null ? undefined
+      : { model, effort, plan, ...(initial === undefined ? {} : { initial }) };
+    changed(this.paneId);
   }
 
   /**
@@ -467,6 +527,7 @@ class Connection {
   private own(threadId: string, sure: boolean): void {
     if (this.subagents.has(threadId)) return;
     if (this.thread === threadId) { this.sure ||= sure; return; }
+    this.following = null;
     this.thread = threadId;
     this.sure = sure;
     this.turn = null;
@@ -476,6 +537,7 @@ class Connection {
     this.context = null;
     this.rerouted = null;
     this.model = null;
+    this.settings = undefined;
     this.idle = false;
     changed(this.paneId);
   }
@@ -492,7 +554,10 @@ class Connection {
   }
 
   status(): ServedStatus | null {
-    return this.thread === null ? null : { threadId: this.thread, context: this.context, model: this.rerouted?.model ?? null };
+    return this.thread === null ? null : {
+      threadId: this.thread, context: this.context, model: this.rerouted?.model ?? null,
+      ...(this.settings === undefined ? {} : { settings: this.settings }),
+    };
   }
 
   questions(): CodexAsk[] {
@@ -539,9 +604,13 @@ class Connection {
     if (message["id"] !== undefined) return this.request(message["id"], method, params);
     const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
     switch (method) {
-      case "thread/started":
-        if (isObject(params["thread"])) this.started(params["thread"], true);
+      case "thread/started": {
+        const thread = params["thread"];
+        if (!isObject(thread)) break;
+        this.started(thread, true);
+        if (this.thread !== null && thread["id"] === this.thread && this.settings === undefined) this.tellSettings(thread, "start");
         break;
+      }
       case "thread/status/changed": {
         const status = isObject(params["status"]) ? params["status"] : {};
         if (threadId !== null && threadId === this.thread) this.idle = status["type"] === "idle";
@@ -569,8 +638,11 @@ class Connection {
         break;
       }
       case "thread/settings/updated": {
-        const settings = isObject(params["threadSettings"]) ? params["threadSettings"] : {};
-        if (threadId === this.thread) this.model = text(settings["model"]) ?? this.model;
+        const settings = params["threadSettings"];
+        if (threadId === null || threadId !== this.thread || !isObject(settings)) break;
+        // This is a snapshot, not a patch: when it names no effort, the chat uses its rollout or
+        // screen again instead of keeping the effort from a previous mode.
+        this.tellSettings(settings, "update");
         break;
       }
       case "thread/tokenUsage/updated": {
@@ -719,6 +791,16 @@ export function servedStatus(paneId: string): ServedStatus | null {
     if (status !== null) return status;
   }
   return null;
+}
+
+/** The pane transcript reader bound this thread to the pane; let its own app server follow that binding. */
+export function followServedThread(paneId: string, threadId: string): void {
+  for (const servers of instances) {
+    const connection = servers.connection(paneId);
+    if (connection === null) continue;
+    connection.observe(threadId);
+    return;
+  }
 }
 
 /**

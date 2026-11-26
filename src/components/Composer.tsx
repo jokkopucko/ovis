@@ -1499,10 +1499,15 @@ export function Composer({
                   </>}
                 </span>
               </span>}
-              {/* Claude Code's plan mode is the one mode the pill marks, as an icon; every other mode draws nothing */}
-              {metadata?.permission_mode === "plan" && <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
-                <ClipboardList aria-hidden="true" />
-              </span>}
+              {/* plan mode (Claude Code's, or a Codex Ovis started) is the one mode the pill marks: in words on a desktop, as an
+                  icon on a phone, where the row has no room for them; every other mode draws nothing */}
+              {metadata?.permission_mode === "plan" && (mobile
+                ? <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
+                  <ClipboardList aria-hidden="true" />
+                </span>
+                : <span className="composer-mode is-text">
+                  <span className="composer-reasoning-dot" aria-hidden="true">·</span>{t("Plan mode")}
+                </span>)}
               {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
                 className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}

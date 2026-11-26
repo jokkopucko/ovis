@@ -63,10 +63,22 @@ export function askOf(key: string, params: Json): CodexAsk | null {
   return { key, threadId, turnId, itemId, questions: read };
 }
 
+/** The chip values in a thread settings snapshot; null means Codex gave no value. */
+export interface ServedThreadSettings {
+  readonly model: string | null;
+  readonly effort: string | null;
+  /** False means Codex explicitly left Plan mode; null leaves the fallback alone. */
+  readonly plan: boolean | null;
+  /** A greeting can change again in the TUI before Ovis can subscribe; prefer the live screen. */
+  readonly initial?: true;
+}
+
 /** What Ovis knows of a pane's own thread from its server; a field is null until the server says it. */
 export interface ServedStatus {
   threadId: string;
   context: PaneContext | null;
   /** The model Codex moved the thread's current turn to, while that turn is the last one. */
   model: string | null;
+  /** Only settings Codex announced, not defaults inferred from the rollout. */
+  settings?: ServedThreadSettings;
 }

@@ -250,10 +250,16 @@
   white-space: nowrap;
 }
 
-/* Claude Code's plan mode as an icon after the level: it never shrinks, the model's name gives way instead */
+/* plan mode after the level, in words on a desktop and as an icon on a phone: it never shrinks, the model's name gives
+   way instead */
 .composer-mode {
   display: inline-flex;
   flex: none;
+}
+
+.composer-mode.is-text {
+  align-items: baseline;
+  white-space: nowrap;
 }
 
 .composer-mode svg {
