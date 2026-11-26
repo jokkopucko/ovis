@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { advanceStateStamps, loadStateStamps, parseStateStamps, saveStateStamps, stampState, stateSince, type LastLook, type PcLook, type StampState, type StateStamps } from "./agentStateSince.ts";
+import { advanceStateStamps, loadStateStamps, parseStateStamps, saveStateStamps, stampState, stateLooks, stateSince, type LastLook, type PcLook, type StampState, type StateStamps } from "./agentStateSince.ts";
+import machines from "../../site/demo/fixtures/machines.json";
+import { shownStatus } from "./sidebarOrder.ts";
+import type { HerdrPane } from "../../shared/protocol.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -29,6 +32,33 @@ function device(kept: { stamps: StateStamps } = { stamps: {} }) {
 }
 
 describe("state stamps: when this device saw a state begin", () => {
+  it("does not restore a Copilot-sampled idle age from unchanged Herdr counters", () => {
+    const snapshot = machines.machines[0]!.snapshot!;
+    const base = snapshot.panes[0]!;
+    const read = (status: HerdrPane["agent_status"], seq: number, processing?: boolean) => {
+      const pane = { ...base, agent: "copilot", agent_status: status, copilot_processing: processing, finish_id: 0 };
+      return stateLooks([{ id: "pc", name: "test", state: "connected", kind: "local", enabled: true, error: null,
+        snapshot: { ...snapshot, herdr_lifetime: "herdr-1", finish_epoch: "server-1", panes: [pane],
+          agents: [{ ...snapshot.agents[0]!, pane_id: pane.pane_id, state_change_seq: seq }] } }],
+      (_, p) => shownStatus(p, null))[0]!;
+    };
+    const page = device();
+    page.see(T, read("working", 1));
+    page.see(T + MIN, read("idle", 2));
+    page.reload();
+    page.see(T + 2 * MIN, read("idle", 2));
+    expect(page.since(base.pane_id, "idle", base.terminal_id)).toBe(T + MIN);
+    page.reload();
+    page.see(T + 3 * MIN, read("idle", 2, false));
+    expect(page.since(base.pane_id, "idle", base.terminal_id)).toBeNull();
+    page.see(T + 4 * MIN, read("working", 3, true));
+    page.see(T + 5 * MIN, read("idle", 4, false));
+    expect(page.since(base.pane_id, "idle", base.terminal_id)).toBe(T + 5 * MIN);
+    page.see(T + 5 * MIN - 1, read("idle", 4)); // a backward clock adjustment clamps the timestamp
+    page.reload();
+    page.see(T + 6 * MIN, read("idle", 4));
+    expect(page.since(base.pane_id, "idle", base.terminal_id)).toBeNull();
+  });
   it("gives a row first seen no time, and stamps it when its state changes in sight", () => {
     const page = device();
     page.see(T, look({ a: ["working", 1] }));

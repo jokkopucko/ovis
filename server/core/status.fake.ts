@@ -110,6 +110,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   stubs.push(spyOn(status.push, "onEnded").mockImplementation(async (paneId: string) => { ended.push(paneId); }));
   return {
     alerts, pending, status, held, client, present,
+    sessionChanges: () => frames.filter((seen) => seen.type === "session-changed").length,
     tickCards: () => cardTick(),
     ended: () => ({ push: [...ended], frames: frames.filter((seen) => seen.type === "pane-exited").length }),
     herdrSays: (...shown: unknown[]) => { panes = shown; },

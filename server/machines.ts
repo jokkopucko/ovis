@@ -383,7 +383,7 @@ export function bridgeAgentNews(tell: () => void) {
 export class MachineManager {
   private machines = new Map<string, Runtime>();
   private jobs = new Map<string, JobState>();
-  private listeners = new Set<(event: MachineEvent) => void>();
+  private listeners = new Map<(event: MachineEvent) => void, "internal" | "roster">();
   private stopped = false;
   private readonly bridgeWork = new Map<string, Promise<void>>();
   private localBusy = false;
@@ -762,14 +762,19 @@ export class MachineManager {
     }
     return this.machines.get(pc)?.finishes.ended(epoch) ?? false;
   }
-  subscribe(listener: (event: MachineEvent) => void): () => void {
-    this.listeners.add(listener);
+  get rosterWatched(): boolean {
+    for (const kind of this.listeners.values()) if (kind === "roster") return true;
+    return false;
+  }
+
+  subscribe(listener: (event: MachineEvent) => void, { internal = false } = {}): () => void {
+    this.listeners.set(listener, internal ? "internal" : "roster");
     listener({ type: "machines", machines: this.list() });
     return () => this.listeners.delete(listener);
   }
   private emit(event?: MachineEvent): void {
     if (this.stopped) return;
-    for (const listener of this.listeners) listener(event ?? { type: "machines", machines: this.list() });
+    for (const listener of this.listeners.keys()) listener(event ?? { type: "machines", machines: this.list() });
   }
   localMessage(message: ServerMessage): void {
     if (message.type === "pane-status" && this.localFinishes.stale(message.finish_epoch)) return;
@@ -2764,11 +2769,13 @@ export class MachineManager {
 }
 
 export function paneAfterStatus(p: HerdrPane, message: Extract<ServerMessage, { type: "pane-status" }>): HerdrPane {
-  const { background_tasks: before, background_wait: _waited, plan: planBefore, context: contextBefore, finish_id: _finish, ...pane } = p;
+  const { background_tasks: before, background_wait: _waited, plan: planBefore, context: contextBefore, finish_id: _finish, copilot_processing: processing, ...pane } = p;
   const tasks = message.background_tasks === undefined ? before : message.background_tasks > 0 ? message.background_tasks : undefined;
   const plan = message.plan === undefined ? planBefore : message.plan ?? undefined;
   const context = message.context === undefined ? contextBefore : message.context ?? undefined;
-  return { ...pane, agent_status: message.agent_status, ...(message.finish_id === undefined ? {} : { finish_id: message.finish_id }), ...(tasks === undefined ? {} : { background_tasks: tasks }), ...(message.background_wait ? { background_wait: true } : {}), ...(plan === undefined ? {} : { plan }), ...(context === undefined ? {} : { context }) };
+  const started = message.agent_status === "working" && p.agent_status !== "working";
+  const sample = started && processing === false ? undefined : processing;
+  return { ...pane, agent_status: message.agent_status, ...(sample === undefined ? {} : { copilot_processing: sample }), ...(message.finish_id === undefined ? {} : { finish_id: message.finish_id }), ...(tasks === undefined ? {} : { background_tasks: tasks }), ...(message.background_wait ? { background_wait: true } : {}), ...(plan === undefined ? {} : { plan }), ...(context === undefined ? {} : { context }) };
 }
 
 function snapshotAfterStatus(snapshot: SessionSnapshot, message: Extract<ServerMessage, { type: "pane-status" }>): SessionSnapshot {

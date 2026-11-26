@@ -19,6 +19,7 @@ import { onServedStatus, servedStatus, servedTurnEnd } from "../approvals/codex.
 import { startStatusCollector } from "../collector.ts";
 import type { TurnEvent } from "../approvals/hub.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
+import { CopilotActivity } from "../copilot-activity.ts";
 import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
@@ -208,7 +209,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * to the one before counted too: a card read begun under an earlier count is of an agent that left (server/card-waits.ts)
    */
   const agentLifetime = new Map<string, number>();
-  const handsChanged = (paneId: string): void => { agentLifetime.set(paneId, (agentLifetime.get(paneId) ?? 0) + 1); };
+  const copilotActivity = new CopilotActivity();
+  const handsChanged = (paneId: string): void => { copilotActivity.forget(paneId); agentLifetime.set(paneId, (agentLifetime.get(paneId) ?? 0) + 1); };
   const eventAgent = new Map<string, { agent: string | null; since: number }>();
   const statusNow = options.statusNow ?? Date.now;
   function newLifetime(paneId: string, keep: string | null): void {
@@ -617,7 +619,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   };
   // clients see a card a pane waits on over what its agent reported, which the finishes and the turns were read from
   const clientSnapshot = async (): Promise<SessionSnapshot> => {
-    const snapshot = await deliverySnapshot();
+    const snapshot = copilotActivity.apply(await deliverySnapshot());
     if (toldFailures.size === 0) return cards.apply(snapshot);
     const display = <T extends { pane_id: string; agent?: string | null; agent_status: AgentStatus }>(pane: T): T =>
       toldFailures.get(pane.pane_id)?.agent === pane.agent ? { ...pane, agent_status: displayStatus(pane.pane_id, pane.agent_status) } : pane;
@@ -754,6 +756,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (!replay) releaseOpenCodePane(paneId);
     }
     const ran = agentNow.get(paneId);
+    if (agent !== "copilot") copilotActivity.forget(paneId);
     agentNow.set(paneId, agent);
     // its agent is gone (it exited at its card): the wait goes with it, so does a read of its screen under way, and the
     // status reported now is what shows. The card reads take no agent for it from a snapshot read begun before this,
@@ -786,6 +789,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       return;
     }
+    // A sample taken (or begun) before Herdr reported new work cannot describe that turn.
+    if (agent === "copilot" && read === "working") copilotActivity.forget(paneId);
     if (reconcileProviderStatus(omo, gjc, { pane_id: paneId, agent })) completions.forget(paneId);
     const named = [{ pane_id: paneId, agent: omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent }];
     if (machines) machines.localAgents(named); else bridgeAgents!.status(named);
@@ -1105,6 +1110,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const shellSnapshots = new WeakSet<HerdrPane>();
   const snapshotVerifications = new WeakMap<HerdrPane, number>();
   function paneGone(paneId: string): void {
+    copilotActivity.forget(paneId);
     cards.forget(paneId);
     lastPanes?.delete(paneId);
     paneClosed.set(paneId, opencodeAgents.beginRead());
@@ -1317,10 +1323,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     timer.unref?.();
     return () => clearInterval(timer);
   }))(cardPace);
+  const copilotRoster = { ...cardRoster, herdrLifetime: () => currentHerdrLifetime() };
+  const activityTimer = setInterval(() => {
+    // Remote bridges already poll snapshots. Refresh the local roster without announcing a session replacement.
+    void copilotActivity.tick(copilotRoster, () => { void machines?.refreshLocal(); }, clients.size > 0 || machines?.rosterWatched === true);
+  }, 3000);
+  activityTimer.unref?.();
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); stopServed(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; clearInterval(activityTimer); copilotActivity.stop(); untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); stopServed(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up

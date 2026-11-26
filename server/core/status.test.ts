@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import * as claudeStore from "../claude-store.ts";
 import * as conversation from "../conversation.ts";
+import { CopilotActivity } from "../copilot-activity.ts";
+import * as copilot from "../copilot-foreground.ts";
 import * as herdr from "../herdr/client.ts";
 import * as gjc from "../gjc-status.ts";
 import * as omo from "../omo.ts";
@@ -18,6 +20,77 @@ import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
 import { at, claude, collectorSnapshot, handlers, hub, line, opencode, originalCollector, root, workingClaude } from "./status.fake.ts";
 import { notePaneFolders, otherHostsShare } from "../windows-share.ts";
+
+it.skipIf(process.platform !== "linux")("exposes a Copilot badge change without announcing a Chat session change", async () => {
+  jest.useFakeTimers();
+  const h = hub(undefined, undefined, undefined, () => "copilot-herdr");
+  const pane: HerdrPane = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "copilot-term", agent: "copilot", agent_status: "idle", focused: false, revision: 1 };
+  const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+    pane_id: pane.pane_id, shell_pid: 41000,
+    foreground_processes: [{ pid: 41001, name: "copilot", argv: ["/usr/bin/copilot", "--ui-server"] }],
+  });
+  const foreground = spyOn(copilot, "readCopilotForeground").mockResolvedValue({ state: "selected", sessionId: "copilot-session", binding: "fixture", processing: true });
+  const settled = Promise.withResolvers<void>();
+  const tick = CopilotActivity.prototype.tick;
+  const sampled = spyOn(CopilotActivity.prototype, "tick").mockImplementation(function (this: CopilotActivity, ...args: Parameters<typeof tick>) {
+    return tick.apply(this, args).then(settled.resolve, settled.reject);
+  });
+  try {
+    handlers.herdrLive?.onChange("copilot-herdr");
+    h.herdrSays(pane);
+    await h.snapshot();
+    const before = h.sessionChanges();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(true);
+    expect(h.sessionChanges()).toBe(before);
+  } finally {
+    sampled.mockRestore();
+    foreground.mockRestore();
+    info.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it.skipIf(process.platform !== "linux")("drops a cached Copilot idle sample when Herdr reports new work", async () => {
+  jest.useFakeTimers();
+  const h = hub(undefined, undefined, undefined, () => "copilot-herdr");
+  const pane: HerdrPane = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "copilot-term", agent: "copilot", agent_status: "idle", focused: false, revision: 1 };
+  const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+    pane_id: pane.pane_id, shell_pid: 41000,
+    foreground_processes: [{ pid: 41001, name: "copilot", argv: ["/usr/bin/copilot", "--ui-server"] }],
+  });
+  const foreground = spyOn(copilot, "readCopilotForeground").mockResolvedValue({ state: "selected", sessionId: "copilot-session", binding: "fixture", processing: false });
+  let settled = Promise.withResolvers<void>();
+  const tick = CopilotActivity.prototype.tick;
+  const sampled = spyOn(CopilotActivity.prototype, "tick").mockImplementation(function (this: CopilotActivity, ...args: Parameters<typeof tick>) {
+    return tick.apply(this, args).then(settled.resolve, settled.reject);
+  });
+  try {
+    handlers.herdrLive?.onChange("copilot-herdr");
+    h.herdrSays(pane);
+    await h.snapshot();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(false);
+
+    h.herdrSays({ ...pane, agent_status: "working" });
+    handlers.onStatus(pane.pane_id, "working", "copilot");
+    const snapshot = await h.snapshot();
+    expect(snapshot.panes[0]?.agent_status).toBe("working");
+    expect(snapshot.panes[0]?.copilot_processing).toBeUndefined();
+
+    settled = Promise.withResolvers<void>();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(false);
+  } finally {
+    sampled.mockRestore();
+    foreground.mockRestore();
+    info.mockRestore();
+    jest.useRealTimers();
+  }
+});
 
 describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native OpenCode ownership reconciliation (%s)", (mode) => {
   it.each([

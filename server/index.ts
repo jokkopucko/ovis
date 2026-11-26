@@ -655,7 +655,7 @@ export function createServer(
   machines?.subscribe((event) => {
     if (event.type !== "machine-message" || event.machine_id === LOCAL_MACHINE || event.message.type !== "pane-moved") return;
     void seen.moved(event.machine_id, event.message.from, event.message.to).catch((error) => console.warn("seen: could not carry remote reads:", error));
-  });
+  }, { internal: true });
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
   // pane's finish now, so a read told late never marks a turn that ended since as seen.
   const seenMarker = capabilities().seen === "label" ? coreSeenMarker() : null;

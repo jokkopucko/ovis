@@ -17,8 +17,10 @@ export function applyPaneStatus(snapshot: SessionSnapshot, paneId: string, statu
     const filled = context === undefined ? pane.context : context ?? undefined;
     if (pane.agent_status === status && pane.finish_id === finishId && pane.background_tasks === tasks && (pane.background_wait === true) === waiting && samePlan(pane.plan, progress) && pane.context?.used === filled?.used && pane.context?.window === filled?.window) return pane;
     paneChanged = true;
-    const { background_tasks: _before, background_wait: _waited, plan: _plan, context: _context, finish_id: _finish, ...rest } = pane;
-    return { ...rest, agent_status: status, ...(finishId === undefined ? {} : { finish_id: finishId }), ...(tasks === undefined ? {} : { background_tasks: tasks }), ...(waiting ? { background_wait: true as const } : {}), ...(progress === undefined ? {} : { plan: progress }), ...(filled === undefined ? {} : { context: filled }) };
+    const { background_tasks: _before, background_wait: _waited, plan: _plan, context: _context, finish_id: _finish, copilot_processing: processing, ...rest } = pane;
+    const started = status === "working" && pane.agent_status !== "working";
+    const sample = started && processing === false ? undefined : processing;
+    return { ...rest, agent_status: status, ...(sample === undefined ? {} : { copilot_processing: sample }), ...(finishId === undefined ? {} : { finish_id: finishId }), ...(tasks === undefined ? {} : { background_tasks: tasks }), ...(waiting ? { background_wait: true as const } : {}), ...(progress === undefined ? {} : { plan: progress }), ...(filled === undefined ? {} : { context: filled }) };
   });
   if (!paneChanged) return snapshot;
   const agents = snapshot.agents.map((agent) =>
