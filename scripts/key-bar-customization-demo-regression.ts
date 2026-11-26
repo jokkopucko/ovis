@@ -11,6 +11,7 @@ import { sheetEntryLeft } from "./sheets-settled.ts";
 import { shownRows } from "./shown-rows.ts";
 import { keyBarItemLabel } from "../src/lib/keyBar.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // Editing and typing stay in this disposable, loopback-only app; no herdr session or user
 // terminal is opened.
@@ -284,6 +285,7 @@ try {
 
   const server = serveDemo(app);
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });

@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { Hand, type Recording } from "./hand.ts";
 import { shownRows } from "../shown-rows.ts";
 import panes from "../../site/demo/fixtures/panes.json";
+import { checkChromeTmpdir } from "../chrome-path.ts";
 
 const REPO = join(import.meta.dir, "../..");
 const SITE = join(REPO, "_site");
@@ -89,6 +90,7 @@ const browsers = new Map<number, Browser>();
 async function browserAt(scale: number): Promise<Browser> {
   let browser = browsers.get(scale);
   if (!browser) {
+    checkChromeTmpdir();
     browser = await chromium.launch({
       executablePath: CHROME,
       headless: true,

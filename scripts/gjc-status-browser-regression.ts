@@ -12,6 +12,7 @@ import { UsageService } from "../server/usage.ts";
 import { GJC_NATIVE_DIRECTORY, GJC_NATIVE_HEARTBEAT_MS, type GjcNativeBinding } from "../shared/gjc-native.ts";
 import type { WireMachineEvent } from "../shared/compact-agents.ts";
 import type { AgentStatus, ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 type Status = "idle" | "working" | "done" | "blocked";
 type NativeRecord = Readonly<Record<string, unknown>>;
@@ -255,6 +256,7 @@ try {
   });
   statusSocket.addEventListener("error", () => { socketError = new Error("Status WebSocket failed"); });
   await until(() => frames.some((frame) => frame.type === "snapshot"), "initial WebSocket snapshot");
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true, args: ["--no-sandbox", "--accept-lang=en-US"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript((ids) => {

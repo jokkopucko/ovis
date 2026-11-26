@@ -10,6 +10,7 @@ import { KO } from "../src/lib/i18n.ko.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-segmented-"));
@@ -160,6 +161,7 @@ try {
   const server = serveDemo(app, { prefix });
   const url = `http://127.0.0.1:${server.port}${prefix}`;
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       for (const language of ["en", "ko", "ja", "zh"] as const) {

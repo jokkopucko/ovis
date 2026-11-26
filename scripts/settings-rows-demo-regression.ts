@@ -9,6 +9,7 @@ import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, themeSide } from "./settings-page.ts";
 import { SETTINGS, closeSettings, dialogOf, historyHolds, openPalette, openSettings } from "./settings-pages-harness.ts";
 import { DEFAULT_SETTINGS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN } from "../src/lib/settings.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // All files and HTTP traffic stay in these disposable, loopback-only apps; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
@@ -1135,6 +1136,7 @@ try {
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   const devUrl = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/dev/`;
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       await dialogSearch(browser, url);

@@ -7,6 +7,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const screenshotDir = process.env.SHORTCUT_SCREENSHOT_DIR;
 const app = mkdtempSync(join(tmpdir(), "herdr-exact-shortcuts-demo-"));
@@ -29,6 +30,7 @@ try {
   const prefix = "/herdr-web-ui/demo/app/";
   const server = serveDemo(app, { prefix });
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true });
     try {
       const context = await browser.newContext({ viewport: { width: 1180, height: 760 }, locale: "en-US" });

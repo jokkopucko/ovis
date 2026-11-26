@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { REPO } from "./footage.ts";
 import { STAGE_HTML, type FrameDesc } from "./stage.ts";
 import { DURATION, FPS, LOOP_FPS, LOOP_LEN, LOOP_START, frame, loopFrame, report } from "./timeline.ts";
+import { checkChromeTmpdir } from "../chrome-path.ts";
 
 const CHROME = process.env["CHROME_PATH"] ?? "/usr/bin/google-chrome";
 const RENDERS = join(REPO, "_film/renders");
@@ -62,6 +63,7 @@ function serve(): { url: string; stop: () => void } {
 interface Stage { browser: Browser; page: Page; cdp: CDPSession }
 
 async function stage(url: string, scale: number): Promise<Stage> {
+  checkChromeTmpdir();
   const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--hide-scrollbars", "--disable-lcd-text", "--force-color-profile=srgb"] });
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: scale });
   await page.goto(url);

@@ -8,6 +8,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { appFaces } from "./app-faces.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-pane-paging-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -74,8 +75,10 @@ try {
   const prefix = "/herdr-web-ui/demo/app/";
   const server = serveDemo(app, { prefix });
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
+      checkChromeTmpdir();
       const fractionalBrowser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox", "--force-device-scale-factor=1.25"] });
       const fractional = await fractionalBrowser.newContext({ viewport: { width: 1024, height: 600 }, deviceScaleFactor: 1.25, locale: "en-US" });
       try {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { SetupJob, SetupRequest } from "../shared/machines.ts";
 import { sheetEntryLeft } from "./sheets-settled.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const repo = join(import.meta.dir, "..");
 const root = mkdtempSync(join(tmpdir(), "herdr-machine-dialog-"));
@@ -34,6 +35,7 @@ try {
     return new Response(Bun.file(join(out, path === "/" ? "index.html" : path.slice(1))));
   } });
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       for (const width of [1280, 390]) {

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-spacing-demo-"));
 const spacing = 16;
@@ -89,6 +90,7 @@ try {
 
   for (const [mobile, empty] of [[false, false], [true, false], [false, true], [true, true]] as const) {
     const label = `${mobile ? "390px" : "desktop"}${empty ? " with no agents" : ""}`;
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({

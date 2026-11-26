@@ -12,6 +12,7 @@ import { PortalService } from "../server/portal.ts";
 import { UsageService } from "../server/usage.ts";
 import type { PortalStatus, RemoteAccess } from "../shared/protocol.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const dist = join(import.meta.dir, "..", "dist", "index.html");
 assert.ok(existsSync(dist), "dist/index.html is missing: run `bun run build` first");
@@ -134,6 +135,7 @@ try {
   servers.push(server);
   const origin = `http://127.0.0.1:${server.port}`;
 
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   const ownerContext = await browser.newContext({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   contexts.push(ownerContext);

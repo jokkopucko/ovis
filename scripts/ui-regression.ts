@@ -1499,7 +1499,10 @@ try {
     await dialog.getByLabel("Optional workspace label", { exact: true }).fill("ovis-test-browser-created");
     await dialog.getByRole("button", { name: "Start", exact: true }).click();
     await until(() => createRequests === 1, "creation started");
-    assert.equal(createCwd, join(root, "a", "made-here"), "Start uses the folder Browse is showing");
+    const madeHere = join(root, "a", "made-here");
+    // a fixture root under the home folder (TMPDIR=$HOME/...) is sent home-relative, as Browse shows it
+    const madeHereFromHome = madeHere.startsWith(`${homedir()}/`) ? `~${madeHere.slice(homedir().length)}` : madeHere;
+    assert.ok(createCwd === madeHere || createCwd === madeHereFromHome, `Start uses the folder Browse is showing: ${createCwd}`);
     await page.keyboard.press("Escape");
     assert.equal(await dialog.isVisible(), true, "in-flight creation cannot be dismissed");
     assert.equal(await dialog.getByRole("button", { name: "Close dialog" }).isDisabled(), true);

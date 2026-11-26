@@ -8,6 +8,7 @@ import { KEY_REPEAT_DELAY_MS, KEY_REPEAT_INTERVAL_MS } from "../src/lib/keyRepea
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // The disposable app only listens on loopback; no herdr session, user terminal or real input
 // transport is opened.
@@ -90,6 +91,7 @@ try {
 
   const server = serveDemo(app);
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 393, height: 852 }, isMobile: true, hasTouch: true, locale: "en-US" });

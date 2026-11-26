@@ -9,6 +9,7 @@ import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { omoPanes, omoSessionFolder } from "../server/omo.ts";
 import { startShellAgent } from "../server/shell-agent.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-omo-browser-")));
 const launchers = join(root, "launchers");
@@ -181,6 +182,7 @@ try {
   assert.equal(negative.body.source, "scrollback");
   pass("the snapshot names only the omo panes; the no-evidence pane is undiscovered and scrollback");
 
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] ?? "/opt/google/chrome/chrome", headless: process.env["HEADED"] !== "1", args: ["--no-sandbox", "--no-proxy-server"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   page = await context.newPage();

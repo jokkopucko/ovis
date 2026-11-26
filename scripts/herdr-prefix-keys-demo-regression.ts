@@ -7,6 +7,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const screenshotDir = process.env.HERDR_KEYS_SCREENSHOT_DIR;
 if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
@@ -30,6 +31,7 @@ try {
   const prefix = "/herdr-web-ui/demo/app/";
   const server = serveDemo(app, { prefix });
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true });
     try {
       const origin = `http://127.0.0.1:${server.port}${prefix}`;

@@ -9,6 +9,7 @@ import { resolveAgyStore } from "../server/agy-store.ts";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import { SLEEP } from "./fixtures/sleep.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 if (process.platform !== "linux") { console.log("SKIP Agy process fixture requires Linux"); process.exit(0); }
 const root = mkdtempSync(join(tmpdir(), "herdr-agy-activity-"));
@@ -44,6 +45,7 @@ try {
     await Bun.sleep(50);
   }
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null });
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   page.setDefaultTimeout(12_000);

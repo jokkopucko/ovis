@@ -11,6 +11,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // Update consent on the unmodified app over the demo's fixture transport: Settings' Update and
 // restart and the header's Update send the revision of the offer they were drawn with, a release
@@ -538,6 +539,7 @@ try {
   const port = server.port;
   const url = `http://127.0.0.1:${port}/herdr-web-ui/demo/app/`;
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const receipts = await behaviour(browser, url);

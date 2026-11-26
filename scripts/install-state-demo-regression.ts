@@ -6,6 +6,7 @@ import { chromium, type BrowserContext, type CDPSession, type Locator, type Page
 import { manifestBody } from "../server/static.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // Install app against a real install: the unmodified app over the demo's fixture
 // transport, served at the ROOT of a loopback origin so the manifest's id, start_url and scope "/"
@@ -83,6 +84,7 @@ try {
   origin = `http://127.0.0.1:${server.port}`;
   const manifestId = `${origin}/`;
   try {
+    checkChromeTmpdir();
     const context = await chromium.launchPersistentContext(profile, {
       executablePath: process.env["CHROME_PATH"] ?? chromium.executablePath(),
       headless,

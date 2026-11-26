@@ -6,6 +6,7 @@ import type { Browser } from "playwright-core";
 import { shownRows } from "./shown-rows.ts";
 import { openLens } from "./header-lens.ts";
 import { IME_INITIAL_ATTACH_TIMEOUT, resetImeInput, selectImePane, waitForImeTerminal } from "./terminal-ime-ready.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 /**
  * iPadOS 27 Safari with a Magic Keyboard sends each jamo as a printable keydown (its own keyCode,
@@ -394,6 +395,7 @@ if (import.meta.main) {
   const owned: string[] = [];
   let browser: Browser | undefined;
   try {
+    checkChromeTmpdir();
     browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true });
     const panes: string[] = [];
     for (let i = 0; i < 2; i++) {

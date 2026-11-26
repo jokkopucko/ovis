@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { claudeProjectDir } from "../server/claude-store.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-claude-api-error-"));
 const id = "11111111-2222-4333-8444-555555555555";
@@ -25,6 +26,7 @@ try {
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "claude", state: "idle" });
   await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:claude", agent: "claude", seq: Date.now() * 1000, agent_session_id: id });
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null });
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport, locale: "en-US" });

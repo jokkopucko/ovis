@@ -8,6 +8,7 @@ import { createServer } from "../server/index.ts";
 import { workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import type { SetupRequest } from "../shared/machines.ts";
 import type { HerdrMachineProfile } from "../server/herdr-profiles.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 await useTestHerdr();
 const stateDir = mkdtempSync(join(tmpdir(), "herdr-profile-browser-"));
@@ -18,6 +19,7 @@ const workspace = await workspaceCreate({ label: "ovis-test-profile-inheritance"
 const profile: HerdrMachineProfile = { id: "browser-fixture", label: "Build machine", enabled: true, target: { destination: "127.0.0.1", port: 1, session: "project-agents" } };
 let profiles = [profile];
 const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, herdrProfiles: async () => profiles });
+checkChromeTmpdir();
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const phone of [false, true]) {
