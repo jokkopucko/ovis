@@ -28,6 +28,7 @@ import type { SessionHistoryAgent, SessionHistoryRow } from "../shared/protocol.
 import { agyUserText } from "./agy.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { cmdSlug } from "./cmd.ts";
+import { codexIndexedNames, codexStoredLabels } from "./codex-session-labels.ts";
 import { grokSessionGroups } from "./grok-store.ts";
 import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefix } from "./codex.ts";
 import { hermesHome } from "./hermes-home.ts";
@@ -43,6 +44,7 @@ export const HEAD_BYTES = 64 * 1024;
  * lands outside the store), or one resolution or stat of a store, a folder or a database.
  */
 export const MAX_STATS = 400;
+const CODEX_METADATA_STATS = 8;
 /** Bun's opendirSync still reads a whole folder from the kernel before any of it. */
 export const MAX_ENTRIES = 16384;
 export const MAX_WALK = 65536;
@@ -218,9 +220,14 @@ class Budget {
     readonly fstatOf: (fd: number, bigint?: boolean) => Stats | BigIntStats = defaultFstat,
     private readonly opendirOf: (dir: string) => Dir = opendirSync,
     readonly onOpened: (path: string, immutable: boolean, db: Database) => void = () => {},
+    private readonly maxStats = MAX_STATS,
   ) {}
 
-  get exhausted(): boolean { return this.used >= MAX_STATS; }
+  get exhausted(): boolean { return this.used >= this.maxStats; }
+
+  withStatLimit(maxStats: number): Budget {
+    return new Budget(this.statOf, this.platform, this.resolveOf, this.lstatOf, this.fstatOf, this.opendirOf, this.onOpened, maxStats);
+  }
 
   stat(path: string): Stats | null {
     if (this.exhausted) return null;
@@ -291,7 +298,7 @@ class Budget {
     if (directoryKey(left) === directoryKey(right)) return true;
     // one Windows folder in two spellings needs no file IDs; the letter case still does (#587)
     if (this.platform === "win32" && windowsFolder(left) === windowsFolder(right)) return true;
-    if (this.platform !== "win32" || this.used + 2 > MAX_STATS) return false;
+    if (this.platform !== "win32" || this.used + 2 > this.maxStats) return false;
     this.used += 2;
     try {
       const a = this.statOf(left, true);
@@ -580,10 +587,8 @@ function codexRow(scan: Scan, file: Found, cwds: readonly string[]): Row | null 
   return row("codex", id, { firstMessage, startedAt, updatedAt: new Date(file.mtimeMs).toISOString() });
 }
 
-function codexSessions(cwds: readonly string[], codexHome: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
-  const sessions = join(codexHome, "sessions");
-  const scan = scanOf(budget, sessions, read);
-  if (scan === null) return [];
+function codexRolloutRows(scan: Scan, sessions: string, cwds: readonly string[]): Row[] {
+  const { budget } = scan;
   const desc = (dir: string) => budget.list(dir, (entry) => /^\d+$/.test(entry.name)).map((entry) => entry.name).sort().reverse();
   const files: Found[] = [];
   walk: for (const year of desc(sessions)) {
@@ -596,6 +601,42 @@ function codexSessions(cwds: readonly string[], codexHome: string, budget: Budge
   }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return rowsOf(files, (file) => codexRow(scan, file, cwds));
+}
+
+function codexSessions(cwds: readonly string[], codexHome: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
+  const sessions = join(codexHome, "sessions");
+  const scan = scanOf(budget, sessions, read);
+  if (scan === null) return [];
+  const listed = codexRolloutRows(scan, sessions, cwds);
+  if (listed.length === 0) return listed;
+  // Looking up optional labels cannot displace rollouts or lose labels when the rollout budget is full.
+  const labelsBudget = budget.withStatLimit(CODEX_METADATA_STATS);
+  const index = scanOf(labelsBudget, codexHome, undefined)?.file(join(codexHome, "session_index.jsonl")) ?? null;
+  let names: ReadonlyMap<string, string> | undefined;
+  if (index !== null) {
+    try {
+      const fd = openChecked(labelsBudget, index);
+      try { names = codexIndexedNames(fd, index.size, HEAD_BYTES); } finally { closeSync(fd); }
+    } catch { /* An unavailable index does not hide the rollout. */ }
+  }
+  const metadata = withDatabase(labelsBudget, codexHome, join(codexHome, "state_5.sqlite"), (db) =>
+    codexStoredLabels(db, listed.map(({ id }) => id), { title: TITLE_CHARS * 4, message: MESSAGE_CHARS * 4 }));
+  return listed.map((entry) => {
+    const id = entry.id.toLowerCase();
+    const stored = metadata?.get(id);
+    const storedPrompt = stored?.firstMessage ?? null;
+    const legacyTitle = clip(stored?.legacyTitle ?? null, TITLE_CHARS);
+    const repeatsPrompt = legacyTitle === clip(storedPrompt, TITLE_CHARS) || legacyTitle === clip(entry.firstMessage, TITLE_CHARS);
+    const indexedName = names?.get(id);
+    const title = indexedName === undefined
+      ? clip(stored?.name ?? null, TITLE_CHARS) ?? (repeatsPrompt ? null : legacyTitle)
+      : clip(indexedName, TITLE_CHARS);
+    return {
+      ...entry,
+      title,
+      firstMessage: entry.firstMessage ?? clip(storedPrompt, MESSAGE_CHARS),
+    };
+  });
 }
 
 /* ---------------------------------------------------------------------------------------------

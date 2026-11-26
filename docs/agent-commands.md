@@ -327,7 +327,10 @@ records it; Claude Code records that branch on the next prompt or command.
 `GET /api/sessions/history` lists a folder's earlier sessions from each agent's own store
 ([`server/session-history.ts`](../server/session-history.ts)), newest first. It reads at most the
 first 64 KiB of a file, looks at most at 400 files and returns at most 50 rows, and refuses any
-path that resolves outside the store. Resume opens a new tab with the agent's own resume flag,
+path that resolves outside the store. Codex checks its two optional metadata stores separately
+from the rollout scan. For the append-only name index it reads the last 64 KiB instead, plus
+one preceding byte to distinguish a complete first record from a cut line.
+Resume opens a new tab with the agent's own resume flag,
 only where that flag is cited in the code; a row without one has no Resume button.
 
 ## Starting an agent with a first message
