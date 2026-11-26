@@ -29,12 +29,12 @@ function errorNote(t: Translate, error: VoiceError | VoiceUnavailable): string |
 
 const BAR_COUNT = 7;
 
-interface VoiceTarget { mode: VoiceMode; box: RefObject<HTMLTextAreaElement | null>; voice: () => VoiceInput; press: () => void }
+interface VoiceTarget { mode: VoiceMode; box: RefObject<HTMLTextAreaElement | null>; voice: () => VoiceInput; press: () => void; shortcutEnabled: () => boolean }
 const targets = new Set<VoiceTarget>();
 let held: VoiceTarget | null = null;
 
 function shortcutTarget(): VoiceTarget | null {
-  const usable = [...targets].filter((target) => target.voice().available && target.box.current !== null && target.box.current.getClientRects().length > 0);
+  const usable = [...targets].filter((target) => target.shortcutEnabled() && target.voice().available && target.box.current !== null && target.box.current.getClientRects().length > 0);
   return usable.find((target) => target.box.current === document.activeElement)
     ?? usable.find((target) => target.mode === "chat")
     ?? usable[0] ?? null;
@@ -209,9 +209,11 @@ export function useDictation(options: DictationOptions): Dictation {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [active, cancel]);
 
+  const shortcutEnabled = useRef(true);
+  shortcutEnabled.current = settings.shortcutOverrides.voice !== null;
   useEffect(() => {
     if (!shown || options.active === false) return;
-    return registerTarget({ mode: latest.current.mode, box: latest.current.box, voice: () => voiceRef.current, press });
+    return registerTarget({ mode: latest.current.mode, box: latest.current.box, voice: () => voiceRef.current, press, shortcutEnabled: () => shortcutEnabled.current });
   }, [shown, press, options.active]);
 
   return { shown, connected: options.connected, voice: { ...voice, cancel }, forget, partial, press };

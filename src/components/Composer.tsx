@@ -219,6 +219,7 @@ export function Composer({
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
   const viewOnly = role === "observe";
   const enterSends = enterSendsOn(settings, useMediaQuery("(pointer: coarse)"));
+  const holdShortcutEnabled = settings.shortcutOverrides["hold-message"] !== null;
   // the agent the pane runs, for every decision of its kind; herdr's label is the one shown
   const kind = labelledAgent(agent);
   const usageEnabled = settings.showUsage && !mobile && machineId === "local" && planForPane(kind, metadata?.provider) !== null;
@@ -1027,7 +1028,7 @@ export function Composer({
         return;
       }
       const altEnter = event.key === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-      const hold = altEnter && !mobile;
+      const hold = altEnter && !mobile && holdShortcutEnabled;
       const shouldSend = !altEnter && event.key === "Enter" && (enterSends
         ? !event.shiftKey && !event.metaKey && !event.ctrlKey
         // not with Alt: Windows reports AltGr as Ctrl+Alt, and Cmd+Option is no send either (#3460)
@@ -1051,7 +1052,7 @@ export function Composer({
       event.preventDefault();
       send(undefined, false, sendNow, hold);
     },
-    [acceptSuggestion, agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, mobile, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
+    [acceptSuggestion, agentStatus, carried.length, choices, connected, holdShortcutEnabled, menuDismissed, menuOpen, mobile, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
   );
 
   const onPaste = useCallback(

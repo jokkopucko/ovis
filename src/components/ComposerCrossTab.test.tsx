@@ -18,6 +18,7 @@ let data: Map<string, string>;
 let refuseLocks = false;
 let onRead: ((key: string) => void) | null = null;
 const leaseKey = `ovis:composer-sending:${draftKey}`;
+let shortcutOverrides: ReturnType<typeof settingsModule.useSettings>["settings"]["shortcutOverrides"];
 
 /** Web Locks as the browser grants them: one holder per name, the others queued in order. */
 function locks(): { request(name: string, run: () => unknown): Promise<unknown> } {
@@ -50,6 +51,7 @@ beforeEach(() => {
   setGlobals();
   data = new Map<string, string>();
   onRead = null;
+  shortcutOverrides = {};
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => {
     const value = data.get(key) ?? null;
     onRead?.(key);
@@ -57,7 +59,7 @@ beforeEach(() => {
   });
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
   spyOn(paneLifetimes.paneStorage, "removeItem").mockImplementation((key) => { data.delete(key); });
-  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, showQuickReplies: true }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
+  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, showQuickReplies: true, shortcutOverrides }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   spyOn(commandsModule, "usePaneCommands").mockReturnValue([]);
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
@@ -107,6 +109,19 @@ it("does not send a draft another tab sent while it held the pane's send lock", 
   data.delete(draftKey);
   await act(async () => { release(); await other; });
   expect(tab.sent).toEqual([]);
+});
+
+it("leaves Alt+Enter alone when the hold shortcut is off", async () => {
+  shortcutOverrides = { "hold-message": null };
+  const { sent } = await tabWith("Keep this in the composer");
+  const preventDefault = mock(() => {});
+  await act(async () => {
+    renderer?.root.findByProps({ className: "composer-text" }).props.onKeyDown({
+      key: "Enter", altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, nativeEvent: {}, preventDefault,
+    });
+  });
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(sent).toEqual([]);
 });
 
 it("does not send a draft another tab sent before this one heard of it, without Web Locks either", async () => {

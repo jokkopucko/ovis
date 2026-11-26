@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
 import type { RefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { SettingsProvider } from "../lib/settings.ts";
+import { SettingsProvider, useSettings } from "../lib/settings.ts";
 import * as voiceLib from "../lib/voice.ts";
 import type { VoiceEngine, VoiceInput, VoiceState, VoiceText } from "../lib/voice.ts";
 import { MicButton, useDictation, type Dictation } from "./VoiceInput.tsx";
@@ -110,8 +110,9 @@ describe("useDictation", () => {
   let renderer: ReactTestRenderer | undefined;
   let engine: ReturnType<typeof spyOn> | undefined;
   let say: (result: VoiceText) => void;
+  let presses: number;
 
-  function globals(): void {
+  function globals(): EventTarget {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
@@ -119,15 +120,17 @@ describe("useDictation", () => {
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
     Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
+    return events;
   }
 
   beforeEach(() => {
     jest.useFakeTimers();
+    presses = 0;
     engine = spyOn(voiceLib, "useVoiceInput").mockImplementation((options) => {
       say = options.onText;
       return {
         available: true, unavailableReason: null, engine: "browser", state: "idle", elapsedMs: 0, silent: false, error: null,
-        press: () => {}, release: () => {}, finish: () => {}, cancel: () => {}, bindBars: () => {}, bindRing: () => {}, bindMeter: () => {},
+        press: () => { presses++; }, release: () => {}, finish: () => {}, cancel: () => {}, bindBars: () => {}, bindRing: () => {}, bindMeter: () => {},
       };
     });
   });
@@ -145,10 +148,12 @@ describe("useDictation", () => {
   });
 
   async function field() {
-    globals();
-    const element = Object.assign(new EventTarget(), { value: "first dictation", selectionStart: 15, selectionEnd: 15 });
+    const events = globals();
+    const element = Object.assign(new EventTarget(), { value: "first dictation", selectionStart: 15, selectionEnd: 15, getClientRects: () => [{}] });
     const box = { current: element as unknown as HTMLTextAreaElement } satisfies RefObject<HTMLTextAreaElement | null>;
+    let update: ReturnType<typeof useSettings>["update"] | undefined;
     function Field() {
+      update = useSettings().update;
       useDictation({
         mode: "chat", connected: true, polish: false, box, onNote: () => {},
         read: () => element.value,
@@ -159,12 +164,30 @@ describe("useDictation", () => {
     await act(async () => { renderer = create(<SettingsProvider><Field /></SettingsProvider>); });
     return {
       text: () => element.value,
+      configureShortcut: (off: boolean) => act(async () => { update?.({ voiceInput: "on", shortcutOverrides: off ? { voice: null } : {} }); }),
+      pressShortcut: () => {
+        const keys = { key: " ", code: "Space", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false };
+        const keydown = Object.assign(new Event("keydown", { cancelable: true }), keys);
+        events.dispatchEvent(keydown);
+        events.dispatchEvent(Object.assign(new Event("keyup"), keys));
+        return keydown.defaultPrevented;
+      },
       /** what the browser raises: one keystroke of an IME is compositionupdate and input together */
       raise: (...types: Array<"compositionstart" | "compositionupdate" | "input" | "compositionend">) => { for (const type of types) element.dispatchEvent(new Event(type)); },
       say: (text: string, phase: VoiceText["phase"] = "raw") => { say({ text, phase, take: 1 }); },
       wait: (ms: number) => { jest.advanceTimersByTime(ms); },
     };
   }
+
+  it("does not capture the dictation key when its shortcut is off", async () => {
+    const box = await field();
+    await box.configureShortcut(true);
+    expect(box.pressShortcut()).toBe(false);
+    expect(presses).toBe(0);
+    await box.configureShortcut(false);
+    expect(box.pressShortcut()).toBe(true);
+    expect(presses).toBe(1);
+  });
 
   // HeliBoard, Gboard and the other AOSP keyboards call setComposingRegion on the word at the caret
   // with nothing typed, and keep it until the next key; Chrome raises compositionstart and

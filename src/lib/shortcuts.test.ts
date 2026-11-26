@@ -123,6 +123,12 @@ it("matches shifted digits and detects alias and default-restoration conflicts",
 });
 
 describe("shortcutDisplayKeys", () => {
+  it("keeps Off for both fixed chords after loading device settings", () => {
+    const overrides = sanitizeShortcutOverrides({ voice: null, "hold-message": null });
+    expect(shortcutDisplayKeys("voice", overrides)).toEqual([]);
+    expect(shortcutDisplayKeys("hold-message", overrides)).toEqual([]);
+  });
+
   it("shows the default chord, custom chord, disabled state, and uncustomizable voice chord", () => {
     expect(shortcutDisplayKeys("palette", {})).toEqual(["Mod", "Shift", "K"]);
     expect(shortcutDisplayKeys("toggle-view", { "toggle-view": "p" })).toEqual(["Mod", "Shift", "P"]);
