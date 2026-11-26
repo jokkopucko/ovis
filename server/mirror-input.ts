@@ -20,11 +20,14 @@
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
-export async function mirrorInput(text: string, paneAgent: () => Promise<string | null>): Promise<string> {
-  if (!/[\r\n][^\r\n]/.test(text)) return text;
+export function needsMirrorPaste(text: string): boolean {
   // a terminal that knew the mode has wrapped it already. This only spares a second pair; it checks nothing: a
   // composer submit reaches here after submitFraming (core/composer.ts) allowed it one outer pair at most
-  if (text.includes(PASTE_START) || text.includes(PASTE_END)) return text;
+  return /[\r\n][^\r\n]/.test(text) && !text.includes(PASTE_START) && !text.includes(PASTE_END);
+}
+
+export async function mirrorInput(text: string, paneAgent: () => Promise<string | null>): Promise<string> {
+  if (!needsMirrorPaste(text)) return text;
   let agent: string | null;
   try {
     agent = await paneAgent();

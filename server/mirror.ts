@@ -28,6 +28,8 @@ const MIRROR_FAILURES = 10;
 
 export interface MirrorOptions {
   read: () => Promise<string>;
+  /** A passive reader sharing a live control stream must not end the attachment on a missed read. */
+  retryRead?: () => boolean;
   write: (data: string) => Promise<unknown>;
   onData: (data: string) => void;
   onExit: (code: number | null) => void;
@@ -97,6 +99,9 @@ export class MirrorSession {
   private echoing = false;
   private patched = false;
   private changedAt = 0;
+  private suspended = false;
+  private announceSize = false;
+  private generation = 0;
 
   constructor(private readonly options: MirrorOptions) {
     this.exited = new Promise((resolve) => { this.finish = resolve; });
@@ -116,7 +121,7 @@ export class MirrorSession {
     try {
       await this.readOnce();
     } catch (error) {
-      if (this.closed) return;
+      if (this.closed || this.suspended) return;
       console.error(`pane mirror stopped: ${error instanceof Error ? error.message : String(error)}`);
       this.closed = true;
       this.finish();
@@ -126,15 +131,17 @@ export class MirrorSession {
 
   private async readOnce(): Promise<void> {
     this.echoing = false;
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
+    const generation = this.generation;
     const active = this.options.activeMs ?? MIRROR_ACTIVE_MS;
     const idle = this.options.idleMs ?? MIRROR_IDLE_MS;
     this.reading = true;
     if (this.options.size && Date.now() - this.sizedAt >= (this.options.sizeMs ?? MIRROR_SIZE_MS)) {
       this.sizedAt = Date.now();
       const size = await this.options.size().catch(() => null);
-      if (this.closed) return;
-      if (size && (size.cols !== this.cols || size.rows !== this.rows)) {
+      if (this.closed || generation !== this.generation) return;
+      if (size && (this.announceSize || size.cols !== this.cols || size.rows !== this.rows)) {
+        this.announceSize = false;
         this.cols = size.cols;
         this.rows = size.rows;
         try { this.options.onResize?.(size.cols, size.rows); } catch (error) { console.error(`pane mirror resize: ${error instanceof Error ? error.message : String(error)}`); }
@@ -143,13 +150,15 @@ export class MirrorSession {
       }
     }
     try {
-      this.screen = await this.options.read();
+      const read = await this.options.read();
+      if (this.closed || generation !== this.generation) return;
+      this.screen = read;
       this.failures = 0;
     } catch (error) {
+      if (this.closed || generation !== this.generation) return;
       this.reading = false;
-      if (this.closed) return;
       const gone = error instanceof HerdrError && error.code !== "connect_failed" && error.code !== "timeout";
-      if (gone || ++this.failures >= MIRROR_FAILURES) {
+      if (!this.options.retryRead?.() && (gone || ++this.failures >= MIRROR_FAILURES)) {
         this.closed = true;
         this.finish();
         this.options.onExit(null);
@@ -202,13 +211,28 @@ export class MirrorSession {
   }
 
   poke(): void {
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
     if (this.reading) { this.poked = true; return; }
     if (this.echoing) return;
     this.echoing = true;
     clearTimeout(this.timer);
     this.delay = this.options.activeMs ?? MIRROR_ACTIVE_MS;
     this.timer = setTimeout(() => void this.tick(), this.options.echoMs ?? MIRROR_ECHO_MS);
+  }
+
+  /** While a native controller owns the screen, neither read the pane nor resume an old read into its successor. */
+  suspendScreen(suspended: boolean): void {
+    if (this.closed || this.suspended === suspended) return;
+    this.suspended = suspended;
+    this.generation++;
+    clearTimeout(this.timer);
+    this.reading = this.poked = this.echoing = this.patched = false;
+    this.sent = this.screen = null;
+    if (!suspended) {
+      this.announceSize = true;
+      this.sizedAt = 0;
+      void this.tick();
+    }
   }
 
   /** The screen last sent, whole, for a client joining now: a stream tail could cut a large one in two. */

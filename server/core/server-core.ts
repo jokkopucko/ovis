@@ -4,6 +4,7 @@ import type { DeviceStore } from "../devices.ts";
 import type { AcpChildren } from "../acp/children.ts";
 import { acpPrompt } from "../approvals/acp.ts";
 import { ping } from "../herdr/client.ts";
+import { windowsControlBinary } from "../windows-control.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import type { PreferenceStore } from "../preferences.ts";
 import { type OmpLookups, OpenCodePromptState, shownPromptText } from "../prompt.ts";
@@ -63,7 +64,9 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   const clients = new Set<Client>();
   const present = new Set<Client>();
   let stopped = false;
-  const { attachments, conversations, notifyConversation, reconcileOutput, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames } = createTerminalRegistry({ options, clients, stopped: () => stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending: (owner, paneId) => holdPending(owner, paneId), holdPendingPane: (paneId, fault) => holdPendingPane(paneId, fault), attached: (client, paneId) => attached(client, paneId), transcriptChanged: async (paneId) => { await Promise.all([reconcilePiDeliveries(paneId), reconcileCodexDeliveries(paneId)]); }, inputReady: (paneId) => drainPending(paneId), end: (client, reason) => end(client, reason) });
+  const nativeControl = process.platform === "win32" && capabilities().attach === "pty-cli" && options.terminalAttach === undefined
+    ? (socket: string) => ping(socket).then(windowsControlBinary).catch(() => null) : undefined;
+  const { attachments, conversations, notifyConversation, reconcileOutput, closeAttachments, paneMoved, detachClaimed, dropClaims, releaseFit, sight, poke, drainOutput, terminalFrames } = createTerminalRegistry({ options, clients, stopped: () => stopped, terminalAttach, nativeControl, holdFor, heldRetry, retryFor, relookupFor, holdPending: (owner, paneId) => holdPending(owner, paneId), holdPendingPane: (paneId, fault) => holdPendingPane(paneId, fault), attached: (client, paneId) => attached(client, paneId), transcriptChanged: async (paneId) => { await Promise.all([reconcilePiDeliveries(paneId), reconcileCodexDeliveries(paneId)]); }, inputReady: (paneId) => drainPending(paneId), end: (client, reason) => end(client, reason) });
 
   const { serialize, settleAfterTyping, lastTyped, typedInto, inputFrames } = createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, acp: options.acp, sight, poke, terminalAttach, terminalAttachKnown: () => terminalAttachKnown, mayType: (client) => mayType(client), authorizeSocket: (client) => authorizeSocket(client) });
 
@@ -89,7 +92,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   const socketHandlers = createSocket({
     herdrFailure: options.herdrFailure,
     accountEnabled: options.accountOpensAll,
-    clients, present, stopped: () => stopped, admit, setRole, watchable: () => capabilities().attach === "pty-cli", terminalHistory: () => capabilities().attach !== "pty-cli", terminalModes: () => capabilities().attach === "hc", watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
+    clients, present, stopped: () => stopped, admit, setRole: (client, mode) => { setRole(client, mode); if (mode === "observe") releaseFit(client); }, watchable: () => capabilities().attach === "pty-cli", terminalHistory: () => capabilities().attach !== "pty-cli", terminalModes: () => capabilities().attach === "hc", watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
     notices: { replay: (deviceId) => devices.noticeReplay(deviceId), seen: (deviceId, seq) => devices.noticeSeen(deviceId, seq), block: (record, onApplied) => devices.applyBlock(record, "session", onApplied), open: id => devices.openNotices().find(n => n.id === id), mayAnswer: (caller, id) => devices.mayAnswerNotice(caller, id), decide: (id, replay) => devices.decideNotice(id, replay), itsMe: (deviceId, id, provedKey) => devices.itsMe(deviceId, id, provedKey) },
     // each frame type by name, with the handler of the module that owns it: anything else on a frame object never
     // becomes a frame a client can send, and a type named twice fails the build instead of replacing a handler

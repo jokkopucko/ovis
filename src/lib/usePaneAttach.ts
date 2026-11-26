@@ -139,7 +139,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       }
       const away = !inUse();
       typeAheadRef.current(paneId);
-      socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held);
+      socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held, true);
       // no blur or hidden comes for a tab already out of use: it lets go of this pane after a moment too
       if (away) leaveRef.current();
       // the chat lens covers the grid and its composer takes the keyboard: focusing the hidden

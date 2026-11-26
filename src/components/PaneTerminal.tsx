@@ -846,6 +846,10 @@ export function PaneTerminal({
     return () => { observer.disconnect(); stack.style.removeProperty("--composer-lift"); stack.style.removeProperty("--composer-room"); setGreetingRoom(true); };
   }, [greetingDue, paneId]);
 
+  const openHere = (pane: string): void => {
+    const socket = socketRef.current;
+    if (socket) socket.takeOver(pane, socket.offersWindowsFit(pane) ? fitRef.current?.proposeDimensions() : undefined);
+  };
   const noticesDocked = presented && paneId !== null && chatView && !secretActive && !observing && !ended;
   const noticeItems: ComposerNoticeRow[] = [];
   if (paneId !== null) {
@@ -860,7 +864,7 @@ export function PaneTerminal({
     if (held) noticeItems.push({
       id: `${owner}:held`, priority: "urgent", revision: takeOver ? "open-here" : "", warning: true, mark: <Unplug />,
       text: t("Another app has this pane open. It connects here as soon as that app lets go."),
-      actions: takeOver && <button type="button" className="composer-notice-action" title={t("Take this pane from another web app or terminal attach. That connection will close.")} onClick={() => { socketRef.current?.takeOver(paneId); }}>{t("Open here")}</button>,
+      actions: takeOver && <button type="button" className="composer-notice-action" title={t("Take this pane from another web app or terminal attach. That connection will close.")} onClick={() => openHere(paneId)}>{t("Open here")}</button>,
     });
     if (outputError) noticeItems.push({
       id: `${owner}:output`, priority: "urgent", revision: outputError, warning: true, mark: <TriangleAlert />, text: outputError,
@@ -1032,7 +1036,7 @@ export function PaneTerminal({
           <div className="terminal-banner terminal-banner-warning" role="status">
             <span>{t("Another app has this pane open. It connects here as soon as that app lets go.")}</span>
             {!observing && socketRef.current?.canTakeOver() && (
-              <button type="button" className="btn terminal-banner-action" title={t("Take this pane from another web app or terminal attach. That connection will close.")} onClick={() => { if (paneId !== null) socketRef.current?.takeOver(paneId); }}>{t("Open here")}</button>
+               <button type="button" className="btn terminal-banner-action" title={t("Take this pane from another web app or terminal attach. That connection will close.")} onClick={() => { if (paneId !== null) openHere(paneId); }}>{t("Open here")}</button>
             )}
           </div>
         )}

@@ -93,6 +93,23 @@ bun run test:ui            # builds, then browser regression on `ovis-test`; sto
 `bun run test:ssh`. Tests and screenshots use panes and state they create themselves, never your
 running terminals.
 
+### Native Windows pane-fit QA
+
+On the designated Windows QA VM, `scripts/windows-pane-fit-qa.ts` checks the native control
+transport separately from the fixed-mirror fixture. Use a disposable named daemon
+(`HERDR_TEST_SESSION=ovis-fit-<unique name>`) inside a fresh `XDG_CONFIG_HOME`. Configure new
+panes to open PowerShell and set `OVIS_HERDR_BIN` to the matching CLI. In a separate PowerShell
+with the same private environment and no inherited socket overrides, start the daemon with
+`& $env:OVIS_HERDR_BIN --session $env:HERDR_TEST_SESSION server`.
+
+In the QA shell set `HERDR_SOCKET` to `herdr/sessions/<name>/herdr.sock` under that config home
+and `CHROME_PATH` to installed Chromium. Build the client, then run `bun scripts/windows-pane-fit-qa.ts`.
+The helper creates and closes its own workspace, checks PowerShell's console dimensions after
+claims and browser resizes, and checks that **Open here** fits Ghostty before its first owned frame
+and delivers typed input. Set `UI_EVIDENCE_DIR` to retain before/after screenshots. Stop only that
+test daemon with `& $env:OVIS_HERDR_BIN session stop $env:HERDR_TEST_SESSION` and remove its
+private state afterwards.
+
 ## Terminology
 
 herdr, the browser and the agents use some of the same words. This index lists the five that matter

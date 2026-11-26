@@ -1,6 +1,7 @@
 export interface WatchStreamOptions {
   onFrame: (data: string) => void;
-  onEnd: () => void;
+  onEnd: (reason?: string) => void;
+  onScreen?: (data: string, cols: number, rows: number, full: boolean) => void;
 }
 
 export class WatchStreamParser {
@@ -48,11 +49,15 @@ export class WatchStreamParser {
     // herdr 0.9.3 labels a frame `encoding:"ansi"`: what the bytes are; `bytes` itself is always base64
     if (record.type === "terminal.frame" && "encoding" in record && record.encoding === "ansi" && "bytes" in record && typeof record.bytes === "string") {
       const data = this.decoder.decode(Buffer.from(record.bytes, "base64"), { stream: true });
+      if ("width" in record && typeof record.width === "number" && Number.isInteger(record.width) && record.width > 0 && record.width <= 1000
+        && "height" in record && typeof record.height === "number" && Number.isInteger(record.height) && record.height > 0 && record.height <= 1000) {
+        this.options.onScreen?.(data, record.width, record.height, "full" in record && record.full === true);
+      }
       if (data) this.options.onFrame(data);
     } else if (record.type === "terminal.closed") {
       this.ended = true;
       this.flush();
-      this.options.onEnd();
+      this.options.onEnd("reason" in record && typeof record.reason === "string" ? record.reason : undefined);
     }
   }
 }

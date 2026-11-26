@@ -35,7 +35,7 @@ import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
 import { screenRows, terminalScreen, viewRows } from "./terminalScreen.ts";
 import { hyperlinkProvider } from "./ghostty/hyperlinks.ts";
-import { visibleTerminalInputBounds } from "./terminalViewport.ts";
+import { adoptPaneGrid, visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
 import { takeTypeAhead, type CaughtKey } from "./typeAhead.ts";
@@ -406,7 +406,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the old frames stayed on screen. A grid held under the soft keyboard is the keyboard's to give back (keyboardHolds).
       const keepsCoreGrid = (): boolean => !keyboardHeld && keptCoreGrid(socketRef.current, paneRef.current);
       const adopted = (): boolean => observeRef.current || fixedGridRef.current || followRef.current || keepsCoreGrid();
-      const scrollableMirror = (): boolean => fixedGridRef.current && !observeRef.current && !followRef.current;
+      let nativeFitPane: string | null = null;
+      const mirrorOnly = (pane: string | null) => mirroredRef.current && (pane === null || nativeFitPane !== pane);
+      const scrollableMirror = (): boolean => (fixedGridRef.current || (!!paneRef.current && socket.offersWindowsFit(paneRef.current)))
+        && !observeRef.current && !followRef.current && !heldRef.current;
       // The soft keyboard takes the bottom of the screen, not the pane: a fit to what is left above
       // it would size the shared pty to that strip, and every other viewer of the pane, herdr's own
       // window included, would reflow twice per keyboard (#1045). While the keyboard is up, a host
@@ -1424,7 +1427,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const nowObserving = message.mode === "observe";
           // text still pending in the editor was composed without the role: it is committed while
           // observing still refuses it, so the next accepted key cannot carry it into the pane
-          if (observeRef.current && !nowObserving) commitPendingText();
+          const promoted = observeRef.current && !nowObserving;
+          if (promoted) commitPendingText();
           observeRef.current = nowObserving;
           if (nowObserving) cancelCopy();
           if (nowObserving) {
@@ -1435,14 +1439,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           syncInputViewport();
           term.options.disableStdin = nowObserving || heldRef.current;
           onRoleAckRef.current?.(message.mode);
-          if (!nowObserving && !fixedGridRef.current && !chatViewRef.current && inUse() && !keyboardHolds(true)) {
+          const fitting = paneRef.current && socket.offersWindowsFit(paneRef.current);
+          if (!nowObserving && (!fixedGridRef.current || (promoted && fitting)) && !chatViewRef.current && inUse() && !keyboardHolds(true)) {
             try {
               fit.fit();
               fitted();
             } catch {
             }
             const pane = paneRef.current;
-            if (pane && sizesPty()) socket.resize(pane, term.cols, term.rows, true);
+            if (pane && sizesPty()) {
+              if (promoted && fitting) socket.attach(pane, term.cols, term.rows, false, true);
+              else socket.resize(pane, term.cols, term.rows, true);
+            }
           }
           panned = false;
           fold.sync();
@@ -1451,6 +1459,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // observe clients adopt the pty's grid; interact clients drive it and ignore this,
           // unless the grid is fixed (nobody here drives it) or a herdr-core pty is kept at another size
           if (message.pane_id !== paneRef.current) return;
+          if (message.windows_fit) nativeFitPane = message.pane_id;
+          else if (message.fixed) nativeFitPane = null;
+          const wasFixed = fixedGridRef.current;
+          if (message.fixed === false && wasFixed) {
+            fixedGridRef.current = false;
+            syncInputViewport();
+          }
           if (message.fixed) {
             fixedGridRef.current = true;
             term.options.fontSize = baseFontRef.current;
@@ -1461,11 +1476,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           sharedGridRef.current = { cols: message.cols, rows: message.rows };
           // the pty took a new size: herdr may draw the old screen reflowed before the agent redraws (lib/inputRow.ts FrameGate)
           if (!message.fixed && before !== null && (before.cols !== message.cols || before.rows !== message.rows)) frameGateRef.current.reflowed();
-          if (!adopted() && !chatViewRef.current) {
-            if (!keyboardHeld) return;
-            heldForce = true;
-          }
-          if (term.cols !== message.cols || term.rows !== message.rows) term.resize(message.cols, message.rows);
+          const drives = !adopted() && !chatViewRef.current;
+          if (drives && keyboardHeld) heldForce = true;
+          if (!adoptPaneGrid(term, message, wasFixed, drives && !keyboardHeld)) return;
           panned = false;
           fold.sync();
           followCursor();
@@ -2154,7 +2167,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // connections never do this: they own no geometry to re-assert.
       const refit = (): void => {
         const current = paneRef.current;
-        if (!current || observeRef.current || fixedGridRef.current || chatViewRef.current || !sizesPty() || keyboardHolds(true)) return;
+        if (!current || observeRef.current || (fixedGridRef.current && !socket.canRequestWindowsFit(current)) || heldRef.current
+          || chatViewRef.current || !sizesPty() || keyboardHolds(true)) return;
         try {
           fit.fit();
           fitted();
@@ -2194,7 +2208,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const release = (idle = false): void => {
         cancelLeave();
         const current = paneRef.current;
-        if (!current || embedded || mirroredRef.current || fixedGridRef.current) return;
+        if (!current || embedded || mirrorOnly(current) || fixedGridRef.current) return;
         if (cachedRef.current && releasedRef.current) {
           afterSwitch(reconcileView);
           return;
@@ -2228,7 +2242,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           armIdle(IDLE_RELEASE_MS - quiet);
           return;
         }
-        if (!idleReleaseRef.current || embedded || mirroredRef.current || fixedGridRef.current || observeRef.current
+        if (!idleReleaseRef.current || embedded || mirrorOnly(pane) || fixedGridRef.current || observeRef.current
           || heldRef.current || stalledRef.current || endedRef.current || chatViewRef.current || followRef.current
           || cachedRef.current || !shownRef.current || !presentedRef.current || !socket.canWatch() || findOpenRef.current
           || composingRef.current || compositionCommitPendingRef.current || secretRef.current !== null || terminalScreen(term).hasSelection()
@@ -2291,7 +2305,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // The client cannot distinguish those cases atomically, so both watch until the user returns.
       const deferAttach = (pane: string): boolean => {
         deferredAttach = false;
-        if (inUse() && !cachedRef.current || embedded || mirroredRef.current || fixedGridRef.current || queueWaits(pane) || !socket.canWatch()) return false;
+        if (inUse() && !cachedRef.current || embedded || mirrorOnly(pane) || fixedGridRef.current || queueWaits(pane) || !socket.canWatch()) return false;
         cancelLeave();
         deferredAttach = true;
         setReleased(true);
@@ -2368,7 +2382,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         const away = !inUse();
         adoptTypeAhead(current);
-        socket.attach(current, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || keyboardHeld);
+        socket.attach(current, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || keyboardHeld, true);
         if (away) leave();
       };
       const leave = (): void => {
@@ -2448,7 +2462,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       presentationRef.current = () => {
         if (cachedRef.current) release();
         else if (presentedRef.current && releasedRef.current) {
-          if (inUse() || mirroredRef.current) back();
+          if (inUse() || mirrorOnly(paneRef.current)) back();
           else if ((cachedReleaseRef.current || deferredAttach && !watchingRef.current) && paneRef.current) {
             if (!deferAttach(paneRef.current)) back();
           }
@@ -2469,7 +2483,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           leave();
           if (hiddenOnTouch()) release();
           else if (document.visibilityState === "visible" && pane && releasedRef.current && !cachedRef.current
-            && !watchingRef.current && mirroredRef.current === false && presentedRef.current) watch(pane);
+            && !watchingRef.current && (mirroredRef.current === false || nativeFitPane === pane) && presentedRef.current) watch(pane);
         }
       };
       // Another device can size the pty while this window keeps its focus (a phone used beside a
@@ -2489,7 +2503,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         const shared = sharedGridRef.current;
         if (!shared || releasedRef.current || !inUse()) return;
-        if ((keepsCoreGrid() && sizesPty()) || shared.cols !== term.cols || shared.rows !== term.rows) refit();
+        if ((keepsCoreGrid() && sizesPty()) || shared.cols !== term.cols || shared.rows !== term.rows
+          || (paneRef.current && socket.canRequestWindowsFit(paneRef.current))) refit();
       };
       reassertIfStaleRef.current = reassertIfStale;
       const reclaim = (event: Event): void => {
@@ -2639,4 +2654,3 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- one terminal for the mount; theme/font follow in their own effect
     }, []);
 }
-

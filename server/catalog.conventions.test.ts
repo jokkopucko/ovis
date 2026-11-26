@@ -85,7 +85,7 @@ function forbiddenBoundaryLiterals(source: string, fileName?: string): string[] 
         ["service.ensure", "turn/start", "thread/resume", "skill.invoke"].some((method) => text.includes(method)) ||
         /\/api\/session\/[^/]+\/command(?:[/?#]|$)/.test(text) ||
         // Only the terminal attachment may take over, after an explicit user request.
-        (text.includes("--takeover") && fileName !== "server/core/terminal-process.ts")
+        (text.includes("--takeover") && fileName !== "server/core/terminal-process.ts" && fileName !== "server/windows-control.ts")
       ) {
         violations.push(text);
       }
@@ -279,6 +279,7 @@ describe("agent command catalog conventions", () => {
   it("allows takeover only in the user-requested terminal attachment path", () => {
     const source = 'args.push("--takeover"); const method = "service.ensure";';
     expect(forbiddenBoundaryLiterals(source, "server/core/terminal-process.ts")).toEqual(["service.ensure"]);
+    expect(forbiddenBoundaryLiterals(source, "server/windows-control.ts")).toEqual(["service.ensure"]);
     expect(forbiddenBoundaryLiterals(source, "server/other.ts")).toEqual(["--takeover", "service.ensure"]);
   });
 

@@ -895,6 +895,91 @@ it("attaches a grid the chat lens covers without resizing the shared pty, on a r
   client.close();
 });
 
+it("offers the current local grid immediately before explicit Windows fit takeover", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    socket.receive(snapshot(["input-ready", "take-over"]));
+    client.attach(pane, 76, 24, false, true);
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true });
+    socket.receive({ type: "error", pane_id: pane, code: "attach_held", message: "held" });
+    const before = socket.sent.length;
+    expect(client.takeOver(pane, { cols: 44, rows: 15 })).toBe(true);
+    expect(socket.sent.slice(before)).toEqual([
+      { type: "resize", pane_id: pane, cols: 44, rows: 15 },
+      { type: "take-over", pane_id: pane },
+    ]);
+  } finally { client.close(); }
+});
+
+it("reattaches a newly shown pane at its own size before the server offers Windows fit", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    client.attach(pane, 120, 40, true, true);
+    client.resize(pane, 44, 15);
+    const before = socket.sent.length;
+    socket.open();
+    expect(socket.sent.slice(before).filter(frame => frame.type === "attach" || frame.type === "resize")).toEqual([
+      { type: "attach", pane_id: pane, cols: 44, rows: 15, flow_control: "ack", receipt_resume_id: expect.any(String), windows_fit: true },
+    ]);
+    const beforeOffer = socket.sent.length;
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true });
+    expect(socket.sent).toHaveLength(beforeOffer);
+  } finally { client.close(); }
+});
+
+it("requests a fresh native fit after release, never by an observer or a replayed takeover", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    client.attach(pane, 40, 15, true, true);
+    client.resize(pane, 51, 18);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "resize", cols: 51, rows: 18 });
+    const fixed = { type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true };
+    const beforeOffer = socket.sent.length;
+    socket.receive(fixed);
+    socket.receive(fixed);
+    expect(socket.sent.slice(beforeOffer)).toEqual([
+      expect.objectContaining({ type: "attach", pane_id: pane, cols: 51, rows: 18, windows_fit: true }),
+    ]);
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 51, rows: 18, fixed: false, windows_fit: true });
+    socket.receive({ type: "role-ack", mode: "observe" });
+    const count = socket.sent.length;
+    client.resize(pane, 70, 24);
+    expect(socket.sent).toHaveLength(count);
+    socket.open();
+    expect(socket.sent.at(-1)).toMatchObject({ type: "attach", keep_size: true, windows_fit: true });
+    expect(socket.sent.some(frame => frame.type === "take-over")).toBe(false);
+  } finally { client.close(); }
+});
+
+it("does not reclaim native fit on a late offer after the terminal releases its grid again", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    client.attach(pane, 40, 15, true, true);
+    client.resize(pane, 51, 18);
+    client.releaseSize(pane);
+    const count = socket.sent.length;
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true });
+    expect(socket.sent).toHaveLength(count);
+    expect(client.canRequestWindowsFit(pane)).toBe(true);
+  } finally { client.close(); }
+});
+
 it("releases the shared grid once when the chat lens covers a terminal this tab sized, never replayed", () => {
   const client = new HerdrSocket("ws://test/ws");
   client.connect();

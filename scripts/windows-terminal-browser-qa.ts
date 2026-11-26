@@ -29,7 +29,8 @@ try {
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-windows-terminal" });
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
-  server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state") });
+  // Exercise the fixed fallback independently of the installed CLI's control-stream support.
+  server = createServer({ port: 0, hostname: "127.0.0.1", token: "", terminalAttach: false, stateDir: join(root, "state") });
   // The long native prompt places the mirror's hidden cursor outside a phone's viewport.
   await paneSendText(pane, 'function prompt { ("P" * 100) + "> " }; 1..120 | ForEach-Object { Write-Output ("WIN-HISTORY-{0:D3}" -f $_) }');
   await paneSendKeys(pane, ["Enter"]);

@@ -33,6 +33,13 @@ export function writeLine(sink: import("bun").FileSink, line: string): boolean {
   }
 }
 
+export function terminalEnv(overrides?: Record<string, string>, inherit = true): NodeJS.ProcessEnv {
+  const env = { ...(inherit ? process.env : {}), ...overrides };
+  delete env["OVIS_TOKEN"];
+  delete env["HERDR_WEB_TOKEN"];
+  return env;
+}
+
 /** A command running on a real PTY, hosted by the Rust PTY host (crates/pty-sidecar). */
 export class PtySession {
   readonly exited: Promise<void>;
@@ -45,9 +52,7 @@ export class PtySession {
 
   constructor(private readonly options: PtySessionOptions) {
     // The bridge's bearer token is for browsers; neither the host nor the attach needs it.
-    const env = { ...(options.inheritEnv === false ? {} : process.env), ...options.env };
-    delete env["OVIS_TOKEN"];
-    delete env["HERDR_WEB_TOKEN"];
+    const env = terminalEnv(options.env, options.inheritEnv !== false);
     const host = rustSidecar();
     if (!host) throw new Error("no PTY host: the Rust PTY host cannot run here (the server's log says why)");
     try {

@@ -5597,7 +5597,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   resize it to reveal the caret. No terminal pixels or input handling code are copied from Zed.
   Local wheel panning in an oversized mirror survives subsequent output. A tap or a touch movement
   that produces no history step sends no shared scroll request.
-- A mirrored grid wider than its mount (a Windows PC's pane, whose size a phone cannot change) is
+- A Windows terminal whose CLI and daemon support the native control stream fits the active
+  browser's grid, like a locally sized terminal in Zed, but only after herdr grants the
+  exclusive attachment. Other viewers adopt the confirmed grid; an observe or kept-size
+  attach never claims the slot. Neither opening a second view nor reconnecting takes over.
+  Without verified stream support the existing mirror stays fixed.
+- A mirrored grid wider than its mount (for example, a Windows PC without verified stream support) is
   drawn folded (`lib/terminalFold.ts`): its rows are drawn again as SGR runs in a pre-wrap block at
   the mount's width, over the grid, which stays at the pane's size for input, the masked prompt, the
   input row and Find; it moves down under the folded rows until its cursor row lies on theirs, so an
