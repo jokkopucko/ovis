@@ -71,4 +71,5 @@ export const UPDATES_ZH: Record<string, string> = {
   "Downloading Ovis {version}… {percent}%": "正在下载 Ovis {version}… {percent}%",
   "The update did not go through: {error}": "更新未完成：{error}",
   "Update": "更新",
+  "This phone's preview app. A check downloads a newer preview, and Restart to Update installs it.": "此手机上的预览版应用。检查会下载更新的预览版，“重启以更新”会安装它。",
 };

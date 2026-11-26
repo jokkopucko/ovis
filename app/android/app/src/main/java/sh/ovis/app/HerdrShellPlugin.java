@@ -286,6 +286,22 @@ public class HerdrShellPlugin extends Plugin {
         requestPermissionForAlias("camera", call, "cameraAnswered");
     }
 
+    /**
+     * The preview build's own update (PreviewUpdater) for Settings → About (src/lib/previewAppUpdate.ts): "state"
+     * answers at once, "check" once the check and any download are over, "install" hands the downloaded APK to the
+     * system installer. Its phase is "off" in every build but the preview.
+     */
+    @PluginMethod
+    public void previewUpdate(PluginCall call) {
+        String action = call.getString("action", "state");
+        if ("check".equals(action)) {
+            PreviewUpdater.check(getActivity(), call::resolve);
+            return;
+        }
+        if ("install".equals(action)) getActivity().runOnUiThread(() -> PreviewUpdater.install(getActivity()));
+        call.resolve(PreviewUpdater.state());
+    }
+
     @PermissionCallback
     private void cameraAnswered(PluginCall call) {
         JSObject result = new JSObject();

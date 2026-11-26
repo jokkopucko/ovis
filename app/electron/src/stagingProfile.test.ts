@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readStagingProfile, writeStagingMarker } from "./stagingProfile.ts";
+import { readStagingProfile, updateFeed, writeStagingMarker } from "./stagingProfile.ts";
 
 const home = "/Users/preview";
 const user = { homedir: home, uid: 501 };
@@ -25,6 +25,15 @@ test("a staging marker supplies the launcher defaults and profile", () => {
     },
     userData: "/Users/preview/.ost/app",
   });
+});
+
+test("a preview (staging) build reads the preview feed alone, and no other build ever reads it", () => {
+  const release = "https://github.com/devswha/ovis/releases/latest/download";
+  const preview = "https://preview.example/mac/";
+  expect(updateFeed({ OVIS_UPDATE_FEED: release, OVIS_PREVIEW_FEED: preview }, true)).toBe(preview);
+  expect(updateFeed({ OVIS_UPDATE_FEED: release, OVIS_PREVIEW_FEED: preview }, false)).toBe(release);
+  expect(updateFeed({ OVIS_PREVIEW_FEED: preview }, false)).toBeNull();
+  expect(updateFeed({ OVIS_UPDATE_FEED: release }, true)).toBeNull();
 });
 
 test("an inherited login HOME still opens the staging home", () => {

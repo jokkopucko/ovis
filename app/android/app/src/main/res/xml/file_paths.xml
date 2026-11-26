@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Only what Capacitor's file chooser shares: a photo taken for <input type="file" capture>, which
-     BridgeWebChromeClient writes to the app's own external Pictures folder; and the picture
-     SaveImagePlugin hands to the share sheet on Android 8 and 9. -->
+     BridgeWebChromeClient writes to the app's own external Pictures folder; the picture
+     SaveImagePlugin hands to the share sheet on Android 8 and 9; and the APK a preview build
+     downloaded to update itself, which PreviewUpdater hands to the system installer. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-files-path name="my_images" path="Pictures" />
     <cache-path name="saved_images" path="saved/" />
+    <cache-path name="preview_update" path="preview-update/" />
 </paths>
