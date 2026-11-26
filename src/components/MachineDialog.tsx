@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, X } from "lucide-react";
-import type { Machine, PcInstallJob, SetupAction, SetupJob } from "../../shared/machines.ts";
+import type { Machine, PcInstallJob, SetupAction, SetupJob, SetupPhase } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
 import { answerMachineSetup, fetchHealth, fetchMachineSetup, fetchPcInstall, startMachineSetup, startPcInstall } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
@@ -14,12 +14,31 @@ import { sshOutputParts } from "../lib/sshOutput.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { machineErrorText, previewVersion, setupErrorLines, setupStepText } from "../lib/userError.ts";
-import { BridgeUpdateProgress, OwnOvisAddress, ownOvisAction } from "./MachineSidebar.tsx";
+import { describeProgress } from "../lib/bridgeProgress.ts";
+import { OwnOvisAddress, ownOvisAction } from "./MachineSidebar.tsx";
 import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { asksChoice, FoundHerdrChoices, HerdrSessionChoices, type HerdrChoice } from "./FoundHerdrChoices.tsx";
 import { useSignInAgainHere } from "./AccountSection.tsx";
+import { ProgressBar, StageProgress } from "./ProgressBar.tsx";
+
+/** A setup's stage among the four it may pass (connect, check, install, start), for its bar; none once it ended. */
+const SETUP_STAGES = 4;
+const SETUP_STAGE: Partial<Record<SetupPhase, number>> = { connecting: 1, authentication: 1, checking: 2, approval: 3, installing: 3, starting: 4 };
+/** An install over SSH's stage among its five (connect, check, put Ovis there, start it, connect to it) in its own words; null once it ended. */
+const INSTALL_STAGES = 5;
+function installStage(phase: PcInstallJob["phase"], t: ReturnType<typeof useT>): { stage: number; label: string } | null {
+  switch (phase) {
+    case "connecting": return { stage: 1, label: t("Connecting to that PC…") };
+    case "checking": return { stage: 2, label: t("Checking that PC…") };
+    case "stopping": return { stage: 3, label: t("Stopping that PC's Ovis…") };
+    case "installing": return { stage: 3, label: t("Running the official installer…") };
+    case "starting": return { stage: 4, label: t("Starting Ovis there…") };
+    case "connecting_pc": return { stage: 5, label: t("Connecting to that PC's Ovis…") };
+    default: return null;
+  }
+}
 
 export function MachineDialog({ machine, preset, updateRemote = false, onClose, onConnected }: { machine?: Machine; preset?: AddPcPreset; updateRemote?: boolean; onClose(): void; onConnected(id: string): void }) {
   const t = useT();
@@ -93,6 +112,10 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   // to the first focusable element (Close), so the field is focused again once the dialog is open
   useEffect(() => { mounted.current = true; dialog.current?.showModal(); destinationField.current?.focus(); return () => { mounted.current = false; againRun.current?.abort(); const current = jobRef.current; if (current && !["connected", "failed", "cancelled"].includes(current.phase) && (current.windows_startup || !["installing", "starting"].includes(current.phase))) void answerMachineSetup(current.id, { action: "cancel" }).catch(() => {}); }; }, []);
   const running = !!job && ["installing", "starting"].includes(job.phase);
+  // the setup's stage stays the bar while a bundle travels, whose own steps are told under it; none while ssh asks for a password
+  const stage = job && !choosing && !job.challenge ? SETUP_STAGE[job.phase] : undefined;
+  const transfer = running ? describeProgress(job?.progress) : null;
+  const installAt = install === null ? null : installStage(install.phase, t);
   useEffect(() => {
     if (!job || finished) return;
     let cancelled = false;
@@ -271,7 +294,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         </div></details>
         </>}
       </form>}
-      {job && job.challenge?.kind !== "host_key" && <div className="machine-progress" role="status">{waitingForLogin ? <strong>{t(startupFailed ? "Windows desktop startup failed" : "Waiting for Windows sign-in")}</strong> : running && job.progress ? <BridgeUpdateProgress update={{ job_id: job.id, step: job.step, progress: job.progress }} /> : <strong>{choosing && job.error ? machineErrorText(job.error, t) : setupStepText(job, t)}</strong>}{waitingForLogin && job.step !== "Waiting for Windows sign-in on this PC." && <p>{machineErrorText(job.step, t)}</p>}{!choosing && !choiceAfterFailure && setupErrorLines(job, t).map((line) => <p key={line}>{line}</p>)}{job.ssh_output && <SshOutput text={job.ssh_output} />}</div>}
+      {job && job.challenge?.kind !== "host_key" && <div className="machine-progress" role="status">{waitingForLogin ? <strong>{t(startupFailed ? "Windows desktop startup failed" : "Waiting for Windows sign-in")}</strong> : stage !== undefined ? <StageProgress label={transfer ? t(transfer.label) : setupStepText(job, t)} stage={stage} total={SETUP_STAGES}>{transfer?.detail != null && <p className="bridge-progress-detail">{transfer.detail}</p>}</StageProgress> : <strong>{choosing && job.error ? machineErrorText(job.error, t) : setupStepText(job, t)}</strong>}{waitingForLogin && job.step !== "Waiting for Windows sign-in on this PC." && <p>{machineErrorText(job.step, t)}</p>}{!choosing && !choiceAfterFailure && setupErrorLines(job, t).map((line) => <p key={line}>{line}</p>)}{job.ssh_output && <SshOutput text={job.ssh_output} />}</div>}
       {job?.action_required === "choose_herdr" && (job.found_herdr_sessions || job.found_ovis) && <FoundHerdrChoices sessions={job.found_herdr_sessions ?? []} ownOvis={job.found_ovis} error={job.error} busy={pending} onChoose={(choice) => void begin(choice)} foldedAbove={!machine?.herdr_profile_id} />}
       {waitingForLogin && <p className="field-hint">{t("Starting without Windows sign-in can break Codex sandbox commands, and desktop-control tools may be unavailable. This choice applies to one start.")}</p>}
       {waitingForLogin && <p className="field-hint">{t("Signing out of Windows ends herdr and its panes; lock the PC instead.")}</p>}
@@ -291,7 +314,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         <button type="submit" className="btn btn-primary" disabled={!secretAllowed || pending}>{t("Continue")}</button>
       </form></>}</div>}
       {added !== null && <p className="field-hint" role="status">{again?.step === "signing-in" ? t("Finish signing in in your browser.") : again?.step === "offered" ? t("Sign in again now to add it right away.") : addedWords(added, t)}</p>}
-      {install !== null && <div className="machine-progress" role="status"><strong>{install.phase === "failed" ? t("Ovis was not installed on that PC") : t("Installing Ovis on that PC…")}</strong>{install.error !== null ? <p>{install.error}</p> : <p>{install.step}</p>}</div>}
+      {added === "adding" && again === null && <ProgressBar label={t("Adding it to your account…")} percent={null} />}
+      {install !== null && <div className="machine-progress" role="status"><strong>{install.phase === "failed" ? t("Ovis was not installed on that PC") : t("Installing Ovis on that PC…")}</strong>{install.error !== null ? <p>{install.error}</p> : installAt !== null ? <StageProgress label={installAt.label} stage={installAt.stage} total={INSTALL_STAGES}><p className="bridge-progress-detail">{install.step}</p></StageProgress> : <p>{install.step}</p>}</div>}
       {error && <p className="machine-error" role="alert">{error}</p>}
     </div>
     <footer className="modal-footer">

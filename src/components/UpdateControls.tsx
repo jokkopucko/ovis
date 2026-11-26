@@ -11,6 +11,7 @@ import { useDesktopAppUpdate, type DesktopAppUpdate, type DesktopUpdateLine } fr
 import { usePreviewAppUpdate } from "../lib/previewAppUpdate.ts";
 import { lazyChunkFailed, onLazyChunkFailure } from "../lib/lazyChunk.ts";
 import { Markdown } from "./Markdown.tsx";
+import { ProgressLine } from "./ProgressBar.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
 import { SettingsBare, SettingsRow } from "./SettingsControls.tsx";
 import "./Machines.css";
@@ -78,12 +79,7 @@ function UpdateProgress({ status, fallback }: { status: UpdateStatus | null; fal
   const t = useT();
   const view = describeUpdate(status);
   const label = view ? t(view.label) : fallback;
-  return <div className="bridge-progress update-progress">
-    <p className="bridge-progress-step"><span>{label}</span>{view && <span className="bridge-progress-count">{view.step}</span>}</p>
-    <div className="bridge-progress-bar" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} {...(view ? { "aria-valuenow": view.percent } : {})}>
-      <span className={view ? "" : "is-indeterminate"} style={view ? { width: `${view.percent}%` } : undefined} />
-    </div>
-  </div>;
+  return <ProgressLine className="update-progress" label={label} count={view?.step ?? null} percent={view?.percent ?? null} />;
 }
 
 /** The app's own version and check, in About's row (desktop app): the app downloads updates by itself, and this checks now */

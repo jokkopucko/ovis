@@ -177,4 +177,10 @@ export const MACHINES_JA: Record<string, string> = {
   "Ovis was not installed on that PC": "その PC に Ovis をインストールできませんでした",
   "Installing Ovis on that PC…": "その PC に Ovis をインストールしています…",
   "Install Ovis there": "その PC に Ovis をインストール",
+  "Connecting to that PC…": "そのPCに接続しています…",
+  "Checking that PC…": "そのPCを確認しています…",
+  "Stopping that PC's Ovis…": "そのPCのOvisを停止しています…",
+  "Running the official installer…": "公式インストーラーを実行しています…",
+  "Starting Ovis there…": "そのPCでOvisを起動しています…",
+  "Connecting to that PC's Ovis…": "そのPCのOvisに接続しています…",
 };

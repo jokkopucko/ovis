@@ -177,4 +177,10 @@ export const MACHINES_ZH: Record<string, string> = {
   "Ovis was not installed on that PC": "未能在那台电脑上安装 Ovis",
   "Installing Ovis on that PC…": "正在那台电脑上安装 Ovis…",
   "Install Ovis there": "在那台电脑上安装 Ovis",
+  "Connecting to that PC…": "正在连接那台电脑…",
+  "Checking that PC…": "正在检查那台电脑…",
+  "Stopping that PC's Ovis…": "正在停止那台电脑上的 Ovis…",
+  "Running the official installer…": "正在运行官方安装程序…",
+  "Starting Ovis there…": "正在那台电脑上启动 Ovis…",
+  "Connecting to that PC's Ovis…": "正在连接那台电脑上的 Ovis…",
 };

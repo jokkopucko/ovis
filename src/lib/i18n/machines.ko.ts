@@ -177,4 +177,10 @@ export const MACHINES_KO: Record<string, string> = {
   "Ovis was not installed on that PC": "그 PC에 Ovis를 설치하지 못했습니다",
   "Installing Ovis on that PC…": "그 PC에 Ovis를 설치하는 중…",
   "Install Ovis there": "그 PC에 Ovis 설치",
+  "Connecting to that PC…": "그 PC에 연결하는 중…",
+  "Checking that PC…": "그 PC를 확인하는 중…",
+  "Stopping that PC's Ovis…": "그 PC의 Ovis를 멈추는 중…",
+  "Running the official installer…": "공식 설치 프로그램을 실행하는 중…",
+  "Starting Ovis there…": "그 PC에서 Ovis를 시작하는 중…",
+  "Connecting to that PC's Ovis…": "그 PC의 Ovis에 연결하는 중…",
 };

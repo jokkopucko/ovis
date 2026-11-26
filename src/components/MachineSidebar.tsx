@@ -39,6 +39,7 @@ import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { MachineOffLine, useRecheck } from "./MachineOffLine.tsx";
+import { ProgressLine } from "./ProgressBar.tsx";
 import { outOfReachReason } from "./relayPcState.tsx";
 
 export const DRAWER_QUERY = "(max-width: 768px)";
@@ -526,13 +527,7 @@ export function BridgeUpdateProgress({ update }: { update: MachineUpdate }) {
   const view = describeProgress(update.progress);
   const seconds = useStageSeconds(update);
   if (!view) return <p className="bridge-progress-step">{update.step}</p>;
-  return <div className="bridge-progress">
-    <p className="bridge-progress-step"><span>{view.label}</span><span className="bridge-progress-count">{view.step}</span></p>
-    <div className="bridge-progress-bar" role="progressbar" aria-label={view.label} aria-valuemin={0} aria-valuemax={100} {...(view.percent === null ? {} : { "aria-valuenow": view.percent })}>
-      <span className={view.percent === null ? "is-indeterminate" : ""} style={view.percent === null ? undefined : { width: `${view.percent}%` }} />
-    </div>
-    <p className="bridge-progress-detail">{view.detail ?? `${seconds} s`}</p>
-  </div>;
+  return <ProgressLine label={view.label} count={view.step} percent={view.percent}><p className="bridge-progress-detail">{view.detail ?? `${seconds} s`}</p></ProgressLine>;
 }
 
 function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(machine: Machine, update?: boolean): void }) {

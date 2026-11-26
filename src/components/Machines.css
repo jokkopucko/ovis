@@ -548,60 +548,6 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   width: calc(100% - var(--space-3) - var(--machine-indent));
 }
 
-.bridge-progress {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  width: 100%;
-}
-
-.bridge-progress-step {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin: 0;
-  color: var(--text-strong);
-}
-
-.bridge-progress-count,
-.bridge-progress-detail {
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.bridge-progress-detail { margin: 0; }
-
-.bridge-progress-bar {
-  position: relative;
-  height: 6px;
-  overflow: hidden;
-  border-radius: var(--radius-pill);
-  background: var(--bg);
-}
-
-.bridge-progress-bar span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: var(--status-working);
-  transition: width 0.3s ease;
-}
-
-.bridge-progress-bar span.is-indeterminate {
-  width: 35%;
-  animation: bridge-progress-slide 1.4s ease-in-out infinite;
-}
-
-@keyframes bridge-progress-slide {
-  from { left: -35%; }
-  to { left: 100%; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bridge-progress-bar span { transition: none; }
-  .bridge-progress-bar span.is-indeterminate { left: 0; width: 100%; animation: none; opacity: 0.5; }
-}
-
 .machine-action.is-updating .machine-action-text strong { color: var(--status-working); }
 
 .machine-action.is-setup { border-color: var(--border); }
