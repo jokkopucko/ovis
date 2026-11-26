@@ -11,6 +11,7 @@ import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
 import { ANSI_RE, parsedByPublicPrompt } from "./dialogs/shared.ts";
+import { hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
 
 const EARLIER_BRIDGE_CARD_ID = "cb779b7d598a";
 
@@ -4479,6 +4480,7 @@ describe("an answer and the menu it was made for", () => {
     piGone?: boolean;
     /** a Hermes pane's Hermes is suspended behind its shell (Ctrl+Z): herdr still names the pane hermes, its foreground is the shell */
     hermesStopped?: boolean;
+    hermesArgv?: readonly string[];
   }
 
   async function withPane(agent: string, status: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
@@ -4520,7 +4522,7 @@ describe("an answer and the menu it was made for", () => {
         if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo?.live ? [{ pid: pane.omo.pid, argv: ["omo"] }]
           : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
           : pane.agent === "pi" ? [pane.piGone ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4343, argv: ["node", "/usr/local/bin/pi"] }]
-          : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: ["/usr/local/bin/hermes"] }]
+          : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: pane.hermesArgv ?? ["/usr/local/bin/hermes"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
           : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
         if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
@@ -7156,12 +7158,22 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  test.skipIf(process.platform === "win32")("serves the installer-launched Hermes approval through the prompt route (#4572)", async () => {
+    const screen = readFileSync(new URL("./fixtures/hermes-approval/once-120.txt", import.meta.url), "utf8");
+    await withPane("hermes", "blocked", screen, async (pane) => {
+      pane.hermesArgv = hermesLauncherArgv;
+      const prompt = await card();
+      expect(prompt?.kind).toBe("approval");
+      expect(labels(prompt)).toEqual(["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"]);
+    });
+  });
+
   test("takes only Hermes itself as the foreground that may take an approval's keys", () => {
     for (const argv of [["/usr/local/bin/hermes"], ["hermes"], ["/usr/bin/python3", "/home/u/.local/bin/hermes", "chat"], ["python3.14", "-u", "/opt/hermes/bin/hermes"],
       ["python3", "-X", "utf8", "/opt/hermes/bin/hermes"], ["python3", "-IsX", "utf8", "/opt/hermes/bin/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, true]);
     }
-    for (const argv of [["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
+    for (const argv of [[...hermesLauncherArgv, "--run-module", "http.server"], ["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
       // combined flags: /tmp/hermes is -X's value, and -c's code runs
       ["python3", "-uX", "/tmp/hermes", "-c", "print(1)"], ["python3", "-uc", "print(1)", "/tmp/hermes"], ["python3", "--check-hash-based-pycs", "always", "/tmp/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, false]);

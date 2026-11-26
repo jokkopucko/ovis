@@ -42,7 +42,7 @@ import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { withRecord } from "./dialogs/record.ts";
-import { titleStatus } from "./agent-identity.ts";
+import { isHermesInstalledLauncher, titleStatus } from "./agent-identity.ts";
 import { recordFor, recordRequest, recordSettled, type RecordOutcome, withAgentRecord } from "./record-cards.ts";
 import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
@@ -873,9 +873,9 @@ async function hermesOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /**
- * The foreground process is Hermes itself: its own executable, or Python running Hermes's entry script as the
- * script (the first argument that is not an option). isHermesProcess also takes a Python with "hermes" anywhere in its
- * arguments (`python3 -c '…' /tmp/hermes`), which may label a pane but must not let it take an approval's keys.
+ * The foreground process is Hermes itself: its own executable, Python running its entry script,
+ * or the installer's inline CLI launcher. Other Python code must not take an approval's keys
+ * even when its arguments contain a path named Hermes.
  */
 export function isHermesForeground(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }): boolean {
   const named = (value: string) => {
@@ -883,6 +883,7 @@ export function isHermesForeground(entry: { name?: string | null; argv0?: string
     return lower === "hermes" || lower === "hermes.exe" || lower.endsWith("/hermes") || lower.endsWith("\\hermes.exe");
   };
   const argv = entry.argv ?? [];
+  if (isHermesInstalledLauncher(argv)) return true;
   const first = argv[0] ?? entry.argv0 ?? entry.name ?? "";
   if (named(first)) return true;
   const interpreter = (first.split(/[\\/]/).pop() ?? "").toLowerCase();

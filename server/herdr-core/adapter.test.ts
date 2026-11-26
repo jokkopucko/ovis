@@ -13,6 +13,7 @@ import { parseCheckouts } from "./worktrees.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { ProcessRow } from "../windows-processes.ts";
 import type { HcTerminal } from "./snapshot.ts";
+import { hermesLauncherArgv } from "../fixtures/hermes-installed-launcher.ts";
 
 type Handler = (params: Record<string, unknown>) => unknown;
 
@@ -1702,6 +1703,17 @@ describe("herdr-core adapter, agents", () => {
     const failed = await posix([missing.record], { "terminal.get": missing.get });
     missing.holder.cores = failed.cores;
     await expect(agentStart({ name: "amp-1", kind: "amp", paneId: "t1" }, failed.socket)).rejects.toMatchObject({ code: "agent_start_failed" });
+  });
+
+  it("confirms installer-launched Hermes on macOS even when hc names the process Python", async () => {
+    const shell = { pid: 10, name: "zsh", argv: ["/bin/zsh"] };
+    const record = terminal("t1", { pid: 10, argv: shell.argv, foreground: shell });
+    const launcher = { pid: 11, name: "Python", argv: [...hermesLauncherArgv] };
+    let checks = 0;
+    const { socket, cores } = await posix([record], {
+      "terminal.get": () => ({ ...record, foreground: cores[0]?.typed.length && checks++ === 0 ? launcher : shell }),
+    }, "darwin");
+    await expect(agentStart({ name: "hermes-1", kind: "hermes", paneId: "t1" }, socket)).resolves.toMatchObject({ type: "agent_started", pane_id: "t1" });
   });
 
   it("lets what is typed after a start reach the pane while the start waits for its agent", async () => {

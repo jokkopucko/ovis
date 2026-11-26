@@ -17,6 +17,7 @@ import { processStartedAt } from "./process-start.ts";
 import { hermesSkillPrompt } from "./skill-activity.ts";
 import { hermesHome } from "./hermes-home.ts";
 import { userHome } from "./user-home.ts";
+import { isHermesInstalledLauncher } from "./agent-identity.ts";
 
 export interface HermesMessageRow {
   id: number;
@@ -117,10 +118,11 @@ export async function processHermesHome(pid: number, argv: readonly string[] = [
   return home;
 }
 
-/** Recognizes the Hermes executable, including Python launching its entrypoint. */
+/** Recognizes the Hermes executable, including its installed Python launcher and entry script. */
 export function isHermesProcess(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }): boolean {
   const binary = (entry.name ?? entry.argv0 ?? entry.argv?.[0] ?? "").toLowerCase();
   if (binary === "hermes" || binary === "hermes.exe" || binary.endsWith("/hermes") || binary.endsWith("\\hermes.exe")) return true;
+  if (isHermesInstalledLauncher(entry.argv ?? [])) return true;
   if (entry.argv && entry.argv.length > 1) {
     const first = (entry.argv[0] ?? "").toLowerCase();
     if (first.includes("python") || first.endsWith("py")) {
