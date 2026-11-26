@@ -1902,7 +1902,7 @@ it("keeps what is typed while the network is gone out of the socket, which would
   }
 });
 
-it("takes no typing while the network is gone over a remote connection, whatever it answers, on any bridge; a server on this device does", () => {
+it("takes no typing while the network is gone over a remote connection until it answers a ping sent since, never on a bridge without ping; a server on this device does", () => {
   jest.useFakeTimers();
   const network = networkSwitch();
   const { client, socket } = liveClient(["submit", "ping"]);
@@ -1912,8 +1912,13 @@ it("takes no typing while the network is gone over a remote connection, whatever
     network.set(false);
     expect(client.canInput("w1:p1")).toBe(false);
     expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    const held = markTyped();
+    expect(client.sendInput("w1:p1", "held", false, false, false, held)).toBe(false);
+    // its pong crossed the network after the browser said it was gone: what is typed from then on goes, never what
+    // was typed before
     socket.receive({ type: "pong", id: 1 });
-    expect(client.sendInput("w1:p1", "ls")).toBe(false);
+    expect(client.sendInput("w1:p1", "held", false, false, false, held)).toBe(false);
+    expect(client.sendInput("w1:p1", "ls")).toBe(true);
     // a bridge without "ping" is not asked, and not trusted while the browser reports no network
     expect(legacy.client.sendInput("w1:p1", "ls")).toBe(false);
     local.attach("w1:p1", 100, 30);
@@ -1923,7 +1928,7 @@ it("takes no typing while the network is gone over a remote connection, whatever
     near.receive(snapshot(["input-ready", "submit", "ping"]));
     near.receive({ type: "input-ready", pane_id: "w1:p1" });
     expect(local.sendInput("w1:p1", "ls")).toBe(true);
-    expect(submissions(socket)).toEqual([]);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }]);
     expect(submissions(legacy.socket)).toEqual([]);
     expect(submissions(near)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }]);
     // the same loopback address for another PC, or reached through the relay, crosses the network
@@ -2095,6 +2100,31 @@ it("holds keys an idle pane queued for its attach while the network was gone, af
     expect(client.sendInput("w1:p1", "ls", false, false, false, before)).toBe(false);
     expect(submissions(socket)).toEqual([]);
     expect(client.sendInput("w1:p1", "pwd", false, false, false, markTyped())).toBe(true);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("takes typing once a pong answers while the browser says offline all along, as a Galaxy Z Flip6's WebView did on Wi-Fi", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  network.set(false);
+  const { client, socket } = liveClient(["submit", "ping", "input-ready"]);
+  try {
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    // the flag alone holds the keys and probes the connection
+    expect(client.canInput("w1:p1")).toBe(false);
+    for (const { id } of pings(socket)) socket.receive({ type: "pong", id });
+    // the pong to a ping sent while the flag said offline proves the link: keys go, and stay going
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(client.sendInput("w1:p1", "ls")).toBe(true);
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }]);
+    // an offline event is a loss again: held until another pong
+    globalThis.dispatchEvent(new Event("offline"));
+    expect(client.canInput("w1:p1")).toBe(false);
   } finally {
     client.close();
     network.restore();
