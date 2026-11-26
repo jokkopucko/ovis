@@ -64,11 +64,15 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       && ((client.data.attached.has(paneId) && client.data.conversationInterests.has(paneId)) || client.data.conversationWatches.has(paneId));
   }
 
-  const conversations = new ConversationMonitor((paneId, signature) => {
-    transcriptChanged?.(paneId);
+  function notifyConversation(paneId: string, signature: string): void {
     for (const client of clients) {
       if (follows(client, paneId)) send(client, { type: "conversation-changed", pane_id: paneId, signature });
     }
+  }
+
+  const conversations = new ConversationMonitor((paneId, signature) => {
+    transcriptChanged?.(paneId);
+    notifyConversation(paneId, signature);
   }, options.codexHome, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData);
 
   function releaseConversation(paneId: string): void {
@@ -515,5 +519,5 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   };
 
   const views: ReadonlyMap<string, AttachmentView> = attachments;
-  return { attachments: views, conversations, reconcileOutput, closeAttachment, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
+  return { attachments: views, conversations, notifyConversation, reconcileOutput, closeAttachment, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
 }

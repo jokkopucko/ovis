@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { PaneContext } from "../../shared/protocol.ts";
 import { parsedByPublicPrompt } from "../dialogs/shared.ts";
 import { parseInteractivePrompt } from "../prompt.ts";
 import { ApprovalHub } from "./hub.ts";
@@ -16,12 +17,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function hubIn() {
+function hubIn(onContext?: (paneId: string, context: PaneContext | null) => void) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "omph-")));
   roots.push(root);
   const waiting: (() => void)[] = [];
   const settling: (() => void)[] = [];
-  const hub = new ApprovalHub(join(root, "h"), [ompApprovals], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
+  const options = { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.(), onContext };
+  const hub = new ApprovalHub(join(root, "h"), [ompApprovals], options);
   started.push(hub);
   return { hub, held: () => new Promise<void>((resolve) => waiting.push(resolve)), settled: () => new Promise<void>((resolve) => settling.push(resolve)) };
 }
@@ -37,7 +39,7 @@ const bashPrompt = (command: string, reason?: string): Prompt => ({
 });
 
 /** omp's side of the extension: its events, and its terminal UI's approval dialog. */
-async function loaded(args: string[], mode = "tui") {
+async function loaded(args: string[], mode = "tui", getContextUsage?: () => { tokens: number; contextWindow: number; percent: number } | undefined, kind: "main" | "sub" = "main") {
   const { default: extension } = await import(args[args.indexOf("-e") + 1]!) as { default: (pi: unknown) => void };
   const handlers = new Map<string, (event: unknown, ctx?: unknown) => unknown>();
   const dialogs: Dialog[] = [];
@@ -48,17 +50,54 @@ async function loaded(args: string[], mode = "tui") {
     }),
   };
   extension({ on: (name: string, handler: (event: unknown, ctx?: unknown) => unknown) => handlers.set(name, handler) });
-  handlers.get("session_start")!({}, { mode, hasUI: true, ui });
+  const run = (type: string) => handlers.get(type)?.({ type }, { mode, hasUI: true, ui, agent: { kind, depth: 0 }, getContextUsage });
+  run("session_start");
   /** what omp does for one bash call: its `tool_call` event, then its approval dialog */
   const call = (command: string, prompt = bashPrompt(command), id = "call-1") => {
     handlers.get("tool_call")!({ toolName: "bash", toolCallId: id, input: { command } });
     return ui.approve(prompt, {});
   };
   const seen = (command: string, id: string) => handlers.get("tool_call")!({ toolName: "bash", toolCallId: id, input: { command } });
-  return { call, seen, dialogs, ui, resolved: (id = "call-1") => handlers.get("tool_approval_resolved")!({ toolCallId: id }) };
+  return { call, seen, dialogs, ui, run, resolved: (id = "call-1") => handlers.get("tool_approval_resolved")!({ toolCallId: id }) };
 }
 
 describe.skipIf(!posix)("omp's approval hook", () => {
+  it("keeps depth-zero subagents from reporting context for the main pane", async () => {
+    const contexts: (PaneContext | null)[] = [];
+    const finished = Promise.withResolvers<void>();
+    const { hub } = hubIn((_paneId, context) => {
+      contexts.push(context);
+      if (context?.used === 45_000) finished.resolve();
+    });
+    const args = hub.launchArgs("omp", "p1", [], "18.14.0")!;
+    let tokens = 40_000;
+    const main = await loaded(args, "tui", () => ({ tokens, contextWindow: 200_000, percent: tokens / 2_000 }));
+    const child = await loaded(args, "print", () => ({ tokens: 3_200, contextWindow: 32_000, percent: 10 }), "sub");
+    child.run("agent_end");
+    tokens = 45_000;
+    main.run("agent_end");
+    await finished.promise;
+    expect(contexts).toEqual([{ used: 40_000, window: 200_000 }, { used: 45_000, window: 200_000 }]);
+  });
+
+  it("tells the pane its exact context at startup and after a turn", async () => {
+    let told = Promise.withResolvers<{ paneId: string; context: PaneContext | null }>();
+    const { hub } = hubIn((paneId, context) => told.resolve({ paneId, context }));
+    // ContextUsage from omp 18.14.0's rpc-wire.generated.ts, returned by ctx.getContextUsage().
+    let usage = { tokens: 12_345, contextWindow: 200_000, percent: 6.1725 };
+    const omp = await loaded(hub.launchArgs("omp", "p1", [], "18.14.0")!, "tui", () => usage);
+    expect(await told.promise).toEqual({ paneId: "p1", context: { used: 12_345, window: 200_000 } });
+
+    told = Promise.withResolvers();
+    usage = { ...usage, tokens: 15_123, percent: 7.5615 };
+    omp.run("agent_end");
+    expect(await told.promise).toEqual({ paneId: "p1", context: { used: 15_123, window: 200_000 } });
+    expect(hub.contextOf("p1", "omp")).toEqual({ used: 15_123, window: 200_000 });
+    expect(hub.contextOf("p2", "omp")).toBeUndefined();
+    hub.launchArgs("omp", "p1", [], "18.13.2");
+    expect(hub.contextOf("p1", "omp")).toBeUndefined();
+  }, 1500);
+
   it("adds only its extension, for omp 18.x from 18.14.0", () => {
     const { hub } = hubIn();
     const args = hub.launchArgs("omp", "p1", ["--thinking", "off"], "18.14.0")!;

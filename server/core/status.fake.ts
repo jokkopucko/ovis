@@ -68,7 +68,8 @@ export const opencode = (session: string | null) => ({ ...base, agent: "opencode
 export const claude = { ...base, agent: "claude", agent_session: { agent: "claude", source: "hook", kind: "id", value: CLAUDE } };
 
 let hubs = 0;
-export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null, alertTiming?: Partial<AlertTiming>, paneVacated?: (paneId: string) => void) {
+type Lifecycle = Pick<Parameters<typeof createStatusHub>[0]["options"], "paneVacated" | "hookContextOf" | "observeHookAgent">;
+export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null, alertTiming?: Partial<AlertTiming>, lifecycle?: Lifecycle) {
   let panes: unknown[] = [];
   let gate: Promise<void> | null = null;
   let reading: (() => void) | undefined;
@@ -95,7 +96,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   // put back at once: the hub takes its collector as it is built, and this module's afterEach runs only in the first file
   // that loads it
   const status = (() => { try { return createStatusHub({
-    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}), cardTimer: (tick) => { cardTick = tick; return () => {}; }, ...(alertTiming ? { alertTiming } : {}), ...(paneVacated ? { paneVacated } : {}) },
+    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}), cardTimer: (tick) => { cardTick = tick; return () => {}; }, ...(alertTiming ? { alertTiming } : {}), ...lifecycle },
     devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ revision: 0, settings: {}, muted_panes: [] }), subscribe: () => () => {} } as never,
     clients: new Set([client]), present, pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,

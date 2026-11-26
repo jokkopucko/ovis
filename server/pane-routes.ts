@@ -22,6 +22,7 @@ import { CLAUDE_REWIND_OPEN_MESSAGE } from "./dialogs/claude.ts";
 import { claudeRewindOpen } from "./prompt.ts";
 import { expandedDirectory } from "./directories.ts";
 import { ConversationDiagnostics } from "./conversation-diagnostics.ts";
+import type { ApprovalHub } from "./approvals/hub.ts";
 
 const conversationDiagnostics = new ConversationDiagnostics();
 
@@ -59,7 +60,7 @@ async function paneReason(paneId: string, reason: ReturnType<typeof unavailableR
   }
 }
 
-export type PaneStores = { codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string };
+export type PaneStores = { codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string; approvals?: Pick<ApprovalHub, "contextOf"> };
 
 /** the sides herdr's pane.swap and pane.resize take, and a move's side of its target; anything else is refused before the RPC, which would answer invalid_request */
 const isPaneDirection = (value: unknown): value is PaneDirection => value === "left" || value === "right" || value === "up" || value === "down";
@@ -394,13 +395,21 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     try {
       const { version, ...conversation } = await paneConversation(paneId, options.codexHome, page, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData);
       conversationDiagnostics.recovered(paneId, requestIdContext.getStore()?.id);
-      // omp's transcript counts the tokens a request filled but never names the window; its own
-      // status bar does (server/omp-status.ts), so the chat's ring gets a percent from there
-      const screenContext = conversation.source === "omp-transcript" ? await ompScreenContext(paneId) : null;
-      const answer = screenContext === null ? conversation
-        : { ...conversation, metadata: { ...(conversation.metadata ?? { model: null, reasoning_effort: null }), context: screenContext } };
+      // The live extension knows the current window and fill, which the session file does not record together.
+      // Only read omp's status bar if its extension has never reported. An unknown sample leaves the file as-is.
+      const kind = conversation.source === "omp-transcript" ? "omp" : conversation.source === "omo-transcript" ? "omo" : null;
+      let context = kind === null ? undefined : options.approvals?.contextOf(paneId, kind);
+      if (kind === "omp" && context === undefined) {
+        const screen = await ompScreenContext(paneId);
+        // A report can arrive during the screen RPCs. Even a report of unknown beats the screen.
+        const reported = options.approvals?.contextOf(paneId, kind);
+        context = reported === undefined ? screen : reported;
+      }
+      context ??= null;
+      const answer = context === null ? conversation
+        : { ...conversation, metadata: { ...(conversation.metadata ?? { model: null, reasoning_effort: null }), context } };
       // no-store keeps the browser's own cache out of it, so the chat sees the 304.
-      const etag = `W/"${version}${screenContext === null ? "" : `-ctx${screenContext.used}:${screenContext.window}`}"`;
+      const etag = `W/"${version}${context === null ? "" : `-ctx${context.used}:${context.window}`}"`;
       const serverTime = new Date().toISOString();
       const headers = { etag, "cache-control": "no-store", "x-server-time": serverTime };
       if (request.headers.get("if-none-match")?.replace(/^W\//, "") === etag.slice(2)) return new Response(null, { status: 304, headers });

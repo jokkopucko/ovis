@@ -14,6 +14,7 @@
  * The hub's events and answers are this file's own: `{ tool: "bash", command, description }` and `{ decision }`.
  */
 import { settingsFile } from "../claude-settings-file.ts";
+import type { PaneContext } from "../../shared/protocol.ts";
 import type { ApprovalAdapter, ApprovalDecision, ApprovalRequest, TurnEvent } from "./hub.ts";
 
 /** The options of the dialogs these extensions answer that are a decision; any other goes to the dialog as its keys. */
@@ -97,6 +98,16 @@ function tell(event) {
     child.stdin.end(JSON.stringify(event));
   }));
 }
+
+/**
+ * The live session knows both the used tokens and the current model's window. OmO can know the window but not the
+ * used tokens after compacting: tell that as unknown, not zero, so an earlier exact sample stops taking precedence.
+ */
+function tellContext(_event, ctx) {
+  if (typeof ctx?.getContextUsage !== "function") return;
+  const usage = ctx.getContextUsage();
+  tell({ contextUsage: usage?.tokens == null ? null : { used: usage.tokens, window: usage.contextWindow } });
+}
 `;
 
 /**
@@ -125,6 +136,18 @@ function toCard(event: unknown): ApprovalRequest | null {
 export function runTurn(event: unknown): TurnEvent | null {
   const run = (event as { run?: unknown } | null)?.run;
   return run === "began" || run === "ended" ? { turn: run, prompt: null } : null;
+}
+
+/** Undefined is not a context event; null is a report that the agent cannot measure its context yet. */
+export function contextUsage(event: unknown): PaneContext | null | undefined {
+  if (typeof event !== "object" || event === null || !("contextUsage" in event)) return undefined;
+  const usage = event.contextUsage;
+  if (usage === null) return null;
+  if (typeof usage !== "object" || !("used" in usage) || !("window" in usage)) return undefined;
+  const { used, window } = usage;
+  if (typeof used !== "number" || !Number.isFinite(used) || used < 0
+    || typeof window !== "number" || !Number.isFinite(window) || window <= 0) return undefined;
+  return { used, window };
 }
 
 export function permissionDecision(label: string): ApprovalDecision | null {

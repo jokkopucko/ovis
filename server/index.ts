@@ -537,6 +537,7 @@ export function createServer(
   const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals], {
     onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn),
     onCommand: (paneId, kind, command) => noteHookCommand(paneId, kind, command),
+    onContext: (paneId, context) => core.hookContextChanged(paneId, context),
   });
   const codexServers = new CodexServers(approvals);
   // the agents this server drives over ACP run under keepers in this PC's own herdr-core; the ones an earlier run
@@ -644,7 +645,11 @@ export function createServer(
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
   let agentTools: AgentToolHub | null = null;
-  const core = createCore({ options: { ...options, acp, codexServers, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); }, paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, acp, codexServers, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); },
+    hookContextOf: (paneId, kind) => approvals.contextOf(paneId, kind),
+    observeHookAgent: (paneId, kind) => approvals.observeContextAgent(paneId, kind),
+    paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); },
+  }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {

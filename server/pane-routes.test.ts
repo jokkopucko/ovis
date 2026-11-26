@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { commandScansSettled, paneCommands, scanPaneCommands, setCommandsWait } from "./commands.ts";
 import { FileBusyError, filePoolSize, setFilePoolOptions } from "./file-pool.ts";
 import { HerdrError } from "./herdr/client.ts";
+import * as herdr from "./herdr/client.ts";
 import { HERMES_ECHO_RE } from "./dialogs/hermes.ts";
 import { registry } from "./dialogs/registry.ts";
 import { findLastIndex } from "./dialogs/shared.ts";
@@ -16,7 +17,7 @@ import { openCodeServiceOptions } from "./opencode-service.ts";
 import * as conversation from "./conversation.ts";
 import { requestIdContext } from "./http.ts";
 import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_KEEP_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS, type PaneSummaries } from "../shared/pane-summary.ts";
-import type { ConversationTurn } from "../shared/protocol.ts";
+import type { ConversationResponse, ConversationTurn, PaneContext } from "../shared/protocol.ts";
 
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
@@ -116,6 +117,71 @@ it("answers a conversation with the PC's clock, which its turns' times are on", 
     expect(Date.parse(unchanged.headers.get("x-server-time") ?? "")).toBeGreaterThanOrEqual(after);
     expect(Date.parse(unchanged.headers.get("x-server-time") ?? "")).toBeLessThanOrEqual(Date.now());
   } finally { read.mockRestore(); }
+});
+
+it.each(["omp", "omo"] as const)("uses %s's live context without rereading its screen, and keeps the fallback", async (kind) => {
+  const pane = crypto.randomUUID();
+  const url = new URL(`http://x/api/pane/conversation?pane_id=${pane}`);
+  const fileContext = { used: 32_002, window: null };
+  const read = spyOn(conversation, "paneConversation").mockResolvedValue({
+    source: `${kind}-transcript`, turns: [], metadata: { model: null, reasoning_effort: null, context: fileContext },
+    cursor: null, history_id: "stable", version: "stable",
+  });
+  const scroll = spyOn(herdr, "paneScrollInfo").mockResolvedValue({ offset_from_bottom: 0, max_offset_from_bottom: 100, viewport_rows: 24 });
+  const screen = spyOn(herdr, "paneRead").mockResolvedValue({
+    pane_id: pane, tab_id: "t", workspace_id: "w", format: "text", source: "visible", text: "◫ 48.1%/1M", revision: 1, truncated: false,
+  });
+  let sample: PaneContext | null | undefined = { used: 42_013, window: 200_000 };
+  const approvals = { contextOf: (id: string, agent: string | null | undefined) => id === pane && agent === kind ? sample : undefined };
+  const ask = async (etag?: string) => {
+    const response = await handlePaneRequest(new Request(url, { headers: etag ? { "if-none-match": etag } : {} }), url, url.pathname, { approvals });
+    if (response === null) throw new Error("conversation route not handled");
+    return response;
+  };
+  const context = async (response: Response) => ((await response.json()) as ConversationResponse).metadata?.context;
+  try {
+    const first = await ask();
+    expect(await context(first)).toEqual({ used: 42_013, window: 200_000 });
+    const etag = first.headers.get("etag") ?? undefined;
+    expect((await ask(etag)).status).toBe(304);
+
+    sample = null;
+    const unknown = await ask(etag);
+    expect(unknown.status).toBe(200);
+    expect(await context(unknown)).toEqual(fileContext);
+    expect(scroll).not.toHaveBeenCalled();
+
+    sample = undefined;
+    expect(await context(await ask())).toEqual(kind === "omp" ? { used: 481_000, window: 1_000_000 } : fileContext);
+  } finally { read.mockRestore(); scroll.mockRestore(); screen.mockRestore(); }
+});
+
+it("prefers the first omp report when it arrives during a screen read", async () => {
+  const pane = crypto.randomUUID();
+  const url = new URL(`http://x/api/pane/conversation?pane_id=${pane}`);
+  const read = spyOn(conversation, "paneConversation").mockResolvedValue({
+    source: "omp-transcript", turns: [], metadata: { model: null, reasoning_effort: null },
+    cursor: null, history_id: "stable", version: "stable",
+  });
+  const scroll = spyOn(herdr, "paneScrollInfo").mockResolvedValue({ offset_from_bottom: 0, max_offset_from_bottom: 100, viewport_rows: 24 });
+  const reading = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const screen = spyOn(herdr, "paneRead").mockImplementation(async () => {
+    reading.resolve();
+    await release.promise;
+    return { pane_id: pane, tab_id: "t", workspace_id: "w", format: "text", source: "visible", text: "◫ 48.1%/1M", revision: 1, truncated: false };
+  });
+  let sample: PaneContext | undefined;
+  try {
+    const pending = handlePaneRequest(new Request(url), url, url.pathname, { approvals: { contextOf: () => sample } });
+    await reading.promise;
+    sample = { used: 42_013, window: 200_000 };
+    release.resolve();
+    const response = await pending;
+    if (response === null) throw new Error("conversation route not handled");
+    const body: ConversationResponse = await response.json();
+    expect(body.metadata?.context).toEqual({ used: 42_013, window: 200_000 });
+  } finally { release.resolve(); read.mockRestore(); scroll.mockRestore(); screen.mockRestore(); }
 });
 
 it("asks a chat showing a history to wait only when Copilot's rejection may be waited out", async () => {

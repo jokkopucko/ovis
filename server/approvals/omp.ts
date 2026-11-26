@@ -23,7 +23,7 @@
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import type { ApprovalDecision } from "./hub.ts";
-import { extensionApprovals } from "./extension.ts";
+import { contextUsage, extensionApprovals } from "./extension.ts";
 
 export const OMP_HOOK_MIN_VERSION = "18.14.0";
 
@@ -62,7 +62,13 @@ export default function ovisApprovals(pi) {
   const done = (event) => { calls.delete(event?.toolCallId); };
   pi.on("tool_approval_resolved", done);
   pi.on("tool_result", done);
-  pi.on("session_start", (_event, ctx) => {
+  // omp rebinds the extension to its subagents, including depth-zero clones, under the same launch key.
+  const reportContext = (event, ctx) => { if (ctx?.agent?.kind === "main") tellContext(event, ctx); };
+  pi.on("agent_end", reportContext);
+  pi.on("session_compact", reportContext);
+  pi.on("session_switch", reportContext);
+  pi.on("session_start", (event, ctx) => {
+    reportContext(event, ctx);
     const ui = ctx?.ui;
     // omp's terminal UI only: in its RPC mode the dialogs are the RPC client's
     if (ctx?.mode !== "tui" || !ctx.hasUI || typeof ui?.approve !== "function" || wrapped.has(ui)) return;
@@ -102,4 +108,5 @@ function decision(label: string): ApprovalDecision | null {
 export const ompApprovals = {
   ...extensionApprovals("omp", (version) => meetsMinVersion(version, OMP_HOOK_MIN_VERSION) && version.split(".")[0] === "18", GLUE),
   decision,
+  context: contextUsage,
 };

@@ -15,7 +15,7 @@
  * a retry was to come: one stopped in its wait (Esc) never starts, and tells no `agent_end`.
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
-import { ALLOW_LABEL, DENY_LABEL, extensionApprovals, runTurn } from "./extension.ts";
+import { ALLOW_LABEL, DENY_LABEL, contextUsage, extensionApprovals, runTurn } from "./extension.ts";
 
 export const OMO_HOOK_MIN_VERSION = "5.1.81";
 
@@ -24,11 +24,17 @@ export default function ovisApprovals(pi) {
   let ui = null;
   const asked = new Map();
   const wrapped = new WeakSet();
-  pi.on("session_start", (_event, ctx) => { ui = ctx?.hasUI ? ctx.ui : null; });
+  pi.on("session_start", (event, ctx) => { ui = ctx?.hasUI ? ctx.ui : null; tellContext(event, ctx); });
+  pi.on("session_compact", tellContext);
+  pi.on("model_select", tellContext);
   let retrying = false;
   const ended = () => { retrying = false; tell({ run: "ended" }); };
   pi.on("agent_start", () => { retrying = false; tell({ run: "began" }); });
-  pi.on("agent_end", (event) => { if (event?.willRetry === true) retrying = true; else ended(); });
+  pi.on("agent_end", (event, ctx) => {
+    if (event?.willRetry === true) retrying = true;
+    else ended();
+    tellContext(event, ctx);
+  });
   pi.on("session_abort", () => { if (retrying) ended(); });
   pi.on("agent_settled", () => { if (retrying) ended(); });
   pi.events.on("permission_asked", (request) => {
@@ -64,4 +70,5 @@ export default function ovisApprovals(pi) {
 export const omoApprovals = {
   ...extensionApprovals("omo", (version) => meetsMinVersion(version, OMO_HOOK_MIN_VERSION) && version.split(".")[0] === "5", GLUE),
   turn: runTurn,
+  context: contextUsage,
 };
