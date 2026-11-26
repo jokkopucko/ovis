@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { exportAccountKey, newRecordId, pcAddSigningBytes, signAccountRecord, signSafetyRecord, type AccountRecord, type PcAddPurpose } from "./account-records.ts";
 import { assembleSnapshot, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
@@ -20,7 +20,7 @@ async function client() {
 }
 
 function pc() {
-  const keys = nacl.box.keyPair();
+  const keys = x25519.keygen();
   return { keys, serverId: deriveServerId(keys.publicKey), publicKey: bytesToHex(keys.publicKey) };
 }
 

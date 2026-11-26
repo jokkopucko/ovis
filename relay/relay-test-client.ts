@@ -1,5 +1,5 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
 export type Received = string | Uint8Array;
@@ -66,7 +66,7 @@ export interface TestServer {
 }
 
 export function newServer(): TestServer {
-  const keys = nacl.box.keyPair();
+  const keys = x25519.keygen();
   return { serverId: deriveServerId(keys.publicKey), publicKey: bytesToHex(keys.publicKey), secretKey: keys.secretKey };
 }
 

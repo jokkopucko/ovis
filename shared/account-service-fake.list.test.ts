@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { canonicalBase64Url, entryFromText, entryHash, entryToText, readBody, signEntry, verifySignature, type EntryBody } from "./account-list-entry.ts";
 import { kindBody, replayList, shownList, signCard, type ListKind, type Sealed } from "./account-list.ts";
@@ -119,7 +119,7 @@ const code = (called: Called) => called.body.error?.code;
 const refusal = (called: Called) => `${called.status} ${code(called)}`;
 
 function machine() {
-  const keys = nacl.box.keyPair();
+  const keys = x25519.keygen();
   return { keys, serverId: deriveServerId(keys.publicKey), endpoint: bytesToHex(keys.publicKey) };
 }
 type Machine = ReturnType<typeof machine>;
