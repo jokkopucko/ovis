@@ -1,4 +1,98 @@
 {
+  "0.5.10": {
+    "en": {
+      "new": [
+        "Agents can call other agents on this PC; you approve their actions.",
+        "Settings → Memory keeps notes for this PC, your account or a project.",
+        "ovis login adds a PC to your account; ovis approve lets devices in.",
+        "Manage account can sign out every device at once.",
+        "The desktop app checks for updates from Settings → About."
+      ],
+      "improved": [
+        "Add a PC has the same three tabs everywhere: relay, Tailscale and SSH.",
+        "Your PCs shows each PC once, with how it connects and if it is on.",
+        "Approval cards show the whole command for more agents.",
+        "Relay connections stay on the relay unless you turn on Direct.",
+        "The server uses up to half less CPU while terminals print a lot."
+      ],
+      "fixed": [
+        "The phone app reconnects at once when you come back to it.",
+        "Chat keeps your reading position when you return to it.",
+        "Typing in Chat on a phone no longer stutters while other panes work.",
+        "Large photos no longer fail to upload over the relay.",
+        "Switching tabs no longer flashes the chat from its oldest message."
+      ]
+    },
+    "ko": {
+      "new": [
+        "에이전트가 이 PC의 다른 에이전트를 부를 수 있고, 승인은 직접 해요.",
+        "설정 → 메모리에 이 PC, 계정, 프로젝트별 메모를 남길 수 있어요.",
+        "ovis login으로 PC를 계정에 넣고, ovis approve로 기기를 허락해요.",
+        "'계정 관리'에서 모든 기기를 한 번에 로그아웃할 수 있어요.",
+        "데스크톱 앱의 설정 → 정보에서 업데이트를 확인할 수 있어요."
+      ],
+      "improved": [
+        "PC 추가는 어디서나 릴레이·Tailscale·SSH 세 탭으로 같아요.",
+        "내 PC에 PC가 한 줄씩, 연결 방식과 켜짐 여부와 함께 보여요.",
+        "더 많은 에이전트의 승인 카드에 명령이 전부 보여요.",
+        "'직접 연결'을 켜지 않으면 릴레이 연결은 릴레이로만 이어져요.",
+        "터미널 출력이 많을 때 서버 CPU 사용이 최대 절반 줄었어요."
+      ],
+      "fixed": [
+        "폰 앱으로 돌아오면 바로 다시 연결돼요.",
+        "채팅으로 돌아오면 읽던 위치가 그대로 있어요.",
+        "다른 창이 바쁠 때도 폰에서 채팅 입력이 끊기지 않아요.",
+        "큰 사진도 릴레이로 올릴 때 실패하지 않아요.",
+        "탭을 바꿔도 채팅이 맨 처음 메시지부터 번쩍이지 않아요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "エージェントがこの PC の他のエージェントを呼べます。承認はあなたが行います。",
+        "設定 → メモリーに、この PC・アカウント・プロジェクトごとのメモを残せます。",
+        "ovis login で PC をアカウントに追加し、ovis approve で端末を入れます。",
+        "「アカウント管理」から、すべてのデバイスを一度にサインアウトできます。",
+        "デスクトップアプリの 設定 → 情報 から更新を確認できます。"
+      ],
+      "improved": [
+        "PC の追加は、どこでもリレー・Tailscale・SSH の 3 タブです。",
+        "「あなたのPC」では各 PC が 1 行で、接続方法とオンかどうかが分かります。",
+        "より多くのエージェントで、承認カードにコマンド全体が表示されます。",
+        "「直接接続」をオンにしない限り、リレー接続はリレーのままです。",
+        "ターミナルの出力が多いとき、サーバーの CPU 使用が最大半分減りました。"
+      ],
+      "fixed": [
+        "スマホアプリに戻ると、すぐに再接続します。",
+        "チャットに戻ると、読んでいた位置のままです。",
+        "ほかのペインが忙しくても、スマホでのチャット入力が引っかかりません。",
+        "大きな写真もリレー経由で失敗せずにアップロードできます。",
+        "タブを切り替えても、チャットが最初のメッセージからちらつきません。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "智能体可以调用这台电脑上的其他智能体，操作仍由你批准。",
+        "设置 → 记忆 可按这台电脑、账号或项目保存笔记。",
+        "ovis login 把电脑加入账号，ovis approve 让设备接入。",
+        "在“管理账号”里可一次退出所有设备。",
+        "桌面应用可在 设置 → 关于 中检查更新。"
+      ],
+      "improved": [
+        "添加电脑在各处都是中继、Tailscale、SSH 三个标签页。",
+        "“我的电脑”中每台电脑只占一行，并显示连接方式和是否在线。",
+        "更多智能体的审批卡片会显示完整命令。",
+        "除非开启“直接连接”，中继连接会一直走中继。",
+        "终端大量输出时，服务器的 CPU 占用最多减少一半。"
+      ],
+      "fixed": [
+        "回到手机应用时会立即重新连接。",
+        "回到聊天时，会停在你上次阅读的位置。",
+        "其他窗格忙碌时，手机上的聊天输入不再卡顿。",
+        "通过中继上传大照片不再失败。",
+        "切换标签页时，聊天不再从最早的消息闪烁一遍。"
+      ]
+    }
+  },
   "0.5.9": {
     "en": {
       "new": [
