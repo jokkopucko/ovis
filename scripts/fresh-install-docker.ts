@@ -35,6 +35,14 @@ async function docker(args: string[], input?: string): Promise<string> {
 }
 /** as the user, in a shell like a terminal's: login (~/.local/bin) and interactive (~/.bashrc, where Bun puts itself) */
 const asUser = (script: string) => docker(["exec", "-i", "-u", "alice", "-w", "/home/alice", name, "bash", "-li"], script);
+/**
+ * The Rust PTY host the plugin's server runs answers and opens a pty, as every attach will: in the checkout's bin/ for a
+ * source build, else in the newest release the plugin installed under .ovis/server (scripts/plugin-launch.ts).
+ */
+const ptyHostOpensPty = async () => {
+  const out = await asUser(`cd "${pluginRoot}" && for h in bin/ovis-pty-sidecar $(ls -td .ovis/server/releases/*/bin/ovis-pty-sidecar 2>/dev/null); do if [ -x "$h" ]; then timeout 10 "$h" 1 1 true </dev/null >/dev/null && echo "PTY_OK $h"; break; fi; done; true`);
+  assert.match(out, /PTY_OK/, `the Rust PTY host opens no pty:\n${out.slice(-1500)}`);
+};
 const step = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
   const started = Date.now();
   const result = await run();
@@ -72,13 +80,7 @@ async function oneLineInstall(): Promise<void> {
     const health = await asUser('for i in $(seq 1 30); do if curl -sf http://127.0.0.1:7317/api/health >/dev/null; then echo "up after ${i}s"; exit 0; fi; sleep 1; done; echo TIMEOUT; herdr plugin log list 2>&1 | tail -c 1500; exit 1');
     console.log(`  ${/up after \d+s/.exec(health)?.[0] ?? health.trim().split("\n").pop()}`);
   });
-  await step("a terminal through the sidecar, on install.sh's Node where it installed one", async () => {
-    const out = await asUser(`cd "${pluginRoot}" && node=~/.local/share/ovis/node/bin/node; if [ -x "$node" ]; then "$node" server/pty/smoke.mjs && echo PTY_OK; else echo NO_APP_NODE; timeout 10 bin/ovis-pty-sidecar 1 1 true </dev/null >/dev/null && echo RUST_PTY_OK; fi; true`);
-    if (out.includes("NO_APP_NODE")) {
-      assert.match(out, /RUST_PTY_OK/, `install.sh installed no Node, and the Rust PTY host opens no pty:\n${out.slice(-1500)}`);
-      console.log("  install.sh installed no Node: the Rust PTY host runs this PC's terminals");
-    } else assert.match(out, /PTY_OK/, `the bundled PTY smoke test failed:\n${out.slice(-1500)}`);
-  });
+  await step("a terminal through the Rust PTY host install.sh put beside the server", ptyHostOpensPty);
   const again = await step("install.sh again: keeps what is there", () => asUser(`cat /tmp/install.sh | sh 2>&1; echo "exit=$?"`));
   assert.match(again, /exit=0/, again.slice(-1500));
   assert.match(again, /already installed/);
@@ -114,10 +116,7 @@ async function pluginInstall(): Promise<void> {
     const health = await asUser('for i in $(seq 1 20); do if curl -sf http://127.0.0.1:7317/api/health; then exit 0; fi; sleep 1; done; echo TIMEOUT; cat ~/.local/state/herdr/plugins/*/server.log 2>/dev/null | tail -20; exit 1');
     assert.match(health, /"ok":true/);
   });
-  await step("a terminal through the sidecar, on the box's own Node", async () => {
-    const out = await asUser(`cd "${pluginRoot}" && node server/pty/smoke.mjs && echo PTY_OK`);
-    assert.match(out, /PTY_OK/, `the bundled PTY smoke test failed:\n${out.slice(-1500)}`);
-  });
+  await step("a terminal through the Rust PTY host the plugin's build put beside the server", ptyHostOpensPty);
   await step("startup hook: herdr restarts, the app comes back by itself", async () => {
     await asUser("herdr plugin action invoke devswha.ovis.stop >/dev/null 2>&1; sleep 1; herdr server stop >/dev/null 2>&1; sleep 2; setsid nohup herdr server > ~/herdr-server2.log 2>&1 < /dev/null &");
     const health = await asUser('for i in $(seq 1 25); do if curl -sf http://127.0.0.1:7317/api/health >/dev/null; then echo "up after ${i}s"; exit 0; fi; sleep 1; done; echo TIMEOUT; herdr plugin log list 2>&1 | tail -c 1500; exit 1');

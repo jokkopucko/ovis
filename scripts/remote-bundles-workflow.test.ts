@@ -93,16 +93,16 @@ describe("remote-bundles.yml", () => {
     expect(conditions).toEqual(["!cancelled() && steps.common.outcome == 'success'", "!cancelled() && steps.pty-host.outcome == 'success'", "!cancelled() && steps.linux-bundle.outcome == 'success'"]);
   });
 
-  it("runs the pull request's SSH checks on a bundle without the Rust PTY host, as the ssh job's, whatever became of the other checks", () => {
+  it("runs the pull request's SSH checks on its Linux bundle, with the Rust PTY host, as the ssh job's, whatever became of the smoke", () => {
     const linux = workflow.jobs["bundle-linux"]!.steps!;
-    const node = linux.find((step) => step.id === "node-bundle")!;
-    expect(node.env).toEqual({ HERDR_BUNDLE_PTY_SIDECAR: "" });
-    expect(node.run).toBe("bun run scripts/build-remote-bundle.ts");
-    expect(node.if).toBe("!cancelled() && steps.common.outcome == 'success'");
-    expect(linux.find((step) => step.id === "common")!.run).toBe("bun run typecheck && bun run build");
-    for (const step of linux.filter(runs("ci-ssh-checks.sh"))) expect([step.name, step.if]).toEqual([step.name, "!cancelled() && steps.node-bundle.outcome == 'success'"]);
-    expect(at(linux, (step) => step.id === "node-bundle")).toBeGreaterThan(at(linux, runs("remote-bundle-smoke.ts")));
-    expect(workflow.jobs["ssh"]!.env?.["HERDR_BUNDLE_PTY_SIDECAR"]).toBeUndefined();
+    expect(linux.some((step) => step.env?.["HERDR_BUNDLE_PTY_SIDECAR"] !== undefined)).toBe(false);
+    const ssh = linux.filter(runs("ci-ssh-checks.sh"));
+    expect(ssh.length).toBe(3);
+    for (const step of ssh) expect([step.name, step.if]).toEqual([step.name, "!cancelled() && steps.linux-bundle.outcome == 'success'"]);
+    expect(Math.min(...ssh.map((step) => linux.indexOf(step)))).toBeGreaterThan(at(linux, runs("remote-bundle-smoke.ts")));
+    const tag = workflow.jobs["ssh"]!;
+    expect(tag.env?.["HERDR_BUNDLE_PTY_SIDECAR"]).toBe(workflow.jobs["bundle-linux"]!.env?.["HERDR_BUNDLE_PTY_SIDECAR"]);
+    expect(at(tag.steps!, runs("pty-sidecar.ts build linux-x64"))).toBeLessThan(at(tag.steps!, runs("build-remote-bundle.ts")));
   });
 
   it("publishes a tag's bundles only when every job it needs passed", () => {

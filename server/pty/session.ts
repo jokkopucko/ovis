@@ -1,12 +1,7 @@
-import { join } from "node:path";
-import { COMPILED, ROOT } from "../entries.ts";
 import { spawnErrorReason } from "../native-binary.ts";
-import { disableRustHost, rustSidecar } from "./host.ts";
-import { nodeSidecarAvailable, realNode } from "./sidecar.ts";
+import { RUST_HOST_FIX, rustSidecar } from "./host.ts";
 
-// a file Node runs, never compiled in: beside the binary, or beside this one from source
-const HOST_SCRIPT = COMPILED ? join(ROOT, "pty-host.mjs") : join(import.meta.dir, "pty-host.mjs");
-/** How long a command asked to leave by itself (`leave`) has for it: what either host gives one to end after a hangup (KILL_AFTER). */
+/** How long a command asked to leave by itself (`leave`) has for it: what the host gives one to end after a hangup (KILL_AFTER). */
 export const LEAVE_WITHIN_MS = 2000;
 
 export interface PtySessionOptions {
@@ -38,13 +33,8 @@ export function writeLine(sink: import("bun").FileSink, line: string): boolean {
   }
 }
 
-/**
- * A command running on a real PTY, hosted by the Rust host or, as the fallback, the Node sidecar (see pty-host.mjs for
- * why output flow control currently needs node-pty, and why it is the prebuilt
- * @lydell/node-pty distribution of it).
- */
+/** A command running on a real PTY, hosted by the Rust PTY host (crates/pty-sidecar). */
 export class PtySession {
-  readonly host: "node" | "rust";
   readonly exited: Promise<void>;
   private readonly proc: ReturnType<typeof Bun.spawn>;
   private closed = false;
@@ -54,43 +44,22 @@ export class PtySession {
   private leaving: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly options: PtySessionOptions) {
-    // The bridge's bearer token is for browsers; neither the sidecar nor the attach needs it.
+    // The bridge's bearer token is for browsers; neither the host nor the attach needs it.
     const env = { ...(options.inheritEnv === false ? {} : process.env), ...options.env };
     delete env["OVIS_TOKEN"];
     delete env["HERDR_WEB_TOKEN"];
-    const args = [String(options.cols), String(options.rows), options.command, ...options.args];
-    const spawnOptions = { stdin: "pipe", stdout: "pipe", stderr: "inherit", env } as const;
-    // only a real Node runs pty-host.mjs: `bun run` puts a `node` that is Bun on a PC without one
-    const node = () => {
-      const executable = nodeSidecarAvailable() ? realNode(options.inheritEnv === false ? process.env : env) : null;
-      if (!executable) throw new Error("no PTY host: the Rust host cannot run and this PC has no Node for the PTY sidecar");
-      return Bun.spawn([executable, HOST_SCRIPT, ...args], spawnOptions);
-    };
-    const rust = rustSidecar();
-    if (rust) {
-      try {
-        this.proc = Bun.spawn([rust, ...args], spawnOptions);
-        this.host = "rust";
-      } catch (error) {
-        const reason = `${rust} could not be started (${spawnErrorReason(error)})`;
-        if (!nodeSidecarAvailable()) throw new Error(`no PTY host: ${reason}, and this PC has no Node for the PTY sidecar`);
-        this.proc = node();
-        this.host = "node";
-        disableRustHost(reason);
-      }
-    } else {
-      this.proc = node();
-      this.host = "node";
+    const host = rustSidecar();
+    if (!host) throw new Error("no PTY host: the Rust PTY host cannot run here (the server's log says why)");
+    try {
+      this.proc = Bun.spawn([host, String(options.cols), String(options.rows), options.command, ...options.args], { stdin: "pipe", stdout: "pipe", stderr: "inherit", env });
+    } catch (error) {
+      throw new Error(`no PTY host: ${host} could not be started (${spawnErrorReason(error)}); to fix it, ${RUST_HOST_FIX}`);
     }
 
     // Process exit can precede the final stdout read. Deliver every byte before
     // onExit lets the server remove the attachment.
     this.exited = Promise.all([this.proc.exited, this.pump()]).then(([code]) => {
-      // with no Node to fall back to, switching the Rust host off would leave every later attach without a host
-      if (this.host === "rust" && !this.closed && this.proc.signalCode !== null) {
-        if (nodeSidecarAvailable()) disableRustHost(`the Rust PTY host ended by ${this.proc.signalCode}`);
-        else console.error(`Rust PTY host: ended by ${this.proc.signalCode}; kept, as this PC has no Node for the PTY sidecar`);
-      }
+      if (!this.closed && this.proc.signalCode !== null) console.error(`Rust PTY host: ended by ${this.proc.signalCode}`);
       if (this.closed) return;
       this.closed = true;
       options.onExit(code ?? null);

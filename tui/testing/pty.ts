@@ -6,9 +6,9 @@ import { PtySession } from "../../server/pty/session.ts";
 import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
 
 /**
- * Runs a command on a real pseudo-terminal for tests, through server/pty/session.ts: the Rust PTY
- * host where it is built and passes its check, else the Node sidecar (node-pty in a real Node, never
- * in Bun). The command is the leader of the pty's session; this process only holds the PTY host.
+ * Runs a command on a real pseudo-terminal for tests, through server/pty/session.ts on the Rust PTY
+ * host (built, or installed in bin/). The command is the leader of the pty's session; this process
+ * only holds the PTY host.
  *
  * Kill guard: every wait ends at the run's deadline, and the deadline ends the run through the PTY
  * host's own handle (SIGTERM to the host this run started; the host hangs up the command's group and
@@ -35,7 +35,6 @@ export interface PtyOptions {
 }
 
 export interface PtyRun {
-  readonly host: "rust" | "node";
   /** everything the command wrote to the pty so far, as UTF-8 */
   output(): string;
   /** resolves once the output contains `match`; rejects at the deadline or when the command ended without it */
@@ -153,7 +152,6 @@ export function runOnPty(options: PtyOptions): PtyRun {
   });
   live.add(stop);
   return {
-    host: session.host,
     output: () => output,
     type: (text) => { session.write(text); },
     resize: (cols, rows) => { session.resize(cols, rows); },

@@ -46,7 +46,6 @@
     "scripts/held-rows-demo-regression.ts",
     "scripts/herdr-profiles-browser-qa.ts",
     "scripts/install-binary.test.ts",
-    "scripts/install-node-fallback.test.ts",
     "scripts/key-bar-customization-demo-regression.ts",
     "scripts/keyboard-viewport-demo-regression.ts",
     "scripts/keyboard-viewport-regression.ts",

@@ -21,9 +21,8 @@
 #
 # A release from before the compiled server, a branch (OVIS_REF), an install from source that is
 # already here, or OVIS_FROM_SOURCE=1 keep the earlier way instead: Bun (its own installer, into
-# ~/.bun), herdr's plugin checkout built from source, which Settings → Updates keeps current, and Node
-# 22 (the official build, checked against its published SHA-256) only where the Rust PTY host cannot
-# be installed.
+# ~/.bun) and herdr's plugin checkout built from source, which Settings → Updates keeps current, with
+# the release's Rust PTY host beside it.
 # 3. When Tailscale runs on this PC, serves the app to your tailnet (`tailscale serve`, on the first
 #    free HTTPS port, or only the one OVIS_TAILSCALE_HTTPS_PORT names) and prints the address
 #    a phone opens as a QR code (scripts/plugin.ts phone).
@@ -75,6 +74,7 @@ REPO="devswha/ovis"
 PLUGIN="devswha.ovis"
 LEGACY_PLUGIN="devswha.herdr-web-ui"
 BIN_DIR="$HOME/.local/bin"
+# where an earlier install put Ovis's own Node: still on PATH here, for a signature check that has no openssl 3
 NODE_DIR="$HOME/.local/share/ovis/node"
 LEGACY_NODE_DIR="$HOME/.local/share/herdr-web-ui/node"
 APP_DIR="$HOME/.local/share/ovis/app"
@@ -92,7 +92,8 @@ ACCOUNT_SINCE="0.5.10"
 JOIN_SINCE="0.5.10"
 JOIN_PREFIX="ovis-join:1:"
 JOIN_MAX=1024
-# Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
+# the Node a signature check fetches where it has neither openssl 3 nor node (pick_checker); official digests from
+# nodejs.org/dist/v22.23.2/SHASUMS256.txt
 NODE_VERSION="v22.23.2"
 # the second line of the `ovis` launcher this installer writes: a file of that name without it is not ours
 LAUNCHER_MARK="# ovis launcher, written by install.sh"
@@ -940,27 +941,9 @@ node_sha_for() {
   esac
 }
 
-install_node() {
-  node_sha_for
-  say "installing Node $NODE_VERSION into $NODE_DIR"
-  # it runs as a condition, where set -e does nothing: each step says itself when it fails
-  tmp=$(mktemp -d) || return 1
-  archive="$tmp/node.tar.gz"
-  curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$platform.tar.gz" -o "$archive" || { rm -rf "$tmp"; return 1; }
-  [ "$(sha256 "$archive")" = "$node_sha" ] || { rm -rf "$tmp"; say "the Node download does not match its published SHA-256; nothing was installed"; return 1; }
-  mkdir -p "$tmp/node" || { rm -rf "$tmp"; return 1; }
-  tar -xzf "$archive" -C "$tmp/node" --strip-components=1 || { rm -rf "$tmp"; return 1; }
-  [ -x "$tmp/node/bin/node" ] || { rm -rf "$tmp"; say "the Node download holds no bin/node; nothing was installed"; return 1; }
-  mkdir -p "$(dirname "$NODE_DIR")" || { rm -rf "$tmp"; return 1; }
-  rm -rf "$NODE_DIR.old"
-  if [ -e "$NODE_DIR" ]; then mv "$NODE_DIR" "$NODE_DIR.old" || { rm -rf "$tmp"; return 1; }; fi
-  mv "$tmp/node" "$NODE_DIR" || { [ ! -e "$NODE_DIR.old" ] || mv "$NODE_DIR.old" "$NODE_DIR"; rm -rf "$tmp"; return 1; }
-  rm -rf "$NODE_DIR.old" "$tmp"
-}
-
 # The architecture the server runs on: that of the Bun that runs it. Bun's installer picks arm64 on
-# an arm64 Mac even from a Rosetta shell, where uname -m says x86_64, so the Node install_node
-# downloads and node_fits accepts follow Bun, not uname.
+# an arm64 Mac even from a Rosetta shell, where uname -m says x86_64, so the native helpers follow Bun,
+# not uname.
 server_arch() {
   # into a file, not $( ): a bun that left a child holding its output would hold a pipe's reader
   # past the bound, where a file is read once bounded has returned (as in starred)
@@ -972,59 +955,6 @@ server_arch() {
   case "$server" in
     x64 | arm64) arch=$server; platform="$os-$arch" ;;
   esac
-}
-
-# Bounded, as the server's probe is: a node that keeps running (a NODE_OPTIONS preload) cannot hold
-# the install.
-node_fits() {
-  # into a file for the same reason as server_arch's
-  fit_file=$(mktemp 2>/dev/null) || return 1
-  fit_status=0
-  bounded 3 "$1" -p '(process.versions.bun ? "bun" : process.versions.node.split(".")[0]) + " " + process.arch' </dev/null >"$fit_file" 2>/dev/null || fit_status=$?
-  fit=$(cat "$fit_file" 2>/dev/null || true)
-  rm -f "$fit_file"
-  [ "$fit_status" = 0 ] || return 1
-  fit_major=${fit%% *}
-  case "$fit_major" in '' | *[!0-9]*) return 1 ;; esac
-  [ "$fit_major" -ge 18 ] && [ "${fit#* }" = "$arch" ]
-}
-
-# The Node install_node puts in NODE_DIR stays out of the user's PATH: linked into BIN_DIR, it went
-# first there and overrode the user's own Node (#596).
-# An older release finds Node on the PATH only, so our Node is linked for it as before, the one from
-# before the rename too: where it needs one ($2 = needed: no Rust PTY host) and the user's PATH has no
-# Node 18 or newer, or always once herdr's build said its own PATH has none ($2 = installed), since
-# herdr's PATH need not be the user's (nvm in .bashrc).
-node_link() {
-  if grep -qs 'share/ovis/node' "$1/server/pty/sidecar.ts"; then
-    [ -L "$BIN_DIR/node" ] || return 0
-    case "$(readlink "$BIN_DIR/node")" in
-      "$NODE_DIR/bin/node" | "$LEGACY_NODE_DIR/bin/node")
-        rm -f "$BIN_DIR/node"
-        say "removed $BIN_DIR/node, the link to Ovis's own Node that an earlier install made: Ovis finds that Node itself now, and your shells use your own Node (install one if you need node outside Ovis)"
-        ;;
-    esac
-  elif [ ! -e "$BIN_DIR/node" ] && [ ! -L "$BIN_DIR/node" ]; then
-    case "${2:-}" in
-      installed) ;;
-      needed)
-        # only node runs on the user's PATH: sed may not be on it
-        user_version=$(PATH="${original_path:-}"; export PATH; node --version 2>/dev/null) || user_version=""
-        user_major=$(printf '%s\n' "$user_version" | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
-        [ "${user_major:-0}" -lt 18 ] || return 0
-        ;;
-      *) return 0 ;;
-    esac
-    for private in "$NODE_DIR" "$LEGACY_NODE_DIR"; do
-      [ -x "$private/bin/node" ] || continue
-      if mkdir -p "$BIN_DIR" && ln -s "$private/bin/node" "$BIN_DIR/node"; then
-        installed_here="$installed_here node"
-      else
-        say "could not link Node into $BIN_DIR, so this release's panes are mirrored until it is updated"
-      fi
-      return 0
-    done
-  fi
 }
 
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
@@ -1606,7 +1536,7 @@ desktop_pc() {
 }
 
 # The PATH a service gives herdr, and so its terminals: the user's own, in its order, with the folders this installer
-# puts herdr and Bun in added at the end where it lacks them (the plugin finds Ovis's own Node itself).
+# puts herdr and Bun in added at the end where it lacks them.
 service_path() {
   service_path=${original_path:-$PATH}
   for service_dir in "$BIN_DIR" "$HOME/.bun/bin"; do
@@ -1890,11 +1820,6 @@ install_plugin() {
     installed=0
     if OVIS_FROM_SOURCE=$plugin_source herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1; then
       installed=1
-    elif grep -q "Ovis needs Node 18 or newer" "$log" && ( install_node ); then
-      # a release from before the Rust PTY host was the default still asks for Node in its first build
-      # step, on herdr's PATH
-      node_link "" installed
-      OVIS_FROM_SOURCE=$plugin_source herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1 && installed=1
     fi
     if [ "$installed" = 1 ]; then
       grep '^Installed ' "$log" || true
@@ -1921,17 +1846,10 @@ install_plugin() {
 
   # the Rust PTY host of the release that runs, checked against its SHA-256: herdr's build step and
   # Settings → Updates fetch it too, so this is for an install from before it shipped, or one whose
-  # download failed. Without it, terminals use the Node sidecar where there is Node, or a mirror.
+  # download failed. Without it, herdr's terminals are mirrored.
   code=$(running_code "$root")
   install_native_helpers "$code"
-  needs_node=""
-  if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
-    needs_node=needed
-    if ! node_fits "$NODE_DIR/bin/node" && ! node_fits "$LEGACY_NODE_DIR/bin/node" && ! node_fits node && ! ( install_node ); then
-      say "could not install Node, so this PC's panes are mirrored until the Rust PTY host can be installed (run this again later)"
-    fi
-  fi
-  node_link "$code" "$needs_node"
+  rust_host_runs "$code/bin/ovis-pty-sidecar" || rust_host_runs "$code/crates/pty-sidecar/target/release/ovis-pty-sidecar" || say "the Rust PTY host does not run on this PC ($code/bin/ovis-pty-sidecar: missing, or in a folder that cannot run programs), so herdr's terminals are mirrored: run this again later, or build one with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml in $code"
 
   # the action only queues the start (its output goes to herdr's plugin log), and a herdr started here starts the app
   # itself once it is up (the plugin's startup hook): either way, wait for it here

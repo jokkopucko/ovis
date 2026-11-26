@@ -555,8 +555,8 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       };
       // herdr-core shares a terminal among its viewers: `hc attach` has no slot to take over
       const command = onCore ? hcBin() : process.env["OVIS_HERDR_BIN"] || "herdr";
-      // node-pty reports a command it cannot exec only as a silent exit 1, which reads as an
-      // ended attach (#925): look it up on the PATH and from the home directory the sidecar uses.
+      // the PTY host reports a command it cannot exec only as its own exit, which reads as an
+      // ended attach (#925): look it up on the PATH and from the home directory the host uses.
       if (!Bun.which(command, { PATH: process.env["PATH"] ?? "", cwd: process.env["HOME"] ?? "/" })) {
         throw new HerdrError("attach_failed", onCore
           ? command === HC_MOVED

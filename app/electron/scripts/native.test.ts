@@ -25,7 +25,7 @@ it.skipIf(process.platform === "win32")("stages an independently verified keeper
   expect(installedHelpers(bin).acpKeeper).toBeUndefined();
   const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   writeFileSync(`${binary}.json`, JSON.stringify({ sha256, version }));
-  await stageServerArtifact({ ...installedHelpers(bin), platform: "linux-x64", dir, dist, nodePty: false, build: async (_, out) => writeFileSync(out, "server") });
+  await stageServerArtifact({ ...installedHelpers(bin), platform: "linux-x64", dir, dist, build: async (_, out) => writeFileSync(out, "server") });
   // The compiled server uses its embedded version; the source resolver reads the same version here.
   writeFileSync(join(dir, "package.json"), JSON.stringify({ version }));
   const installed = join(dir, "bin", "ovis-acp-keeper");
@@ -53,5 +53,5 @@ it("does not bless different keeper bytes copied after selection", async () => {
   const file = join(base, "bin/ovis-acp-keeper");
   writeFileSync(file, "selected"); writeFileSync(file + ".json", JSON.stringify({version, sha256: new Bun.CryptoHasher("sha256").update("selected").digest("hex")}));
   const helpers = installedHelpers(join(base,"bin"));
-  await expect(stageServerArtifact({ ...helpers, dir: join(base,"server"), dist: join(base,"dist"), nodePty:false, platform:"linux-x64", build: async (_, out) => { writeFileSync(out,"server"); writeFileSync(file,"changed"); } })).rejects.toThrow("SHA-256");
+  await expect(stageServerArtifact({ ...helpers, dir: join(base,"server"), dist: join(base,"dist"), platform:"linux-x64", build: async (_, out) => { writeFileSync(out,"server"); writeFileSync(file,"changed"); } })).rejects.toThrow("SHA-256");
 });

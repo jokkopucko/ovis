@@ -8,7 +8,7 @@ import { runOnPty, runSupervised, stopAllPtyRuns, type SupervisedRun } from "../
 
 /**
  * `restore`: the real host (tui/host/unix.ts) in a fixture entry on a real pseudo-terminal that this
- * test creates (server/pty/session.ts: the Rust PTY host, else the Node sidecar). The entry runs
+ * test creates (server/pty/session.ts, on the Rust PTY host). The entry runs
  * under the harness's supervisor, which started it and alone signals it, through its own handle.
  * After a normal exit, a thrown error and each signal, the terminal is cooked again and the last
  * bytes written are the exact undo of the setup, written once.
@@ -217,8 +217,8 @@ describe("the start probe on a pseudo-terminal", () => {
     }, TEST_MS);
   }
 
-  // On macOS the Node PTY host can wedge while writing the paste and stop servicing
-  // the probe. See .omo/evidence/task-39-macos.txt and .omo/evidence/task-68-ovis-tui-own.txt.
+  // On macOS the Node PTY host this first ran on could wedge while writing the paste and stop servicing
+  // the probe (not yet rechecked on the Rust host). See .omo/evidence/task-39-macos.txt and .omo/evidence/task-68-ovis-tui-own.txt.
   it.skipIf(process.platform === "darwin")("1 MiB of text during the probe: the probe ends at its limit and every byte is input", async () => {
     const run = start("exit", { HOST_FIXTURE_HASH_INPUT: "1" });
     const paste = "A".repeat(1024 * 1024);

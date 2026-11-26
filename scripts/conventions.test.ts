@@ -285,7 +285,7 @@ describe("killing by name", () => {
     expect(found("Bun.spawnSync([\"pgrep\", \"-f\", tag]);")).toBe(0);
     expect(found("spawnSync(\"pkill\", [\"-KILL\", \"-f\", tempDir]);")).toBe(0);
     expect(found("pkill -f \"$r/remote.sh\" || true", "example.sh")).toBe(0);
-    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"pty-host.mjs\"]);")).toBe(0);
+    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"ovis-pty-sidecar\"]);")).toBe(0);
     expect(found("kill -HUP \"$(pgrep -o -x sshd)\"", "example.sh")).toBe(0);
     expect(found("# pkill -f server/index.ts", "example.sh")).toBe(0);
     expect(found("// pkill -f server/index.ts")).toBe(0);
@@ -550,10 +550,9 @@ describe("names from before Ovis", () => {
     "src/lib/legacyStorage.test.ts": "tests that move",
     "server/auth.ts": "still accepts and clears the old cookies",
     "server/auth.test.ts": "tests the old cookies",
-    "server/pty/pty-host.mjs": "keeps the token from the attach under either name",
-    "server/pty/session.ts": "keeps the token from the sidecar under either name",
-    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name, as pty-host.mjs does",
-    "server/pty/host.test.ts": "tests that both PTY hosts keep the token from the command under either name",
+    "server/pty/session.ts": "keeps the token from the PTY host under either name",
+    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name",
+    "server/pty/host.test.ts": "tests that the PTY host keeps the token from the command under either name",
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
     "install.sh": "reads the old settings of an earlier install",
     "scripts/plugin-tui.ts": "withholds the old token name from ovis tui too, as a shell set up for an earlier install may export it",

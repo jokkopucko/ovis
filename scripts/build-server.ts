@@ -9,7 +9,7 @@
  *                                                 naming what does not match. A consumer passes the version it asked for:
  *                                                 the signature alone does not stop an older release being offered
  */
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { keeperManifestText } from "./release-assets.ts";
 import { DIST_ARCHIVE, generateKeyPair, KEY_FILE, publicKeyOf, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNING_KEY_VARIABLE, signManifest, sourceTrees, verifyRelease, writeManifest } from "./server-manifest.ts";
@@ -43,7 +43,6 @@ async function main(args: string[]): Promise<void> {
     const { binaryName, buildBinary } = await artifact();
     mkdirSync(out, { recursive: true });
     await buildBinary(verb, join(out, binaryName(verb)));
-    copyFileSync(join(root, "server", "pty", "pty-host.mjs"), join(out, "pty-host.mjs"));
   } else if (verb === "release" && rest.length === 0) {
     const { binaryName, buildBinary } = await artifact();
     mkdirSync(out, { recursive: true });

@@ -61,11 +61,10 @@ jobs:
           package-manager-cache: false
       - if: runner.os == 'Linux'
         run: bun install --frozen-lockfile
-      - name: PtySession on the built binary, beside the Node sidecar
+      - name: PtySession on the built binary
         if: runner.os == 'Linux'
         env:
           HERDR_TEST_MODE: unit
-          OVIS_PTY_SIDECAR: rust
           OVIS_PTY_SIDECAR_BIN: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-${{ matrix.asset }}
         run: bun test ./server/pty/host.test.ts ./server/pty/session.test.ts
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

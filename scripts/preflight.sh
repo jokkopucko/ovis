@@ -2,8 +2,8 @@
 # herdr runs this first when it installs the plugin (herdr-plugin.toml, [[build]]), with its own
 # environment rather than your shell's. It says in one line what is missing, instead of a failed
 # `bun install` some steps later. The startup hook runs with the same PATH, so a bun that is
-# missing here would also keep the app from starting with herdr. Also looks in the usual bun and
-# node install places (~/.bun/bin, Homebrew, etc.) to handle GUI app PATH scenarios.
+# missing here would also keep the app from starting with herdr. Also looks in the usual bun
+# install places (~/.bun/bin, Homebrew, etc.) to handle GUI app PATH scenarios.
 set -u
 . "$(dirname "$0")/bun-path.sh"
 fail=0
@@ -39,11 +39,5 @@ else
   echo "Ovis needs Bun, and 'bun' is not on the PATH of the shell that started herdr."
   echo "Install it (https://bun.sh), start herdr from a shell where 'bun --version' works, then install again."
   fail=1
-fi
-if command -v node >/dev/null 2>&1; then
-  major=$(node --version 2>/dev/null | sed 's/^\([^0-9]*\)\([0-9]*\).*/\2/')
-  if [ "${major:-0}" -lt 18 ]; then
-    echo "Ovis: Node $(node --version) is older than 18. Terminals run on the Rust PTY host; if that cannot run, the Node fallback may fail on this Node."
-  fi
 fi
 exit $fail

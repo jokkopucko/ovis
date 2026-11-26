@@ -90,8 +90,6 @@ async function stageAll(): Promise<void> {
   await stageServerArtifact({
     platform: windows ? "windows-x64" : target,
     dir: join(stage, "server"),
-    nodePty: false,
-    downloads: join(cache, "server-downloads"),
     ...helpers,
   });
   for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) cpSync(join(repo, file), join(stage, file));

@@ -16,17 +16,14 @@ function matches(fileList: string[], pattern: RegExp): { file: string; at: strin
 }
 
 describe("PTY sidecar boundary", () => {
-  // node-pty panics Bun (oven-sh/bun#18546): only the Node sidecar loads it. `Bun.resolveSync`
-  // in server/pty/sidecar.ts only finds the package for Node and is not a load.
-  const NODE_SIDE = new Set(["server/pty/pty-host.mjs", "server/pty/smoke.mjs"]);
+  // node-pty panics Bun (oven-sh/bun#18546); terminals run on the Rust PTY host instead
   const LOAD = /\bfrom\s*["'](?:@lydell\/)?node-pty[^"']*["']|\bimport\s*\(?\s*["'](?:@lydell\/)?node-pty[^"']*["']|\b(?:require|createRequire\s*\([^()]*(?:\([^()]*\))?[^()]*\))\s*\(\s*["'](?:@lydell\/)?node-pty[^"']*["']/;
 
-  it("loads node-pty only in the Node sidecar", () => {
+  it("never loads node-pty", () => {
     const code = [...files("{server,src,shared,scripts,site,telemetry,tui}/**/*.{ts,tsx,mjs,cjs,js}"), "vite.config.ts"].filter((file) => file !== "server/conventions.test.ts");
     const loads = matches(code, LOAD);
-    fail(loads.filter((load) => !NODE_SIDE.has(load.file)).map((load) => load.at),
-      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts): the Rust PTY host (crates/pty-sidecar), or the Node sidecar server/pty/pty-host.mjs as its fallback.");
-    expect(loads.map((load) => load.file)).toContain("server/pty/pty-host.mjs");
+    fail(loads.map((load) => load.at),
+      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts) on the Rust PTY host (crates/pty-sidecar).");
   });
 
   it("knows an import from a mention", () => {

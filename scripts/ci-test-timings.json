@@ -34,7 +34,7 @@
   "server/conversation-push.contract.test.ts": 16,
   "server/copilot.contract.test.ts": 16,
   "scripts/build-cache.test.ts": 14,
-  "scripts/install-node-fallback.test.ts": 14,
+  "scripts/install-pty-host.test.ts": 14,
   "server/account/step2-upgrade-matrix.test.ts": 14,
   "server/relay/session-ws.contract.test.ts": 14,
   "scripts/app-web-connect.test.ts": 13,

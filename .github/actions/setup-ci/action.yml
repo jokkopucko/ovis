@@ -1,12 +1,12 @@
 name: Set up CI toolchain
-description: Bun (with its dependency cache), and optionally Node 22 and the checksum-pinned herdr. Callers check out the repository first.
+description: Bun (with its dependency cache), and optionally Node 22, the checksum-pinned herdr and the Rust PTY host. Callers check out the repository first.
 inputs:
   bun-version:
     description: Bun version for ci.yml, pages.yml and release.yml; the one place it is set.
     required: false
     default: '1.4.4'
   node:
-    description: "'true' installs Node 22 (the PTY sidecar runs on it)."
+    description: "'true' installs Node 22 (some test fixtures and tools are Node programs)."
     required: false
     default: 'false'
   herdr:

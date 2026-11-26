@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describeProgress } from "../src/lib/bridgeProgress.ts";
@@ -15,7 +15,7 @@ import { MachineActionRequired, MachineManager, setupStepWords } from "./machine
 import { detectHost, psQuote, UNSUPPORTED_HOST, windowsBridgeFiles, windowsHost } from "./remote-host.ts";
 import { decodeClixml, SshConnection } from "./ssh.ts";
 import { terminalAttachSupported } from "./herdr/client.ts";
-import { attachableIdentity, isRealNode, realNode, sidecarAvailable } from "./pty/sidecar.ts";
+import { attachableIdentity } from "./pty/sidecar.ts";
 import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
 import { recentSshOutput } from "./ssh.ts";
@@ -1036,49 +1036,6 @@ describe("terminal attach capability", () => {
     const declared = { version: "0.1.14", protocol: 22, terminal_attach: true };
     expect(attachableIdentity(declared, false, true)).toEqual(declared);
     expect(attachableIdentity(declared, false, false)).toEqual({ ...declared, terminal_attach: false, terminal_mirror: true });
-  });
-
-  it("counts the sidecar as runnable only with both node and node-pty", () => {
-    expect(sidecarAvailable({ node: () => true, pty: () => true })).toBe(true);
-    expect(sidecarAvailable({ node: () => false, pty: () => true })).toBe(false);
-    expect(sidecarAvailable({ node: () => true, pty: () => false })).toBe(false);
-  });
-
-  it("takes a node for Node only when it answers in time, is not Bun and is built for this server's architecture", () => {
-    const dir = mkdtempSync(join(tmpdir(), "herdr-sidecar-probe-"));
-    const stand = (name: string, body: string) => {
-      const path = join(dir, name);
-      writeFileSync(path, `#!/bin/sh\n${body}\n`);
-      chmodSync(path, 0o755);
-      return path;
-    };
-    try {
-      expect(isRealNode(stand("node", `echo 22.23.2 ${process.arch}`))).toBe(true);
-      expect(isRealNode(stand("old-node", `echo 16.20.2 ${process.arch}`))).toBe(false);
-      // an x64 Node under Rosetta beside an arm64 server, or the other way round (#596 review)
-      expect(isRealNode(stand("other-arch", `echo 22.23.2 ${process.arch === "x64" ? "arm64" : "x64"}`))).toBe(false);
-      expect(isRealNode(stand("bun-as-node", "echo bun"))).toBe(false);
-      expect(isRealNode(stand("broken", "exit 1"))).toBe(false);
-      expect(isRealNode(join(dir, "absent"))).toBe(false);
-      expect(isRealNode(stand("hung", "exec sleep 30"), process.env, 200)).toBe(false);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
-
-  it("shares one time budget among the Node candidates, so hung app Nodes leave time for the one on PATH", () => {
-    const home = mkdtempSync(join(tmpdir(), "herdr-sidecar-budget-"));
-    const stand = (path: string, body: string) => {
-      mkdirSync(join(path, ".."), { recursive: true });
-      writeFileSync(path, `#!/bin/sh\n${body}\n`);
-      chmodSync(path, 0o755);
-      return path;
-    };
-    try {
-      for (const dir of [".local/share/ovis/node", ".local/share/herdr-web-ui/node"]) stand(join(home, dir, "bin", "node"), "exec /bin/sleep 30");
-      const onPath = stand(join(home, "path", "node"), `echo 22.23.2 ${process.arch}`);
-      const started = performance.now();
-      expect(realNode({ HOME: home, PATH: join(home, "path") }, 900)).toBe(onPath);
-      expect(performance.now() - started).toBeLessThan(900 + 500);
-    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
 

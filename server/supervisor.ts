@@ -40,7 +40,7 @@ function installMissingRustHost(directory: string, signal: AbortSignal): Promise
   }
   return runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], signal, 120_000).then(
     (output) => console.log(output),
-    (error: unknown) => console.error("Rust PTY host install failed; terminals use the Node PTY sidecar", error),
+    (error: unknown) => console.error("Rust PTY host install failed; herdr's terminals are mirrored until it is installed", error),
   );
 }
 

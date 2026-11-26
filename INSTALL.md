@@ -17,9 +17,7 @@ web server on port `7317` and never replaces herdr, its sessions or the user's o
 - Never print, log or commit the token. Write it only to the config file named below and tell the
   user where it is.
 - Do not install herdr or Bun yourself unless the user agrees. Say which one is missing and how to
-  install it. Node is optional (below), so never install it only for Ovis. The one exception is the
-  one-line installer (C): it adds Node 22 when the PC has no Node 18 or newer and the Rust PTY host
-  does not run there. Say so, and get the user's agreement, before recommending C in that case.
+  install it. Ovis does not use Node, so never install it for Ovis.
 - Do not stop or restart the user's herdr server (`herdr server stop`). Restarting Ovis is fine.
 
 ## 1. Check prerequisites
@@ -36,8 +34,8 @@ git --version
 - herdr not running: ask the user to start `herdr` in a terminal, then check again.
 - Node is not needed. On Linux and macOS, terminals run on the Rust PTY host that each release ships
   (`bin/ovis-pty-sidecar`, installed by the plugin's build and checked against the release's SHA-256).
-  Node 18 or newer, when the PC already has it, is only the fallback for a host that is missing or
-  fails its startup check; with neither, panes are mirrored instead of attached.
+  Where it is missing or fails its startup check, panes are mirrored instead of attached, and the
+  server's log says why and how to get one.
 - Supported platforms: Linux x64 and arm64, macOS, Windows x64. Windows uses the [screen mirror](docs/remote-pcs.md#windows-pcs) and has no Rust PTY host. No compiler or Python is needed: the terminal
   host is prebuilt for Linux and macOS. Other platforms (Alpine, 32-bit ARM) have no build.
 
@@ -47,7 +45,7 @@ git --version
 | --- | --- | --- |
 | **A. herdr plugin** (default) | The user wants it to start with herdr | In-app: Settings → About |
 | **B. Source checkout** | The user wants to develop it, or asks for a clone | In-app, while the checkout stays on a clean `main` |
-| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer), to let Tailscale serve the app, and, where herdr is not running, to have herdr started at login (and at boot, with lingering) | In-app, like A |
+| **C. One-line installer** | The user agrees to install what is missing (herdr and Bun), to let Tailscale serve the app, and, where herdr is not running, to have herdr started at login (and at boot, with lingering) | In-app, like A |
 
 Use A unless the user says otherwise. C is A plus the prerequisites and step 5 in one command,
 `curl -fsSL https://ovis.sh/install.sh | sh`: it installs herdr for the user only (no sudo) when it
@@ -125,8 +123,7 @@ Running it again keeps what is there (`nothing to do` for a version already inst
 take turns through an install lock in `~/.local/share/ovis`: a waiter breaks the lock once the holder's pid no
 longer runs, one breaker at a time. A release
 from before the compiled server, a branch in `OVIS_REF`, an install from source already on the PC, or
-`OVIS_FROM_SOURCE=1` install from source as before ([one rule](#binary-or-source)) (Bun, herdr's plugin checkout, and Node 22 only where
-the Rust PTY host cannot run). `OVIS_RELEASES_URL` (an https:// address, or a `file://` folder) points
+`OVIS_FROM_SOURCE=1` install from source as before ([one rule](#binary-or-source)) (Bun and herdr's plugin checkout, with the release's Rust PTY host). `OVIS_RELEASES_URL` (an https:// address, or a `file://` folder) points
 it at another place for releases; plain http is refused. On a first install it prints a link
 for a GitHub star, unless the account gh is signed in to has starred the repository already. It
 asks whether to give one only at a terminal, and goes on by itself after 20 seconds: do not answer
@@ -302,8 +299,9 @@ service manager, so it keeps running. Settings are environment variables on that
 
 A checkout has no Rust PTY host until one is put in `bin/`: on a release tag,
 `bun scripts/pty-sidecar.ts install` fetches that release's, checked; on any branch,
-`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml` builds one. Without either,
-terminals run on Node 18+ where the PC has it, and are mirrored where it has none.
+`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml` builds one (a checkout of main
+whose `crates/pty-sidecar` changed since the release gets one from the next daily beta's
+`pty-sidecar-<tree>` prerelease). Without one, terminals are mirrored, and the server's log says so.
 
 On Linux and macOS, a service manager may start with a smaller `PATH` than an interactive shell.
 Use the existing launcher so Bun, Node and agents installed in `~/.local/bin` are discoverable.

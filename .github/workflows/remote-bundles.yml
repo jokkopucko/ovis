@@ -109,22 +109,15 @@ jobs:
         run: bun run scripts/build-remote-bundle.ts
       - if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
         run: bun run scripts/remote-bundle-smoke.ts
-      # the ssh job's bundle has no Rust PTY host, so its remote PC runs the Node one: the same here, whatever became
-      # of the Windows bundle, the Rust PTY host or the smoke
-      - id: node-bundle
-        name: Linux bundle without the Rust PTY host
-        if: "!cancelled() && steps.common.outcome == 'success'"
-        env:
-          HERDR_BUNDLE_PTY_SIDECAR: ''
-        run: bun run scripts/build-remote-bundle.ts
+      # the SSH checks on that Linux bundle, with its Rust PTY host, as the ssh job's, whatever became of the smoke
       - name: OpenSSH server
-        if: "!cancelled() && steps.node-bundle.outcome == 'success'"
+        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
         run: bash scripts/ci-ssh-checks.sh server
       - name: SSH integration
-        if: "!cancelled() && steps.node-bundle.outcome == 'success'"
+        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
         run: bash scripts/ci-ssh-checks.sh integration
       - name: SSH password in a disposable container
-        if: "!cancelled() && steps.node-bundle.outcome == 'success'"
+        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
         run: bash scripts/ci-ssh-checks.sh password
   bundle-windows:
     if: github.event_name != 'pull_request'
@@ -180,6 +173,8 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 20
     runs-on: ubuntu-24.04
+    env:
+      HERDR_BUNDLE_PTY_SIDECAR: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-linux-x64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -194,7 +189,9 @@ jobs:
           package-manager-cache: false
       - name: OpenSSH server
         run: bash scripts/ci-ssh-checks.sh server
-      - run: bun install --frozen-lockfile && bun run build && bun run scripts/build-remote-bundle.ts
+      - run: bun install --frozen-lockfile && bun run build
+      - run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
+      - run: bun run scripts/build-remote-bundle.ts
       - name: SSH integration
         run: bash scripts/ci-ssh-checks.sh integration
       - name: SSH password in a disposable container

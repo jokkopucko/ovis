@@ -55,7 +55,7 @@ curl -fsSL https://ovis.sh/install.sh | sh
 
 It does, in order, only what is not done yet:
 
-- **What it runs on.** [herdr](https://github.com/herdrdev/herdr) 0.9.0+, [Bun](https://bun.sh) 1.4+. A missing one is installed for your user only, without sudo, by its own installer, into `~/.local/bin` and `~/.bun`. Node is not needed: on Linux and macOS, terminals run on the Rust PTY host each release ships (`bin/ovis-pty-sidecar`), checked against the release's SHA-256 and once more when the server starts. A Node 18+ already on the PC is only its fallback, and the installer adds Node 22 from nodejs.org (checked against its published SHA-256, into `~/.local/share/ovis/node`) only when the host cannot be installed and there is no Node. Nothing is compiled.
+- **What it runs on.** [herdr](https://github.com/herdrdev/herdr) 0.9.0+, [Bun](https://bun.sh) 1.4+. A missing one is installed for your user only, without sudo, by its own installer, into `~/.local/bin` and `~/.bun`. Node is not needed: on Linux and macOS, terminals run on the Rust PTY host each release ships (`bin/ovis-pty-sidecar`), checked against the release's SHA-256 and once more when the server starts. Where it cannot run, panes are mirrored, and the server's log says why and how to get one. Nothing is compiled.
 - **The app**, as a herdr plugin at the latest release (set `OVIS_REF` to install another branch or tag): herdr builds it and starts it along with itself, on `127.0.0.1:7317`, following the socket of the current herdr session. When herdr is already running, the app starts now.
 - **herdr, running.** When herdr is not running (it was just installed, or it is stopped), the installer starts its server headless, and the app with it, so the app runs when the install ends. It also sets up what starts herdr again:
   - **On a Linux PC used without a desktop**, the user service `ovis-herdr` (`systemctl --user`), only where lingering is on for your user or the installer can turn it on without a password (`loginctl enable-linger`, which a server's polkit usually allows). herdr then starts when the PC starts and keeps running after you log out. A PC counts as a desktop when the session you run the installer in is a desktop's, when a display manager (a desktop's login screen) is enabled, or when you have a graphical session open, so setting up a desktop PC over SSH sets up no service either. X forwarded over SSH alone does not count.
@@ -98,7 +98,7 @@ bun install
 bun run start
 ```
 
-You need herdr 0.9.0+ and Bun 1.4+, and for attached terminals either the Rust PTY host (`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml`, or `bun scripts/pty-sidecar.ts install` on a release tag) or Node 18+; with neither, panes are mirrored. herdr must be installed and running first: start it with `herdr`. `start` builds the client and runs the server under the update supervisor. It talks to `~/.config/herdr/herdr.sock` unless `HERDR_SOCKET` says otherwise. If herdr isn't running there, the app still opens, but its header shows **Status unknown** after the first failed health check and **herdr unavailable** after the second, and the page says it cannot reach herdr at that socket.
+You need herdr 0.9.0+ and Bun 1.4+, and for attached terminals the Rust PTY host (`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml`, or `bun scripts/pty-sidecar.ts install` on a release tag); without it, panes are mirrored. herdr must be installed and running first: start it with `herdr`. `start` builds the client and runs the server under the update supervisor. It talks to `~/.config/herdr/herdr.sock` unless `HERDR_SOCKET` says otherwise. If herdr isn't running there, the app still opens, but its header shows **Status unknown** after the first failed health check and **herdr unavailable** after the second, and the page says it cannot reach herdr at that socket.
 
 </details>
 
@@ -1381,7 +1381,7 @@ flowchart LR
 A React client talks to a Bun HTTP/WebSocket server.
 
 - **Status:** the server reads workspaces and agent status from herdr's Unix socket.
-- **Terminal:** it streams the real `herdr terminal attach` output through a PTY host: the Rust one (`crates/pty-sidecar`) on Linux and macOS, or the Node sidecar where that cannot run (`OVIS_PTY_SIDECAR=node` asks for it). Browsers watching one pane share one attach, with a bounded replay and backpressure ([terminal flow control](terminal-flow-control.md)).
+- **Terminal:** it streams the real `herdr terminal attach` output through the Rust PTY host (`crates/pty-sidecar`) on Linux and macOS; where it cannot run, panes are mirrored. Browsers watching one pane share one attach, with a bounded replay and backpressure ([terminal flow control](terminal-flow-control.md)).
 - **Chat:** it reads the agents' own session files, and sending types into the same live pane.
 - **Relay (optional):** while it's on, the server also keeps a WebSocket open to the [Ovis relay](relay.md), and a paired phone's requests come in through it, end-to-end encrypted, to the same handlers as a browser's.
 

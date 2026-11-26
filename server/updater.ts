@@ -504,10 +504,10 @@ export class Updater {
         await run([process.execPath, "--bun", "run", "typecheck"]);
         this.patch({ step: "build" });
         await run([process.execPath, "run", "build"]);
-        // the release's Rust PTY host, checked against its manifest; without it the release runs the Node sidecar
+        // the release's Rust PTY host, checked against its manifest; without it the release mirrors herdr's terminals
         if (existsSync(join(stage, "scripts", "pty-sidecar.ts"))) {
           try { console.log((await run([process.execPath, "scripts/pty-sidecar.ts", "install"], 120_000))); }
-          catch (error) { console.error("Rust PTY host install failed; the release uses the Node PTY sidecar", error); }
+          catch (error) { console.error("Rust PTY host install failed; the release mirrors herdr's terminals until it is installed", error); }
         }
         const reason = await this.sourceBlock();
         if (reason) {

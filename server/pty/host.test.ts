@@ -1,49 +1,41 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { defaultRustSidecar, installedHostVouched, probeRustHost, resetPtyHostForTests, RUST_SIDECAR_BUILD, rustSidecar, rustSidecarPath } from "./host.ts";
+import { defaultRustSidecar, installedHostVouched, probeRustHost, resetPtyHostForTests, RUST_HOST_FIX, RUST_SIDECAR_BUILD, rustSidecar, rustSidecarPath } from "./host.ts";
 import { LEAVE_WITHIN_MS, PtySession, type PtySessionOptions } from "./session.ts";
-import { nodeSidecarAvailable, resetSidecarForTests, sidecarAvailable } from "./sidecar.ts";
+import { sidecarAvailable } from "./sidecar.ts";
 
-const RUST_HOST = rustSidecar({ ...process.env, OVIS_PTY_SIDECAR: "rust" });
+const RUST_HOST = rustSidecar();
 const built = RUST_HOST !== null;
 const LIMIT_MS = 10_000;
 
 describe("rustSidecar", () => {
   beforeEach(resetPtyHostForTests);
-  it.skipIf(process.platform === "win32")("runs the Rust host by default where it passes its check, and Node when OVIS_PTY_SIDECAR=node asks", () => {
+  it.skipIf(process.platform === "win32")("runs the host it is pointed at where it passes its check, also for an old OVIS_PTY_SIDECAR=node, which it says once is gone", () => {
     const said = spyOn(console, "log").mockImplementation(() => {});
+    const warned = spyOn(console, "error").mockImplementation(() => {});
     try {
       const binary = fakeHost(`${IDENTITY}\nexit 0`);
       expect(rustSidecar({ OVIS_PTY_SIDECAR_BIN: binary })).toBe(binary);
-      expect(rustSidecar({ OVIS_PTY_SIDECAR: "rust", OVIS_PTY_SIDECAR_BIN: binary })).toBe(binary);
-      expect(rustSidecar({ OVIS_PTY_SIDECAR: "node", OVIS_PTY_SIDECAR_BIN: binary })).toBeNull();
-    } finally { said.mockRestore(); }
-  });
-
-  it.skipIf(process.platform === "win32")("falls back to Node quietly by default, and loudly when OVIS_PTY_SIDECAR=rust asked", () => {
-    const logged = spyOn(console, "log").mockImplementation(() => {});
-    const warned = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const missing = join(tmpdir(), `ovis-no-pty-sidecar-${crypto.randomUUID()}`);
-      expect(rustSidecar({ OVIS_PTY_SIDECAR_BIN: missing })).toBeNull();
       expect(warned).not.toHaveBeenCalled();
-      expect(String(logged.mock.calls[0]?.[0])).toContain("Rust PTY host unavailable");
-      resetPtyHostForTests();
-      expect(rustSidecar({ OVIS_PTY_SIDECAR: "rust", OVIS_PTY_SIDECAR_BIN: missing })).toBeNull();
-      expect(String(warned.mock.calls[0]?.[0])).toContain("OVIS_PTY_SIDECAR=rust");
-    } finally { logged.mockRestore(); warned.mockRestore(); }
+      for (let i = 0; i < 2; i++) expect(rustSidecar({ OVIS_PTY_SIDECAR: "node", OVIS_PTY_SIDECAR_BIN: binary })).toBe(binary);
+      expect(warned.mock.calls.map((call) => String(call[0]))).toEqual(["OVIS_PTY_SIDECAR=node: the Node PTY sidecar was removed, so the Rust PTY host runs every terminal"]);
+    } finally { said.mockRestore(); warned.mockRestore(); }
   });
 
-  it("falls back to the Node sidecar when the Rust binary is missing, saying so at most once", () => {
+  it.skipIf(process.platform === "win32")("says once, as an error, that there is no PTY host, why, and how to get one", () => {
     const said = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const env = { OVIS_PTY_SIDECAR: "rust", OVIS_PTY_SIDECAR_BIN: join(tmpdir(), `ovis-no-pty-sidecar-${crypto.randomUUID()}`) };
+      const env = { OVIS_PTY_SIDECAR_BIN: join(tmpdir(), `ovis-no-pty-sidecar-${crypto.randomUUID()}`) };
       expect(rustSidecar(env)).toBeNull();
       expect(rustSidecar(env)).toBeNull();
       expect(said.mock.calls.length).toBe(1);
+      const message = String(said.mock.calls[0]?.[0]);
+      expect(message).toStartWith("No PTY host: the Rust PTY host cannot run");
+      expect(message).toContain("ENOENT");
+      expect(message).toContain(RUST_HOST_FIX);
     } finally { said.mockRestore(); }
   });
 
@@ -93,25 +85,23 @@ describe("rustSidecar", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it.skipIf(!existsSync(defaultRustSidecar()))("runs the installed host or the Rust build, or OVIS_PTY_SIDECAR_BIN, when asked", () => {
-    expect(rustSidecar({ OVIS_PTY_SIDECAR: "rust" })).toBe(defaultRustSidecar());
-    expect(rustSidecar({ OVIS_PTY_SIDECAR: "rust", OVIS_PTY_SIDECAR_BIN: defaultRustSidecar() })).toBe(defaultRustSidecar());
+  it.skipIf(!existsSync(defaultRustSidecar()))("runs the installed host or the Rust build, or OVIS_PTY_SIDECAR_BIN", () => {
+    expect(rustSidecar({})).toBe(defaultRustSidecar());
+    expect(rustSidecar({ OVIS_PTY_SIDECAR_BIN: defaultRustSidecar() })).toBe(defaultRustSidecar());
   });
 });
 
 const fixtures = mkdtempSync(join(tmpdir(), "ovis-pty-host-"));
 afterAll(() => rmSync(fixtures, { recursive: true, force: true }));
-const NODE_HOST = join(import.meta.dir, "pty-host.mjs");
 const IDENTITY = 'if [ "$#" -eq 0 ]; then printf "pty-sidecar: usage: fixture\\n" >&2; exit 2; fi';
 const quote = (path: string): string => `'${path.replaceAll("'", "'\\''")}'`;
-const DELEGATE = `exec node ${quote(NODE_HOST)} "$@"`;
 
 // No core dump from a process that crashes on purpose: with a relative core_pattern it would land in
 // the working directory, the checkout, where check.ts counts it as a source change. A piped one
 // (systemd-coredump) ignores a limit of 0 and reports the crash to the desktop on every run; a limit
 // of 1 byte keeps the kernel from starting it. `prlimit` is Linux's, and it cannot raise a hard limit
 // of 0; there, and where `prlimit` is missing, only `ulimit -c 0` applies, as before. Its path is
-// resolved here, as the tests without Node run their fixtures on a PATH of `/usr/bin:/bin` alone,
+// resolved here, as a test may run its fixtures on a PATH of `/usr/bin:/bin` alone,
 // where a `prlimit` installed anywhere else is not found.
 // https://github.com/torvalds/linux/blob/028ef9c96e96197026887c0f092424679298aae8/fs/coredump.c#L978-L996
 const PRLIMIT = Bun.which("prlimit");
@@ -211,7 +201,7 @@ describe("rustSidecar policy", () => {
     const spawn = spyOn(Bun, "spawnSync");
     const said = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const env = { OVIS_PTY_SIDECAR: "rust", OVIS_PTY_SIDECAR_BIN: join(fixtures, "broken") };
+      const env = { OVIS_PTY_SIDECAR_BIN: join(fixtures, "broken") };
       for (let i = 0; i < 3; i++) expect(rustSidecar(env)).toBeNull();
       expect(spawn).toHaveBeenCalledTimes(1);
       expect(said).toHaveBeenCalledTimes(1);
@@ -228,35 +218,13 @@ describe("rustSidecar policy", () => {
     expect(rustSidecarPath({})).toBe(defaultRustSidecar());
   });
 
-  it.skipIf(process.platform === "win32")("warns once for each unknown value, uses Node for it, and never probes for node", () => {
-    const spawn = spyOn(Bun, "spawnSync");
-    const said = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      for (const choice of ["RUST", "yes", "RUST", "yes"]) expect(rustSidecar({ OVIS_PTY_SIDECAR: choice })).toBeNull();
-      expect(said).toHaveBeenCalledTimes(2);
-      expect(String(said.mock.calls[0]?.[0])).toContain('OVIS_PTY_SIDECAR=RUST: expected "node" or "rust"');
-      expect(String(said.mock.calls[1]?.[0])).toContain("yes");
-      said.mockClear();
-      expect(rustSidecar({ OVIS_PTY_SIDECAR: "node" })).toBeNull();
-      expect(said).not.toHaveBeenCalled();
-      expect(spawn).not.toHaveBeenCalled();
-    } finally { spawn.mockRestore(); said.mockRestore(); }
-  });
-
-  it("attaches with the Rust host alone, with Node and node-pty alone, and mirrors with neither", () => {
-    expect(sidecarAvailable({ rust: () => true, node: () => false, pty: () => false })).toBe(true);
-    expect(sidecarAvailable({ rust: () => false, node: () => true, pty: () => true })).toBe(true);
-    expect(sidecarAvailable({ rust: () => false, node: () => false, pty: () => true })).toBe(false);
-    expect(sidecarAvailable({ node: () => true, pty: () => false })).toBe(false);
-  });
-
   it.skipIf(process.platform === "win32")("caches each passing path and announces it once", () => {
     const spawn = spyOn(Bun, "spawnSync");
     const said = spyOn(console, "log").mockImplementation(() => {});
     try {
       for (let path = 0; path < 2; path++) {
         const binary = fakeHost(`${IDENTITY}\nexit 0`);
-        const env = { OVIS_PTY_SIDECAR: "rust", OVIS_PTY_SIDECAR_BIN: binary };
+        const env = { OVIS_PTY_SIDECAR_BIN: binary };
         for (let i = 0; i < 3; i++) expect(rustSidecar(env)).toBe(binary);
       }
       expect(spawn).toHaveBeenCalledTimes(4);
@@ -265,149 +233,59 @@ describe("rustSidecar policy", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("PtySession Rust fallback", () => {
+describe.skipIf(process.platform === "win32")("PtySession and a host that cannot serve", () => {
   let previous: Record<string, string | undefined>;
   beforeEach(() => {
     resetPtyHostForTests();
     previous = { ...process.env };
-    process.env["OVIS_PTY_SIDECAR"] = "rust";
     process.env["HOME"] = mkdtempSync(join(fixtures, "home-"));
   });
   afterEach(() => {
-    for (const key of ["OVIS_PTY_SIDECAR", "OVIS_PTY_SIDECAR_BIN", "PATH", "HOME"]) {
+    for (const key of ["OVIS_PTY_SIDECAR_BIN", "HOME"]) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];
     }
-    resetSidecarForTests();
   });
 
-  /** A PC without Node, as `bun run` leaves one: the `node` on PATH is Bun itself. Nothing here may run pty-host.mjs on it. */
-  function withoutNode(): void {
-    const dir = mkdtempSync(join(fixtures, "bun-as-node-"));
-    symlinkSync(process.execPath, join(dir, "node"));
-    process.env["PATH"] = `${dir}:/usr/bin:/bin`;
-    process.env["HOME"] = mkdtempSync(join(fixtures, "home-"));
-    resetSidecarForTests();
-    expect(nodeSidecarAvailable()).toBe(false);
-  }
-  const NODELESS_PROBE = `${IDENTITY}\nif [ "$3" = true ]; then exit 0; fi`;
+  /** A host that passes its check and does nothing else. */
+  const PROBE_ONLY = `${IDENTITY}\nif [ "$3" = true ]; then exit 0; fi`;
 
-  it("keeps the Rust host after an unrequested signal on a PC without Node, which has nothing to fall back to", async () => {
-    const binary = fakeHost(`${NODELESS_PROBE}\nprintf READY\nkill -SEGV $$`);
+  it("keeps the host after an unrequested signal, saying so", async () => {
+    const binary = fakeHost(`${PROBE_ONLY}\nprintf READY\nkill -SEGV $$`);
     process.env["OVIS_PTY_SIDECAR_BIN"] = binary;
-    withoutNode();
     const said = spyOn(console, "error").mockImplementation(() => {});
     const exitCodes: Array<number | null> = [];
     const crashed = new PtySession({ command: "sh", args: ["-c", "true"], cols: 80, rows: 24, onData: () => {}, onExit: (code) => { exitCodes.push(code); } });
     try {
-      expect(crashed.host).toBe("rust");
       await crashed.exited;
       expect(exitCodes).toEqual([139]);
       expect(rustSidecar()).toBe(binary);
-      expect(said).toHaveBeenCalledTimes(1);
-      expect(String(said.mock.calls[0]?.[0])).toContain("kept, as this PC has no Node");
+      expect(said.mock.calls.map((call) => String(call[0]))).toEqual(["Rust PTY host: ended by SIGSEGV"]);
     } finally { crashed.kill(); said.mockRestore(); }
   });
 
-  it("never runs pty-host.mjs on a node that is Bun: without the Rust host there is no PTY host", () => {
-    process.env["OVIS_PTY_SIDECAR"] = "node";
-    withoutNode();
+  it("starts nothing without a host that runs, and tells the server to mirror", () => {
+    process.env["OVIS_PTY_SIDECAR_BIN"] = join(fixtures, "absent-host");
+    const said = spyOn(console, "error").mockImplementation(() => {});
     const spawn = spyOn(Bun, "spawn");
     try {
       expect(() => new PtySession({ command: "true", args: [], cols: 1, rows: 1, onData: () => {}, onExit: () => {} })).toThrow("no PTY host");
       expect(spawn).not.toHaveBeenCalled();
-    } finally { spawn.mockRestore(); }
-  });
-
-  // #596: the installer no longer links its Node into ~/.local/bin, and herdr's PATH may hold a Node older than 18 first
-  for (const where of [".local/share/ovis/node", ".local/share/herdr-web-ui/node"]) {
-    it(`runs the Node the installer put in ~/${where} over an older one first on PATH, probed and spawned at one path`, async () => {
-      const real = Bun.which("node");
-      if (real === null) throw new Error("this test needs Node");
-      const home = mkdtempSync(join(fixtures, "home-"));
-      const appNode = join(home, where, "bin", "node");
-      mkdirSync(dirname(appNode), { recursive: true });
-      symlinkSync(real, appNode);
-      const old = mkdtempSync(join(fixtures, "old-node-"));
-      writeFileSync(join(old, "node"), "#!/bin/sh\necho 10.24.1\n", { mode: 0o755 });
-      process.env["HOME"] = home;
-      process.env["PATH"] = `${old}:/usr/bin:/bin`;
-      process.env["OVIS_PTY_SIDECAR"] = "node";
-      resetSidecarForTests();
-      const spawn = spyOn(Bun, "spawn");
-      let started: Run | undefined;
-      try {
-        expect(nodeSidecarAvailable()).toBe(true);
-        started = runOn("node", "sh", ["-c", "printf ok"]);
-        expect((spawn.mock.calls[0] as unknown as [string[]])[0][0]).toBe(appNode);
-        expect(await started.exited).toBe(0);
-        expect(started.output()).toBe("ok");
-      } finally { started?.session.kill(); spawn.mockRestore(); }
-    });
-  }
-
-  it("tells the server to attach with the Rust host alone on a PC without Node, and to mirror with neither", () => {
-    const log = spyOn(console, "log").mockImplementation(() => {});
-    try {
-      process.env["OVIS_PTY_SIDECAR_BIN"] = fakeHost(`${NODELESS_PROBE}\nexit 0`);
-      delete process.env["OVIS_PTY_SIDECAR"];
-      withoutNode();
-      expect(sidecarAvailable()).toBe(true);
-      resetPtyHostForTests();
-      resetSidecarForTests();
-      process.env["OVIS_PTY_SIDECAR"] = "node";
       expect(sidecarAvailable()).toBe(false);
-      expect(log.mock.calls.map((call) => String(call[0]))).toContain("PTY host: none (no Rust host and no Node for the sidecar), so panes are mirrored");
-    } finally { log.mockRestore(); }
+      process.env["OVIS_PTY_SIDECAR_BIN"] = fakeHost(`${PROBE_ONLY}\nexit 0`);
+      expect(sidecarAvailable()).toBe(true);
+    } finally { spawn.mockRestore(); said.mockRestore(); }
   });
 
-  function passingHost(): string {
-    const binary = fakeHost(`${IDENTITY}\n${DELEGATE}`);
+  it("says why when the host vanished after its check", () => {
+    const binary = fakeHost(`${PROBE_ONLY}\nexit 0`);
     process.env["OVIS_PTY_SIDECAR_BIN"] = binary;
-    expect(rustSidecar()).toBe(binary);
-    return binary;
-  }
-
-  it("starts on Node when the Rust binary vanished after the probe", async () => {
-    const binary = passingHost();
-    rmSync(binary);
-    const said = spyOn(console, "error").mockImplementation(() => {});
-    let started: Run | undefined;
+    const said = spyOn(console, "log").mockImplementation(() => {});
     try {
-      started = runOn("node", "sh", ["-c", "printf ok"]);
-      expect(await started.exited).toBe(0);
-      expect(started.output()).toBe("ok");
-      expect(rustSidecar()).toBeNull();
-      expect(rustSidecar()).toBeNull();
-      expect(said).toHaveBeenCalledTimes(1);
-      expect(String(said.mock.calls[0]?.[0])).toContain("ENOENT");
-    } finally { started?.session.kill(); said.mockRestore(); }
-  });
-
-  it("trips the breaker before onExit when the Rust host ends by an unrequested signal", async () => {
-    const binary = fakeHost(`${IDENTITY}\nif [ "$3" = true ]; then ${DELEGATE}; fi\nprintf READY\nkill -SEGV $$`);
-    process.env["OVIS_PTY_SIDECAR_BIN"] = binary;
-    const said = spyOn(console, "error").mockImplementation(() => {});
-    let following: Run | undefined;
-    let output = "";
-    const exitCodes: Array<number | null> = [];
-    const crashed = new PtySession({
-      command: "sh", args: ["-c", "printf unused"], cols: 80, rows: 24,
-      onData: (data) => { output += data; },
-      onExit: (code) => { exitCodes.push(code); following = runOn("node", "sh", ["-c", "printf ok"]); },
-    });
-    try {
-      expect(crashed.host).toBe("rust");
-      await crashed.exited;
-      expect(exitCodes).toEqual([139]);
-      expect(output).toBe("READY");
-      expect(following).toBeDefined();
-      expect(await following?.exited).toBe(0);
-      expect(following?.output()).toBe("ok");
-      expect(rustSidecar()).toBeNull();
-      expect(said).toHaveBeenCalledTimes(1);
-      expect(String(said.mock.calls[0]?.[0])).toContain("SIGSEGV");
-    } finally { crashed.kill(); following?.session.kill(); said.mockRestore(); }
+      expect(rustSidecar()).toBe(binary);
+      rmSync(binary);
+      expect(() => new PtySession({ command: "true", args: [], cols: 1, rows: 1, onData: () => {}, onExit: () => {} })).toThrow(/no PTY host: .* could not be started \(.*ENOENT/);
+    } finally { said.mockRestore(); }
   });
 
   it.skipIf(!existsSync(RUST_SIDECAR_BUILD))("keeps the Rust host after its own immediate kill, twenty times", async () => {
@@ -417,32 +295,11 @@ describe.skipIf(process.platform === "win32")("PtySession Rust fallback", () => 
       for (let i = 0; i < 20; i++) {
         const session = new PtySession({ command: "cat", args: [], cols: 80, rows: 24, onData: () => {}, onExit: () => {} });
         try {
-          expect(session.host).toBe("rust");
           session.kill();
           await session.exited;
           expect(rustSidecar()).toBe(RUST_SIDECAR_BUILD);
         } finally { session.kill(); }
       }
-      expect(said).not.toHaveBeenCalled();
-    } finally { said.mockRestore(); }
-  });
-
-  it("does not trip when both hosts fail to start", () => {
-    const binary = passingHost();
-    rmSync(binary);
-    const said = spyOn(console, "error").mockImplementation(() => {});
-    const path = process.env["PATH"];
-    const empty = mkdtempSync(join(fixtures, "empty-"));
-    try {
-      try {
-        expect(nodeSidecarAvailable()).toBe(true);
-        process.env["PATH"] = empty;
-        expect(() => new PtySession({ command: "true", args: [], cols: 1, rows: 1, onData: () => {}, onExit: () => {} })).toThrow();
-      } finally {
-        if (path === undefined) delete process.env["PATH"];
-        else process.env["PATH"] = path;
-      }
-      expect(rustSidecar()).toBe(binary);
       expect(said).not.toHaveBeenCalled();
     } finally { said.mockRestore(); }
   });
@@ -455,7 +312,7 @@ interface Run {
   exited: Promise<number | null>;
 }
 
-function runOn(host: "node" | "rust", command: string, args: string[], extra: Partial<PtySessionOptions> = {}): Run {
+function run(command: string, args: string[], extra: Partial<PtySessionOptions> = {}): Run {
   let output = "";
   const waiters = new Set<() => void>();
   let reportExit!: (code: number | null) => void;
@@ -468,7 +325,6 @@ function runOn(host: "node" | "rust", command: string, args: string[], extra: Pa
     },
     onExit: (code) => reportExit(code),
   });
-  expect(session.host).toBe(host);
   const until = (label: string, check: (output: string) => boolean) => new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       waiters.delete(test);
@@ -541,316 +397,286 @@ const READS = (gate: string | null, leaves: boolean) => ["-e", `
 /** A command in a process group of its own whose members ignore SIGHUP: a hangup alone never ends it. */
 const STUBBORN_GROUP = (tag: string, then: string) => ["-c", `trap '' HUP; ${tag} & printf READY; ${then}`];
 
-function parity(host: "node" | "rust") {
-  describe.skipIf(host === "rust" && !built)(`PtySession on the ${host} PTY host`, () => {
-    beforeEach(resetPtyHostForTests);
-    const run = (command: string, args: string[], extra: Partial<PtySessionOptions> = {}) => runOn(host, command, args, extra);
-    const previous = process.env["OVIS_PTY_SIDECAR"];
-    const home = process.env["HOME"];
-    beforeAll(() => {
-      process.env["OVIS_PTY_SIDECAR"] = host;
-      process.env["HOME"] = mkdtempSync(join(fixtures, "home-"));
-    });
-    afterAll(() => {
-      if (previous === undefined) delete process.env["OVIS_PTY_SIDECAR"];
-      else process.env["OVIS_PTY_SIDECAR"] = previous;
-      if (home === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = home;
-    });
-
-    it("starts that host and hands the command its environment without the bridge token", async () => {
-      const token = `ovis-host-token-fixture-${crypto.randomUUID()}`;
-      const kept = process.env["OVIS_TOKEN"];
-      process.env["OVIS_TOKEN"] = token;
-      const spawn = spyOn(Bun, "spawn");
-      let started: Run | undefined;
-      try {
-        started = run("sh", ["-c", 'printf "[%s|%s|%s|%s]" "$HERDR_SOCKET_PATH" "$TERM" "${OVIS_TOKEN-unset}" "${HERDR_WEB_TOKEN-unset}"'], {
-          env: { HERDR_SOCKET_PATH: "/tmp/ovis-host-parity.sock", HERDR_WEB_TOKEN: token },
-        });
-        expect(await started.exited).toBe(0);
-        const argv = (spawn.mock.calls[0] as unknown as [string[]])[0];
-        expect(argv[0]).toBe(host === "rust" ? RUST_HOST ?? "" : Bun.which("node") ?? "");
-        expect(started.output()).toContain("[/tmp/ovis-host-parity.sock|xterm-256color|unset|unset]");
-        // compared as a boolean so a failure never prints the token
-        expect(started.output().includes(token)).toBe(false);
-      } finally {
-        started?.session.kill();
-        spawn.mockRestore();
-        if (kept === undefined) delete process.env["OVIS_TOKEN"];
-        else process.env["OVIS_TOKEN"] = kept;
-      }
-    }, 15_000);
-
-    it("delivers split UTF-8 and the entire final burst before reporting the exit code", async () => {
-      const expected = "한글🙂\u001b[31m끝\u001b[0m".repeat(100_000);
-      const burst = run("node", ["-e", `
-        const data = Buffer.from("한글🙂\\x1b[31m끝\\x1b[0m".repeat(100000));
-        process.stdout.write(data.subarray(0, 1));
-        setTimeout(() => process.stdout.write(data.subarray(1), () => process.exit(7)), 10);
-      `]);
-      try {
-        expect(await burst.exited).toBe(7);
-        expect(burst.output() === expected).toBe(true);
-      } finally { burst.session.kill(); }
-    }, 15_000);
-
-    // a signal's end is never the 0 of a success: told as a shell tells it
-    it.skipIf(process.platform === "win32")("reports a command a signal ended as 128 plus the signal's number", async () => {
-      const ended = run("sh", ["-c", "kill -TERM $$"]);
-      try {
-        expect(await ended.exited).toBe(143);
-      } finally { ended.session.kill(); }
-    }, 15_000);
-
-    // Neither the host's grace deadline nor node-pty's fallback may release the hold:
-    // the same exit check used in production must observe the command's end.
-    it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
-      const ended = run("sh", ["-c", "exit 7"], { env: { OVIS_TEST_PTY_NO_CLOSE_DEADLINE: "1" } });
-      try {
-        expect(await ended.exited).toBe(7);
-      } finally { ended.session.kill(); }
-    }, 15_000);
-
-    // the host waits (EXIT_QUIET) for a command that closed its terminal, as a dying one does, before hanging it up:
-    // time is the behaviour here, a command exiting 50 ms after it closed its terminal is well within that wait
-    it.skipIf(process.platform === "win32")("lets a command that closed its terminal exit with its own code", async () => {
-      const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 0.05; exit 3"]);
-      try {
-        expect(await ended.exited).toBe(3);
-      } finally { ended.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("hangs up a command that closed its terminal and kept running as an end of its own, not a signal", async () => {
-      const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 5"]);
-      try {
-        expect(await ended.exited).toBe(0);
-      } finally { ended.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("reports a signal the command sent itself after the host hung it up, as that signal", async () => {
-      const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 0.45; kill -TERM $$"]);
-      try {
-        expect(await ended.exited).toBe(143);
-      } finally { ended.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("ends a command that closed its terminal and ignores the hangup, as an end of its own", async () => {
-      const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 30"]);
-      try {
-        expect(await ended.exited).toBe(0);
-      } finally { ended.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("signals SIGWINCH to the command without changing its size", async () => {
-      const winch = run("node", ["-e", `
-        process.on("SIGWINCH", () => process.stdout.write("WINCH " + process.stdout.columns + "x" + process.stdout.rows, () => process.exit(0)));
-        process.stdout.write("READY");
-        setInterval(() => {}, 1000);
-      `], { cols: 40, rows: 5 });
-      try {
-        await winch.until("READY", (output) => output.includes("READY"));
-        winch.session.winch();
-        expect(await winch.exited).toBe(0);
-        expect(winch.output()).toContain("WINCH 40x5");
-      } finally { winch.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("resizes the pty, and the command hears it", async () => {
-      // process.stdout first: its own SIGWINCH listener, which refreshes the size, has to run before ours
-      const resized = run("node", ["-e", `
-        const out = process.stdout;
-        process.on("SIGWINCH", () => out.write("WINCH " + out.columns + "x" + out.rows, () => process.exit(0)));
-        out.write("READY");
-        setInterval(() => {}, 1000);
-      `], { cols: 40, rows: 5 });
-      try {
-        await resized.until("READY", (output) => output.includes("READY"));
-        resized.session.resize(60, 10);
-        expect(await resized.exited).toBe(0);
-        expect(resized.output()).toContain("WINCH 60x10");
-      } finally { resized.session.kill(); }
-    }, 15_000);
-
-    it("holds output while paused with input live, and delivers it all on resume", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "ovis-pty-pause-"));
-      const wrote = join(dir, "wrote");
-      const interrupted = join(dir, "interrupted");
-      const held = "B".repeat(1000);
-      const paused = run("node", ["-e", `
-        const fs = require("fs");
-        process.stdin.setRawMode(true);
-        process.stdin.on("data", (data) => {
-          const text = data.toString();
-          if (text.includes("\\x03")) fs.writeFileSync(${JSON.stringify(interrupted)}, "");
-          if (text.includes("go")) process.stdout.write("B".repeat(1000), () => fs.writeFileSync(${JSON.stringify(wrote)}, ""));
-          if (text.includes("q")) process.stdout.write("END", () => process.exit(0));
-        });
-        process.stdout.write("READY");
-      `]);
-      try {
-        await paused.until("READY", (output) => output.includes("READY"));
-        paused.session.pause();
-        paused.session.write("go");
-        await appears(wrote);
-        expect(paused.output()).not.toContain("B");
-        paused.session.write("\x03");
-        await appears(interrupted);
-        expect(paused.output()).not.toContain("B");
-        paused.session.resume();
-        await paused.until("the held output", (output) => output.includes(held));
-        paused.session.write("q");
-        expect(await paused.exited).toBe(0);
-        expect(paused.output()).toEndWith("END");
-      } finally {
-        paused.session.kill();
-        rmSync(dir, { recursive: true, force: true });
-      }
-    }, 15_000);
-
-    it("writes a lone surrogate as U+FFFD, the way JavaScript encodes it", async () => {
-      const echo = run("node", ["-e", `
-        process.stdin.setRawMode(true);
-        process.stdin.once("data", (data) => process.stdout.write("HEX:" + data.toString("hex"), () => process.exit(0)));
-        process.stdout.write("READY");
-      `]);
-      try {
-        await echo.until("READY", (output) => output.includes("READY"));
-        echo.session.write("a\ud83db");
-        expect(await echo.exited).toBe(0);
-        expect(echo.output()).toContain("HEX:61efbfbd62");
-      } finally { echo.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("lets a command that leaves at its own keys read everything written before them, however late it reads (#4174)", async () => {
-      const gate = join(mkdtempSync(join(fixtures, "gate-")), "open");
-      const leaving = run("node", READS(gate, true), { leaveAt: LEAVE });
-      try {
-        await leaving.until("READY", (output) => output.includes("READY"));
-        const typed = ["a", ...Array.from({ length: 6 }, (_, wheel) => `\x1b[<64;10;${wheel + 1}M`)];
-        for (const text of typed) expect(leaving.session.write(text)).toBe(true);
-        leaving.session.leave();
-        expect(leaving.session.write("b")).toBe(false);
-        writeFileSync(gate, "");
-        await leaving.session.exited;
-        expect(leaving.output()).toBe(`READY${bytes(typed.join("") + LEAVE.keys)}`);
-      } finally { leaving.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(process.platform === "win32")("ends a command with its keys unwritten behind input they would not be read as its way out after", async () => {
-      const held = run("node", READS(null, true), { leaveAt: LEAVE });
-      try {
-        await held.until("READY", (output) => output.includes("READY"));
-        held.session.write("\x02");
-        await held.until("the chord's first key", (output) => output.includes("<02>"));
-        held.session.leave();
-        await held.session.exited;
-        expect(held.output()).toBe("READY<02>");
-      } finally { held.session.kill(); }
-    }, 15_000);
-
-    // time is the behaviour here: a command that does not leave is ended as a kill ends it, once it has had
-    // LEAVE_WITHIN_MS for it and well after a kill at once would have (some 250 ms)
-    it.skipIf(process.platform === "win32")("ends a command that has not left at its keys within LEAVE_WITHIN_MS", async () => {
-      const staying = run("node", READS(null, false), { leaveAt: LEAVE });
-      try {
-        await staying.until("READY", (output) => output.includes("READY"));
-        staying.session.write("a");
-        const asked = performance.now();
-        staying.session.leave();
-        await staying.session.exited;
-        expect(performance.now() - asked).toBeGreaterThan(LEAVE_WITHIN_MS / 2);
-        expect(staying.output()).toBe(`READY${bytes(`a${LEAVE.keys}`)}`);
-      } finally { staying.session.kill(); }
-    }, 15_000);
-
-    it("reaps both processes when killed with output paused", async () => {
-      const tag = `ovis-pty-reap-${crypto.randomUUID()}`;
-      const flood = run("node", ["-e", `/* ${tag} */ setInterval(() => process.stdout.write("x".repeat(4096)), 5);`]);
-      try {
-        await flood.until("output", (output) => output.length > 0);
-        flood.session.pause();
-        flood.session.kill();
-        await flood.session.exited;
-        expect(Bun.spawnSync(["pgrep", "-f", tag]).stdout.length).toBe(0);
-      } finally { flood.session.kill(); }
-    }, 15_000);
-
-    it.skipIf(host !== "rust")("kills the command's whole process group when stopped, even one ignoring SIGHUP", async () => {
-      const tag = sleepTag();
-      const stubborn = run("sh", STUBBORN_GROUP(tag, "wait"));
-      try {
-        await stubborn.until("READY", (output) => output.includes("READY"));
-        stubborn.session.kill();
-        await stubborn.session.exited;
-        expect(await gone(tag)).toBe(true);
-      } finally {
-        stubborn.session.kill();
-        Bun.spawnSync(["pkill", "-KILL", "-f", tag]);
-      }
-    }, 15_000);
-
-    it.skipIf(host !== "rust")("kills what is left of the command's process group when the command exits", async () => {
-      const tag = sleepTag();
-      const leaving = run("sh", STUBBORN_GROUP(tag, "exit 0"));
-      try {
-        expect(await leaving.exited).toBe(0);
-        expect(await gone(tag)).toBe(true);
-      } finally {
-        leaving.session.kill();
-        Bun.spawnSync(["pkill", "-KILL", "-f", tag]);
-      }
-    }, 15_000);
-
-    // the Node host kills the group once node-pty's exit timer ends, also while it holds paused output; the Rust
-    // host hangs it up at the exit and kills it after the drain
-    it.skipIf(host !== "node" || process.platform === "win32")("kills what is left of the command's process group when the command exits, while output is paused", async () => {
-      const tag = sleepTag();
-      // the tag's seconds as an argument: the host's own command line must not match `tag`
-      const leaving = run("sh", ["-c", `trap '' HUP; sleep "$1" & printf READY; read -r _; exit 4`, "sh", tag.slice("sleep ".length)]);
-      try {
-        await leaving.until("READY", (output) => output.includes("READY"));
-        leaving.session.pause();
-        leaving.session.write("go\r");
-        expect(await gone(tag)).toBe(true);
-        leaving.session.resume();
-        expect(await leaving.exited).toBe(4);
-      } finally {
-        leaving.session.kill();
-        Bun.spawnSync(["pkill", "-KILL", "-f", tag]);
-      }
-    }, 15_000);
-
-    // node-pty on Windows reads ConPTY through its own pipe, not the Unix socket pty-host.mjs holds open
-    it.skipIf(host === "node" && process.platform === "win32")("holds output paused when the command exits, and delivers all of it on resume", async () => {
-      const dir = mkdtempSync(join(tmpdir(), "ovis-pty-exit-paused-"));
-      const wrote = join(dir, "wrote");
-      const ending = run("node", ["-e", `
-        const fs = require("fs");
-        process.stdin.setRawMode(true);
-        process.stdin.once("data", () => process.stdout.write("Q".repeat(1000), () => { fs.writeFileSync(${JSON.stringify(wrote)}, ""); process.exit(3); }));
-        process.stdout.write("READY");
-      `]);
-      try {
-        await ending.until("READY", (output) => output.includes("READY"));
-        ending.session.pause();
-        ending.session.write("go");
-        await appears(wrote);
-        await Bun.sleep(400); // fixed wait: past the 200 ms a host may keep reading once its command has exited
-        expect(ending.output()).not.toContain("Q");
-        ending.session.resume();
-        expect(await ending.exited).toBe(3);
-        expect(ending.output()).toContain("Q".repeat(1000));
-      } finally {
-        ending.session.kill();
-        rmSync(dir, { recursive: true, force: true });
-      }
-    }, 15_000);
+describe.skipIf(!built)("PtySession on the Rust PTY host", () => {
+  beforeEach(resetPtyHostForTests);
+  const home = process.env["HOME"];
+  beforeAll(() => {
+    process.env["HOME"] = mkdtempSync(join(fixtures, "home-"));
   });
-}
+  afterAll(() => {
+    if (home === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = home;
+  });
 
-parity("node");
-parity("rust");
+  it("starts that host and hands the command its environment without the bridge token", async () => {
+    const token = `ovis-host-token-fixture-${crypto.randomUUID()}`;
+    const kept = process.env["OVIS_TOKEN"];
+    process.env["OVIS_TOKEN"] = token;
+    const spawn = spyOn(Bun, "spawn");
+    let started: Run | undefined;
+    try {
+      started = run("sh", ["-c", 'printf "[%s|%s|%s|%s]" "$HERDR_SOCKET_PATH" "$TERM" "${OVIS_TOKEN-unset}" "${HERDR_WEB_TOKEN-unset}"'], {
+        env: { HERDR_SOCKET_PATH: "/tmp/ovis-host-parity.sock", HERDR_WEB_TOKEN: token },
+      });
+      expect(await started.exited).toBe(0);
+      const argv = (spawn.mock.calls[0] as unknown as [string[]])[0];
+      expect(argv[0]).toBe(RUST_HOST ?? "");
+      expect(started.output()).toContain("[/tmp/ovis-host-parity.sock|xterm-256color|unset|unset]");
+      // compared as a boolean so a failure never prints the token
+      expect(started.output().includes(token)).toBe(false);
+    } finally {
+      started?.session.kill();
+      spawn.mockRestore();
+      if (kept === undefined) delete process.env["OVIS_TOKEN"];
+      else process.env["OVIS_TOKEN"] = kept;
+    }
+  }, 15_000);
+
+  it("delivers split UTF-8 and the entire final burst before reporting the exit code", async () => {
+    const expected = "한글🙂\u001b[31m끝\u001b[0m".repeat(100_000);
+    const burst = run("node", ["-e", `
+      const data = Buffer.from("한글🙂\\x1b[31m끝\\x1b[0m".repeat(100000));
+      process.stdout.write(data.subarray(0, 1));
+      setTimeout(() => process.stdout.write(data.subarray(1), () => process.exit(7)), 10);
+    `]);
+    try {
+      expect(await burst.exited).toBe(7);
+      expect(burst.output() === expected).toBe(true);
+    } finally { burst.session.kill(); }
+  }, 15_000);
+
+  // a signal's end is never the 0 of a success: told as a shell tells it
+  it.skipIf(process.platform === "win32")("reports a command a signal ended as 128 plus the signal's number", async () => {
+    const ended = run("sh", ["-c", "kill -TERM $$"]);
+    try {
+      expect(await ended.exited).toBe(143);
+    } finally { ended.session.kill(); }
+  }, 15_000);
+
+  // The host's grace deadline may not release the hold:
+  // the same exit check used in production must observe the command's end.
+  it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
+    const ended = run("sh", ["-c", "exit 7"], { env: { OVIS_TEST_PTY_NO_CLOSE_DEADLINE: "1" } });
+    try {
+      expect(await ended.exited).toBe(7);
+    } finally { ended.session.kill(); }
+  }, 15_000);
+
+  // the host waits (EXIT_QUIET) for a command that closed its terminal, as a dying one does, before hanging it up:
+  // time is the behaviour here, a command exiting 50 ms after it closed its terminal is well within that wait
+  it.skipIf(process.platform === "win32")("lets a command that closed its terminal exit with its own code", async () => {
+    const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 0.05; exit 3"]);
+    try {
+      expect(await ended.exited).toBe(3);
+    } finally { ended.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("hangs up a command that closed its terminal and kept running as an end of its own, not a signal", async () => {
+    const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 5"]);
+    try {
+      expect(await ended.exited).toBe(0);
+    } finally { ended.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("reports a signal the command sent itself after the host hung it up, as that signal", async () => {
+    const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 0.45; kill -TERM $$"]);
+    try {
+      expect(await ended.exited).toBe(143);
+    } finally { ended.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("ends a command that closed its terminal and ignores the hangup, as an end of its own", async () => {
+    const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 30"]);
+    try {
+      expect(await ended.exited).toBe(0);
+    } finally { ended.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("signals SIGWINCH to the command without changing its size", async () => {
+    const winch = run("node", ["-e", `
+      process.on("SIGWINCH", () => process.stdout.write("WINCH " + process.stdout.columns + "x" + process.stdout.rows, () => process.exit(0)));
+      process.stdout.write("READY");
+      setInterval(() => {}, 1000);
+    `], { cols: 40, rows: 5 });
+    try {
+      await winch.until("READY", (output) => output.includes("READY"));
+      winch.session.winch();
+      expect(await winch.exited).toBe(0);
+      expect(winch.output()).toContain("WINCH 40x5");
+    } finally { winch.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("resizes the pty, and the command hears it", async () => {
+    // process.stdout first: its own SIGWINCH listener, which refreshes the size, has to run before ours
+    const resized = run("node", ["-e", `
+      const out = process.stdout;
+      process.on("SIGWINCH", () => out.write("WINCH " + out.columns + "x" + out.rows, () => process.exit(0)));
+      out.write("READY");
+      setInterval(() => {}, 1000);
+    `], { cols: 40, rows: 5 });
+    try {
+      await resized.until("READY", (output) => output.includes("READY"));
+      resized.session.resize(60, 10);
+      expect(await resized.exited).toBe(0);
+      expect(resized.output()).toContain("WINCH 60x10");
+    } finally { resized.session.kill(); }
+  }, 15_000);
+
+  it("holds output while paused with input live, and delivers it all on resume", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-pty-pause-"));
+    const wrote = join(dir, "wrote");
+    const interrupted = join(dir, "interrupted");
+    const held = "B".repeat(1000);
+    const paused = run("node", ["-e", `
+      const fs = require("fs");
+      process.stdin.setRawMode(true);
+      process.stdin.on("data", (data) => {
+        const text = data.toString();
+        if (text.includes("\\x03")) fs.writeFileSync(${JSON.stringify(interrupted)}, "");
+        if (text.includes("go")) process.stdout.write("B".repeat(1000), () => fs.writeFileSync(${JSON.stringify(wrote)}, ""));
+        if (text.includes("q")) process.stdout.write("END", () => process.exit(0));
+      });
+      process.stdout.write("READY");
+    `]);
+    try {
+      await paused.until("READY", (output) => output.includes("READY"));
+      paused.session.pause();
+      paused.session.write("go");
+      await appears(wrote);
+      expect(paused.output()).not.toContain("B");
+      paused.session.write("\x03");
+      await appears(interrupted);
+      expect(paused.output()).not.toContain("B");
+      paused.session.resume();
+      await paused.until("the held output", (output) => output.includes(held));
+      paused.session.write("q");
+      expect(await paused.exited).toBe(0);
+      expect(paused.output()).toEndWith("END");
+    } finally {
+      paused.session.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("writes a lone surrogate as U+FFFD, the way JavaScript encodes it", async () => {
+    const echo = run("node", ["-e", `
+      process.stdin.setRawMode(true);
+      process.stdin.once("data", (data) => process.stdout.write("HEX:" + data.toString("hex"), () => process.exit(0)));
+      process.stdout.write("READY");
+    `]);
+    try {
+      await echo.until("READY", (output) => output.includes("READY"));
+      echo.session.write("a\ud83db");
+      expect(await echo.exited).toBe(0);
+      expect(echo.output()).toContain("HEX:61efbfbd62");
+    } finally { echo.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("lets a command that leaves at its own keys read everything written before them, however late it reads (#4174)", async () => {
+    const gate = join(mkdtempSync(join(fixtures, "gate-")), "open");
+    const leaving = run("node", READS(gate, true), { leaveAt: LEAVE });
+    try {
+      await leaving.until("READY", (output) => output.includes("READY"));
+      const typed = ["a", ...Array.from({ length: 6 }, (_, wheel) => `\x1b[<64;10;${wheel + 1}M`)];
+      for (const text of typed) expect(leaving.session.write(text)).toBe(true);
+      leaving.session.leave();
+      expect(leaving.session.write("b")).toBe(false);
+      writeFileSync(gate, "");
+      await leaving.session.exited;
+      expect(leaving.output()).toBe(`READY${bytes(typed.join("") + LEAVE.keys)}`);
+    } finally { leaving.session.kill(); }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("ends a command with its keys unwritten behind input they would not be read as its way out after", async () => {
+    const held = run("node", READS(null, true), { leaveAt: LEAVE });
+    try {
+      await held.until("READY", (output) => output.includes("READY"));
+      held.session.write("\x02");
+      await held.until("the chord's first key", (output) => output.includes("<02>"));
+      held.session.leave();
+      await held.session.exited;
+      expect(held.output()).toBe("READY<02>");
+    } finally { held.session.kill(); }
+  }, 15_000);
+
+  // time is the behaviour here: a command that does not leave is ended as a kill ends it, once it has had
+  // LEAVE_WITHIN_MS for it and well after a kill at once would have (some 250 ms)
+  it.skipIf(process.platform === "win32")("ends a command that has not left at its keys within LEAVE_WITHIN_MS", async () => {
+    const staying = run("node", READS(null, false), { leaveAt: LEAVE });
+    try {
+      await staying.until("READY", (output) => output.includes("READY"));
+      staying.session.write("a");
+      const asked = performance.now();
+      staying.session.leave();
+      await staying.session.exited;
+      expect(performance.now() - asked).toBeGreaterThan(LEAVE_WITHIN_MS / 2);
+      expect(staying.output()).toBe(`READY${bytes(`a${LEAVE.keys}`)}`);
+    } finally { staying.session.kill(); }
+  }, 15_000);
+
+  it("reaps both processes when killed with output paused", async () => {
+    const tag = `ovis-pty-reap-${crypto.randomUUID()}`;
+    const flood = run("node", ["-e", `/* ${tag} */ setInterval(() => process.stdout.write("x".repeat(4096)), 5);`]);
+    try {
+      await flood.until("output", (output) => output.length > 0);
+      flood.session.pause();
+      flood.session.kill();
+      await flood.session.exited;
+      expect(Bun.spawnSync(["pgrep", "-f", tag]).stdout.length).toBe(0);
+    } finally { flood.session.kill(); }
+  }, 15_000);
+
+  it("kills the command's whole process group when stopped, even one ignoring SIGHUP", async () => {
+    const tag = sleepTag();
+    const stubborn = run("sh", STUBBORN_GROUP(tag, "wait"));
+    try {
+      await stubborn.until("READY", (output) => output.includes("READY"));
+      stubborn.session.kill();
+      await stubborn.session.exited;
+      expect(await gone(tag)).toBe(true);
+    } finally {
+      stubborn.session.kill();
+      Bun.spawnSync(["pkill", "-KILL", "-f", tag]);
+    }
+  }, 15_000);
+
+  it("kills what is left of the command's process group when the command exits", async () => {
+    const tag = sleepTag();
+    const leaving = run("sh", STUBBORN_GROUP(tag, "exit 0"));
+    try {
+      expect(await leaving.exited).toBe(0);
+      expect(await gone(tag)).toBe(true);
+    } finally {
+      leaving.session.kill();
+      Bun.spawnSync(["pkill", "-KILL", "-f", tag]);
+    }
+  }, 15_000);
+
+  it("holds output paused when the command exits, and delivers all of it on resume", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-pty-exit-paused-"));
+    const wrote = join(dir, "wrote");
+    const ending = run("node", ["-e", `
+      const fs = require("fs");
+      process.stdin.setRawMode(true);
+      process.stdin.once("data", () => process.stdout.write("Q".repeat(1000), () => { fs.writeFileSync(${JSON.stringify(wrote)}, ""); process.exit(3); }));
+      process.stdout.write("READY");
+    `]);
+    try {
+      await ending.until("READY", (output) => output.includes("READY"));
+      ending.session.pause();
+      ending.session.write("go");
+      await appears(wrote);
+      await Bun.sleep(400); // fixed wait: past the 200 ms a host may keep reading once its command has exited
+      expect(ending.output()).not.toContain("Q");
+      ending.session.resume();
+      expect(await ending.exited).toBe(3);
+      expect(ending.output()).toContain("Q".repeat(1000));
+    } finally {
+      ending.session.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
 
 function direct(args: string[]) {
   // exec keeps the host's pid; no core dump when a test aborts it (NO_CORE)
