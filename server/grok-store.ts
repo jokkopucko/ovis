@@ -1,4 +1,4 @@
-import { opendirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, opendirSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
@@ -10,13 +10,16 @@ const MAX_GROUPS = 4096;
 const DELETED_SUFFIX = " (deleted)";
 /** Packaging only. A version such as `grok-1.0.52` keeps its dots. */
 const EXECUTABLE_SUFFIXES = [".cjs", ".mjs", ".exe", ".js"];
+const LAUNCHER = /(^|[\\/])(?:bun|node)(?:\.exe)?$/i;
 
 export interface GrokProcessInfo { foreground_processes?: { pid: number; argv?: string[] | null }[] }
+function isGrokLauncher(argv: readonly string[]): boolean {
+  return LAUNCHER.test(argv[0] ?? "") && isGrokExecutable(argv[1] ?? "");
+}
 export function grokPaneProcesses(info: GrokProcessInfo): { pid: number }[] {
   return (info.foreground_processes ?? []).filter((p) => {
     const argv = p.argv ?? [];
-    return isGrokExecutable(argv[0] ?? "") ||
-      (/(^|[\\/])(?:bun|node)(?:\.exe)?$/i.test(argv[0] ?? "") && isGrokExecutable(argv[1] ?? ""));
+    return isGrokExecutable(argv[0] ?? "") || isGrokLauncher(argv);
   });
 }
 
@@ -83,6 +86,7 @@ export function grokTranscriptPath(home: string, session: string): string | null
 
 const MAX_LISTED_FILES = 4096;
 const MAX_LISTING_BYTES = 1024 * 1024;
+const MAX_ACTIVE_SESSIONS_BYTES = 1024 * 1024;
 
 /** Do not substitute the bridge's home when the pane's environment is unreadable. */
 export function grokHomeFromEnvironment(environment: string): string | null {
@@ -223,6 +227,157 @@ function reportedSessionPath(home: string, sessionId: string, held: Map<string, 
   return path !== null && dirname(path) === sessionDir ? path : null;
 }
 
+function linuxGrokExecutable(pid: number): boolean {
+  try { return isGrokExecutable(readlinkSync(`/proc/${pid}/exe`)); }
+  catch { return false; }
+}
+
+/** Direct children of every thread of a Linux process (/proc/<pid>/task/<tid>/children). */
+function linuxThreadChildren(pid: number): number[] | null {
+  const tasks = readdirSync(`/proc/${pid}/task`);
+  if (tasks.length > MAX_LISTED_FILES) return null;
+  const children = new Set<number>();
+  for (const task of tasks) {
+    const list = readFileSync(`/proc/${pid}/task/${task}/children`, "utf8");
+    for (const word of list.split(/\s+/)) {
+      if (word === "") continue;
+      const child = Number(word);
+      if (Number.isSafeInteger(child) && child > 0) children.add(child);
+    }
+  }
+  return [...children];
+}
+
+/** Retry once when a thread exits while reading /proc/<pid>/task, as server/foreground-job.ts does. */
+function linuxChildren(pid: number): number[] | null {
+  try { return linuxThreadChildren(pid); }
+  catch {
+    try { return linuxThreadChildren(pid); }
+    catch { return null; }
+  }
+}
+
+/**
+ * The single Grok owner process for a pane: prefer a Grok executable in argv[0] over a bun/node
+ * launcher (classic herdr lists both). When only one launcher is listed, on Linux take its single
+ * direct child whose /proc/<pid>/exe is a Grok executable and that stays in the launcher's process
+ * group (the pane's foreground job). Anything else is ambiguous and returns null.
+ */
+export function grokOwnerPid(info: GrokProcessInfo, platform: string = process.platform): number | null {
+  const direct: number[] = [];
+  const launchers: number[] = [];
+  for (const p of info.foreground_processes ?? []) {
+    const argv = p.argv ?? [];
+    if (isGrokExecutable(argv[0] ?? "")) direct.push(p.pid);
+    else if (isGrokLauncher(argv)) launchers.push(p.pid);
+  }
+  if (direct.length > 0) {
+    if (direct.length !== 1) return null;
+    const pid = direct[0]!;
+    if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+    if (platform === "linux") return linuxGrokExecutable(pid) ? pid : null;
+    return platform === "darwin" ? pid : null;
+  }
+  if (launchers.length !== 1) return null;
+  const launcher = launchers[0]!;
+  if (!Number.isSafeInteger(launcher) || launcher <= 0) return null;
+  if (platform === "darwin") return launcher;
+  if (platform !== "linux") return null;
+  const children = linuxChildren(launcher);
+  if (children === null) return null;
+  const group = linuxStatNumber(launcher, PGRP_FIELD);
+  if (group === null) return null;
+  const grokChildren = children.filter((child) => linuxGrokExecutable(child) && linuxStatNumber(child, PGRP_FIELD) === group);
+  return grokChildren.length === 1 ? grokChildren[0]! : null;
+}
+
+/** /proc/<pid>/stat fields counted from the one after `(comm)`: 5 (pgrp) and 22 (starttime). */
+const PGRP_FIELD = 2;
+const START_FIELD = 19;
+
+function linuxStatNumber(pid: number, field: number): number | null {
+  try {
+    const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = text.lastIndexOf(") ");
+    if (close < 0) return null;
+    const raw = text.slice(close + 2).split(" ")[field];
+    if (raw === undefined || !/^\d+$/.test(raw)) return null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) ? value : null;
+  } catch { return null; }
+}
+
+/** Field 22 (starttime, clock ticks) of /proc/<pid>/stat, matching Grok's active_sessions.json `pid_start`. */
+function linuxPidStart(pid: number): number | null {
+  return linuxStatNumber(pid, START_FIELD);
+}
+
+/** The file's bytes read through one descriptor, or null when it is not a file or exceeds `max`. */
+function readBounded(path: string, max: number): Buffer | null {
+  const fd = openSync(path, "r");
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    const buffer = Buffer.alloc(max + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    return length > max ? null : buffer.subarray(0, length);
+  } finally { closeSync(fd); }
+}
+
+/**
+ * Stand-in for herdr's session report on Linux when herdr names none (herdr-core): read
+ * `<GROK_HOME>/active_sessions.json` bounded, validate every entry, and pick the strictly latest
+ * `opened_at` matching both `pid` and `pid_start`. Still confirmed by `reportedSessionPath`.
+ */
+export function grokActiveSession(home: string, pid: number, pidStart: number): string | null {
+  if (!isAbsolute(home) || !Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(pidStart) || pidStart < 0) return null;
+  let parsed: unknown;
+  try {
+    const raw = readBounded(join(home, "active_sessions.json"), MAX_ACTIVE_SESSIONS_BYTES);
+    if (raw === null) return null;
+    parsed = JSON.parse(raw.toString("utf8"));
+  } catch { return null; }
+  if (!Array.isArray(parsed)) return null;
+  let latest: { id: string; at: number } | null = null;
+  let tied = false;
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    const id = record["session_id"];
+    const entryPid = record["pid"];
+    const entryStart = record["pid_start"];
+    const openedAt = record["opened_at"];
+    const cwd = record["cwd"];
+    if (typeof id !== "string" || !SESSION.test(id)) return null;
+    if (typeof entryPid !== "number" || !Number.isSafeInteger(entryPid) || entryPid <= 0) return null;
+    if (typeof entryStart !== "number" || !Number.isSafeInteger(entryStart) || entryStart < 0) return null;
+    // millisecond precision: two sessions opened in the same millisecond tie, and a tie fails closed
+    const at = typeof openedAt === "string" ? Date.parse(openedAt) : Number.NaN;
+    if (!Number.isFinite(at)) return null;
+    if (cwd !== undefined && typeof cwd !== "string") return null;
+    if (entryPid !== pid || entryStart !== pidStart) continue;
+    if (latest === null || at > latest.at) {
+      latest = { id, at };
+      tied = false;
+    } else if (at === latest.at) {
+      tied = true;
+    }
+  }
+  return latest !== null && !tied ? latest.id : null;
+}
+
+function herdrReportedGrokSession(pane: HerdrPane): { present: boolean; id: string | null } {
+  const session = pane.agent_session;
+  if (session?.agent !== "grok" || session.kind !== "id" || session.source !== "herdr:grok") {
+    return { present: false, id: null };
+  }
+  return { present: true, id: SESSION.test(session.value) ? session.value : null };
+}
+
 async function resolveDarwinGrokStore(paneId: string, pid: number, sessionId: string, configuredHome: string | undefined): Promise<string | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   const started = darwinProcess.startTime(pid);
@@ -238,28 +393,42 @@ async function resolveDarwinGrokStore(paneId: string, pid: number, sessionId: st
   if (darwinProcess.startTime(pid) !== started) return null;
   // The initial foreground list may predate the sampled process. Confirm membership again,
   // then bracket that asynchronous RPC with the same kernel birth time as the evidence.
-  const current = grokPaneProcesses((await paneProcessInfo(paneId)) ?? {});
-  return current.length === 1 && current[0]!.pid === pid && darwinProcess.startTime(pid) === started ? path : null;
+  const current = grokOwnerPid((await paneProcessInfo(paneId)) ?? {}, "darwin");
+  return current === pid && darwinProcess.startTime(pid) === started ? path : null;
 }
 
-/** Bind Herdr's exact ID only when its unique held directory has the newest events.jsonl.
+/** Bind Herdr's exact ID (or, on Linux when herdr names none, the owner process's latest
+ * `active_sessions.json` entry) only when its unique held directory has the newest events.jsonl.
  * Linux reads /proc. macOS reads lsof and the kernel's copy of the environment. Windows stays
  * on the terminal view.
  * Write times confirm that ID; they never select a different conversation. */
 export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<string | null> {
-  const session = pane.agent_session;
-  if (pane.agent !== "grok" || session?.agent !== "grok" || session.kind !== "id" || session.source !== "herdr:grok" || !SESSION.test(session.value)) return null;
-  // The executable may be any Grok build. Herdr's id chooses the session; an events.jsonl it did not name does not.
-  if (platform !== "linux" && platform !== "darwin") return null;
+  if (pane.agent !== "grok" || (platform !== "linux" && platform !== "darwin")) return null;
+  const reported = herdrReportedGrokSession(pane);
+  if (reported.present) {
+    if (reported.id === null) return null;
+  } else if (platform !== "linux") {
+    return null;
+  }
   try {
-    const processes = grokPaneProcesses((await paneProcessInfo(pane.pane_id)) ?? {});
-    if (processes.length !== 1) return null;
-    const owner = processes[0]!;
-    if (platform === "darwin") return await resolveDarwinGrokStore(pane.pane_id, owner.pid, session.value, configuredHome);
-    if (!isGrokExecutable(readlinkSync(`/proc/${owner.pid}/exe`))) return null;
-    const home = configuredHome ?? grokHomeFromEnvironment(readFileSync(`/proc/${owner.pid}/environ`, "utf8"));
+    const ownerPid = grokOwnerPid((await paneProcessInfo(pane.pane_id)) ?? {}, platform);
+    if (ownerPid === null) return null;
+    if (platform === "darwin") return await resolveDarwinGrokStore(pane.pane_id, ownerPid, reported.id!, configuredHome);
+    const pidStart = reported.present ? null : linuxPidStart(ownerPid);
+    if (!reported.present && pidStart === null) return null;
+    const home = configuredHome ?? grokHomeFromEnvironment(readFileSync(`/proc/${ownerPid}/environ`, "utf8"));
     if (!home) return null;
-    return reportedSessionPath(home, session.value, grokHeldSessions(owner.pid, home));
+    const sessionId = reported.present ? reported.id! : grokActiveSession(home, ownerPid, pidStart!);
+    if (sessionId === null) return null;
+    const held = grokHeldSessions(ownerPid, home);
+    if (!reported.present) {
+      // The registry names a session by pid alone: confirm the pid is still this pane's owner, the
+      // same process, after every read, so a pid reused by another pane's Grok never binds here.
+      if (linuxPidStart(ownerPid) !== pidStart) return null;
+      if (grokOwnerPid((await paneProcessInfo(pane.pane_id)) ?? {}, platform) !== ownerPid) return null;
+      if (linuxPidStart(ownerPid) !== pidStart) return null;
+    }
+    return reportedSessionPath(home, sessionId, held);
   } catch { return null; }
 }
 
@@ -272,12 +441,10 @@ export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string,
 export async function grokHeldTranscript(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<string | null> {
   if (pane.agent !== "grok" || platform !== "linux") return null;
   try {
-    const processes = grokPaneProcesses((await paneProcessInfo(pane.pane_id)) ?? {});
-    if (processes.length !== 1) return null;
-    const owner = processes[0]!;
-    if (!isGrokExecutable(readlinkSync(`/proc/${owner.pid}/exe`))) return null;
-    const home = configuredHome ?? grokHomeFromEnvironment(readFileSync(`/proc/${owner.pid}/environ`, "utf8"));
-    const held = home ? grokHeldSessions(owner.pid, home) : null;
+    const ownerPid = grokOwnerPid((await paneProcessInfo(pane.pane_id)) ?? {}, platform);
+    if (ownerPid === null) return null;
+    const home = configuredHome ?? grokHomeFromEnvironment(readFileSync(`/proc/${ownerPid}/environ`, "utf8"));
+    const held = home ? grokHeldSessions(ownerPid, home) : null;
     if (!home || held === null || held.size !== 1) return null;
     const [dir] = held.keys();
     const path = grokTranscriptPath(home, basename(dir!));

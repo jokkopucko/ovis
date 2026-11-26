@@ -24,7 +24,11 @@ The bridge reads the one foreground Grok process's environment for `GROK_HOME`, 
 `HOME/.grok` when unset: `/proc/<pid>/environ` on Linux, `sysctl` `KERN_PROCARGS2` on
 macOS, never the bridge's own home. A relative `GROK_HOME` does not fall through to
 `HOME`. The pane's Grok process is found in Herdr's foreground list, and chat needs exactly
-one. Foreground discovery and the
+one: a process whose `argv[0]` is a Grok executable is preferred over a `node`/`bun`
+launcher (such as an npm wrapper), and on Linux, if only one `node`/`bun` launcher is listed
+(as on herdr-core, which reports only the foreground leader), the bridge follows its single
+direct child whose `/proc/<pid>/exe` is a Grok executable. Multiple Grok executables or
+multiple Grok children remain ambiguous and use the terminal view. Foreground discovery and the
 executable check both accept `grok` or `grok-…`, with packaging suffixes removed; neither
 requires a particular build number or a numeric suffix. On macOS the executable is the
 first `txt` entry from `lsof` (later `txt` lines are mapped files such as dyld). A
@@ -35,7 +39,13 @@ a conversation, and a symlinked session is not followed.
 Grok keeps `events.jsonl` open for earlier sessions as well as the one on screen, and an
 in-TUI `/resume` on Grok 1.0.50 does not fire `SessionStart`, so Herdr can keep an old ID.
 `active_sessions.json` does not say which session is on screen, and neither does the newest
-file. Chat follows the session Herdr reported only when that process holds its
+file. When Herdr reports no Grok session (herdr-core), on Linux `<GROK_HOME>/active_sessions.json`
+stands in for Herdr's report only: the bridge reads it with a size cap, validates every entry,
+matches the owner Grok process's PID and `/proc/<pid>/stat` start time (`pid_start`), and
+takes the entry with the strictly latest `opened_at` (a tie, missing entry, or malformed or
+oversized file falls back to the terminal view). A Herdr-reported session keeps priority
+whenever present. Chat follows the reported session—whether from Herdr or, on Linux without
+a Herdr report, from `active_sessions.json`—only when that process holds its
 `events.jsonl`, that ID occurs in exactly one held session directory, and that file was
 written more recently than every other held session's `events.jsonl`. Older open session
 files do not hide it. Duplicate held IDs remain ambiguous even when only one directory has
@@ -67,10 +77,11 @@ listing must match the named file. Its write time comes from the named file only
 that identity matches. A missing device or inode is not a match. The `lsof` read has a
 three-second timeout.
 
-The newest file only confirms Herdr's ID; it never chooses another session. A missing held
+The newest file only confirms the reported ID (Herdr's, or the latest `active_sessions.json`
+entry on Linux when Herdr names none); it never chooses another session. A missing held
 file or a newer write to another held session uses the terminal view. An in-TUI `/resume`
-that writes to another session without reporting it to Herdr therefore shows the terminal
-until Herdr names that session and the same checks pass. The same rule applies to every
+that writes to another session without updating that report therefore shows the terminal
+until the reported session matches and the same checks pass. The same rule applies to every
 Grok executable. Builds other than 1.0.50 were not each re-checked.
 
 **Resume limitation:** a `/resume` that Herdr does not hear about can keep showing the
