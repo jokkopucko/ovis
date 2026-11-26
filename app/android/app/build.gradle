@@ -75,8 +75,8 @@ android {
         applicationId "sh.ovis.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 15
-        versionName "1.0.7"
+        versionCode 16
+        versionName "1.0.8"
         buildConfigField "String", "PREVIEW_FEED", '""'
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField "String", "APP_ORIGIN", "\"${appOrigin}\""

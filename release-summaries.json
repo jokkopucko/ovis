@@ -1,4 +1,58 @@
 {
+  "0.5.11": {
+    "en": {
+      "new": [
+        "The install line now ends with Ovis running on Linux, Mac and Windows.",
+        "Installers can add a PC to your account with no terminal."
+      ],
+      "improved": [
+        "libghostty now draws every terminal; xterm.js is gone.",
+        "Codex and Claude turn failures show and alert sooner."
+      ],
+      "fixed": [
+        "Phones on Wi-Fi no longer claim to be offline and block your PCs."
+      ]
+    },
+    "ko": {
+      "new": [
+        "설치 한 줄이 끝나면 리눅스·맥·윈도우에서 Ovis가 켜져 있어요.",
+        "설치 스크립트로 터미널 없이 PC를 계정에 넣을 수 있어요."
+      ],
+      "improved": [
+        "모든 터미널을 libghostty가 그려요. xterm.js는 빠졌어요.",
+        "Codex·Claude의 턴 실패가 더 빨리 보이고 알림이 와요."
+      ],
+      "fixed": [
+        "와이파이에 연결된 폰이 오프라인이라며 PC를 막지 않아요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "インストールの1行が終わると Linux・Mac・Windows で Ovis が起動しています。",
+        "インストーラーでターミナルなしに PC をアカウントへ追加できます。"
+      ],
+      "improved": [
+        "すべてのターミナルを libghostty が描画し、xterm.js はなくなりました。",
+        "Codex と Claude のターン失敗がより早く表示・通知されます。"
+      ],
+      "fixed": [
+        "Wi-Fi につながったスマホがオフライン扱いで PC を開けない問題を修正。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "一行安装命令结束后，Linux、Mac 和 Windows 上的 Ovis 会保持运行。",
+        "安装脚本可以无需终端就把 PC 加入你的账户。"
+      ],
+      "improved": [
+        "所有终端都由 libghostty 绘制，xterm.js 已移除。",
+        "Codex 和 Claude 的回合失败会更快显示并提醒。"
+      ],
+      "fixed": [
+        "连着 Wi-Fi 的手机不再误报离线、挡住打开 PC。"
+      ]
+    }
+  },
   "0.5.10": {
     "en": {
       "new": [

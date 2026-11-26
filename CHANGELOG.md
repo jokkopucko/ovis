@@ -7,6 +7,91 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-11-26
+
+### Added
+- `curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>` (or
+  `OVIS_ADD_ACCOUNT=<id>`) adds a new server to your Ovis account with no terminal, as a script or a
+  coding agent runs it: the installer runs `ovis add --account <id>` and exits non-zero when the PC
+  was not added.
+  ([#4520](https://github.com/devswha/ovis/pull/4520))
+- `curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file <file> --account <id>` (or the line in
+  `OVIS_JOIN`) joins a new PC to your Ovis account with an invite a device of it made, with no sign-in
+  on the PC: once Ovis runs, the installer runs `ovis join` with the line in its environment, never on
+  a command line, and exits non-zero unless the PC joined, saying why in one line. Without `--account`
+  it runs the join at a terminal, which asks whether the invite's account is yours, and where nobody
+  can answer it refuses before installing anything. `--help` lists
+  the installer's options.
+  ([#4520](https://github.com/devswha/ovis/pull/4520))
+- `& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -Add -Account <id>` (or
+  `OVIS_ADD_ACCOUNT=<id>` before `irm https://ovis.sh/install.ps1 | iex`) adds a Windows PC to your
+  Ovis account with no terminal, as a script or a coding agent runs it: the installer runs
+  `ovis add --account <id>` and fails when the PC was not added. `-Add` alone runs `ovis add` at a
+  terminal.
+  ([#4565](https://github.com/devswha/ovis/pull/4565))
+- `& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -JoinFile <file> -Account <id>` (or
+  the line in `OVIS_JOIN`) joins a Windows PC to your Ovis account with an invite a device of it made,
+  with no sign-in on the PC: once Ovis runs, the installer runs `ovis join` with the line in its
+  environment, never on a command line, and fails unless the PC joined, saying why in one line.
+  Without `-Account` it runs the join at a terminal, which asks whether the invite's account is yours,
+  and where nobody can answer it refuses before installing anything.
+  `-Help` lists the installer's options.
+  ([#4565](https://github.com/devswha/ovis/pull/4565))
+
+### Changed
+- The one-line installer now ends with Ovis running on a PC where herdr was not running (just
+  installed, or stopped): it starts herdr's server headless, and the app with it, and sets up what
+  starts herdr again: on a Linux PC used without a desktop the user service `ovis-herdr`, only where
+  lingering is on or can be turned on without a password, so herdr starts at boot and keeps running
+  after a logout; on a Mac the Mac app's `sh.ovis.herdr-server` LaunchAgent. On a Linux desktop
+  (its session, a display manager or a graphical session), without lingering, or with `--no-service`
+  (`OVIS_NO_SERVICE=1`) it starts herdr once and sets up nothing, and it removes a service an earlier
+  run set up where none is wanted now. The service never stops herdr, a herdr that already runs is left as it
+  is, and the guide's Uninstall removes the service. Its last lines say what runs, what starts it
+  again, `ovis status` to see it and `ovis stop` to stop it.
+  ([#4520](https://github.com/devswha/ovis/pull/4520))
+- The terminal no longer runs xterm.js: libghostty draws every pane and answers the program, and
+  Ovis's own input layer takes keys, IME, paste and the mouse. Typing, selection, links and
+  scrolling work as before.
+  ([#4778](https://github.com/devswha/ovis/pull/4778))
+- The Windows installer (`irm https://ovis.sh/install.ps1 | iex`) now ends with Ovis running on a PC
+  where herdr was not running: it starts herdr's server with no window, and the app with it, in your
+  signed-in desktop, also when it runs over SSH or from a coding agent's command, and sets herdr to
+  start at your sign-in, the same Startup entry (`Ovis`) the Ovis app for Windows sets. It needs no
+  administrator and sets up no Windows service. `-NoService` (`OVIS_NO_SERVICE=1`) starts herdr once
+  and sets up no sign-in start. Over SSH with nobody signed in at the PC it starts nothing unless
+  given `-Headless` (`OVIS_HEADLESS=1`), which starts herdr without a desktop. A herdr that already
+  runs is left as it is.
+  ([#4565](https://github.com/devswha/ovis/pull/4565))
+- For Codex panes opened by Ovis, chat reflects live model, reasoning effort and Plan mode
+  between turns, including after resuming a saved conversation. On a fresh thread, the Plan
+  icon can appear only once Codex writes its first session record.
+  ([#4789](https://github.com/devswha/ovis/pull/4789))
+
+### Removed
+- Ovis no longer ships xterm.js or its addons, and `localStorage["ovis:terminal-engine"]` no
+  longer brings the old terminal back.
+  ([#4781](https://github.com/devswha/ovis/pull/4781))
+
+### Fixed
+- Usage limits and other turn failures in Codex and Claude Code update the pane status and trigger
+  enabled error alerts sooner, without repeating the alert when the chat history catches up.
+  ([#4800](https://github.com/devswha/ovis/pull/4800))
+- On some Android phones (seen on a Galaxy Z Flip6 on Wi-Fi), My PCs said the phone was not
+  connected to the internet and refused to open a PC while the network worked, and an opened PC's
+  terminal could hold every key. A phone or browser that says it is offline is now checked against
+  the account service before a PC opens and on Try again, and a terminal takes keys again once its
+  PC answers.
+  ([#4810](https://github.com/devswha/ovis/pull/4810))
+- The Mac preview app no longer takes over a PC's released Ovis when it reaches that PC over SSH:
+  it used to find that Ovis, offer to update it to the newest release of its own channel and, in an
+  account add, take it into the preview's test account. It now leaves that Ovis alone, adds no PC
+  to its account over SSH and installs no Ovis on another PC.
+  ([#4802](https://github.com/devswha/ovis/pull/4802))
+- The desktop launcher no longer gives a stopped app's address to the terminal screen or
+  tries to approve a device after the desktop server stops listening.
+  ([#4801](https://github.com/devswha/ovis/pull/4801))
+
 ## [0.5.10] - 2026-11-26
 
 ### Added
@@ -13578,7 +13663,8 @@ First public version.
 - Installable PWA, a mobile key bar, web push alerts and optional token auth.
 - Distribution as a herdr plugin.
 
-[Unreleased]: https://github.com/devswha/ovis/compare/v0.5.10...HEAD
+[Unreleased]: https://github.com/devswha/ovis/compare/v0.5.11...HEAD
+[0.5.11]: https://github.com/devswha/ovis/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/devswha/ovis/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/devswha/ovis/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/devswha/ovis/compare/v0.5.7...v0.5.8
