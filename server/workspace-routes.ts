@@ -314,7 +314,17 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
           return badRequest("invalid_worktree_target", "the confirmed core, repository, checkout and git directory identity are required");
         }
         removed = await worktreeRemove(payload.workspace_id, false, undefined, { expected_core, expected_repo, expected_checkout, expected_git_id });
-      } else removed = await worktreeRemove(payload.workspace_id, payload.force === true);
+      } else {
+        // the checkout the confirmation showed: a core refuses the delete when the workspace names another by now
+        if (expected_checkout !== undefined && (typeof expected_checkout !== "string" || !isAbsolute(expected_checkout))) {
+          return badRequest("invalid_expected_checkout", "expected_checkout must be an absolute path");
+        }
+        if (expected_git_id !== undefined && (typeof expected_git_id !== "string" || !expected_git_id)) {
+          return badRequest("invalid_expected_git_id", "expected_git_id must be a non-empty string");
+        }
+        const confirmed = { ...(expected_checkout === undefined ? {} : { expected_checkout }), ...(expected_git_id === undefined ? {} : { expected_git_id }) };
+        removed = await worktreeRemove(payload.workspace_id, payload.force === true, undefined, Object.keys(confirmed).length === 0 ? undefined : confirmed);
+      }
       broadcastAll({ type: "session-changed" });
       return jsonResponse({ ok: true, path: removed.path, forced: removed.forced });
     } catch (error) {

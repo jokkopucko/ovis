@@ -21,6 +21,7 @@ import { layoutCalls, LayoutStore, moveBesideEdit, newLayoutId, ownsLayout, rati
 import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, type RepositoryReads, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
 import type { SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/worktree-info.ts";
+import type { HerdrWorkspaceWorktree } from "../../shared/protocol.ts";
 
 /**
  * herdr's socket API, answered from herdr-core. The server talks to herdr through one client
@@ -617,13 +618,16 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     await Promise.all([...asked].map(async ([workspace, folder]) => {
       const answer = await answerFor(folder);
       if (!answer) return;
-      workspace.worktree = { ...answer.facts };
       let pin = pinned.get(workspace.workspace_id);
       // the folder drawn is kept from the first draw; a pin a newer read took stands over this older one
       if (!pin || (pin.folder !== folder && pin.at < began)) pinned.set(workspace.workspace_id, pin = { folder, gitId: null, at: Date.now() });
       // its identity only from an answer git gave since: a cached one may be of a checkout no longer there
       if (pin.folder === folder && pin.gitId === null && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pin.gitId = answer.gitId;
-      gitIds.set(workspace.workspace_id, pin.folder === folder ? pin.gitId ?? answer.gitId : answer.gitId);
+      const gitId = pin.folder === folder ? pin.gitId ?? answer.gitId : answer.gitId;
+      gitIds.set(workspace.workspace_id, gitId);
+      // the row carries the identity it is drawn with, which a delete it confirms sends back (#4211)
+      const drawn: HerdrWorkspaceWorktree = { ...answer.facts, ...(gitId ? { git_id: gitId } : {}) };
+      workspace.worktree = drawn;
     }));
     return { shown, own, gitIds, started };
   };

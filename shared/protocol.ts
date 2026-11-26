@@ -34,7 +34,7 @@ export type {
   WorkspaceInfo,
 } from "./herdr-api.generated.ts";
 
-import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo } from "./herdr-api.generated.ts";
+import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo, WorkspaceWorktreeInfo } from "./herdr-api.generated.ts";
 
 /** GET /api/herdr-ui: the herdr client preferences of the PC serving the web UI, never the rest of its config. */
 export interface HerdrUiConfig {
@@ -43,7 +43,13 @@ export interface HerdrUiConfig {
   keys?: HerdrKeys;
 }
 
-export type HerdrWorkspace = WorkspaceInfo;
+/**
+ * A workspace's checkout as herdr reports it. herdr-core adds `git_id`, the identity of the checkout's
+ * git folder this row was drawn with: Delete worktree checkout… sends it back, so a checkout added
+ * again at the same path since is refused rather than deleted. Absent on herdr and older servers.
+ */
+export type HerdrWorkspaceWorktree = WorkspaceWorktreeInfo & { git_id?: string };
+export type HerdrWorkspace = Omit<WorkspaceInfo, "worktree"> & { worktree?: HerdrWorkspaceWorktree | null };
 export type HerdrTab = TabInfo;
 /** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
 export type PaneContext = { used: number; window: number | null };
@@ -84,8 +90,9 @@ export type HerdrPane = PaneInfo & {
   finish_id?: number;
 };
 /** Missing finish fields on an older bridge mean no finish can be acknowledged here. */
-export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
+export type SessionSnapshot = Omit<HerdrSnapshot, "panes" | "workspaces"> & {
   panes: HerdrPane[];
+  workspaces: HerdrWorkspace[];
   /** Random per bridge start and observed herdr socket/marker replacement, independently per PC. */
   finish_epoch?: string;
   /**
@@ -503,9 +510,11 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
- *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
- *         checkout and closes its workspace, keeps the branch; a dirty checkout is refused without force:
- *         dirty_worktree_requires_force)
+ *  POST   /api/worktree/remove { workspace_id, force?, expected_checkout?, expected_git_id? } -> WorktreeRemoved
+ *         (worktree.remove: deletes the checkout and closes its workspace, keeps the branch; a dirty checkout is
+ *         refused without force: dirty_worktree_requires_force; a herdr-core server refuses a checkout other
+ *         than the confirmed path and git identity: worktree_target_changed; 400 invalid_expected_checkout,
+ *         invalid_expected_git_id when they are not an absolute path and a non-empty string)
  *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
  *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices, then the account-joined ones

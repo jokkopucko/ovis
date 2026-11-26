@@ -2245,6 +2245,34 @@ describe("workspace and discovery endpoints", () => {
     }
   }, 30_000);
 
+  it("hands the checkout the browser confirmed to the delete, so a core refuses one its workspace no longer names (#4211)", async () => {
+    const asked: unknown[][] = [];
+    const removing = spyOn(herdrClient, "worktreeRemove").mockImplementation(async (...args) => {
+      asked.push(args);
+      return { type: "worktree_removed", workspace_id: args[0], path: "/confirmed", forced: args[1] };
+    });
+    const post = (body: unknown) => fetch(`${base()}/api/worktree/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    try {
+      expect((await post({ workspace_id: "w1", expected_checkout: "/confirmed" })).status).toBe(200);
+      expect((await post({ workspace_id: "w1", force: true, expected_checkout: "/confirmed", expected_git_id: "1:2:3" })).status).toBe(200);
+      // an older client confirms no path: its delete goes as before
+      expect((await post({ workspace_id: "w1" })).status).toBe(200);
+      for (const wrong of ["relative/path", "", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_checkout");
+      }
+      for (const wrong of ["", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: "/confirmed", expected_git_id: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_git_id");
+      }
+      expect(asked).toEqual([["w1", false, undefined, { expected_checkout: "/confirmed" }], ["w1", true, undefined, { expected_checkout: "/confirmed", expected_git_id: "1:2:3" }], ["w1", false, undefined, undefined]]);
+    } finally {
+      removing.mockRestore();
+    }
+  });
+
   it("starts a worktree asked from a workspace on a linked checkout at the repository's own workspace", async () => {
     const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-linked-"));
     const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });

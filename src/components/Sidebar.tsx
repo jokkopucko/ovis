@@ -4,7 +4,7 @@ import { Bot, ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, GitBranch
 
 import "./Sidebar.css";
 
-import type { AgentStatus, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrWorkspaceWorktree, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
 import { renamesWorkspace } from "../lib/layoutTargets.ts";
@@ -510,6 +510,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     ] : [];
     const closes = [workspace.workspace_id, ...sameRepo.map((candidate) => candidate.workspace_id)];
     const scope = (group: boolean): CloseScope | undefined => closeScope(snapshot, workspace.workspace_id, group) ?? undefined;
+    // a snapshot's row, which a herdr-core server draws with its checkout's git identity
+    const drawnCheckout: HerdrWorkspaceWorktree | null | undefined = workspace.worktree;
+    const confirmedCheckout = drawnCheckout
+      ? { expected_checkout: drawnCheckout.checkout_path, ...(drawnCheckout.git_id ? { expected_git_id: drawnCheckout.git_id } : {}) } : {};
     const deleteItems: RowMenuItem[] = linked && worktreesOffered && !holdsLock([workspace.workspace_id]) ? [{
       id: "delete-worktree", label: t("Delete worktree checkout…"), icon: Trash2, danger: true,
       run: () => setConfirm({
@@ -517,9 +521,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         title: t("Delete the checkout of {name}?", { name: workspace.label }),
         body: t("The folder at {path} is deleted and the workspace closes. The branch stays.", { path: workspace.worktree?.checkout_path ?? "" }),
         action: t("Delete"),
-        run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id }); }),
+        // the folder this question shows goes with the delete: a server whose workspace names another by now refuses it
+        run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, ...confirmedCheckout }); }),
         // git refuses a checkout with unsaved changes: the refusal shows, and the action becomes a forced one
-        escalation: { label: t("Delete anyway"), code: "dirty_worktree_requires_force", run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, force: true }); }) },
+        escalation: { label: t("Delete anyway"), code: "dirty_worktree_requires_force", run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, force: true, ...confirmedCheckout }); }) },
       }),
     }] : [];
     const closeItem: RowMenuItem = { id: "close", label: t("Close workspace"), icon: X, danger: true, divider: true, run: () => setConfirm({

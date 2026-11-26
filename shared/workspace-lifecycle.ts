@@ -86,6 +86,14 @@ export interface WorktreeOpened {
 export interface RemoveWorktreeRequest {
   workspace_id: string;
   force?: boolean;
+  /**
+   * The checkout the confirmation showed: its folder, and the `git_id` its row carried. herdr-core
+   * refuses the delete when the workspace now names another folder, or the folder holds another
+   * checkout (worktree_target_changed); herdr keeps a workspace's checkout from its start and ignores
+   * them. Older clients send neither and delete as before.
+   */
+  expected_checkout?: string;
+  expected_git_id?: string;
 }
 
 export interface WorktreeRemoved {

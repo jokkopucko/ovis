@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/worktree-info.ts";
+import type { HerdrWorkspaceWorktree } from "../../shared/protocol.ts";
 
 /**
  * herdr's worktree calls, answered with git on a herdr-core PC: hc has no worktrees, so Ovis runs
@@ -27,8 +28,10 @@ export class WorktreeError extends Error {
   }
 }
 
-export function worktreeOfLabels(labels: Record<string, string> | undefined): WorkspaceWorktreeInfo | null {
-  return labeledWorktree(labels)?.facts ?? null;
+/** a labelled workspace's checkout, with the git identity its label recorded for the row to carry */
+export function worktreeOfLabels(labels: Record<string, string> | undefined): HerdrWorkspaceWorktree | null {
+  const labeled = labeledWorktree(labels);
+  return labeled ? { ...labeled.facts, ...(labeled.gitId ? { git_id: labeled.gitId } : {}) } : null;
 }
 
 // git reuses a `.git/worktrees/<name>` for a checkout added again at the same path, but that is a new folder
