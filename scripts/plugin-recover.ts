@@ -11,7 +11,7 @@ export interface RecoverIo {
   terminal: boolean;
   platform: NodeJS.Platform;
   ask(question: string): Promise<string>;
-  send(request: RecoveryAction): Promise<unknown>;
+  send(request: RecoveryAction, timeoutSeconds?: number): Promise<unknown>;
 }
 
 interface WaitingRow {
@@ -166,7 +166,7 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
 export interface LogoutIo extends RecoverIo {
   /** this PC's name, as `ovis login` lists it */
   label: string;
-  /** the PC's account and its member count (`GET /api/account/status`); null when Ovis does not answer */
+  /** the PC's account and its member count; null when Ovis does not answer */
   account(): Promise<{ readonly account: string | null; readonly members: number } | null>;
   /** takes this PC off `account`'s list at the account service, by its own proof; false where that did not happen */
   leave(account: string): Promise<boolean>;

@@ -95,6 +95,7 @@ export function openPcRecovery(options: {
       return done;
     },
     revokeAll: (user) => forgetMedia(devices.revokeAll(user)),
+    accountStatus: () => ({ account: devices.account(), members: devices.accountRows().members }),
   };
   // a bridge this app started on another PC's behalf is never that PC's own Ovis: it is not added to an account
   const managed = () => process.env["OVIS_REMOTE"] === "1";
@@ -124,6 +125,7 @@ export function openPcRecovery(options: {
     switch (act) {
       case "restamp": return devices.restampRefusal(options.retryRestamp === true) === null;
       case "revoke_all": return devices.revokeAllError === null;
+      case "account_status": return !devices.failsClosed && devices.accountError === null;
       case "release": case "admit": case "lift": case "account_add_inspect": case "account_add_take": return devices.accountError === null;
       case "list": case "undo": case "remove": return !devices.failsClosed;
     }

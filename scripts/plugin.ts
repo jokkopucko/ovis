@@ -1485,7 +1485,16 @@ async function recover(args: readonly string[]): Promise<number> {
 /** `ovis logout` (scripts/plugin-recover.ts runLogout): Revoke all over the same recovery socket, after a typed yes. */
 async function logout(): Promise<number> {
   const { runLogout } = await import("./plugin-recover.ts");
-  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => (await health()) ? await accountOf() : null, leave: leaveListing }));
+  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => {
+    const health = await appHealth();
+    if (health === null) return null;
+    if (serverDoor() !== null || !health.tokenRequired) return await accountOf();
+    // Liveness does not prove who holds the TCP port. Ask the same local socket that will revoke the devices.
+    const reply = await io.send({ act: "account_status" }, 2).catch(() => null);
+    if (typeof reply !== "object" || reply === null || !("account" in reply) || !("members" in reply)) return null;
+    const { account, members } = reply;
+    return (typeof account === "string" || account === null) && typeof members === "number" && Number.isSafeInteger(members) ? { account, members } : null;
+  }, leave: leaveListing }));
 }
 
 /**
@@ -1522,7 +1531,7 @@ async function withRecoveryIo(run: (io: import("./plugin-recover.ts").RecoverIo)
       terminal: lines !== null,
       platform: process.platform,
       ask: (question) => lines === null ? Promise.resolve("") : lines.question(question),
-      send: (request) => askRecovery(runningStateDir(APP_STATE_DIR), request),
+      send: (request, timeoutSeconds) => askRecovery(runningStateDir(APP_STATE_DIR), request, timeoutSeconds),
     });
   } finally { lines?.close(); }
 }

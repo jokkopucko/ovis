@@ -21,6 +21,7 @@ export interface RecoverySeams {
   removeKey(input: { target: string; by: "local"; user: string }): { removed: string[] } | { refused: string };
   appendLift(id: string, forget: boolean, user: string): { readonly outcome: string; readonly journalWarning?: string };
   revokeAll(user: string): string[];
+  accountStatus(): { readonly account: string | null; readonly members: number };
   restamp?(confirm: string | undefined, user: string): unknown;
 }
 
@@ -57,6 +58,8 @@ export function recoveryActs(options: { releases: RecoveryReleases; logReadable(
       return action.act === "release" ? { error: `${action.rows[0]} cannot be released: log_unreadable` } : UNREADABLE;
     }
     switch (action.act) {
+      case "account_status":
+        return options.seams?.accountStatus() ?? { error: "Account status is not available on this PC" };
       case "account_add_inspect": case "account_add_take": {
         const add = options.accountAdd;
         if (add === undefined) return { error: "Adding this PC over SSH is not available on it", code: "unavailable" };

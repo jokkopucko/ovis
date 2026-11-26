@@ -140,6 +140,7 @@ export type RecoveryAction =
   | { readonly act: "undo"; readonly rows: readonly string[] | null }
   | { readonly act: "remove"; readonly targets: readonly string[] }
   | { readonly act: "revoke_all" }
+  | { readonly act: "account_status" }
   | { readonly act: "restamp"; readonly confirm?: string }
   | { readonly act: "lift"; readonly blocks: readonly string[] }
   | { readonly act: "admit"; readonly pending: string; readonly fingerprint: string }
@@ -213,7 +214,7 @@ export function parseRecoveryAction(value: unknown): RecoveryAction {
   const only = (...fields: string[]) => Object.keys(action).every((name) => name === "act" || fields.includes(name));
   const ok = (() => {
     switch (action.act) {
-      case "list": case "revoke_all": case "account_add_inspect": return only();
+      case "list": case "revoke_all": case "account_status": case "account_add_inspect": return only();
       case "account_add_take": return (only("account", "server_id") || (only("account", "server_id", "list", "adder") && typeof action.list === "string" && isListHash(action.list)
         && typeof action.adder === "string" && isListKeyEncoding(action.adder))) && typeof action.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(action.account)
         && typeof action.server_id === "string" && HEX32.test(action.server_id);
