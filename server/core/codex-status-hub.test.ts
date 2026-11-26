@@ -29,7 +29,10 @@ function codexHub(text: string) {
   const failures: string[] = [];
   spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
   const looked = async () => {
-    await reads.promise;
+    // fail before the test's own timeout, so its finally still restores the spies
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("no rollout read finished")), 1_500); });
+    try { await Promise.race([reads.promise, late]); } finally { clearTimeout(timer); }
     reads = Promise.withResolvers<void>();
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
@@ -209,12 +212,12 @@ describe("a Codex pane whose turn ended in an error", () => {
       await h.looked();
       appendFileSync(h.path, `${failed.trimEnd().split("\n").at(-1)}\n`);
       await h.snapshot();
-      await h.settled();
-      expect(h.read).toHaveBeenCalledTimes(3);
+      // the snapshot's read begins only once the rollout's stat returns
       await h.looked();
+      expect(h.read).toHaveBeenCalledTimes(3);
       expect(h.failures).toEqual(["w1:p1"]);
     } finally { h.restore(); }
-  });
+  }, 2_000);
 
   it("does not attribute a pending rollout read to a successor agent (#3760)", async () => {
     const h = codexHub(failed);
