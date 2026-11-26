@@ -4,7 +4,7 @@
  * that lets the device in with its own list key. A PC that follows no list, and a join that brings no card, are let in
  * as before.
  */
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
 import { join as pathJoin } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -77,6 +77,30 @@ async function allowingPc(first?: (account: TestList) => Promise<void>) {
 }
 
 type Bound = Awaited<ReturnType<typeof boundPc>>;
+
+async function memberReadClock(run: (clock: { readonly now: () => number; readonly advanceTo: (ms: number) => Promise<void> }) => Promise<void>) {
+  let elapsed = 0;
+  const immediate = setImmediate;
+  const clock = spyOn(performance, "now").mockImplementation(() => 1_000 + elapsed);
+  jest.useFakeTimers();
+  try {
+    await run({ now: () => elapsed, advanceTo: async (ms) => {
+      await new Promise<void>((resolve) => immediate(resolve));
+      // Let each look and the account response settle before advancing the next timer.
+      while (elapsed < ms) {
+        const step = Math.min(100, ms - elapsed);
+        elapsed += step;
+        jest.advanceTimersByTime(step);
+        await new Promise<void>((resolve) => immediate(resolve));
+      }
+    } });
+  } finally {
+    jest.useRealTimers();
+    clock.mockRestore();
+  }
+}
+
+const logLimited = (seconds: number) => Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": String(seconds) } });
 
 /** The new device's join: its admission, then PAIR_REQUEST with the account intent, with its card where it says so. */
 async function join(made: Bound, device: ListMember, options: { card?: { enc: string; card: string }; features?: readonly string[];
@@ -1137,6 +1161,117 @@ describe("a join into the list a member allows from afar, on a pinned PC", () =>
     expect(await bounded(waiting, MEMBER_WAIT_MS + 300).catch(() => "still waiting")).toBe("still waiting");
     (held as () => void)();
     expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
+  });
+
+  test("a member-approved join reads its entry after the PC's exhausted list budget resets", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await made.account.addDevice(phone);
+    let retryAt: number | null = null;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+      retryAt ??= performance.now() + 2_000;
+      if (performance.now() >= retryAt) return await forward();
+      return Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": "2" } });
+    };
+
+    expect(await made.list.allowDevice(device, false)).toMatchObject({ allowed: { id: made.account.id } });
+  });
+
+  test("member log retry keeps the normal interval when Retry-After is shorter", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await made.account.addDevice(phone);
+    await memberReadClock(async ({ now, advanceTo }) => {
+      const reads: number[] = [];
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+        reads.push(now());
+        return reads.length === 1 ? logLimited(1) : await forward();
+      };
+      const waiting = made.list.allowDevice(device, false);
+      await advanceTo(3_500);
+      expect(reads).toEqual([0, 3_000]);
+      expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
+    });
+  });
+
+  test("member log retry after a throttled final read can still find the entry", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await memberReadClock(async ({ now, advanceTo }) => {
+      const release = deferred<void>();
+      const reads: number[] = [];
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+        reads.push(now());
+        if (reads.length === 2) return logLimited(5);
+        if (reads.length === 3) await release.promise;
+        return await forward();
+      };
+      const waiting = made.list.allowDevice(device, false);
+      try {
+        await advanceTo(1_000);
+        await made.account.addDevice(phone);
+        await advanceTo(12_000);
+      } finally {
+        release.resolve();
+        await made.list.settled();
+      }
+      await advanceTo(12_100);
+      expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
+      expect(reads).toEqual([0, 3_000, 8_000]);
+    });
+  });
+
+  test("member log retry stops waiting for an unanswered final read by the session deadline", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await memberCard(phone, made.account.id), label: "Phone" };
+    await memberReadClock(async ({ advanceTo }) => {
+      const release = deferred<void>();
+      let reads = 0;
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname === "/v2/pc/list/log" && ++reads === 2) await release.promise;
+        return await forward();
+      };
+      const answer: { refusal: string | null } = { refusal: null };
+      const waiting = made.list.allowDevice(device, false).then((outcome) => { if ("refused" in outcome) answer.refusal = outcome.refused; });
+      try {
+        await advanceTo(LIST_ALLOW_MS);
+        expect(reads).toBe(2);
+        expect(answer.refusal).toBe("service_away");
+      } finally {
+        release.resolve();
+        await made.list.settled();
+      }
+      await waiting;
+    });
+  });
+
+  test("member log retry sends nothing after an in-flight read returns Retry-After past the session deadline", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await memberCard(phone, made.account.id), label: "Phone" };
+    await memberReadClock(async ({ now, advanceTo }) => {
+      const release = deferred<void>();
+      const reads: number[] = [];
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+        reads.push(now());
+        if (reads.length === 1) { await release.promise; return logLimited(10); }
+        return await forward();
+      };
+      const waiting = made.list.allowDevice(device, false);
+      try { await advanceTo(LIST_ALLOW_MS + 100); }
+      finally { release.resolve(); await made.list.settled(); }
+      await advanceTo(LIST_ALLOW_MS + 200);
+      expect(reads).toEqual([0]);
+      expect(await waiting).toMatchObject({ refused: "service_away" });
+    });
   });
 
   test("a join nobody signs for ends as not in the list once that wait is over, and not before", async () => {

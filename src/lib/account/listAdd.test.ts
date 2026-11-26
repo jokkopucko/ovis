@@ -78,6 +78,20 @@ describe("the number for a PC that asks to be added", () => {
     expect(await play.digits()).not.toBe(number.digits);
   });
 
+  it("can still show after the PC was unable to answer for a full rate-limit window", async () => {
+    const { phone, play } = await asking();
+    const [post] = await postedPcs(phone.list);
+    if (post === undefined) throw new Error("no PC post");
+    let clock = 0;
+
+    const result = await numberWith(phone.list, post, { now: () => clock, wait: async (ms) => {
+      clock += ms;
+      if (clock >= 63_000) await play.answer();
+    } });
+
+    expect(await play.digits()).toBe(shown(result).digits);
+  });
+
   it("is not shown where the PC does not answer in time", async () => {
     const { phone } = await asking();
     const [post] = await postedPcs(phone.list);
@@ -138,8 +152,8 @@ describe("the number for a PC that asks to be added", () => {
     };
     // the PC's nonce was not there at the first read, sent at 0, and was at the next: it can have been put there right after 0
     expect(shown(await slowly(20_000)).until).toBe(120_000);
-    // the same, where the late read came back past the thirty seconds the device waits: no number at all
-    expect(await slowly(40_000)).toEqual({ shown: false, why: "silent" });
+    // the same, where the late read came back after the device's deadline: no number at all
+    expect(await slowly(80_000)).toEqual({ shown: false, why: "silent" });
   });
 
   it("ends at its deadline where the reveal is never answered, the number's two minutes notwithstanding", async () => {

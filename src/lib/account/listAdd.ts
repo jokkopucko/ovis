@@ -79,8 +79,8 @@ export type NumberOutcome = { readonly shown: true; readonly number: AddNumber }
 export const NUMBER_TRIES = 3;
 /** A number lives this long from the PC's answer. */
 export const NUMBER_MS = 120_000;
-/** How long this device waits for the PC's answer to its commitment: the PC asks the account service every few seconds. */
-export const NUMBER_WAIT_MS = 30_000;
+/** Leave time for the PC's per-minute list budget to reset, then for both ends to poll and reveal. */
+export const NUMBER_WAIT_MS = 70_000;
 /** How often it looks for that answer. */
 const NUMBER_POLL_MS = 1_500;
 /** How often the reveal goes again while the service still holds the attempt without the PC's answer. */

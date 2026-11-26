@@ -124,7 +124,9 @@ const LIST_ALLOW_RETRY_MAX_MS = 10_000;
  * The longest one try waits for a PC that spent its list calls (429 `rate_limited`): the service counts them by the
  * minute, so the next minute takes the entry. Under LIST_ALLOW_MS.
  */
-const LIST_ALLOW_LIMITED_MAX_MS = 60_000;
+const LIST_RATE_LIMIT_MAX_MS = 60_000;
+/** End a member's reads with time left to send the session's answer. */
+const LIST_MEMBER_LIMITED_MS = LIST_ALLOW_MS - 5_000;
 /** How long after a round of naming the account service could not answer the next one may start (nameDevices). */
 const NAMES_RETRY_MS = 60_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
@@ -423,6 +425,8 @@ class AllowStopped extends Error {
 
 interface Scope { readonly serverId: string; readonly bindId: string | null; readonly account: string | null; readonly list: string | null; readonly endpoint: string }
 type Bound = Scope & { readonly bindId: string; readonly account: string };
+type LogReadOutcome = "caught_up" | "rate_limited" | "unavailable";
+type MemberRead = { readonly scope: Bound; readonly by: number; readonly started: (at: number) => void };
 
 export class ListFollow implements ListAuthority {
   private readonly path: string;
@@ -446,7 +450,8 @@ export class ListFollow implements ListAuthority {
   private postedUntil: number | null = null;
   /** When the last read of the log began, in seconds; also one that failed. */
   private askedAt: number | null = null;
-  private reading: Promise<void> | null = null;
+  private reading: Promise<LogReadOutcome> | null = null;
+  private logRetryAt = 0;
   /** The next second at which a device the list lets in stops being let in, or null. */
   private untilAt: number | null = null;
   /** The rows do not hold yet what the list says: the commit is tried again. */
@@ -1733,34 +1738,38 @@ export class ListFollow implements ListAuthority {
   /**
    * A member allowed the device and signs its entry itself, once the new device confirmed its digits: the PC signs
    * nothing, and waits for that entry to reach its copy (the member hands the page over, or the account service shows
-   * it), LIST_MEMBER_WAIT_MS at most. What this PC itself holds against the key is asked at each look.
+   * it). A rate-limited log read can wait past LIST_MEMBER_WAIT_MS, within the session's setup time. What this PC
+   * itself holds against the key is asked at each look.
    */
   private async awaitMember(device: AllowedDevice, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+    const began = performance.now();
+    const by = began + LIST_MEMBER_LIMITED_MS;
     const scope = this.bound();
     if (scope === null || !this.isPinned) return no("not_pinned");
-    await this.ready;
-    const deadline = performance.now() + (this.deps.memberWaitMs ?? LIST_MEMBER_WAIT_MS);
+    await this.within(this.ready, by - performance.now());
+    const deadline = began + (this.deps.memberWaitMs ?? LIST_MEMBER_WAIT_MS);
     let askedAt = Number.NEGATIVE_INFINITY;
-    let lastLook = false;
+    let lastLook: LogReadOutcome | undefined;
     for (;;) {
+      const now = performance.now();
+      if (now >= by) return no("service_away");
       if (!this.live(scope) || !this.isPinned || this.problem !== null) return no("unavailable");
       if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
       const copy = this.copy;
       const place = copy === null || copy.state === null ? null : placeOf(copy, device);
       if (place !== null) return { allowed: place };
-      const left = deadline - performance.now();
-      if (left <= 0) {
-        // the time is over: the account service is asked once more before the device is told it is not in the list
-        if (lastLook) return no("not_in_list");
-        lastLook = true;
-        // a read that went out before the time was over may answer with a head from before the member's entry: it is
-        // let end, and the last look is a read begun now
-        if (this.reading !== null) await this.reading;
-        await this.readNow();
-        continue;
+      if (lastLook === "caught_up") return no("not_in_list");
+      if (lastLook === "unavailable") return no("service_away");
+      if (this.reading === null && now >= Math.max(askedAt + LIST_MEMBER_READ_MS, this.logRetryAt)) {
+        const read = this.readNow({ scope, by, started: (at) => { askedAt = at; } });
+        // Only a complete read begun after the regular wait can say the entry is absent. A rate-limited
+        // final look stays eligible for a retry, but an unanswered read never extends the session.
+        if (now >= deadline) {
+          lastLook = await this.within(read, by - performance.now());
+          continue;
+        }
       }
-      if (performance.now() - askedAt >= LIST_MEMBER_READ_MS) { askedAt = performance.now(); void this.readNow(); }
-      await new Promise((resolve) => setTimeout(resolve, Math.min(left, LIST_MEMBER_LOOK_MS)));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(by - now, LIST_MEMBER_LOOK_MS)));
     }
   }
 
@@ -1883,7 +1892,7 @@ export class ListFollow implements ListAuthority {
           if (error.status === 429 && error.code === "rate_limited") {
             last = "service_away";
             limited = true;
-            wait = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_LIMITED_MAX_MS);
+            wait = Math.min(logRateLimitDelay(error), LIST_RATE_LIMIT_MAX_MS);
             continue;
           }
           // the service's own word that it did not place the entry: nothing is kept of it
@@ -2237,10 +2246,10 @@ export class ListFollow implements ListAuthority {
     return next;
   }
 
-  private within(work: Promise<unknown>, ms: number): Promise<void> {
+  private within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, Math.max(0, ms));
-      void work.then(() => undefined, () => undefined).then(() => { clearTimeout(timer); resolve(); });
+      const timer = setTimeout(() => resolve(undefined), Math.max(0, ms));
+      void work.catch(() => undefined).then((value) => { clearTimeout(timer); resolve(value); });
     });
   }
 
@@ -2323,6 +2332,7 @@ export class ListFollow implements ListAuthority {
     this.snapshotNames = null;
     this.pinDue = false;
     this.lastVerdict = this.error = null;
+    this.logRetryAt = 0;
     this.keysState = null;
     // the keys go with the relay identity, not with the binding: a PC that joins an account by its list has read them
     // before the binding stood, and may sign for the list with them from its first moment
@@ -2461,30 +2471,41 @@ export class ListFollow implements ListAuthority {
   }
 
   /** One read at a time: whoever asks while one runs waits for that one. */
-  private readNow(): Promise<void> {
-    this.reading ??= this.enqueue(async () => {
-      const scope = this.bound();
-      if (scope === null) return;
+  private readNow(member?: MemberRead): Promise<LogReadOutcome> {
+    this.reading ??= this.enqueue(async (): Promise<LogReadOutcome> => {
+      const scope = member?.scope ?? this.bound();
+      if (scope === null || !this.live(scope)) return "unavailable";
       await this.ready;
+      if (member !== undefined && performance.now() >= member.by) return "unavailable";
       await this.ensureCopy(scope);
-      if (this.problem === null && this.copy !== null) await this.read(scope);
-    }).then(() => undefined, () => undefined).finally(() => { this.reading = null; });
+      return this.problem === null ? this.read(scope, member) : "unavailable";
+    }).catch((): LogReadOutcome => "unavailable").finally(() => { this.reading = null; });
     return this.reading;
   }
 
   /** One read of the log, page after page, until the follower asks for no more. The copy is saved once, when it changed. */
-  private async read(scope: Bound): Promise<void> {
-    if (this.copy === null) return;
+  private async read(scope: Bound, member?: MemberRead): Promise<LogReadOutcome> {
+    if (this.copy === null || !this.live(scope)) return "unavailable";
+    if (member !== undefined) {
+      const now = performance.now();
+      if (now >= member.by) return "unavailable";
+      if (now < this.logRetryAt) return "rate_limited";
+      member.started(now);
+    }
     this.askedAt = this.seconds();
     // the follower bounds a read by itself (FollowRead.left): what is left is asked at the next one
     let base: FollowerCopy = this.copy;
     let read: FollowRead | null = startRead(base, "service");
     // how often a read may begin again because a member's page moved the copy under it: each time the copy got further
     let restarts = 0;
+    let caughtUp = false;
     try {
       while (read !== null && this.live(scope)) {
+        if (member !== undefined && performance.now() >= member.by) return "unavailable";
+        caughtUp = false;
         const asked: FollowRead = read;
         const answer = await this.deps.call("/v2/pc/list/log", { list: asked.list, ...(asked.after === null ? {} : { after: asked.after }) });
+        if (this.live(scope)) this.logRetryAt = 0;
         // Each page reaches the copy the PC decides on, and what follows from it (a removal closes its sessions), before
         // the next request goes out: a service that answers the next one slowly holds nothing back that it already showed
         read = await this.apply(async () => {
@@ -2497,6 +2518,7 @@ export class ListFollow implements ListAuthority {
           const held = this.copy;
           const result = await takePage(held, asked, answer as unknown as ListPage, this.seconds());
           if (!this.live(scope) || this.copy === null || changed(held, this.copy)) return null;
+          caughtUp = result.verdict === "caught_up";
           this.lastVerdict = result.code === null ? result.verdict : `${result.verdict} ${result.code}`;
           this.keep(result.copy, scope, changed(held, result.copy));
           base = this.copy ?? result.copy;
@@ -2506,15 +2528,19 @@ export class ListFollow implements ListAuthority {
     } catch (error) {
       // a service that is away, or that serves this PC no list, is no word on the list: the copy stays as it is
       this.error = this.words(error);
-      return;
+      if (!this.live(scope) || !(error instanceof AccountServiceRefusal) || error.status !== 429 || error.code !== "rate_limited") return "unavailable";
+      this.logRetryAt = performance.now() + logRateLimitDelay(error);
+      return "rate_limited";
     }
     // one whole read: the service answered to the end, and the PC stands at the head the service shows. A page the PC
     // refused, a tail the service withholds and a read that ran out of its requests are none
-    if (this.live(scope) && this.lastVerdict === "caught_up") this.readWhole();
+    if (this.live(scope) && caughtUp) this.readWhole();
+    if (member !== undefined && performance.now() >= member.by) return "unavailable";
     await this.keepServiceLinks(scope);
     // a wrap of the names' key may have come since a round found none, with the list as it was: asked again, once a read
     this.reads++;
-    if (this.live(scope) && (this.deviceNames?.unwrapped.size ?? 0) > 0) this.nameDevices(scope);
+    if (this.live(scope) && (this.deviceNames?.unwrapped.size ?? 0) > 0 && (member === undefined || performance.now() < member.by)) this.nameDevices(scope);
+    return caughtUp && this.live(scope) ? "caught_up" : "unavailable";
   }
 
   /**
@@ -2963,6 +2989,10 @@ function handedFrom(state: ListState, key: string): string[] {
 /** The keys a `carried` entry named that are in by themselves: they never handed their place on. */
 function carriedAlone(state: ListState): string[] {
   return Object.entries(state.devices).flatMap(([key, device]) => (device.carried && standsFor(state, key) === key ? [key] : []));
+}
+
+function logRateLimitDelay(error: AccountServiceRefusal): number {
+  return Math.max((error.retryAfter ?? 0) * 1000, LIST_ALLOW_RETRY_MS);
 }
 
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {
