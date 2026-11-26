@@ -110,6 +110,8 @@ export function relay(address: string, key: string, event: string): Promise<stri
 
 export async function runApprovalRelay(): Promise<void> {
   if (preloaded(process.execArgv)) return;
+  // loaded only for it: an approval's hook waits on nothing it does not need
+  if (process.argv.includes("--statusline")) return (await import("./statusline.ts")).runStatusline(process.argv.slice(2));
   const options = relayOptions(process.argv.slice(2));
   if (options === null) {
     console.error("usage: ovis-server approval-hook --socket <address> --launch-file <path>");

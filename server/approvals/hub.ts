@@ -95,8 +95,9 @@ export interface ApprovalAdapter {
   /**
    * The agent's arguments with the hook added, which runs `hook.command` with `hook.args`. Files it needs go in `dir`,
    * the hub's own private folder. It never edits the user's own settings. Null leaves the launch without the hook.
+   * `cwd` is the folder the agent starts in, where it is known.
    */
-  launchArgs(args: readonly string[] | undefined, hook: { command: string; args: string[] }, dir: string): string[] | null;
+  launchArgs(args: readonly string[] | undefined, hook: { command: string; args: string[] }, dir: string, cwd?: string | null): string[] | null;
   /** The approval an event the hook sent asks, or null for one the hub gives no decision on. */
   toCard(event: unknown): ApprovalRequest | null;
   /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop, OmO's runs), else null. */
@@ -275,11 +276,11 @@ export class ApprovalHub {
   }
 
   /**
-   * `args` for an agent of `kind`, at `version`, started in `paneId`, with its hook. Whatever ran in the pane before is
+   * `args` for an agent of `kind`, at `version`, started in `paneId` (in the folder `cwd`, where known), with its hook. Whatever ran in the pane before is
    * forgotten. An agent with no adapter, a version it does not support or none, a hub that cannot listen, and an
    * adapter that cannot add the hook leave `args` as they are.
    */
-  launchArgs(kind: string, paneId: string, args: readonly string[] | undefined, version: string | null): string[] | undefined {
+  launchArgs(kind: string, paneId: string, args: readonly string[] | undefined, version: string | null, cwd: string | null = null): string[] | undefined {
     this.forget(paneId);
     const unchanged = args === undefined ? undefined : [...args];
     const adapter = this.adapters.get(kind);
@@ -298,7 +299,7 @@ export class ApprovalHub {
       // the key goes in a file of its own (named by its digest), never on the agent's command line, which Claude Code
       // writes into its transcript (relay.ts)
       const keyFile = settingsFile(key, this.dir, KEY_SUFFIX);
-      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch-file", keyFile] }, this.dir);
+      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch-file", keyFile] }, this.dir, cwd);
     } catch (error) {
       console.error(`approval hub (${kind}): ${error instanceof Error ? error.message : String(error)}`);
       this.dropKey(keyDigest(key));

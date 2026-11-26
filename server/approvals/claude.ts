@@ -3,7 +3,7 @@
  * writes or edits, a page it fetches and an MCP tool through its own PermissionRequest hook, its turns through its
  * UserPromptSubmit and Stop hooks, and the commands it ran through its PostCompact, SessionStart and UserPromptExpansion
  * hooks. The hooks go in a `--settings` file (0600, in the hub's folder), never the user's
- * settings.
+ * settings, with the status line that hands Ovis Claude's context window (statusLineOf).
  * Measured on Claude Code 2.1.330:
  * - the terminal draws its own dialog while the hook waits, and whichever answers first wins;
  * - answered in the terminal, the hook's request stays open and a later answer to it is ignored, so a request the
@@ -11,10 +11,12 @@
  * - a hook that ends with no decision leaves the terminal's dialog as it is, at once.
  * So every card still has its keys: the hook is only how a Yes or No goes when it holds the very request on screen.
  */
-import { isAbsolute, relative } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import { settingsFile } from "../claude-settings-file.ts";
+import { configuredStatusLine, shellQuote, type SettingSource } from "../statusline-install.ts";
 import type { ApprovalAdapter, ApprovalDecision, ApprovalRequest } from "./hub.ts";
 
 /**
@@ -38,6 +40,36 @@ const COMMAND_EVENTS: Record<string, string | null> = { PostCompact: "manual", S
 /** Seconds Claude waits on such a hook at most (its default is ten minutes) */
 const TOLD_TIMEOUT_S = 10;
 
+/**
+ * The settings sources a launch's `--setting-sources` lets Claude read (all three without it), so the status line is
+ * looked for only where Claude would look.
+ */
+function settingSources(flags: readonly string[]): SettingSource[] {
+  const at = flags.findIndex((arg) => arg === "--setting-sources" || arg.startsWith("--setting-sources="));
+  if (at < 0) return ["user", "project", "local"];
+  const value = flags[at] === "--setting-sources" ? flags[at + 1] ?? "" : flags[at]!.slice("--setting-sources=".length);
+  return value.split(",").map((source) => source.trim()).filter((source): source is SettingSource => source === "user" || source === "project" || source === "local");
+}
+
+/**
+ * The status line of a Claude Ovis starts in `cwd`, which hands Ovis the payload Claude gives its status line (its
+ * context window, among the rest) and draws the user's own line (`approval-hook --statusline`, server/approvals/
+ * statusline.ts): the one Claude would draw, from the `--settings` the launch had or else the settings files it reads,
+ * with its own members (padding, refreshInterval). Only where the user set one: Claude 2.1.330 drops the `? for
+ * shortcuts` hint from its footer under any status line, even one that prints nothing, and a pane must look as it would
+ * without Ovis. None where the project folder is not known (its settings rank above the user's), nor on Windows, where
+ * the line is not run through `sh`.
+ */
+function statusLineOf(given: unknown, hook: { command: string; args: string[] }, sources: readonly SettingSource[], cwd: string | null): Record<string, unknown> | null {
+  if (process.platform === "win32") return null;
+  const lineOf = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>)["command"] === "string" && ((value as Record<string, unknown>)["command"] as string).trim() !== "" ? value as Record<string, unknown> : null;
+  const line = lineOf(given) ?? (cwd === null ? null : configuredStatusLine(process.env["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude"), cwd, sources, homedir()));
+  if (line === null) return null;
+  const words = [hook.command, ...hook.args, "--statusline", "--statusline-command", Buffer.from(line["command"] as string).toString("base64")];
+  return { ...line, type: "command", command: words.map(shellQuote).join(" ") };
+}
+
 /** Yes allows and No declines; any other option of the dialog goes as its keys. */
 export function permissionDecision(label: string): ApprovalDecision | null {
   return label === "Yes" ? "allow" : /^No\b/.test(label) ? "deny" : null;
@@ -52,7 +84,7 @@ export const claudeApprovals: ApprovalAdapter = {
    * An inline JSON `--settings` the launch already has (the dialog's) goes into the hook's file with it; a `--settings`
    * that names a file, or more than one, could not be merged, and gets no hook.
    */
-  launchArgs(args, hook, dir) {
+  launchArgs(args, hook, dir, cwd = null) {
     const given = args ?? [];
     const end = given.indexOf("--");
     const flags = end < 0 ? given : given.slice(0, end);
@@ -84,7 +116,8 @@ export const claudeApprovals: ApprovalAdapter = {
     // told only of what is a command (command), and never waited on for long: the hub answers them at once
     const told = [{ ...relay[0]!, timeout: TOLD_TIMEOUT_S }];
     for (const [event, matcher] of Object.entries(COMMAND_EVENTS)) hooks[event] = [...theirs(event), { ...(matcher ? { matcher } : {}), hooks: told }];
-    const path = settingsFile(JSON.stringify({ ...settings, hooks }), dir);
+    const statusLine = statusLineOf(settings["statusLine"], hook, settingSources(flags), cwd);
+    const path = settingsFile(JSON.stringify({ ...settings, hooks, ...(statusLine === null ? {} : { statusLine }) }), dir);
     if (replaced === null) return ["--settings", path, ...given];
     return [...given.slice(0, replaced.from), "--settings", path, ...given.slice(replaced.to)];
   },
