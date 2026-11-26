@@ -1142,3 +1142,24 @@ it("never falls back from a relay that is not one of Ovis's regional relays", as
   await expect(fixture({}, { relay: "wss://relay.example", unreachable: 1 })).rejects.toBeInstanceOf(RelayUnreachableError);
 });
 
+it("uploads a JSON string body larger than the 3 MiB nonterminal queue over the relay (#4476)", async () => {
+  const payload = JSON.stringify({ pane_id: "w1:p1", content_type: "image/jpeg", data_base64: "A".repeat(4 * 1024 * 1024) });
+  expect(Buffer.byteLength(payload)).toBeGreaterThan(3 * 1024 * 1024);
+  const f = await fixture({ dispatch: async (request) => {
+    const received = await request.text();
+    return Response.json({ length: received.length, matches: received === payload });
+  } });
+  const direct = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(direct.status).toBe(200);
+  expect(await direct.json()).toEqual({ length: payload.length, matches: true });
+
+  firefoxRequests();
+  const buffered = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(buffered.status).toBe(200);
+  expect(await buffered.json()).toEqual({ length: payload.length, matches: true });
+}, 30_000);
+

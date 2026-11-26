@@ -710,7 +710,6 @@ export class RelayTransport implements Transport {
         };
         if (request.signal.aborted) { aborted(); return; }
         if (upload) void stream.sendBody(upload).catch((error: unknown) => {
-          if (stream.stopped) return;
           stream.reset("internal_error");
           reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay upload failed", { cause: error }));
         });
