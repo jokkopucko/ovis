@@ -35,6 +35,7 @@ import { MEMORY_JA } from "./i18n/memory.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Waiting to be added": "追加待ち",
   "Type the number": "番号を入力",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "キーがターミナルに届いていない可能性があります: 確認される前に接続が切れました。",
   "Open PC": "PC を開く",

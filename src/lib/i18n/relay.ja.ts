@@ -26,7 +26,6 @@ export const RELAY_JA: Record<string, string> = {
   "Approve on the PC if it shows the same number": "PC に同じ数字が表示されたら承認してください",
   "Approved. {name} opens in a moment.": "承認されました。まもなく {name} の画面に移動します。",
   "Your Ovis account": "あなたの Ovis アカウント",
-  "Waiting to be added": "追加待ち",
   "Checking your account…": "アカウントを確認しています…",
   "This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.": "このデバイスはアカウントのキーで {name} に参加します。PC の「設定 → デバイスと PC」に表示され、そこから削除できます。",
   "{name}'s Ovis relay or power is off, it has no network, or Ovis is not running on it. Turn it on, or wait for it to come back, then try again.": "{name}のリレーか電源が切れているか、ネットワークがないか、Ovis が実行されていません。オンにするか、戻るのを待ってから、もう一度お試しください。",

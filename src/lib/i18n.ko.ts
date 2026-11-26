@@ -33,6 +33,7 @@ import { MEMORY_KO } from "./i18n/memory.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Waiting to be added": "추가 대기 중",
   "Type the number": "숫자 입력",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "키가 터미널에 닿지 않았을 수 있습니다: 확인되기 전에 연결이 끊겼습니다.",
   "Open PC": "PC 열기",

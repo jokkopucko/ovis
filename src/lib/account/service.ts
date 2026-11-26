@@ -7,7 +7,7 @@ import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "..
 import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { newRecordId, pcAddSigningBytes, registerSigningBytes, type AccountRecord, type DeviceSafetyRecord, type PcAddPurpose } from "../../../shared/account-records.ts";
+import { isIsoTime, newRecordId, pcAddSigningBytes, registerSigningBytes, type AccountRecord, type DeviceSafetyRecord, type PcAddPurpose } from "../../../shared/account-records.ts";
 import { inviteMakeBytes } from "../../../shared/account-list-invite.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
@@ -318,9 +318,10 @@ function parsePc(value: unknown): DirectoryPc | null {
   const admitted_at = typeof value.admitted_at === "string" && !Number.isNaN(Date.parse(value.admitted_at)) ? value.admitted_at : null;
   const listing_id = "listing_id" in value ? (typeof value.listing_id === "string" && SERVER_ID.test(value.listing_id) ? value.listing_id : null) : undefined;
   const invited_at = typeof value.invited_at === "string" && !Number.isNaN(Date.parse(value.invited_at)) ? value.invited_at : undefined;
-  const completed_at = "completed_at" in value ? (typeof value.completed_at === "string" && !Number.isNaN(Date.parse(value.completed_at)) ? value.completed_at : null) : undefined;
+  const completed_at = "completed_at" in value ? (isIsoTime(value.completed_at) ? value.completed_at : null) : undefined;
   const asking_until = "asking_until" in value ? (typeof value.asking_until === "string" && !Number.isNaN(Date.parse(value.asking_until)) ? value.asking_until : null) : undefined;
-  return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at: value.last_seen_at, public_key, relay, new_until, admitted_at, admitted_before_you: admitted_at !== null && value.admitted_before_you === true,
+  const last_seen_at = isIsoTime(value.last_seen_at) ? value.last_seen_at : null;
+  return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at, public_key, relay, new_until, admitted_at, admitted_before_you: admitted_at !== null && value.admitted_before_you === true,
     ...(listing_id === undefined ? {} : { listing_id }), ...(completed_at === undefined ? {} : { completed_at }), ...(invited_at === undefined ? {} : { invited_at }),
     ...(value.new_until != null && new_until === null ? { new_until_unreadable: true as const } : {}),
     ...(value.unconfirmed === true ? { unconfirmed: true as const } : {}),

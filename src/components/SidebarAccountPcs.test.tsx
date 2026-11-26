@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from "
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
+import { generateKeyPair } from "../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
+import { addListPc, listWorld } from "../lib/account/accountList.test-helpers.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_SESSION_EVENT } from "../lib/account/store.ts";
 import { SignedOutError } from "../lib/account/service.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import type { AccountPcsSource } from "../lib/account/useAccountPcs.ts";
+import { signedInAccount, type AccountPcsSource } from "../lib/account/useAccountPcs.ts";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
 
 const pc = (id: string, name: string): AccountPcEntry => ({ server_id: id.repeat(32).slice(0, 32), server_public_key: "key", relay: "wss://relay.ovis.example", name });
@@ -37,6 +41,7 @@ describe("the account's PCs in the sidebar", () => {
   let awayHold: Promise<void> | null;
   let statusFails: boolean;
   let invalidAway: boolean;
+  let extraReady: ReadonlySet<string>;
   let events: EventTarget;
   let documentEvents: EventTarget;
   // this browser's storage, kept across a page load within a test (mount again) and cleared between tests
@@ -57,6 +62,7 @@ describe("the account's PCs in the sidebar", () => {
     awayHold = null;
     statusFails = false;
     invalidAway = false;
+    extraReady = new Set();
     source = {
       account: async () => mine,
       list: async () => { lists += 1; const who = listAccount ?? mine; return who === null ? null : { account: who, pcs: [OWN, DESK, LAB, OLD, AWAY] }; },
@@ -100,7 +106,7 @@ describe("the account's PCs in the sidebar", () => {
           if (hold !== null) await hold;
           return Response.json({ pcs: [{ server_id: AWAY.server_id, state: answer }] });
         }
-        return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: states[entry.server_id] })) });
+        return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: extraReady.has(entry.server_id) ? "ready" : states[entry.server_id] })) });
       }
       if (path === "/api/machines/relay/account/start") return Response.json({ ticket: "ticket-1", key: "a-key", label: "Ovis on here" });
       if (path === "/api/machines/relay/account/pair") pairSignal = init?.signal ?? null;
@@ -114,6 +120,7 @@ describe("the account's PCs in the sidebar", () => {
     jest.useRealTimers();
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
+    setPageAccountList(null);
     mock.restore();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -182,6 +189,38 @@ describe("the account's PCs in the sidebar", () => {
     expect(admitted).toEqual([]);
     expect(requests.filter(({ path, body }) => path === "/api/machines/relay/account/check" && (body as { pcs: AccountPcEntry[] }).pcs.some((pc) => pc.server_id === AWAY.server_id))).toEqual([]);
     expect(requests.filter(({ path }) => path === "/api/machines/relay/account/start")).toEqual([]);
+  });
+
+  it("keeps signed and outside rows visible but waits for the signed PC to check in before pairing", async () => {
+    const world = listWorld("acct", Date.now());
+    const member = await world.device();
+    const target = await addListPc(world, member, "Signed PC");
+    await addListPc(world, member, "No route");
+    const key = generateKeyPair().publicKey;
+    const outside = { server_id: deriveServerId(key), endpoint: Buffer.from(key).toString("hex") };
+    const at = new Date(world.clock.now).toISOString();
+    const route = (pc: { server_id: string; endpoint: string }, label: string, completed_at: string | null) => ({
+      server_id: pc.server_id, public_key: pc.endpoint, relay: "wss://relay.test",
+      label, added_at: at, last_seen_at: null, completed_at,
+    });
+    let completed: string | null = null;
+    member.wire.answer = (request) => new URL(request.url).pathname === "/v1/pcs"
+      ? Response.json({ pcs: [route(target, "Directory name", completed), route(outside, "Outside PC", null)] })
+      : null;
+    setPageAccountList(member.list);
+    source = { ...signedInAccount(member.service), admit: source.admit };
+    extraReady = new Set([target.server_id, outside.server_id]);
+
+    await mount();
+    expect(groups().map(([label]) => label).sort()).toEqual(["PC No route", "PC Outside PC", "PC Signed PC"]);
+    expect(text(row("No route"))).toContain("Can't reach the PC");
+    expect(text(row("Outside PC"))).toContain("Not in your account's list yet");
+    expect(starts()).toBe(0);
+
+    completed = at;
+    await comeBack();
+    expect(starts()).toBe(1);
+    expect(admitted).toEqual([target.server_id]);
   });
 
   it("adds by itself no PC of the list that is still new to this device: it waits for a person, as it does on My PCs", async () => {

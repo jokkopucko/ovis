@@ -57,10 +57,12 @@ export interface MyPc {
   readonly listed: boolean;
   /**
    * The PC took its place in the account: it completed its add (the directory's `completed_at`) or has pulled the
-   * account's mailbox (`last_seen_at`), which only a PC in the account does. A listing or an admission alone is neither
-   * (docs/account.md, "Adding a PC over SSH").
+   * account's mailbox (`last_seen_at`), which only a PC in the account does, or the signed list holds it.
+   * A directory listing or an admission alone is neither (docs/account.md, "Adding a PC over SSH").
    */
   readonly joined?: true;
+  /** The signed list holds it, but the target PC has not reported completing its add or pulling its mailbox. */
+  readonly awaitingCheckIn?: true;
   /** this device holds an admitted key for it, so it can open; whatever its state says */
   readonly paired: boolean;
   readonly accountOpen?: true;
@@ -84,9 +86,12 @@ export interface MyPc {
 
 const ORDER: Record<MyPcState, number> = { paired: 0, "needs-update": 1, "needs-approval": 2, offline: 3 };
 
-// a PC the list holds took its place by the entry that brought it in
-const joinedOf = (pc: DirectoryPc | undefined): { joined?: true; byList?: true } => pc?.by_list === true ? { joined: true, byList: true }
-  : pc !== undefined && (typeof pc.completed_at === "string" || pc.last_seen_at !== null) ? { joined: true } : {};
+function joinedOf(pc: DirectoryPc | undefined): Pick<MyPc, "joined" | "byList" | "awaitingCheckIn"> {
+  if (pc === undefined) return {};
+  const checkedIn = pc.completed_at != null || pc.last_seen_at !== null;
+  if (pc.by_list === true) return checkedIn ? { joined: true, byList: true } : { joined: true, byList: true, awaitingCheckIn: true };
+  return checkedIn ? { joined: true } : {};
+}
 const outsideOf = (pc: DirectoryPc): { notInList?: true } => pc.not_in_list === true ? { notInList: true } : {};
 
 export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayDevice[], options: { now: number; outdated?: ReadonlySet<string>; accountKey?: string; account?: string; registered?: boolean }): MyPc[] {

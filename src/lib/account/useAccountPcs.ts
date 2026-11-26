@@ -5,7 +5,7 @@ import { AccountService, SignedOutError } from "./service.ts";
 import { indexedAccountStore } from "./store.ts";
 import { pagePcs, readPageList } from "./listPcs.ts";
 import { pageAccountList } from "./pageList.ts";
-import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "./myPcs.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, myPcs, type MyPc } from "./myPcs.ts";
 import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountPcEntry, type AccountPcState } from "../api.ts";
 import { useT } from "../i18n.ts";
 import { deviceOs } from "../phone.ts";
@@ -15,7 +15,7 @@ import { deviceOs } from "../phone.ts";
  * the PC in it: the row says so and nothing adds it by itself. `unreachable`: the list holds the PC and the account
  * service gives no way to it: the row says so, with no key or relay to ask it by.
  */
-export type AccountPcRow = AccountPcEntry & {
+export type AccountPcRow = AccountPcEntry & Pick<MyPc, "awaitingCheckIn"> & {
   readonly new_until?: string | null; readonly outside?: true; readonly unreachable?: true;
   /** the row is a PC that this device's list of the account holds: while it is new to this device (`new_until`), nothing adds it by itself */
   readonly byList?: true;
@@ -49,9 +49,14 @@ export function signedInAccount(service: Pick<AccountService, "session" | "forSi
       // copy is waited for, and where none ends every row is marked, so the sidebar adds none by itself
       const listed = await bound.listPcs();
       await readPageList(session.account);
-      const pcs = myPcs(pagePcs(session.account, listed), [], { now: Date.now() }).flatMap((pc): AccountPcRow[] => pc.join === undefined
-        ? (pc.byList === true ? [{ server_id: pc.server_id, name: pc.name, server_public_key: "", relay: "", unreachable: true }] : [])
-        : [{ server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }), ...(pc.notInList === true ? { outside: true as const } : {}), ...(pc.byList === true ? { byList: true as const } : {}) }]);
+      const pcs = myPcs(pagePcs(session.account, listed), [], { now: Date.now() }).flatMap((pc): AccountPcRow[] => {
+        // A directory entry alone cannot accept another device. Its first Add has a separate request card.
+        // Rows outside a signed list are still shown as such, and cannot be added from the sidebar.
+        if (pc.joined !== true && pc.notInList !== true) return [];
+        return pc.join === undefined
+          ? (pc.byList === true ? [{ server_id: pc.server_id, name: pc.name, server_public_key: "", relay: "", unreachable: true }] : [])
+          : [{ server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }), ...(pc.notInList === true ? { outside: true as const } : {}), ...(pc.byList === true ? { byList: true as const } : {}), ...(pc.awaitingCheckIn === true ? { awaitingCheckIn: true as const } : {}) }];
+      });
       return { account: session.account, pcs };
     },
     async admit(serverId, label, key) {
@@ -197,8 +202,8 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   useEffect(() => {
     if (pcs === null) return;
     const round = listed.current;
-    // (a PC with no way to it is asked nothing: there is no key or relay to ask it by)
-    for (const pc of pcs) if (pc.unreachable !== true && added(pc.server_id) === undefined && !round.asked.has(pc.server_id)) check(pc, round);
+    // A signed PC still finishing its first Add cannot pair yet, even if its relay is reachable.
+    for (const pc of pcs) if (pc.unreachable !== true && pc.awaitingCheckIn !== true && added(pc.server_id) === undefined && !round.asked.has(pc.server_id)) check(pc, round);
   }, [pcs, machines]);
   useEffect(() => () => { listed.current = { asked: new Set(), invalid: new Set(), failed: new Set(), scope: null }; }, []);
   useEffect(() => () => running.current?.abort(), []);

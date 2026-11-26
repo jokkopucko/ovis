@@ -26,7 +26,6 @@ export const RELAY_ZH: Record<string, string> = {
   "Approve on the PC if it shows the same number": "如果电脑上显示相同的数字，请在电脑上批准",
   "Approved. {name} opens in a moment.": "已批准，马上打开 {name}。",
   "Your Ovis account": "你的 Ovis 账号",
-  "Waiting to be added": "等待添加",
   "Checking your account…": "正在检查你的账号…",
   "This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.": "此设备将使用账号的密钥加入 {name}。电脑会在“设置 → 设备和电脑”中列出它，并可在那里移除。",
   "{name}'s Ovis relay or power is off, it has no network, or Ovis is not running on it. Turn it on, or wait for it to come back, then try again.": "{name} 的中继或电源已关闭、没有网络，或者其上的 Ovis 没有运行。请打开它，或等待它恢复，然后重试。",

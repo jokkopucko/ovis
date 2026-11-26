@@ -26,7 +26,6 @@ export const RELAY_KO: Record<string, string> = {
   "Approve on the PC if it shows the same number": "PC에 같은 숫자가 보이면 승인하세요",
   "Approved. {name} opens in a moment.": "승인되었습니다. 곧 {name} 화면으로 이동합니다.",
   "Your Ovis account": "내 Ovis 계정",
-  "Waiting to be added": "추가 대기 중",
   "Checking your account…": "계정을 확인하는 중…",
   "This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.": "이 기기는 계정의 키로 {name}에 참여합니다. PC의 설정 → 기기와 PC 목록에 나타나며 거기서 삭제할 수 있습니다.",
   "{name}'s Ovis relay or power is off, it has no network, or Ovis is not running on it. Turn it on, or wait for it to come back, then try again.": "{name}의 릴레이나 전원이 꺼져 있거나, 네트워크가 없거나, Ovis가 실행되고 있지 않습니다. 켜거나 다시 연결될 때까지 기다린 뒤 다시 시도하세요.",

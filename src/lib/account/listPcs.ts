@@ -165,6 +165,7 @@ export function pcsByList(view: AccountListView | null | undefined, account: str
       server_id: pc.server_id, label: pc.name?.label ?? pc.server_id.slice(0, 8), added_at: route?.added_at ?? "",
       last_seen_at: route?.last_seen_at ?? null, public_key: route === undefined ? null : pc.endpoint, relay: route?.relay ?? null,
       new_until: isNew ? new Date(newUntil).toISOString() : null, admitted_at: null, admitted_before_you: false, by_list: true as const,
+      ...(route?.completed_at == null ? {} : { completed_at: route.completed_at }),
       ...(addedBy === undefined ? {} : { added_by: addedBy }),
       // carried in by the move with no key of its own: it lets the list's devices in, and nobody new until it has one
       ...(pc.how === "carried" && !pc.allows ? { needs_keys: true as const } : {}),
