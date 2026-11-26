@@ -2876,8 +2876,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`enterKeyHint="done"`) rather than its inferred **Next**; moving focus alone makes nothing.
   Unlike Paseo's separate New directory step, this keeps Ovis's existing inline Enter flow without
   another control or step; no code is borrowed.
-- Recent folders appear as neutral `.btn` chips with `--radius-pill` and `--space-2` gaps: the
-  three most recent, on one row that never wraps. Each shows the folder basename with ellipsis
+- Recent folders appear as neutral `.btn` chips with `--radius-pill` and `--space-2` gaps, on one
+  row that never wraps: the ten most recent at first. A wider screen shows as many as the row holds
+  and a `+N` chip counting every other folder kept; it opens a list of the loaded ones with their
+  paths, which ends with **Show N more** while more are kept. That item adds the next ten, leaves
+  the list open and hands the focus to the first folder it added. A phone swipes the row sideways,
+  and its `+N` chip at the end adds the next ten to the row. Keyboard activation follows the
+  wide-screen list: it focuses and reveals the first folder added, even when `+N` disappears.
+  Zed's Open Recent lists every recent project in a searchable picker; here Directory and Browse
+  already search, so the list stays short and grows ten at a time only when asked. Each shows the folder basename with ellipsis
   and the full path in its tooltip and accessible name. Clicking puts the folder in Directory and
   starts nothing. History is per PC in this browser and retained after panes close. Only a
   successful workspace start puts its folder first; a folder merely seen in a connected PC's panes

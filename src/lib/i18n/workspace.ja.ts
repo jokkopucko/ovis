@@ -8,6 +8,7 @@ export const WORKSPACE_JA: Record<string, string> = {
   "Open": "開く",
   "Use folder {path}": "フォルダー {path} を使用",
   "{n} more recent folders": "最近のフォルダーをあと {n} 件",
+  "Show {n} more": "さらに {n} 件表示",
   "New worktree · {name}": "新しいワークツリー · {name}",
   "Open worktree · {name}": "ワークツリーを開く · {name}",
   "Install an agent · {name}": "エージェントをインストール · {name}",

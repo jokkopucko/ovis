@@ -24,6 +24,8 @@ export interface RowMenuItem {
   checked?: boolean;
   /** shown with its state but not runnable here (a watching device and a shared switch): it keeps its place in the keyboard order, and a press on it leaves the menu open */
   disabled?: boolean;
+  /** runs and leaves the menu open (a "Show more" that adds items): the item that then stands in its place takes the focus */
+  keepOpen?: boolean;
   run: () => void;
   aside?: { label: string; icon: LucideIcon; run: () => void };
 }
@@ -67,6 +69,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
   // The press keeps the focus in the sheet: its blur would close it on the mousedown, and the mouseup
   // after it would land on what lies behind
   const pressedScrim = useRef(false);
+  const handOff = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     const node = surface.current;
@@ -90,6 +93,14 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
     if (!sheet || !node || (document.activeElement !== null && document.activeElement !== document.body)) return;
     node.querySelector<HTMLElement>(SHEET_ITEMS)?.focus({ preventScroll: true });
   });
+
+  useLayoutEffect(() => {
+    const index = handOff.current;
+    handOff.current = null;
+    const next = index === null ? undefined : items[Math.min(index, items.length - 1)];
+    if (next === undefined) return;
+    [...(surface.current?.querySelectorAll<HTMLElement>("[data-item]") ?? [])].find((button) => button.getAttribute("data-item") === next.id)?.focus();
+  }, [items]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -163,7 +174,8 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
 
   const run = (item: RowMenuItem): void => {
     if (item.disabled) return;
-    onClose();
+    if (item.keepOpen) handOff.current = items.indexOf(item);
+    else onClose();
     item.run();
   };
   const runAside = (aside: NonNullable<RowMenuItem["aside"]>): void => {

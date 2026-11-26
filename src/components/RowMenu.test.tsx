@@ -5,7 +5,7 @@ import { Pencil } from "lucide-react";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
-import { RowMenu } from "./RowMenu.tsx";
+import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 
 const node = (): HTMLElement => ({
   isConnected: true, offsetWidth: 200, offsetHeight: 100, clientHeight: 100, scrollHeight: 100, dataset: {},
@@ -21,7 +21,7 @@ describe("how the row menu closes from outside it", () => {
   let frames: FrameRequestCallback[];
   let closes: number;
 
-  async function draw(phone: boolean, anchor = node(), { point, menuNode = node() }: { readonly point?: { x: number; y: number }; readonly menuNode?: HTMLElement } = {}): Promise<void> {
+  async function draw(phone: boolean, anchor = node(), { point, menuNode = node(), useItems }: { readonly point?: { x: number; y: number }; readonly menuNode?: HTMLElement; readonly useItems?: () => RowMenuItem[] } = {}): Promise<void> {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     events = new EventTarget();
     frames = [];
@@ -37,7 +37,8 @@ describe("how the row menu closes from outside it", () => {
     define("getComputedStyle", (element: Element) => ({ overflowX: "visible", overflowY: element === anchor.parentElement ? "auto" : "visible", getPropertyValue: () => "" }));
     function OpenMenu() {
       const [open, setOpen] = useState(true);
-      return open ? createElement(RowMenu, { anchor, point, title: "w1", items: [{ id: "rename", label: "Rename", icon: Pencil, run() {} }], onClose: () => { closes++; setOpen(false); } }) : null;
+      const items = useItems?.() ?? [{ id: "rename", label: "Rename", icon: Pencil, run() {} }];
+      return open ? createElement(RowMenu, { anchor, point, title: "w1", items, onClose: () => { closes++; setOpen(false); } }) : null;
     }
     await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(OpenMenu)), { createNodeMock: node }); });
   }
@@ -122,6 +123,31 @@ describe("how the row menu closes from outside it", () => {
     await scroll(list);
     await frame();
     expect(menu()).toHaveLength(0);
+    expect(closes).toBe(1);
+  });
+
+  it("stays open on a Show more item and hands the focus to the item that takes its place", async () => {
+    const focused: string[] = [];
+    const buttons = () => renderer!.root.findAll((found) => found.type === "button" && typeof found.props["data-item"] === "string");
+    const menuNode = Object.assign(node(), {
+      querySelectorAll: () => buttons().map((button) => ({ getAttribute: () => button.props["data-item"], focus: () => focused.push(button.props["data-item"]) })),
+    });
+    function useGrowingItems(): RowMenuItem[] {
+      const [count, setCount] = useState(1);
+      const folders = Array.from({ length: count }, (_, index) => ({ id: `folder-${index}`, label: `folder ${index}`, icon: Pencil, run() {} }));
+      return count < 3 ? [...folders, { id: "more", label: "Show more", icon: Pencil, keepOpen: true, run: () => setCount((shown) => shown + 1) }] : folders;
+    }
+    await draw(false, node(), { menuNode, useItems: useGrowingItems });
+    const press = (id: string) => act(async () => buttons().find((button) => button.props["data-item"] === id)!.props.onClick());
+
+    await press("more");
+    expect(closes).toBe(0);
+    expect(focused).toEqual(["folder-1"]);
+    await press("more");
+    expect(closes).toBe(0);
+    expect(buttons().map((button) => button.props["data-item"])).toEqual(["folder-0", "folder-1", "folder-2"]);
+    expect(focused).toEqual(["folder-1", "folder-2"]);
+    await press("folder-0");
     expect(closes).toBe(1);
   });
 
