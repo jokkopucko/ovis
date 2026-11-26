@@ -352,9 +352,12 @@ release_js() {
 EOF
 }
 
-# herdr's checkout stays at the version first installed, so one from before `link` cannot hand on at
-# all: for it the launcher finds the release that runs, as running_code does below (release_js, which
-# the launcher carries), and runs that; where that one has no `link` either, it says to update.
+# herdr's checkout stays at the version first installed while Settings → Updates runs newer releases, so
+# the launcher finds the release that runs, as running_code does below (release_js, which the launcher
+# carries), and runs every command but start and stop there: status and the usage then name that
+# release, and a checkout from before `link`, `tui` or `join` still has them. start and stop stay with
+# the checkout, which starts that release's server and finds it by its own path. Where the release that
+# runs lacks a command too, the launcher says to update.
 launcher_text() {
   printf '%s\n' '#!/bin/sh' "$LAUNCHER_MARK"
   cat <<'EOF'
@@ -419,12 +422,15 @@ if [ -z "$root" ] || [ ! -f "$root/scripts/plugin.ts" ]; then
 fi
 code=$root
 case "${1:-}" in
+  start | stop) ;;
+  *)
+    # --no-env-file: a .env in the folder it runs in is some project's, not Ovis's settings
+    code=$(bun --no-env-file -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
+    [ -n "$code" ] || code=$root
+    ;;
+esac
+case "${1:-}" in
   add | login | link)
-    if ! grep -qs '"link"' "$root/scripts/plugin.ts"; then
-      # a checkout from before link: Settings → Updates runs newer releases from the app's state dir
-      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
-      [ -n "$code" ] || code=$root
-    fi
     if grep -qs COMMAND_ALIASES "$code/scripts/plugin.ts"; then
       :
     elif grep -qs '"link"' "$code/scripts/plugin.ts"; then
@@ -436,25 +442,15 @@ case "${1:-}" in
     fi
     ;;
   tui)
-    # a checkout from before ovis tui: the release Settings → Updates installed may know it
-    if ! grep -qs '"tui"' "$root/scripts/plugin.ts"; then
-      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
-      [ -n "$code" ] || code=$root
-      if ! grep -qs '"tui"' "$code/scripts/plugin.ts"; then
-        echo "ovis: this Ovis is from before ovis tui. Update it in Settings → Updates, then run this again" >&2
-        exit 1
-      fi
+    if ! grep -qs '"tui"' "$code/scripts/plugin.ts"; then
+      echo "ovis: this Ovis is from before ovis tui. Update it in Settings → Updates, then run this again" >&2
+      exit 1
     fi
     ;;
   join)
-    # a checkout from before ovis join: the release Settings → Updates installed may have it
-    if [ ! -f "$root/scripts/plugin-join.ts" ]; then
-      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
-      [ -n "$code" ] || code=$root
-      if [ ! -f "$code/scripts/plugin-join.ts" ]; then
-        echo "ovis: this Ovis is from before ovis join. Update it in Settings → Updates, then run this again" >&2
-        exit 1
-      fi
+    if [ ! -f "$code/scripts/plugin-join.ts" ]; then
+      echo "ovis: this Ovis is from before ovis join. Update it in Settings → Updates, then run this again" >&2
+      exit 1
     fi
     ;;
 esac
@@ -1034,7 +1030,7 @@ node_link() {
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
 # in the app's state dir and runs it from there (server/updater.ts, current.json).
 running_code() {
-  running_found=$(bun -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
+  running_found=$(bun --no-env-file -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
   printf '%s\n' "${running_found:-$1}"
 }
 
