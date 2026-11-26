@@ -663,7 +663,7 @@ type CannotSign = "behind" | "not_signer" | "needs_keys" | "held";
  * command is typed here.
  */
 const approvedWords = (label: string, list: boolean, cannot: CannotSign | null = null, command = "ovis"): string => cannot === "held"
-  ? `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it, whether or not your account's list holds it. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`
+  ? `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it${list ? ", whether or not your account's list holds it" : ""}. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`
   : cannot === "behind"
   ? `${label} was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have ${label} ask again; or allow it on another device of your account.\n`
   : cannot === "needs_keys"
@@ -733,7 +733,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
       // a join into the account's list is let in by its entry, first join or not: the approval was received, no more
-      out(outcome === "approved" ? first || join.list === true ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
+      out(outcome === "approved" ? first || join.list === true || join.list_held === true ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);

@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
 import { type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
 import type { ListAuthority } from "./account/list-follow.ts";
-import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
+import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog, SafetyState } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
 import { RevokeAllIntent } from "./account/revoke-all-intent.ts";
@@ -1066,14 +1066,27 @@ export class DeviceStore {
     if (state.freezes.length === 0) return true;
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
     if (confirmed) return true;
-    const rows = proof === "legacy_credential" && options?.retainedRow ? [options.retainedRow] : key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
+    return this.passesFreezes(state.freezes, key, proof, options?.retainedRow);
+  }
+
+  /**
+   * Whether a block or a freeze in force on this PC keeps `key` out, whatever else would admit it: a key with no row here
+   * counts as newer than its target. What a join refused for it is told, apart from a hold or a removal.
+   */
+  keptOutByBlock(key: string): boolean {
+    const freezes = this.safety?.state().freezes ?? [];
+    return freezes.length > 0 && !this.passesFreezes(freezes, key, undefined, undefined);
+  }
+
+  private passesFreezes(freezes: SafetyState["freezes"], key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, retainedRow: StoredDevice | undefined): boolean {
+    const rows = proof === "legacy_credential" && retainedRow ? [retainedRow] : key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
     // Only retaining a current list admission can use its age: a new pairing or readmission cannot inherit it.
     const listed = proof === "list" && key !== undefined ? this.joinedRows?.rowsByKey(key).find(candidate => candidate.state !== "expired") : undefined;
     if (listed) rows.push(this.joinedAsStored(listed));
-    return state.freezes.every(({ record, asof, targetOnlyCompanion }) => {
+    return freezes.every(({ record, asof, targetOnlyCompanion }) => {
       if (key === record.target) return false;
       if (record.kind === "freeze") {
-        return this.beforeServiceCutoff(key, record, options?.retainedRow, targetOnlyCompanion === true && proof === "legacy_credential");
+        return this.beforeServiceCutoff(key, record, retainedRow, targetOnlyCompanion === true && proof === "legacy_credential");
       }
       return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, record.id, asof));
     });

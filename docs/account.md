@@ -2093,7 +2093,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   says so, and that `ovis add` on this PC gives it its keys. A join of a key this PC itself keeps out (a
   block here, which closes the PC to every key newer than its target, whatever the list holds) is
   marked `list_held`, and `ovis approve` says that the device is not let in here until that block is
-  lifted, and where. A join into the account on a pinned
+  lifted, and where. A PC that follows no list marks a first or members join of such a key
+  `list_held` the same way, and a device approved here anyway hears `list_held_here`, not that
+  nobody approved it. A join into the account on a pinned
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.

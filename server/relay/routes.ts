@@ -48,14 +48,14 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (!own) return fail("own_window_required", "Only this PC's own window lists account joins.", 403);
     // a join into the list that this PC cannot sign says why before anybody approves it here: its Ovis is behind the
     // list, it joined by an invite and signs for nobody, or it came in as its account moved with no key of its own
-    // (a device of the account allows it then); and one whose key this PC itself keeps out says that
+    // (a device of the account allows it then); and one whose key this PC itself keeps out says that, list or not
     const list = context.services.accountList;
     const refusal = list?.allowRefusal();
     const why = refusal === "behind" ? { list_behind: true as const } : refusal === "not_signer" ? { list_not_signer: true as const }
       : refusal === "needs_keys" ? { list_needs_keys: true as const } : null;
     return reply({ joins: service.approvals.ownJoins().map((join) => {
-      if (join.list !== true) return join;
       const key = service.approvals.keyOf(join.id);
+      if (join.list !== true) return key !== null && context.services.devices.keptOutByBlock(key) ? { ...join, list_held: true as const } : join;
       const held = key !== null && list?.holdsBack(key) === true ? { list_held: true as const } : {};
       return { ...join, ...why ?? {}, ...held };
     }) });

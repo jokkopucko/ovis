@@ -769,6 +769,12 @@ export class RelaySession {
         this.close("auth_failed"); return;
       }
     }
+    // approved on this PC for a key a block here keeps out: the device hears that cause, as from a list PC
+    if (this.intent === "account" && sas.approvedBy === undefined && devices.keptOutByBlock(sas.publicKey)) {
+      this.endPairing(true);
+      this.failJoin(LIST_ALLOW_CAUSES.held_here!);
+      return;
+    }
     let device: DeviceMatch | undefined;
     try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }), ...(this.intent === "vouched" && this.vouchedEndpoint !== null ? { vouchedPc: this.vouchedEndpoint } : {}) }, undefined, this.admitNewDevice)?.device; }
     catch (error) {

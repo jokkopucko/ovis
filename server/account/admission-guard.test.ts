@@ -113,6 +113,28 @@ describe("one final admission guard (G3, rule R1)", () => {
     expect(devices.isAccountApprover(id)).toBe(false);
   });
 
+  test("keptOutByBlock names a block that keeps a key out, never a hold or an account removal", async () => {
+    const fixture = relayFixture(false, { accountOpensAll: true });
+    try {
+      const { devices, accountHolds } = fixture.app.context.services;
+      const held = await accountKey();
+      accountHolds.hold([held.spki]);
+      expect([devices.admits(held.spki), devices.keptOutByBlock(held.spki)]).toEqual([false, false]);
+    } finally {
+      fixture.close();
+    }
+    const { devices, log } = pc();
+    const removed = await accountKey();
+    devices.removeAccountKey(removed.spki, ACCOUNT, { id: newRecordId(), issuedAt: new Date().toISOString() });
+    expect([devices.admits(removed.spki), devices.keptOutByBlock(removed.spki)]).toEqual([false, false]);
+    const [signer, target, older, newer] = await Promise.all([accountKey(), accountKey(), accountKey(), accountKey()]);
+    for (const k of [signer, target, older]) {
+      if (devices.pairRelay(devices.startPairing().code, "Older device", k.spki) === null) throw new Error("Older key did not pair");
+    }
+    await block(log, target.spki, signer, 99);
+    expect([devices.keptOutByBlock(older.spki), devices.keptOutByBlock(target.spki), devices.keptOutByBlock(newer.spki)]).toEqual([false, true, true]);
+  });
+
   test("G3: admits and a signed add refuse a key revoked on this PC", async () => {
     const { devices } = pc();
     const signer = await member(devices);

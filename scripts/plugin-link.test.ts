@@ -4445,6 +4445,13 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     }
   });
 
+  it("never says a members join is approved where a block here keeps that device out, on a PC with no list", async () => {
+    const { code, out } = await joining({ joins: [{ ...joinOf("j1"), list_held: true }], said: (said, answer) => { if (said.includes("asks to join your account")) answer("123456"); } });
+    expect(code).toBe(0);
+    expect(out.at(-1)).toStartWith("Tablet one was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it. Lift");
+    expect(out.join("")).not.toMatch(/Approved:|is let in;/);
+  });
+
   it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
     const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
     expect(code).toBe(1);

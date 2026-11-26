@@ -6,6 +6,7 @@
  */
 import { afterEach, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -224,4 +225,22 @@ test("a PC with an account member keeps the member's approval: its own window ge
   const tapped = await http(pc, "/api/relay/join", own, { id: listed.body.joins![0]!.id, decision: "approve" });
   expect(tapped.status).not.toBe(200);
   expect(pc.app.context.services.relay.approvals.ownJoins()).toHaveLength(1);
+});
+
+test("a first join of a key a block here keeps out is marked held for ovis approve, and the device hears why its typed digits let it in nowhere", async () => {
+  const pc = await boundPc("darwin");
+  // a block in force on this PC closes it to every key that came after its target (devices.ts admissionAllowed)
+  const [signer, target] = await Promise.all([phone(), phone()]);
+  const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2, signer: signer.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey);
+  pc.app.context.services.safetyLog!.append({ record, got: "handed", asof: { signer_no: 1, target_no: 2, after: 2, joined: 2, signer_removed: false } });
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  const listed = await http(pc, "/api/relay/joins", terminal(pc));
+  expect(listed.body.joins).toEqual([expect.objectContaining({ digits, list_held: true })]);
+  expect((await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits })).status).toBe(200);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_held_here" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
 });
