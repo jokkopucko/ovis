@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { claudeApprovals, permissionDecision } from "./claude.ts";
+import { heldQuestionAnswer, showsHeldQuestion } from "../claude-question.ts";
 import { ApprovalHub, heldBody, relayCommand, showable, type ApprovalDialog } from "./hub.ts";
 import { preloaded } from "./relay.ts";
 import { parsedByPublicPrompt } from "../dialogs/shared.ts";
@@ -82,8 +83,8 @@ describe.skipIf(!posix)("launchArgs", () => {
     expect(statSync(join(dir, "hub.sock")).mode & 0o777).toBe(0o600);
     const entry = settings.hooks.PermissionRequest[0]!;
     const matcher = new RegExp(entry.matcher!);
-    for (const tool of ["Bash", "Monitor", "Edit", "Write", "WebFetch", "mcp__echo__shout"]) expect(matcher.test(tool), tool).toBe(true);
-    for (const tool of ["NotebookEdit", "WebSearch", "Read", "Task", "mcp__"]) expect(matcher.test(tool), tool).toBe(false);
+    for (const tool of ["Bash", "Monitor", "Edit", "Write", "WebFetch", "AskUserQuestion", "mcp__echo__shout"]) expect(matcher.test(tool), tool).toBe(true);
+    for (const tool of ["NotebookEdit", "WebSearch", "Read", "Task", "ExitPlanMode", "mcp__"]) expect(matcher.test(tool), tool).toBe(false);
     // the turns, told to the same relay
     expect(settings.hooks.UserPromptSubmit).toEqual([{ hooks: [entry.hooks[0]!] }]);
     expect(settings.hooks.Stop).toEqual([{ hooks: [entry.hooks[0]!] }]);
@@ -756,5 +757,116 @@ describe("Claude's other tools on a card from the hook's request", () => {
     // another agent started in the pane has told nothing yet
     launch(hooks, "p1", undefined);
     expect(hooks.toldMode("p1")).toBeNull();
+  });
+});
+
+/** Claude's one-question dialog as Claude Code draws it: its header's chip, the question, its options, then its own rows. */
+const questionScreen = (question: string, options: string[]): string => [
+  "☐ Color", "", question, "",
+  ...options.map((label, index) => `${index === 0 ? "❯" : " "} ${index + 1}. ${label}`),
+  `  ${options.length + 1}. Type something.`, "─".repeat(28), `  ${options.length + 2}. Chat about this`, "",
+  "Enter to select · ↑/↓ to navigate · Esc to cancel",
+].join("\n");
+
+describe("Claude's questions on a card from the hook's request", () => {
+  // Claude Code 2.1.330 as recorded: "Which color?" (Red, Blue), "Which size?" (Small, Large), and one request of two
+  // questions, the first a multiple choice
+  const color = () => requestOf("AskUserQuestion", 0);
+  const asked = (answers: Record<string, string>) => ({
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { ...(color()["tool_input"] as object), answers } } },
+  });
+
+  it("binds a one-question dialog to the question its hook holds, and answers a pick as the request's input", async () => {
+    const prompt = parseInteractivePrompt("claude", questionScreen("Which color?", ["Red", "Blue"]))!;
+    const parsed = parsedByPublicPrompt.get(prompt)!;
+    expect([parsed.approvalCommand, parsed.approvalKind]).toEqual(["Which color?", "question"]);
+    const dialog: ApprovalDialog = { command: parsed.approvalCommand!, kind: parsed.approvalKind! };
+    const { hooks, held } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const holding = held("p1");
+    const { answer } = ask(hook, color());
+    await holding;
+    // a Bash dialog shows no question, and a question dialog no command
+    expect(hooks.shown("p1", on("Which color?"))).toBeNull();
+    const card = hooks.shown("p1", dialog)!;
+    expect(card.question).toEqual({ text: "Which color?", options: ["Red", "Blue"] });
+    expect(hooks.onlyOpen("p1", dialog, card.id)).toBe(true);
+    // its options are no Yes or No
+    expect(hooks.decision("p1", card.id, "Yes")).toBeNull();
+    expect(hooks.answerQuestion("p1", { command: "Which size?", kind: "question" }, card.id, "Blue")).toBe(false);
+    expect(hooks.answerQuestion("p1", dialog, card.id, "Blue")).toBe(true);
+    expect(await answer()).toEqual(asked({ "Which color?": "Blue" }));
+    expect(hooks.answerQuestion("p1", dialog, card.id, "Blue")).toBe(false);
+  });
+
+  it("answers no Bash dialog's Yes with a question's request, nor a question with an approval's decision", async () => {
+    const { hooks, held } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const holding = held("p1");
+    const { answer } = ask(hook, color());
+    await holding;
+    const dialog: ApprovalDialog = { command: "Which color?", kind: "question" };
+    const card = hooks.shown("p1", dialog)!;
+    expect(hooks.answer("p1", dialog, card.id, "allow")).toBe(false);
+    hooks.forget("p1");
+    expect(await answer()).toEqual({});
+  });
+
+  // the adversarial review of this change: two requests asked in the same words, whose options mean different things
+  it("binds no card while two held requests ask the same question, and answers neither", async () => {
+    const { hooks, held } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const dialog: ApprovalDialog = { command: "Which color?", kind: "question" };
+    const relays = [];
+    for (let index = 0; index < 2; index++) {
+      const holding = held("p1");
+      relays.push(ask(hook, color()));
+      await holding;
+    }
+    const card = hooks.shown("p1", dialog)!;
+    expect(hooks.onlyOpen("p1", dialog, card.id)).toBe(false);
+    expect(hooks.answerQuestion("p1", dialog, card.id, "Blue")).toBe(false);
+    hooks.forget("p1");
+    for (const relay of relays) expect(await relay.answer()).toEqual({});
+  });
+
+  it("leaves to the terminal at once a request of several questions, a multiple choice, and options with a preview", async () => {
+    const { hooks } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const several = requestOf("AskUserQuestion", 2);
+    const questions = (several["tool_input"] as { questions: Record<string, unknown>[] }).questions;
+    expect(questions).toHaveLength(2);
+    const [fruits] = questions;
+    expect(fruits!["multiSelect"]).toBe(true);
+    const input = color()["tool_input"] as { questions: { options: Record<string, unknown>[] }[] };
+    const previewed = { ...color(), tool_input: { questions: [{ ...input.questions[0], options: input.questions[0]!.options.map((option) => ({ ...option, preview: "+--+" })) }] } };
+    for (const request of [several, { ...several, tool_input: { questions: [fruits] } }, previewed]) {
+      expect(await ask(hook, request).answer()).toEqual({});
+    }
+    expect(hooks.held("p1")).toEqual([]);
+  });
+
+  it("turns a pick and words typed into Claude's answer, and leaves any other answer to the keys", () => {
+    const single = parseInteractivePrompt("claude", questionScreen("Which color?", ["Red", "Blue"]))!;
+    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Red", "Blue"] })).toBe(true);
+    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Blue", "Red"] })).toBe(false);
+    expect(showsHeldQuestion({ ...single, multi_select: true }, { text: "Which color?", options: ["Red", "Blue"] })).toBe(false);
+    expect(heldQuestionAnswer(single, { pane_id: "p", prompt_id: "x", option_index: 1 })).toBe("Blue");
+    expect(heldQuestionAnswer(single, { pane_id: "p", prompt_id: "x", custom_text: "Ovis-free-text" })).toBe("Ovis-free-text");
+    for (const body of [
+      { option_index: 2 }, { option_index: 0, custom_text: "also" }, { custom_text: "  " }, { step_back: true }, { option_indices: [0] },
+    ]) expect(heldQuestionAnswer(single, { pane_id: "p", prompt_id: "x", ...body }), JSON.stringify(body)).toBeNull();
+    // a card with no row for typed words takes none as data either
+    expect(heldQuestionAnswer({ ...single, custom_option_index: null }, { pane_id: "p", prompt_id: "x", custom_text: "Green" })).toBeNull();
+  });
+
+  it("binds no question of a dialog with a tab per question", () => {
+    const tabbed = parseInteractivePrompt("claude", [
+      "←  ☐ Fruits  ☐ Name  ✔ Submit  →", "", "Pick fruits?", "",
+      "❯ 1. [ ] Apple", "  2. [ ] Pear", "  3. [ ] Plum", "  4. [ ] Type something", "  Submit", "─".repeat(28), "  5. Chat about this", "",
+      "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    ].join("\n"));
+    expect(tabbed).not.toBeNull();
+    expect(parsedByPublicPrompt.get(tabbed!)?.approvalCommand).toBeUndefined();
   });
 });

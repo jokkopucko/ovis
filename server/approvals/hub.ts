@@ -46,6 +46,25 @@ export interface ApprovalRequest {
   subject?: string;
   /** which of the agent's dialogs shows it, where it has several (Codex's command, edit, grant): no other is its */
   dialog?: string;
+  /**
+   * A question the agent asks through the same hook (Claude's AskUserQuestion, whose dialog is `question`): its card's
+   * answer goes back with the request's own input (`input`), never as a Yes or No.
+   */
+  question?: HeldQuestion;
+  /** the request's input as the agent sent it, which an answer to its question goes back with */
+  input?: Readonly<Record<string, unknown>>;
+}
+
+/** One question a held request asks, of one pick: its words, and its options' labels in their order. */
+export interface HeldQuestion {
+  readonly text: string;
+  readonly options: readonly string[];
+}
+
+/** What a question's card answered, keyed by the question's words, with the input its request was sent with. */
+export interface QuestionAnswer {
+  readonly input: Readonly<Record<string, unknown>>;
+  readonly answers: Readonly<Record<string, string>>;
 }
 
 /**
@@ -110,8 +129,11 @@ export interface ApprovalAdapter {
   context?(event: unknown): PaneContext | null | undefined;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
   decision(label: string): ApprovalDecision | null;
-  /** What the hook prints for a decision, or for none (null), after which the agent's own dialog stands. */
-  toAnswer(decision: ApprovalDecision | null): string;
+  /**
+   * What the hook prints for a decision, or for none (null), after which the agent's own dialog stands; an allow that
+   * answers a held question (`answered`) carries its answer.
+   */
+  toAnswer(decision: ApprovalDecision | null, answered?: QuestionAnswer): string;
 }
 
 interface Launch {
@@ -136,7 +158,7 @@ interface Pending extends ApprovalRequest {
   at: number;
   /** released only by whoever holds it (hold), never by a read of the screen */
   pinned: boolean;
-  settle: (decision: ApprovalDecision | null) => void;
+  settle: (decision: ApprovalDecision | null, answered?: QuestionAnswer) => void;
 }
 
 /** The most of an event the hub reads, in UTF-8 bytes. */
@@ -186,7 +208,9 @@ export function heldBody(held: ApprovalRequest): string {
 const idOf = (entry: Pending): string =>
   createHash("sha256").update(JSON.stringify([entry.nonce, entry.command, entry.description])).digest("hex").slice(0, 16);
 
-const publicOf = (entry: Pending): HeldApproval => ({ id: idOf(entry), kind: entry.adapter.kind, command: entry.command, description: entry.description });
+const publicOf = (entry: Pending): HeldApproval => ({
+  id: idOf(entry), kind: entry.adapter.kind, command: entry.command, description: entry.description, ...(entry.question === undefined ? {} : { question: entry.question }),
+});
 
 const subjectOf = (entry: Pending): string => entry.subject ?? entry.command;
 
@@ -279,7 +303,9 @@ export class ApprovalHub {
    * (herdr may name the pane otherwise: an OmO waiting on its user, pi), or null for one that goes as keys.
    */
   decision(paneId: string, id: string, label: string): ApprovalDecision | null {
-    return (this.pending.get(paneId) ?? []).find((entry) => idOf(entry) === id)?.adapter.decision(label) ?? null;
+    const entry = (this.pending.get(paneId) ?? []).find((candidate) => idOf(candidate) === id);
+    // a question's option is its answer, whatever its words: a "Yes" of it is no approval
+    return entry === undefined || entry.question !== undefined ? null : entry.adapter.decision(label);
   }
 
   private listen(): void {
@@ -376,9 +402,9 @@ export class ApprovalHub {
     if (launch === undefined || !isNonce(nonce)) return void socket.destroy();
     const event = unseal(launch.key, "request", nonce, envelope!["sealed"]);
     if (event === null || Buffer.byteLength(event) > EVENT_MAX) return void socket.destroy();
-    const reply = (decision: ApprovalDecision | null) => {
+    const reply = (decision: ApprovalDecision | null, answered?: QuestionAnswer) => {
       if (socket.destroyed) return;
-      socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, launch.adapter.toAnswer(decision)) })}\n`);
+      socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, launch.adapter.toAnswer(decision, answered)) })}\n`);
     };
     let parsed: unknown;
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
@@ -408,7 +434,7 @@ export class ApprovalHub {
     // an event the adapter does not take, or a command the card could not show whole or as it is, is the terminal's: a
     // Yes allows only what the card showed
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const entry = card === null ? null : this.add(launch.paneId, card, launch.adapter, false, (decision) => { clearTimeout(timer); reply(decision); });
+    const entry = card === null ? null : this.add(launch.paneId, card, launch.adapter, false, (decision, answered) => { clearTimeout(timer); reply(decision, answered); });
     if (entry === null) return reply(null);
     timer = setTimeout(() => entry.settle(null), this.options.heldMs ?? HELD_MS);
     // the agent ended its hook (answered in the terminal, or timed out)
@@ -421,19 +447,20 @@ export class ApprovalHub {
   }
 
   /** A held request of `paneId`, or null for a card that could not show it whole or as it is. */
-  private add(paneId: string, card: ApprovalRequest, adapter: ApprovalSource, pinned: boolean, reply: (decision: ApprovalDecision | null) => void): Pending | null {
+  private add(paneId: string, card: ApprovalRequest, adapter: ApprovalSource, pinned: boolean, reply: (decision: ApprovalDecision | null, answered?: QuestionAnswer) => void): Pending | null {
     const body = heldBody(card);
     if (body.length > CARD_BODY_MAX || !showable(body)) return null;
+    if (card.question !== undefined && !card.question.options.every((label) => label.length <= CARD_BODY_MAX && showable(label))) return null;
     let done = false;
     const entry: Pending = {
       ...card, adapter, pinned, nonce: randomBytes(16).toString("hex"), at: this.now(),
-      settle: (decision) => {
+      settle: (decision, answered) => {
         if (done) return;
         done = true;
         const left = (this.pending.get(paneId) ?? []).filter((other) => other !== entry);
         if (left.length) this.pending.set(paneId, left);
         else this.pending.delete(paneId);
-        reply(decision);
+        reply(decision, answered);
         this.options.onSettled?.(paneId);
       },
     };
@@ -504,6 +531,15 @@ export class ApprovalHub {
   }
 
   /**
+   * Whether the request a card built on `id` showed is the one request the dialog leaves open: of two asked in the same
+   * words, the screen cannot tell which it shows, and what an option means may differ between them.
+   */
+  onlyOpen(paneId: string, dialog: ApprovalDialog, id: string): boolean {
+    const open = this.open(paneId, dialog);
+    return open.length === 1 && idOf(open[0]!) === id;
+  }
+
+  /**
    * Whether the dialog shows the subject of the request a card built on `id` showed, whole, and of no other held
    * request: only then is that dialog this request's, and the card's options other than a decision go to it as keys.
    * Runs of white space count as one in `shows`, so two requests that differ only in them are both shown. Nor may another
@@ -517,11 +553,23 @@ export class ApprovalHub {
       && open.every((entry) => entry.command === latest.command && subjectOf(entry) === subjectOf(latest) && entry.description === latest.description);
   }
 
-  /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card. */
+  /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card, or asks a question. */
   answer(paneId: string, dialog: ApprovalDialog, id: string, decision: ApprovalDecision): boolean {
     const held = this.bound(paneId, dialog, id);
-    if (held === null) return false;
+    if (held === null || held.question !== undefined) return false;
     held.settle(decision);
+    return true;
+  }
+
+  /**
+   * Answers the question of the request a card built on `id` showed with `answer` (an option's label, or words typed),
+   * as the agent's own dialog would. False when that request is no longer bound to the card, is not the one request
+   * the dialog leaves open, or asks no question.
+   */
+  answerQuestion(paneId: string, dialog: ApprovalDialog, id: string, answer: string): boolean {
+    const held = this.bound(paneId, dialog, id);
+    if (held?.question === undefined || held.input === undefined || !this.onlyOpen(paneId, dialog, id)) return false;
+    held.settle("allow", { input: held.input, answers: { [held.question.text]: answer } });
     return true;
   }
 

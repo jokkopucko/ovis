@@ -85,6 +85,27 @@ draw();
 writeFileSync(out, "");
 `;
 
+/** Claude's one-question dialog: its header's chip, the question, its options and its own rows. It logs each key it gets. */
+const QUESTION = `
+const { appendFileSync, writeFileSync } = require("node:fs");
+const [out, spec] = process.argv.slice(2);
+const { question, options } = JSON.parse(spec);
+process.stdout.write("\\u001b[2J\\u001b[H" + [
+  "☐ Color", "", question, "", ...options.map((label, index) => (index === 0 ? "❯ " : "  ") + (index + 1) + ". " + label),
+  "  " + (options.length + 1) + ". Type something.", "─".repeat(28), "  " + (options.length + 2) + ". Chat about this", "",
+  "Enter to select · ↑/↓ to navigate · Esc to cancel",
+].join("\\r\\n"));
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.on("data", (chunk) => {
+  const data = chunk.toString("utf8");
+  const keys = data.replace(/~/g, "");
+  if (keys !== "") appendFileSync(out, JSON.stringify(keys) + "\\n");
+  if (data.includes("~")) appendFileSync(out, "input drained\\n");
+});
+writeFileSync(out, "");
+`;
+
 interface Menu { pane: string; log: string }
 let trust: Menu;
 let guessed: Menu;
@@ -381,6 +402,28 @@ describe("a Claude command approval its PermissionRequest hook holds", () => {
       hooks.forget(dialog.pane);
       expect(await held.answer(), label).toEqual({});
     }
+  }, 30_000);
+
+  it("answers Claude's one question its hook holds as that request's input, with no key", async () => {
+    writeFileSync(join(root, "question.js"), QUESTION);
+    const asked = await menu("hooked-question", [], [], false, "question.js", { question: "Which color?", options: ["Red", "Blue"] });
+    const hook = launched(asked);
+    const before = await read(asked);
+    expect(before.id).not.toContain(".");
+    // Claude Code 2.1.330's request, as recorded
+    const input = { questions: [{ question: "Which color?", header: "Color", options: [{ label: "Red", description: "Choose red" }, { label: "Blue", description: "Choose blue" }], multiSelect: false }] };
+    const held = new Promise<void>((resolve) => holding.push(resolve));
+    const relay = Bun.spawn([hook.command, ...hook.args], {
+      stdin: new Blob([JSON.stringify({ hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: input })]), stdout: "pipe",
+    });
+    await held;
+    const card = await read(asked);
+    expect(card.id.startsWith(`${before.id}.`)).toBe(true);
+    expect((await post(asked, card.id, 1)).status).toBe(200);
+    expect(JSON.parse(await new Response(relay.stdout).text())).toEqual({
+      hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { ...input, answers: { "Which color?": "Blue" } } } },
+    });
+    expect(await choicesBeforeBarrier(asked)).toEqual([]);
   }, 30_000);
 
   // the adversarial review of #4480: a card drawn before the hook's request came kept its id, and its Yes then allowed it
