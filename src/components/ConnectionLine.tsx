@@ -28,10 +28,13 @@ export function ConnectionLine({ state, reason = null }: { state: LineState; rea
     <span className="connection-line" data-connection={state.kind}>
       <span className="connection-status">
         <StatusDot state={GLYPH[state.kind]} size="inline" />
-        {state.kind === "connected" || state.kind === "answered" ? <>
-          {state.kind === "connected" ? t("Connected") : t("Answers")} · {route(state.route, state.relay)}
-          {state.rttMs !== null && <> · <span className={state.rttMs > SLOW_MS ? "connection-slow" : undefined}>{t("{n} ms", { n: state.rttMs })}</span></>}
-        </> : state.kind === "checking" ? t("Connecting…") : state.text}
+        {/* one run of text beside the dot, so a narrow row wraps it between words, never inside one */}
+        <span className="connection-text">
+          {state.kind === "connected" || state.kind === "answered" ? <>
+            {state.kind === "connected" ? t("Connected") : t("Answers")} · {route(state.route, state.relay)}
+            {state.rttMs !== null && <> · <span className={state.rttMs > SLOW_MS ? "connection-slow" : undefined}>{t("{n} ms", { n: state.rttMs })}</span></>}
+          </> : state.kind === "checking" ? t("Connecting…") : state.text}
+        </span>
       </span>
       {reason !== null && state.kind === "offline" && <span className="connection-reason">{reason}</span>}
     </span>

@@ -283,13 +283,16 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                         : <span className="settings-description">{t("Last seen {when}", { when: seenWhen(d) })}</span>}
                     {d.not_me_waiting && <span className="settings-description" role="status">{t("Not me is waiting. Revoke this device to stop its access now.")}</span>}
                   </div>
-                  {d.current && currentAction}
-                  {!guest && (
+                  {/* this device's action rides with Rename and Revoke: on a narrow row the three drop below the name together */}
+                  {((d.current && currentAction !== null) || !guest) && (
                     <div className="devices-actions">
-                      <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
-                      <button type="button" className={confirming === d.id ? "btn btn-danger" : "icon-button"} aria-label={confirming === d.id ? undefined : t("Revoke {name}", { name: d.label })} onClick={() => void revoke(d.id)}>
-                        <Trash2 aria-hidden="true" />{confirming === d.id && t("Revoke?")}
-                      </button>
+                      {d.current && currentAction}
+                      {!guest && <>
+                        <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
+                        <button type="button" className={confirming === d.id ? "btn btn-danger" : "icon-button"} aria-label={confirming === d.id ? undefined : t("Revoke {name}", { name: d.label })} onClick={() => void revoke(d.id)}>
+                          <Trash2 aria-hidden="true" />{confirming === d.id && t("Revoke?")}
+                        </button>
+                      </>}
                     </div>
                   )}
                 </>

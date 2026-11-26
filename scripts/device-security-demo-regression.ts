@@ -658,8 +658,9 @@ try {
           }
 
           {
-            // no device paired here, two the PC's account let in, this one among them (site/demo/transport.ts `demo_devices=account`)
-            const { page, errors } = await open(context, server.port, "&demo_devices=account");
+            // no device paired here, two the PC's account let in, this one among them (site/demo/transport.ts `demo_devices=account`);
+            // the relay is on, so a phone's own row also carries Use the relay
+            const { page, errors } = await open(context, server.port, "&demo_devices=account&demo_relay=on");
             errorsOf.push(errors);
             const joined = page.locator(ROW, { hasText: "Galaxy S25" });
             await joined.waitFor();
@@ -669,19 +670,53 @@ try {
             assert.equal(await joined.getByRole("button", { name: label("Revoke {name}").replace("{name}", "Galaxy S25"), exact: true }).count(), 1, "the row has its own Revoke");
             // this device's row wears three pills: its kind, the account, and this device; each whole, in the name, clear of the buttons
             const self = page.locator(ROW, { hasText: "iPhone · Safari" });
+            // the button waits for the relay's status, read apart from the device list
+            const relayButton = self.getByRole("button", { name: label("Use the relay"), exact: true });
+            if (phone) await relayButton.waitFor();
+            assert.equal(await relayButton.count(), phone ? 1 : 0, "only a touch phone's own row offers Use the relay");
             const pills = await self.evaluate((row) => {
               const name = row.querySelector(".devices-name")!.getBoundingClientRect();
-              const actions = row.querySelector(".devices-actions")?.getBoundingClientRect();
+              const buttons = [...row.querySelectorAll(".devices-actions > *")].map((button) => button.getBoundingClientRect());
               return [...row.querySelectorAll<HTMLElement>(".devices-kind, .devices-current")].map((pill) => {
                 const box = pill.getBoundingClientRect();
-                return { text: pill.textContent, inName: box.left >= name.left - 0.5 && box.right <= name.right + 0.5, clearOfButtons: actions === undefined || box.right <= actions.left + 0.5, whole: pill.scrollWidth <= pill.clientWidth + 0.5 };
+                const clearOfButtons = buttons.every((button) => box.right <= button.left + 0.5 || box.left >= button.right - 0.5 || box.bottom <= button.top + 0.5 || box.top >= button.bottom - 0.5);
+                return { text: pill.textContent, inName: box.left >= name.left - 0.5 && box.right <= name.right + 0.5, clearOfButtons, whole: pill.scrollWidth <= pill.clientWidth + 0.5 };
               });
             });
+            // a row's buttons leave its name room for whole words: none breaks across two lines ("Connecte/d")
+            const brokenWords = await page.locator(`${ROW} .devices-name`).evaluateAll((names) => names.flatMap((name) => {
+              const broken: string[] = [];
+              const walker = document.createTreeWalker(name, NodeFilter.SHOW_TEXT);
+              for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+                for (const word of (node.textContent ?? "").matchAll(/\S+/g)) {
+                  const range = document.createRange();
+                  range.setStart(node, word.index);
+                  range.setEnd(node, word.index + word[0].length);
+                  if (new Set([...range.getClientRects()].map((line) => Math.round(line.top))).size > 1) broken.push(word[0]);
+                }
+              }
+              return broken;
+            }));
+            assert.deepEqual(brokenWords, [], `no word in a device row breaks across lines at ${width}`);
             assert.deepEqual(pills.map((pill) => pill.text), [label("Phone"), label("Through your account"), label("This device now")], "this device's row has its three pills");
             for (const pill of pills) assert.deepEqual({ inName: pill.inName, clearOfButtons: pill.clearOfButtons, whole: pill.whole }, { inName: true, clearOfButtons: true, whole: true }, `the pill ${pill.text} fits at ${width}`);
             assert.deepEqual(await overflow(page), [], "the pills fit the rows");
             await reveal(joined);
             await capture(page, `${prefix}-account`, about("account"));
+            // renaming keeps the name field and its Save and Cancel inside the row
+            await press(self.getByRole("button", { name: label("Rename {name}").replace("{name}", "iPhone · Safari"), exact: true }));
+            const renaming = page.locator(`${ROW} .devices-rename`);
+            await renaming.waitFor();
+            const outside = await renaming.evaluate((form) => {
+              const row = form.closest("li")!.getBoundingClientRect();
+              return [...form.querySelectorAll<HTMLElement>("input, button")].filter((part) => {
+                const box = part.getBoundingClientRect();
+                return box.left < row.left - 0.5 || box.right > row.right + 0.5;
+              }).map((part) => part.getAttribute("aria-label"));
+            });
+            assert.deepEqual(outside, [], `the rename field and its buttons fit the row at ${width}`);
+            await press(renaming.getByRole("button", { name: label("Cancel"), exact: true }));
+            await renaming.waitFor({ state: "detached" });
             await page.close();
           }
 
