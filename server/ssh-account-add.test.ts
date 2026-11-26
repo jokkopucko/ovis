@@ -10,7 +10,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { askRecoverySocket, openRecoverySocket } from "./account/recovery.ts";
 import { shellQuote } from "./machine-security.ts";
-import { SshConnection } from "./ssh.ts";
+import { SshConnection, stdioSocketForward } from "./ssh.ts";
 
 const SSHD = "/usr/sbin/sshd";
 const available = process.platform !== "win32" && existsSync(SSHD);
@@ -57,14 +57,14 @@ async function sshd(root: string, hostKey: string, options: { password?: boolean
 }
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "ovis-ssh-account-add-"));
+  const root = mkdtempSync(join(tmpdir(), "osa-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   keygen(join(root, "host"));
   keygen(join(root, "client"));
   writeFileSync(join(root, "authorized_keys"), readFileSync(join(root, "client.pub")), { mode: 0o600 });
   const state = join(root, "state");
-  const connect = (port: number, identity = join(root, "client")) => {
-    const ssh = new SshConnection({ destination: `${userInfo().username}@127.0.0.1`, port, identity_file: identity }, state);
+  const connect = (port: number, identity = join(root, "client"), multiplexed = true) => {
+    const ssh = new SshConnection({ destination: `${userInfo().username}@127.0.0.1`, port, identity_file: identity }, state, undefined, false, multiplexed);
     ssh.publicKeyOnly = true;
     cleanups.push(() => ssh.close());
     return ssh;
@@ -109,6 +109,24 @@ test.skipIf(!available)("a confirmed host key connects, and the PC's owner socke
   asked.length = 0;
   await expect(connect(port).start(answering("yes"))).rejects.toThrow(/IDENTIFICATION HAS CHANGED|Host key verification failed/);
   expect(asked).toEqual([]);
+});
+
+// OpenSSH reaches a Unix socket with -W from 9.4 on; an older ssh here is refused with words of its own (ssh.test.ts)
+const stdioSockets = available && stdioSocketForward(Bun.spawnSync(["ssh", "-V"]).stderr.toString());
+
+test.skipIf(!stdioSockets)("as on Windows, with no connection sharing: the PC's owner socket answers on an ssh of its own for each request", async () => {
+  const { root, connect, answering } = fixture();
+  const { port } = await sshd(root, join(root, "host"));
+  const socket = openRecoverySocket({ stateDir: mkdtempSync(join(root, "o-")), handle: async (request) => ({ heard: request }) });
+  if ("refused" in socket) throw new Error(socket.refused);
+  cleanups.push(() => socket.stop());
+  const ssh = connect(port, join(root, "client"), false);
+  await ssh.start(answering("yes"));
+  for (const act of ["account_add_inspect", "account_add_take"]) {
+    expect(JSON.parse(await ssh.askSocket(socket.path, JSON.stringify({ act })))).toEqual({ heard: { act } });
+  }
+  await expect(ssh.askSocket(join(root, "nothing-here.sock"), JSON.stringify({ act: "account_add_inspect" }))).rejects.toThrow();
+  expect(ssh.connected()).toBe(true);
 });
 
 test.skipIf(!available)("a key the PC does not accept fails: no password is ever asked, even where the server takes one", async () => {

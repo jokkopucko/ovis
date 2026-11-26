@@ -1159,8 +1159,6 @@ export class MachineManager {
     const accountAdd = request.account_add === true;
     if (accountAdd && (request.update_remote || options.auto || options.fromInstall || options.keysOnly)) throw new Error("An account add is its own setup, asked in its dialog");
     if (accountAdd && (target.herdr_socket || target.start_new_herdr)) throw new Error("An account add connects to that PC's own Ovis, not to a herdr session");
-    // the owner's socket is forwarded over a multiplexed connection, which this app has on Linux and macOS only
-    if (accountAdd && process.platform === "win32") throw new Error("Adding a PC to your account over SSH from Windows is not supported yet.");
     if (accountAdd && this.previewProfile) throw new Error(PREVIEW_NO_ACCOUNT_ADD);
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
     if (existing?.machine.kind === "address") throw new Error(ADDRESS_PC_UPDATES);

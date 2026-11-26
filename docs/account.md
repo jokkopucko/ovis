@@ -1345,8 +1345,8 @@ this way. All other comparison paths still require their original digits.
 ### Adding a PC over SSH
 
 From this PC's own window, signed in to the account this PC is in, Add PC over SSH can also add
-the other PC (B) to that account (Linux and macOS on both ends; a Windows B adds itself with its
-number). SSH only says which machine and OS user was reached; the account's one-press admission
+the other PC (B) to that account (from Linux, macOS or Windows; B runs Linux or macOS, and a Windows
+B adds itself with its number). SSH only says which machine and OS user was reached; the account's one-press admission
 decides which account B may join. There, Add a connection's Ovis relay tab lists the PCs this PC can
 reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC over SSH with that host.
 A row says **In your account** only for a PC that took its place there: the directory's `completed_at`
@@ -1364,7 +1364,9 @@ added** before.
   refused, and a PC without Ovis is offered the official installer (`install_ovis`). Nothing is
   installed or started in its place.
 - **Inspect.** B's registration names its recovery socket (`recover_socket`). It is forwarded over
-  the job's connection into the connection's private folder, and `account_add_inspect` returns B's
+  the job's connection into the connection's private folder; on Windows, whose ssh shares no
+  connection, each request goes on an ssh of its own instead (`ssh -W` to that socket, which needs
+  OpenSSH 9.4 or newer there), so nothing listens for it on the adding PC. `account_add_inspect` returns B's
   ID, public key, advertised relay, label and account. The ID must derive from the key. That socket answers every
   recovery act of B's owner, so the adding PC only ever sends `account_add_inspect` and `account_add_take` on it
   (`server/account-add-channel.ts`), and closes the forward once take answers, on any error, and after ten minutes.

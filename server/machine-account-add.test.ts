@@ -254,7 +254,7 @@ test("nothing but an account add's inspect and take is ever sent on the forwarde
     { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), list: "a".repeat(64) },
     { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), adder: "key" },
     { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), list: "a".repeat(64), adder: "key", pending: "x" },
-  ]) await expect(sendAccountAddAct(socket.path, request as never)).rejects.toThrow("Only an account add's inspect and take");
+  ]) await expect(sendAccountAddAct({ local: socket.path }, request as never)).rejects.toThrow("Only an account add's inspect and take");
   expect(socket.seen).toEqual([]);
 });
 

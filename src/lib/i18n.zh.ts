@@ -347,6 +347,7 @@ const BASE: Record<string, string> = {
   "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.": "那台电脑上只运行着这个应用启动的桥接，没有它自己的 Ovis。请先安装 Ovis，再添加到你的账号。",
   "Ovis is not running on that PC. Install it there, then add it to your account.": "那台电脑上没有运行 Ovis。请先安装，再添加到你的账号。",
   "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.": "暂不支持通过 SSH 将 Windows 电脑添加到账号。请用那台电脑 Ovis 页面上显示的数字添加。",
+  "Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.": "在 Windows 上通过 SSH 将电脑添加到账号，需要这台电脑上有 OpenSSH 9.4 或更高版本。请更新 Git for Windows（或 OpenSSH）后重试。",
   "That PC's Ovis is too old to be added over SSH. Update it there, then try again.": "那台电脑上的 Ovis 版本太旧，无法通过 SSH 添加。请在那台电脑上更新后重试。",
   "New PC": "新电脑",
   "Rename failed: {reason}": "重命名失败：{reason}",

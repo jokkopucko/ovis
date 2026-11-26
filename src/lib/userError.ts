@@ -104,6 +104,7 @@ export function machineErrorText(words: string, translateIn: Translate): string 
     ["That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.", t("That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.")],
     ["Ovis is not running on that PC. Install it there, then add it to your account.", t("Ovis is not running on that PC. Install it there, then add it to your account.")],
     ["Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.", t("Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.")],
+    ["Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.", t("Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.")],
     ["That PC's Ovis is too old to be added over SSH. Update it there, then try again.", t("That PC's Ovis is too old to be added over SSH. Update it there, then try again.")],
   ];
   return known.reduce((text, [english, local]) => text.replaceAll(english, local), words);

@@ -8,7 +8,7 @@ import type { BridgeDescriptor } from "./bridge.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
-import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, sweepSshDirs } from "./ssh.ts";
+import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, stdioSocketForward, sweepSshDirs } from "./ssh.ts";
 import { posixHost, type HostInspection } from "./remote-host.ts";
 
 // The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
@@ -354,6 +354,18 @@ describe("sweeping connection folders an earlier server left", () => {
       expect(["herdr-ssh-old1", "herdr-ssh-old2", "herdr-ssh-busy", "herdr-ssh-new", "other-old"].filter((name) => existsSync(join(root, name)))).toEqual(["herdr-ssh-busy", "herdr-ssh-new", "other-old"]);
       expect(await sweepSshDirs(join(root, "missing"))).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("which ssh reaches a Unix socket with -W", () => {
+  it("is OpenSSH 9.4 or newer, Windows' own build and Git for Windows' alike", () => {
+    expect(stdioSocketForward("OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.9p1, OpenSSL 3.2.3 3 Sep 2024")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_10.2p1 Ubuntu-2ubuntu3.8, OpenSSL 3.5.5 27 Jan 2026")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.4p1, OpenSSL 3.1.2")).toBe(true);
+    expect(stdioSocketForward("OpenSSH_9.2p1 Debian-2+deb12u3, OpenSSL 3.0.15 3 Sep 2024")).toBe(false);
+    expect(stdioSocketForward("OpenSSH_for_Windows_8.1p1, LibreSSL 3.0.2")).toBe(false);
+    expect(stdioSocketForward("ssh: not found")).toBe(false);
   });
 });
 

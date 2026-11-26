@@ -345,6 +345,7 @@ const BASE: Record<string, string> = {
   "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.": "その PC ではこのアプリが起動したブリッジだけが動いていて、独自の Ovis はありません。Ovis をインストールしてからアカウントに追加してください。",
   "Ovis is not running on that PC. Install it there, then add it to your account.": "その PC では Ovis が動いていません。インストールしてからアカウントに追加してください。",
   "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.": "Windows PC を SSH でアカウントに追加することはまだできません。その PC の Ovis ページに表示された番号で追加してください。",
+  "Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.": "Windows から SSH で PC をアカウントに追加するには、この PC に OpenSSH 9.4 以降が必要です。Git for Windows（または OpenSSH）を更新してから、もう一度お試しください。",
   "That PC's Ovis is too old to be added over SSH. Update it there, then try again.": "その PC の Ovis は古いため SSH で追加できません。その PC で更新してからもう一度お試しください。",
   "New PC": "新しいPC",
   "Rename failed: {reason}": "名前を変更できませんでした: {reason}",

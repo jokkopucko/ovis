@@ -343,6 +343,7 @@ const BASE: Record<string, string> = {
   "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.": "그 PC에는 이 앱이 띄운 브리지만 있고 자체 Ovis가 없습니다. Ovis를 설치한 뒤 계정에 추가하세요.",
   "Ovis is not running on that PC. Install it there, then add it to your account.": "그 PC에서 Ovis가 실행 중이 아닙니다. 설치한 뒤 계정에 추가하세요.",
   "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.": "Windows PC는 아직 SSH로 계정에 추가할 수 없습니다. 그 PC의 Ovis 페이지에 표시된 번호로 추가하세요.",
+  "Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.": "Windows에서 SSH로 PC를 계정에 추가하려면 이 PC에 OpenSSH 9.4 이상이 필요합니다. Git for Windows(또는 OpenSSH)를 업데이트한 뒤 다시 시도하세요.",
   "That PC's Ovis is too old to be added over SSH. Update it there, then try again.": "그 PC의 Ovis가 오래되어 SSH로 추가할 수 없습니다. 그 PC에서 업데이트한 뒤 다시 시도하세요.",
   "New PC": "새 PC",
   "Rename failed: {reason}": "이름 바꾸기 실패: {reason}",
