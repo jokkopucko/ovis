@@ -1,7 +1,4 @@
-/**
- * libghostty's layer (src/lib/ghostty/overlay.ts) draws each run's background over xterm's screen, and xterm's
- * selection boxes sat under that layer: over a coloured cell the selection was copied but never shown.
- */
+/** Selection over a cell with its own background must remain visible. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

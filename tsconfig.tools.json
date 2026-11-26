@@ -125,7 +125,6 @@
     "scripts/ui-terminal-regression.ts",
     "scripts/usage-regression.ts",
     "scripts/web-panel-mobile-regression.ts",
-    "scripts/with-bun.test.ts",
-    "scripts/xterm-composition.test.ts"
+    "scripts/with-bun.test.ts"
   ]
 }

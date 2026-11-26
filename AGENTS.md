@@ -1,6 +1,6 @@
 # Ovis
 
-Browser UI for the herdr terminal multiplexer: a React 19 + xterm.js client (`src/`), a Bun
+Browser UI for the herdr terminal multiplexer: a React 19 + libghostty client (`src/`), a Bun
 backend (`server/`) that bridges herdr's unix-socket API, and the wire contract both import
 (`shared/`). herdr owns every pty, scrollback and agent state; this app is only a bridge.
 

@@ -41,7 +41,7 @@ describe("the screen's door to the Ovis server", () => {
   });
 
   it("asks only a loopback http origin with no path; any other address is refused before a request leaves", async () => {
-    const asked: { url: string; redirect: RequestRedirect | undefined }[] = [];
+    const asked: { url: string; redirect: RequestInit["redirect"] }[] = [];
     const send = async (url: string, init: RequestInit) => {
       asked.push({ url, redirect: init.redirect });
       return Response.json({ ok: true, path: "/p", forced: false });

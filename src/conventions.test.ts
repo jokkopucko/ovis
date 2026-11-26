@@ -363,14 +363,12 @@ describe("surfaces over the app", () => {
 });
 
 describe("terminal mount", () => {
-  // The attach stream is the only writer of the terminal and herdr owns scrollback: xterm
-  // keeps none, or the fit addon reserves a scrollbar column and the last columns go dead.
-  it("creates every xterm Terminal with scrollback: 0", () => {
+  // Only terminal-history panes opt into local history, after the server advertises it.
+  it("mounts the Ghostty terminal with local history off by default", () => {
     const options: string[] = [];
     for (const file of scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name))) {
       const source = read(file);
-      // the mount gives the same options to xterm or to the terminal without it (ghostty/terminal.ts)
-      for (const match of source.matchAll(/new Terminal\(\{|const termOptions = \{/g)) {
+      for (const match of source.matchAll(/new GhosttyTerminal\(\{|const termOptions = \{/g)) {
         let depth = 1;
         let end = match.index + match[0].length;
         for (; depth > 0 && end < source.length; end++) depth += source[end] === "{" ? 1 : source[end] === "}" ? -1 : 0;
@@ -379,7 +377,7 @@ describe("terminal mount", () => {
     }
     expect(options.length).toBeGreaterThan(0);
     fail(options.filter((entry) => !/\bscrollback:\s*0\b/.test(entry)).map((entry) => entry.split("\n")[0]!),
-      "Every new Terminal({...}) sets scrollback: 0: herdr owns scrollback, and xterm's own would reserve a scrollbar column.");
+      "Ghostty panes start with scrollback: 0; herdr owns scrollback unless the backend advertises terminal-history.");
   });
 
   it("mounts the terminal before the attach reset effect runs", () => {

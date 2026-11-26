@@ -48,7 +48,7 @@ export interface FrameStamp {
 }
 
 type GateParse = "ground" | "can" | "can-esc" | "can-csi" | "can-bang" | "esc" | "csi" | "bang" | "private";
-/** xterm 6 Params capacity (node_modules/@xterm/xterm/src/common/parser/Params.ts). */
+/** Maximum CSI parameters tracked by the frame gate. */
 const XTERM_MAX_CSI_PARAMS = 32;
 
 /**

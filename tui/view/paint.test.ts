@@ -1,6 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
-import { Terminal } from "@xterm/xterm";
+import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
 import type { LayoutNode } from "../../server/herdr-core/layout-doc.ts";
 import { createEmulator } from "../emulator/ghostty.ts";
 import { type Emulator, type EngineEvents, STYLE_INVERSE, type WrittenColor } from "../emulator/index.ts";
@@ -450,23 +449,25 @@ describe("the frame painter", () => {
     expectReplay(host, painter, frames[1]!);
     expect(unplaced(frames[1]!.bytes)).toEqual([]);
 
-    // xterm, the browser's terminal, with its grapheme widths: the same cells and the same cursor column
-    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
-    term.loadAddon(new UnicodeGraphemesAddon());
-    term.unicode.activeVersion = "15-graphemes";
+    // The browser's width profile also lands each cell and the cursor at the model's coordinates.
+    const wasm = Bun.file(new URL("../../shared/ghostty/ghostty-vt.wasm", import.meta.url));
+    const { instance } = await WebAssembly.instantiate(await wasm.arrayBuffer());
+    const term = new GhosttyEngine(new GhosttyModule(instance), W, H, { widths: "xterm", images: false });
+    term.setMode(2027, true);
     try {
-      for (const frame of frames) await new Promise<void>((resolve) => term.write(frame.bytes, resolve));
-      const buffer = term.buffer.active;
+      for (const frame of frames) term.write(frame.bytes);
       for (let row = 0; row < H; row++) {
-        const line = buffer.getLine(row)!;
+        const line = term.rowCells(row);
         for (let col = 0; col < W; col++) {
           const want = at(col, row);
-          const cell = line.getCell(col)!;
-          expect({ col, row, text: want.width === 0 ? "" : cell.getChars() || " ", width: cell.getWidth() }).toEqual({ col, row, text: want.text ?? "", width: want.width ?? -1 });
+          const cell = line?.[col];
+          if (!cell) throw new Error(`browser engine has no cell at ${col},${row}`);
+          const got: { col: number; row: number; text: string; width: number } = { col, row, text: want.width === 0 ? "" : cell.text || " ", width: cell.width };
+          expect(got).toEqual({ col, row, text: want.text ?? "", width: want.width ?? -1 });
         }
       }
       const cursor = frames[1]!.cursor;
-      expect({ x: buffer.cursorX, y: buffer.cursorY }).toEqual({ x: cursor.col, y: cursor.row });
+      expect(term.screenCursor()).toEqual({ x: cursor.col, y: cursor.row });
     } finally {
       term.dispose();
     }

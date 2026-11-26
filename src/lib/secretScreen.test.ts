@@ -1,29 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { Terminal } from "@xterm/xterm";
-import { GhosttyVt } from "./ghostty/vt.ts";
-import { ghosttyRows } from "./ghostty/screenRows.ts";
+import { testTerminal, type TestTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { createSecretScreen } from "./secretScreen.ts";
-import { holdScreenRows } from "./terminalScreen.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 
-const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
-
-/**
- * Each case is read off xterm's screen and off libghostty's: the same stream must get the same answer from both.
- * libghostty takes each byte before xterm parses it and answers the screen's rows, as ghostty/overlay.ts has it.
- */
-async function held(term: Terminal, engine: "xterm" | "libghostty"): Promise<Terminal> {
-  if (engine === "xterm") return term;
-  const vt = await GhosttyVt.create(term.cols, term.rows);
-  vt.setScrollback(term.options.scrollback ?? 0);
-  const write = term.write.bind(term), resize = term.resize.bind(term), reset = term.reset.bind(term), dispose = term.dispose.bind(term);
-  term.write = ((data: string | Uint8Array, callback?: () => void) => { vt.write(data); write(data, callback); }) as Terminal["write"];
-  term.resize = (cols, rows) => { resize(cols, rows); vt.resize(cols, rows, 8, 16); };
-  term.reset = () => { vt.reset(); reset(); };
-  term.dispose = () => { holdScreenRows(term, null); vt.dispose(); dispose(); };
-  holdScreenRows(term, () => ghosttyRows(vt));
-  return term;
-}
+const parse = (term: TestTerminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
 
 /** What herdr's attach sends before its first screen: the alternate screen, where a resize joins no rows, and no wrap. */
 const SETUP = "\x1b[?1049h\x1b[?7l";
@@ -37,13 +16,9 @@ const frame = (cols: number, rows: string[], [row, column]: [number, number]): s
 
 const GIT = "Password for 'https://alice@github.com':";
 
-describe.each(["xterm", "libghostty"] as const)("read off %s's screen", (engine) => {
-  const terminal = async (cols: number, rows = 10, scrollback = 0): Promise<Terminal> => {
-    const term = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
-    matchHerdrWidths(term);
-    return await held(term, engine);
-  };
-  const attached = async (cols: number, rows = 10): Promise<Terminal> => {
+describe("read off libghostty's screen", () => {
+  const terminal = (cols: number, rows = 10, scrollback = 0) => testTerminal({ cols, rows, scrollback });
+  const attached = async (cols: number, rows = 10): Promise<TestTerminal> => {
     const term = await terminal(cols, rows);
     await parse(term, SETUP);
     return term;
@@ -254,7 +229,7 @@ describe.each(["xterm", "libghostty"] as const)("read off %s's screen", (engine)
     } finally { term.dispose(); }
   });
 
-  test("on a stream of the program's own bytes, a prompt xterm wrapped is answered by a line feed alone", async () => {
+  test("on a stream of the program's own bytes, a wrapped prompt is answered by a line feed alone", async () => {
     // a herdr-core pane: xterm wraps the 40-column prompt at 30 columns itself and joins its rows
     const term = await terminal(30);
     const screen = createSecretScreen(term, () => true);
@@ -296,7 +271,7 @@ describe.each(["xterm", "libghostty"] as const)("read off %s's screen", (engine)
     } finally { term.dispose(); }
   });
 
-  test("a program's switch to 132 columns leaves the pane as wide as it is, as xterm does", async () => {
+  test("a program's switch to 132 columns leaves the pane at its original width", async () => {
     const term = await terminal(40);
     const screen = createSecretScreen(term, () => true);
     try {
@@ -316,19 +291,4 @@ describe.each(["xterm", "libghostty"] as const)("read off %s's screen", (engine)
       expect(screen.read("a")).toBe(GIT);
     } finally { term.dispose(); }
   });
-});
-
-test("the prompt is read off the screen libghostty holds while it holds one, and off xterm's once it gives it back", async () => {
-  const term = new Terminal({ cols: 40, rows: 4, scrollback: 0, allowProposedApi: true });
-  const vt = await GhosttyVt.create(40, 4);
-  const screen = createSecretScreen(term, () => false);
-  try {
-    // only libghostty was given the prompt: the reader that answers it is libghostty's
-    vt.write("$ sudo true\r\n[sudo] password for alice: ");
-    await parse(term, "$ ls\r\n");
-    holdScreenRows(term, () => ghosttyRows(vt));
-    expect(screen.read("a")).toBe("[sudo] password for alice:");
-    holdScreenRows(term, null);
-    expect(screen.read("a")).toBeNull();
-  } finally { vt.dispose(); term.dispose(); }
 });

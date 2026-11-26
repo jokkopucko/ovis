@@ -1,8 +1,4 @@
-/**
- * herdr's own server is
- * drawn by libghostty too, and so is a device that turned the old Draw with libghostty switch off.
- * The libghostty-only renderer places iTerm2 and sixel pictures where xterm does. Demo fixtures only.
- */
+/** Demo-only regression for libghostty output, input and inline pictures. */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -89,17 +85,13 @@ const print = async (page: Page, data: string, marker: string) => {
   await settled(page);
 };
 
-async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false, only = false, xterm = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
+async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { legacyEngine = false, images = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-  await context.addInitScript(([storedOff, images, only, xterm]) => {
-    // the old engine, asked for by name: the place xterm itself puts text after a picture is the reference
-    if (xterm) localStorage.setItem("ovis:terminal-engine", "xterm");
+  await context.addInitScript(([legacyEngine, images]) => {
+    if (legacyEngine) localStorage.setItem("ovis:terminal-engine", "xterm");
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
-    if (storedOff) localStorage.setItem("ovis:terminal-ghostty", "false");
     localStorage.setItem("ovis:terminal-pictures", JSON.stringify(images));
-    if (only) localStorage.setItem("ovis:ghostty-only", "on");
-  }, [storedOff, images, only, xterm] as const);
-  if (noModule) await context.route(/\.wasm$/, (route) => route.abort());
+  }, [legacyEngine, images] as const);
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   const wasm: string[] = [];
@@ -108,8 +100,7 @@ async function open(browser: Browser, server: number, prefix: string, kind: "cor
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "warning" && message.text().includes("libghostty")) errors.push(message.text()); });
   await page.goto(`http://127.0.0.1:${server}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=${kind}`);
-  // Either renderer can paint the first replay; xterm stops painting once libghostty takes over.
-  await page.locator(".pane-frame.is-current :is(.xterm-rows, .ghostty-row)", { hasText: "BEFORE-LOAD" }).filter({ visible: true }).first().waitFor();
+  await page.locator(".pane-frame.is-current .ghostty-row", { hasText: "BEFORE-LOAD" }).filter({ visible: true }).first().waitFor();
   return { page, wasm, errors };
 }
 
@@ -128,14 +119,11 @@ try {
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
         assert.equal(wasm.length, 1, "core: the module is fetched once");
-        // a terminal without xterm has no rows of its own; over xterm (the old engine) its rows are hidden
-        if (await page.locator(".pane-frame.is-current .xterm-rows").count()) assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "core: xterm's own text is hidden under libghostty's");
 
         const announced = () => page.evaluate(() => document.querySelector(".pane-frame.is-current .ghostty-layer [aria-live]")?.textContent ?? null);
         assert.equal(await announced(), "", "core: the screen a pane opens on is not announced");
         await print(page, "SPOKEN-LINE\r\n", "SPOKEN-DONE");
         assert.ok((await announced())?.includes("SPOKEN-LINE"), `core: a line the program writes is announced (${JSON.stringify(await announced())})`);
-        assert.equal(await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "SPOKEN-LINE" }).count(), 0, "core: xterm no longer redraws its hidden rows");
         await print(page, Array.from({ length: 60 }, (_, i) => `OLD-${String(i).padStart(2, "0")}`).join("\r\n") + "\r\n", "FILL-DONE");
         await print(page, "NEW-ONLY-LINE\r\n", "NEW-DONE");
         const scrolled = await announced();
@@ -335,42 +323,27 @@ try {
         await page.context().close();
       }
       {
-        // iTerm2 in only mode: the converted picture stays on libghostty, and text still starts
-        // at xterm's row and column after the picture.
-        const shownRow = async (ghostty: boolean) => {
-          const { page, errors } = await open(browser, server.port, prefix, "core", { noModule: !ghostty, images: true, only: true, xterm: !ghostty });
-          if (ghostty) await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
-          else {
-            await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor();
-            await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .xterm") as { imageAt?: unknown } | null)?.imageAt === "function");
-          }
-          await page.evaluate((data) => window.ghosttyFixture.print(data), `\x1b[2J\x1b[H${itermSquare()}IT2-AFTER\r\n`);
-          const row = await page.waitForFunction(() => {
-            const layer = document.querySelector(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]");
-            const rows = [...document.querySelectorAll(layer ? ".pane-frame.is-current .ghostty-row" : ".pane-frame.is-current .xterm-rows > div")];
-            const index = rows.findIndex((row) => row.textContent?.includes("IT2-AFTER"));
-            return index >= 0 ? { index, column: rows[index]?.textContent?.indexOf("IT2-AFTER") } : null;
-          }).then(async (handle) => handle.jsonValue());
-          assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-renderer]").count(), Number(ghostty), "core, iTerm2 picture: only a missing module falls back to xterm");
-          const rgb = ghostty ? (await picture(page))?.rgb : await page.evaluate(() =>
-            (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => unknown }).imageAt?.(0, 0));
-          assert.deepEqual(rgb, [0, 128, 0], "core, iTerm2 picture: the picture is drawn where it was placed");
-          if (ghostty) {
-            // One blue GIF pixel. Seeing the marker and the new colour together proves the browser
-            // decode ran before the following text, without leaving the libghostty renderer.
-            const gif = Buffer.from("474946383961010001008000000000ffffff002c00000000010001000002024401003b", "hex").toString("base64");
-            await print(page, `\x1b_Ga=d,d=A\x1b\\\x1b[H\x1b]1337;File=inline=1;width=2:${gif}\x07`, "GIF-AFTER");
-            assert.deepEqual((await picture(page))?.rgb, [0, 0, 255], "core, iTerm2 GIF: libghostty draws the browser-converted picture");
+        const { page, errors } = await open(browser, server.port, prefix, "core", { images: true });
+        const marker = "IT2-AFTER";
+        await print(page, "\x1b[2J\x1b[H" + itermSquare(), marker);
+        const placement = await page.evaluate((marker) => {
+          const layer = document.querySelector<HTMLElement>(".pane-frame.is-current .ghostty-layer");
+          if (!layer) return null;
+          const rows = [...layer.querySelectorAll(".ghostty-row")];
+          const row = rows.findIndex((line) => line.textContent?.includes(marker));
+          return { row, col: rows[row]?.textContent?.indexOf(marker), height: parseFloat(getComputedStyle(layer).getPropertyValue("--ghostty-ch")) };
+        }, marker);
+        assert.ok(placement && placement.row === Math.ceil(24 / placement.height) - 1 && placement.col === 0,
+          "core, iTerm2 picture: following text starts at the left of the last picture row: " + JSON.stringify(placement));
+        assert.deepEqual((await picture(page))?.rgb, [0, 128, 0], "core, iTerm2 picture: the picture is drawn where it was placed");
 
-            await checkGhosttySixel(page, print);
-          }
-          assert.deepEqual(errors.filter((error) => !error.includes("libghostty") && !error.includes("wasm")), [], `core, iTerm2 picture${ghostty ? "" : ", no module"}: no page errors`);
-          await page.context().close();
-          return row;
-        };
-        const xtermRow = await shownRow(false);
-        assert.ok(xtermRow && xtermRow.index > 0, `core, iTerm2 picture, no module: xterm moves past the picture (${JSON.stringify(xtermRow)})`);
-        assert.deepEqual(await shownRow(true), xtermRow, "core, iTerm2 picture: text following the picture lands where xterm puts it");
+        // Seeing the marker and the new colour together proves the GIF decoded before the following text.
+        const gif = Buffer.from("474946383961010001008000000000ffffff002c00000000010001000002024401003b", "hex").toString("base64");
+        await print(page, "\x1b_Ga=d,d=A\x1b\\\x1b[H\x1b]1337;File=inline=1;width=2:" + gif + "\x07", "GIF-AFTER");
+        assert.deepEqual((await picture(page))?.rgb, [0, 0, 255], "core, iTerm2 GIF: libghostty draws the browser-converted picture");
+        await checkGhosttySixel(page, print);
+        assert.deepEqual(errors, [], "core, inline pictures: no page errors");
+        await page.context().close();
       }
       {
         const { page, wasm, errors } = await open(browser, server.port, prefix, "herdr");
@@ -378,7 +351,6 @@ try {
         await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
         await print(page, "HERDR-LINE\r\n", "HERDR-DONE");
         assert.equal(wasm.length, 1, "herdr: the module is fetched once");
-        if (await page.locator(".pane-frame.is-current .xterm-rows").count()) assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "herdr: xterm's own text is hidden under libghostty's");
         await page.locator(".pane-frame.is-current .pane-terminal").click();
         await page.keyboard.type("y");
         await page.waitForFunction(() => window.ghosttyFixture.inputs.some((frame) => frame.type === "input" && frame.text === "y"));
@@ -414,14 +386,14 @@ try {
         console.log("PASS libghostty that never loads: the pane says so and takes no typing");
       }
       for (const kind of ["herdr", "core"] as const) {
-        const { page, wasm, errors } = await open(browser, server.port, prefix, kind, { storedOff: true });
+        const { page, wasm, errors } = await open(browser, server.port, prefix, kind, { legacyEngine: true });
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         await print(page, "STORED-OFF\r\n", "STORED-OFF-DONE");
-        assert.equal(wasm.length, 1, `${kind}, switch once turned off: the module is fetched`);
-        assert.deepEqual(errors, [], `${kind}, switch once turned off: no page errors`);
+        assert.equal(wasm.length, 1, `${kind}, legacy engine preference ignored: the module is fetched`);
+        assert.deepEqual(errors, [], `${kind}, legacy engine preference ignored: no page errors`);
         await page.context().close();
       }
-      console.log("PASS libghostty: draws every pane, a herdr-core one from its first byte with Kitty pictures, herdr's own too, also where the old switch was turned off");
+      console.log("PASS libghostty: draws every pane, a herdr-core one from its first byte with Kitty pictures, herdr's own too, also where the old engine preference was set");
     } finally {
       await browser.close();
     }

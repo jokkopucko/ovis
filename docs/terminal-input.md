@@ -189,11 +189,9 @@ trips and pane changes on those keyboards before claiming universal IME compatib
   of `니다.` when completions and punctuation arrive before deferred timers. A limited backport
   drains pending commits in order, uses the live selection end for interrupted compositions, and
   tracks emitted offsets to prevent duplicates. It reads corrected DOM text rather than stale
-  `compositionend.data`, retaining the `핫 → 하세` case. The readable source patch is in `patches/`;
-  Vite builds that source through `scripts/build-xterm.ts` so the patch is present in the shipped
-  app, not just unused TypeScript. Version changes fail closed until the patch is revalidated.
-  The queue/watermark approach follows @joonhoekim's proposal in #6090 (MIT); the backport was written
-  for 5.5.0, ported to 6.0.0 (#1617), and is maintained here pending an upstream release. Reset/disposal also invalidate deferred
+  `compositionend.data`, retaining the `핫 → 하세` case.
+  The MIT-licensed queue/watermark approach from @joonhoekim's proposal is now part of
+  `src/lib/terminalInput/composition.ts`, which drives the libghostty terminal. Reset/disposal also invalidate deferred
   composition work so old input cannot enter a newly selected pane. The app resets in a layout
   effect, before another task can deliver the previous pane's commit.
 - Related to [xterm #3600](https://github.com/xtermjs/xterm.js/issues/3600), native Gboard testing

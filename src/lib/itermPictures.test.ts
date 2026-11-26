@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
-import { Terminal } from "@xterm/xterm";
-import { decodeTiff, itermPictures, type OscStreamHandler } from "./itermPictures.ts";
-import { registerOscStream } from "./terminalImages.ts";
+import { itermPictureWriter } from "./ghostty/itermPictureWriter.ts";
+import { decodeTiff, itermPictures } from "./itermPictures.ts";
 
 const LIMITS = { sizeLimit: 20_000_000, pixelLimit: 4096 * 4096 };
 
@@ -153,28 +152,21 @@ test("gives a placeholder where the PNG a TIFF turns into is past the addon's fi
   expect([...readPng(bytes).rgba.subarray(0, 4)]).toEqual([0x60, 0x60, 0x60, 255]);
 });
 
-test("reads a picture past the 10,000,000 characters xterm holds for a string handler, from xterm's own parser", async () => {
-  const { fed, stream } = handler();
-  const term = new Terminal({ cols: 80, rows: 24, scrollback: 0, allowProposedApi: true });
-  // the handler before it: reached only where the pictures handler leaves a payload to the addon
-  const left: boolean[] = [];
-  const addon: OscStreamHandler = { start() {}, put() {}, end: (success) => { left.push(success); return true; } };
-  expect(registerOscStream(term, 1337, addon)).not.toBeNull();
-  expect(registerOscStream(term, 1337, stream)).not.toBeNull();
-  const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
-  // 2048 x 1280 RGBA: 10,485,760 bytes, about 14 million base64 characters
+test("streams an inline picture past ten million base64 characters without losing following text", async () => {
+  const writer = itermPictureWriter(() => LIMITS, () => ({ cols: 80, rows: 24, cellW: 8, cellH: 16 }));
   const pixels = Uint8Array.from({ length: 2048 * 1280 * 4 }, (_, i) => (i % 4 === 3 ? 255 : (i >> 13) % 256));
   const base64 = Buffer.from(chafaTiff(2048, 1280, pixels)).toString("base64");
   expect(base64.length).toBeGreaterThan(10_000_000);
-  await write(`\x1b]1337;File=inline=1:${base64}\x07`);
-  expect(fed.length).toBe(1);
-  const png = readPng(fedPicture(fed[0]!).bytes);
+  const writes: string[] = [];
+  const emit = (data: string | Uint8Array) => { writes.push(String(data)); };
+  writer.write("\x1b]1337;File=inline=1:", emit);
+  for (let at = 0; at < base64.length; at += 65_536) writer.write(base64.slice(at, at + 65_536), emit);
+  await new Promise<void>((done) => writer.write("\x07after", emit, done));
+  const converted = [...writes.join("").matchAll(/\x1b_G[^;]+;([^\x1b]+)\x1b\\/g)].map((match) => match[1]).join("");
+  const png = readPng(Buffer.from(converted, "base64"));
   expect([png.width, png.height]).toEqual([2048, 1280]);
   expect(png.rgba).toEqual(pixels);
-  await write(`\x1b]1337;File=inline=1;size=7500000:iVBORw0KGgo${"A".repeat(10_000_000)}\x07`);
-  expect(fed.length).toBe(1);
-  expect(left).toEqual([false, true]);
-  term.dispose();
+  expect(writes.at(-1)).toBe("after");
 });
 
 test("reads a payload fed in small pieces as the whole of it, long arguments and characters past U+FFFF too", async () => {

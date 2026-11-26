@@ -5669,21 +5669,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   folded rows or an oversized mirror, done in the browser, does not glide. The wheel speed setting
   is for wheels and trackpads only: the finger keeps the text under it.
 - The screen a new attach is handed (`pty-data` with `replay: true`: a second tab, a phone, a
-  reconnect) is presentation history: xterm draws it byte for byte, and an OSC 52 copy request in
-  it is not run again. Output reaches xterm one frame at a time, so the frame being parsed is
-  known; a replayed frame that ends inside an OSC that may still become OSC 52 (xterm's own
-  `oscStringState()`, added by the xterm patch) keeps the next OSC 52 dispatch suppressed until
+  reconnect) is presentation history: Ghostty draws it byte for byte, and an OSC 52 copy request in
+  it is not run again. Output reaches Ghostty one frame at a time, so the frame being parsed is
+  known; a replayed frame that ends inside an OSC that may still become OSC 52 (`oscStringState()` in
+  `src/lib/ghostty/hooks.ts`) keeps the next OSC 52 dispatch suppressed until
   that OSC ends. The edge is fail-closed: when such an OSC is aborted (CAN, SUB) or completes as
   another identifier, a whole live OSC 52 later in that same live frame is not copied either; one
   in the next frame is. An older bridge marks nothing, so its replay still counts as live output.
   A reconnect, a pane switch or a tab letting go of its attach retires the output from before
-  it: frames still waiting are dropped unwritten, the one xterm is still parsing copies nothing,
+  it: frames still waiting are dropped unwritten, the one Ghostty is still parsing copies nothing,
   and an OSC the old output left open is guarded as a replayed one.
   The idea that a new viewer does not act on earlier writes is AoE's (Agent of Empires), whose
   clipboard consumer starts at the current point and never sees the replay; Ovis differs because a
-  joining view needs the replay drawn, so only its side effect goes. Every xterm upgrade ports
-  `oscStringState` (`scripts/xterm-parser-state.test.ts`) and reruns
-  `scripts/replay-clipboard-demo-regression.ts`.
+  joining view needs the replay drawn, so only its side effect goes. The parser state and replay
+  guard are checked by `src/lib/ghostty/hooks.test.ts` and `scripts/replay-clipboard-demo-regression.ts`.
 - Terminal banners stack top-right for ended, reconnecting, view-only and held-input states, and
   say only what the person needs now (section 1). Ended reads **Terminal ended**; input held for
   the pane stays until the person sends or discards it (pty-exit also comes with a herdr restart).

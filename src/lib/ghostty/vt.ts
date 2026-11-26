@@ -56,6 +56,8 @@ const PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
 /** decoded pictures one terminal keeps; every terminal on the page shares the module's one memory */
 const IMAGE_STORAGE_BYTES = 64n * 1024n * 1024n;
 
+let loadedModule: GhosttyModule | null = null;
+let widthProbe: GhosttyVt | null = null;
 let modulePromise: Promise<GhosttyModule> | null = null;
 
 function loadModule(): Promise<GhosttyModule> {
@@ -74,6 +76,8 @@ function loadModule(): Promise<GhosttyModule> {
     const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), { env });
     const module = new GhosttyModule(instance);
     memory = module.exports.memory;
+    loadedModule = module;
+    widthProbe = null;
     return module;
   })();
   modulePromise.catch(() => { modulePromise = null; });
@@ -121,6 +125,19 @@ export class GhosttyVt {
     return new GhosttyVt(module, cols, rows, events);
   }
 
+  /** Measure printable text with the same layout as a pane, without starting a WASM load. */
+  static textCells(text: string): number | null {
+    if (!loadedModule || loadedModule.trap) return null;
+    const printable = text.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+    // Leave the cursor a spare column even if every code unit takes two cells.
+    const cols = Math.min(0xffff, Math.max(2000, printable.length * 2 + 1));
+    const probe = widthProbe ??= new GhosttyVt(loadedModule, 2000, 1);
+    probe.reset();
+    if (probe.cols !== cols) probe.resize(cols, 1, 8, 16);
+    probe.write(printable);
+    return probe.screenCursor().x;
+  }
+
   modes(): EngineModes {
     return this.engine.modes();
   }
@@ -133,7 +150,7 @@ export class GhosttyVt {
   write(data: string | Uint8Array): void {
     const bytes = typeof data === "string" ? this.encoder.encode(data) : data;
     if (bytes.length === 0) return;
-    // xterm (terminalWidths.ts) and herdr give an emoji sequence (ZWJ family, skin tone, flag, keycap,
+    // herdr and herdr-core give an emoji sequence (ZWJ family, skin tone, flag, keycap,
     // an emoji-presentation selector) one two-column cell, an emoji with a text form and the
     // text-presentation selector (\u26bd\ufe0e) one one-column cell, and otherwise lay out as libghostty
     // does with grapheme clustering (mode 2027) off: clustering also joins spacing marks and Indic
@@ -222,6 +239,8 @@ export class GhosttyVt {
   reset(): void {
     // libghostty keeps a sequence it is in the middle of across a reset, and so does the scanner
     this.engine.reset();
+    this.afterZwj = false;
+    this.broken = true;
   }
 
   resize(cols: number, rows: number, cellW: number, cellH: number): void {
@@ -304,3 +323,5 @@ export class GhosttyVt {
     this.engine.dispose();
   }
 }
+
+export const textCells = GhosttyVt.textCells;

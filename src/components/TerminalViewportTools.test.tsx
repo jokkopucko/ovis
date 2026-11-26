@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "../lib/ghostty/terminal.ts";
 import type { PaneScrollInfo } from "../../shared/protocol.ts";
 import * as machineContext from "../lib/machineContext.tsx";
 import * as settingsModule from "../lib/settings.ts";
@@ -53,7 +53,7 @@ describe("a page held for a scroll read on stale zero-history metrics", () => {
       buffer: { active: { viewportY: 0, baseY: 0, getLine: () => undefined } },
       onWriteParsed: (listener: () => void) => { output = listener; return disposable; },
       onScroll: () => disposable, onRender: () => disposable, onResize: () => disposable,
-    } as unknown as Terminal;
+    } as unknown as GhosttyTerminal;
     await act(async () => {
       renderer = create(createElement(TerminalViewportTools, {
         viewportIntent: new ViewportIntentGate(), terminal, paneId: "w1:p1", pageScroll,
@@ -268,7 +268,7 @@ describe("history scrolls by every wheel line while the view's own writes are sl
       buffer: { active: { viewportY: 0, baseY: 0, getLine: () => undefined } },
       onWriteParsed: (callback: () => void) => { written.push(callback); return { dispose() {} }; },
       onScroll: listener, onRender: listener, onResize: (callback: () => void) => { resized.push(callback); return { dispose() {} }; },
-    } as unknown as Terminal;
+    } as unknown as GhosttyTerminal;
     const lineScroll: { current: ((lines: number) => void) | null } = { current: null };
     const pageScroll: { current: ((direction: -1 | 1) => void) | null } = { current: null };
     const errors: string[] = [];

@@ -1,4 +1,4 @@
-import type { ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
+import type { ILink, ILinkDecorations, ILinkProvider } from "./terminalSelection/types.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { terminalPathMatches } from "../../shared/terminal-links.ts";
 import { isWebLink } from "./externalLink.ts";

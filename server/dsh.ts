@@ -231,7 +231,7 @@ async function readDsh(binding: DshTranscript): Promise<{ text: string; identity
     if (path.endsWith(".zstd")) {
       const complete = completeDshFrames(bytes);
       if (!complete) return unavailable();
-      const reader = new Blob([bytes.subarray(0, complete)]).stream().pipeThrough(new DecompressionStream("zstd" as CompressionFormat)).getReader();
+      const reader = new Blob([bytes.subarray(0, complete)]).stream().pipeThrough(new DecompressionStream("zstd" as ConstructorParameters<typeof DecompressionStream>[0])).getReader();
       const chunks: Uint8Array[] = []; let size = 0;
       try {
         for (;;) {

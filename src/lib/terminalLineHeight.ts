@@ -1,4 +1,4 @@
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 
 /**
  * How tall a terminal row is drawn. xterm makes a row as tall as the Latin font's line, and
@@ -37,7 +37,7 @@ let measure: CanvasRenderingContext2D | null | undefined;
  * font bounding box of "W"). Called after every change of the font's family or size; a browser
  * without font metrics keeps the font's own line.
  */
-export function fitLineHeight(term: Terminal): void {
+export function fitLineHeight(term: GhosttyTerminal): void {
   const { fontFamily, fontSize } = term.options;
   if (fontSize === undefined || typeof document === "undefined") return;
   if (measure === undefined) measure = document.createElement("canvas").getContext("2d");

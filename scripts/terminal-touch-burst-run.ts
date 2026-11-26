@@ -145,8 +145,8 @@ async function instrument(context: BrowserContext): Promise<void> {
     window.addEventListener("keydown", (event) => { probe.events.push({ k: "keydown", t: now(), frame: event.key }); }, { capture: true });
     document.addEventListener("wheel", (event) => { if (!event.isTrusted) probe.events.push({ k: "wheel", t: now(), ft: probe.frameTime ?? undefined }); }, { capture: true });
     new MutationObserver((records) => {
-      // the rows the user sees: libghostty's while it draws the pane (xterm's are hidden and not redrawn), else xterm's
-      const painted = ".xterm-rows, .ghostty-text";
+      // the rows the user sees: libghostty's text layer
+      const painted = ".ghostty-text";
       if (records.some((record) => (record.target as Element).closest?.(painted) || record.target.parentElement?.closest(painted))) probe.lastPaint = now();
     }).observe(document, { subtree: true, childList: true, characterData: true });
     const watched = new WeakSet<WebSocket>();

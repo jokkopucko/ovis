@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { fontSettled } from "./fontFamily.ts";
 import { usePaneAttach, type PaneAttachDeps } from "./usePaneAttach.ts";
 import { useTerminalRefits, type TerminalRefitsDeps } from "./useTerminalRefits.ts";
@@ -30,7 +30,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
   let renderer: ReactTestRenderer | undefined;
   let client: HerdrSocket;
   let socket: FakeSocket;
-  const termRef: RefObject<Terminal | null> = { current: null };
+  const termRef: RefObject<GhosttyTerminal | null> = { current: null };
   const paneRef: RefObject<string | null> = { current: BEFORE };
   const coveredRef: RefObject<boolean> = { current: false };
   const releasedRef: RefObject<boolean> = { current: false };
@@ -97,7 +97,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     });
   };
   const sizing = (from: number) => socket.sent.slice(from).filter((frame) => ["attach", "resize", "release-size"].includes(frame.type));
-  const layOut = (): void => { termRef.current = { cols: 100, rows: 30, options: {}, reset: nothing } as unknown as Terminal; };
+  const layOut = (): void => { termRef.current = { cols: 100, rows: 30, options: {}, reset: nothing } as unknown as GhosttyTerminal; };
 
   it("attaches a pane that comes to the slot under the list keeping the pty's size, and asks for its grid once as it is shown", async () => {
     await draw({ paneId: BEFORE, covered: false });

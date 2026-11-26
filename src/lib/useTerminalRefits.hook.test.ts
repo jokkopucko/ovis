@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { fontSettled } from "./fontFamily.ts";
 import { useTerminalRefits, type TerminalRefitsDeps } from "./useTerminalRefits.ts";
 import { HerdrSocket } from "./ws.ts";
@@ -28,7 +28,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
   let renderer: ReactTestRenderer | undefined;
   let client: HerdrSocket;
   let socket: FakeSocket;
-  const termRef: RefObject<Terminal | null> = { current: null };
+  const termRef: RefObject<GhosttyTerminal | null> = { current: null };
 
   beforeEach(() => {
     for (const key of ["IS_REACT_ACT_ENVIRONMENT", "WebSocket", "window", "document"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -81,7 +81,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     const from = socket.sent.length;
     socket.open();
     expect(sizing(from)).toEqual([{ type: "attach", pane_id: PANE, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true }]);
-    termRef.current = { cols: 100, rows: 30 } as Terminal;
+    termRef.current = { cols: 100, rows: 30 } as GhosttyTerminal;
     const shown = socket.sent.length;
     await draw(false);
     expect(sizing(shown)).toEqual([{ type: "resize", pane_id: PANE, cols: 100, rows: 30 }]);
@@ -91,7 +91,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     let bottoms = 0;
     let selecting = false;
     await draw(false, true);
-    termRef.current = { cols: 100, rows: 30, hasSelection: () => selecting, scrollToBottom: () => { bottoms += 1; } } as unknown as Terminal;
+    termRef.current = { cols: 100, rows: 30, hasSelection: () => selecting, scrollToBottom: () => { bottoms += 1; } } as unknown as GhosttyTerminal;
     expect(bottoms).toBe(0);
     await draw(false, false);
     expect(bottoms).toBe(1);
@@ -107,7 +107,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     await draw(false);
     const from = socket.sent.length;
     await draw(true);
-    termRef.current = { cols: 100, rows: 30 } as Terminal;
+    termRef.current = { cols: 100, rows: 30 } as GhosttyTerminal;
     await draw(false);
     expect(sizing(from)).toEqual([]);
   });

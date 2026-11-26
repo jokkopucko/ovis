@@ -1,4 +1,3 @@
-import type { Terminal } from "@xterm/xterm";
 import { promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
 import { screenRows } from "./terminalScreen.ts";
 
@@ -25,7 +24,7 @@ function sameAsking(seen: Asking, now: Asking): boolean {
  * first seen after the answer. What was seen is one pane's: it is kept while that pane's screen is drawn again (a
  * reconnect, a phone that let the pane go while hidden), and dropped when the terminal shows another pane.
  */
-export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
+export function createSecretScreen(term: Parameters<typeof screenRows>[0] & { readonly cols: number }, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
   let seen: Asking | null = null;
   let seenOn: string | null = null;
   return {

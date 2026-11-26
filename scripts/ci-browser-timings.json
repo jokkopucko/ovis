@@ -225,7 +225,6 @@
   "scripts/touch-long-press-demo-regression.ts": 3,
   "scripts/external-link-tab-regression.ts": 2,
   "scripts/chat-visualization-browser-qa.ts": 2,
-  "scripts/terminal-dispose-browser-qa.ts": 1,
   "scripts/relay-qa-teardown-regression.ts": 1,
   "scripts/relay-device-indexeddb-regression.ts": 1,
   "scripts/account-list-seal-browser-qa.ts": 1

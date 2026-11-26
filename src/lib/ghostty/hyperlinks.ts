@@ -1,10 +1,9 @@
-import type { ILink, ILinkProvider } from "@xterm/xterm";
+import type { ILink, ILinkProvider } from "../terminalSelection/types.ts";
 import type { ScreenRows } from "../terminalScreen.ts";
 
 /**
  * The OSC 8 hyperlinks (`ESC ] 8 ; ; uri`) of a row of libghostty's, as xterm's own link provider finds them in its
- * buffer: each run of cells with one target is a link. xterm's rows carry none here (they have no `hyperlink`), so a
- * pane whose bytes xterm no longer parses keeps its hyperlinks. A target `opens` refuses is no link, as xterm's own
+ * buffer: each run of cells with one target is a link. A target `opens` refuses is no link, as xterm's own
  * provider leaves it (#739): the cells stay the program's to click, and a file link under them stays found.
  */
 export function hyperlinkProvider(rows: () => ScreenRows, opens: (uri: string) => boolean, activate: (event: MouseEvent, uri: string) => void): ILinkProvider {

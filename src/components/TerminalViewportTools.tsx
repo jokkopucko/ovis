@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "../lib/ghostty/terminal.ts";
 import type { PaneFindResponse, PaneScrollInfo } from "../../shared/protocol.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import type { ViewportIntentGate } from "../lib/viewportIntent.ts";
@@ -16,7 +16,7 @@ export interface TerminalSearchState { query: string; result: PaneFindResponse }
 interface Box { left: number; top: number; width: number; height: number; cols: number; rows: number; anchorX: number; anchorY: number }
 interface Props {
   viewportIntent: ViewportIntentGate;
-  terminal: Terminal | null;
+  terminal: GhosttyTerminal | null;
   paneId: string;
   pageScroll?: { current: ((direction: -1 | 1) => void) | null };
   lineScroll?: { current: ((lines: number) => void) | null };
@@ -209,7 +209,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const metrics = scrollRef.current;
       if (!interactive || !alive || viewportIntent.isSearching() || !validScroll(metrics) || !showing()) return;
       desired = Math.max(0, Math.min(metrics.max_offset_from_bottom, Math.round(offset)));
-      // herdr paints the moved view as output: libghostty's layer tells it apart from new lines (ghostty/overlay.ts)
+      // herdr paints the moved view as output: the renderer tells it apart from new lines
       terminal.element?.dispatchEvent(new Event(VIEW_MOVED_EVENT, { bubbles: true }));
       previewRef.current = desired;
       void flush();
@@ -273,10 +273,10 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       outputAt = now;
       schedule(scrollPollDelay(true, 0, scrollRef.current, following()));
     });
-    // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
+    // libghostty's scrollback is 0 on a herdr server, so its view sits above the screen only on a herdr-core one
     const readLocal = () => {
-      // xterm's own view: the overlay follows it (overlay.ts), and moves libghostty's view only when it next draws.
-      // When libghostty parses alone, xterm keeps no rows and libghostty's view is the one
+      // the view is libghostty's (terminal.ts): the rows it sits above the bottom, or its buffer's own position when
+      // no view is registered
       const rowsAbove = ghosttyRowsAbove(terminal);
       setLocalBack(rowsAbove === null ? terminal.buffer.active.viewportY < terminal.buffer.active.baseY : rowsAbove > 0);
     };

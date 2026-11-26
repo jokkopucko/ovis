@@ -1,30 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import type { IBufferCell, IBufferLine } from "@xterm/xterm";
+import type { ScreenCell, ScreenLine } from "./terminalScreen.ts";
 import { cellStyle, columnAt, contrastRatio, dimmedColor, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
-function line(cells: Cell[], cols: number): IBufferLine {
+function line(cells: Cell[], cols: number): ScreenLine {
   const at = (x: number): Cell => cells[x] ?? { chars: "" };
-  const cell = (x: number): IBufferCell => {
+  const cell = (x: number): ScreenCell => {
     const c = at(x);
     return {
       getChars: () => c.chars,
       getWidth: () => c.width ?? 1,
-      getCode: () => c.chars.codePointAt(0) ?? 0,
       isBold: () => (c.bold ? 1 : 0),
-      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isBlink: () => 0, isInverse: () => (c.inverse ? 1 : 0),
+      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isInverse: () => (c.inverse ? 1 : 0),
       isInvisible: () => 0, isStrikethrough: () => 0, isOverline: () => 0,
       isFgDefault: () => c.fg === undefined, isBgDefault: () => c.bg === undefined && c.bgRgb === undefined,
       isFgRGB: () => false, isBgRGB: () => c.bgRgb !== undefined,
-      isFgPalette: () => c.fg !== undefined, isBgPalette: () => c.bg !== undefined,
       getFgColor: () => c.fg ?? 0, getBgColor: () => c.bgRgb ?? c.bg ?? 0,
-      getFgColorMode: () => 0, getBgColorMode: () => 0, isAttributeDefault: () => c.fg === undefined && c.bg === undefined && !c.bold,
-    } as unknown as IBufferCell;
+    };
   };
-  return { length: cols, isWrapped: false, getCell: (x: number) => (x < cols ? cell(x) : undefined), translateToString: () => "" } as unknown as IBufferLine;
+  return { length: cols, isWrapped: false, getCell: (x: number) => (x < cols ? cell(x) : undefined), translateToString: () => "" };
 }
-const scratch = {} as IBufferCell;
+const scratch = line([], 1).getCell(0)!;
 const plain = (text: string): Cell[] => [...text].map((chars) => ({ chars }));
 
 describe("the folded view of a mirrored grid", () => {

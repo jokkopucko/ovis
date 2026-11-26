@@ -7,8 +7,7 @@ import { inUse, keepsCoreGrid, takeKeptCoreGrid } from "./paneTerminalShared.ts"
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import type { HerdrSocket } from "./ws.ts";
-import type { FitAddon } from "@xterm/addon-fit";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyFit, GhosttyTerminal } from "./ghostty/terminal.ts";
 import { typeAheadFocused } from "./typeAhead.ts";
 import { terminalScreen } from "./terminalScreen.ts";
 
@@ -23,7 +22,7 @@ export interface TerminalRefitsDeps {
   coarseRef: RefObject<boolean>;
   covered: boolean;
   findOpenRef: RefObject<boolean>;
-  fitRef: RefObject<FitAddon | null>;
+  fitRef: RefObject<GhosttyFit | null>;
   fittedRef: RefObject<() => void>;
   fixedGridRef: RefObject<boolean>;
   follow: boolean;
@@ -39,7 +38,7 @@ export interface TerminalRefitsDeps {
   shown: boolean;
   sizesPty: () => boolean;
   socketRef: RefObject<HerdrSocket | null>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   terminalFontFamily: string;
   terminalFontSize: number;
 }

@@ -62,16 +62,16 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
       });
     });
     const probe = () => page.evaluate(() => ({
-      fontPx: parseFloat(getComputedStyle(document.querySelector(".pane-terminal :is(.ghostty-text, .xterm-rows)")!).fontSize),
-      // libghostty's rows, or xterm's where it draws alone: both hold one element a grid row
-      rows: (document.querySelectorAll(".pane-terminal .ghostty-row").length || document.querySelectorAll(".pane-terminal .xterm-rows > div").length),
+      fontPx: parseFloat(getComputedStyle(document.querySelector(".pane-terminal .ghostty-text")!).fontSize),
+      // libghostty draws one element a grid row
+      rows: document.querySelectorAll(".pane-terminal .ghostty-row").length,
       saved: JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize as number | undefined,
       transform: (document.querySelector(".pane-terminal .xterm") as HTMLElement).style.transform,
       computedTransform: getComputedStyle(document.querySelector(".pane-terminal .xterm")!).transform,
       wheels: (window as Window & { wheels_: number }).wheels_,
       wheelModes: (window as Window & { wheelModes_: number[] }).wheelModes_.slice(),
       cell: document.querySelector(".pane-terminal .xterm-screen")!.getBoundingClientRect().height
-        / (document.querySelectorAll(".pane-terminal .ghostty-row").length || document.querySelectorAll(".pane-terminal .xterm-rows > div").length),
+        / document.querySelectorAll(".pane-terminal .ghostty-row").length,
       remaining: (window as Window & { remaining_: number[] }).remaining_,
       touchEnds: (window as Window & { touchEnds_: number }).touchEnds_,
       scale: visualViewport!.scale,

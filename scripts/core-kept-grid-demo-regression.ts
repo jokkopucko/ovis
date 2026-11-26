@@ -92,10 +92,10 @@ const gridIs = (page: Page, cols: number, rows: number, step: string) => page.wa
 }, [cols, rows] as const, { timeout: 5000 }).catch(async (cause: unknown) => {
   throw new Error(`${step}: the grid is ${JSON.stringify((await probe(page))?.grid)}, not ${cols}x${rows}`, { cause });
 });
-/** the rows the user sees: libghostty's layer when it draws the pane (xterm's own rows are hidden under it), else xterm's */
+/** the rows libghostty draws for the pane */
 const drawn = (page: Page) => page.evaluate(() => {
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
-  const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];
+  const rows = host?.querySelectorAll(".ghostty-row") ?? [];
   return [...rows].map((row) => row.textContent ?? "");
 });
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));

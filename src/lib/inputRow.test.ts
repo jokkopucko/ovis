@@ -1,25 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { Terminal } from "@xterm/xterm";
+import { testTerminal, type TestTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState, type ScreenSnapshot } from "./inputRow.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 import { drawsColour, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 import { SCREEN_AUTO_RETURN, watchReturn } from "./terminalPeek.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures-input-rows");
 const CLAUDE = join(import.meta.dir, "../../server/fixtures");
 
-const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
-const terminal = (cols: number, rows = 40): Terminal => {
-  const term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
-  matchHerdrWidths(term);
-  return term;
-};
+const parse = (term: TestTerminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
+const terminal = (cols: number, rows = 40) => testTerminal({ cols, rows });
 
 test("logical screen lines preserve spaces across wraps but not hard line breaks", async () => {
-  const term = terminal(40, 5);
+  const term = await terminal(40, 5);
   const text = `${"a".repeat(39)} b`;
   try {
     await parse(term, `${text}\r\nnext`);
@@ -30,7 +25,7 @@ test("logical screen lines preserve spaces across wraps but not hard line breaks
 });
 
 test("logical screen lines reject a wrapped line clipped at the screen top", async () => {
-  const term = terminal(40, 2);
+  const term = await terminal(40, 2);
   try {
     await parse(term, `${"a".repeat(81)}\r\nnext`);
     expect(readScreenLines(term.buffer.active, term.rows)).toBeNull();
@@ -40,7 +35,7 @@ test("logical screen lines reject a wrapped line clipped at the screen top", asy
 });
 
 async function screenOf(text: string, cols: number): Promise<ScreenSnapshot> {
-  const term = terminal(cols);
+  const term = await terminal(cols);
   const rows = text.replace(/\r/g, "").split("\n").slice(0, 40);
   await parse(term, rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join(""));
   const screen = readScreen(term.buffer.active, term.cols, term.rows);
@@ -56,7 +51,7 @@ async function recorded(agent: string, name: string): Promise<InputRowState | nu
 async function replay(agent: string, name: string): Promise<(InputRowState | null)[]> {
   const frames = readFileSync(join(FIXTURES, agent, `${name}.frames.jsonl`), "utf8").trim().split("\n")
     .map((line) => JSON.parse(line) as { cols: number; rows: number; data: string });
-  const term = terminal(frames[0]!.cols, frames[0]!.rows);
+  const term = await terminal(frames[0]!.cols, frames[0]!.rows);
   const gate = new FrameGate();
   term.onResize(() => gate.resized());
   const states: (InputRowState | null)[] = [];
@@ -336,7 +331,7 @@ describe("FrameGate", () => {
 
   test("a split herdr-core attach paint holds off until its ?9001 end mark, so history chunks never arm a peek watcher", async () => {
     const idle = readFileSync(join(FIXTURES, "codex", "permissions-idle-120.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
-    const term = terminal(120, 40);
+    const term = await terminal(120, 40);
     const gate = new FrameGate();
     const states: InputRowState[] = [];
     const write = async (chunk: string): Promise<boolean> => {
@@ -543,7 +538,7 @@ describe("recorded frame streams", () => {
   test("a phone peek's resize: herdr's reflowed frame of gjc's loading /sessions neither arms nor returns", async () => {
     const loading = readFileSync(join(FIXTURES, "gjc", "sessions-open-loading10s-119.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     // herdr's own frame for the new grid: the old screen, reflowed to 40 columns (its box cut at the borders)
-    const old = terminal(119);
+    const old = await terminal(119);
     await parse(old, loading.map((row, index) => `\u001b[${index + 1};1H${row}`).join(""));
     old.resize(40, 40);
     await parse(old, "");
@@ -552,7 +547,7 @@ describe("recorded frame streams", () => {
     expect(inputRowState("gjc", await screenOf(reflowed.join("\n"), 40))).toBe("gone");
     const redrawn = readFileSync(join(FIXTURES, "gjc", "settings-closed-40.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     const frame = (rows: readonly string[]): string => `\u001b[?2026h\u001b[2J${rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join("")}\u001b[?2026l`;
-    const term = terminal(119);
+    const term = await terminal(119);
     const gate = new FrameGate();
     term.onResize(() => gate.resized());
     const states: InputRowState[] = [];

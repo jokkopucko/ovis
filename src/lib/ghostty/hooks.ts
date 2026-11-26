@@ -11,7 +11,7 @@ export type HookParams = (number | number[])[];
 /** xterm's function identifier: an optional private prefix (`?`, `>`, `<`, `=`), intermediates, and the final byte */
 export interface SequenceId { readonly prefix?: string; readonly intermediates?: string; readonly final: string }
 
-/** where an OSC stands, as xterm's `oscStringState()` tells it (patch: CoreTerminal.oscStringState) */
+/** The current OSC identifier and whether its payload has started. */
 export interface OscStringState { readonly open: boolean; readonly idComplete: boolean; readonly id: number }
 
 /** a hooked payload past this is dropped unread, as xterm's OSC and DCS parsers drop one past their limit */

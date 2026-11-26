@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Terminal } from "@xterm/xterm";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 
 function fixture(mirrored = true, adopted = true, omoQuestion = false, drag = false, pan = false) {
@@ -10,8 +9,8 @@ function fixture(mirrored = true, adopted = true, omoQuestion = false, drag = fa
     attachCustomWheelEventHandler(handler: typeof handle) { handle = handler; },
     hasSelection: () => true,
     clearSelection() { cleared = true; },
-    modes: { mouseTrackingMode: "none" },
-  } as unknown as Terminal;
+    modes: { mouseTrackingMode: "none" as const, bracketedPasteMode: false, synchronizedOutputMode: false, applicationCursorKeysMode: false, applicationKeypadMode: false, sendFocusMode: false },
+  };
   attachTerminalWheel(term, { current: { speed: 2, omoQuestion } }, {
     drag: () => drag, pan: () => pan, adopted: () => adopted, mirrored: () => mirrored,
     scroll: (count) => lines.push(count),

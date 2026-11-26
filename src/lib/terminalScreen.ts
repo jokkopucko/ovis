@@ -1,11 +1,8 @@
-import type { IBufferCell, Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 
 /*
  * The one way the app reads what a terminal shows: its rows and cells, the cursor, where the view sits in
- * history, the selection and the links in it. Two engines hold a screen: xterm, under every terminal
- * (`terminalScreen`), and libghostty, which draws it while it can (ghostty/overlay.ts) and answers the rows of a
- * reader moved to it (`screenRows`). Readers move over one at a time; the rest still read xterm's buffer. The
- * shapes follow xterm's buffer API, so its rows and cells serve as they are.
+ * history, the selection and links in the libghostty screen.
  *
  * Rows are buffer rows, history first: `baseY` is the first row of the screen a program writes to, `viewportY`
  * the first row in view, `cursorX`/`cursorY` the cursor's cell on the screen (cursorY counts from `baseY`).
@@ -36,7 +33,7 @@ export interface ScreenLine {
   /** cell `x`, read into `cell` when one is given (a reader that walks a row reuses one cell) */
   getCell(x: number, cell?: ScreenCell): ScreenCell | undefined;
   translateToString(trimRight?: boolean, startColumn?: number, endColumn?: number): string;
-  /** libghostty's rows only: the OSC 8 target of cell `x`, or null (xterm's is read through TerminalScreen.hyperlinkAt) */
+  /** the OSC 8 target of cell `x`, or null */
   hyperlink?(x: number): string | null;
 }
 
@@ -68,98 +65,42 @@ export interface TerminalScreen extends ScreenRows {
   drawnSelection(): { start: ScreenPoint; end: ScreenPoint; column: boolean } | null;
 }
 
-interface XtermInternals {
-  _core?: {
-    _oscLinkService?: { getLinkData?: (id: number) => { uri?: string } | undefined };
-    _renderService?: { _selectionState?: { start?: ScreenPoint; end?: ScreenPoint; columnSelectMode?: boolean } };
-  };
-}
+type ScreenSource = { readonly buffer: { readonly active: ScreenRows } };
+const engineRows = new WeakMap<ScreenSource, () => ScreenRows>();
+const screens = new WeakMap<GhosttyTerminal, TerminalScreen>();
 
-const screens = new WeakMap<Terminal, TerminalScreen>();
-const engineRows = new WeakMap<Terminal, () => ScreenRows | null>();
-/** terminals whose output libghostty alone parses (overlay `only`): xterm's buffer holds no text there */
-const parsedAlone = new WeakSet<Terminal>();
-
-/** libghostty's rows for `term` while it holds the screen (ghostty/overlay.ts); null, or rows it cannot give, leave the reads to xterm */
-export function holdScreenRows(term: Terminal, rows: (() => ScreenRows | null) | null, alone = false): void {
+export function holdScreenRows(term: ScreenSource, rows: (() => ScreenRows) | null): void {
   if (rows) engineRows.set(term, rows);
   else engineRows.delete(term);
-  if (rows && alone) parsedAlone.add(term);
-  else parsedAlone.delete(term);
 }
 
-/**
- * The rows a reader judged at whole frames (the frame gate: the input row, an agent's stop check) reads: xterm's,
- * whose parse the frame gate follows, unless libghostty parses alone, when its rows are the only ones with text.
- */
-export function frameRows(term: Terminal): ScreenRows {
-  return parsedAlone.has(term) ? viewRows(term) : term.buffer.active;
-}
-
-/** the rows of the screen up now (normal or alternate): libghostty's while it holds the screen, xterm's otherwise */
-export function screenRows(term: Terminal): ScreenRows {
+/** The visible screen and history in the same buffer coordinates for every reader. */
+export function screenRows(term: ScreenSource): ScreenRows {
   return engineRows.get(term)?.() ?? term.buffer.active;
 }
 
-/**
- * The rows of the screen up now numbered as xterm's buffer numbers them, for a reader that takes its rows from xterm
- * (a selection, a link provider, a pointer on the view): libghostty's while it holds the screen, xterm's otherwise. A row of xterm's
- * view is the row libghostty draws there (overlay.ts), so a selection is copied and a pointer hits as they are shown:
- * where a resize left the two engines' histories at different depths, the view's top is where they meet. While the
- * two are on different screens (a switch libghostty took and xterm has yet to parse), xterm's own rows answer.
- */
-export function viewRows(term: Terminal): ScreenRows {
-  const rows = engineRows.get(term)?.();
-  const own = term.buffer.active;
-  if (!rows) return own;
-  if ("alternate" in rows && rows.alternate !== (own.type === "alternate")) return own;
-  const offset = rows.viewportY - own.viewportY;
-  if (offset === 0) return rows;
-  return {
-    ...("alternate" in rows ? { alternate: rows.alternate } : {}),
-    length: rows.length - offset, baseY: rows.baseY - offset, viewportY: rows.viewportY - offset, cursorX: rows.cursorX, cursorY: rows.cursorY,
-    getNullCell: () => rows.getNullCell(),
-    getLine: (y) => rows.getLine(y + offset),
-  };
-}
+export const frameRows = screenRows;
+export const viewRows = screenRows;
 
-/** xterm's screen: reads go to whichever of its buffers (normal or alternate) is up when they are made */
-export function terminalScreen(term: Terminal): TerminalScreen {
+export function terminalScreen(term: GhosttyTerminal): TerminalScreen {
   const known = screens.get(term);
   if (known) return known;
-  const internals = (term as unknown as XtermInternals)._core;
+  const active = (): ScreenRows => screenRows(term);
   const screen: TerminalScreen = {
-    get length() { return term.buffer.active.length; },
-    get baseY() { return term.buffer.active.baseY; },
-    get viewportY() { return term.buffer.active.viewportY; },
-    get cursorX() { return term.buffer.active.cursorX; },
-    get cursorY() { return term.buffer.active.cursorY; },
-    get alternate() { return term.buffer.active.type === "alternate"; },
-    active: () => term.buffer.active,
-    getLine: (y) => term.buffer.active.getLine(y),
-    getNullCell: () => term.buffer.active.getNullCell(),
-    // xterm (5.5 and 6.0) keeps OSC 8 targets in its own link service with no public way to read them: this reads
-    // its internals and finds nothing where they are not there; the caller applies its own link policy to the uri
-    // the folded view draws and hits libghostty's cells while it holds the screen: their target is its
-    hyperlinkAt: (y, x) => {
-      const held = viewRows(term).getLine(y);
-      if (held?.hyperlink) return held.hyperlink(x);
-      const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
-      const id = cell?.extended?.urlId;
-      if (!id) return null;
-      const uri = internals?._oscLinkService?.getLinkData?.(id)?.uri;
-      return typeof uri === "string" && uri !== "" ? uri : null;
-    },
+    get length() { return active().length; },
+    get baseY() { return active().baseY; },
+    get viewportY() { return active().viewportY; },
+    get cursorX() { return active().cursorX; },
+    get cursorY() { return active().cursorY; },
+    get alternate() { return term.buffer.active.alternate; },
+    active,
+    getLine: (y) => active().getLine(y),
+    getNullCell: () => active().getNullCell(),
+    hyperlinkAt: (y, x) => active().getLine(y)?.hyperlink?.(x) ?? null,
     hasSelection: () => term.hasSelection(),
     getSelection: () => term.getSelection(),
     getSelectionPosition: () => term.getSelectionPosition(),
-    drawnSelection: () => {
-      // a terminal without xterm (ghostty/terminal.ts) draws its own selection
-      const own = term as unknown as { drawnSelection?: () => { start: ScreenPoint; end: ScreenPoint; column: boolean } | null };
-      if (typeof own.drawnSelection === "function") return own.drawnSelection();
-      const state = internals?._renderService?._selectionState;
-      return state?.start && state.end ? { start: state.start, end: state.end, column: state.columnSelectMode === true } : null;
-    },
+    drawnSelection: () => term.drawnSelection(),
   };
   screens.set(term, screen);
   return screen;

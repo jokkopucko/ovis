@@ -1,6 +1,5 @@
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { HERDR_MOUSE_SCROLL_LINES } from "./wheelSteps.ts";
-import { terminalScreen } from "./terminalScreen.ts";
 
 export interface TerminalWheelState {
   readonly speed: number;
@@ -31,8 +30,8 @@ export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scroll
   return delta < 0 ? view.scrollTop > 1 : delta > 0 && view.scrollTop < view.scrollHeight - view.clientHeight - 1;
 }
 
-/** herdr owns history; xterm owns encoding mouse reports for applications that use them. */
-export function attachTerminalWheel(term: Terminal, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
+/** herdr owns history; the input layer owns encoding mouse reports for applications that use them. */
+export function attachTerminalWheel(term: Pick<GhosttyTerminal, "hasSelection" | "clearSelection" | "modes" | "attachCustomWheelEventHandler">, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
   term.attachCustomWheelEventHandler((event) => {
     if (viewport.drag(event)) return false;
     if (viewport.pan?.(event)) {
@@ -43,7 +42,7 @@ export function attachTerminalWheel(term: Terminal, state: { readonly current: T
     const mirrored = viewport.mirrored();
     if (viewport.adopted() && !mirrored) return false;
     if (mirrored && event.deltaY === 0) return false;
-    if (terminalScreen(term).hasSelection()) term.clearSelection();
+    if (term.hasSelection()) term.clearSelection();
     // OmO consumes wheel reports without acting while a question captures mouse input, so the
     // wheel moves herdr's history itself, as far as the reports below would: one three-line step
     // per event whatever its delta, repeated at the chosen speed for a real wheel only.
@@ -54,7 +53,7 @@ export function attachTerminalWheel(term: Terminal, state: { readonly current: T
       return false;
     }
     const reporting = term.modes.mouseTrackingMode !== "none";
-    // A program that does not report must not receive xterm's fallback arrow keys.
+    // A program that does not report must not receive fallback arrow keys.
     // Trusted wheels replay at the chosen speed; touch/replays already supply their steps.
     // A trackpad pinch (Ctrl) keeps its original single-event path and all replayed modifiers.
     if (reporting && real(event) && event.target && !event.ctrlKey) {

@@ -1,28 +1,21 @@
 import type { PaneFindMatch, PaneFindRequest, PaneFindResponse, PaneScrollInfo } from "../../shared/protocol.ts";
-import { herdrWidthProvider } from "../../src/lib/terminalWidths.ts";
+import { displayWidth } from "../../shared/secret-prompt.ts";
 
-const widths = herdrWidthProvider();
+const graphemes = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
 interface Cell { text: string; from: number; to: number; width: number }
 interface Span extends Cell { start: { row: number; col: number }; end: { row: number; col: number } }
 interface Layout { rows: string[]; lines: Array<{ text: string; spans: Span[] }> }
 const compare = (a: { row: number; col: number }, b: { row: number; col: number }): number => a.row - b.row || a.col - b.col;
 
 function cells(text: string): Cell[] {
-  const result: Cell[] = [];
-  let preceding = 0;
+  const parts = graphemes && /[^\x20-\x7e]/.test(text) ? Array.from(graphemes.segment(text), ({ segment }) => segment) : [...text];
   let index = 0;
-  for (const char of text) {
-    const property = widths.charProperties!(char.codePointAt(0)!, preceding);
-    const width = (property >> 1) & 3;
-    // UnicodeCharProperties packs shouldJoin in bit 0 and cell width in bits 1–2.
-    const last = result.at(-1);
-    if ((property & 1) !== 0 && last) {
-      last.text += char; last.to += char.length; last.width = width;
-    } else result.push({ text: char, from: index, to: index + char.length, width });
-    index += char.length;
-    preceding = property;
-  }
-  return result;
+  return parts.map((part) => {
+    const from = index;
+    index += part.length;
+    const width = /^[\x20-\x7e]$/.test(part) ? 1 : displayWidth(part);
+    return { text: part, from, to: index, width };
+  });
 }
 
 export const DEMO_LOG_LINES = [
@@ -100,7 +93,7 @@ export class DemoHistory {
     const scroll = this.scroll();
     const top = scroll.max_offset_from_bottom - scroll.offset_from_bottom;
     const visible = this.layout.rows.slice(top, top + this.rows);
-    // Absolute row positioning avoids a full-width last row scrolling xterm's zero-history grid.
+    // Absolute row positioning avoids a full-width last row scrolling the zero-history grid.
     const output = visible.map((line, row) => `\x1b[${row + 1};1H${line}`).join("");
     const last = visible.at(-1) ?? "";
     const cursor = Math.min(this.cols, cells(last).reduce((sum, cell) => sum + cell.width, 0) + 1);

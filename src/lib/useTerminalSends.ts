@@ -11,7 +11,7 @@ import { paneStorageId } from "../../shared/machines.ts";
 import { pendingMessages } from "./pendingMessages.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { Translate } from "./i18n.ts";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import type { InputDraft } from "./draft.ts";
 import type { Settings } from "./settings.ts";
 
@@ -59,7 +59,7 @@ export interface TerminalSendsDeps {
   stillOpenRef: RefObject<{ pane: string; agent: string; command: string; named: boolean; history: string | undefined } | null>;
   submitRetention: PaneSubmitRetention | null;
   tRef: RefObject<Translate>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   updateSettings: (patch: Partial<Settings>) => void;
 }
 

@@ -1,11 +1,10 @@
 import { expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Terminal } from "@xterm/xterm";
+import { testTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { readFileSync } from "node:fs";
 import { claudeMainAtRest } from "./compose.ts";
 import { inputRowState, readScreen, readScreenLines } from "./inputRow.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { PendingMessageStore, pendingMessages } from "./pendingMessages.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
@@ -222,8 +221,7 @@ for (const autoSendQueued of [false, true]) {
     ["idle without waiting evidence", [...idleBox], false],
     ["permission dialog", [waiting, "Do you want to proceed?", "❯ 1. Yes", "  2. No", "esc to cancel"], false],
   ] as const)(`Claude %s chooses safe delivery with autoSendQueued=${autoSendQueued}`, async (_name, rows, immediate) => {
-    const term = new Terminal({ cols: 40, rows: 60, scrollback: 0, allowProposedApi: true });
-    matchHerdrWidths(term);
+    const term = await testTerminal({ cols: 40, rows: 60, scrollback: 0 });
     try {
       await new Promise<void>((resolve) => term.write(rows.join("\r\n"), resolve));
       const shown: string[] = [], deliveries: SubmitDelivery[] = [];

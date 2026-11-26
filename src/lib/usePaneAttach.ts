@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { Terminal } from "@xterm/xterm";
-import type { FitAddon } from "@xterm/addon-fit";
+import type { GhosttyFit, GhosttyTerminal } from "./ghostty/terminal.ts";
 import type { HerdrSocket } from "./ws.ts";
 import { EMPTY_DRAFT, holdBefore, restoreDraft, type InputDraft } from "./draft.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -23,7 +22,7 @@ export interface PaneAttachDeps {
   fontSettledRef: RefObject<FontSettled>;
   draftPaneRef: RefObject<string | null>;
   findOpenRef: RefObject<boolean>;
-  fitRef: RefObject<FitAddon | null>;
+  fitRef: RefObject<GhosttyFit | null>;
   fittedRef: RefObject<() => void>;
   fixedGridRef: RefObject<boolean>;
   frameGateRef: RefObject<{ reset: () => void }>;
@@ -57,7 +56,7 @@ export interface PaneAttachDeps {
   socketRef: RefObject<HerdrSocket | null>;
   stalledRef: RefObject<boolean>;
   terminalId: string | null;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   chatViewRef: RefObject<boolean>;
   cancelLeaveRef: RefObject<() => void>;
   cachedRef: RefObject<boolean>;

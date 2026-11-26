@@ -25,7 +25,7 @@ const DEFAULT_ANSI = ["#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#7
   "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec"];
 
 export interface RendererTheme {
-  foreground?: string; background?: string; cursor?: string; selectionBackground?: string;
+  foreground?: string; background?: string; cursor?: string; cursorAccent?: string; selectionBackground?: string;
   black?: string; red?: string; green?: string; yellow?: string; blue?: string; magenta?: string; cyan?: string; white?: string;
   brightBlack?: string; brightRed?: string; brightGreen?: string; brightYellow?: string; brightBlue?: string; brightMagenta?: string; brightCyan?: string; brightWhite?: string;
 }

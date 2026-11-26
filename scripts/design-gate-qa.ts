@@ -498,7 +498,7 @@ const SURFACES: Surface[] = [
     id: "terminal-view", pane: panes.flaky, view: "terminal",
     run: async (page, env) => {
       // Claude's screen ends on a dim (SGR 2) hint line; libghostty draws it as DOM rows over xterm's hidden ones
-      await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row, .pane-frame.is-current .xterm-rows > div")].some((row) => row.textContent?.includes("for shortcuts")));
+      await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("for shortcuts")));
       await settle(page);
       env.steps.push("the Claude pane in the Terminal lens, its dim hint line drawn");
     },
@@ -626,7 +626,7 @@ function gateRuntime(): void {
   const OVERLAY = '.modal-scrim, [role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], [popover], #workspace-drawer.is-open';
   const MODAL = '.modal-scrim, [aria-modal="true"]';
   const BOOT = "#root > [role='status']";
-  // a terminal's text: xterm's own rows, or libghostty's rows drawn over them (lib/ghostty/overlay.ts)
+  // a terminal's text: libghostty's rows or the folded rows
   const TERMINAL = ".xterm, .ghostty-layer";
   let canvas: HTMLCanvasElement | null = null;
   const colors = new Map<string, RGBA>();

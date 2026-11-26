@@ -2689,7 +2689,7 @@ class DemoSocket extends EventTarget {
     const pane = paneOf(paneId);
     if (!pane || pane.agent || chats.has(paneId) || this.mode === "observe") return;
     let history = histories.get(paneId);
-    // xterm sends SGR wheel reports once demo history has enabled mouse reporting.
+    // The terminal sends SGR wheel reports once demo history has enabled mouse reporting.
     text = text.replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (_report, value: string) => {
       const button = Number(value);
       if (history && (button & 64) !== 0) history.setOffset(history.offset + ((button & 1) === 0 ? 3 : -3));
