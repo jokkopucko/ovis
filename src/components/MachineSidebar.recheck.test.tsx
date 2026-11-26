@@ -146,3 +146,16 @@ it("offers no Check again for a connected PC, and to a device that only watches 
   expect(recheckButtons()).toHaveLength(0);
   expect(textOf(renderer!.root.find((element) => element.props.className === "machine-off"))).toContain("It is off, has no network, or Ovis is not running on it.");
 });
+
+it("keeps a folded off PC to its header line: no state words and no Check again until it is unfolded, and its dot names the state", async () => {
+  await mount([local, relayPc({})]);
+  const fold = () => renderer!.root.find((element) => element.type === "button" && element.props.className === "machine-title").props.onClick();
+  const offLines = () => renderer!.root.findAll((element) => element.props.className === "machine-off");
+  const dot = () => renderer!.root.find((element) => element.type === "span" && element.props.className === "machine-dot is-disconnected");
+  expect([offLines().length, recheckButtons().length]).toEqual([1, 1]);
+  await act(async () => { fold(); });
+  expect([offLines().length, recheckButtons().length]).toEqual([0, 0]);
+  expect(dot().props.title).toBe("Switched off");
+  await act(async () => { fold(); });
+  expect([offLines().length, recheckButtons().length]).toEqual([1, 1]);
+});
