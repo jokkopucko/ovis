@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { encodePng } from "../itermPictures.ts";
 import { itermPictureWriter } from "./itermPictureWriter.ts";
 import { ghosttyRows } from "./screenRows.ts";
@@ -153,6 +153,20 @@ test("waits for TIFF conversion before same-write and later text", async () => {
   await finished;
   const converted = Buffer.from(await encodePng(1, 1, Uint8Array.of(123, 123, 123, 255))).toString("base64");
   expect(output.join("")).toBe(`head${cancel}${kitty(converted)}samelater`);
+});
+
+test("skips a conversion still running at its deadline and goes on with the text after it", () => {
+  jest.useFakeTimers();
+  try {
+    const writer = itermPictureWriter(() => CAPS, () => GRID);
+    const output: string[] = [];
+    let parsed = false;
+    writer.write(`${file("inline=1", greyTiff())}same`, (data) => { output.push(data.toString()); }, () => { parsed = true; });
+    expect(output).toEqual([cancel]);
+    jest.advanceTimersByTime(1000);
+    expect(output).toEqual([cancel, "same"]);
+    expect(parsed).toBe(true);
+  } finally { jest.useRealTimers(); }
 });
 
 test("drops the pending image on queue overflow but still emits every later byte", () => {

@@ -175,4 +175,13 @@ describe("hookedStream", () => {
     expect(seen).toEqual([]);
     expect(sent()).toBe("abc");
   });
+
+  it("says whether the stream is between sequences", () => {
+    const { write } = stream();
+    expect(write.idle()).toBe(true);
+    write("\x1b]0;tit");
+    expect(write.idle()).toBe(false);
+    write("le\x07plain");
+    expect(write.idle()).toBe(true);
+  });
 });

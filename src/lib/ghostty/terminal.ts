@@ -12,6 +12,8 @@ import { TerminalInput, type TerminalInputModes, type TextAreaViewportBounds } f
 import { createLinkifier, createSelection, type ILinkProvider, type Linkifier, type LinkUnderline, type Selection } from "../terminalSelection/index.ts";
 import { holdScreenRows, type ScreenRows } from "../terminalScreen.ts";
 import { requestShownFrame } from "../shownFrame.ts";
+import { fitCompositionView } from "../terminalGlyphs.ts";
+import { wheelPansGrid } from "../terminalWheel.ts";
 import type { PictureLimits } from "../itermPictures.ts";
 import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
 import { ghosttyRows } from "./screenRows.ts";
@@ -21,12 +23,12 @@ import { cellDimensions, measureChar, proposeGrid, type CellDimensions } from ".
 import { createRowsRenderer, themeColors, type RendererTheme, type RowsRenderer } from "./renderer.ts";
 import { GhosttyVt, rgb } from "./vt.ts";
 
-/** "ghostty" or "xterm": which terminal this browser makes for a pane, over the default (xterm until the switch is made) */
+/** "xterm": this browser makes its panes with xterm.js, as before; anything else (the default) makes them without it */
 export const TERMINAL_ENGINE_KEY = "ovis:terminal-engine";
 
 /** whether panes are made as GhosttyTerminal, without xterm.js; a browser that refuses storage keeps the default */
 export function ownTerminalEngine(): boolean {
-  try { return globalThis.localStorage?.getItem(TERMINAL_ENGINE_KEY) === "ghostty"; } catch { return false; }
+  try { return globalThis.localStorage?.getItem(TERMINAL_ENGINE_KEY) !== "xterm"; } catch { return true; }
 }
 
 export interface Disposable { dispose(): void }
@@ -84,6 +86,18 @@ const TRACKING_NAME = { none: "none", x10: "x10", normal: "vt200", button: "drag
 const WRITE_BUDGET_MS = 12;
 /** how long a synchronized update may hold the screen before it is shown anyway (xterm's limit) */
 const SYNC_HOLD_MS = 1000;
+/** how many times in a row a terminal starts over with a new engine before it gives up */
+const MAX_RESTARTS = 3;
+const RESTART_DELAY_MS = 500;
+/** an engine that drew this long without failing counts as well again: a later failure has every restart again */
+const RESTARTS_FORGOTTEN_MS = 60_000;
+
+/**
+ * told on the pane's host when libghostty stopped drawing a terminal (ghostty/terminal.ts): `restarting` once a new engine
+ * is in and the pane should be drawn again, or not when the terminal gave up
+ */
+export const TERMINAL_FAILED_EVENT = "ovis-terminal-failed";
+export interface TerminalFailure { readonly error: unknown; readonly restarting: boolean }
 
 interface Pending { readonly data: string | Uint8Array; readonly callback: (() => void) | undefined }
 
@@ -95,8 +109,24 @@ export class GhosttyTerminal {
   readonly unicode = { activeVersion: "15-graphemes", register: (): void => {} };
   cols: number;
   rows: number;
+  private pictureCaps: PictureLimits | null = null;
   /** the limits pictures are drawn within, or null with pictures off (the mount's Settings choice) */
-  pictureLimits: PictureLimits | null = null;
+  get pictureLimits(): PictureLimits | null { return this.pictureCaps; }
+  /** turned off, the pictures drawn go (Kitty's delete-all, given to the engine alone, never to the program) */
+  set pictureLimits(limits: PictureLimits | null) {
+    const off = limits === null && this.pictureCaps !== null;
+    this.pictureCaps = limits;
+    if (!off || !this.vt) return;
+    this.clearPictures = true;
+    this.clearPicturesBetweenSequences();
+  }
+
+  private clearPicturesBetweenSequences(): void {
+    if (!this.clearPictures || !this.vt || !this.stream.idle()) return;
+    this.clearPictures = false;
+    try { this.vt.write("\x1b_Ga=d,d=A\x1b\\"); } catch (error) { this.fail(error); }
+    this.schedule();
+  }
   /**
    * Whether the output being parsed now is the program's live output, which libghostty may answer. The mount says no
    * for a replay of earlier output, a hidden tab's view and output of a pane it left: their questions were answered
@@ -132,6 +162,10 @@ export class GhosttyTerminal {
   private selectionLayer: HTMLElement | undefined;
   private drawnSelectionKey = "";
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  private restarts = 0;
+  private broken = false;
+  /** the pictures were turned off inside a sequence: they are cleared once the stream is between sequences */
+  private clearPictures = false;
   private readonly earlyLinks: { provider: ILinkProvider; registered: Disposable | null }[] = [];
   private vt: GhosttyVt | null = null;
   private renderer: RowsRenderer | null = null;
@@ -144,7 +178,7 @@ export class GhosttyTerminal {
   private decoder = new TextDecoder();
   private readonly stream = hookedStream(this.parser, (text) => this.vt?.write(text));
   private readonly pictures = itermPictureWriter(
-    () => this.pictureLimits,
+    () => this.pictureCaps,
     () => ({ cols: this.cols, rows: this.rows, cellW: this.dims?.cell.width ?? 0, cellH: this.dims?.cell.height ?? 0 }),
     () => rgb(themeColors(this.options.theme).background) ?? [0, 0, 0],
   );
@@ -253,6 +287,14 @@ export class GhosttyTerminal {
     this.cleanups.push(
       selection.onSelectionChange(() => this.onSelectionChangeEmitter.fire()),
       selection.onRedraw(() => this.schedule()),
+      // Linux's primary selection: the selected text is put in the textarea, focused and selected, as xterm does
+      selection.onLinuxMouseSelection((text) => {
+        const textarea = this.textarea;
+        if (!textarea) return;
+        textarea.value = text;
+        textarea.focus();
+        textarea.select();
+      }),
     );
     const input = new TerminalInput({
       element, screen,
@@ -273,6 +315,8 @@ export class GhosttyTerminal {
     });
     this.inputLayer = input;
     this.textarea = input.textarea;
+    const view = screen.querySelector<HTMLElement>(".composition-view");
+    if (view) this.cleanups.push(fitCompositionView(view, () => this.dims?.cell.width ?? 0, () => ({ family: this.options.fontFamily, size: this.options.fontSize, weight: this.options.fontWeight })));
     input.disableStdin = this.options.disableStdin;
     this.cleanups.push(
       input.onData((data) => this.onDataEmitter.fire(data)).dispose,
@@ -301,7 +345,8 @@ export class GhosttyTerminal {
     // layer turns it into a report or arrow keys where the program reads the mouse or its screen keeps no history
     let wheelPixels = 0;
     const onWheel = (event: WheelEvent): void => {
-      if (this.disposed || this.options.scrollback === 0 || this.vt?.alternate() !== false || this.modes.mouseTrackingMode !== "none") return;
+      // a wheel that pans a grid wider than the screen (terminalWheel.ts) moves only that
+      if (this.disposed || wheelPansGrid(event) || this.options.scrollback === 0 || this.vt?.alternate() !== false || this.modes.mouseTrackingMode !== "none") return;
       const cellH = this.dims?.cell.height ?? 0;
       wheelPixels += event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * cellH : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * cellH * this.rows : event.deltaY;
       const lines = cellH > 0 ? Math.trunc(wheelPixels / cellH) : 0;
@@ -341,6 +386,12 @@ export class GhosttyTerminal {
     }
     if (this.disposed) { vt.dispose(); return; }
     this.vt = vt;
+    if (this.restarts > 0) {
+      // a new engine after a failure: the mount attaches the pane again now, so the server's replay reaches this one
+      this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error: null, restarting: true } }));
+      const restarted = vt;
+      setTimeout(() => { if (this.vt === restarted && this.failed === null) this.restarts = 0; }, RESTARTS_FORGOTTEN_MS);
+    }
     this.renderer = createRowsRenderer(this.screen!, vt, () => ({
       fontFamily: this.options.fontFamily, fontSize: this.options.fontSize, fontWeight: this.options.fontWeight,
       fontWeightBold: this.options.fontWeightBold, theme: this.options.theme, minimumContrastRatio: this.options.minimumContrastRatio,
@@ -367,19 +418,53 @@ export class GhosttyTerminal {
     } else this.schedule();
   }
 
-  /** libghostty could not start or stopped: told once, so the mount can say so and open the pane again */
+  /**
+   * libghostty could not start or stopped. What waits is still acknowledged, in order, so the server's flow control does
+   * not take the pane for a reader that stopped. The terminal starts over with a new engine (a fresh module if this one
+   * trapped) a few times, and tells the mount, which attaches the pane again so the server draws it anew; past that it
+   * tells the mount it gave up (`restarting: false`).
+   */
   private fail(error: unknown): void {
-    if (this.failed !== null) return;
+    if (this.failed !== null || this.disposed) return;
     this.failed = error;
-    console.warn("libghostty could not draw this terminal", error);
-    // what waits is still acknowledged, in order, so the server's flow control does not take the pane for a reader that
-    // stopped: the writes go through with nothing parsed
+    console.warn("libghostty stopped drawing this terminal", error);
     this.pending = false;
-    if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites(), 0);
-    this.host?.dispatchEvent(new CustomEvent("ovis-terminal-failed", { detail: error }));
+    if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites());
+    const restarting = this.restarts < MAX_RESTARTS;
+    // the mount is told when there is something to do: attach again once the new engine is in (start), or say it gave up
+    if (restarting) {
+      this.restarts++;
+      // a moment between attempts, longer each time: a fetch that failed for a moment (a relay's hiccup) gets its chance
+      setTimeout(() => this.restart(), RESTART_DELAY_MS * this.restarts);
+    } else {
+      // given up: a blank grid takes no typing, whatever the mount says about input later
+      this.broken = true;
+      if (this.inputLayer) this.inputLayer.disableStdin = true;
+    }
+    if (!restarting) this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error, restarting: false } }));
+  }
+
+  private restart(): void {
+    if (this.disposed) return;
+    try { this.renderer?.dispose(); } catch { /* the layer goes with the engine */ }
+    try { this.vt?.dispose(); } catch { /* a trapped engine is gone already */ }
+    this.renderer = null;
+    this.vt = null;
+    this.stream.reset();
+    this.decoder = new TextDecoder();
+    this.pictures.reset();
+    this.selection?.clearSelection();
+    this.fromBottom = 0;
+    this.viewTop = null;
+    this.failed = null;
+    this.pending = true;
+    void this.start();
   }
 
   get failure(): unknown { return this.failed; }
+
+  /** test builds only (the mount's __HERDR_TEST_HOOKS__): libghostty stopping, as a trap stops it */
+  failForTest(): void { this.fail(new Error("a stop the test asked for")); }
 
   /**
    * Output is parsed in a task of its own, after the event that wrote it, as xterm's write buffer parses it: a listener
@@ -390,7 +475,7 @@ export class GhosttyTerminal {
     if (this.disposed) return;
     this.writes.push({ data, callback });
     if (this.pending || this.draining !== null) return;
-    this.draining = setTimeout(() => this.drainWrites(), 0);
+    this.draining = setTimeout(() => this.drainWrites());
   }
 
   private drainWrites(): void {
@@ -398,7 +483,7 @@ export class GhosttyTerminal {
     const start = performance.now();
     while (!this.disposed && !this.pending && this.writes.length > 0) {
       if (performance.now() - start > WRITE_BUDGET_MS) {
-        this.draining = setTimeout(() => this.drainWrites(), 0);
+        this.draining = setTimeout(() => this.drainWrites());
         return;
       }
       const { data, callback } = this.writes.shift()!;
@@ -408,6 +493,7 @@ export class GhosttyTerminal {
 
   private parseWrite(data: string | Uint8Array, callback: (() => void) | undefined): void {
     if (this.failed !== null) { callback?.(); return; }
+    // a picture conversion past its deadline is skipped (itermPictureWriter.ts), so a frame is told parsed only once it is
     this.pictures.write(data, (part, picture) => this.parse(part, picture), () => {
       try {
         if (this.failed === null) this.afterWrite();
@@ -434,6 +520,7 @@ export class GhosttyTerminal {
       this.selection?.refresh(top !== null ? Math.max(0, top - vt.history().viewportTop) : 0);
     } else this.selection?.refresh();
     this.viewTop = vt && this.fromBottom > 0 ? vt.history().viewportTop : null;
+    this.clearPicturesBetweenSequences();
     this.written = true;
     // the program's mouse and cursor modes may have changed: the input layer follows them now, as xterm's does
     this.inputLayer?.cursorMoved();
@@ -539,7 +626,7 @@ export class GhosttyTerminal {
         this.schedule();
         break;
       case "disableStdin":
-        if (this.inputLayer) this.inputLayer.disableStdin = this.options.disableStdin;
+        if (this.inputLayer) this.inputLayer.disableStdin = this.options.disableStdin || this.broken;
         break;
     }
   }
@@ -638,6 +725,8 @@ export class GhosttyTerminal {
       const changed = renderer.draw(selected, this.fromBottom === 0, announce);
       this.drawSelection(selected);
       if (changed) {
+        // a row a link was read from may have been written over: the link under the pointer is read again, once a frame
+        this.linkifier?.refresh();
         this.inputLayer?.cursorMoved();
         this.host?.dispatchEvent(new Event(GHOSTTY_DREW_EVENT));
       }

@@ -310,6 +310,8 @@ export function hookedStream(hooks: ParserHooks, engine: (text: string) => void)
     if (piece) engine(piece);
   };
   return Object.assign(write, {
+    /** between sequences: something written to the engine now starts no sequence of the program's halfway */
+    idle: (): boolean => state === GROUND,
     oscStringState: (): OscStringState => ({ open: state === OSC, idComplete: oscIdComplete && !oscAborted, id: oscId }),
     reset: (): void => {
       state = GROUND;

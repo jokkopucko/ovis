@@ -1,7 +1,6 @@
 /**
- * The image addon keeps a picture's id in its cells and a new addon
- * numbers from 1 again: one loaded anew drew its first picture into the cells an old picture 1 had
- * left.
+ * Pictures in the terminal: libghostty draws iTerm2 and sixel pictures the browser converts to Kitty ones, the setting
+ * takes them away and brings them back only where they are printed again (an old picture's cells draw nothing).
  * Demo fixtures only: no herdr, hc or user state.
  */
 import assert from "node:assert/strict";
@@ -164,22 +163,17 @@ try {
       await context.addInitScript(() => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
         localStorage.setItem("ovis:terminal-pictures", "true");
-        localStorage.setItem("ovis:ghostty-only", "off");
       });
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      const addonLoaded = page.waitForResponse((response) => /addon-image-[^/]*\.js$/.test(new URL(response.url()).pathname));
       await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
-      await page.locator(".pane-frame.is-current .xterm").waitFor();
-      await addonLoaded;
+      await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
       await settled(page);
 
-      // Force xterm's addon for its reset and stale-cell checks. The shared-parser mode hands
-      // over at the first picture. Use a PNG for the sample pixel, independent of sixel startup.
+      // A PNG for the sample pixel, independent of sixel startup
       await print(page, `\x1b[H\x1b[2J\x1bPq\x1b\\${RED}`, "RED-PRINTED");
-      assert.equal(await page.locator(".pane-frame.is-current [data-renderer=ghostty]").count(), 0, "sixel hands the pane to xterm");
       assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "the picture is drawn where it is printed");
 
       await setPictures(page, false);
@@ -190,17 +184,13 @@ try {
       await setPictures(page, true);
       await print(page, `\x1b[20;1H${BLUE}`, "BLUE-PRINTED");
       const below = await page.evaluate(() => {
-        const layer = document.querySelector<HTMLCanvasElement>(".pane-frame.is-current canvas.xterm-image-layer")!;
-        const data = layer.getContext("2d")!.getImageData(0, 0, layer.width, layer.height).data;
-        let first = -1;
-        for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) { first = Math.floor((i - 3) / 4 / layer.width); break; }
-        return { first, height: layer.height };
+        const layer = document.querySelector(".pane-frame.is-current .ghostty-layer")!;
+        const tops = [...layer.querySelectorAll<HTMLCanvasElement>("canvas.ghostty-image")].map((canvas) => canvas.getBoundingClientRect().top - layer.getBoundingClientRect().top);
+        return { first: tops.length ? Math.min(...tops) : -1, pictures: tops.length };
       });
       assert.ok(below.first > 0, `on again: the new picture is drawn lower down, where it was printed (${JSON.stringify(below)})`);
+      assert.deepEqual(await pixel(page, 4, below.first + 4), [0, 0, 255], "on again: the new picture is drawn where it was printed");
       assert.equal(await pixel(page, 4, 4), null, "on again: the cells the first picture left draw nothing, not the new picture");
-      const held = await page.evaluate(() => (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => number[] | null }).imageAt?.(0, 0));
-      assert.notEqual(held, undefined, "the demo build's probe answers");
-      assert.equal(held, null, `on again: the top left cell holds no picture (${JSON.stringify(held)})`);
 
       // imgcat's multipart form and chafa's TIFF without a size, which the addon takes neither of by itself (#3147)
       await print(page, `\x1b[H\x1b[2J${multipart([0, 255, 0])}`, "IMGCAT-PRINTED");

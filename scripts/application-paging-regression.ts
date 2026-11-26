@@ -101,7 +101,11 @@ sys.stdout.flush()
   await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).selectOption("u");
   await page.getByRole("combobox", { name: "Scroll pane down", exact: true }).selectOption("d");
   await page.keyboard.press("Escape");
+  // the closing dialog hands focus back to what opened it: the textarea is focused once the dialog is gone, and the
+  // chords wait until it holds the focus
+  await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).waitFor({ state: "detached" });
   await page.locator(".xterm-helper-textarea").first().evaluate((node: HTMLTextAreaElement) => node.focus());
+  await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea") === true);
   await input((text) => text === "\x1b[5~\x1b[6~\x1b[5~\x1b[5~\x1b[6~",
     "remapped paging actions still send plain page sequences to the application", "ControlOrMeta+Shift+U", "ControlOrMeta+Shift+D");
   // The program quits and hands the screen back to the shell, whose history the browser does not know

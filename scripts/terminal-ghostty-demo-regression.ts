@@ -89,14 +89,16 @@ const print = async (page: Page, data: string, marker: string) => {
   await settled(page);
 };
 
-async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false, only = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
+async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false, only = false, xterm = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-  await context.addInitScript(([storedOff, images, only]) => {
+  await context.addInitScript(([storedOff, images, only, xterm]) => {
+    // the old engine, asked for by name: the place xterm itself puts text after a picture is the reference
+    if (xterm) localStorage.setItem("ovis:terminal-engine", "xterm");
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
     if (storedOff) localStorage.setItem("ovis:terminal-ghostty", "false");
     localStorage.setItem("ovis:terminal-pictures", JSON.stringify(images));
     if (only) localStorage.setItem("ovis:ghostty-only", "on");
-  }, [storedOff, images, only] as const);
+  }, [storedOff, images, only, xterm] as const);
   if (noModule) await context.route(/\.wasm$/, (route) => route.abort());
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -126,7 +128,8 @@ try {
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
         assert.equal(wasm.length, 1, "core: the module is fetched once");
-        assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "core: xterm's own text is hidden under libghostty's");
+        // a terminal without xterm has no rows of its own; over xterm (the old engine) its rows are hidden
+        if (await page.locator(".pane-frame.is-current .xterm-rows").count()) assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "core: xterm's own text is hidden under libghostty's");
 
         const announced = () => page.evaluate(() => document.querySelector(".pane-frame.is-current .ghostty-layer [aria-live]")?.textContent ?? null);
         assert.equal(await announced(), "", "core: the screen a pane opens on is not announced");
@@ -335,10 +338,12 @@ try {
         // iTerm2 in only mode: the converted picture stays on libghostty, and text still starts
         // at xterm's row and column after the picture.
         const shownRow = async (ghostty: boolean) => {
-          const { page, errors } = await open(browser, server.port, prefix, "core", { noModule: !ghostty, images: true, only: true });
+          const { page, errors } = await open(browser, server.port, prefix, "core", { noModule: !ghostty, images: true, only: true, xterm: !ghostty });
           if (ghostty) await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
-          else await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor();
-          await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .xterm") as { imageAt?: unknown } | null)?.imageAt === "function");
+          else {
+            await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor();
+            await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .xterm") as { imageAt?: unknown } | null)?.imageAt === "function");
+          }
           await page.evaluate((data) => window.ghosttyFixture.print(data), `\x1b[2J\x1b[H${itermSquare()}IT2-AFTER\r\n`);
           const row = await page.waitForFunction(() => {
             const layer = document.querySelector(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]");
@@ -373,12 +378,40 @@ try {
         await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
         await print(page, "HERDR-LINE\r\n", "HERDR-DONE");
         assert.equal(wasm.length, 1, "herdr: the module is fetched once");
-        assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "herdr: xterm's own text is hidden under libghostty's");
+        if (await page.locator(".pane-frame.is-current .xterm-rows").count()) assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "herdr: xterm's own text is hidden under libghostty's");
         await page.locator(".pane-frame.is-current .pane-terminal").click();
         await page.keyboard.type("y");
         await page.waitForFunction(() => window.ghosttyFixture.inputs.some((frame) => frame.type === "input" && frame.text === "y"));
         assert.deepEqual(errors, [], "herdr: no page errors");
         await page.context().close();
+      }
+      {
+        // libghostty stops while the pane is shown: a new engine starts and the pane is attached again, so the server
+        // (here the fixture, which paints BEFORE-LOAD on every attach) draws it anew without the program writing anything
+        const { page, errors } = await open(browser, server.port, prefix, "core");
+        await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
+        await print(page, "\x1b[H\x1b[2JBEFORE-STOP\r\n", "STOP-READY");
+        await page.waitForFunction(() => ![...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
+        await page.evaluate(() => (document.querySelector(".pane-frame.is-current .pane-terminal") as HTMLElement & { failTerminal(): void }).failTerminal());
+        await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")), undefined, { timeout: 10000 });
+        await page.locator(".pane-frame.is-current .pane-terminal").click();
+        await page.keyboard.type("r");
+        await page.waitForFunction(() => window.ghosttyFixture.inputs.some((frame) => frame.type === "input" && frame.text === "r"));
+        assert.deepEqual(errors.filter((error) => !error.includes("libghostty")), [], "restart: no page errors");
+        await page.context().close();
+        console.log("PASS libghostty stopping mid-session: a new engine draws the pane again and takes typing");
+      }
+      {
+        // the module never loads: the terminal starts over a few times, then the pane says so instead of staying blank
+        const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+        await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false })));
+        await context.route(/\.wasm$/, (route) => route.abort());
+        const page = await context.newPage();
+        await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=core`);
+        await page.getByText("This terminal could not be drawn. Reload the page to try again.").waitFor({ timeout: 15000 });
+        assert.equal(await page.locator(".pane-frame.is-current .xterm-helper-textarea").evaluate((field: HTMLTextAreaElement) => field.readOnly), true, "no module: the blank grid takes no typing");
+        await context.close();
+        console.log("PASS libghostty that never loads: the pane says so and takes no typing");
       }
       for (const kind of ["herdr", "core"] as const) {
         const { page, wasm, errors } = await open(browser, server.port, prefix, kind, { storedOff: true });

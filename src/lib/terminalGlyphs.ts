@@ -238,6 +238,79 @@ export function textPresentation(text: string): string | null {
   return textForm === text ? null : textForm;
 }
 
+export interface ViewFont { readonly family: string; readonly size: number; readonly weight?: string | number }
+
+/**
+ * An IME's pending text is not a row: it is drawn in a box of its own over the cursor (the composition view), in the plain
+ * font size. A Hangul syllable the rows enlarge (renderer.ts fits a wide glyph to its two cells) stayed the font's narrow
+ * glyph there, so the syllable being typed looked smaller than every syllable before it until it was committed. The box
+ * gets the fit its row will give it: its first glyph takes two cells when it is wider than one, as libghostty lays it out.
+ * Returns the undo.
+ */
+export function fitCompositionView(view: HTMLElement, cellWidth: () => number, font: () => ViewFont): () => void {
+  const measure = document.createElement("canvas").getContext("2d");
+  if (!measure) return () => {};
+  const fits = new Map<string, GlyphFit | null>();
+  const faces = followLateFaces(document.fonts as FontFaceSet | undefined, (callback) => { requestAnimationFrame(callback); }, () => { fits.clear(); });
+  const probe = document.createElement("span").style;
+  // the input layer's own transform of the box (a long text at the right edge is moved left to show its end), which
+  // the stretch is added to, and the transform written here last
+  let base = "";
+  let written = "";
+  const fit = (): void => {
+    const { family, size: fontSize, weight = "normal" } = font();
+    const cell = cellWidth();
+    let size = `${fontSize}px`;
+    let spacing = "";
+    let padding = "";
+    let stretch = "";
+    const first = String.fromCodePoint((view.textContent ?? "").codePointAt(0) ?? 0x20);
+    if (view.classList.contains("active") && cell > 0) {
+      const key = `${first}\u0000${weight}\u0000${fontSize}\u0000${family}\u0000${cell}\u0000${globalThis.devicePixelRatio ?? 1}`;
+      let found = fits.get(key);
+      if (found === undefined) {
+        faces.ask(family, first);
+        measure.font = `${weight} ${fontSize}px ${family}`;
+        const glyphWidth = measure.measureText(first).width;
+        const cells = glyphWidth > cell + MIN_SPACING_PX ? 2 : 1;
+        found = glyphFit(cells * cell - glyphWidth, glyphWidth, cell);
+        if (fits.size >= VIEW_FIT_CACHE_MAX) fits.clear();
+        fits.set(key, found);
+      }
+      if (found) {
+        size = `${fontSize * found.scale}px`;
+        spacing = `${found.spacing / found.stretch}px`;
+        padding = `${found.spacing / found.stretch / 2}px`;
+        if (found.stretch !== 1) stretch = `scaleX(${found.stretch})`;
+      }
+    }
+    // each write is a mutation the observer sees again: only what differs is written, compared as the browser stores it
+    if (view.style.transform !== written) base = view.style.transform;
+    probe.transform = stretchedView(base, stretch);
+    if (stretch !== "" && probe.transform === "") {
+      probe.transform = base;
+      stretch = "";
+      spacing = padding = "";
+    }
+    probe.fontSize = size;
+    probe.letterSpacing = spacing;
+    probe.paddingLeft = padding;
+    if (view.style.fontSize !== probe.fontSize) view.style.fontSize = probe.fontSize;
+    if (view.style.transform !== probe.transform) view.style.transform = probe.transform;
+    written = view.style.transform;
+    const origin = stretch === "" ? "" : "0 0";
+    if (view.style.transformOrigin !== origin) view.style.transformOrigin = origin;
+    if (view.style.letterSpacing !== probe.letterSpacing) view.style.letterSpacing = probe.letterSpacing;
+    if (view.style.paddingLeft !== probe.paddingLeft) view.style.paddingLeft = probe.paddingLeft;
+  };
+  const observer = new MutationObserver(fit);
+  observer.observe(view, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["style", "class"] });
+  return () => {
+    observer.disconnect();
+    faces.stop();
+  };
+}
+
 /**
  * Keeps every row the DOM renderer draws adjusted. The renderer rebuilds a row's spans on
  * each render (and on link hover, which fires no render event), so a MutationObserver

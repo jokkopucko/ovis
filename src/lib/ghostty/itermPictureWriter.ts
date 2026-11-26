@@ -191,6 +191,8 @@ interface Job {
 }
 
 const MAX_PENDING = 8 * 1024 * 1024;
+/** a conversion still running past this is skipped: the output behind it, and its acknowledgement, never wait longer */
+const CONVERSION_DEADLINE_MS = 1000;
 const MAX_ACTIVE = 64 * 1024 * 1024;
 const MAX_WRITES = 1024;
 
@@ -240,7 +242,15 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
         decoding = true;
         const conversion = image();
         pending = conversion;
+        // skipped as an overflow skips it: the text after it goes on, and a picture that comes before this decode ends is
+        // dropped too (one browser decode at a time), so a slow phone may show neither
+        const late = setTimeout(() => {
+          if (pending !== conversion) return;
+          pending = null;
+          drain();
+        }, CONVERSION_DEADLINE_MS);
         const finish = (output: string): void => {
+          clearTimeout(late);
           decoding = false;
           if (pending !== conversion) return;
           pending = null;

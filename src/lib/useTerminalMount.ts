@@ -50,7 +50,7 @@ import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
 import { holdForPictures } from "./terminalImages.ts";
-import { GhosttyTerminal, ownTerminalEngine } from "./ghostty/terminal.ts";
+import { GhosttyTerminal, ownTerminalEngine, TERMINAL_FAILED_EVENT, type TerminalFailure } from "./ghostty/terminal.ts";
 
 /**
  * Build-time constant: on only in the browser lane's demo build (lib/crashProbe.ts). Read it through
@@ -1076,6 +1076,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           peakInFlight = Math.max(peakInFlight, inFlight);
           write(data, () => { inFlight--; callback(); });
         };
+        Object.assign(host, { failTerminal: () => (term as unknown as GhosttyTerminal).failForTest() });
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
           history: ((rows) => ({ scrollback: term.options.scrollback ?? 0, length: rows.length, viewportY: rows.viewportY, baseY: rows.baseY }))(screenRows(term)),
           grid: { cols: term.cols, rows: term.rows } }) });
@@ -2438,15 +2439,44 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // The PC's connection stopped on an overload close (4008), or an attach conflicted: attach again
       // in place, as a pane pick does. The attach reconnects, and the connection's open replays every
       // pane this PC has attached; their snapshot clears what is left of the notice.
+      let terminalGaveUp = false;
       const reattach = (): void => {
         if (!presentedRef.current || !paneRef.current) return;
         stalledRef.current = false;
-        setOutputError(null);
+        // a terminal that gave up keeps saying so whatever brings the pane back
+        setOutputError(terminalGaveUp ? tRef.current("This terminal could not be drawn. Reload the page to try again.") : null);
         setEnded(false);
         resume();
         term.options.disableStdin = observeRef.current || heldRef.current;
       };
       reattachRef.current = reattach;
+      // the server replays a pane only to an attach that is new: the pane lets go first, so a terminal that started over
+      // is drawn from the pane's screen, not left blank until the program writes again
+      let redrawOnReturn = false;
+      const redrawFresh = (): void => {
+        redrawOnReturn = false;
+        const current = paneRef.current;
+        if (current && !mirroredRef.current && !releasedRef.current) {
+          socket.detach(current);
+          retireOutput();
+        }
+        reattach();
+      };
+      // libghostty stopped drawing: the terminal starts over with a new engine and the pane is attached again, so the
+      // server draws it anew; once it gives up, the pane says so and takes no typing a blank grid would hide
+      const onTerminalFailed = (event: Event): void => {
+        if ((event as CustomEvent<TerminalFailure>).detail.restarting) {
+          // a pane put away is attached again when it is shown (back)
+          if (!presentedRef.current) { redrawOnReturn = true; return; }
+          redrawFresh();
+          return;
+        }
+        terminalGaveUp = true;
+        const t = tRef.current; // the language of now, not of the attach
+        setOutputError(t("This terminal could not be drawn. Reload the page to try again."));
+        term.options.disableStdin = true;
+      };
+      if (ownEngine) host.addEventListener(TERMINAL_FAILED_EVENT, onTerminalFailed);
       const back = (): void => {
         if (!presentedRef.current) {
           if (cachedRef.current && releasedRef.current) release();
@@ -2460,7 +2490,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // A pane that kept its attach while put away (a queued message, a mirror) stopped because its
         // frozen page sent no ACKs, not because this device is too slow: coming back attaches again,
         // once. A stop while the page stays in use is final (no reconnect loop).
-        if (stalledRef.current && socket.stoppedWhileHidden && inUse()) reattach();
+        if (redrawOnReturn) redrawFresh();
+        else if (stalledRef.current && socket.stoppedWhileHidden && inUse()) reattach();
         else if (releasedRef.current) resume();
         else refit();
       };
@@ -2586,6 +2617,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         typeAheadRef.current = () => {};
         cancelLeaveRef.current = () => {};
         reattachRef.current = () => {};
+        host.removeEventListener(TERMINAL_FAILED_EVENT, onTerminalFailed);
         attachFilesRef.current = () => {};
         keyboardHoldsRef.current = () => false;
         fittedRef.current = () => {};
