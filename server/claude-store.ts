@@ -34,9 +34,13 @@ function isClaudeExecutable(text = ""): boolean {
   return /(?:^|[\\/])claude(?:\.exe)?$/.test(/\\|\.exe$/i.test(text) ? text.toLowerCase() : text);
 }
 
+const isNodeExecutable = (path = "") => /(?:^|[\\/])node(?:\.exe)?$/i.test(path);
+const isClaudeCliScript = (path = "") => /(?:^|[\\/])node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js$/.test(path);
+
 export function isClaudeProcess(entry: { name?: string; argv0?: string; argv?: readonly string[] }): boolean {
   // macOS keeps the executable name "node" for npm installs; the process title is argv0.
   if (isClaudeExecutable(entry.name) || isClaudeExecutable(entry.argv0) || isClaudeExecutable(entry.argv?.[0])) return true;
+  if (isNodeExecutable(entry.argv?.[0]) && isClaudeCliScript(entry.argv?.[1])) return true;
   // the native build runs under its version as the name and titles itself "Claude": both its
   // argv0 and its argv[0] say so, which one field alone does not prove
   return /^\d+\.\d+\.\d+$/.test(entry.name ?? "") && entry.argv0 === "Claude" && entry.argv?.[0] === "Claude";
@@ -312,10 +316,11 @@ async function environSource(environ: string): Promise<SourceRead> {
   const named = entries.filter((entry) => entry.startsWith("CLAUDE_CONFIG_DIR=")).map((entry) => entry.slice(18));
   const legacy = await namedDirectory(named[0] || null);
   if (named.length > 1) return { source: { state: "unreadable" }, legacy };
-  if (named.length === 1) return { source: await overrideSource(named[0]!), legacy };
+  const override = named[0];
+  if (override !== undefined && override !== "") return { source: await overrideSource(override), legacy };
   const homes = entries.flatMap((entry) => entry.startsWith("HOME=") ? [entry.slice(5)] : []);
   const home = homes.length === 1 && isAbsolute(homes[0]!) ? homes[0] : undefined;
-  return { source: { state: "absent" }, legacy, home };
+  return { source: override === "" ? { state: "override", dir: "" } : { state: "absent" }, legacy, home };
 }
 
 async function readClaudeSource(pid: number, home: string, platform: string, table: () => Promise<ProcessRow[]>): Promise<SourceRead> {
@@ -516,34 +521,46 @@ export async function processClaudeConfigDir(
  * The store of a Claude the pane's processes cannot show (#3931): a sandbox wrapper such as
  * `bwrap --new-session` runs it in a session of its own, outside the pane's job. herdr's agent hint,
  * HERDR_AGENT=claude, marks the foreground processes the wrapper put in front of it, and their
- * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only). Only
- * the whole foreground job counts, so `processes` is herdr's list, never herdr-core's leader alone. Null
- * when none carries the hint or it names the default store; AmbiguousClaudeStore when they name more than
- * one, or a live one cannot be read, which may carry the hint and another store: a guess could be another
- * account's store.
+ * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only).
+ * Check the kernel's executable path before discounting a hint: `exec -a claude` changes argv[0],
+ * not the executable or the script it runs. For Node, also check its script. Only the whole
+ * foreground job counts, not herdr-core's leader alone.
+ * An unreadable live process may carry the hint and another store. Refuse to guess if we found
+ * any hinted wrapper, or if the caller already expected a wrapper in the job.
  */
-export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
+export async function hintedClaudeSource(processes: readonly { pid?: number | null }[], { proc = "/proc", requireReadable = true } = {}): Promise<(SourceRead & { pids: readonly number[] }) | null> {
   if (process.platform !== "linux") return null;
   const reads: { pid: number; read: SourceRead }[] = [];
   let unread: number | null = null;
   for (const { pid } of processes) {
     if (typeof pid !== "number") continue;
+    const processDir = join(proc, String(pid));
     let environ = "";
-    try { environ = await readFile(join(proc, String(pid), "environ"), "utf8"); } catch { /* read as empty */ }
+    try { environ = await readFile(join(processDir, "environ"), "utf8"); } catch { /* read as empty */ }
     // read empty: gone, or not ours to read, which may hide the hint and another store
     if (environ === "") {
       if (processAlive(pid)) unread ??= pid;
       continue;
     }
     if (!environ.split("\0").includes("HERDR_AGENT=claude")) continue;
+    const executable = (await readlink(join(processDir, "exe")).catch(() => "")).replace(/ \(deleted\)$/, "");
+    if (isClaudeExecutable(executable) || /\/claude\/versions\/\d+\.\d+\.\d+$/.test(executable)) continue;
+    if (isNodeExecutable(executable)) {
+      const [, script] = (await readFile(join(processDir, "cmdline"), "utf8").catch(() => "")).split("\0");
+      if (isClaudeCliScript(script)) continue;
+    }
     reads.push({ pid, read: await environSource(environ) });
   }
-  if (unread !== null) throw new AmbiguousClaudeStore(unread);
+  if (unread !== null && (requireReadable || reads.length > 0)) throw new AmbiguousClaudeStore(unread);
   const first = reads[0];
   if (first === undefined) return null;
   const differs = reads.find(({ read }) => read.source.state === "unreadable" || JSON.stringify(read) !== JSON.stringify(first.read));
   if (differs !== undefined) throw new AmbiguousClaudeStore(differs.pid);
-  return first.read.legacy;
+  return { ...first.read, pids: reads.map(({ pid }) => pid) };
+}
+
+export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
+  return (await hintedClaudeSource(processes, { proc }))?.legacy ?? null;
 }
 
 /** Only an absent path is a miss: an unreadable store is an error to report, not an empty one. */
