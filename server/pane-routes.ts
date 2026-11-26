@@ -397,7 +397,8 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       conversationDiagnostics.recovered(paneId, requestIdContext.getStore()?.id);
       // The live extension knows the current window and fill, which the session file does not record together.
       // Only read omp's status bar if its extension has never reported. An unknown sample leaves the file as-is.
-      const kind = conversation.source === "omp-transcript" ? "omp" : conversation.source === "omo-transcript" ? "omo" : null;
+      const kind = conversation.source === "omp-transcript" ? "omp" : conversation.source === "omo-transcript" ? "omo"
+        : conversation.source === "pi-transcript" ? "pi" : null;
       let context = kind === null ? undefined : options.approvals?.contextOf(paneId, kind);
       if (kind === "omp" && context === undefined) {
         const screen = await ompScreenContext(paneId);

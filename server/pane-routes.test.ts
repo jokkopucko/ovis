@@ -119,7 +119,7 @@ it("answers a conversation with the PC's clock, which its turns' times are on", 
   } finally { read.mockRestore(); }
 });
 
-it.each(["omp", "omo"] as const)("uses %s's live context without rereading its screen, and keeps the fallback", async (kind) => {
+it.each(["omp", "omo", "pi"] as const)("uses %s's live context without rereading its screen, and keeps the fallback", async (kind) => {
   const pane = crypto.randomUUID();
   const url = new URL(`http://x/api/pane/conversation?pane_id=${pane}`);
   const fileContext = { used: 32_002, window: null };

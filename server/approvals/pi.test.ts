@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { PaneContext } from "../../shared/protocol.ts";
 import { parsedByPublicPrompt } from "../dialogs/shared.ts";
 import { parseInteractivePrompt } from "../prompt.ts";
 import { permissionDecision } from "./extension.ts";
@@ -23,10 +24,10 @@ function tempRoot(): string {
   return root;
 }
 
-function hubIn() {
+function hubIn(onContext?: (paneId: string, context: PaneContext | null) => void) {
   const waiting: (() => void)[] = [];
   const settling: (() => void)[] = [];
-  const hub = new ApprovalHub(join(tempRoot(), "h"), [piApprovals], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
+  const hub = new ApprovalHub(join(tempRoot(), "h"), [piApprovals], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.(), onContext });
   started.push(hub);
   return { hub, held: () => new Promise<void>((resolve) => waiting.push(resolve)), settled: () => new Promise<void>((resolve) => settling.push(resolve)) };
 }
@@ -34,8 +35,10 @@ function hubIn() {
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown>;
 interface Dialog { title: string; options: string[]; signal: AbortSignal; choose: (label: string | undefined) => void }
 
-/** pi's side of the extension: the `tool_call` handler it registers, and the dialogs it opens. */
-async function loaded(args: string[]) {
+type Usage = { tokens: number | null; contextWindow: number; percent: number | null };
+
+/** pi's side of the extension: the handlers it registers, and the dialogs it opens. */
+async function loaded(args: string[], getContextUsage?: () => Usage | undefined) {
   const file = args[args.indexOf("-e") + 1]!;
   const { default: extension } = await import(file) as { default: (pi: unknown) => void };
   const handlers = new Map<string, Handler>();
@@ -46,6 +49,7 @@ async function loaded(args: string[]) {
     hasUI: mode !== "print",
     mode,
     signal: undefined,
+    getContextUsage,
     ui: {
       select: (title: string, options: string[], opts: { signal: AbortSignal }) => new Promise<string | undefined>((resolve) => {
         opts.signal.addEventListener("abort", () => resolve(undefined), { once: true });
@@ -55,7 +59,9 @@ async function loaded(args: string[]) {
     },
   });
   const call = (input: unknown, toolName = "bash", mode = "tui") => handlers.get("tool_call")!({ toolName, toolCallId: "call-1", input }, ctx(mode));
-  return { call, dialogs, opened: () => new Promise<void>((resolve) => opened.push(resolve)) };
+  /** what pi tells its extensions of the session (pi 1.4.0's ExtensionAPI events) */
+  const run = (type: string) => handlers.get(type)?.({ type }, ctx("tui"));
+  return { call, run, dialogs, opened: () => new Promise<void>((resolve) => opened.push(resolve)) };
 }
 
 describe.skipIf(!posix)("pi's approval hook", () => {
@@ -68,6 +74,30 @@ describe.skipIf(!posix)("pi's approval hook", () => {
     expect(readFileSync(args[1]!, "utf8")).toContain(hub.address);
     for (const version of ["1.3.9", "2.0.0", null]) expect(hub.launchArgs("pi", "p1", ["--x"], version), String(version)).toEqual(["--x"]);
   });
+
+  it("tells the pane its exact context at startup, after a turn, a model switch and a branch move, and as unknown after compaction", async () => {
+    let told = Promise.withResolvers<{ paneId: string; context: PaneContext | null }>();
+    const { hub } = hubIn((paneId, context) => told.resolve({ paneId, context }));
+    // ContextUsage of pi 1.4.0's ExtensionContext.getContextUsage(): tokens and percent are null after compaction
+    let usage: Usage = { tokens: 12_345, contextWindow: 1_000_000, percent: 1.2345 };
+    const pi = await loaded(hub.launchArgs("pi", "p1", undefined, "1.4.0")!, () => usage);
+    pi.run("session_start");
+    expect(await told.promise).toEqual({ paneId: "p1", context: { used: 12_345, window: 1_000_000 } });
+
+    for (const [type, next, context] of [
+      ["agent_end", { tokens: 15_123, contextWindow: 1_000_000, percent: 1.5123 }, { used: 15_123, window: 1_000_000 }],
+      ["model_select", { tokens: 15_123, contextWindow: 200_000, percent: 7.5615 }, { used: 15_123, window: 200_000 }],
+      // /tree moved to a shorter branch: nothing else is told until the next run
+      ["session_tree", { tokens: 9_000, contextWindow: 200_000, percent: 4.5 }, { used: 9_000, window: 200_000 }],
+      ["session_compact", { tokens: null, contextWindow: 200_000, percent: null }, null],
+    ] as const) {
+      told = Promise.withResolvers();
+      usage = next;
+      pi.run(type);
+      expect(await told.promise, type).toEqual({ paneId: "p1", context });
+    }
+    expect(hub.contextOf("p1", "pi")).toBeNull();
+  }, 1500);
 
   it("answers a shell command from Ovis's card, its own dialog closed", async () => {
     const { hub, held } = hubIn();

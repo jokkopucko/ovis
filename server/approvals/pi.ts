@@ -8,14 +8,19 @@
  * from the screen. Outside pi's terminal UI (`ctx.mode` other than "tui": its print mode, and its RPC mode, whose
  * dialogs wait on the RPC client) the extension holds nothing, as pi without it. Measured on pi 1.4.0 (`tool_call`'s
  * `{ block, reason }`, `ctx.ui.select` with a signal, `ctx.signal`, `ctx.mode`).
+ *
+ * The extension also tells the pane's context as pi itself counts it (`ctx.getContextUsage()`), at startup, after a run,
+ * a model switch, a move in its tree (/tree) and a compaction: the session file records what a request filled but not the window, which a reader
+ * of pi's catalogs on disk (pi-models.ts) cannot know for a model pi has built in.
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
-import { ALLOW_LABEL, DENY_LABEL, extensionApprovals } from "./extension.ts";
+import { ALLOW_LABEL, DENY_LABEL, contextUsage, extensionApprovals } from "./extension.ts";
 
 export const PI_HOOK_MIN_VERSION = "1.4.0";
 
 const GLUE = `
 export default function ovisApprovals(pi) {
+  for (const event of ["session_start", "agent_end", "model_select", "session_compact", "session_tree"]) pi.on(event, tellContext);
   pi.on("tool_call", async (event, ctx) => {
     const command = event?.input?.command;
     if (event?.toolName !== "bash" || typeof command !== "string" || ctx?.mode !== "tui") return undefined;
@@ -37,4 +42,7 @@ export default function ovisApprovals(pi) {
 `;
 
 /** pi 1.x from the one measured on: a later major may change the extension API under the hook. */
-export const piApprovals = extensionApprovals("pi", (version) => meetsMinVersion(version, PI_HOOK_MIN_VERSION) && version.split(".")[0] === "1", GLUE);
+export const piApprovals = {
+  ...extensionApprovals("pi", (version) => meetsMinVersion(version, PI_HOOK_MIN_VERSION) && version.split(".")[0] === "1", GLUE),
+  context: contextUsage,
+};
