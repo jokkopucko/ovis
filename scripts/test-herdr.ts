@@ -12,7 +12,7 @@
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { ping, sessionSnapshot, workspaceCreate } from "../server/herdr/client.ts";
+import { HerdrError, herdrRpc, ping, sessionSnapshot, workspaceCreate } from "../server/herdr/client.ts";
 import { testShellEnv } from "./test-shell.ts";
 
 // macOS's temp dir is behind a symlink (/var -> /private/var): herdr reports a pane's cwd
@@ -46,11 +46,26 @@ export function testSocketPath(env: Record<string, string | undefined> = process
   return join(root, "herdr", "sessions", TEST_SESSION, "herdr.sock");
 }
 
+/** The test herdr's own XDG_CONFIG_HOME, beside its socket: its herdr folder holds the server's config, data and herdr-server.log. */
+export function testConfigHome(socket: string = testSocketPath()): string {
+  return join(dirname(socket), "config");
+}
+
 function herdrBinary(): string | null {
   const configured = process.env["OVIS_HERDR_BIN"];
   if (configured) return configured;
   const found = Bun.which("herdr");
   return found ?? null;
+}
+
+/** Whether the herdr at `socket` has plugins of its config folder: ours has none, a server another checkout started may. */
+async function runsPlugins(socket: string): Promise<boolean> {
+  try {
+    return (await herdrRpc<{ plugins: unknown[] }>("plugin.list", {}, socket)).plugins.length > 0;
+  } catch (error) {
+    // herdr's own refusal (one with no plugin.list) says it runs none; no answer says nothing, so it may
+    return !(error instanceof HerdrError && error.fromReply);
+  }
 }
 
 async function answers(socket: string): Promise<boolean> {
@@ -105,17 +120,28 @@ export async function useTestHerdr(): Promise<string | null> {
     process.env["HERDR_SOCKET"] = join(tmpdir(), "ovis-tests-found-no-herdr.sock");
     return null;
   }
+  // herdr reads "default" as the user's own session: `herdr --session default server stop` would stop it
+  if (TEST_SESSION === "default") throw new Error("HERDR_TEST_SESSION=default names the user's own herdr session; pick another name");
   const socket = testSocketPath();
+  // herdr runs every plugin in its config folder's plugins.json (XDG_CONFIG_HOME/herdr), in each server it starts:
+  // the user's installed Ovis would start the user's own Ovis from inside this session. The server reads a
+  // config and state folder of its own instead (no plugins, nor the user's config.toml, nor writes to the user's
+  // state), and listens where the session's socket is (HERDR_SOCKET_PATH), so `herdr --session <name> server stop`
+  // still stops it. This process stops it by that socket too, whichever herdr answers there.
+  const config = testConfigHome(socket);
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(HERDR|OMO|SENPI|PI)_/.test(name)));
+  const own = { XDG_CONFIG_HOME: config, XDG_STATE_HOME: join(dirname(socket), "state"), HERDR_SOCKET_PATH: socket };
   // an empty ZDOTDIR: a pane's zsh (macOS's login shell) reads none of the user's own files,
   // where a shell integration can start a CLI herdr takes for an agent, ending the agent a test
   // reported, or set a title that names the pane's tab
   const zdotdir = join(dirname(socket), "zdotdir");
   // Windows panes cannot run the stand-ins (and keep their own PATH)
   const standIns = process.platform === "win32" ? null : join(dirname(socket), "agent-stand-ins");
-  // a server left running from before either directory existed has panes reading those files, or
-  // the user's agents on their PATH: it is stopped once, and started again below
-  if ((!existsSync(zdotdir) || (standIns !== null && !existsSync(join(standIns, "muse")))) && await answers(socket)) {
-    Bun.spawnSync([herdr, "--session", TEST_SESSION, "server", "stop"]);
+  // a server left running from before any of these directories existed has panes reading those files, the
+  // user's agents on their PATH, or the user's plugins, as has one an older checkout started since: it is
+  // stopped, and started again below
+  if ((!existsSync(zdotdir) || !existsSync(config) || (standIns !== null && !existsSync(join(standIns, "muse"))) || await runsPlugins(socket)) && await answers(socket)) {
+    Bun.spawnSync([herdr, "server", "stop"], { env: { ...clean, ...own } });
     for (const deadline = Date.now() + 15_000; await answers(socket);) {
       if (Date.now() > deadline) throw new Error(`The test herdr session "${TEST_SESSION}" did not stop`);
       await Bun.sleep(100);
@@ -128,15 +154,18 @@ export async function useTestHerdr(): Promise<string | null> {
   mkdirSync(zdotdir, { recursive: true });
   if (!existsSync(join(zdotdir, ".zshrc"))) writeFileSync(join(zdotdir, ".zshrc"), "");
   if (!(await answers(socket))) {
+    // no network checks for a new herdr version or agent manifests in a test run
+    mkdirSync(join(config, "herdr"), { recursive: true });
+    if (!existsSync(join(config, "herdr", "config.toml"))) writeFileSync(join(config, "herdr", "config.toml"), "[update]\nversion_check = false\nmanifest_check = false\n");
     const path = standIns === null ? {} : { PATH: [agentStandIns(standIns), process.env["PATH"]].filter(Boolean).join(delimiter) };
-    Bun.spawn([herdr, "--session", TEST_SESSION, "server"], {
+    Bun.spawn([herdr, "server"], {
       stdin: "ignore",
       stdout: Bun.file(join(dirname(socket), "test-server.log")),
       stderr: Bun.file(join(dirname(socket), "test-server.log")),
       // run from inside a herdr pane, this process carries that pane's HERDR_* variables; run by
       // an agent, it carries the agent's too (OMO_CODING_AGENT_DIR moves where a pane's omo is
       // read from), and every pane of this server would inherit them
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(HERDR|OMO|SENPI|PI)_/.test(name))), ...testShellEnv(dirname(socket)), ...path, ZDOTDIR: zdotdir },
+      env: { ...clean, ...testShellEnv(dirname(socket)), ...path, ZDOTDIR: zdotdir, ...own },
     }).unref();
     const deadline = Date.now() + 15_000;
     while (!(existsSync(socket) && await answers(socket))) {

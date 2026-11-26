@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { testSocketPath } from "../scripts/test-herdr.ts";
+import { join } from "node:path";
+import { testConfigHome } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, subscribeEvents, type Subscription, workspaceClose, workspaceCreate } from "./herdr/client.ts";
@@ -33,7 +33,7 @@ async function fixtureInFront(pane: string, session: string): Promise<number | u
 }
 
 function herdrLogTail(): string {
-  const log = join(dirname(testSocketPath()), "herdr-server.log");
+  const log = join(testConfigHome(), "herdr", "herdr-server.log");
   try {
     return fs.readFileSync(log, "utf8").split("\n").filter((line) => line && !line.includes('event="api.request.')).slice(-25).join("\n");
   } catch (error) { return `no herdr log at ${log}: ${error instanceof Error ? error.message : String(error)}`; }
