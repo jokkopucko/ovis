@@ -3,13 +3,15 @@ import { answerServerChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../s
 import { RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_HEADER, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
 import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, WARM_QUIET_MS, parseSocketRequest, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
-import { PAIR_GUEST_MS } from "./pair-room.ts";
+import { PAIR_GUEST_MS, PAIR_HOST_MS } from "./pair-room.ts";
 import { RelayRoom, handle, usageKey, type Env, type HibernatableSocket, type RelayState } from "./worker.ts";
 
 class FakeSocket implements HibernatableSocket {
   sent: Frame[] = [];
   closedWith: { code: number; reason: string } | null = null;
   closes = 0;
+  /** calls to accept(): a socket taken that way keeps its Durable Object awake */
+  accepts = 0;
   /** the far end vanished without a TCP close: a close sent to it is never answered, so the runtime keeps listing the socket */
   peerGone = false;
   private attachment: unknown = null;
@@ -22,6 +24,7 @@ class FakeSocket implements HibernatableSocket {
     if (this.closedWith) throw new Error("already closed");
     this.closedWith = { code, reason };
   }
+  accept() { this.accepts++; }
   serializeAttachment(value: unknown) { this.attachment = structuredClone(value); }
   deserializeAttachment() { return structuredClone(this.attachment); }
   json(index: number) { return JSON.parse(this.sent[index] as string) as Record<string, unknown>; }
@@ -30,9 +33,11 @@ class FakeSocket implements HibernatableSocket {
 const runtime = globalThis as unknown as Record<string, unknown>;
 const saved = { WebSocketPair: runtime["WebSocketPair"], WebSocketRequestResponsePair: runtime["WebSocketRequestResponsePair"] };
 const pairs: { 0: FakeSocket; 1: FakeSocket }[] = [];
+/** the runtime's WebSocketRequestResponsePair: workerd takes only its own instances as an auto-response */
+class FakeAutoResponse { constructor(readonly request: string, readonly response: string) {} }
 beforeAll(() => {
   runtime["WebSocketPair"] = class { 0 = new FakeSocket(); 1 = new FakeSocket(); constructor() { pairs.push(this); } };
-  runtime["WebSocketRequestResponsePair"] = class { constructor(readonly request: string, readonly response: string) {} };
+  runtime["WebSocketRequestResponsePair"] = FakeAutoResponse;
 });
 afterAll(() => Object.assign(runtime, saved));
 afterEach(() => setSystemTime());
@@ -201,6 +206,203 @@ describe("relay warm sockets", () => {
   });
 });
 
+/**
+ * What lets a room's Durable Object sleep (hibernate) while its sockets stay open. An object that
+ * cannot hibernate is billed for every second it stays in memory, which for a room is as long as
+ * its PC is connected. These run the real room on a stand-in runtime that wakes it only as
+ * Cloudflare does: for a frame its auto-response does not answer, for a close, and for an alarm.
+ * Each wake gets a fresh instance, as if every one were evicted in between.
+ */
+describe("relay Durable Object hibernation", () => {
+  /** how often a PC's relay sockets send their keepalive (README; server/relay/link.ts) */
+  const PING_MS = 10_000;
+  /** how often a PC's pairing code host sends its keepalive (server/relay/pair-code.ts) */
+  const PAIR_PING_MS = 30_000;
+  /** the closest two alarms of a room with nothing to do may come: each alarm wakes the object */
+  const IDLE_WAKE_FLOOR_MS = 60_000;
+  const HOUR = 3_600_000;
+
+  /** one Durable Object as the runtime runs it */
+  function hibernating() {
+    const fake = fakeState();
+    const handled: (string | ArrayBuffer)[] = [];
+    const wakes: number[] = [];
+    /** when the runtime reported each socket's close */
+    const closedAt = new Map<FakeSocket, number>();
+    let room = new RelayRoom(fake.state);
+    /** the far end answers each close the room sent, and the runtime reports it */
+    const answerCloses = () => {
+      for (const socket of fake.sockets) {
+        if (!socket.closedWith || closedAt.has(socket)) continue;
+        closedAt.set(socket, Date.now());
+        room = new RelayRoom(fake.state);
+        room.webSocketClose(socket, socket.closedWith.code, socket.closedWith.reason, true);
+      }
+    };
+    return {
+      fake, handled, wakes, closedAt,
+      get room() { return room; },
+      /** a frame from the far end: the registered auto-response answers its request without waking the object */
+      async arrive(socket: FakeSocket, frame: string | ArrayBuffer) {
+        const auto = fake.state.autoResponse;
+        if (auto instanceof FakeAutoResponse && frame === auto.request) {
+          socket.sent.push(auto.response);
+          fake.keepalive.set(socket, new Date());
+          return;
+        }
+        handled.push(frame);
+        room = new RelayRoom(fake.state);
+        await room.webSocketMessage(socket, frame);
+        answerCloses();
+      },
+      /** runs every alarm due by `at`; the runtime drops an alarm once it fires */
+      async alarmsUntil(at: number) {
+        while (fake.state.alarm !== null && fake.state.alarm <= at) {
+          const due = fake.state.alarm;
+          if (wakes.length > HOUR / 1000) throw new Error("the room keeps re-arming its alarm");
+          fake.state.alarm = null;
+          setSystemTime(new Date(due));
+          wakes.push(due);
+          room = new RelayRoom(fake.state);
+          await room.alarm();
+          answerCloses();
+        }
+      },
+    };
+  }
+
+  /**
+   * An hour with nothing happening: a PC alone, a PC with a phone connected, and a PC's pairing code
+   * waiting for a device. Every socket only sends its keepalive. Timers the rooms start are counted,
+   * not run.
+   */
+  async function idleHour() {
+    const start = new Date("2026-11-26T00:00:00Z").getTime();
+    setSystemTime(new Date(start));
+    const timers: string[] = [];
+    const real = { setTimeout: globalThis.setTimeout, setInterval: globalThis.setInterval };
+    globalThis.setTimeout = (() => { timers.push("setTimeout"); }) as unknown as typeof setTimeout;
+    globalThis.setInterval = (() => { timers.push("setInterval"); }) as unknown as typeof setInterval;
+    try {
+      const alone = hibernating();
+      const lonely = await connectServer(alone.room, alone.fake);
+      const spare = await connectWarm(alone.room, alone.fake, generationOf(lonely));
+      const pc = hibernating();
+      const control = await connectServer(pc.room, pc.fake);
+      // the phone takes the PC's warm socket as its data socket, and the PC opens the next one
+      const data = await connectWarm(pc.room, pc.fake, generationOf(control));
+      const client = await connect(pc.room, pc.fake, "role=client");
+      await pc.arrive(data, "handshake answer");
+      await pc.arrive(client, "first frame");
+      const warm = await connectWarm(pc.room, pc.fake, generationOf(control));
+      const pairing = hibernating();
+      await pairing.room.fetch(new Request(`https://relay.test/v1/pair?nameplate=AAA&role=host&v=1&server_id=${SERVER}&public_key=${PC.publicKey}`, upgrade));
+      const host = pairing.fake.sockets.at(-1)!;
+      await pairing.arrive(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AAA" })!);
+      expect(host.json(0)).toEqual({ type: "waiting" });
+      for (const room of [alone, pc, pairing]) room.handled.length = 0;
+      const open = [lonely, spare, control, warm, client, data];
+      const pings = new Map<FakeSocket, number>();
+      const ping = async (room: ReturnType<typeof hibernating>, socket: FakeSocket) => {
+        pings.set(socket, (pings.get(socket) ?? 0) + 1);
+        await room.arrive(socket, KEEPALIVE_PING);
+      };
+      const end = start + HOUR;
+      for (let at = start + PING_MS; at <= end; at += PING_MS) {
+        for (const room of [alone, pc, pairing]) await room.alarmsUntil(at);
+        setSystemTime(new Date(at));
+        for (const socket of [lonely, spare]) await ping(alone, socket);
+        for (const socket of [control, warm, client, data]) await ping(pc, socket);
+        if (!host.closedWith && (at - start) % PAIR_PING_MS === 0) await ping(pairing, host);
+      }
+      const closedInHour = open.filter((socket) => socket.closedWith !== null);
+      const pongs = [...open, host].map((socket) => socket.sent.filter((frame) => frame === KEEPALIVE_PONG).length - (pings.get(socket) ?? 0));
+      // then the PC's spare warm socket goes quiet: the idle check, still running, closes it
+      for (let at = end + PING_MS; at <= end + IDLE_MS + IDLE_WAKE_FLOOR_MS; at += PING_MS) {
+        await alone.alarmsUntil(at);
+        setSystemTime(new Date(at));
+        await ping(alone, lonely);
+      }
+      return { start, end, timers, rooms: { alone, pc, pairing }, closedInHour, pongs, pings, open, host, quiet: { lonely, spare } };
+    } finally {
+      Object.assign(globalThis, real);
+    }
+  }
+  let hour: ReturnType<typeof idleHour> | undefined;
+  /** the hour is run once and read by the tests below */
+  const idle = () => (hour ??= idleHour());
+
+  const gaps = (wakes: number[]) => wakes.slice(1).map((at, index) => at - wakes[index]!);
+
+  test("takes every socket with acceptWebSocket, never accept(), so the object can sleep while they stay open", async () => {
+    const fake = fakeState();
+    const room = new RelayRoom(fake.state);
+    const first = pairs.length;
+    const control = await connectServer(room, fake);
+    await connectWarm(room, fake, generationOf(control));
+    await connectPair(room, fake);
+    for (const query of ["nameplate=AAA&role=host&v=1", "nameplate=AAA&role=guest&v=1"]) {
+      expect((await room.fetch(new Request(`https://relay.test/v1/pair?${query}`, upgrade))).status).toBe(101);
+    }
+    // a socket the room refuses at once is taken the same way
+    await room.fetch(new Request(`https://relay.test/v1/ws?server_id=${SERVER}&role=client&v=9`, upgrade));
+    const made = pairs.slice(first);
+    expect(made).toHaveLength(7);
+    expect(fake.sockets).toEqual(made.map((pair) => pair[1]));
+    expect(made.map((pair) => pair[0].accepts + pair[1].accepts)).toEqual(made.map(() => 0));
+  });
+
+  test("registers the keepalive PCs send as the runtime's auto-response, the same answer the room gives", async () => {
+    const fake = fakeState();
+    const room = new RelayRoom(fake.state);
+    // the exact frames PCs already out there send and expect (server/relay/link.ts, pair-code.ts):
+    // a different request would wake the object for every keepalive of every PC
+    expect(fake.state.autoResponse).toBeInstanceOf(FakeAutoResponse);
+    expect(fake.state.autoResponse).toEqual({ request: '{"type":"ping"}', response: '{"type":"pong"}' });
+    expect([KEEPALIVE_PING, KEEPALIVE_PONG]).toEqual(['{"type":"ping"}', '{"type":"pong"}']);
+    const control = await connectServer(room, fake);
+    room.webSocketMessage(control, KEEPALIVE_PING);
+    expect(control.sent.at(-1)).toBe(KEEPALIVE_PONG);
+  });
+
+  test("an idle hour never hands a keepalive to a room, and keepalives alone keep every socket open", async () => {
+    const { start, end, rooms, closedInHour, pongs, pings, host, quiet } = await idle();
+    for (const room of Object.values(rooms)) expect(room.handled).toEqual([]);
+    expect(closedInHour).toEqual([]);
+    // every keepalive got exactly one pong, the pairing host's included
+    expect(pongs).toEqual(pongs.map(() => 0));
+    expect(pings.get(host)).toBe(PAIR_HOST_MS / PAIR_PING_MS - 1);
+    // the pairing code holds its nameplate to its deadline, not to an idle timeout
+    expect(host.closedWith).toEqual({ code: 1001, reason: "time ran out" });
+    expect(rooms.pairing.closedAt.get(host)).toBe(start + PAIR_HOST_MS);
+    // a socket that stops its keepalive after the hour is closed as idle, no sooner than IDLE_MS
+    expect(quiet.spare.closedWith).toEqual({ code: CLOSE.GOING_AWAY, reason: "idle" });
+    expect(rooms.alone.closedAt.get(quiet.spare)).toBeGreaterThanOrEqual(end + IDLE_MS);
+    expect(rooms.alone.closedAt.get(quiet.spare)).toBeLessThanOrEqual(end + IDLE_MS + IDLE_WAKE_FLOOR_MS);
+    expect(quiet.lonely.closedWith).toBeNull();
+  });
+
+  test("an idle room starts no timer and wakes only for alarms at least a minute apart, none once empty", async () => {
+    const { start, end, timers, rooms } = await idle();
+    expect(timers).toEqual([]);
+    for (const room of [rooms.alone, rooms.pc]) {
+      // the deadlines of the connections being set up (the PC's proof, the phone's handshake) may wake it once each
+      const settled = room.wakes.filter((at) => at > start + HANDSHAKE_MS && at <= end);
+      expect(room.wakes.filter((at) => at <= start + HANDSHAKE_MS && at !== start + SERVER_PROOF_MS && at !== start + HANDSHAKE_MS)).toEqual([]);
+      // then only the idle check: it still runs (it closes sockets that went quiet), at most once a minute
+      expect(settled[0]! - start - HANDSHAKE_MS).toBeGreaterThanOrEqual(IDLE_WAKE_FLOOR_MS);
+      expect(gaps(settled).filter((gap) => gap < IDLE_WAKE_FLOOR_MS)).toEqual([]);
+      expect(settled.length).toBeGreaterThan(HOUR / IDLE_MS / 2);
+      // and it is still armed at the end of the hour
+      expect(settled.filter((at) => at > end - IDLE_MS)).not.toEqual([]);
+    }
+    // a pairing code: idle checks until its deadline, which ends it; an empty room keeps no alarm
+    expect(rooms.pairing.wakes.at(-1)).toBe(start + PAIR_HOST_MS);
+    expect(gaps(rooms.pairing.wakes.slice(0, -1)).filter((gap) => gap < IDLE_WAKE_FLOOR_MS)).toEqual([]);
+    expect(rooms.pairing.fake.state.alarm).toBeNull();
+  });
+});
+
 describe("relay Durable Object", () => {
   test("one failed alarm write does not stop later ones", async () => {
     const fake = fakeState();
@@ -213,11 +415,6 @@ describe("relay Durable Object", () => {
     expect(fake.state.alarm).not.toBeNull();
   });
 
-  test("lets the runtime answer the keepalive, so an idle PC does not wake it", () => {
-    const fake = fakeState();
-    new RelayRoom(fake.state);
-    expect(fake.state.autoResponse).toEqual({ request: KEEPALIVE_PING, response: KEEPALIVE_PONG });
-  });
 
   test("pairs control, client and data and passes frames unchanged, across an eviction", async () => {
     const fake = fakeState();
