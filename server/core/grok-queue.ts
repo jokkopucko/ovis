@@ -15,7 +15,7 @@ export type GrokQueue =
    */
   | { readonly mode: "fullscreen"; readonly rows: readonly string[]; readonly enterSendsNow: boolean }
   /** Minimal mode: no input box, only a count on the info row (`1 queued · /queue`), 0 when none is drawn. */
-  | { readonly mode: "minimal"; readonly count: number };
+  | { readonly mode: "minimal"; readonly count: number; readonly responding: boolean };
 
 const QUEUE_ROW = /^ {4}#(\d+) (.*)$/;
 /** a row of the agent's output, which Grok indents by five */
@@ -28,8 +28,11 @@ export function grokQueue(screen: string): GrokQueue | null {
   const input = rows.map((row) => /^\s*│ ❯/.test(row)).lastIndexOf(true);
   if (input < 0) {
     const minimal = /(?:^|· )(\d+) queued · \/queue(?: ·|$)/.exec(last);
-    if (minimal) return { mode: "minimal", count: Number(minimal[1]) };
-    return last.endsWith("ctrl+o transcript") && rows.some((row) => /^❯(?: |$)/.test(row)) ? { mode: "minimal", count: 0 } : null;
+    const prompt = rows.map((row) => /^❯(?: |$)/.test(row)).lastIndexOf(true);
+    // Minimal mode can report done through herdr while the spinner above the input is still running.
+    const responding = prompt > 0 && /^[\u2801-\u28ff] Responding…(?:\s|$)/u.test(rows[prompt - 1] ?? "");
+    if (minimal) return { mode: "minimal", count: Number(minimal[1]), responding };
+    return last.endsWith("ctrl+o transcript") && prompt >= 0 ? { mode: "minimal", count: 0, responding } : null;
   }
   if (rows.some((row) => /^\s*│\s+#\d+ /.test(row))) return null;
   const top = rows.slice(0, input).map((row) => /^\s*╭/.test(row)).lastIndexOf(true);
@@ -63,19 +66,26 @@ export function showsMessage(row: string, message: string): boolean {
 /** a prompt as Grok echoes it in the transcript once sent: `     ❯ first line` (its time on the right), the rest under it */
 const ECHO_ROW = /^ {5}❯ (.*)$/;
 const ECHO_MORE = /^ {7}\S/;
+/** minimal mode echoes a prompt at column zero, `❯ first line`, the rest under it indented by two */
+const MINIMAL_ECHO_ROW = /^❯ (.*)$/;
+const MINIMAL_ECHO_MORE = /^ {2}\S/;
 
 export type GrokEcho = { readonly text: string; readonly echoes: number };
 
 export function grokEcho(screen: string): GrokEcho | null {
   const rows = stripVTControlCharacters(screen).split("\n").map((row) => row.replace(/\s+█$/, "").trimEnd());
   const box = rows.map((row) => /^\s*╭/.test(row)).lastIndexOf(true);
-  const above = rows.slice(0, box < 0 ? rows.length : box);
-  const echoes = above.map((row) => ECHO_ROW.test(row));
+  const minimal = box < 0 && grokQueue(screen)?.mode === "minimal";
+  const [echoRow, echoMore] = minimal ? [MINIMAL_ECHO_ROW, MINIMAL_ECHO_MORE] : [ECHO_ROW, ECHO_MORE];
+  // in minimal mode the last `❯` row is the live prompt, not an echo
+  const end = minimal ? rows.map((row) => /^❯(?: |$)/.test(row)).lastIndexOf(true) : box;
+  const above = rows.slice(0, end < 0 ? rows.length : end);
+  const echoes = above.map((row) => echoRow.test(row));
   const at = echoes.lastIndexOf(true);
   if (at < 0) return null;
-  const echo = [ECHO_ROW.exec(above[at]!)![1]!.replace(/\s{2,}\d{1,2}:\d{2}(?: [AP]M)?$/, "")];
+  const echo = [echoRow.exec(above[at]!)![1]!.replace(/\s{2,}\d{1,2}:\d{2}(?: [AP]M)?$/, "")];
   for (const row of above.slice(at + 1)) {
-    if (!ECHO_MORE.test(row)) break;
+    if (!echoMore.test(row)) break;
     echo.push(row);
   }
   return { text: squash(echo.join(" ")), echoes: echoes.filter(Boolean).length };
@@ -112,7 +122,15 @@ function sendNowStep(seen: { status: string; screen: string }, before: GrokBefor
   if (queue === null) throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
   switch (queue.mode) {
     case "minimal": {
-      if (queue.count === 0) return "done";
+      if (queue.count === 0) {
+        // The count can lag a paste. While a turn is active, no count is not proof that the send left.
+        const wasResponding = before.queue?.mode === "minimal" && before.queue.responding;
+        if ((before.working || wasResponding || seen.status === "working" || queue.responding)
+          && !echoesMessage(seen.screen, before.echo, message)) {
+          throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
+        }
+        return "done";
+      }
       const earlier = before.queue?.mode === "minimal" ? before.queue.count : null;
       if (earlier === null || queue.count !== earlier + 1) throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
       throw changed(earlier > 0 ? grokQueuedBehindMessage(earlier) : GROK_QUEUED_MESSAGE);

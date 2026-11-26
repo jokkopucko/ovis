@@ -25,9 +25,9 @@ describe("Grok's queue and prompt on recorded screens", () => {
     ["permission", null, "gone"],
     ["draft-lines", { mode: "fullscreen", rows: [], enterSendsNow: false }, "draft"],
     ["draft-second-line", { mode: "fullscreen", rows: [], enterSendsNow: false }, "draft"],
-    ["minimal-working", { mode: "minimal", count: 0 }, "gone"],
-    ["minimal-queued-1", { mode: "minimal", count: 1 }, "gone"],
-    ["minimal-queued-2", { mode: "minimal", count: 2 }, "gone"],
+    ["minimal-working", { mode: "minimal", count: 0, responding: true }, "gone"],
+    ["minimal-queued-1", { mode: "minimal", count: 1, responding: true }, "gone"],
+    ["minimal-queued-2", { mode: "minimal", count: 2, responding: true }, "gone"],
   ] as const)("%s", (name, queue, prompt) => {
     const screen = recorded(name);
     expect(grokQueue(screen)).toEqual(queue);
@@ -101,6 +101,22 @@ describe("Send now's one more Enter, decided on recorded screens", () => {
     const screen = before.includes("\n") ? before : recorded(before);
     const failed = await sendGrokQueuedNow({
       message, before: { working: false, queue: grokQueue(screen), echo: grokEcho(screen) }, delayMs: 0, sendEnter,
+      look: async () => ({ status: "working", screen: after }),
+    }).then(() => null, (error: unknown) => error as HerdrError);
+    expect(sendEnter).not.toHaveBeenCalled();
+    expect(failed === null ? null : [failed.code, failed.message]).toEqual(outcome === null ? null : ["submit_changed", outcome]);
+  });
+
+  const minimalEcho = (prompt: string): string => recorded("minimal-working").replace(/^(?=[\u2801-\u28ff] Responding…)/mu, `❯ ${prompt}\n\n`);
+  it.each([
+    ["the message echoed at column zero during a turn", minimalEcho("continue"), "continue", null],
+    ["no echo of the message, only the live prompt", recorded("minimal-working"), "continue", GROK_SEND_UNCONFIRMED_MESSAGE],
+    ["the earlier echo unchanged", recorded("minimal-working"), "Tell me another long story.", GROK_SEND_UNCONFIRMED_MESSAGE],
+  ] as const)("minimal mode: %s", async (_, after, message, outcome) => {
+    const sendEnter = mock(async () => {});
+    const before = recorded("minimal-working");
+    const failed = await sendGrokQueuedNow({
+      message, before: { working: true, queue: grokQueue(before), echo: grokEcho(before) }, delayMs: 0, sendEnter,
       look: async () => ({ status: "working", screen: after }),
     }).then(() => null, (error: unknown) => error as HerdrError);
     expect(sendEnter).not.toHaveBeenCalled();

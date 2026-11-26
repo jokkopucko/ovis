@@ -186,6 +186,13 @@ export class ComposerDraftStore {
     this.commands.set(key, { message, id, shared });
     return id;
   }
+  forgetCommand(key: string, id: string): void {
+    if (this.commands.get(key)?.id === id) this.commands.delete(key);
+    try {
+      const storage = this.storage(), marker = COMMAND_PREFIX + key;
+      if (storage.getItem(marker)?.endsWith(`:${id}`)) storage.removeItem(marker);
+    } catch {}
+  }
   end(key: string, send?: number): void {
     if (send !== undefined && this.sends.get(key)?.id !== send) return;
     this.sends.delete(key);

@@ -1,4 +1,5 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { readFileSync } from "node:fs";
 import * as client from "../herdr/client.ts";
 import { GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { createSubmitText } from "./composer.ts";
@@ -141,6 +142,32 @@ it("presses nothing in minimal mode, where herdr says done during a turn, and sa
   expect(keys).not.toHaveBeenCalled();
   expect(state.queue).toEqual(["hello from chat"]);
   expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
+});
+
+it("does not claim a minimal-mode send is done before the pending count is drawn (#3977)", async () => {
+  const { state, prompt, read } = grok({ minimal: true });
+  const draw = read.getMockImplementation()!;
+  read.mockImplementation(async (...args) => {
+    if (prompt.mock.calls.length === 0 || state.queue.length === 0) return await draw(...args);
+    return { text: grokScreen({ ...state, queue: [] }) } as Awaited<ReturnType<typeof client.paneRead>>;
+  });
+  const failed = await failure(sendNow());
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(failed?.code).toBe("submit_changed");
+});
+
+it("does not confirm a send when minimal Grok shows Responding but herdr says done", async () => {
+  const { state, keys, read } = grok({ herdr: "done", minimal: true });
+  const screen = readFileSync(new URL("../../src/lib/fixtures-input-rows/grok-1.0.77/minimal-working-119.txt", import.meta.url), "utf8");
+  const draw = read.getMockImplementation()!;
+  read.mockImplementation(async (...args) => ({ ...await draw(...args), text: screen }));
+
+  const failed = await failure(sendNow());
+
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(state.sent).toEqual([]);
+  expect(keys).not.toHaveBeenCalled();
+  expect(failed).toMatchObject({ code: "submit_changed", message: GROK_SEND_UNCONFIRMED_MESSAGE });
 });
 
 it("presses nothing while Grok's prompt holds text typed in the terminal", async () => {

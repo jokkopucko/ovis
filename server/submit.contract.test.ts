@@ -1630,7 +1630,8 @@ describe("WebSocket submit", () => {
       expect(await socket.result(21)).toMatchObject({ ok: true });
       await received(codex, from, 1);
       expect(typed(codex, from)).toBe(`${paste("follow up")}\r`);
-      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["visible", "detection", "detection"]);
+      // the last read checks Codex's own screens again after the paste, before its Enter (composer.ts)
+      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["visible", "detection", "detection", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();

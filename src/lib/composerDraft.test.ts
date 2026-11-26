@@ -52,6 +52,23 @@ it("recognizes an identical draft replaced by another tab before storage events 
   expect(store.commandKey(key, "continue")).not.toBe(sent);
 });
 
+it("uses a fresh command for an explicit retry of a confirmed incomplete send", () => {
+  const { storage, store } = fixture();
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  const first = store.commandKey(key, "continue")!;
+  store.forgetCommand(key, first);
+  store.end(key);
+  const other = new ComposerDraftStore(() => storage);
+  expect(other.claim(key, "continue")).toBe(true);
+  const second = other.commandKey(key, "continue");
+  expect(second).toBeString();
+  expect(second).not.toBe(first);
+  store.forgetCommand(key, first);
+  expect(other.commandKey(key, "continue")).toBe(second);
+});
+
 it("keeps the command key for a manual retry, not for edited or acknowledged drafts", () => {
   const { store } = fixture(), key = "pane", text = "echo once";
   const claim = () => {

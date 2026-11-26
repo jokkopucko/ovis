@@ -14,7 +14,7 @@ import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { knownStatus, STATUS_WORD } from "./status.ts";
 import { t, type Vars } from "./i18n.ts";
 import type { ActiveTrigger } from "./mentions.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, grokQueuedAhead, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, grokQueuedAhead, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 export { submitNotTyped } from "../../shared/submit-outcome.ts";
 
 /** This cap keeps one composer message inside a single WS frame. */
@@ -166,7 +166,9 @@ export function submitNote(code: string, message: string, agent?: string | null)
   if (code === "first_message_launch_ended") return t("Not sent: the agent started for this message has ended. Review the message before sending it.");
   if (code === "pending_target_changed") return t("Not sent: the pane's terminal or agent session changed. Review the message before sending it again.");
   if (code === "typed_while_waiting") return t("Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.");
-  if (code === "disconnected" || code === "timeout") return t("Not confirmed: the pane did not confirm this message. Check the terminal before sending it again.");
+  if (code === "disconnected" || code === "timeout" || (code === "submit_changed" && message === GROK_SEND_UNCONFIRMED_MESSAGE)) {
+    return t("Not confirmed: the pane did not confirm this message. Check the terminal before sending it again.");
+  }
   return t("Not sent: {message}", { message });
 }
 

@@ -5,6 +5,7 @@ import { composerDelivery, pendingActionUncertain, submitNote, submitNotTyped, s
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import { pendingMessages, UNCONFIRMED_SEND } from "./pendingMessages.ts";
 import { paneStorageId } from "../../shared/machines.ts";
+import { FALLBACK_ENTER_WITHHELD_MESSAGE } from "../../shared/submit-outcome.ts";
 import { rememberWaitingSend, stampedBaseline, waitingBaseline, waitingKey } from "./sentWaiting.ts";
 import { composerDraftKey, composerDrafts } from "./composerDraft.ts";
 import type { AgentStatus, InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
@@ -133,12 +134,18 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       const sentAt = Date.now();
       const sentAfter = pane === null ? null : waitingBaseline(waitingKey(machineId, pane));
       // a PC that cannot hold refuses a hold rather than queuing it to go on its own (HerdrSocket `holdOnly`)
-      const command = pane === null ? undefined : composerDrafts.commandKey(composerDraftKey(paneStorageId(machineId, pane)), text);
+      const draftKey = pane === null ? null : composerDraftKey(paneStorageId(machineId, pane));
+      const command = draftKey === null ? undefined : composerDrafts.commandKey(draftKey, text);
       const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly, hold, command);
       return result === null ? false : result.then((answer) => {
         // Neither a dropped connection nor a cleared old draft proves this message was typed.
         // Without a receipt, leave the retryable composer text and report the uncertainty.
-        if (!answer.ok) return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
+        if (!answer.ok) {
+          if (draftKey !== null && command !== undefined && answer.code === "submit_partial" && answer.message === FALLBACK_ENTER_WITHHELD_MESSAGE) {
+            composerDrafts.forgetCommand(draftKey, command);
+          }
+          return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
+        }
         if (answer.unconfirmed && pane !== null) pendingMessages.keepUnconfirmed(paneStorageId(machineId, pane), text);
         // A queued follow-up was typed now only when its receipt says so: an ok with no `pending` also
         // answers a replayed id, or a row sent or discarded since

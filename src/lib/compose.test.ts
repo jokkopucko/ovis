@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
@@ -199,6 +199,10 @@ describe("composerMessage and submitNote", () => {
     expect(submitRefusal("input_draft", "x", "ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
     expect(submitRefusal("input_draft", "x")).toBe(submitNote("input_draft", "x"));
     expect(submitRefusal("agent_blocked", "x", "ㅔ")).toBe(submitNote("agent_blocked", "x"));
+  });
+
+  it("reports an unconfirmed Grok delivery without claiming it was never sent", () => {
+    expect(submitRefusal("submit_changed", GROK_SEND_UNCONFIRMED_MESSAGE)).toStartWith("Not confirmed:");
   });
 
   it("names the draft after a Send it that did not go, and offers another draft's buttons", () => {

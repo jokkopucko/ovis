@@ -409,10 +409,29 @@ function fallbackGjcSelectionMenu(agent: string, lines: string[], shown: number[
   return { start, rows, selectedIndex };
 }
 
-const PICKER_MOVE_RE = /↑\s*\/?\s*↓|\bup\/down\b/i;
+const PICKER_MOVE_RE = /↑\s*\/?\s*↓|\bup\/down\s+(?:to\s+)?(?:move|choose|select|navigate)\b/i;
 const PICKER_CHOOSE_RE = /[↵⏎]|\benter\b/i;
 
 const PICKER_CURSOR_ROW_RE = /^[❯›>❭]\s*\S/;
+
+/** The unchanged rules around Devin's composer distinguish its pasted text from the rows of a picker. */
+export function withoutEchoedDevinDraft(before: string, after: string, draft: string): string {
+  const rows = (screen: string): string[] => screen.replace(ANSI_RE, "").split(/\r?\n/).map((row) => row.trimEnd());
+  const earlier = rows(before);
+  const prompt = findLastIndex(earlier, (row) => /^❭(?: Ask Devin\b.*)?$/.test(row));
+  const rule = earlier[prompt - 1];
+  if (rule === undefined || !/^─{10,}$/.test(rule) || earlier[prompt + 1] !== rule) return after;
+
+  const current = rows(after);
+  const start = findLastIndex(current, (row, index) => /^❭(?: |$)/.test(row) && current[index - 1] === rule);
+  if (start < 0) return after;
+  const end = current.indexOf(rule, start + 1);
+  if (end < 0) return after;
+  // Soft wraps and terminal padding can change the whitespace in the echo.
+  const echo = current.slice(start, end).join("\n").replace(/^❭/, "");
+  return echo.replace(/\s/g, "") === draft.replace(/\s/g, "")
+    ? [...current.slice(0, start), ...current.slice(end)].join("\n") : after;
+}
 
 /**
  * Whether a picker of the agent's own owns its input: a key hint that moves and chooses with Enter among the screen's
