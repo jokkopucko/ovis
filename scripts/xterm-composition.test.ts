@@ -9,8 +9,8 @@ const bundle = await Bun.build({
   plugins: [xtermSourcePlugin(source)], target: "bun",
 });
 if (!bundle.success) throw new AggregateError(bundle.logs, "Could not build the composition helper");
-const load = async (name: string) => {
-  const output = bundle.outputs.find(({ path }) => path.endsWith(`/${name}.js`))!;
+const load = async (name: string, from = bundle) => {
+  const output = from.outputs.find(({ path }) => path.endsWith(`/${name}.js`))!;
   return import(`data:text/javascript;base64,${Buffer.from(await output.text()).toString("base64")}`);
 };
 const { CompositionHelper } = await load("CompositionHelper");
@@ -19,26 +19,37 @@ const { CoreBrowserTerminal } = await load("CoreBrowserTerminal");
 beforeEach(() => { jest.useFakeTimers(); });
 afterEach(() => { jest.useRealTimers(); });
 
-function editor(term?: any) {
+function editor(term?: any, Helper = CompositionHelper) {
   const sent: string[] = [];
-  const textarea = Object.assign(new EventTarget(), { value: "", selectionStart: 0, selectionEnd: 0 });
+  const textarea = Object.assign(new EventTarget(), {
+    value: "", selectionStart: 0, selectionEnd: 0, style: {},
+    focus() {},
+    select() { this.selectionStart = 0; this.selectionEnd = this.value.length; },
+  });
+  const element = Object.assign(new EventTarget(), { classList: { add() {}, remove() {} } });
   const view = { textContent: "", classList: { add() {}, remove() {} } };
-  const helper = new CompositionHelper(textarea, view,
+  const helper = new Helper(textarea, view,
     { buffer: { isCursorInViewport: false } },
     { rawOptions: { screenReaderMode: false } },
     term?.coreService ?? { triggerDataEvent: (text: string) => sent.push(text) }, {});
   if (term) {
-    Object.assign(term, { textarea, _compositionHelper: helper, element: { classList: { add() {}, remove() {} } } });
+    Object.assign(term, {
+      textarea, element, _compositionHelper: helper,
+      screenElement: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
+      _selectionService: { selectionText: "screen-output", shouldColumnSelect: () => false, reset() {} },
+    });
     term.onData((text: string) => sent.push(text));
+    term._initGlobal();
+  } else {
+    textarea.addEventListener("compositionstart", () => helper.compositionstart());
+    textarea.addEventListener("compositionupdate", (event) => helper.compositionupdate(event));
+    textarea.addEventListener("compositionend", () => helper.compositionend());
+    textarea.addEventListener("keydown", (event) => helper.keydown(event));
+    textarea.addEventListener("beforeinput", (event) => helper.beforeinput(event));
+    textarea.addEventListener("input", (event) => helper.input(event, true));
   }
-  textarea.addEventListener("compositionstart", () => helper.compositionstart());
-  textarea.addEventListener("compositionupdate", (event) => helper.compositionupdate(event));
-  textarea.addEventListener("compositionend", () => helper.compositionend());
-  textarea.addEventListener("keydown", (event) => term ? term._keyDown(event) : helper.keydown(event));
-  textarea.addEventListener("beforeinput", (event) => helper.beforeinput(event, true));
-  textarea.addEventListener("input", (event) => term ? term._inputEvent(event) : helper.input(event, true));
-  const event = (type: string, fields: Record<string, unknown> = {}) =>
-    textarea.dispatchEvent(Object.assign(new Event(type, { bubbles: true, composed: true }), fields));
+  const event = (type: string, fields: Record<string, unknown> = {}, target: EventTarget = textarea) =>
+    target.dispatchEvent(Object.assign(new Event(type, { bubbles: true, composed: true }), fields));
   const value = (text: string) => {
     textarea.value = text;
     textarea.selectionStart = textarea.selectionEnd = text.length;
@@ -67,7 +78,7 @@ function editor(term?: any) {
     event("input", { inputType, data, isComposing: false });
     jest.runAllTimers();
   };
-  return { sent, textarea, compose, edit, event, value, helper };
+  return { sent, textarea, element, compose, edit, event, value, helper };
 }
 
 describe("xterm mobile composition input", () => {
@@ -204,6 +215,169 @@ describe("xterm mobile composition input", () => {
     expect(e.sent).toEqual(["\x1b[D"]);
     jest.runAllTimers();
     expect(e.sent).toEqual(["\x1b[D", "abc"]);
+  });
+});
+
+for (const platform of ["iPhone", "MacIntel"]) describe(`xterm dictation input on mobile WebKit (${platform})`, async () => {
+  const safari = await Bun.build({
+    entrypoints: [join(source, "browser/input/CompositionHelper.js"), join(source, "browser/CoreBrowserTerminal.js")],
+    plugins: [xtermSourcePlugin(source)], target: "bun",
+    banner: `const process = undefined; const document = {}; const window = {}; const navigator = {
+      userAgent: 'Mozilla/5.0 (${platform === "iPhone" ? "iPhone" : "Macintosh"}) AppleWebKit/605.1.15 Version/27.0 Safari/604.1',
+      platform: '${platform}', maxTouchPoints: 5, language: 'en'
+    };`,
+  });
+  if (!safari.success) throw new AggregateError(safari.logs, "Could not build the terminal for iPhone WebKit");
+  const { CompositionHelper: SafariHelper } = await load("CompositionHelper", safari);
+  const { CoreBrowserTerminal: SafariTerminal } = await load("CoreBrowserTerminal", safari);
+
+  for (const rewrite of ["insertReplacementText", "insertText"]) {
+    it(`keeps ${rewrite} rewrites of a provisional dictation phrase out of the PTY until Enter`, () => {
+      const e = editor(new SafariTerminal(), SafariHelper);
+      // The phone report has no event log; the insertText case models the same selected range
+      // as the established replacement trace, but with a different inputType on later revisions.
+      const hypotheses = ["p", "ple", "pleas", "please ", "please te", "please test", "please test t",
+        "please test thi", "please test this", "please test this solution", "please test this solution"];
+      for (const [index, data] of hypotheses.entries()) {
+        const inputType = index === 0 ? "insertReplacementText" : rewrite;
+        e.textarea.selectionStart = 0;
+        e.event("beforeinput", { inputType, data, isComposing: false });
+        e.value(data);
+        e.event("input", { inputType, data, isComposing: false });
+        jest.runOnlyPendingTimers();
+      }
+      expect(e.sent).toEqual([]);
+      e.event("keydown", { key: "Enter", keyCode: 13 });
+      expect(e.sent).toEqual(["please test this solution", "\r"]);
+    });
+  }
+
+  const insert = (e: ReturnType<typeof editor>, data: string, inputType = "insertText") => {
+    const fields = { inputType, data, isComposing: false };
+    e.event("beforeinput", fields);
+    const { value, selectionStart, selectionEnd } = e.textarea;
+    e.value(value.slice(0, selectionStart) + data + value.slice(selectionEnd));
+    e.event("input", fields);
+  };
+
+  for (const key of [undefined, { key: "Unidentified", keyCode: 229 }]) {
+    it(`sends single-key answers without waiting for a following key (${key ? "229" : "no keydown"})`, () => {
+      const e = editor(new SafariTerminal(), SafariHelper);
+      for (const [index, data] of ["1", "y"].entries()) {
+        if (key) e.event("keydown", key);
+        insert(e, data);
+        expect(e.sent).toEqual(["1", "y"].slice(0, index + 1));
+        if (key) e.event("keyup", key);
+        jest.runOnlyPendingTimers();
+        expect(e.sent).toEqual(["1", "y"].slice(0, index + 1));
+      }
+    });
+
+    it(`buffers only the rewrites after a plain first insertion (${key ? "229" : "no keydown"})`, () => {
+      const e = editor(new SafariTerminal(), SafariHelper);
+      for (const data of ["p", "ple", "please"]) {
+        e.textarea.select();
+        if (key) e.event("keydown", key);
+        insert(e, data);
+        expect(e.sent).toEqual(["p"]);
+        if (key) e.event("keyup", key);
+        jest.runOnlyPendingTimers();
+      }
+      e.event("keydown", { key: "Enter", keyCode: 13 });
+      expect(e.sent).toEqual(["p", "lease", "\r"]);
+    });
+  }
+
+  it("keeps a keyless append after a retrospective rewrite provisional until Enter", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "ths");
+    e.textarea.select();
+    insert(e, "this");
+    insert(e, " is");
+    jest.runOnlyPendingTimers();
+    expect(e.sent).toEqual(["ths"]);
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["ths", "\x7fis is", "\r"]);
+  });
+
+  it("corrects only the selected suffix of a sent insertion at Enter", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "test ths");
+    e.textarea.selectionStart = "test ".length;
+    insert(e, "this", "insertReplacementText");
+    jest.runOnlyPendingTimers();
+    expect(e.sent).toEqual(["test ths"]);
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["test ths", "\x7fis", "\r"]);
+  });
+
+  it("corrects a sent prefix only at commit, after Backspace edits the provisional text", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "thi");
+    e.textarea.select();
+    insert(e, "This.");
+    e.event("keydown", { key: "Backspace", keyCode: 8 });
+    e.textarea.selectionStart--;
+    e.event("beforeinput", { inputType: "deleteContentBackward", isComposing: false });
+    e.value("This");
+    e.event("input", { inputType: "deleteContentBackward", isComposing: false });
+    expect(e.sent).toEqual(["thi"]);
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["thi", "\x7f\x7f\x7fThis", "\r"]);
+  });
+
+  it("accepts keyless input after reset even when the old key never came up", () => {
+    const term = new SafariTerminal();
+    const e = editor(term, SafariHelper);
+    e.event("keydown", { key: "Shift", keyCode: 16 });
+    term.reset();
+    insert(e, "first", "insertReplacementText");
+    e.textarea.select();
+    insert(e, "final", "insertReplacementText");
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["final", "\r"]);
+  });
+
+  it("commits dictation before context-menu paste replaces the textarea with a grid selection", () => {
+    const e = editor(new SafariTerminal({ rightClickSelectsWord: false }), SafariHelper);
+    insert(e, "p", "insertReplacementText");
+    e.textarea.select();
+    insert(e, "please");
+    e.event("contextmenu", { clientX: 0, clientY: 0 }, e.element);
+    e.event("paste", { clipboardData: { getData: () => "PASTE" } });
+    expect(e.sent).toEqual(["please", "PASTE"]);
+  });
+
+  it("sends the iOS Chinese keyboard's Space immediately over a selected dictation hypothesis", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "hello", "insertReplacementText");
+    e.textarea.select();
+    e.event("keydown", { key: " ", code: "Space", keyCode: 229 });
+    insert(e, " ");
+    e.event("keyup", { key: " ", code: "Space", keyCode: 32 });
+    expect(e.sent).toEqual(["hello", " "]);
+  });
+
+  it("keeps a suffix-only dictation correction in the same provisional phrase", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "please text", "insertReplacementText");
+    e.textarea.select();
+    insert(e, "please text this");
+    e.textarea.selectionStart = "please ".length;
+    insert(e, "test this");
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["please test this", "\r"]);
+  });
+
+  it("commits dictation before regular text inserted at the caret", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    e.event("beforeinput", { inputType: "insertReplacementText", data: "hello", isComposing: false });
+    e.value("hello");
+    e.event("input", { inputType: "insertReplacementText", data: "hello", isComposing: false });
+    e.event("beforeinput", { inputType: "insertText", data: "!", isComposing: false });
+    e.value("hello!");
+    e.event("input", { inputType: "insertText", data: "!", isComposing: false });
+    expect(e.sent).toEqual(["hello", "!"]);
   });
 });
 

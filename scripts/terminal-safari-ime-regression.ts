@@ -288,6 +288,14 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await input.press("Enter");
     await check("This is a test.\r", "dictation commits before Enter");
     report("dictation commits before Enter");
+    await reset();
+    await input.evaluate((box) => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Shift", keyCode: 16 }));
+      (box as HTMLTextAreaElement).blur();
+    });
+    await input.focus();
+    await dictate(hypotheses, false);
+    await check("This is a test.", "dictation after blur does not depend on the old keyup");
 
     // SwiftKey's retrospective compositions over a word already sent.
     for (const [label, run, expected] of [
