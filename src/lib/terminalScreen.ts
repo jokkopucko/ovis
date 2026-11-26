@@ -154,6 +154,9 @@ export function terminalScreen(term: Terminal): TerminalScreen {
     getSelection: () => term.getSelection(),
     getSelectionPosition: () => term.getSelectionPosition(),
     drawnSelection: () => {
+      // a terminal without xterm (ghostty/terminal.ts) draws its own selection
+      const own = term as unknown as { drawnSelection?: () => { start: ScreenPoint; end: ScreenPoint; column: boolean } | null };
+      if (typeof own.drawnSelection === "function") return own.drawnSelection();
       const state = internals?._renderService?._selectionState;
       return state?.start && state.end ? { start: state.start, end: state.end, column: state.columnSelectMode === true } : null;
     },

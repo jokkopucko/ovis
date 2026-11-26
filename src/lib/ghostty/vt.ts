@@ -8,7 +8,9 @@ import {
   GhosttyEngine,
   GhosttyModule,
   type EngineCell,
+  type EngineEvents,
   type EngineHistory,
+  type EngineModes,
   type EngineRowText,
   type GhosttyCursor,
   type GhosttyImage,
@@ -99,15 +101,25 @@ export class GhosttyVt {
   private afterZwj = false;
   private broken = true;
 
-  private constructor(module: GhosttyModule, cols: number, rows: number) {
+  private constructor(module: GhosttyModule, cols: number, rows: number, events?: EngineEvents) {
     this.cols = cols;
     this.rows = rows;
     // history is cut by lines alone, as xterm cuts it: libghostty's byte limit would keep far fewer than a herdr-core pane's 2,000
-    this.engine = new GhosttyEngine(module, cols, rows, { widths: "xterm", images: IMAGE_STORAGE_BYTES, scrollbackLines: 0 });
+    this.engine = new GhosttyEngine(module, cols, rows, { widths: "xterm", images: IMAGE_STORAGE_BYTES, scrollbackLines: 0, ...(events ? { events } : {}) });
   }
 
-  static async create(cols: number, rows: number): Promise<GhosttyVt> {
-    return new GhosttyVt(await loadModule(), cols, rows);
+  /** `events`: a terminal libghostty alone parses (terminal.ts) hears its replies to the program and its holds */
+  static async create(cols: number, rows: number, events?: EngineEvents): Promise<GhosttyVt> {
+    return new GhosttyVt(await loadModule(), cols, rows, events);
+  }
+
+  modes(): EngineModes {
+    return this.engine.modes();
+  }
+
+  /** ends a synchronized update the program left open: the next frame shows what it wrote since */
+  releaseHold(): void {
+    this.engine.releaseHold();
   }
 
   write(data: string | Uint8Array): void {

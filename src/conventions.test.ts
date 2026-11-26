@@ -369,7 +369,8 @@ describe("terminal mount", () => {
     const options: string[] = [];
     for (const file of scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name))) {
       const source = read(file);
-      for (const match of source.matchAll(/new Terminal\(\{/g)) {
+      // the mount gives the same options to xterm or to the terminal without it (ghostty/terminal.ts)
+      for (const match of source.matchAll(/new Terminal\(\{|const termOptions = \{/g)) {
         let depth = 1;
         let end = match.index + match[0].length;
         for (; depth > 0 && end < source.length; end++) depth += source[end] === "{" ? 1 : source[end] === "}" ? -1 : 0;

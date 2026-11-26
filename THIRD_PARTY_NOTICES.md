@@ -1885,12 +1885,17 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 ## xterm.js
 
 The browser terminal includes xterm.js 6.0.0 with a local composition-ordering and reset patch.
+
+`src/lib/terminalInput` adapts the browser input code from xterm.js 6.0.0, including Ovis's
+local keyboard, mouse, and composition patches. The MIT license below applies to that port.
 xterm.js 6 includes parts of Visual Studio Code's base library (`src/vs/base`), under the same
 MIT license.
 The queue/watermark approach follows joonhoekim's MIT-licensed proposal in
 https://github.com/xtermjs/xterm.js/pull/6090.
 `src/lib/ghostty/selection.ts` adapts xterm.js 6's selection rules (selected text, word and line
 selection, from `SelectionService` and `Buffer`) to read libghostty's rows.
+`src/lib/terminalSelection/` adapts xterm.js 6.0.0's `SelectionService`, `SelectionModel`,
+mouse coordinates, `Linkifier` and `LinkProviderService` for Ovis under the same MIT license.
 
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)

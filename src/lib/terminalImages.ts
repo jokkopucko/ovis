@@ -15,6 +15,14 @@ export function terminalImageOptions(coarse: boolean): IImageAddonOptions {
     : { pixelLimit: 4096 * 4096, storageLimit: 64 };
 }
 
+function pictureLimitsOf(options: IImageAddonOptions): PictureLimits {
+  return {
+    sizeLimit: options.iipSizeLimit ?? 20_000_000,
+    sixelSizeLimit: options.sixelSizeLimit ?? 25_000_000,
+    pixelLimit: options.pixelLimit ?? 16_777_216,
+  };
+}
+
 interface Loaded {
   addon: ImageAddon;
   windowOptions: Terminal["options"]["windowOptions"];
@@ -132,6 +140,12 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
   coarseRef.current = coarse;
   useEffect(() => {
     if (terminal === null) return;
+    // a terminal libghostty alone parses (ghostty/terminal.ts) draws its pictures itself: it is only given the limits
+    const own = terminal as unknown as { pictureLimits?: PictureLimits | null };
+    if ("pictureLimits" in own) {
+      own.pictureLimits = enabled ? pictureLimitsOf(terminalImageOptions(coarseRef.current)) : null;
+      return;
+    }
     const present = loaded.get(terminal);
     if (!enabled) {
       release(terminal);
@@ -166,11 +180,7 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       terminal.loadAddon(addon);
       // registered after the addon, so it reads each iTerm2 payload first (xterm asks the newest handler first)
       const feed = iipFeed(addon);
-      const limits: PictureLimits = {
-        sizeLimit: options.iipSizeLimit ?? 20_000_000,
-        sixelSizeLimit: options.sixelSizeLimit ?? 25_000_000,
-        pixelLimit: options.pixelLimit ?? 16_777_216,
-      };
+      const limits = pictureLimitsOf(options);
       const pictures = feed && itermPictures(feed, () => limits);
       const entry: Loaded = { addon, windowOptions, limits, enabled: true, resetPictures: () => pictures?.reset() };
       // xterm feeds every handler each piece and asks only at the end who takes it: while off, a payload

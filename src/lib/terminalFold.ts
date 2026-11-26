@@ -366,10 +366,13 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const buffer = reader();
     const scratch = buffer.getNullCell();
     const shown = term.element?.querySelector(".xterm-rows .xterm-cursor");
+    // a terminal without xterm (ghostty/terminal.ts) says itself whether and how its cursor is drawn
+    const ownCursor = (term as unknown as { cursorShape?: () => FoldCursor["shape"] | null }).cursorShape;
     const cursorY = buffer.baseY + buffer.cursorY - buffer.viewportY;
     for (let y = Math.max(0, start); y <= Math.min(end, term.rows - 1); y++) {
       const line = buffer.getLine(buffer.viewportY + y);
-      const cursor = shown && y === cursorY ? { x: buffer.cursorX, shape: cursorShape(shown) } : null;
+      const shape = ownCursor ? ownCursor.call(term) : shown ? cursorShape(shown) : null;
+      const cursor = shape !== null && y === cursorY ? { x: buffer.cursorX, shape } : null;
       const html = line ? rowHtml(line, term.cols, theme, scratch, term.options.minimumContrastRatio ?? 1, cursor) : "";
       if (html === drawn[y]) continue;
       drawn[y] = html;

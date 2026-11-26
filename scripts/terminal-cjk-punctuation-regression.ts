@@ -100,7 +100,8 @@ setInterval(() => {}, 1 << 30);
     const full = probe.getBoundingClientRect().width;
     probe.remove();
     return { marks, trims: trimmed < full - 1, measureTrim: measure ? getComputedStyle(measure).getPropertyValue("text-spacing-trim") : null,
-      renderer: document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "xterm" };
+      renderer: document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "xterm",
+      xterm: document.querySelector(".pane-terminal .xterm-rows") !== null };
   }, [ROWS.length, shownRows(), shownRow()] as const);
   const drawn = await sample.jsonValue();
   await sample.dispose();
@@ -113,7 +114,8 @@ setInterval(() => {}, 1 << 30);
   others.forEach((x, index) => assert.ok(Math.abs(x - plain!) < 1,
     `row ${index + 1}'s marker is drawn ${(x - plain!).toFixed(1)}px from its column`));
   // xterm measures each glyph alone, as it is drawn, whether or not this browser's fonts trim
-  assert.equal(drawn.measureTrim, "space-all");
+  // a terminal without xterm (ghostty/terminal.ts, no .xterm-rows) measures its cell once from the font and has no such element
+  if (drawn.xterm) assert.equal(drawn.measureTrim, "space-all");
   assert.deepEqual(errors, []);
   console.log(`PASS fullwidth punctuation keeps its row's later cells in their columns${drawn.trims ? "" : " (this browser does not trim punctuation)"}`);
 } finally {

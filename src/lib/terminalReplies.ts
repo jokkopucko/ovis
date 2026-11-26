@@ -12,7 +12,9 @@ interface UserInputSource {
  * what Ovis did before it could tell.
  */
 export function userInputTracker(term: Terminal): { wasUserInput: () => boolean; dispose: () => void } {
-  const service = (term as unknown as { _core?: { coreService?: UserInputSource } })._core?.coreService;
+  // a terminal without xterm (ghostty/terminal.ts) tells it itself
+  const own = term as unknown as UserInputSource;
+  const service = typeof own.onUserInput === "function" ? own : (term as unknown as { _core?: { coreService?: UserInputSource } })._core?.coreService;
   if (typeof service?.onUserInput !== "function") return { wasUserInput: () => true, dispose: () => {} };
   let user = false;
   const subscription = service.onUserInput(() => { user = true; });

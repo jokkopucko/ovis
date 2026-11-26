@@ -21,7 +21,7 @@ interface Stop { key: string | null; where: "bar" | "line" | "grid" | "page" }
 async function settled(page: Page, want: Want, label: string): Promise<Drawn[]> {
   const read = (): Promise<Drawn[]> => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".pane-frame:not(.is-hidden)")].map((frame) => {
     const id = frame.dataset["layoutPane"] ?? "";
-    const rows = frame.querySelector(".xterm-rows");
+    const rows = frame.querySelector(".ghostty-text, .xterm-rows");
     return { id, px: rows ? parseFloat(getComputedStyle(rows).fontSize) : 0, cols: (window as unknown as { sentCols: Record<string, number> }).sentCols[id] ?? null };
   }));
   const matches = (drawn: Drawn[]): boolean => drawn.length === want.panes && drawn.every((pane) =>
