@@ -1,7 +1,7 @@
 import { FFIType } from "bun:ffi";
 import { readdirSync, readFileSync, writeSync } from "node:fs";
 import { constants } from "node:os";
-import { WRITE_AGAIN_LIMIT, WRITE_AGAIN_PAUSE_MS } from "../model/deadlines.ts";
+import { LAUNCHER_STOP_LOOK_MS, LAUNCHER_STOP_WAIT_MS, WRITE_AGAIN_LIMIT, WRITE_AGAIN_PAUSE_MS } from "../model/deadlines.ts";
 import { guardedHost, type HostHooks } from "./guard.ts";
 import { openHold, SCREEN_HOLD } from "./hold.ts";
 import type { Host } from "./index.ts";
@@ -26,25 +26,35 @@ const openSignal = () => openLibc({
  * Stops this process at SIGTSTP's default action once `giveBack` has run, with the stop asked for first and held
  * pending (SIGTSTP blocked, at its default action): a SIGCONT sent from then on discards a pending stop signal
  * (POSIX), so a continue that comes before the process could stop, the shell's `fg` once it saw the terminal given
- * back, cancels the stop instead of being lost to it. Where `continuedAlready` says the job was continued before the
- * stop was asked for, the pending stop is discarded (SIG_IGN). Either way the continue that came is heard next, and the
- * screen enters again. The stop lands when SIGTSTP is unblocked again; Bun's own handler comes back after it.
+ * back, cancels the stop instead of being lost to it. `decide` then settles it, at once or later: where the job was
+ * continued before the stop was asked for, the pending stop is discarded (SIG_IGN), and the continue that came is heard
+ * next, and the screen enters again. The stop lands when SIGTSTP is unblocked again; Bun's own handler comes back after
+ * it. It stays at the default action until then: with Bun's handler in place while `decide` waits, the pending stop was
+ * taken from this thread and never landed (5 of 100 runs of tui/host/restore.contract.test.ts in the CI runner image).
  */
-function stopOnceGivenBack(libc: NonNullable<ReturnType<typeof openSignal>>, continuedAlready: () => boolean, giveBack: () => void): void {
+function stopOnceGivenBack(libc: NonNullable<ReturnType<typeof openSignal>>, giveBack: () => void, decide: (settle: (continued: boolean) => void) => void): void {
   const tstp = constants.signals.SIGTSTP;
   const set = new Uint8Array(SIGSET.bytes);
   set[(tstp - 1) >> 3]! |= 1 << ((tstp - 1) & 7);
   const before = new Uint8Array(SIGSET.bytes);
   libc.symbols.pthread_sigmask(SIGSET.block, set, before);
   const handler = libc.symbols.signal(tstp, SIG_DFL);
+  let settled = false;
+  const settle = (continued: boolean) => {
+    if (settled) return;
+    settled = true;
+    if (continued) libc.symbols.signal(tstp, SIG_IGN);
+    libc.symbols.pthread_sigmask(SIGSET.setMask, before, null);
+    libc.symbols.signal(tstp, handler);
+  };
   try {
     // to this thread, which holds it blocked: pending until unblocked, or discarded by a continue
     libc.symbols.raise(tstp);
     giveBack();
-    if (continuedAlready()) libc.symbols.signal(tstp, SIG_IGN);
-  } finally {
-    libc.symbols.pthread_sigmask(SIGSET.setMask, before, null);
-    libc.symbols.signal(tstp, handler);
+    decide(settle);
+  } catch (error) {
+    settle(false);
+    throw error;
   }
 }
 
@@ -58,10 +68,11 @@ const openProcInfo = () => process.platform === "darwin"
   : null;
 
 /**
- * Whether process `pid` is stopped, or a stop signal waits for it. On Linux the pending stop is read first: a thread
- * takes it and stops at once, both under the same lock, so a stop read neither pending then nor in a thread's state was
- * never sent. On macOS its status says whether it is stopped. Anything that cannot be read counts as stopped: the
- * stop then goes on, as it did before.
+ * Whether process `pid` is stopped, or a stop signal waits for it. On Linux the pending stop is read first, then each
+ * thread's state. Neither shows a stop a thread has taken and not yet acted on: Linux lets go of the signal lock in
+ * between (kernel/signal.c, `get_signal`), so a launcher read as running may still stop a moment later. On macOS its
+ * status says whether it is stopped. Anything that cannot be read counts as stopped: the stop then goes on, as it did
+ * before.
  */
 function stopping(pid: number, procInfo: ReturnType<typeof openProcInfo>): boolean {
   try {
@@ -140,8 +151,8 @@ export interface UnixHostParts {
   writeSync: (fd: number, buffer: Uint8Array, offset: number, length: number) => number;
   /** blocks this long between two tries of a refused write */
   pause: (ms: number) => void;
-  /** stops this process once `giveBack` gave the terminal back (`stopOnceGivenBack`) */
-  stop: (continuedAlready: () => boolean, giveBack: () => void) => void;
+  /** stops this process once `giveBack` gave the terminal back, unless `decide` settles that the job was continued already (`stopOnceGivenBack`) */
+  stop: (giveBack: () => void, decide: (settle: (continued: boolean) => void) => void) => void;
   /** whether a process is stopped, or about to stop (`stopping`) */
   stopping: (pid: number) => boolean;
 }
@@ -168,11 +179,11 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
   const signalLibc = openSignal();
   // A process group that leads its session (a pty's entry run on its own, with no job-control shell above it) is
   // orphaned: the system drops SIGTSTP's default stop there, and only SIGSTOP stops it. No shell's `fg` comes there.
-  const stop = parts.stop ?? ((continuedAlready, giveBack) => {
+  const stop = parts.stop ?? ((giveBack, decide) => {
     if (signalLibc === null || signalLibc.symbols.getpgrp() === signalLibc.symbols.getsid(0)) {
       giveBack();
       proc.kill(proc.pid, "SIGSTOP");
-    } else stopOnceGivenBack(signalLibc, continuedAlready, giveBack);
+    } else stopOnceGivenBack(signalLibc, giveBack, decide);
   });
   const procInfo = parts.stopping ? null : openProcInfo();
   const isStopping = parts.stopping ?? ((pid: number) => stopping(pid, procInfo));
@@ -241,12 +252,31 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
     exit: (code) => { proc.exit(code); },
     // stopReading let go of the loop; it is held again before the stop, or a screen with nothing else to wait for could
     // end on its own the moment the continue wakes it, before the continue is heard. Started by a launcher (it named a
-    // hold file), the job's first process is that launcher, which stopped at the shell's SIGTSTP at once: when it runs
-    // again, the shell continued the job before this handler ran, and this process gives the terminal back without
-    // stopping, to enter again at that continue. Without the C library, this process stops by the one stop no handler
-    // can catch, as it did before, and so does a screen whose group leads its session.
+    // hold file), the job's first process is that launcher, which stops at the shell's SIGTSTP at once. When it is seen
+    // running, either the shell continued the job before this handler ran, or the launcher took the signal and has not
+    // stopped yet. The stop stays pending until one shows: the launcher stops, and so does this process; or the
+    // continue, which reached this process too, is heard (after the guard entered again at it), and this process does
+    // not stop; nor does it at a signal that ends it, which the guard is answering by then. Without the C library, this process stops by the one stop no handler can catch, as it did before, and so
+    // does a screen whose group leads its session.
     suspend: (giveBack) => {
-      stop(() => launched && !isStopping(proc.ppid), () => { giveBack(); stdin.ref?.(); });
+      stop(() => { giveBack(); stdin.ref?.(); }, (settle) => {
+        if (!launched || isStopping(proc.ppid)) { settle(false); return; }
+        const started = performance.now();
+        let look: ReturnType<typeof setTimeout> | undefined;
+        const finish = (continued: boolean) => {
+          clearTimeout(look);
+          for (const name of ["SIGCONT", ...SIGNALS]) proc.off(name, heard);
+          settle(continued);
+        };
+        const heard = () => { finish(true); };
+        const again = () => {
+          if (isStopping(proc.ppid)) finish(false);
+          else if (performance.now() - started >= LAUNCHER_STOP_WAIT_MS) finish(true);
+          else look = setTimeout(again, LAUNCHER_STOP_LOOK_MS);
+        };
+        for (const name of ["SIGCONT", ...SIGNALS]) proc.on(name, heard);
+        look = setTimeout(again, LAUNCHER_STOP_LOOK_MS);
+      });
     },
     hold: (held) => { hold?.(held); },
   });

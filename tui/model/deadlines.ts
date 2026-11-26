@@ -45,6 +45,10 @@ export const SIGNAL_END_WAIT_MS = 2000;
 export const WRITE_AGAIN_LIMIT = 2000;
 /** ...this long apart; past the limit the write fails and the host reports the terminal gone. */
 export const WRITE_AGAIN_PAUSE_MS = 1;
+/** At a stop, a launcher seen running is looked at again this often, until it stops or the job's continue is heard... */
+export const LAUNCHER_STOP_LOOK_MS = 1;
+/** ...for this long at most; then the job counts as continued already, and the screen does not stop. */
+export const LAUNCHER_STOP_WAIT_MS = 2_000;
 
 export const NO_DEADLINES: Deadlines = new Map();
 
