@@ -64,7 +64,7 @@
 </ul>
 <p>이 연결은 Cloudflare(<code>relay-ap.ovis.sh</code>는 그 호스팅 업체)가 저희 대신 처리하므로, 서비스 앞단의 여느 네트워크처럼 이 서비스들이 보는 정보를 기록할 수 있습니다. 페어링한 PC는 휴대폰의 공개 키를 기기 목록에 보관하며, 거기서 지울 수 있습니다. 릴레이의 코드는 <a href="https://github.com/devswha/ovis/tree/main/relay">공개되어 있고</a>, <a href="https://github.com/devswha/ovis/blob/main/docs/relay.md#trust-model">신뢰 모델</a> 문서에 각 부분이 무엇을 볼 수 있는지 설명되어 있습니다.</p>
 <h2 id="direct">직접 연결</h2>
-<p>Ovis 릴레이가 켜져 있는 동안 PC는 iPhone·Android 앱의 연결을 직접 받기도 합니다. 그래서 같은 Wi-Fi에 있거나 Tailscale을 켠 휴대폰은 저희 릴레이 없이 PC에 연결할 수 있습니다. 페어링은 여전히 릴레이를 거치고, 릴레이가 먼저 연결되면 앱이 릴레이를 쓸 수도 있습니다(아래 참고). 직접 연결은 릴레이를 켜면 기본으로 켜지며, PC의 <strong>설정 → 기기와 PC → 내 기기</strong>에 있는 <strong>같은 Wi-Fi 직접 연결</strong> 스위치로 끌 수 있습니다.</p>
+<p>PC의 <strong>설정 → 기기와 PC → 설정 더 보기 → 기기와 접속</strong>에서 <strong>직접 연결</strong>을 켜면, Ovis 릴레이가 켜져 있는 동안 PC는 iPhone·Android 앱의 연결을 직접 받기도 합니다. 그래서 같은 Wi-Fi에 있거나 Tailscale을 켠 휴대폰은 저희 릴레이 없이 PC에 연결할 수 있습니다. 직접 연결은 기본으로 꺼져 있습니다. 꺼져 있는 동안 PC는 아래 주소 어디에서도 연결을 기다리지 않고, 릴레이 연결은 릴레이로만 이어집니다. 페어링은 여전히 릴레이를 거치고, 릴레이가 먼저 연결되면 앱이 릴레이를 쓸 수도 있습니다(아래 참고).</p>
 <ul>
 <li><strong>PC가 받는 곳.</strong> PC의 사설 네트워크 주소(<code>192.168.x.x</code> 등. 기본 경로가 쓰는 주소를 먼저, 그다음 다른 주소이며, 기본 경로가 쓰지 않는 컨테이너·가상 머신·VPN 어댑터는 제외)와, Tailscale이 켜져 있으면 PC의 Tailscale 주소의 7319번 포트(이미 쓰이면 비어 있는 다른 포트). 공인 주소에서는 받지 않습니다.</li>
 <li><strong>누가 연결할 수 있는지.</strong> 그 PC와 릴레이로 이미 페어링한 기기만, 릴레이와 같은 키와 같은 종단 간 암호화로 로그인할 수 있습니다. 여기서는 새로 페어링되지 않고, 웹 페이지의 연결은 거부됩니다. Tailscale 주소는 사용자의 tailnet에 있는 기기의 연결만 받습니다.</li>
