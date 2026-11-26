@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "bun:test";
-import { createElement, StrictMode } from "react";
-import { act, create } from "react-test-renderer";
+import { act, createElement, StrictMode } from "react";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "../../../server/relay/test-helpers.ts";
 import type { RelaySessionOptions } from "../../../server/relay/session.ts";
 import type { WsStream } from "../../../shared/relay-mux-engine.ts";
+import { openPage, type Page } from "../page.fixture.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { WebSocketLike } from "../transport.ts";
 import { useResourceUrlState } from "../useResourceUrl.ts";
@@ -19,8 +19,14 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => {
+let browserPage: Page | undefined;
+function openBrowserPage(): Page {
+  return browserPage = openPage();
+}
+afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) close();
+  await browserPage?.close();
+  browserPage = undefined;
   setTransport(nativeTransport);
 });
 
@@ -631,10 +637,7 @@ it("tells the shell each time a reconnect finds nobody for the PC at the relay, 
 });
 
 it("keeps the growing pause after such waits while the page is hidden", async () => {
-  const page = Object.assign(new EventTarget(), { visibilityState: "hidden" });
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
-  cleanups.push(() => { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else Reflect.deleteProperty(globalThis, "document"); });
+  page("hidden");
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   f.attempts.offline = 2;
   await f.drop();
@@ -744,14 +747,12 @@ it("reconnects after an authorization change without telling the shell to forget
   expect(f.fatal).toEqual([]);
 });
 
-it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
-  const browser = new EventTarget();
-  const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+// The relay registers these browser events on globalThis, not on window.
+function installWindowListeners(browser: Page["window"]): void {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     addEventListener: browser.addEventListener.bind(browser),
     removeEventListener: browser.removeEventListener.bind(browser),
-    document: page,
   })) {
     descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -762,41 +763,34 @@ it("reconnects on online and visible-page events and removes wake listeners on c
       else Reflect.deleteProperty(globalThis, key);
     }
   });
+}
+
+it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
+  const shown = page("visible");
+  const browser = shown.window;
+  installWindowListeners(browser);
   const f = await fixture();
   await f.drop();
-  browser.dispatchEvent(new Event("online"));
+  browser.dispatchEvent(new browser.Event("online"));
   await f.transport.connect();
   expect(f.connections).toHaveLength(2);
   await f.drop();
-  page.visibilityState = "hidden";
-  page.dispatchEvent(new Event("visibilitychange"));
+  shown.hide();
   expect(f.attempts.count).toBe(2);
-  page.visibilityState = "visible";
-  page.dispatchEvent(new Event("visibilitychange"));
+  shown.show();
   await f.transport.connect();
   expect(f.connections).toHaveLength(3);
   expect(f.clock.tasks.size).toBe(0);
   f.transport.close();
-  browser.dispatchEvent(new Event("online"));
-  page.dispatchEvent(new Event("visibilitychange"));
+  browser.dispatchEvent(new browser.Event("online"));
+  shown.show();
   expect(f.attempts.count).toBe(3);
 });
 
 it("takes its carrier as gone when the page comes back from the back/forward cache, though it still reads open, and connects again", async () => {
-  const browser = new EventTarget();
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  for (const [key, value] of Object.entries({ addEventListener: browser.addEventListener.bind(browser), removeEventListener: browser.removeEventListener.bind(browser) })) {
-    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
-  cleanups.push(() => {
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-  });
-  page("visible");
-  const pageshow = (persisted: boolean): Event => Object.assign(new Event("pageshow"), { persisted });
+  const { window: browser } = page("visible");
+  installWindowListeners(browser);
+  const pageshow = (persisted: boolean) => Object.assign(new browser.Event("pageshow"), { persisted });
   const f = await fixture();
   // a page loaded fresh says nothing of its carrier
   browser.dispatchEvent(pageshow(false));
@@ -815,12 +809,16 @@ it("takes its carrier as gone when the page comes back from the back/forward cac
 });
 
 function page(visibilityState: "visible" | "hidden") {
-  const target = Object.assign(new EventTarget(), { visibilityState });
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: target });
-  cleanups.push(() => { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else Reflect.deleteProperty(globalThis, "document"); });
-  const turn = (state: "visible" | "hidden"): void => { target.visibilityState = state; target.dispatchEvent(new Event("visibilitychange")); };
-  return { target, hide: () => turn("hidden"), show: () => turn("visible") };
+  const { window } = openBrowserPage();
+  const setVisibility = (state: "visible" | "hidden"): void => {
+    Object.defineProperty(window.document, "visibilityState", { configurable: true, value: state });
+  };
+  setVisibility(visibilityState);
+  const turn = (state: "visible" | "hidden"): void => {
+    setVisibility(state);
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+  };
+  return { window, setVisibility, hide: () => turn("hidden"), show: () => turn("visible") };
 }
 
 it("drops an attempt that began while the page was hidden and connects again at once when it is shown", async () => {
@@ -852,7 +850,7 @@ it("does not fall back to the other relay when an attempt that began before the 
   f.clock.advance(1000);
   shown.hide();
   // back on screen, the stale socket's error runs before the page's visibilitychange
-  shown.target.visibilityState = "visible";
+  shown.setVisibility("visible");
   f.attempts.stuck[0]!(new RelayUnreachableError(null, true));
   await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayUnreachableError);
   expect(f.attempts.relays).toEqual([regional, regional]);
@@ -1065,26 +1063,20 @@ it("returns a blob resource fetched over the relay and stops a closed SSE withou
 });
 
 it("exposes resource failures as hook state without an unhandled promise rejection", async () => {
+  const page = openBrowserPage();
   const f = await fixture({ dispatch: async () => new Response(null, { status: 404 }) });
   setTransport(f.transport);
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  cleanups.push(() => {
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
   const result = deferred<ResourceUrlState>();
   function Probe() {
     const state = useResourceUrlState("/api/fs/file?path=missing");
     if (state.error) result.resolve(state);
     return null;
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   await act(async () => { await bounded(result.promise); });
   // Then the caller can render the failure; Bun's test runner also fails unhandled rejections.
   expect(await result.promise).toMatchObject({ url: null, error: expect.any(TypeError) });
-  await act(async () => renderer?.unmount());
+  await page.render(null);
 });
 
 it("throws on send while connecting and validates close arguments synchronously", () => {
@@ -1099,31 +1091,25 @@ it("throws on send while connecting and validates close arguments synchronously"
 
 it("keeps a StrictMode resource usable and revokes each owned blob on cleanup", async () => {
   // Given a resource hook whose effects will be replayed by React StrictMode.
+  const page = openBrowserPage();
   const f = await fixture({ dispatch: async () => new Response("image") });
   setTransport(f.transport);
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
   const revoke = URL.revokeObjectURL;
   const revoked: string[] = [];
   URL.revokeObjectURL = (url) => { revoked.push(url); revoke(url); };
-  cleanups.push(() => {
-    URL.revokeObjectURL = revoke;
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
+  cleanups.push(() => { URL.revokeObjectURL = revoke; });
   const loaded = deferred<string>();
   function Probe() {
     const state = useResourceUrlState("/api/fs/file?path=image");
     if (state.url) loaded.resolve(state.url);
     return null;
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => { renderer = create(createElement(StrictMode, null, createElement(Probe))); });
+  await page.render(createElement(StrictMode, null, createElement(Probe)));
   await act(async () => { await bounded(loaded.promise); });
   const url = await loaded.promise;
   expect(await (await fetch(url)).text()).toBe("image");
   expect(revoked).not.toContain(url);
-  await act(async () => renderer?.unmount());
+  await page.render(null);
   expect(revoked).toContain(url);
   await expect(fetch(url)).rejects.toBeInstanceOf(TypeError);
 });

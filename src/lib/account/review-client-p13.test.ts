@@ -4,13 +4,13 @@
  * Lives in `src/lib/account/` of the reviewed head, as `src/lib/account/review-client-p13.test.ts`. Each `F-…` test
  * FAILS on 1017d8662 and shows one finding of `review-client-p13.md` (7: F-H1, F-M1 to F-M5, F-L1); each `G…` test
  * passes there and pins a guard that was checked and found sound (18: G1 to G18), most of them killing a mutant the
- * step's own tests let live. Run it alone, in its own process (it mocks react-dom for the component tests):
+ * step's own tests let live. To run this file alone:
  * `TMPDIR=<short dir> bun test src/lib/account/review-client-p13.test.ts`; only the guards: add `-t 'G[0-9]+:'`.
  */
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { act, createElement, type ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { act, createElement } from "react";
+import { ListDevices, RemoveDialog, showsListDevices } from "../../components/ListDevices.tsx";
+import { openPage, type Page } from "../page.fixture.ts";
 
 import { listView, signListEntry } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
@@ -29,14 +29,9 @@ import { createAccountController } from "../relay/accountController.ts";
 import type { ShellDeviceStore } from "../relay/device.ts";
 import { SettingsProvider } from "../settings.ts";
 
-// the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ListDevices, RemoveDialog, showsListDevices } = await import("../../components/ListDevices.tsx");
-
 type World = ReturnType<typeof listWorld>;
 const noWait = { wait: async () => {} };
 const kinds = (texts: readonly string[]): string[] => texts.map((text) => readBody(entryFromText(text).body).kind);
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 const isIn = (w: World, key: string): boolean => listView(w.held().state).devices.some((row) => row.key === key && row.ended === null);
 
 /** A device of the world let into the list by `by`, which then follows it. */
@@ -300,26 +295,23 @@ describe("G: guards checked and found sound on 1017d8662 (these pass)", () => {
 
 describe("G: the controller's own guards (accountController.ts), on 1017d8662", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let page: Page;
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "matchMedia"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const storage = (store: Map<string, string>) => ({ getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() });
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage(new Map()) });
-    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: storage(new Map([["ovis-launched", "1"]])) });
-    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-    const events = new EventTarget();
-    const page = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      location: { href: "https://app.ovis.sh/", search: "", hash: "", origin: "https://app.ovis.sh", pathname: "/" }, history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440,
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      visibilityState: "visible", documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null,
-      addEventListener: page.addEventListener.bind(page), removeEventListener: page.removeEventListener.bind(page), dispatchEvent: page.dispatchEvent.bind(page),
-    } });
+    page = openPage("https://app.ovis.sh/");
+    page.window.sessionStorage.setItem("ovis-launched", "1");
+    Object.defineProperties(page.window.navigator, {
+      languages: { configurable: true, value: ["en"] },
+      userAgent: { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64)" },
+      maxTouchPoints: { configurable: true, value: 0 },
+    });
+    Object.defineProperty(page.window, "innerWidth", { configurable: true, value: 1440 });
+    for (const [key, value] of Object.entries({ localStorage: page.window.localStorage, sessionStorage: page.window.sessionStorage, matchMedia: page.window.matchMedia.bind(page.window) })) {
+      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, { configurable: true, value });
+    }
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await page.close();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -524,39 +516,30 @@ describe("F: findings that fail on 1017d8662", () => {
 
 describe("Remove's question (ListDevices.tsx): F-M2, and the guards G16, G17", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let warn: typeof console.warn;
 
   beforeEach(() => {
     warn = console.warn;
     console.warn = () => {};
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const events = new EventTarget();
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    class HTMLElement { isConnected = true; focus(): void {} }
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      location: { href: "https://app.example/", search: "", origin: "https://app.example", pathname: "/", protocol: "https:" },
-      history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440, innerHeight: 900,
-      requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      activeElement: new HTMLElement(), body: { nodeType: 1, children: [] },
-      querySelector: () => null, querySelectorAll: () => [],
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
+    page = openPage("https://app.example/");
+    Object.defineProperties(page.window.navigator, {
+      languages: { configurable: true, value: ["en"] },
+      userAgent: { configurable: true, value: "Test" },
+      maxTouchPoints: { configurable: true, value: 0 },
+    });
+    Object.defineProperties(page.window, {
+      innerWidth: { configurable: true, value: 1440 },
+      innerHeight: { configurable: true, value: 900 },
+    });
+    for (const [key, value] of Object.entries({ Event: page.window.Event, HTMLElement: page.window.HTMLElement, matchMedia: page.window.matchMedia.bind(page.window) })) {
+      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, { configurable: true, value });
+    }
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     console.warn = warn;
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -574,28 +557,29 @@ describe("Remove's question (ListDevices.tsx): F-M2, and the guards G16, G17", (
       await act(async () => {});
     }
   }
-  const mount = async (device: WorldDevice): Promise<ReactTestInstance> => {
+  const mount = async (device: WorldDevice): Promise<void> => {
     const view = await device.list.sync();
     if (!showsListDevices(view, device.session.account)) throw new Error("the device does not show the list");
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, { children: createElement(ListDevices, { list: device.list, view }) }), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    if (!renderer) throw new Error("not mounted");
-    return renderer.root;
+    await page.render(createElement(SettingsProvider, { children: createElement(ListDevices, { list: device.list, view }) }));
   };
-  const dialog = (root: ReactTestInstance) => root.find((node) => node.props.role === "alertdialog");
-  const confirm = async (root: ReactTestInstance): Promise<void> => {
-    await act(async () => { dialog(root).find((node) => node.type === "button" && textOf(node) === "Remove").props.onClick(); });
+  const dialogs = () => [...page.window.document.body.querySelectorAll('[role="alertdialog"]')];
+  function only<T>(nodes: readonly T[], label: string): T {
+    const [node] = nodes;
+    if (nodes.length !== 1 || !node) throw new Error(`Expected one ${label}, found ${nodes.length}`);
+    return node;
+  }
+  const confirm = async (): Promise<void> => {
+    const dialog = only(dialogs(), "removal dialog");
+    const button = only([...dialog.querySelectorAll("button")].filter((node) => node.textContent === "Remove"), "Remove button");
+    await act(async () => { button.click(); });
     await waitFor(() => {
-      const open = root.findAll((node) => node.props.role === "alertdialog");
-      return open.length === 0 || open[0]!.findAll((node) => node.props.role === "alert").length > 0;
+      const [open] = dialogs();
+      return !open || open.querySelector('[role="alert"]') !== null;
     });
   };
-  const said = (root: ReactTestInstance): string | null => {
-    const open = root.findAll((node) => node.props.role === "alertdialog");
-    return open.length === 0 ? null : textOf(open[0]!.find((node) => node.props.role === "alert"));
+  const said = (): string | null => {
+    const [open] = dialogs();
+    return open ? only([...open.querySelectorAll('[role="alert"]')], "removal alert").textContent : null;
   };
 
   it("G16: Remove acts for the member key its question was drawn for: a page that writes by another key now removes nothing", async () => {
@@ -606,15 +590,10 @@ describe("Remove's question (ListDevices.tsx): F-M2, and the guards G16, G17", (
     const view = await phone.list.sync();
     // the page drew its devices when this device was in by another key (another tab signed in again since)
     const drawn = { ...view, devices: view.devices.map((row) => (row.self ? { ...row, key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEthekeythequestionwasdrawnfor" } : row)) };
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, { children: createElement(ListDevices, { list: phone.list, view: drawn }) }), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    const root = renderer!.root;
-    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
-    await confirm(root);
-    expect(said(root)).toBe("Your sign-in changed while this was asked. Nothing was removed.");
+    await page.render(createElement(SettingsProvider, { children: createElement(ListDevices, { list: phone.list, view: drawn }) }));
+    await act(async () => { page.one<HTMLButtonElement>('button[data-action="remove-device"]').click(); });
+    await confirm();
+    expect(said()).toBe("Your sign-in changed while this was asked. Nothing was removed.");
     expect(isIn(w, (await tablet.keys()).key)).toBe(true);
   });
 
@@ -627,22 +606,21 @@ describe("Remove's question (ListDevices.tsx): F-M2, and the guards G16, G17", (
     const view = await phone.list.sync();
     const key = (await stranger.keys()).key;
     const dialog = (ticked: boolean) => createElement(SettingsProvider, { children: createElement(RemoveDialog, { list: phone.list, view, removing: key, name: "Stranger's phone", ticked, onClose: () => {}, onRemoved: () => {} }) });
-    const nodes = { createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }) };
     // Not me, everything ticked: the request goes out and nothing is known of it
     let away = false;
     phone.wire.answer = (request) => {
       if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) away = true;
       return away ? Promise.reject(new TypeError("offline")) : null;
     };
-    await act(async () => { renderer = create(dialog(true), nodes); });
-    await confirm(renderer!.root);
-    expect(said(renderer!.root)).toBe("Whether Stranger's phone was removed is not known yet. Look at the list again in a moment.");
-    await act(async () => { renderer?.unmount(); });
+    await page.render(dialog(true));
+    await confirm();
+    expect(said()).toBe("Whether Stranger's phone was removed is not known yet. Look at the list again in a moment.");
+    await page.render(null);
     phone.wire.answer = null;
     // a Remove of the same device, nothing ticked
-    await act(async () => { renderer = create(dialog(false), nodes); });
-    await confirm(renderer!.root);
-    expect(said(renderer!.root)).toBe("An earlier change is still waiting: try it again or cancel it first.");
+    await page.render(dialog(false));
+    await confirm();
+    expect(said()).toBe("An earlier change is still waiting: try it again or cancel it first.");
     expect([isIn(w, key), isIn(w, (await added.keys()).key)]).toEqual([true, true]);
   });
 
@@ -651,19 +629,19 @@ describe("Remove's question (ListDevices.tsx): F-M2, and the guards G16, G17", (
     const phone = await w.device({ label: "Dana's phone" });
     await phone.list.sync();
     const tablet = await letIn(w, phone, "Stolen tablet");
-    const root = await mount(phone);
-    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
+    await mount(phone);
+    await act(async () => { page.one<HTMLButtonElement>('button[data-action="remove-device"]').click(); });
     // whoever holds the tablet hands its place to a new key as the question opens
     const first = await handOver(w, tablet, "Stolen tablet");
-    await confirm(root);
-    expect(said(root)).toBe("Stolen tablet moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
+    await confirm();
+    expect(said()).toBe("Stolen tablet moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
     // and once more before the second press
     const second = await handOver(w, first, "Stolen tablet");
-    await confirm(root);
-    expect(said(root)).toBe("Stolen tablet moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
+    await confirm();
+    expect(said()).toBe("Stolen tablet moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
     // nothing moves any more: the third press removes the key that stands for the tablet now
-    await confirm(root);
-    expect(said(root)).toBeNull();
+    await confirm();
+    expect(said()).toBeNull();
     expect(isIn(w, (await second.keys()).key)).toBe(false);
   });
 });

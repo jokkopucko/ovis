@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useEffect } from "react";
+import { act, useEffect } from "react";
 
 import { DeviceNotices } from "../components/DevicePairedNotice.tsx";
 import type { DeviceNotice, NoticeAnswer, NoticeSeen } from "../../shared/account-devices-api.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { DEVICE_NOTICE_FEATURE, DeviceNoticeWire, deviceNotice } from "./deviceNoticeWire.fixture.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { SettingsProvider } from "./settings.ts";
 import { useDeviceNotices, type NoticeSocket } from "./useDeviceNotices.ts";
 import { HerdrSocket } from "./ws.ts";
@@ -16,8 +16,8 @@ const notice = (seq: number, open = true): DeviceNotice => ({
 });
 
 describe("device notices on the real PC socket", () => {
-  let renderer: ReactTestRenderer | undefined;
-  const restorations = new Map<string, PropertyDescriptor | undefined>();
+  let page: Page;
+  let webSocket: PropertyDescriptor | undefined;
   const sockets: HerdrSocket[] = [];
   let result: ReturnType<typeof useDeviceNotices> | undefined;
 
@@ -27,38 +27,35 @@ describe("device notices on the real PC socket", () => {
       onDismiss={(item) => result?.dismiss("desk", item)} onShown={result.acknowledgeShown} /></SettingsProvider> : null;
   }
 
+  beforeEach(() => {
+    page = openPage();
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
+    webSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  });
+
   async function connect(visible = true) {
     const wire = new DeviceNoticeWire("ws://localhost/ws");
-    for (const [key, value] of Object.entries({
-      window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-      document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-      navigator: { languages: ["en"] },
-      getComputedStyle: () => ({ getPropertyValue: () => "" }),
-      WebSocket: class { constructor() { return wire; } },
-      IS_REACT_ACT_ENVIRONMENT: true,
-    })) {
-      restorations.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-      Object.defineProperty(globalThis, key, { configurable: true, value });
-    }
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: class { constructor() { return wire; } } });
     const socket = new HerdrSocket(wire.url);
     sockets.push(socket);
-    await act(async () => { renderer = create(<Probe socket={socket} visible={visible} />); });
+    await page.render(<Probe socket={socket} visible={visible} />);
     socket.connect();
     wire.open();
     return { wire, socket };
   }
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     result = undefined;
     for (const socket of sockets.splice(0)) socket.close();
-    for (const [key, original] of restorations) {
-      if (original) Object.defineProperty(globalThis, key, original);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    restorations.clear();
+    if (webSocket) Object.defineProperty(globalThis, "WebSocket", webSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
+    await page.close();
   });
+
+  const hintLines = (card: Element) => [...card.querySelectorAll('[class="settings-hint"]')]
+    .flatMap((line) => [...line.childNodes].filter((child) => child.nodeType === 3).map((child) => child.textContent ?? ""));
 
   it("a notice with two-step missing, unknown, null or unrecognised says how it signed in and nothing of two-step (T57)", async () => {
     const { wire } = await connect();
@@ -71,10 +68,10 @@ describe("device notices on the real PC socket", () => {
         wire.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "device-notice", notice: payload }) }));
       }
     });
-    const rendered = renderer?.root.findAllByProps({ "data-testid": "device-notice" }) ?? [];
+    const rendered = page.container.querySelectorAll('[data-testid="device-notice"]');
     expect(rendered).toHaveLength(4);
     for (const card of rendered) {
-      const lines = card.findAllByProps({ className: "settings-hint" }).flatMap((line) => line.children).filter((line) => typeof line === "string");
+      const lines = hintLines(card);
       expect(lines.filter((line) => line.startsWith("Google sign-in"))).toEqual(["Google sign-in"]);
       expect(lines.filter((line) => line.toLowerCase().includes("two-step"))).toEqual([]);
     }
@@ -90,11 +87,9 @@ describe("device notices on the real PC socket", () => {
         wire.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "device-notice", notice: payload }) }));
       }
     });
-    const rendered = renderer?.root.findAllByProps({ "data-testid": "device-notice" }) ?? [];
+    const rendered = [...page.container.querySelectorAll('[data-testid="device-notice"]')];
     expect(rendered).toHaveLength(twoStepValues.length);
-    const labels = rendered.map((card) => card.findAllByProps({ className: "settings-hint" })
-      .flatMap((line) => line.children)
-      .filter((line) => typeof line === "string" && line.toLowerCase().includes("two-step sign-in")));
+    const labels = rendered.map((card) => hintLines(card).filter((line) => line.toLowerCase().includes("two-step sign-in")));
     expect(labels).toEqual([[], [], ["Two-step sign-in set on the account"], [], [], []]);
   });
 
@@ -173,7 +168,7 @@ describe("device notices on the real PC socket", () => {
     });
     expect(wire.seen()).toEqual([]);
     await act(async () => { wire.snapshot(); });
-    const confirmed = JSON.stringify(renderer?.toJSON());
+    const confirmed = page.container.textContent ?? "";
     const ackAfterConfirmation = wire.seen();
     await act(async () => { wire.read({ type: "device-notice", notice: laterAdmission }); });
     expect({ methodRendered: confirmed.includes("A sign-in method was added"), ackAfterConfirmation, allAcks: wire.seen() }).toEqual({
@@ -186,8 +181,8 @@ describe("device notices on the real PC socket", () => {
     const { wire, socket } = await connect(false);
     await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: method }); });
     expect(wire.seen()).toEqual([]);
-    await act(async () => { renderer?.update(<Probe socket={socket} />); });
-    expect(JSON.stringify(renderer?.toJSON())).toContain("A sign-in method was added");
+    await page.render(<Probe socket={socket} />);
+    expect(page.container.textContent).toContain("A sign-in method was added");
     expect(wire.seen()).toEqual([{ type: "notice-seen", seq: 2 }]);
   });
 
@@ -243,14 +238,11 @@ class FakeSocket implements NoticeSocket {
 }
 
 describe("each PC's device notices in the app", () => {
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let seen: ReturnType<typeof useDeviceNotices> | undefined;
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  beforeEach(() => { Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true }); });
+  beforeEach(() => { page = openPage(); });
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    await page.close();
   });
 
   function Probe({ sockets, onClose }: { sockets: readonly { id: string; socket: NoticeSocket }[]; onClose?: (pcId: string, noticeId: string) => void }) {
@@ -265,7 +257,7 @@ describe("each PC's device notices in the app", () => {
 
   it("T57: a PC's replay shows once and is acknowledged once, up to its newest notice", async () => {
     const desk = new FakeSocket();
-    await act(async () => { renderer = create(<Probe sockets={[{ id: "desk", socket: desk }]} />); });
+    await page.render(<Probe sockets={[{ id: "desk", socket: desk }]} />);
     await act(async () => { desk.receive({ type: "device-notice-replay", replay: { notices: [notice(2), notice(3, false)], cut: 0 } }); });
     await act(async () => { desk.receive({ type: "device-notice", notice: notice(3, false) }); });
     expect(seen!.byPc.get("desk")?.notices.map((item) => item.seq)).toEqual([2, 3]);
@@ -277,9 +269,7 @@ describe("each PC's device notices in the app", () => {
     const admission = notice(1);
     const confirmed = deviceNotice({ ...admission, id: "b".repeat(32), seq: 2, kind: "confirm", how: "its_me", open: false });
     const closed: [string, string][] = [];
-    await act(async () => {
-      renderer = create(<Probe sockets={[{ id: "desk", socket: desk }]} onClose={(pc, id) => closed.push([pc, id])} />);
-    });
+    await page.render(<Probe sockets={[{ id: "desk", socket: desk }]} onClose={(pc, id) => closed.push([pc, id])} />);
     await act(async () => { desk.receive({ type: "device-notice", notice: admission }); });
     expect(closed).toEqual([]);
     await act(async () => { desk.receive({ type: "device-notice", notice: confirmed }); });
@@ -292,7 +282,7 @@ describe("each PC's device notices in the app", () => {
     const confirmed = deviceNotice({ ...admission, id: "b".repeat(32), seq: 2, kind: "confirm", how: "its_me", open: false });
     const close = { ...admission, seq: 3, open: false };
     const unrelated = { ...notice(4), no: 5, open: false };
-    await act(async () => { renderer = create(<Probe sockets={[{ id: "desk", socket: desk }]} />); });
+    await page.render(<Probe sockets={[{ id: "desk", socket: desk }]} />);
     await act(async () => { desk.receive({ type: "device-notice", notice: admission }); });
     await act(async () => { desk.receive({ type: "device-notice-replay", replay: { notices: [confirmed, close, unrelated], cut: 0 } }); });
     expect(seen?.byPc.get("desk")?.notices.map(item => item.id)).toEqual([confirmed.id, unrelated.id]);
@@ -300,7 +290,7 @@ describe("each PC's device notices in the app", () => {
 
   it("T57: dismissing a told notice decides nothing on the PC, and an open admission stays", async () => {
     const desk = new FakeSocket();
-    await act(async () => { renderer = create(<Probe sockets={[{ id: "desk", socket: desk }]} />); });
+    await page.render(<Probe sockets={[{ id: "desk", socket: desk }]} />);
     await act(async () => { desk.receive({ type: "device-notice-replay", replay: { notices: [notice(2), notice(3, false)], cut: 0 } }); });
     await act(async () => { seen!.dismiss("desk", notice(3, false)); seen!.dismiss("desk", notice(2)); });
     expect(seen!.byPc.get("desk")?.notices.map((item) => item.seq)).toEqual([2]);
@@ -310,7 +300,7 @@ describe("each PC's device notices in the app", () => {
   it("G5: a PC that does not offer it gets no acknowledgment, and is asked again once it does", async () => {
     const desk = new FakeSocket();
     desk.offers = false;
-    await act(async () => { renderer = create(<Probe sockets={[{ id: "desk", socket: desk }]} />); });
+    await page.render(<Probe sockets={[{ id: "desk", socket: desk }]} />);
     await act(async () => { desk.receive({ type: "device-notice-replay", replay: { notices: [notice(5)], cut: 0 } }); });
     expect(desk.sent).toEqual([]);
     desk.offers = true;

@@ -1,7 +1,7 @@
 import { createShellTestPage } from "./shell.test.tsx";
 import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
-import { createElement, type ReactElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, type ReactElement } from "react";
+import { openPage, type Page } from "../page.fixture.ts";
 
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
@@ -28,8 +28,17 @@ const drain = async (): Promise<void> => { for (let turn = 0; turn < 500; turn++
 describe("the hosted shell's front page", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   let rendered: ReactElement[];
+  let signOutPage: Page | undefined;
   beforeEach(() => { browser = createShellTestPage(); rendered = []; });
-  afterEach(() => { jest.useRealTimers(); browser.dispose(); });
+  afterEach(async () => {
+    jest.useRealTimers();
+    if (signOutPage) {
+      await signOutPage.close();
+      signOutPage = undefined;
+      jest.restoreAllMocks();
+    }
+    browser.dispose();
+  });
 
   const deviceStore = (devices: RelayDevice[]): ShellDeviceStore => ({
     async get(serverId) { return devices.find((device) => device.server_id === serverId); },
@@ -540,23 +549,14 @@ describe("the hosted shell's front page", () => {
     await until(() => rendered.length > 0 && account().pcs !== null, "the signed-in front page");
     let hosted: HostedSignIn | null = null;
     const Probe = (): null => { hosted = useHostedSignIn(); return null; };
-    const react = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    let page: ReactTestRenderer | null = null;
-    try {
-      await act(async () => { page = create(createElement(Probe)); });
-      expect(hosted).toMatchObject({ provider: "github" });
-      await act(async () => { hosted!.signOut(); await signedOut.promise; });
-      await drain();
-      expect(await accountStore.get("session")).toBeUndefined();
-      expect(Object.keys(await accountStore.get("unsent_blocks") ?? {})).toEqual(["r1"]);
-      expect(last().state).toMatchObject({ account: { kind: "signed-out" } });
-    } finally {
-      await act(async () => { page?.unmount(); });
-      if (react) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", react);
-      else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-      jest.restoreAllMocks();
-    }
+    signOutPage = openPage("https://app.ovis.sh/");
+    await signOutPage.render(createElement(Probe));
+    expect(hosted).toMatchObject({ provider: "github" });
+    await act(async () => { hosted!.signOut(); await signedOut.promise; });
+    await drain();
+    expect(await accountStore.get("session")).toBeUndefined();
+    expect(Object.keys(await accountStore.get("unsent_blocks") ?? {})).toEqual(["r1"]);
+    expect(last().state).toMatchObject({ account: { kind: "signed-out" } });
   });
 
 });

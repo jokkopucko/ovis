@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "./page.fixture.ts";
 
 import { LanExposureNotice } from "../components/LanExposureNotice.tsx";
 import { directHostOf, useDirectNotice } from "./directNotice.ts";
@@ -15,34 +15,30 @@ function Probe({ scope, host, seen }: ProbeProps) {
 }
 
 describe("the same-Wi-Fi direct notice", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let records: Map<string, string>;
-  let renderer: ReactTestRenderer | undefined;
-  const tabs: ReactTestRenderer[] = [];
+  let browser: Page;
+  let main: ReactElement | null;
+  let tabs: ReactElement[];
 
   beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    records = new Map();
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => void records.set(key, value), removeItem: (key: string) => void records.delete(key) },
-    } });
+    browser = openPage();
+    main = null;
+    tabs = [];
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); for (const tab of tabs.splice(0)) tab.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await browser.close(); });
+
+  const draw = () => browser.render([main, ...tabs]);
 
   async function load(scope: string, host: string | null | undefined) {
     const seen: ProbeProps["seen"] = [];
-    await act(async () => { renderer?.unmount(); renderer = create(createElement(Probe, { scope, host, seen })); });
-    return { latest: () => seen.at(-1)!, answer: async (next: string | null | undefined) => { await act(async () => { renderer!.update(createElement(Probe, { scope, host: next, seen })); }); } };
+    main = null;
+    await draw();
+    const answer = async (next: string | null | undefined) => {
+      main = createElement(Probe, { key: "main", scope, host: next, seen });
+      await draw();
+    };
+    await answer(host);
+    return { latest: () => seen.at(-1)!, answer };
   }
 
   it("stays dismissed on the next load for the same PC and address", async () => {
@@ -74,10 +70,13 @@ describe("the same-Wi-Fi direct notice", () => {
 
   async function tab(scope: string, host: string) {
     const seen: ProbeProps["seen"] = [];
-    let own: ReactTestRenderer;
-    await act(async () => { own = create(createElement(Probe, { scope, host, seen })); });
-    tabs.push(own!);
-    return { answer: async (next: string | null) => { await act(async () => { own.update(createElement(Probe, { scope, host: next, seen })); }); } };
+    const index = tabs.length;
+    const answer = async (next: string | null) => {
+      tabs[index] = createElement(Probe, { key: index, scope, host: next, seen });
+      await draw();
+    };
+    await answer(host);
+    return { answer };
   }
 
   it("keeps a dismissal another tab made or forgot while this one was open", async () => {
@@ -108,12 +107,12 @@ describe("what a health answer says about direct", () => {
 });
 
 describe("the exposure line", () => {
-  const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
-  beforeEach(() => { Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] }); });
-  afterEach(() => {
-    if (languages) Object.defineProperty(navigator, "languages", languages);
-    else Reflect.deleteProperty(navigator, "languages");
+  let page: Page;
+  beforeEach(() => {
+    page = openPage();
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
   });
+  afterEach(async () => { await page.close(); });
 
   it("offers a dismiss on the direct notice only, never on the open-server warning", () => {
     const render = (direct: boolean) => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(LanExposureNotice, { host: "192.168.0.10", direct, onOpen: () => undefined, onDismiss: () => undefined }) }));

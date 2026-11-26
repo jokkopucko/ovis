@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, jest, mock } from "bun:test";
-import { createElement, useLayoutEffect } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, useLayoutEffect, useReducer } from "react";
+import { flushSync } from "react-dom";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
 import { NAV_KEY, readLink, type AppLink, type CreateDraft } from "./deepLink.ts";
@@ -43,13 +44,12 @@ let inboxCalls: string[];
 let reopenFiles: boolean;
 let asked: Array<string | null>;
 let writes: string[];
-let entries: Array<{ state: unknown; url: URL }>;
+let entries: Array<{ state: object | null; url: URL }>;
 let index: number;
-let listeners: Array<(event: Event) => void>;
 /** an update still waiting when Back lands: React draws it between two popstate listeners */
 let waiting: (() => void) | null;
-let renderer: ReactTestRenderer | undefined;
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
+let page: Page;
+let redraw: (() => void) | undefined;
 const refs = {
   selection: { current: { machineId: "local", paneId: null, generation: 0 } as SelectionMark },
   machines: { current: [] as Machine[] },
@@ -63,6 +63,8 @@ const refs = {
 };
 
 function Probe() {
+  const [, refresh] = useReducer((version: number) => version + 1, 0);
+  redraw = refresh;
   const { machineId, paneId, newSessionOpen, newFields, sidebarCollapsed, snapshot, viewing, linkLanded, inbox, dialogMachineId, rosterOut, mode } = place;
   const machine = { id: machineId, name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId) as HerdrPane;
@@ -90,51 +92,45 @@ function Probe() {
   return null;
 }
 
-const draw = (): void => { renderer?.update(createElement(Probe)); };
+const draw = (): void => { redraw?.(); };
 /** Draws at once, effects included, as React does in the microtask after a popstate listener that set state. */
-const drawNow = (): void => { (renderer as unknown as { unstable_flushSync(run: () => void): void }).unstable_flushSync(draw); };
+const drawNow = (): void => { flushSync(draw); };
 
 beforeEach(() => {
-  for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  page = openPage("http://localhost:7317/");
+  redraw = undefined;
   place = { machineId: "local", paneId: "p2", newSessionOpen: false, newFields: null, sidebarCollapsed: false, snapshot: roster(), viewing: null, linkLanded: true, inbox: { open: false, enabled: false } };
   inboxCalls = [];
   reopenFiles = true;
   sheetStep = false;
   asked = [];
   writes = [];
-  listeners = [];
+  entries = [];
   waiting = null;
   refs.selectTarget.current = (_machineId, paneId) => { asked.push(paneId); if (paneId !== null) { place.paneId = paneId; draw(); } };
   refs.pendingCreate.current = null;
   refs.newSessionPending.current = false;
-  const write = (method: "pushState" | "replaceState") => (state: unknown, _unused: string, url?: string): void => {
+  const write = (method: "pushState" | "replaceState") => (state: object | null, _unused: string, url?: string): void => {
     const entry = { state, url: url === undefined ? entries[index]!.url : new URL(url, entries[index]!.url) };
     if (method === "pushState") { entries.splice(index + 1); entries.push(entry); index += 1; } else entries[index] = entry;
     writes.push(`${method} ${index} ${entry.url.search}`);
   };
-  const page = {
-    event: undefined as Event | undefined,
-    get location() { return entries[index]!.url; },
-    history: {
-      get state() { return entries[index]!.state; },
-      pushState: write("pushState"), replaceState: write("replaceState"),
-      // a traversal lands at once, and the browser names the event (`window.event`) to each listener in turn
-      go: (steps: number): void => {
-        index += steps;
-        let stopped = false;
-        const event = Object.assign(new Event("popstate"), { state: entries[index]!.state, stopImmediatePropagation: () => { stopped = true; } });
-        for (const listener of [...listeners]) {
-          if (stopped) break;
-          page.event = event;
-          try { listener(event); } finally { page.event = undefined; }
-        }
-      },
-    },
-    addEventListener: (_type: "popstate", listener: (event: Event) => void) => { listeners.push(listener); },
-    removeEventListener: (_type: "popstate", listener: (event: Event) => void) => { listeners = listeners.filter((other) => other !== listener); },
-  };
-  Object.defineProperty(globalThis, "window", { configurable: true, value: page });
+  const { window: browser } = page;
+  const location = browser.location;
+  Object.defineProperty(browser, "location", { configurable: true, get: () => entries[index]?.url ?? location });
+  Object.defineProperties(browser.history, {
+    state: { configurable: true, get: () => entries[index]?.state ?? null },
+    pushState: { configurable: true, writable: true, value: write("pushState") },
+    replaceState: { configurable: true, writable: true, value: write("replaceState") },
+    go: { configurable: true, writable: true, value: (steps: number) => {
+      index += steps;
+      const event = new browser.PopStateEvent("popstate", { state: entries[index]!.state });
+      // The browser exposes the in-flight event while a popstate listener draws.
+      Object.defineProperty(browser, "event", { configurable: true, writable: true, value: event });
+      try { browser.dispatchEvent(event); }
+      finally { Reflect.deleteProperty(browser, "event"); }
+    } },
+  });
   window.addEventListener("popstate", () => {
     if (waiting === null) return;
     waiting();
@@ -143,21 +139,13 @@ beforeEach(() => {
   });
 });
 
-afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
-  for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  descriptors.clear();
-});
+afterEach(async () => { await page.close(); });
 
 async function mount(addresses: string[], beforeDraw?: () => Promise<void>): Promise<void> {
   entries = addresses.map((search) => ({ state: null, url: new URL(`http://localhost:7317/${search}`) }));
   index = entries.length - 1;
   await beforeDraw?.();
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   writes = [];
 }
 const addresses = (): string[] => entries.map((entry) => entry.url.search);
@@ -371,11 +359,10 @@ it("writes the file URL on a new entry after a sheet's refused Back does not ret
 });
 
 it("holds nothing once the dispatch is over, though the handler never heard the pop", async () => {
-  await mount([P1, P2]);
+  await mount([P1, P2], async () => {
+    window.addEventListener("popstate", (event) => { event.stopImmediatePropagation(); });
+  });
   waiting = () => { place.snapshot = roster(); };
-  window.addEventListener("popstate", (event) => { event.stopImmediatePropagation(); });
-  // the listeners run in the order they were added: that one goes before the hook's
-  listeners.splice(1, 0, listeners.pop()!);
 
   await back();
 

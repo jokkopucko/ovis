@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { fontSettled } from "./fontFamily.ts";
 import { useTerminalRefits, type TerminalRefitsDeps } from "./useTerminalRefits.ts";
@@ -25,17 +25,16 @@ const COLORS = {} as TerminalRefitsDeps["colors"];
 
 describe("useTerminalRefits under the inbox mode's list", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let client: HerdrSocket;
   let socket: FakeSocket;
   const termRef: RefObject<GhosttyTerminal | null> = { current: null };
 
   beforeEach(() => {
-    for (const key of ["IS_REACT_ACT_ENVIRONMENT", "WebSocket", "window", "document"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
+    saved.set("WebSocket", Object.getOwnPropertyDescriptor(globalThis, "WebSocket"));
     Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: FakeSocket });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", hasFocus: () => true, addEventListener() {}, removeEventListener() {} } });
+    Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
     termRef.current = null;
     client = new HerdrSocket("ws://test/ws");
     client.connect();
@@ -45,9 +44,9 @@ describe("useTerminalRefits under the inbox mode's list", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     client.close();
+    await page.close();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -68,10 +67,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     return null;
   }
   const draw = async (covered: boolean, chatView = false): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, { covered, chatView }));
-      else renderer = create(createElement(Probe, { covered, chatView }));
-    });
+    await page.render(createElement(Probe, { covered, chatView }));
   };
   const sizing = (from: number) => socket.sent.slice(from).filter((frame) => ["attach", "resize", "release-size"].includes(frame.type));
 

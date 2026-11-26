@@ -1,6 +1,6 @@
-import { describe, expect, it } from "bun:test";
-import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { afterEach, describe, expect, it } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { ConversationPart, ConversationTurn } from "../../shared/protocol.ts";
 import { publishSessionStats, sessionStats, useSessionStats, type SessionStats } from "./sessionStats.ts";
 
@@ -50,26 +50,21 @@ describe("sessionStats", () => {
 });
 
 describe("useSessionStats", () => {
+  let page: Page;
+  afterEach(async () => { await page.close(); });
+
   it("keeps a pane's totals while another view of the same pane still shows them", async () => {
-    const previous = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
     const seen: Array<SessionStats | null> = [];
     const Probe = () => { seen.push(useSessionStats("local", "w1:p1")); return null; };
     const left = Symbol("left"), right = Symbol("right");
     const stats = (bytes: number) => sessionStats([], true, bytes);
-    let renderer: ReturnType<typeof create> | undefined;
-    try {
-      await act(async () => { renderer = create(createElement(Probe)); });
-      await act(async () => { publishSessionStats("local", "w1:p1", left, stats(10)); publishSessionStats("local", "w1:p1", right, stats(20)); });
-      expect(seen.at(-1)?.bytes).toBe(20);
-      await act(async () => { publishSessionStats("local", "w1:p1", right, null); });
-      expect(seen.at(-1)?.bytes).toBe(10);
-      await act(async () => { publishSessionStats("local", "w1:p1", left, null); });
-      expect(seen.at(-1)).toBeNull();
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-      if (previous) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", previous);
-      else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    }
+    await page.render(createElement(Probe));
+    await act(async () => { publishSessionStats("local", "w1:p1", left, stats(10)); publishSessionStats("local", "w1:p1", right, stats(20)); });
+    expect(seen.at(-1)?.bytes).toBe(20);
+    await act(async () => { publishSessionStats("local", "w1:p1", right, null); });
+    expect(seen.at(-1)?.bytes).toBe(10);
+    await act(async () => { publishSessionStats("local", "w1:p1", left, null); });
+    expect(seen.at(-1)).toBeNull();
   });
 });

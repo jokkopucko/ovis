@@ -1,11 +1,11 @@
-import { expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { act } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { App } from "./App.tsx";
 import { indexedAccountStore } from "./lib/account/store.ts";
 import { DeviceNoticeWire, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
+import { openPage, type Page } from "./lib/page.fixture.ts";
 import { CRAMPED_QUERY } from "./lib/paneCanvas.ts";
 import { PHONE_INBOX_STORAGE_KEY, SettingsProvider } from "./lib/settings.ts";
 import { SHEET_QUERY } from "./lib/sheets.ts";
@@ -18,65 +18,62 @@ const snapshot: SessionSnapshot = {
   panes: [{ pane_id: "p1", workspace_id: "w1", tab_id: "t1", terminal_id: "term", revision: 1, focused: true, agent_status: "idle", restore_error: "No test terminal" }],
 };
 
-async function withPhoneMore(check: (tree: ReactTestRenderer, dismissKeyboard: () => Promise<void>) => Promise<void>): Promise<void> {
+let page: Page;
+beforeEach(() => { page = openPage("http://localhost:4880/"); });
+afterEach(async () => { await page.close(); });
+
+async function withPhoneMore(check: (page: Page, dismissKeyboard: () => Promise<void>) => Promise<void>): Promise<void> {
   const originals = new Map<string, PropertyDescriptor | undefined>();
   const install = (key: string, value: unknown): void => {
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   };
-  const values = new Map([[PHONE_INBOX_STORAGE_KEY, "false"]]);
-  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) };
-  const location = new URL("http://localhost:4880/");
-  const history = { replaceState() {}, pushState() {} };
+  const { window } = page;
+  window.localStorage.setItem(PHONE_INBOX_STORAGE_KEY, "false");
   const cramped = Object.assign(new EventTarget(), { matches: true });
   const matchMedia = (query: string) => query === CRAMPED_QUERY ? cramped : Object.assign(new EventTarget(), { matches: query === SHEET_QUERY });
-  const style = { setProperty() {}, removeProperty() {} };
-  const body = { nodeType: 1, children: [], dataset: {}, style, classList: { toggle() {} }, createNodeMock: () => null };
-  install("window", Object.assign(new EventTarget(), { location, history, matchMedia, localStorage: storage, sessionStorage: storage,
-    setTimeout, clearTimeout, setInterval, clearInterval, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, innerWidth: 390, innerHeight: 610,
-  }));
-  install("document", Object.assign(new EventTarget(), { body, visibilityState: "visible", activeElement: null,
-    documentElement: { dataset: {}, style, classList: { toggle() {} }, hasAttribute: () => false },
-    querySelector: () => null, querySelectorAll: () => [], getElementById: () => null, hasFocus: () => true,
-  }));
-  install("navigator", { language: "en-US", languages: ["en-US"], platform: "Linux", onLine: true });
-  install("localStorage", storage);
-  install("sessionStorage", storage);
-  install("location", location);
-  install("history", history);
-  install("HTMLElement", class {});
-  install("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+  Object.defineProperties(window, {
+    matchMedia: { configurable: true, value: matchMedia },
+    innerWidth: { configurable: true, value: 390 },
+    innerHeight: { configurable: true, value: 610 },
+  });
+  Object.defineProperty(window.document, "hasFocus", { configurable: true, value: () => true });
+  Object.defineProperty(window.navigator, "platform", { configurable: true, value: "Linux" });
+  install("localStorage", window.localStorage);
+  install("sessionStorage", window.sessionStorage);
+  install("location", window.location);
+  install("history", window.history);
+  install("HTMLElement", window.HTMLElement);
+  install("Element", window.Element);
+  install("Node", window.Node);
+  install("requestAnimationFrame", window.requestAnimationFrame.bind(window));
+  install("cancelAnimationFrame", window.cancelAnimationFrame.bind(window));
   install("MutationObserver", class { observe() {} disconnect() {} });
   install("ResizeObserver", class { observe() {} disconnect() {} });
   install("WebSocket", DeviceNoticeWire);
   install("EventSource", class extends EventTarget { close() {} });
   install("__HERDR_TEST_HOOKS__", false);
-  install("IS_REACT_ACT_ENVIRONMENT", true);
   const account = spyOn(indexedAccountStore, "get").mockResolvedValue(undefined);
   const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: RequestInfo | URL) => {
-    const { pathname } = new URL(String(input), location);
+    const { pathname } = new URL(String(input), window.location.href);
     if (pathname === "/api/health") return Response.json({ auth: { required: false, authenticated: true, role: "drive" }, herdr: { version: "0.9.5", protocol: 22 } });
     if (pathname === "/api/machines") return Response.json({ machines: [
       { id: "local", name: "Test PC", kind: "local", enabled: true, state: "connected", error: null, snapshot },
     ] });
     return new Response(null, { status: 404 });
   }, { preconnect: globalThis.fetch.preconnect }));
-  let tree: ReactTestRenderer | undefined;
   try {
     storeSelection("local", "p1");
-    await act(async () => { tree = create(<SettingsProvider><App /></SettingsProvider>); });
-    if (!tree) throw new TypeError("App did not mount");
-    const more = tree.root.find((node) => node.type === "button" && node.props.className === "icon-button header-more-button");
-    const anchor = { isConnected: true, closest: () => null, focus() {} };
-    await act(async () => more.props.onClick({ currentTarget: anchor }));
+    await page.render(<SettingsProvider><App /></SettingsProvider>);
+    await act(async () => { page.one<HTMLButtonElement>('button[class="icon-button header-more-button"]').click(); });
     const dismissKeyboard = async (): Promise<void> => {
       await act(async () => { cramped.matches = false; cramped.dispatchEvent(new Event("change")); });
       // Let App read the action provider again after PaneCanvas has rendered at the new height.
-      await act(async () => tree?.update(<SettingsProvider><App /></SettingsProvider>));
+      await page.render(<SettingsProvider><App /></SettingsProvider>);
     };
-    await check(tree, dismissKeyboard);
+    await check(page, dismissKeyboard);
   } finally {
-    await act(async () => tree?.unmount());
+    await page.render(null);
     account.mockRestore();
     fetch.mockRestore();
     for (const [key, previous] of originals) {
@@ -91,15 +88,20 @@ it.each([
   ["close-tab", "group", "Close tab Test tab?"],
   ["rename-tab", "more", "Rename tab · Test tab"],
 ] as const)("runs %s after the tab row comes back with %s open (#4392)", async (command, open, title) => {
-  await withPhoneMore(async (tree, dismissKeyboard) => {
-    const press = (id: string) => act(async () => tree.root.findByProps({ "data-item": id }).props.onClick());
-    const tabRow = () => tree.root.findAllByProps({ role: "tablist", "aria-label": "Tabs of Test workspace" });
+  await withPhoneMore(async (page, dismissKeyboard) => {
+    const press = (id: string) => act(async () => {
+      const items = page.window.document.body.querySelectorAll(`button[data-item="${id}"]`);
+      const [item] = items;
+      if (items.length !== 1 || !(item instanceof page.window.HTMLButtonElement)) throw new Error(`Expected one menu item ${id}, found ${items.length}`);
+      item.click();
+    });
+    const tabRow = () => page.container.querySelectorAll('[role="tablist"][aria-label="Tabs of Test workspace"]');
     expect(tabRow()).toHaveLength(0);
     if (open === "group") await press("pane-group");
     await dismissKeyboard();
     expect(tabRow()).toHaveLength(1);
     if (open === "more") await press("pane-group");
     await press(command);
-    expect(tree.root.findAllByType("h2").map((heading) => heading.children.join(""))).toContain(title);
+    expect([...page.window.document.body.querySelectorAll("h2")].map((heading) => heading.textContent)).toContain(title);
   });
 });

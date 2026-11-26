@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useLayoutEffect } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, useLayoutEffect } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 
 import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
 import { readFileSync } from "node:fs";
@@ -31,6 +31,7 @@ interface StandInSubscription {
   toJSON(): { endpoint: string; keys: { p256dh: string; auth: string } };
 }
 
+let page: Page;
 let live: StandInSubscription | null;
 let issued: number;
 let registered: string[];
@@ -56,6 +57,7 @@ function standIn(endpoint: string, key: ArrayBuffer): StandInSubscription {
 }
 
 beforeEach(() => {
+  page = openPage();
   live = null;
   issued = 0;
   registered = [];
@@ -87,8 +89,8 @@ beforeEach(() => {
   }) as typeof fetch;
 });
 
-afterEach(() => {
-  delete (globalThis.navigator as { serviceWorker?: unknown }).serviceWorker;
+afterEach(async () => {
+  await page.close();
   Object.assign(globalThis, { PushManager: saved.PushManager, Notification: saved.Notification, fetch: saved.fetch });
 });
 
@@ -167,24 +169,17 @@ describe("testDevicePush", () => {
   });
 
   it("records what the test came to as the subscription's confirmation, where the PC keeps no delivery record", async () => {
-    const before = Object.getOwnPropertyDescriptor(globalThis, "window");
-    const values = new Map<string, string>();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value) } } });
-    try {
-      live = standIn("https://push.example/existing", OTHER_KEY);
-      globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "push_failed", message: "push service 502" } }, { status: 502 })) as typeof fetch;
-      await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
-      expect(confirmation("https://push.example/existing")).toBe(false);
-      globalThis.fetch = (async (_url: string) => new Response(null, { status: 204 })) as typeof fetch;
-      expect(await testDevicePush()).toBe("sent");
-      expect(confirmation("https://push.example/existing")).toBe(true);
-      // a watching device's refusal says nothing of delivery
-      globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "read_only", message: "watch" } }, { status: 403 })) as typeof fetch;
-      await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
-      expect(confirmation("https://push.example/existing")).toBe(true);
-    } finally {
-      if (before) Object.defineProperty(globalThis, "window", before); else Reflect.deleteProperty(globalThis, "window");
-    }
+    live = standIn("https://push.example/existing", OTHER_KEY);
+    globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "push_failed", message: "push service 502" } }, { status: 502 })) as typeof fetch;
+    await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
+    expect(confirmation("https://push.example/existing")).toBe(false);
+    globalThis.fetch = (async (_url: string) => new Response(null, { status: 204 })) as typeof fetch;
+    expect(await testDevicePush()).toBe("sent");
+    expect(confirmation("https://push.example/existing")).toBe(true);
+    // a watching device's refusal says nothing of delivery
+    globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "read_only", message: "watch" } }, { status: 403 })) as typeof fetch;
+    await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
+    expect(confirmation("https://push.example/existing")).toBe(true);
   });
 
   it("reports a missing browser subscription without creating a replacement", async () => {
@@ -426,74 +421,50 @@ describe("in the phone app", () => {
       if (method === "unsubscribe") forgotten.resolve();
       return answer;
     };
-    const view = Object.assign(new EventTarget(), { visibilityState: "visible" });
-    const saved = (name: string) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const;
-    const restore = [saved("document"), saved("IS_REACT_ACT_ENVIRONMENT")];
-    Object.defineProperty(globalThis, "document", { configurable: true, value: view });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    let page: ReactTestRenderer | null = null;
-    try {
-      const refusedAtLoad = pc.nextRefusal();
-      await act(async () => { page = create(createElement(Page, { alertsOn: false })); });
-      await refusedAtLoad;
-      expect(app.saved).toBe(endpoint);
-      pc.answer();
-      view.dispatchEvent(new Event("visibilitychange"));
-      await forgotten.promise;
-      expect(sent).toEqual([{ url: "/api/push/subscribe", method: "DELETE", body: { endpoint } }]);
-      expect(app.saved).toBeNull();
-    } finally {
-      await act(async () => { page?.unmount(); });
-      for (const [name, descriptor] of restore) {
-        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-        else delete (globalThis as Record<string, unknown>)[name];
-      }
-    }
+    const view = page.window.document;
+    Object.defineProperty(view, "visibilityState", { configurable: true, value: "visible" });
+    const refusedAtLoad = pc.nextRefusal();
+    await page.render(createElement(Page, { alertsOn: false }));
+    await refusedAtLoad;
+    expect(app.saved).toBe(endpoint);
+    pc.answer();
+    await act(async () => { view.dispatchEvent(new page.window.Event("visibilitychange")); });
+    await forgotten.promise;
+    expect(sent).toEqual([{ url: "/api/push/subscribe", method: "DELETE", body: { endpoint } }]);
+    expect(app.saved).toBeNull();
   });
 
   it("preserves push when visibility changes during the alerts reenable commit", async () => {
     const endpoint = await ensurePushSubscription();
     const pc = pcRefusesRemoval();
     await expect(removePushSubscription()).rejects.toBeInstanceOf(ApiError);
-    const view = Object.assign(new EventTarget(), { visibilityState: "visible" });
-    const restore = ["document", "IS_REACT_ACT_ENVIRONMENT"].map((name) =>
-      [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
-    Object.defineProperty(globalThis, "document", { configurable: true, value: view });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    const view = page.window.document;
+    Object.defineProperty(view, "visibilityState", { configurable: true, value: "visible" });
     const registeredAgain = deferred();
     function Page({ alertsOn }: { readonly alertsOn: boolean }) {
       useNotificationSwitch({ updateSettings: () => {}, locked: false, notifications: "granted",
         setNotifications: () => {}, alerts: DEFAULT_ALERTS, alertsRef: { current: DEFAULT_ALERTS },
         alertsOn, setPushOn: () => {} });
       useLayoutEffect(() => {
-        if (alertsOn) view.dispatchEvent(new Event("visibilitychange"));
+        if (alertsOn) view.dispatchEvent(new page.window.Event("visibilitychange"));
       }, [alertsOn]);
       return null;
     }
-    let page: ReactTestRenderer | null = null;
-    try {
-      const refusedAtLoad = pc.nextRefusal();
-      await act(async () => { page = create(createElement(Page, { alertsOn: false })); });
-      await refusedAtLoad;
-      pc.answer();
-      const server = globalThis.fetch;
-      globalThis.fetch = Object.assign(async (...args: Parameters<typeof fetch>) => {
-        const response = await server(...args);
-        if (args[0] === "/api/push/subscribe" && args[1]?.method === "POST") registeredAgain.resolve();
-        return response;
-      }, { preconnect: server.preconnect });
-      sent = [];
-      await act(async () => { page?.update(createElement(Page, { alertsOn: true })); });
-      await registeredAgain.promise;
-      expect(sent.filter(({ method }) => method === "DELETE")).toEqual([]);
-      expect(app.saved).toBe(endpoint);
-    } finally {
-      await act(async () => { page?.unmount(); });
-      for (const [name, descriptor] of restore) {
-        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-        else Reflect.deleteProperty(globalThis, name);
-      }
-    }
+    const refusedAtLoad = pc.nextRefusal();
+    await page.render(createElement(Page, { alertsOn: false }));
+    await refusedAtLoad;
+    pc.answer();
+    const server = globalThis.fetch;
+    globalThis.fetch = Object.assign(async (...args: Parameters<typeof fetch>) => {
+      const response = await server(...args);
+      if (args[0] === "/api/push/subscribe" && args[1]?.method === "POST") registeredAgain.resolve();
+      return response;
+    }, { preconnect: server.preconnect });
+    sent = [];
+    await page.render(createElement(Page, { alertsOn: true }));
+    await registeredAgain.promise;
+    expect(sent.filter(({ method }) => method === "DELETE")).toEqual([]);
+    expect(app.saved).toBe(endpoint);
   });
 
   it("tests the app's kept subscription without making one", async () => {

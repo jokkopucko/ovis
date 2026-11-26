@@ -57,6 +57,7 @@
     "@types/react-test-renderer": "^19.1.0",
     "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^6.1.2",
+    "happy-dom": "21.0.4",
     "playwright-core": "^1.49.1",
     "react-test-renderer": "19.3.0",
     "typescript": "^7.0.2",

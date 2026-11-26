@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:te
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, type ReactElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { PreferenceStore } from "../../server/preferences.ts";
 const named = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 import { type PreferencesChange, type SharedPreferences } from "../../shared/preferences.ts";
@@ -14,14 +14,16 @@ import { usePreferencesSync } from "./preferencesSync.ts";
 import type { UserError } from "./userError.ts";
 
 describe("preferences sync real send path", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let savedStorage: PropertyDescriptor | undefined;
   let dir: string;
   let store: PreferenceStore;
-  let records: Map<string, string>;
+
   let oldServer: boolean;
   let releaseAnswer: (() => Promise<void>) | undefined;
   let releaseGet: (() => Promise<void>) | undefined;
-  let renderers: ReactTestRenderer[];
+  let page: Page;
+  let mounted: Map<number, ReactElement>;
+  let nextMount: number;
   let clients: Client[];
   let revisions: number[];
   let answers: number;
@@ -32,7 +34,7 @@ describe("preferences sync real send path", () => {
   let refusals: number;
   let bodies: PreferencesChange[];
   let answerListeners: Set<() => void>;
-  let pageEvents: EventTarget;
+
   let keepalives: boolean[];
   let sent: PreferencesChange[];
   const dropNewKeys = ({ muted_panes: _muted, state_id: _id, ...doc }: SharedPreferences): SharedPreferences => ({
@@ -51,48 +53,34 @@ describe("preferences sync real send path", () => {
     resubscribed: () => void;
     disconnected: () => void;
     closed: () => void;
-    rerender: () => void;
+    rerender: () => Promise<void>;
   }
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT", "localStorage"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    records = new Map();
+    page = openPage();
     waits = new Map();
     syncEnabled = true;
-    pageEvents = new EventTarget();
     keepalives = [];
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
-    const localStorage = { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value), removeItem: (key: string) => records.delete(key) };
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: localStorage });
-    const tab = new Map<string, string>();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage,
-      // this tab's session storage, which a reload keeps
-      sessionStorage: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => tab.set(key, value), removeItem: (key: string) => tab.delete(key) },
-      setTimeout: (fn: () => void, ms: number) => {
+    savedStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: page.window.localStorage });
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en-US"] });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+    page.window.document.documentElement.style.setProperty("--bg", "#12100e");
+    Object.defineProperties(page.window, {
+      setTimeout: { configurable: true, value: (fn: () => void, ms: number) => {
         const id = globalThis.setTimeout(() => { waits.delete(id); fn(); }, ms);
         waits.set(id, ms);
         return id;
-      },
-      clearTimeout: (id: number) => { waits.delete(id); globalThis.clearTimeout(id); },
-      addEventListener: pageEvents.addEventListener.bind(pageEvents),
-      removeEventListener: pageEvents.removeEventListener.bind(pageEvents),
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-      visibilityState: "visible",
-      addEventListener: pageEvents.addEventListener.bind(pageEvents),
-      removeEventListener: pageEvents.removeEventListener.bind(pageEvents),
-    } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: (name: string) => (name === "--bg" ? "#12100e" : "") }) });
+      } },
+      clearTimeout: { configurable: true, value: (id: number) => { waits.delete(id); globalThis.clearTimeout(id); } },
+    });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
     oldServer = false;
     releaseAnswer = undefined;
     releaseGet = undefined;
-    renderers = [];
+    mounted = new Map();
+    nextMount = 0;
     clients = [];
     revisions = [];
     answers = 0;
@@ -138,20 +126,33 @@ describe("preferences sync real send path", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { for (const renderer of renderers) renderer.unmount(); });
     jest.useRealTimers();
+    await page.close();
     jest.restoreAllMocks();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
+    if (savedStorage) Object.defineProperty(globalThis, "localStorage", savedStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
     rmSync(dir, { recursive: true, force: true });
   });
 
+  const draw = () => page.render([...mounted.values()]);
+  const unmountLast = () => {
+    const id = [...mounted.keys()].at(-1);
+    if (id === undefined) throw new Error("No client mounted");
+    mounted.delete(id);
+    return draw();
+  };
+  const unmountClients = () => {
+    mounted.clear();
+    return page.render(null);
+  };
+  const leavePage = (type: string): void => {
+    const target = type === "visibilitychange" ? page.window.document : page.window;
+    target.dispatchEvent(new page.window.Event(type));
+  };
+
   async function open(raw: object = DEFAULT_SETTINGS, again = false): Promise<Client> {
-    if (!again) records.clear();
-    records.set("ovis:settings", JSON.stringify(raw));
+    if (!again) page.window.localStorage.clear();
+    page.window.localStorage.setItem("ovis:settings", JSON.stringify(raw));
     const unmounted = () => { throw new Error("not mounted"); };
     const client: Client = { known: false, settings: sanitizeSettings(raw), rendered: { id: "amber", mode: "dark" }, update: unmounted, receive: unmounted, saveError: null, paused: false, retrying: false, retry: unmounted, resubscribed: unmounted, disconnected: unmounted, closed: unmounted, rerender: unmounted };
     function Probe() {
@@ -171,11 +172,12 @@ describe("preferences sync real send path", () => {
       client.closed = sync.closed;
       return null;
     }
-    const tree = () => createElement(SettingsProvider, null, createElement(Probe));
-    let renderer: ReactTestRenderer | undefined;
-    await act(async () => { renderer = create(tree()); });
-    renderers.push(renderer!);
-    client.rerender = () => renderer!.update(tree());
+    const key = nextMount++;
+    client.rerender = () => {
+      mounted.set(key, createElement(SettingsProvider, { key, children: createElement(Probe) }));
+      return draw();
+    };
+    await client.rerender();
     clients.push(client);
     return client;
   }
@@ -205,13 +207,20 @@ describe("preferences sync real send path", () => {
   }
   function nextAbsorbed(): Promise<void> {
     // the answer is taken in once its pins are stored; React draws nothing before this act ends
-    const storage = window.localStorage;
+    const storage = page.window.localStorage;
     return bounded("the answer's pins were not stored", (arrived) => {
       const { setItem, removeItem } = storage;
       const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") arrived(); };
-      storage.setItem = (key, value) => { setItem(key, value); told(key); };
-      storage.removeItem = (key) => { removeItem(key); told(key); };
-      return () => { storage.setItem = setItem; storage.removeItem = removeItem; };
+      Object.defineProperties(storage, {
+        setItem: { configurable: true, value: (key: string, value: string) => { setItem(key, value); told(key); } },
+        removeItem: { configurable: true, value: (key: string) => { removeItem(key); told(key); } },
+      });
+      return () => {
+        Object.defineProperties(storage, {
+          setItem: { configurable: true, value: setItem },
+          removeItem: { configurable: true, value: removeItem },
+        });
+      };
     });
   }
   async function send(): Promise<void> {
@@ -291,7 +300,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { store.set({ settings: { palette } }); });
     await windows(3);
     expect(client.settings.darkTheme).toBe(palette);
-    expect(JSON.parse(records.get("ovis:themes") ?? "{}").darkTheme).toBe(palette);
+    expect(JSON.parse(page.window.localStorage.getItem("ovis:themes") ?? "{}").darkTheme).toBe(palette);
     expect(revisions).toEqual([1, 2]);
   });
 
@@ -300,8 +309,8 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
 
     // When the page closes, or is hidden (a phone may kill it then).
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    await act(async () => { pageEvents.dispatchEvent(new Event(type)); });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
+    await act(async () => { leavePage(type); });
 
     expect(keepalives).toEqual([true]);
     expect(store.get().settings.showUsage).toBe(!DEFAULT_SETTINGS.showUsage);
@@ -317,7 +326,7 @@ describe("preferences sync real send path", () => {
     await windows();
     await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
 
-    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { leavePage("pagehide"); });
 
     expect(keepalives).toEqual([false, true]);
     expect(bodies[1]?.settings).toMatchObject({ showUsage: !DEFAULT_SETTINGS.showUsage, showThinking: !DEFAULT_SETTINGS.showThinking });
@@ -332,16 +341,16 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
 
     // When the page is hidden, then goes, before the answer (a reload fires both).
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); pageEvents.dispatchEvent(new Event("pagehide")); });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
+    await act(async () => { leavePage("visibilitychange"); leavePage("pagehide"); });
 
     expect(keepalives).toEqual([true]);
     const answered = nextAnswer();
     await act(async () => { gate.resolve(); await answered; });
     releaseAnswer = undefined;
 
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+    await act(async () => { leavePage("visibilitychange"); });
     await windows(3);
     expect(keepalives).toEqual([true]);
   });
@@ -356,14 +365,14 @@ describe("preferences sync real send path", () => {
     await send();
     await act(async () => { client.update({ showUsage: !on }); });
     refusing = () => Promise.reject(new TypeError("Failed to fetch"));
-    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
-    await act(async () => { renderers.pop()!.unmount(); });
+    await act(async () => { leavePage("pagehide"); });
+    await unmountLast();
     clients.length = 0;
     refusing = null;
     expect(store.get().settings.showUsage).toBe(on);
     if (savedElsewhere) store.set({ settings: { showUsage: on } });
 
-    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    const reloaded = await open(JSON.parse(page.window.localStorage.getItem("ovis:settings")!), true);
     await windows(3);
 
     expect(store.get().settings.showUsage).toBe(savedElsewhere ? on : !on);
@@ -372,8 +381,8 @@ describe("preferences sync real send path", () => {
 
   it("sends nothing on its way out when nothing changed", async () => {
     await open();
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); pageEvents.dispatchEvent(new Event("visibilitychange")); });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
+    await act(async () => { leavePage("pagehide"); leavePage("visibilitychange"); });
     await windows(3);
     expect(bodies).toEqual([]);
   });
@@ -386,7 +395,7 @@ describe("preferences sync real send path", () => {
 
     await act(async () => {
       if (!drawn) client.update({ showUsage: on });
-      pageEvents.dispatchEvent(new Event("pagehide"));
+      leavePage("pagehide");
     });
 
     expect(bodies.map((body) => [body.settings.darkTheme, body.settings.showUsage])).toEqual([["gruvbox", on]]);
@@ -532,7 +541,7 @@ describe("preferences sync real send path", () => {
     clients.splice(clients.indexOf(b), 1);
     await act(async () => { a.update({ markdownStyle: "tinted" }); });
     await send();
-    await act(async () => { pageEvents.dispatchEvent(Object.assign(new Event("storage"), { key: "ovis:markdown-style", storageArea: window.localStorage })); });
+    await act(async () => { page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "ovis:markdown-style", storageArea: page.window.localStorage })); });
     clients.splice(clients.indexOf(a), 1);
     store.set({ settings: { markdownStyle: "colorful" } });
     clients.push(b);
@@ -551,7 +560,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await windows();
     await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
-    await act(async () => { renderers.pop()!.unmount(); });
+    await unmountLast();
     clients.length = 0;
 
     let pick: (patch: Partial<Settings>) => void = () => { throw new Error("not mounted"); };
@@ -559,9 +568,11 @@ describe("preferences sync real send path", () => {
       pick = useSettings().update;
       return null;
     }
-    await act(async () => { renderers.push(create(createElement(SettingsProvider, null, createElement(OtherTab)))); });
+    const key = nextMount++;
+    mounted.set(key, createElement(SettingsProvider, { key, children: createElement(OtherTab) }));
+    await draw();
     await act(async () => { pick({ darkTheme: "gruvbox" }); });
-    const storedTheme = (): unknown => JSON.parse(records.get("ovis:settings")!).darkTheme;
+    const storedTheme = (): unknown => JSON.parse(page.window.localStorage.getItem("ovis:settings")!).darkTheme;
     expect(storedTheme()).toBe("gruvbox");
 
     const absorbed = nextAbsorbed();
@@ -597,13 +608,13 @@ describe("preferences sync real send path", () => {
     const client = await open();
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     refusing = () => Promise.reject(new TypeError("Failed to fetch"));
-    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
-    await act(async () => { renderers.pop()!.unmount(); });
+    await act(async () => { leavePage("pagehide"); });
+    await unmountLast();
     clients.length = 0;
     refusing = null;
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
-    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    const reloaded = await open(JSON.parse(page.window.localStorage.getItem("ovis:settings")!), true);
     await windows();
     expect(keepalives).toEqual([true, false]);
     expect(bodies[1]?.settings).toMatchObject({ darkTheme: "tokyo-night" });
@@ -630,13 +641,13 @@ describe("preferences sync real send path", () => {
     const client = await open();
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     refusing = () => Promise.reject(new TypeError("Failed to fetch"));
-    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
-    await act(async () => { renderers.pop()!.unmount(); });
+    await act(async () => { leavePage("pagehide"); });
+    await unmountLast();
     clients.length = 0;
     refusing = null;
     const gate = Promise.withResolvers<void>();
     releaseGet = () => gate.promise;
-    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    const reloaded = await open(JSON.parse(page.window.localStorage.getItem("ovis:settings")!), true);
     await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
     if (drawn) await act(async () => { reloaded.update({ darkTheme: "tokyo-night" }); });
 
@@ -680,13 +691,13 @@ describe("preferences sync real send path", () => {
     const client = await open(boot);
     await act(async () => { client.update(edit); });
     refusing = () => Promise.reject(new TypeError("Failed to fetch"));
-    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
-    await act(async () => { renderers.pop()!.unmount(); });
+    await act(async () => { leavePage("pagehide"); });
+    await unmountLast();
     clients.length = 0;
     refusing = null;
     const gate = Promise.withResolvers<void>();
     releaseGet = () => gate.promise;
-    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    const reloaded = await open(JSON.parse(page.window.localStorage.getItem("ovis:settings")!), true);
     const first = async (): Promise<void> => {
       const absorbed = nextAbsorbed();
       gate.resolve();
@@ -875,7 +886,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { setSidebarPins(["local:t1"]); });
     await send();
     expect(store.get().pins).toEqual(["local:t1"]);
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     store.set({ settings: {}, pins: [] });
     const before = sent.length;
@@ -892,7 +903,7 @@ describe("preferences sync real send path", () => {
     await windows();
     await act(async () => { setSidebarPins(["local:t1"]); });
     await send();
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
@@ -911,7 +922,7 @@ describe("preferences sync real send path", () => {
     await windows();
     await act(async () => { setSidebarPins(["local:t1"]); });
     await send();
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
@@ -932,7 +943,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { setSidebarPins(["local:t1"]); });
     await send();
     expect(store.get().revision).toBe(2);
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
@@ -953,7 +964,7 @@ describe("preferences sync real send path", () => {
     await windows();
     await act(async () => { setSidebarPins(["local:t1"]); });
     await send();
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
@@ -965,7 +976,7 @@ describe("preferences sync real send path", () => {
     oldServer = true;
     await open(DEFAULT_SETTINGS, true);
     await windows();
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     oldServer = false;
     store.set({ settings: {}, pins: [] });
@@ -1406,7 +1417,7 @@ describe("preferences sync real send path", () => {
     await longWait();
     expect([bodies.length, watching.saveError, watching.retrying]).toEqual([1, null, false]);
 
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     clients.length = 0;
     const older = await open();
     refuse = Response.json({ error: { code: "not_found" } }, { status: 404 });
@@ -1447,7 +1458,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { clients[0]!.update({ darkTheme: "tokyo-night" }); });
     await windows();
     expect(bodies.length).toBe(1);
-    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    await unmountClients();
     await act(async () => { gate.resolve(); });
     await act(async () => {});
     expect(refusals).toBe(1);
@@ -1461,7 +1472,7 @@ describe("preferences sync real send path", () => {
     await windows();
     expect(bodies.length).toBe(1);
     syncEnabled = false;
-    await act(async () => { client.rerender(); });
+    await client.rerender();
     await act(async () => { gate.resolve(); });
     await act(async () => {});
     expect(client.saveError).not.toBeNull();
@@ -1471,7 +1482,7 @@ describe("preferences sync real send path", () => {
 
     refusing = null;
     syncEnabled = true;
-    await act(async () => { client.rerender(); });
+    await client.rerender();
     await send();
     expect([bodies.length, answers, client.saveError]).toEqual([2, 1, null]);
     expect(store.get().settings.darkTheme).toBe("tokyo-night");

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "./page.fixture.ts";
 import { HIDDEN_MACHINES_KEY, useShownMachines } from "./hiddenMachines.ts";
 
 interface Pc { id: string }
@@ -13,35 +13,21 @@ function Probe({ machines, selected, picks, restored, calls }: ProbeProps) {
 }
 
 describe("a tab opened on its last selection, on a PC hidden here", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   const roster: Pc[] = [{ id: "local" }, { id: "work" }];
 
   beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const records = new Map([[HIDDEN_MACHINES_KEY, JSON.stringify(["work"])]]);
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => void records.set(key, value) },
-      addEventListener: () => undefined, removeEventListener: () => undefined,
-    } });
+    page = openPage();
+    page.window.localStorage.setItem(HIDDEN_MACHINES_KEY, JSON.stringify(["work"]));
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   async function open(props: Omit<ProbeProps, "machines">): Promise<void> {
-    await act(async () => { renderer = create(createElement(Probe, { ...props, machines: [] })); });
+    await page.render(createElement(Probe, { ...props, machines: [] }));
   }
   async function rosterArrives(props: Omit<ProbeProps, "machines">): Promise<void> {
-    await act(async () => { renderer!.update(createElement(Probe, { ...props, machines: roster })); });
+    await page.render(createElement(Probe, { ...props, machines: roster }));
   }
 
   it("moves the selection to a PC shown once the roster names its PC", async () => {

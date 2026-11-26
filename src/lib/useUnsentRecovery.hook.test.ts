@@ -1,64 +1,51 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { composerDrafts } from "./composerDraft.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { useUnsentRecovery } from "./useUnsentRecovery.ts";
 
 type Hook = ReturnType<typeof useUnsentRecovery>;
-const window = Object.getOwnPropertyDescriptor(globalThis, "window");
-const data = new Map<string, string>();
-const storage = {
-  get length() { return data.size; },
-  key: (index: number) => [...data.keys()][index] ?? null,
-  getItem: (key: string) => data.get(key) ?? null,
-  setItem: (key: string, value: string) => { data.set(key, value); },
-  removeItem: (key: string) => { data.delete(key); },
-  clear: () => { data.clear(); },
-};
-beforeEach(() => { Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage } }); });
-afterEach(() => {
-  if (window) Object.defineProperty(globalThis, "window", window);
-  else Reflect.deleteProperty(globalThis, "window");
+let page: Page;
+beforeEach(() => { page = openPage(); });
+afterEach(async () => {
+  await page.close();
 });
 
-function mount(): { hook: () => Hook; unmount: () => void } {
+async function mount(): Promise<() => Hook> {
   let hook: Hook | null = null;
   function Probe() {
     hook = useUnsentRecovery({ selectedMachineId: "local", selectedPaneId: null, setView: () => {}, pickView: () => {} });
     return null;
   }
-  let renderer: ReactTestRenderer | null = null;
-  act(() => { renderer = create(createElement(Probe)); });
-  return {
-    hook: () => { if (hook === null) throw new Error("not rendered"); return hook; },
-    unmount: () => act(() => { renderer!.unmount(); }),
-  };
+  await page.render(createElement(Probe));
+  return () => { if (hook === null) throw new Error("not rendered"); return hook; };
 }
 
-it("keeps the record of text put in the box of a PC whose herdr is not proven, and lets one go that storage kept", () => {
+it("keeps the record of text put in the box of a PC whose herdr is not proven, and lets one go that storage kept", async () => {
   const pane = { pane_id: "w1:p1" } as HerdrPane;
   // an older bridge names no herdr: its panes' drafts live in this page alone
   paneLifetimes.observe([{ id: "older-bridge", snapshot: { panes: [] } } as unknown as Machine], (item) => item.pane_id);
   paneLifetimes.observe([{ id: "proven-pc", snapshot: { panes: [], herdr_lifetime: "recovery-herdr" } } as unknown as Machine], (item) => item.pane_id);
-  const { hook, unmount } = mount();
-  act(() => { hook().openUnsent({ machineId: "older-bridge", pane }); });
+  const hook = await mount();
+  await act(async () => { hook().openUnsent({ machineId: "older-bridge", pane }); });
   expect(hook().recover("kept for later")).toBe(false);
   expect(composerDrafts.read("ovis:composer-draft:remote:older-bridge:w1%3Ap1").text).toBe("kept for later");
-  expect([...data.keys()].filter((key) => key.includes("older-bridge"))).toEqual([]);
-  act(() => { hook().openUnsent({ machineId: "proven-pc", pane }); });
+  const { localStorage } = page.window;
+  expect(Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter((key) => key?.includes("older-bridge"))).toEqual([]);
+  await act(async () => { hook().openUnsent({ machineId: "proven-pc", pane }); });
   expect(hook().recover("into storage")).toBe(true);
-  expect(data.get("ovis:composer-draft:remote:proven-pc:w1%3Ap1")).toBe("into storage");
-  unmount();
+  expect(localStorage.getItem("ovis:composer-draft:remote:proven-pc:w1%3Ap1")).toBe("into storage");
 });
 
-it("puts a recovered comment message back agent-only, and other text as it was", () => {
+it("puts a recovered comment message back agent-only, and other text as it was", async () => {
   const pane = { pane_id: "w1:p2" } as HerdrPane;
   const key = "ovis:composer-draft:remote:proven-pc:w1%3Ap2";
-  const { hook, unmount } = mount();
-  act(() => { hook().openUnsent({ machineId: "proven-pc", pane }); });
+  paneLifetimes.observe([{ id: "proven-pc", snapshot: { panes: [], herdr_lifetime: "recovery-herdr" } } as unknown as Machine], (item) => item.pane_id);
+  const hook = await mount();
+  await act(async () => { hook().openUnsent({ machineId: "proven-pc", pane }); });
   expect(hook().recover("plain words")).toBe(true);
   expect(composerDrafts.isAgentOnly(key)).toBe(false);
   composerDrafts.set(key, "");
@@ -67,10 +54,9 @@ it("puts a recovered comment message back agent-only, and other text as it was",
     expect(composerDrafts.isAgentOnly(key)).toBe(true);
     composerDrafts.set(key, "");
   }
-  unmount();
 });
 
-it("puts an agent-only draft a herdr restart kept back agent-only, its quote edited away or not", () => {
+it("puts an agent-only draft a herdr restart kept back agent-only, its quote edited away or not", async () => {
   const snapshot = (lifetime: string) => [{ id: "restart-pc", snapshot: { panes: [], herdr_lifetime: lifetime } } as unknown as Machine];
   paneLifetimes.observe(snapshot("first"), (item) => item.pane_id);
   const key = "ovis:composer-draft:remote:restart-pc:p";
@@ -79,11 +65,10 @@ it("puts an agent-only draft a herdr restart kept back agent-only, its quote edi
   paneLifetimes.observe(snapshot("second"), (item) => item.pane_id);
   const record = paneLifetimes.unsent().find((item) => item.machine_id === "restart-pc" && item.text === "rm backup.txt");
   expect(record?.agent_only).toBe(true);
-  const { hook, unmount } = mount();
-  act(() => { hook().openUnsent({ machineId: "restart-pc", pane: { pane_id: "p" } as HerdrPane }); });
+  const hook = await mount();
+  await act(async () => { hook().openUnsent({ machineId: "restart-pc", pane: { pane_id: "p" } as HerdrPane }); });
   expect(hook().recover(record!.text, record!.agent_only === true)).toBe(true);
   expect(composerDrafts.isAgentOnly(key)).toBe(true);
   composerDrafts.set(key, "");
   paneLifetimes.discard(record!.id);
-  unmount();
 });

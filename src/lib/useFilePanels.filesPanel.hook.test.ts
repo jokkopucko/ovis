@@ -1,36 +1,22 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { DEFAULT_SETTINGS, type Settings } from "./settings.ts";
 import { useFilePanels } from "./useFilePanels.ts";
 
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let panels: ReturnType<typeof useFilePanels>;
 
+let htmlElement: PropertyDescriptor | undefined;
 beforeEach(() => {
-  for (const key of ["window", "document", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  const events = new EventTarget();
-  let state: unknown = null;
-  Object.defineProperty(globalThis, "window", { configurable: true, value: {
-    location: new URL("http://localhost:7317/"),
-    history: { get state() { return state; }, replaceState: (next: unknown) => { state = next; }, pushState: (next: unknown) => { state = next; } },
-    addEventListener: events.addEventListener.bind(events),
-    removeEventListener: events.removeEventListener.bind(events),
-  } });
-  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { activeElement: null } });
+  page = openPage("http://localhost:7317/");
+  htmlElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
 });
-
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
-  for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  descriptors.clear();
+  await page.close();
+  if (htmlElement) Object.defineProperty(globalThis, "HTMLElement", htmlElement);
+  else Reflect.deleteProperty(globalThis, "HTMLElement");
 });
 
 async function mount(settings: Partial<Settings>, filePanelAvailable: boolean): Promise<void> {
@@ -38,7 +24,7 @@ async function mount(settings: Partial<Settings>, filePanelAvailable: boolean): 
     panels = useFilePanels({ settings: { ...DEFAULT_SETTINGS, ...settings }, filePanelAvailable, selectedPaneId: "p1", selectedMachineId: "local" });
     return null;
   }
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   await act(async () => { panels.setFilesOpen(true); });
 }
 
@@ -69,13 +55,13 @@ it("closes Files beside the pane when the window narrows under a web page that c
     panels = useFilePanels({ settings, filePanelAvailable: wide, selectedPaneId: "p1", selectedMachineId: "local" });
     return null;
   }
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   await act(async () => { panels.setFilesOpen(true); });
   await act(async () => { expect(panels.openWebPage("http://localhost:3000/report", false, "local")).toBe(true); });
   expect(panels.filesCovered).toBe(true);
 
   wide = false;
-  await act(async () => { renderer!.update(createElement(Probe)); });
+  await page.render(createElement(Probe));
 
   expect(panels.webPage).not.toBeNull();
   expect(panels.filesOpen).toBe(false);
@@ -88,13 +74,13 @@ it("closes Files beside the pane when the window narrows under a popup file", as
     panels = useFilePanels({ settings, filePanelAvailable: wide, selectedPaneId: "p1", selectedMachineId: "local" });
     return null;
   }
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   await act(async () => { panels.setFilesOpen(true); });
   await act(async () => { panels.viewFile("src/app.ts"); });
   expect(panels.fileDocked).toBe(false);
 
   wide = false;
-  await act(async () => { renderer!.update(createElement(Probe)); });
+  await page.render(createElement(Probe));
 
   expect(panels.viewing).not.toBeNull();
   expect(panels.filesOpen).toBe(false);

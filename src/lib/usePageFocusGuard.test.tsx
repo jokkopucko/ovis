@@ -1,66 +1,62 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
+import { act, createElement, useRef } from "react";
 
+import { openPage, type Page } from "./page.fixture.ts";
 import { usePageFocusGuard } from "./usePageFocusGuard.ts";
 
-const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "HTMLElement", "setTimeout"];
-const timers: Array<() => void> = [];
-const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-let renderer: ReactTestRenderer | undefined;
-
-class Element { isConnected = true; focused = 0; focus(): void { this.focused += 1; } }
-type Listener = (event: unknown) => void;
-function target() {
-  const listeners = new Map<string, Listener[]>();
-  return {
-    addEventListener(type: string, listener: Listener, capture?: boolean) { listeners.set(`${type}:${capture === true}`, [...(listeners.get(`${type}:${capture === true}`) ?? []), listener]); },
-    removeEventListener(type: string, listener: Listener, capture?: boolean) { listeners.set(`${type}:${capture === true}`, (listeners.get(`${type}:${capture === true}`) ?? []).filter((one) => one !== listener)); },
-    fire(type: string, capture: boolean, event: unknown = {}) { for (const listener of listeners.get(`${type}:${capture}`) ?? []) listener(event); },
-  };
-}
-
-let win: ReturnType<typeof target> & { focus(): void };
-let doc: ReturnType<typeof target> & { activeElement: Element | null; hasFocus(): boolean };
-const frame = new Element();
-const field = new Element();
-const ref = { current: frame } as unknown as RefObject<HTMLIFrameElement | null>;
+let page: Page;
+let savedHTMLElement: PropertyDescriptor | undefined;
 let grabs = 0;
 let shield = false;
 
 function Guard() {
+  const ref = useRef<HTMLIFrameElement>(null);
   shield = usePageFocusGuard(ref, true, () => { grabs += 1; }).shield;
-  return null;
+  return [
+    createElement("input", { key: "field" }),
+    createElement("button", { key: "other" }, "Other control"),
+    createElement("iframe", { key: "frame", ref }),
+  ];
 }
 
 beforeEach(async () => {
-  win = Object.assign(target(), { focus() {} });
-  doc = Object.assign(target(), { activeElement: null as Element | null, hasFocus: () => true });
+  page = openPage();
+  savedHTMLElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
+  Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
   grabs = 0;
-  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: win, document: doc, HTMLElement: Element, setTimeout: (run: () => void) => { timers.push(run); return 0; } });
-  await act(async () => { renderer = create(createElement(Guard)); });
-  await act(async () => doc.fire("focusin", true, { target: field }));
+  jest.useFakeTimers();
+  await page.render(createElement(Guard));
+  await focusField();
 });
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
-  for (const late of timers.splice(0)) late();
-  for (const [name, descriptor] of saved) {
-    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-    else Reflect.deleteProperty(globalThis, name);
-  }
+  await page.render(null);
+  jest.runOnlyPendingTimers();
+  jest.useRealTimers();
+  await page.close();
+  if (savedHTMLElement) Object.defineProperty(globalThis, "HTMLElement", savedHTMLElement);
+  else Reflect.deleteProperty(globalThis, "HTMLElement");
 });
 
+const field = () => page.one<HTMLInputElement>("input");
+const focusField = () => act(async () => { field().focus(); });
 /** The frame has the focus and the window lost it: what a browser reports when the focus goes into a page. */
-const intoPage = async (): Promise<void> => { doc.activeElement = frame; await act(async () => win.fire("blur", false)); };
-const tab = async (defaultPrevented = false): Promise<void> => { await act(async () => win.fire("keydown", false, { key: "Tab", defaultPrevented })); };
+const intoPage = () => act(async () => {
+  page.one<HTMLIFrameElement>("iframe").focus();
+  page.window.dispatchEvent(new page.window.Event("blur"));
+});
+const tab = (handled = false) => act(async () => {
+  const event = new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  if (handled) event.preventDefault();
+  page.window.dispatchEvent(event);
+});
 
 test("a page that takes the focus by itself loses its scripts, and the focus goes back", async () => {
   expect(shield).toBe(true);
   await intoPage();
   expect(grabs).toBe(1);
-  expect(field.focused).toBeGreaterThan(0);
+  expect(document.activeElement).toBe(field());
 });
 
 test("a Tab from the control before the page puts the focus in it", async () => {
@@ -71,7 +67,12 @@ test("a Tab from the control before the page puts the focus in it", async () => 
 });
 
 test("a Tab the terminal kept for itself does not let the page take the focus", async () => {
-  await act(async () => win.fire("keydown", true, { key: "Tab", defaultPrevented: false }));
+  await act(async () => {
+    const input = page.window.document.querySelector("input");
+    if (!input) throw new Error("Expected input");
+    input.addEventListener("keydown", (event) => event.stopPropagation(), { once: true });
+    input.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+  });
   await intoPage();
   expect(grabs).toBe(1);
 });
@@ -84,7 +85,7 @@ test("a Tab the app handled does not let the page take the focus", async () => {
 
 test("a Tab that moved the focus inside the app does not let the page take it next", async () => {
   await tab();
-  await act(async () => doc.fire("focusin", true, { target: field }));
+  await act(async () => { page.one<HTMLButtonElement>("button").focus(); });
   await intoPage();
   expect(grabs).toBe(1);
 });
@@ -92,7 +93,7 @@ test("a Tab that moved the focus inside the app does not let the page take it ne
 test("one Tab lets the focus in once", async () => {
   await tab();
   await intoPage();
-  await act(async () => doc.fire("focusin", true, { target: field }));
+  await focusField();
   await intoPage();
   expect(grabs).toBe(1);
 });

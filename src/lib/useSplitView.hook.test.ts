@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { SplitState } from "./split.ts";
 import { useSplitLayout } from "./useSplitView.ts";
 
 describe("useSplitLayout", () => {
-  let renderer: ReactTestRenderer | undefined;
-  const saved = new Map<string, PropertyDescriptor | undefined>();
+  let page: Page;
   let written: (SplitState | null)[];
   let notes: unknown[];
   let layout: ReturnType<typeof useSplitLayout>;
@@ -18,23 +17,13 @@ describe("useSplitLayout", () => {
   };
 
   beforeEach(() => {
-    for (const key of ["IS_REACT_ACT_ENVIRONMENT", "window"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener() {}, removeEventListener() {} } });
+    page = openPage();
     written = [];
     notes = [];
     splitShownRef.current = false;
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    saved.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   const nothing = (): void => {};
   function Probe({ wideScreen, threadDrawn }: { wideScreen: boolean; threadDrawn: boolean }) {
@@ -51,10 +40,7 @@ describe("useSplitLayout", () => {
     return null;
   }
   const draw = async (props: { wideScreen: boolean; threadDrawn: boolean }): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, props));
-      else renderer = create(createElement(Probe, props));
-    });
+    await page.render(createElement(Probe, props));
   };
 
   it("tells the alerts the split is on the screen only while both halves are drawn, not under a thread drawn alone", async () => {

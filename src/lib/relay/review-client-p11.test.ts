@@ -9,8 +9,7 @@
  * On 114ffe9c1: 8 pass, 7 fail (the seven FINDING tests).
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create } from "react-test-renderer";
+import { act, createElement } from "react";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { signListEntry } from "../../../shared/account-list.ts";
 import { generateKeyPair, exportPublicKey } from "../../../shared/relay-e2ee.ts";
@@ -25,6 +24,7 @@ import { setPageAccountList } from "../account/pageList.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { signedInAccount } from "../account/useAccountPcs.ts";
+import { openPage } from "../page.fixture.ts";
 import { usePcRemoval } from "../../components/usePcRemoval.tsx";
 import { SettingsProvider } from "../settings.ts";
 import { createAccountController } from "./accountController.ts";
@@ -43,30 +43,32 @@ type World = ReturnType<typeof listWorld>;
 const noWait = { wait: async () => {} };
 const settle = async (): Promise<void> => { for (let turn = 0; turn < 40; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
 
-/** A browser-like page for the shell and the controller: window, document, storage; restored by dispose. */
-function fakePage() {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "matchMedia", "getComputedStyle"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const storage = (store: Map<string, string>) => ({ getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() });
+/** The shell also reads storage and matchMedia as bare browser globals. */
+function openShellPage() {
+  const page = openPage("https://app.ovis.sh/");
+  const { window } = page;
+  window.sessionStorage.setItem("ovis-launched", "1");
   const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const events = new EventTarget();
-  const doc = new EventTarget();
-  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
-  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage(new Map()) });
-  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: storage(new Map([["ovis-launched", "1"]])) });
-  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-  Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-  Object.defineProperty(globalThis, "window", { configurable: true, value: {
-    location: { href: "https://app.ovis.sh/", search: "", hash: "", origin: "https://app.ovis.sh", pathname: "/" },
-    history: { state: null, replaceState() {}, pushState() {} }, matchMedia, innerWidth: 1440,
-    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-  } });
-  Object.defineProperty(globalThis, "document", { configurable: true, value: {
-    visibilityState: "hidden", documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null,
-    addEventListener: doc.addEventListener.bind(doc), removeEventListener: doc.removeEventListener.bind(doc), dispatchEvent: doc.dispatchEvent.bind(doc),
-  } });
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  return () => { for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } };
+  Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMedia });
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+  Object.defineProperty(window.document, "visibilityState", { configurable: true, value: "hidden" });
+  Object.defineProperties(window.navigator, {
+    languages: { configurable: true, value: ["en"] },
+    userAgent: { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64)" },
+    maxTouchPoints: { configurable: true, value: 0 },
+  });
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ localStorage: window.localStorage, sessionStorage: window.sessionStorage, matchMedia })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  return { page, async close() {
+    await page.close();
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  } };
 }
 
 /** A directory row the account service gives for a PC: routed, and heard from a minute ago. */
@@ -97,9 +99,9 @@ const full = (inner: ListStore): ListStore => ({
 const noPairings: ShellDeviceStore = { get: async () => undefined, list: async () => [], remove: async () => {}, removeRow: async () => false, update: async () => { throw new Error("No pairing is made here"); } };
 
 describe("P11 review: what a page that holds a saved copy draws and opens", () => {
-  let restore: () => void;
-  beforeEach(() => { restore = fakePage(); });
-  afterEach(() => { setPageAccountList(null); restore(); });
+  let browser: ReturnType<typeof openShellPage>;
+  beforeEach(() => { browser = openShellPage(); });
+  afterEach(async () => { setPageAccountList(null); await browser.close(); });
 
   /** A device that started its account's list and added Desk to it; the account service's directory also names a PC of its own. */
   async function account() {
@@ -163,7 +165,7 @@ describe("P11 review: what a page that holds a saved copy draws and opens", () =
     const service = { forSignIn: () => ({ deletePc: async (serverId: string) => { deleted.push(serverId); } }) } as unknown as Parameters<typeof usePcRemoval>[0];
     let hook: ReturnType<typeof usePcRemoval> | undefined;
     const Probe = () => { hook = usePcRemoval(service, (_serverId, how) => { told.push(how); }); return null; };
-    await act(async () => { create(createElement(SettingsProvider, { children: createElement(Probe) })); });
+    await browser.page.render(createElement(SettingsProvider, { children: createElement(Probe) }));
     return { deleted, told, remove: (session: WorldDevice["session"], serverId: string) => act(async () => { await hook!.remove(session, serverId).catch(() => false); }) };
   }
 
@@ -209,9 +211,9 @@ describe("P11 review: what a page that holds a saved copy draws and opens", () =
 });
 
 describe("P11 review: a device that every sign-in now offers account-list-1 from, meeting a pinned PC that holds no row for it", () => {
-  let restore: () => void;
-  beforeEach(() => { restore = fakePage(); });
-  afterEach(() => { restore(); });
+  let browser: ReturnType<typeof openShellPage>;
+  beforeEach(() => { browser = openShellPage(); });
+  afterEach(async () => { await browser.close(); });
 
   /**
    * A saved pairing of a device with no account here (signed out, or of an account with no list), opened on its PC's own
@@ -295,9 +297,9 @@ describe("P11 review: the clean-up a Remove signs", () => {
 });
 
 describe("P11 review: which key the shell signs in with, against a PC that lies about following a list", () => {
-  let restore: () => void;
-  beforeEach(() => { restore = fakePage(); });
-  afterEach(() => { restore(); });
+  let browser: ReturnType<typeof openShellPage>;
+  beforeEach(() => { browser = openShellPage(); });
+  afterEach(async () => { await browser.close(); });
 
   /**
    * A PC's own page, signed in with a registered key, on a device whose list holds that PC (or not: `holds`). The PC

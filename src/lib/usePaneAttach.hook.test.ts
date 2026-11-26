@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { fontSettled } from "./fontFamily.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { usePaneAttach, type PaneAttachDeps } from "./usePaneAttach.ts";
 import { useTerminalRefits, type TerminalRefitsDeps } from "./useTerminalRefits.ts";
 import { HerdrSocket } from "./ws.ts";
@@ -26,8 +26,8 @@ const AFTER = "w1:p2";
 const COLORS = {} as TerminalRefitsDeps["colors"];
 
 describe("usePaneAttach with the inbox mode's list over the pane", () => {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let savedSocket: PropertyDescriptor | undefined;
+  let page: Page;
   let client: HerdrSocket;
   let socket: FakeSocket;
   const termRef: RefObject<GhosttyTerminal | null> = { current: null };
@@ -42,12 +42,12 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     releasedRef.current = false;
     cachedRef.current = false;
     presentations = 0;
-    for (const key of ["IS_REACT_ACT_ENVIRONMENT", "WebSocket", "window", "document"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
+    savedSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
     Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: FakeSocket });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
     // the page in use: an attach sizes the pty unless it says keep_size
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", hasFocus: () => true, addEventListener() {}, removeEventListener() {} } });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+    Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
     termRef.current = null;
     client = new HerdrSocket("ws://test/ws");
     client.connect();
@@ -57,14 +57,11 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     client.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    saved.clear();
+    await page.close();
+    if (savedSocket) Object.defineProperty(globalThis, "WebSocket", savedSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
   });
 
   const ref = <T,>(current: T): RefObject<T> => ({ current });
@@ -91,10 +88,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     return null;
   }
   const draw = async (props: { paneId: string; covered: boolean; mirrored?: boolean | null; presented?: boolean; cached?: boolean }): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, props));
-      else renderer = create(createElement(Probe, props));
-    });
+    await page.render(createElement(Probe, props));
   };
   const sizing = (from: number) => socket.sent.slice(from).filter((frame) => ["attach", "resize", "release-size"].includes(frame.type));
   const layOut = (): void => { termRef.current = { cols: 100, rows: 30, options: {}, reset: nothing } as unknown as GhosttyTerminal; };

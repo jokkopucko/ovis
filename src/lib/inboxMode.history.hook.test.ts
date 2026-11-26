@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
-import { createElement, useLayoutEffect, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, useLayoutEffect, useState, type RefObject } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
 import { linksSomewhere, readLink, type AppLink, type CreateDraft } from "./deepLink.ts";
@@ -35,13 +35,12 @@ const snapshot = {
 } as unknown as Snapshot;
 
 describe("the inbox mode in the history", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let paneId: string | null;
   let shell: { mode: InboxMode; inbox: ReturnType<typeof useInbox> };
-  let entries: Array<{ state: unknown; url: URL }>;
+  let entries: Array<{ state: object | null; url: URL }>;
   let index: number;
-  let listeners: Array<{ type: string; listener: (event: Event) => void }>;
+  let draw: () => void;
   const refs = {
     selection: { current: { machineId: "local", paneId: null, generation: 0 } as SelectionMark },
     machines: { current: [] as Machine[] },
@@ -58,6 +57,8 @@ describe("the inbox mode in the history", () => {
   let setting: boolean;
   let navigation: string | undefined;
   function Probe({ link }: { link: AppLink | null }) {
+    const [, setRevision] = useState(0);
+    draw = () => setRevision((revision) => revision + 1);
     const mode = useInboxMode({ startsIn: () => pageStartsInInbox(setting, true, link) });
     const inbox = useInbox({ on: mode.on, initialLink: link, drawerOpenRef: refs.drawerOpen });
     shell = { mode, inbox };
@@ -80,58 +81,39 @@ describe("the inbox mode in the history", () => {
     return null;
   }
   let link: AppLink | null;
-  const draw = (): void => { renderer?.update(createElement(Probe, { link })); };
 
   beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    listeners = [];
+    page = openPage("http://localhost:7317/");
     setting = false;
     navigation = "navigate";
     refs.selectTarget.current = (_machineId, picked) => { if (picked !== null) { paneId = picked; shell.inbox.leave(); draw(); } };
-    const write = (method: "pushState" | "replaceState") => (state: unknown, _unused: string, url?: string): void => {
+    const write = (method: "pushState" | "replaceState") => (state: object | null, _unused: string, url?: string): void => {
       const entry = { state, url: url === undefined ? entries[index]!.url : new URL(url, entries[index]!.url) };
       if (method === "pushState") { entries.splice(index + 1); entries.push(entry); index += 1; } else entries[index] = entry;
+      page.window.happyDOM.setURL(entry.url.href);
     };
     const go = (steps: number): void => {
       index += steps;
-      const event = Object.assign(new Event("popstate"), { state: entries[index]!.state });
-      for (const { type, listener } of [...listeners]) {
-        if (type !== "popstate") continue;
-        page.event = event;
-        try { listener(event); } finally { page.event = undefined; }
-      }
+      page.window.happyDOM.setURL(entries[index]!.url.href);
+      page.window.dispatchEvent(new page.window.PopStateEvent("popstate", { state: entries[index]!.state }));
     };
-    const page = {
-      event: undefined as Event | undefined,
-      get location() { return entries[index]!.url; },
-      matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-      performance: { getEntriesByType: (kind: string) => kind === "navigation" && navigation !== undefined ? [{ type: navigation }] : [] },
-      history: { get state() { return entries[index]!.state; }, pushState: write("pushState"), replaceState: write("replaceState"), go, back: () => go(-1) },
-      addEventListener: (type: string, listener: (event: Event) => void) => { listeners.push({ type, listener }); },
-      removeEventListener: (type: string, listener: (event: Event) => void) => { listeners = listeners.filter((other) => other.type !== type || other.listener !== listener); },
-    };
-    Object.defineProperty(globalThis, "window", { configurable: true, value: page });
+    Object.defineProperty(page.window.performance, "getEntriesByType", { configurable: true, value: (kind: string) => kind === "navigation" && navigation !== undefined ? [{ type: navigation }] : [] });
+    Object.defineProperties(page.window.history, Object.getOwnPropertyDescriptors({
+      get state() { return entries[index]!.state; }, pushState: write("pushState"), replaceState: write("replaceState"), go, back: () => go(-1),
+    }));
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
-  async function open(addresses: string[], selected: string | null, state: unknown = null): Promise<void> {
+  async function open(addresses: string[], selected: string | null, state: object | null = null): Promise<void> {
     entries = addresses.map((search) => ({ state: null, url: new URL(`http://localhost:7317/${search}`) }));
     index = entries.length - 1;
     entries[index]!.state = state;
     paneId = selected;
     const search = entries[index]!.url.search;
+    page.window.happyDOM.setURL(entries[index]!.url.href);
     link = linksSomewhere(search) ? readLink(search) : null;
-    await act(async () => { renderer = create(createElement(Probe, { link })); });
+    await page.render(createElement(Probe, { link }));
   }
   const addresses = (): string[] => entries.map((entry) => entry.url.search);
   const at = (): string => entries[index]!.url.search;
@@ -273,21 +255,21 @@ describe("the inbox mode in the history", () => {
     expect(screen()).toBe("app:p1");
     const left = addresses();
     expect(left).toEqual([LIST, P1]);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     navigation = "reload";
     await open(left, "p1", entries[index]!.state);
 
     expect(screen()).toBe("app:p1");
     expect(addresses()).toEqual(left);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     navigation = undefined;
     await open(left, "p1", { "ovis:nav": true });
 
     expect(screen()).toBe("app:p1");
     expect(addresses()).toEqual(left);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     navigation = "reload";
     await open([P1], "p1");
@@ -301,7 +283,7 @@ describe("the inbox mode in the history", () => {
     expect(screen()).toBe("app:p1");
     expect(addresses()).toEqual([P1]);
     const stood = entries[0]!.state;
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     setting = true;
     navigation = "navigate";
@@ -309,7 +291,7 @@ describe("the inbox mode in the history", () => {
 
     expect(screen()).toBe("app:p1");
     expect(addresses()).toEqual([P1]);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     await open([P1], "p1");
     expect(screen()).toBe("thread:p1");
@@ -318,7 +300,7 @@ describe("the inbox mode in the history", () => {
   it("a reload keeps the mode and what it showed", async () => {
     await open([P1, LIST, thread(P2)], "p2");
     expect(screen()).toBe("thread:p2");
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     await open([P1, LIST], "p1");
     expect(screen()).toBe("list:p1");

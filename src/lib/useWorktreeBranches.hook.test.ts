@@ -1,6 +1,6 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { useWorktreeBranches } from "./useWorktreeBranches.ts";
 import type { WorkspaceBranch } from "./worktreeBranches.ts";
@@ -16,7 +16,7 @@ const listings: Record<string, unknown> = {
 };
 
 describe("useWorktreeBranches", () => {
-  let renderer: ReactTestRenderer | null = null;
+  let page: Page;
   let refused = false;
   /** while set, the PC's bridge is from before GET /api/worktree/inventory and answers it as an unknown endpoint */
   let before = false;
@@ -29,19 +29,9 @@ describe("useWorktreeBranches", () => {
   const words = () => [...shown].map(([id, branch]) => `${id}:${branch.branch}`).sort();
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
 
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  beforeAll(() => {
-    for (const key of ["document", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } });
-  });
-  afterAll(() => {
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-  });
   beforeEach(() => {
+    page = openPage();
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
     jest.useFakeTimers();
     refused = false;
     before = false;
@@ -58,14 +48,13 @@ describe("useWorktreeBranches", () => {
     }, { preconnect: globalThis.fetch.preconnect }));
   });
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = null;
-    fetchSpy.mockRestore();
     jest.useRealTimers();
+    await page.close();
+    fetchSpy.mockRestore();
   });
 
   it("asks a driving device's PC again on its next poll", async () => {
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
     await settle(() => fetchSpy.mock.calls.length >= 1);
     await act(async () => { jest.advanceTimersByTime(30_000); });
     await settle(() => fetchSpy.mock.calls.length >= 2);
@@ -74,7 +63,7 @@ describe("useWorktreeBranches", () => {
 
   it("does not ask again when the device may only watch (#2250)", async () => {
     refused = true;
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
     await settle(() => fetchSpy.mock.calls.length >= 1);
     await settle(() => false);
     await act(async () => { jest.advanceTimersByTime(120_000); });
@@ -83,17 +72,17 @@ describe("useWorktreeBranches", () => {
   });
 
   it("asks nothing while watching, and reads branches once the device may drive (#2250)", async () => {
-    await act(async () => { renderer = create(createElement(Probe, { watching: true })); });
+    await page.render(createElement(Probe, { watching: true }));
     await settle(() => false);
     await act(async () => { jest.advanceTimersByTime(60_000); });
     await settle(() => false);
     expect(fetchSpy.mock.calls.length).toBe(0);
     refused = true;
-    await act(async () => { renderer!.update(createElement(Probe, { watching: false })); });
+    await page.render(createElement(Probe, { watching: false }));
     await settle(() => fetchSpy.mock.calls.length >= 1);
     refused = false;
-    await act(async () => { renderer!.update(createElement(Probe, { watching: true })); });
-    await act(async () => { renderer!.update(createElement(Probe, { watching: false })); });
+    await page.render(createElement(Probe, { watching: true }));
+    await page.render(createElement(Probe, { watching: false }));
     await settle(() => fetchSpy.mock.calls.length >= 2);
     await act(async () => { jest.advanceTimersByTime(30_000); });
     await settle(() => fetchSpy.mock.calls.length >= 3);
@@ -101,7 +90,7 @@ describe("useWorktreeBranches", () => {
   });
 
   it("reads every repository and unmarked git workspace of the PC in one request per poll, each poll starting one further on (#2661)", async () => {
-    await act(async () => { renderer = create(createElement(Wide)); });
+    await page.render(createElement(Wide));
     await settle(() => words().length === 3);
     expect(words()).toEqual(["w1:main", "w2:dev", "w3:spike"]);
     await act(async () => { jest.advanceTimersByTime(30_000); });
@@ -126,7 +115,7 @@ describe("useWorktreeBranches", () => {
     const longUnmarked = new Set([long]);
     function Two() { shown = useWorktreeBranches(twoReads, true, false, longUnmarked).branches; return null; }
     try {
-      await act(async () => { renderer = create(createElement(Two)); });
+      await page.render(createElement(Two));
       await settle(() => words().length === 1);
       await settle(() => false);
       expect(words()).toEqual(["w1:main"]);
@@ -136,7 +125,7 @@ describe("useWorktreeBranches", () => {
 
   it("reads a PC from before the inventory one workspace at a time, without asking it for the inventory again (#2661)", async () => {
     before = true;
-    await act(async () => { renderer = create(createElement(Wide)); });
+    await page.render(createElement(Wide));
     await settle(() => words().length === 3);
     expect(words()).toEqual(["w1:main", "w2:dev", "w3:spike"]);
     await act(async () => { jest.advanceTimersByTime(30_000); });
@@ -158,13 +147,13 @@ describe("useWorktreeBranches", () => {
       if (fetchSpy.mock.calls.length === 1) await held;
       return answer;
     }, { preconnect: globalThis.fetch.preconnect }));
-    await act(async () => { renderer = create(createElement(Wide)); });
+    await page.render(createElement(Wide));
     await settle(() => fetchSpy.mock.calls.length >= 1);
-    await act(async () => { renderer!.update(createElement(Wide, { online: false })); });
+    await page.render(createElement(Wide, { online: false }));
     await act(async () => { release(); });
     await settle(() => false);
     before = false;
-    await act(async () => { renderer!.update(createElement(Wide, { online: true })); });
+    await page.render(createElement(Wide, { online: true }));
     await settle(() => fetchSpy.mock.calls.length >= 2);
     await settle(() => false);
     expect(asked().map((url) => url.pathname.split("/").pop())).toEqual(["inventory", "inventory"]);
@@ -172,11 +161,11 @@ describe("useWorktreeBranches", () => {
 
   it("asks a PC that read one workspace at a time for the inventory again once it reconnects, as after an update (#2661)", async () => {
     before = true;
-    await act(async () => { renderer = create(createElement(Wide)); });
+    await page.render(createElement(Wide));
     await settle(() => fetchSpy.mock.calls.length >= 4);
     before = false;
-    await act(async () => { renderer!.update(createElement(Wide, { online: false })); });
-    await act(async () => { renderer!.update(createElement(Wide, { online: true })); });
+    await page.render(createElement(Wide, { online: false }));
+    await page.render(createElement(Wide, { online: true }));
     await settle(() => fetchSpy.mock.calls.length >= 5);
     await settle(() => false);
     expect(asked().map((url) => url.pathname.split("/").pop())).toEqual(["inventory", "list", "list", "list", "inventory"]);

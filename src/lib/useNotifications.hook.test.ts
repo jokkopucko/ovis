@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { resetPushHealth, usePushHealth, type PushActionResult } from "./pushHealth.ts";
 import { pushSupported, registeredPushEndpoint } from "./push.ts";
 import { confirmation } from "./pushConfirm.ts";
@@ -11,15 +11,13 @@ import type { AlertPrefs } from "../../shared/notify-policy.ts";
 describe("what Turn on alerts leaves this device", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   const key = Buffer.from(new Uint8Array(65).fill(4)).toString("base64url");
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let testPushStatus = 204;
   let lastSuccess: string | null = null;
   let lastFailure: string | null = null;
   let statusRoute: "record" | "error" | "no-device" = "record";
-  let storage: Map<string, string>;
   let rendered: (() => void)[] = [];
   let permission: NotificationPermission = "granted";
-  let documentEvents: EventTarget;
   let permissionEvents: EventTarget;
   let hook: { notifications: string; pushOn: boolean; enable: () => Promise<PushActionResult>; alerts: AlertsHere };
 
@@ -29,18 +27,10 @@ describe("what Turn on alerts leaves this device", () => {
     lastSuccess = null;
     lastFailure = null;
     statusRoute = "record";
-    storage = new Map();
     rendered = [];
-    for (const name of ["window", "document", "navigator", "PushManager", "Notification", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    const windowEvents = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      location: { href: "https://pc.example/", hostname: "pc.example", protocol: "https:" },
-      localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => void storage.set(key, value), removeItem: (key: string) => void storage.delete(key) },
-      addEventListener: windowEvents.addEventListener.bind(windowEvents), removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
-    } });
-    documentEvents = new EventTarget();
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", cookie: "", addEventListener: documentEvents.addEventListener.bind(documentEvents), removeEventListener: documentEvents.removeEventListener.bind(documentEvents) } });
+    for (const name of ["PushManager", "Notification"]) descriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    page = openPage("https://pc.example/");
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
     let live: unknown = null;
     const pushManager = {
       getSubscription: async () => live,
@@ -52,7 +42,12 @@ describe("what Turn on alerts leaves this device", () => {
     const registration = { pushManager };
     permissionEvents = new EventTarget();
     const permissions = { query: async () => permissionEvents };
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Mozilla/5.0 Chrome/130", languages: ["en"], permissions, serviceWorker: { ready: Promise.resolve(registration), getRegistration: async () => registration } } });
+    Object.defineProperties(page.window.navigator, {
+      userAgent: { configurable: true, value: "Mozilla/5.0 Chrome/130" },
+      languages: { configurable: true, value: ["en"] },
+      permissions: { configurable: true, value: permissions },
+      serviceWorker: { configurable: true, value: { ready: Promise.resolve(registration), getRegistration: async () => registration } },
+    });
     Object.defineProperty(globalThis, "PushManager", { configurable: true, value: class {} });
     Object.defineProperty(globalThis, "Notification", { configurable: true, value: { get permission() { return permission; }, requestPermission: async () => permission } });
     const fetch = async (input: string | URL | Request) => {
@@ -75,8 +70,7 @@ describe("what Turn on alerts leaves this device", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     mock.restore();
     resetPushHealth();
     for (const [name, descriptor] of descriptors) {
@@ -97,7 +91,7 @@ describe("what Turn on alerts leaves this device", () => {
       for (const listener of rendered.splice(0)) listener();
       return null;
     }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
   }
 
   async function settled(): Promise<AlertsHere> {
@@ -136,7 +130,7 @@ describe("what Turn on alerts leaves this device", () => {
     permission = "granted";
     await act(async () => { permissionEvents.dispatchEvent(new Event("change")); });
     expect(hook.notifications).toBe("default");
-    await act(async () => { documentEvents.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(hook.notifications).toBe("default");
   });
 
@@ -163,7 +157,7 @@ describe("what Turn on alerts leaves this device", () => {
     await mount();
     await enable();
     permission = "denied";
-    await act(async () => { documentEvents.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(hook.notifications).toBe("denied");
   });
 
@@ -185,7 +179,7 @@ describe("what Turn on alerts leaves this device", () => {
     await enable();
     resetPushHealth();
     statusRoute = "error";
-    await act(async () => { documentEvents.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(hook.alerts).toBe("checking");
   });
 
