@@ -22,7 +22,7 @@ index 29d630f..145c804 100644
  /// we have this in addition to PageList.Scroll is because we have additional
  /// scroll behaviors that are not part of the PageList.Scroll enum.
 diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
-index 65c96cb..ee878ae 100644
+index 65c96cb..4f927e6 100644
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
 @@ -2530,7 +2530,11 @@ pub fn carriageReturn(self: *Terminal) void {
@@ -56,3 +56,29 @@ index 65c96cb..ee878ae 100644
  
              break :complete .{ 0, self.cols };
          },
+@@ -4562,9 +4571,25 @@ pub fn eraseDisplay(
+         },
+ 
+         .above => {
++            const screen = self.screens.active;
++            const width: size.CellCountInt = if (screen.cursor.page_cell.wide == .wide) 2 else 1;
++            const erases_cursor_row = screen.cursor.x + width == self.cols;
++
+             // Erase to the left (including the cursor)
+             self.eraseLine(.left, protected_req);
+ 
++            // Stop wrapping into the next row when no cursor-row text survives.
++            // An earlier erase may have ended this row's wrap and left the next
++            // row's continuation, so end that as well.
++            if (erases_cursor_row and
++                (!protected or !Cell.hasTextAny(screen.cursor.page_pin.cells(.all))))
++            {
++                if (screen.cursor.page_row.wrap) screen.cursorResetWrap();
++                if (screen.cursor.page_pin.down(1)) |next_row| {
++                    next_row.rowAndCell().row.wrap_continuation = false;
++                }
++            }
++
+             // All lines above
+             if (self.screens.active.cursor.y > 0) {
+                 self.screens.active.clearRows(

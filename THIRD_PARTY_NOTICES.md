@@ -1574,8 +1574,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 `shared/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
 commit e95bed6, built for wasm32 by `scripts/ghostty-vt/build.sh` with `kitty-on-wasm.patch`
 (Kitty graphics on, file media off), `screen-generation.patch` (a read-only screen generation
-for TUI selections) and `erase-ends-wrap.patch` (an erase from a row's first column or a line feed onto it ends
-the soft wrap into it, as in xterm), all beside the build script. It draws every terminal, under the
+for TUI selections) and `erase-ends-wrap.patch` (ends soft wraps on erases and line feeds as in xterm),
+all beside the build script. It draws every terminal, under the
 MIT License below. The module links two
 packages Ghostty's build brings in: [Wuffs](https://github.com/google/wuffs) 0.4.0-alpha.10, which decodes
 Kitty PNG pictures, under the MIT License (it is offered under MIT or Apache-2.0), and
