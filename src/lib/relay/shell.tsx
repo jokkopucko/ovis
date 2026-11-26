@@ -471,7 +471,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       after(now);
     });
   };
-  const sweep = createPcSweep(store, { active: frontUp, redraw: () => { if (shown) show(shown); } }, { ...(mount.checkPc ? { probe: mount.checkPc } : {}), ...(directSocket ? { directSocket } : {}) });
+  const sweep = createPcSweep(store, { active: frontUp, redraw: () => { if (shown) show(shown); } }, { ...(mount.checkPc ? { probe: mount.checkPc } : {}), ...(directSocket ? { directSocket: (url: string) => directSocket(url, false) } : {}) });
   const toFront = (): void => {
     entries++;
     keepFrontChosen(true);

@@ -1236,7 +1236,9 @@ so the apps' `OvisDirect` plugin opens it for the hosted app (`app/ios/App/App/O
   Capacitor's message handler, which lets any frame call; on Android Capacitor's own origin rule and
   main-frame check apply, and the plugin refuses without the WebView's message listener.
 - It opens only `ws://<10/8, 172.16/12, 192.168/16, 169.254/16 or Tailscale's 100.64/10 address>:<port>/v1/ws?v=1`,
-  at most two at once, and closes them when a new page loads. Noise inside the channel proves the PC.
+  at most two at once (iOS counts one until it reports its close). A race or probe it refuses as full
+  (`too_many`) waits on the page and asks again once the plugin reports a close; a background sweep does not wait.
+  It closes them when a new page loads. Noise inside the channel proves the PC.
   Its `features` call answers `{ tailnet: true }`, so the page asks the PC for its Tailscale address
   only in an app that opens it; an app built before that has no `features` and stays on home-network
   addresses. A Tailscale address needs no Local Network permission (Tailscale is a VPN on the phone).

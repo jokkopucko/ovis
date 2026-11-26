@@ -1469,8 +1469,9 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   against one set of limits whichever way they came (relay links and direct carriers together):
   eight at once and four per device key, whose oldest gives way once the new one is used (its first stream): until
   then it may be one of the app's racing carriers, which makes nothing give way, and past three of those for one
-  device key the oldest of them does. With every place taken, a device already at its share still gets a racing
-  carrier in (used, it replaces its own oldest), at most three past the limit in all. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
+  device key the oldest of them does. With every place taken, a device already at its share still gets its racing
+  carriers in (used, one replaces its own oldest), three past every place for each such device at most, so another
+  device's unused carriers never keep it from replacing its own sessions. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
   every peer outside Tailscale's range (each listener takes only its own network's peers). Removing a device, stopping
   the relay, resetting its identity or turning direct connections off ends them.
 - **The app moves on its own.** An app with a socket for it (`RelayTransport` `directSocket`)
