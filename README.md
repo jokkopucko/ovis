@@ -90,11 +90,12 @@ Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in ma
 
 - **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [terminal screen (`ovis tui`)](docs/tui.md) · [configuration](docs/guide.md#configuration) · [FAQ](docs/guide.md#faq)
 - **[INSTALL.md](INSTALL.md):** every way to install, step by step.
+- **[Set up a PC with a coding agent](docs/agent-setup.md):** one sentence to paste, and the [skill](skills/ovis-setup/SKILL.md) the agent follows to install Ovis and add the PC to your account.
 - **[Demo](https://ovis.sh/demo/)** · **[Changelog](CHANGELOG.md)**
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the setup and the checks, with [development](docs/development.md), [DESIGN.md](DESIGN.md) and [SECURITY.md](SECURITY.md). Coding agents install Ovis for someone with [INSTALL.md](INSTALL.md), and follow [AGENTS.md](AGENTS.md) and the [review rules](.github/REVIEW.md) for changes.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup and the checks, with [development](docs/development.md), [DESIGN.md](DESIGN.md) and [SECURITY.md](SECURITY.md). Coding agents install Ovis for someone with [INSTALL.md](INSTALL.md), set up a PC and add it to an account with the [ovis-setup skill](skills/ovis-setup/SKILL.md), and follow [AGENTS.md](AGENTS.md) and the [review rules](.github/REVIEW.md) for changes.
 
 ## Thanks
 
