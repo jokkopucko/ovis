@@ -80,6 +80,18 @@ export function formatPairCode(code: string): string {
   return `${code.slice(0, 5)}-${code.slice(5)}`;
 }
 
+/**
+ * The code field as it is typed: upper case, spaces and dashes dropped as `normalizePairCode` drops
+ * them, and the dash shown once the first group is in, so nobody has to guess whether to type it. A
+ * dash just deleted is not put back, or Backspace could not pass it, and one still there after a
+ * Backspace stays.
+ */
+export function typedPairCode(input: string, deleting: boolean): string {
+  const chars = [...input.toUpperCase().replace(/[\s-]/g, "")];
+  if (chars.length > 5 || (chars.length === 5 && (!deleting || input.endsWith("-")))) chars.splice(5, 0, "-");
+  return chars.length === 0 ? input : chars.join("");
+}
+
 export function randomPairCode(random: (bytes: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n))): string {
   let code = "";
   while (code.length < PAIR_CODE_CHARS) {

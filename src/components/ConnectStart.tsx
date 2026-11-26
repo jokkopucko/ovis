@@ -7,6 +7,7 @@ import { indexedAccountService } from "../lib/account/service.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import type { KnownPc } from "../lib/account/knownPcs.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
@@ -629,7 +630,7 @@ function CodeLine({ code, disabled }: { readonly code: CodeWays; readonly disabl
       {shown && (
         <form className="relay-shell-code-form" data-code-form="" onSubmit={submit}>
           <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{t("Code from the PC")}</label>
-          <input id={`${id}-code`} name="code" className="input relay-shell-code-input" placeholder="XXXXX-XXXXX" disabled={disabled} readOnly={code.state.looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
+          <input id={`${id}-code`} name="code" className="input relay-shell-code-input" placeholder="XXXXX-XXXXX" disabled={disabled} readOnly={code.state.looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus onInput={typePairCode} onCompositionEnd={endPairCodeComposition} />
           {code.state.failure !== null && <p className="account-error" role="alert">{codeFailureText(t, code.state.failure)}</p>}
           <div className="relay-shell-actions">
             <button type="submit" className="btn btn-primary" disabled={disabled || code.state.looking} aria-busy={code.state.looking || undefined}>{code.state.looking ? t("Looking for the PC…") : t("Pair")}</button>

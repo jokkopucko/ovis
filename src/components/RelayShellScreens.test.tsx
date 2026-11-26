@@ -14,6 +14,7 @@ import { CodeEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { relayFailureText } from "./relayFailureText.ts";
 import { translate, type Vars } from "../lib/i18n.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 
 /** every tree a test draws, still mounted: the test's end unmounts each one, not only the ones it unmounted itself */
 const drawn = new Set<ReactTestRenderer>();
@@ -202,6 +203,7 @@ describe("RelayShellScreens", () => {
       });
       const inputDuring = renderer!.root.findByType("input");
       expect(inputDuring).toBe(inputBefore);
+      expect([inputBefore.props.onInput, inputBefore.props.onCompositionEnd]).toEqual([typePairCode, endPairCodeComposition]);
 
       await act(async () => {
         renderer!.update(

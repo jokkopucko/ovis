@@ -6,6 +6,7 @@ import type { AccountList } from "../lib/account/accountList.ts";
 import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { setPageAccountList } from "../lib/account/pageList.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { signInLink } from "./ConnectPhoneDialog.tsx";
 import { keyIdGroups } from "./KeyId.tsx";
@@ -485,6 +486,8 @@ describe("the hosted front page", () => {
       expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(0);
       await act(async () => { line.props.onClick(); });
       const form = renderer!.root.find((node) => node.type === "form" && node.props["data-code-form"] !== undefined);
+      const field = form.findByType("input");
+      expect([field.props.onInput, field.props.onCompositionEnd]).toEqual([typePairCode, endPairCodeComposition]);
       expect(form.findAll((node) => node.type === "button" && node.props.type === "submit").map(textOf)).toEqual(["Pair"]);
       await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: code }) } } }); });
     };
