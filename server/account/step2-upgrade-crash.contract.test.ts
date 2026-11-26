@@ -78,8 +78,10 @@ test.skipIf(!available || process.platform === "win32").each(crashCells)("SIGKIL
     }
     await app.stop();
   `;
+  // Without env, Bun.spawn hands the child the environment this process started with, not the
+  // HERDR_SOCKET the test preload set: the child's server would reach the user's own herdr.
   const child = Bun.spawn([process.execPath, "-e", childCode], {
-    stdin: "ignore", stdout: "ignore", stderr: "inherit",
+    env: { ...process.env }, stdin: "ignore", stdout: "ignore", stderr: "inherit",
   });
   try {
     await bounded(child.exited, 5_000);
