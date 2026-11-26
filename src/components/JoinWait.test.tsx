@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest, mock } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { ItsMeButton, JoinWait } from "./JoinWait.tsx";
@@ -7,33 +8,18 @@ import { ItsMeButton, JoinWait } from "./JoinWait.tsx";
 const NOW = Date.parse("2026-11-20T04:00:00.000Z");
 
 describe("the new device's wait", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
 
-  beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
-  });
-
+  beforeEach(() => { page = openPage(); });
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
     jest.useRealTimers();
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    await page.close();
   });
 
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
+  const text = () => page.container.textContent ?? "";
   const mount = async (element: React.ReactElement) => {
-    await act(async () => { renderer = create(<SettingsProvider>{element}</SettingsProvider>); });
-    return renderer!.toJSON() === null ? "" : text(renderer!.root);
+    await page.render(<SettingsProvider>{element}</SettingsProvider>);
+    return text();
   };
 
   it("T53: counts down to the PC's own deadline, in whole seconds", async () => {
@@ -46,8 +32,7 @@ describe("the new device's wait", () => {
     const hold = { reason: "join_hold", until: "2026-11-20T04:00:07.400Z" } as const;
     expect(await mount(<JoinWait pc="Desk" hold={hold} />)).toContain("8");
     await act(async () => { jest.advanceTimersByTime(1000); });
-    if (renderer === undefined) throw new TypeError("Missing wait");
-    expect(text(renderer.root)).toContain("7");
+    expect(text()).toContain("7");
   });
 
   it("T53: a hold with no deadline shows no countdown", async () => {
@@ -68,26 +53,23 @@ describe("the new device's wait", () => {
     const onPress = mock();
     const screen = (wait: React.ReactElement) => <SettingsProvider>{wait}<ItsMeButton sending={false} onPress={onPress} /></SettingsProvider>;
     const hold = { reason: "join_hold", until: null } as const;
-    await act(async () => { renderer = create(screen(<JoinWait pc="Desk" hold={hold} now={NOW} />)); });
-    const view = renderer;
-    if (view === undefined) throw new Error("No wait rendered");
-    const dismiss = view.root.find((node) => node.type === "button" && node.props["aria-label"] === "Dismiss");
-    await act(async () => { dismiss.props.onClick(); });
-    expect(view.root.findAllByProps({ role: "status" })).toEqual([]);
+    await page.render(screen(<JoinWait pc="Desk" hold={hold} now={NOW} />));
+    await act(async () => { page.one('button[aria-label="Dismiss"]').click(); });
+    expect([...page.container.querySelectorAll('[role="status"]')]).toEqual([]);
     expect(onPress).not.toHaveBeenCalled();
-    await act(async () => { view.update(screen(<JoinWait pc="Desk" hold={{ ...hold, until: "2026-11-20T04:00:07.400Z" }} now={NOW + 1000} />)); });
-    expect(view.root.findAllByProps({ role: "status" })).toEqual([]);
-    await act(async () => { view.update(screen(<JoinWait pc="Desk" hold={{ reason: "catching_up" }} now={NOW} />)); });
-    expect(text(view.root.findByProps({ role: "status" }))).toContain("checking your account");
+    await page.render(screen(<JoinWait pc="Desk" hold={{ ...hold, until: "2026-11-20T04:00:07.400Z" }} now={NOW + 1000} />));
+    expect([...page.container.querySelectorAll('[role="status"]')]).toEqual([]);
+    await page.render(screen(<JoinWait pc="Desk" hold={{ reason: "catching_up" }} now={NOW} />));
+    expect(page.one('[role="status"]').textContent).toContain("checking your account");
     expect(onPress).not.toHaveBeenCalled();
   });
 
   it("T53: It's me is one press, held while it goes to each PC", async () => {
     let presses = 0;
     await mount(<ItsMeButton sending={false} onPress={() => { presses += 1; }} />);
-    await act(async () => { renderer!.root.findByType("button").props.onClick(); });
+    await act(async () => { page.one("button").click(); });
     expect(presses).toBe(1);
-    await act(async () => { renderer!.update(<SettingsProvider><ItsMeButton sending onPress={() => {}} /></SettingsProvider>); });
-    expect(renderer!.root.findByType("button").props.disabled).toBe(true);
+    await page.render(<SettingsProvider><ItsMeButton sending onPress={() => {}} /></SettingsProvider>);
+    expect(page.one<HTMLButtonElement>("button").disabled).toBe(true);
   });
 });

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from "bun:test";
-import type { ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import qrcode from "qrcode-generator";
+import { act, type ReactNode } from "react";
 
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { PairedDevice, PortalStatus, RelayStatus, RemoteAccess, TailscaleAccess } from "../../shared/protocol.ts";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import type { PhonePlan } from "../lib/phone.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -16,12 +16,8 @@ import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { RelayPairing } from "./RelayPanel.tsx";
-import { QrCode } from "./QrCode.tsx";
 
-// the confirmation before Revoke all is a portal on document.body, which this renderer has none of
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, closedBySignIn, CodeRoute, ConnectPhoneDialog, connectTabs, TAILSCALE_POLL_MS, localWays, openingTab, ReachablePcList, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, SshTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
-const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
 
@@ -30,6 +26,43 @@ const APP = "https://app.ovis.example";
 const OFFER_URL = encodeOffer({ v: 1, server_id: SERVER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.example", code: "482913", name: "Workstation" }, APP);
 const ONLINE: RelayStatus = { phase: "online", relay: "wss://relay.ovis.example", app: APP, sessions: 0, blocked: null, error: null };
 const relayState = (status: RelayStatus = ONLINE): RelayState => ({ status, unsupported: false, readFailed: false, pending: false, request: async () => status, reread: () => {} });
+
+// Dialogs (including the revoke confirmation) render through portals into the page body.
+const all = <E extends Element = HTMLElement,>(selector: string, scope: Element = document.body) => [...scope.querySelectorAll<E>(selector)];
+const one = <E extends Element = HTMLElement,>(selector: string, scope: Element = document.body): E => {
+  const matches = all<E>(selector, scope);
+  if (matches.length !== 1 || !matches[0]) throw new Error("Expected one element matching " + selector + ", found " + matches.length);
+  return matches[0];
+};
+const text = (node: Element): string => node.textContent ?? "";
+const matchingButton = (label: string, scope: Element) => {
+  const found = all<HTMLButtonElement>("button", scope).filter((node) => text(node).trim() === label);
+  if (found.length !== 1 || !found[0]) throw new Error("Expected one button: " + label);
+  return found[0];
+};
+const inputs = (scope?: Element) => all<HTMLInputElement>("input", scope);
+const forms = (scope?: Element) => all<HTMLFormElement>("form", scope);
+const submitForm = (page: Page, form: HTMLFormElement) => {
+  form.dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+};
+const qrCodes = (scope?: Element) => all<SVGSVGElement>('svg.qr[role="img"]', scope);
+// Compare QR modules in the rendered SVG to the encoder's matrix for the expected URL.
+const qrModules = (url: string) => {
+  const code = qrcode(0, "M");
+  code.addData(url);
+  code.make();
+  const size = code.getModuleCount();
+  return Array.from({ length: size }, (_, y) => Array.from({ length: size }, (_, x) => code.isDark(y, x) ? x + "," + y : "").filter(Boolean)).flat().join(" ");
+};
+const drawnModules = (svg: SVGSVGElement) => [...(one("path", svg).getAttribute("d") ?? "").matchAll(/M(\d+) (\d+)h1v1h-1z/g)]
+  .map((match) => (Number(match[1]) - 4) + "," + (Number(match[2]) - 4)).join(" ");
+const inRelayShell = (page: Page) => {
+  const meta = page.window.document.createElement("meta");
+  meta.name = "ovis-shell";
+  meta.content = "relay";
+  page.window.document.head.append(meta);
+};
+const relaySwitch = 'button[role="switch"][aria-label="Ovis relay"]';
 
 describe("relayPending", () => {
   it("is pending only until the relay's first state comes or its read fails, so a relay that never answers hides nothing", async () => {
@@ -44,10 +77,10 @@ describe("relayPending", () => {
 
 describe("Connect a phone on a phone", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let requests: string[];
   let assigned: string[];
-  let shellMeta: boolean;
+  const relayCodes = new Map<string, string>();
   let tailnetAnswer: Promise<void>;
   let tailnetOutdated: boolean;
   let tailnetRelay: string | null;
@@ -94,7 +127,7 @@ describe("Connect a phone on a phone", () => {
     offerRoads = [];
     requests = [];
     assigned = [];
-    shellMeta = false;
+    relayCodes.clear();
     tailnetAnswer = Promise.resolve();
     tailnetOutdated = true;
     tailnetRelay = "online";
@@ -106,23 +139,16 @@ describe("Connect a phone on a phone", () => {
     addressRefusal = null;
     addressGate = null;
     addressAnswer = undefined;
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "Capacitor", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Version/17.4 Mobile/15E148 Safari/604.1", maxTouchPoints: 5 } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: { href: "https://workstation.example.ts.net/", assign: (url: string) => { assigned.push(url); } },
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-      dispatchEvent: events.dispatchEvent.bind(events),
-      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: (selector: string) => shellMeta && selector.includes("ovis-shell") ? { getAttribute: () => "relay" } : null,
-    } });
+    page = openPage("https://workstation.example.ts.net/");
+    for (const key of ["HTMLElement", "Event", "CustomEvent", "Capacitor"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["HTMLElement", "Event", "CustomEvent"] as const) {
+      Object.defineProperty(globalThis, key, { configurable: true, value: page.window[key] });
+    }
+    Object.defineProperty(page.window, "isSecureContext", { configurable: true, writable: true, value: true });
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
+    Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Version/17.4 Mobile/15E148 Safari/604.1" });
+    Object.defineProperty(page.window.navigator, "maxTouchPoints", { configurable: true, value: 5 });
+    Object.defineProperty(page.window.location, "assign", { configurable: true, value: (url: string) => { assigned.push(url); } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net").pathname;
       requests.push(path);
@@ -142,7 +168,9 @@ describe("Connect a phone on a phone", () => {
         offersOut += 1;
         await offerGates.shift();
         offersOut -= 1;
-        return Response.json({ url: code === "482913" ? OFFER_URL : encodeOffer({ ...decodeOffer(OFFER_URL)!, code }, APP), expires_at });
+        const url = code === "482913" ? OFFER_URL : encodeOffer({ ...decodeOffer(OFFER_URL)!, code }, APP);
+        relayCodes.set(qrModules(url), code);
+        return Response.json({ url, expires_at });
       }
       if (path === "/api/devices/pair/start") {
         const held = pairStarts.shift();
@@ -179,8 +207,7 @@ describe("Connect a phone on a phone", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     mock.restore();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -189,10 +216,9 @@ describe("Connect a phone on a phone", () => {
     descriptors.clear();
   });
 
-  const mount = async (node: React.ReactNode) => { await act(async () => { renderer = create(<SettingsProvider>{node}</SettingsProvider>); }); };
-  const qrCodes = () => renderer!.root.findAllByType(QrCode);
+  const mount = (node: ReactNode) => page.render(<SettingsProvider>{node}</SettingsProvider>);
   /** the six-digit codes of the relay QR codes on screen */
-  const shown = () => qrCodes().map((qr) => decodeOffer(String(qr.props.value))?.code);
+  const shown = () => qrCodes().map((qr) => relayCodes.get(drawnModules(qr)));
   /** Lets the page run on, a turn at a time, until `reached` holds; a state that never comes fails here, naming `what`. */
   const until = async (reached: () => boolean, what: string) => {
     for (let turn = 0; turn < 2000; turn += 1) {
@@ -218,19 +244,18 @@ describe("Connect a phone on a phone", () => {
   };
   /** how many offers the page has asked for, those still on their way to the PC too */
   const offersSent = () => requests.filter((path) => path === "/api/relay/offer").length;
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
   const button = (label: string) => {
-    const found = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label);
+    const found = all<HTMLButtonElement>("button").filter((node) => text(node).trim() === label);
     expect(found.map(text)).toEqual([label]);
     return found[0]!;
   };
-  const buttons = () => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
+  const buttons = () => all<HTMLButtonElement>("button").map((node) => text(node).trim());
 
   it("shows the Tailscale address with Copy address and no QR code until Show QR code", async () => {
     await mount(<PhonePanel url="https://workstation.example.ts.net" phone />);
     expect(qrCodes()).toHaveLength(0);
     expect(buttons()).toContain("Copy address");
-    await act(async () => { button("Show QR code").props.onClick(); });
+    await act(async () => { button("Show QR code").click(); });
     expect(qrCodes()).toHaveLength(1);
   });
 
@@ -244,18 +269,18 @@ describe("Connect a phone on a phone", () => {
     await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce phone />);
     expect(requests).toContain("/api/devices/pair/start");
     expect(qrCodes()).toHaveLength(0);
-    const code = renderer!.root.findAll((node) => node.type === "p" && typeof node.props.className === "string" && node.props.className.includes("devices-code"));
-    expect(code.map((node) => [node.props.className, text(node)])).toEqual([["devices-code devices-code-large", "482 913"]]);
-    await act(async () => { button("Show QR code").props.onClick(); });
+    const code = all('p[class*="devices-code"]');
+    expect(code.map((node) => [node.className, text(node)])).toEqual([["devices-code devices-code-large", "482 913"]]);
+    await act(async () => { button("Show QR code").click(); });
     expect(qrCodes()).toHaveLength(1);
   });
 
   it("a code asked for by a dialog closed meanwhile never replaces the newer code the reopened one shows", async () => {
     let answerOld: () => void = () => {};
     pairStarts = [{ code: "111111", gate: new Promise<void>((resolve) => { answerOld = resolve; }) }, { code: "222222", gate: Promise.resolve() }];
-    const shown = () => renderer!.root.findAll((node) => node.type === "p" && typeof node.props.className === "string" && node.props.className.includes("devices-code")).map(text);
+    const shown = () => all('p[class*="devices-code"]').map(text);
     await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce />);
-    await act(async () => { renderer!.unmount(); });
+    await page.render(null);
     await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce />);
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
     expect(shown()).toEqual(["222 222"]);
@@ -269,12 +294,12 @@ describe("Connect a phone on a phone", () => {
     await mount(<CodeRoute pairUrl={null} startAtOnce={false} compact />);
     expect(starts()).toBe(0);
     expect(buttons()).toContain("Get a pairing code");
-    await act(async () => { button("Get a pairing code").props.onClick(); });
+    await act(async () => { button("Get a pairing code").click(); });
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
     // with no address, the code stands alone: no QR code and no empty box beside it
     expect(qrCodes()).toHaveLength(0);
-    expect(renderer!.root.findAll((node) => node.props.className === "compact-pair-qr-empty")).toHaveLength(0);
+    expect(all('[class="compact-pair-qr-empty"]')).toHaveLength(0);
   });
 
   it("keeps the desktop's pairing code QR code up front", async () => {
@@ -287,18 +312,18 @@ describe("Connect a phone on a phone", () => {
     for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
     expect(requests.filter((path) => path === "/api/relay/offer").length).toBeLessThanOrEqual(3);
     expect(qrCodes()).toHaveLength(2);
-    expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(0);
+    expect(all("p").filter((node) => text(node).includes("This code expired."))).toHaveLength(0);
   });
 
   it("takes the guide's relay QR code down once the relay tab's QR code has its code, and starts no code for it again", async () => {
     // the setup guide's relay QR code is up; then the relay tab's is shown beside it
     await mount(<RelayPairing />);
     await until(() => shown().join() === "482913" && offersOut === 0, "the guide's QR code with the pending code");
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>);
     await until(() => onlyTheRelayTabs() && offersAsked.length === 3, "the relay tab's QR code alone, with the PC's code");
     // the guide's asked once, before it; the relay tab's asked again as the guide's came down, and the PC kept its code
     expect([offersAsked, pending]).toEqual([[null, "1", "1"], "600002"]);
-    expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(1);
+    expect(all("p").filter((node) => text(node).includes("This code expired."))).toHaveLength(1);
     expect(buttons().filter((label) => label === "New code")).toHaveLength(2);
   });
 
@@ -306,7 +331,7 @@ describe("Connect a phone on a phone", () => {
     await mount(<RelayPairing qrOnly />);
     await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
     const first = pending;
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>);
     // the guide's offer started a code, which ended the relay tab's; the relay tab's QR code asked for its own again
     await until(() => onlyTheRelayTabs() && offersAsked.length === 4, "the relay tab's QR code alone, with the code the PC has now");
     expect([offersAsked, pending === first]).toEqual([["1", null, "1", "1"], false]);
@@ -319,9 +344,9 @@ describe("Connect a phone on a phone", () => {
     // for its offer again, quietly: the PC answers, and that answer is slow to arrive
     pending = "246801";
     const arrive = gate(1);
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing /><RelayPairing /></SettingsProvider>);
     await until(() => offersAsked.length === 3, "the guide's second offer reaching the PC");
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing /><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>);
     await until(() => onlyTheRelayTabs(1), "the relay tab's QR code alone, with its code");
     const before = offersAsked.length;
     await act(async () => { arrive(); });
@@ -333,18 +358,18 @@ describe("Connect a phone on a phone", () => {
   it("has the relay tab's QR code ask again when the PC got another relay QR code's offer after its own and answered it late: the QR code left up shows the PC's code", async () => {
     await mount(<RelayPairing qrOnly />);
     await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>);
     await until(() => onlyTheRelayTabs() && offersAsked.includes(null), "the relay tab's QR code alone again");
     // a third relay QR code comes up and says its code, then goes: the relay tab's asks for its own again, and the
     // guide's for its offer, quietly. The PC gets the relay tab's first and the guide's after it; both answers are slow
     const settled = offersAsked.length;
     const tabArrives = gate(1);
     const guideArrives = gate(0);
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /><RelayPairing /></SettingsProvider>);
     await until(() => offersOut === 2, "the relay tab's and the guide's offers reaching the PC");
     expect([offersAsked.slice(settled), pendingOwn]).toEqual([[null, "1", null], false]);
     const guides = pending;
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>);
     await act(async () => { tabArrives(); });
     // the relay tab's QR code shows the code the PC started for it, which the guide's has ended since
     await until(() => offersOut === 1 && shown().length === 1 && shown()[0] !== guides, "the relay tab's QR code up alone, the guide's answer still on its way");
@@ -358,13 +383,13 @@ describe("Connect a phone on a phone", () => {
   it("has the relay tab's QR code ask again when a relay QR code that shows a newer code comes down for it", async () => {
     await mount(<RelayPairing qrOnly />);
     await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>);
     await until(() => onlyTheRelayTabs() && offersAsked.includes(null), "the relay tab's QR code alone again");
     // as above, but the guide's answer arrives at once and the relay tab's is slow: the guide's QR code shows the PC's
     // code when the relay tab's answer, with a code the PC has ended, takes it down
     const settled = offersAsked.length;
     const tabArrives = gate(1);
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /><RelayPairing /></SettingsProvider>);
     await until(() => offersOut === 1 && shown().includes(pending), "the guide's QR code with the PC's code, the relay tab's answer still on its way");
     expect([offersAsked.slice(settled), pendingOwn]).toEqual([[null, "1", null], false]);
     const before = offersAsked.length;
@@ -380,9 +405,9 @@ describe("Connect a phone on a phone", () => {
     // the guide's relay QR code comes up and asks for its offer: the PC starts a code for it, which ends the relay
     // tab's. The guide's is gone before the answer arrives, so no QR code is left to show that code or to say it
     const arrive = gate(0);
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>);
     await until(() => offersOut === 1, "the guide's offer reaching the PC");
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing qrOnly /></SettingsProvider>);
     expect([shown(), pendingOwn]).toEqual([[tabs], false]);
     const before = offersAsked.length;
     await act(async () => { arrive(); });
@@ -398,9 +423,9 @@ describe("Connect a phone on a phone", () => {
     await until(() => offersSent() === 1, "the guide's offer asked for");
     // a second relay QR code comes up with the pending code and says so: the guide's asks for its offer again, quietly,
     // and shows that code without a word. Then the relay tab's QR code comes up, and both come down for its code
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing /><RelayPairing /></SettingsProvider>);
     await until(() => shown().join() === "482913,482913", "both relay QR codes with the pending code");
-    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>); });
+    await page.render(<SettingsProvider><RelayPairing /><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>);
     await until(() => onlyTheRelayTabs() && offersAsked.length === 4, "the relay tab's QR code alone, with its code");
     const tabs = pending;
     // the PC gets the guide's first offer only now: its code ends the relay tab's, and no QR code waits for the answer
@@ -429,20 +454,20 @@ describe("Connect a phone on a phone", () => {
   it("a code to type starts a new six-digit code, and the pairing code shown beside it follows", async () => {
     await mount(<><RelayPairing /><CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce={false} /></>);
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
-    const shown = () => renderer!.root.findAll((node) => node.type === "p" && typeof node.props.className === "string" && node.props.className.includes("devices-code")).map(text);
+    const shown = () => all('p[class*="devices-code"]').map(text);
     // the relay QR code's own code is not drawn as digits until they are asked for here
     expect(shown()).toEqual([]);
-    await act(async () => { await button("Get a pairing code").props.onClick(); });
+    await act(async () => { button("Get a pairing code").click(); });
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
     expect(shown()).toEqual(["482 913"]);
-    await act(async () => { await button("Show a code to type").props.onClick(); });
+    await act(async () => { button("Show a code to type").click(); });
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
     expect(shown()).toEqual(["777 111"]);
   });
 
   it("never shows as digits the code of a QR code shown alone, and drops the code it showed, which that one replaced", async () => {
     await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce />);
-    const shown = () => renderer!.root.findAll((node) => node.type === "p" && typeof node.props.className === "string" && node.props.className.includes("devices-code")).map(text);
+    const shown = () => all('p[class*="devices-code"]').map(text);
     expect(shown()).toEqual(["482 913"]);
     const expires_at = new Date(Date.now() + 600_000).toISOString();
     await act(async () => { announcePairingCode({ code: "135790", expires_at, qrOnly: true }); });
@@ -458,10 +483,10 @@ describe("Connect a phone on a phone", () => {
     expect(buttons()).toContain("Copy link");
     const offers = () => requests.filter((path) => path === "/api/relay/offer").length;
     const before = offers();
-    await act(async () => { await button("Use the relay on this phone").props.onClick(); });
+    await act(async () => { button("Use the relay on this phone").click(); });
     expect(offers()).toBe(before + 1);
     expect(assigned).toEqual([OFFER_URL]);
-    await act(async () => { button("Show QR code").props.onClick(); });
+    await act(async () => { button("Show QR code").click(); });
     expect(qrCodes()).toHaveLength(1);
   });
 
@@ -473,14 +498,14 @@ describe("Connect a phone on a phone", () => {
       nativePromise: async (...args: unknown[]) => { calls.push(args); },
     } });
     await mount(<RelayRoute relay={relayState()} readOnly={false} phone pairHere />);
-    await act(async () => { await button("Use the relay on this phone").props.onClick(); });
+    await act(async () => { button("Use the relay on this phone").click(); });
     expect(calls).toEqual([["HerdrShell", "open", { url: OFFER_URL, scope: `${APP}/s/${SERVER_ID}/`, name: "Workstation" }]]);
     expect(assigned).toEqual([]);
   });
 
   it("only hints at a relay device with this phone's name, and still offers the relay", async () => {
     await mount(<RelayRoute relay={relayState()} readOnly={false} phone pairHere sameName="iPhone · Safari" />);
-    const hints = renderer!.root.findAll((node) => node.type === "p" && node.props.className === "settings-hint").map(text);
+    const hints = all('p[class="settings-hint"]').map(text);
     expect(hints.filter((hint) => hint.includes("iPhone · Safari"))).toHaveLength(1);
     expect(buttons()).toContain("Use the relay on this phone");
   });
@@ -492,118 +517,91 @@ describe("Connect a phone on a phone", () => {
   });
 
   it("makes no pairing code while the relay's state is still read, then one for the Tailscale tab, and the relay tab's Pair with a code asks for no second one", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
     const machines = [{ id: "local", kind: "local", name: "Desk", server_id: SERVER_ID } as unknown as Machine];
     const dialog = (relay: RelayState) => (
       <ConnectPhoneDialog plan={{ kind: "here", url: "https://desk.example.com" }} tailscale={{ kind: "served", url: "https://workstation.example.ts.net" }} pairUrl="https://desk.example.com" relay={relay} readOnly={false} closesGate={false} canPair
         signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={machines} onConnectMachine={() => {}} onClose={() => {}} />
     );
     const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
-    await act(async () => { renderer = create(<SettingsProvider>{dialog({ ...relayState(), status: null })}</SettingsProvider>, { createNodeMock: node }); });
+    await page.render(<SettingsProvider>{dialog({ ...relayState(), status: null })}</SettingsProvider>);
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-pending" })).toHaveLength(1);
+    expect(all('[data-testid="connect-pending"]')).toHaveLength(1);
     expect(starts()).toBe(0);
     // the relay's state came: the dialog opens on Tailscale (no account here), whose phone part starts one code
-    await act(async () => { renderer!.update(<SettingsProvider>{dialog(relayState())}</SettingsProvider>); });
+    await page.render(<SettingsProvider>{dialog(relayState())}</SettingsProvider>);
     await until(() => starts() === 1, "the Tailscale tab's code");
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
-    const values = () => qrCodes().map((qr) => String(qr.props.value));
+    const values = () => qrCodes().map(drawnModules);
     // the Tailscale tab's QR code is its Tailscale address, never the proxy this page is open at
-    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
+    expect(values()).toEqual([qrModules("https://workstation.example.ts.net/?pair=482913")]);
     // the relay tab's Pair with a code shows the same code, with no QR code, and asks for no second code, which would end the first
-    await act(async () => { renderer!.root.findByProps({ "data-tab": "relay" }).props.onClick(); });
+    await act(async () => { one('[data-tab="relay"]').click(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
     // the relay's own pairing then shows its code there (the PC keeps one pending code)
-    expect(text(renderer!.root.findByProps({ "data-tab-panel": "relay" }).findByProps({ "data-testid": "pair-with-code" }))).toMatch(/\d{3} \d{3}/);
+    expect(text(one('[data-testid="pair-with-code"]', one('[data-tab-panel="relay"]')))).toMatch(/\d{3} \d{3}/);
   });
 
   it("a tab that waited on the first tab's code asks for its own when that request fails", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
     const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
     const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
     let refuse = (): void => {};
     pairStarts.push({ code: "000000", gate: new Promise<void>((resolve) => { refuse = resolve; }), refused: true }, { code: "246810", gate: Promise.resolve() });
-    await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog asked="ssh" plan={served} tailscale={served} pairUrl={served.url} relay={{ ...relayState(), unsupported: true }} readOnly={false} closesGate={false} canPair
-        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-    });
+    await page.render(<SettingsProvider><ConnectPhoneDialog asked="ssh" plan={served} tailscale={served} pairUrl={served.url} relay={{ ...relayState(), unsupported: true }} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>);
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     // with no relay tab, Pair with a code is under SSH, and makes its code on a press only
     expect(starts()).toBe(0);
-    await act(async () => { renderer!.root.findByProps({ "data-testid": "pair-with-code" }).find((each) => each.type === "button" && text(each) === "Get a pairing code").props.onClick(); });
+    await act(async () => { matchingButton("Get a pairing code", one('[data-testid="pair-with-code"]')).click(); });
     expect(starts()).toBe(1);
-    await act(async () => { renderer!.root.findByProps({ "data-tab": "tailscale" }).props.onClick(); });
+    await act(async () => { one('[data-tab="tailscale"]').click(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(starts()).toBe(1);
     await act(async () => { refuse(); });
     // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
     await until(() => starts() === 2, "the waiting tab's own request");
-    await until(() => qrCodes().some((qr) => String(qr.props.value).endsWith("pair=246810")), "the waiting tab's own code");
+    await until(() => qrCodes().some((qr) => drawnModules(qr) === qrModules("https://workstation.example.ts.net/?pair=246810")), "the waiting tab's own code");
   });
 
   it("puts the Tailscale tab's phone QR code and code above its list of PCs, and its tabs above the body that scrolls", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
     const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-    await act(async () => {
-      renderer = create(<SettingsProvider><ConnectPhoneDialog asked="tailscale" plan={served} tailscale={served} pairUrl={served.url} relay={{ ...relayState(), unsupported: true }} readOnly={false} closesGate={false} canPair
-        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-    });
-    await until(() => renderer!.root.findAll((each) => each.props.className === "connect-found-row").length > 0, "the tailnet PCs");
+    await page.render(<SettingsProvider><ConnectPhoneDialog asked="tailscale" plan={served} tailscale={served} pairUrl={served.url} relay={{ ...relayState(), unsupported: true }} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>);
+    await until(() => all('[class="connect-found-row"]').length > 0, "the tailnet PCs");
     await until(() => qrCodes().length === 1, "the Tailscale address's QR code");
-    const panel = renderer!.root.find((each) => each.props["data-tab-panel"] === "tailscale" && each.type === "div");
-    const parts = panel.children.filter((child): child is ReactTestInstance => typeof child !== "string");
-    const order = (match: (each: ReactTestInstance) => boolean) => parts.findIndex((part) => match(part) || part.findAll(match).length > 0);
-    expect(order((each) => each.type === QrCode)).toBeLessThan(order((each) => each.props.className === "connect-found-row"));
-    const body = renderer!.root.find((each) => each.type === "div" && String(each.props.className).includes("connect-phone-body"));
-    expect(body.findAll((each) => each.props["data-tab"] !== undefined)).toHaveLength(0);
-    expect(renderer!.root.findAll((each) => each.props["data-tab"] !== undefined && each.type === "button").map((each) => each.props["data-tab"])).toEqual(["tailscale", "ssh"]);
+    const panel = one('div[data-tab-panel="tailscale"]');
+    const parts = [...panel.children];
+    const order = (selector: string) => parts.findIndex((part) => part.matches(selector) || part.querySelector(selector));
+    expect(order("svg.qr")).toBeLessThan(order('[class="connect-found-row"]'));
+    const body = one('div[class*="connect-phone-body"]');
+    expect(all("[data-tab]", body)).toHaveLength(0);
+    expect(all("button[data-tab]").map((each) => each.getAttribute("data-tab"))).toEqual(["tailscale", "ssh"]);
   });
 
   it("puts the list of PCs under the relay tab's QR code only where Add PC over SSH adds to the account", async () => {
-    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-    const pageEvents = new EventTarget();
-    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
     const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
     const machines = [{ id: "local", kind: "local", name: "Desk", server_id: SERVER_ID } as unknown as Machine];
     const dialog = (addsOverSsh: boolean) => (
       <ConnectPhoneDialog asked="relay" plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
         signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={machines} onConnectMachine={() => {}} onClose={() => {}} addsOverSsh={addsOverSsh} accountPcs={[]} />
     );
-    const lists = () => renderer!.root.findAll((each) => each.type === "section" && each.props.className === "connect-reachable");
-    await act(async () => { renderer = create(<SettingsProvider>{dialog(false)}</SettingsProvider>, { createNodeMock: node }); });
-    await until(() => renderer!.root.findAll((each) => each.props["data-tab-panel"] === "relay").length > 0, "the relay tab");
+    const lists = () => all('section[class="connect-reachable"]');
+    await page.render(<SettingsProvider>{dialog(false)}</SettingsProvider>);
+    await until(() => all('[data-tab-panel="relay"]').length > 0, "the relay tab");
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(lists()).toHaveLength(0);
-    expect(renderer!.root.find((each) => each.props["data-tab-panel"] === "relay" && each.type === "div").findAllByProps({ "data-testid": "pair-with-code" }).length).toBeGreaterThan(0);
-    await act(async () => { renderer!.update(<SettingsProvider>{dialog(true)}</SettingsProvider>); });
-    await until(() => lists().length === 1 && lists()[0]!.findAll((each) => each.props.className === "connect-found-row").length > 0, "the relay tab's list");
-    const panel = renderer!.root.find((each) => each.props["data-tab-panel"] === "relay" && each.type === "div");
-    const parts = panel.children.filter((child): child is ReactTestInstance => typeof child !== "string");
+    expect(all('[data-testid="pair-with-code"]', one('div[data-tab-panel="relay"]')).length).toBeGreaterThan(0);
+    await page.render(<SettingsProvider>{dialog(true)}</SettingsProvider>);
+    await until(() => lists().length === 1 && all('[class="connect-found-row"]', lists()[0]!).length > 0, "the relay tab's list");
+    const panel = one('div[data-tab-panel="relay"]');
     // under what the tab showed before, the phone's QR code first; its code is the tab's one code, so no Pair with a code
-    expect(parts.at(-1)!.findAll((each) => each.type === "section" && each.props.className === "connect-reachable")).toHaveLength(1);
-    expect(panel.findAllByProps({ "data-testid": "pair-with-code" })).toHaveLength(0);
-    expect(panel.findAll((each) => each.type === QrCode).length).toBeGreaterThan(0);
-    expect(renderer!.root.findAll((each) => each.props["data-tab-panel"] === "tailscale" && each.type === "div").flatMap((tab) => tab.findAll((each) => each.props.className === "connect-reachable"))).toHaveLength(0);
+    const last = panel.lastElementChild;
+    const list = 'section[class="connect-reachable"]';
+    expect(last ? [last, ...all(list, last)].filter((part) => part.matches(list)) : []).toHaveLength(1);
+    expect(all('[data-testid="pair-with-code"]', panel)).toHaveLength(0);
+    expect(qrCodes(panel).length).toBeGreaterThan(0);
+    expect(all('div[data-tab-panel="tailscale"] [class="connect-reachable"]')).toHaveLength(0);
   });
 
   describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
@@ -613,7 +611,6 @@ describe("Connect a phone on a phone", () => {
       polls = [];
       const realInterval = globalThis.setInterval, realClear = globalThis.clearInterval;
       Object.assign(window, {
-        matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} },
         setInterval: (tick: () => void, ms: number) => {
           if (ms !== TAILSCALE_POLL_MS) return realInterval(tick, ms);
           polls.push({ tick, cleared: false });
@@ -621,21 +618,14 @@ describe("Connect a phone on a phone", () => {
         },
         clearInterval: (id: number) => { if (id < 0) polls[-id - 1]!.cleared = true; else realClear(id); },
       });
-      const pageEvents = new EventTarget();
-      Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-      descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-      Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-      const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
-      await act(async () => {
-        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={step} tailscale={step} platform={platform} pairUrl={null} relay={relayState()} readOnly={false} closesGate={false} canPair
-          signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-      });
+      await page.render(<SettingsProvider><ConnectPhoneDialog plan={step} tailscale={step} platform={platform} pairUrl={null} relay={relayState()} readOnly={false} closesGate={false} canPair
+          signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>);
       for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-      expect(renderer!.root.findByProps({ "data-tab": "tailscale" }).props["aria-pressed"]).toBe(true);
+      expect(one('[data-tab="tailscale"]').getAttribute("aria-pressed")).toBe("true");
     };
-    const panel = () => renderer!.root.findByProps({ "data-tab-panel": "tailscale" });
+    const panel = () => one('[data-tab-panel="tailscale"]');
     /** no command is on screen: `tailscale up`, a serve command or the operator one */
-    const commands = () => panel().findAll((node) => node.type === "code").map(text);
+    const commands = () => all("code", panel()).map(text);
     const served = (url: string): RemoteAccess => tailscaleAccess({ state: "running", serving_url: url });
     const command: PhonePlan = { kind: "command", command: "tailscale serve --bg --https=8443 http://127.0.0.1:7317", url: "https://workstation.example.ts.net:8443" };
     const asked = (path: string) => requests.filter((request) => request === path).length;
@@ -644,10 +634,10 @@ describe("Connect a phone on a phone", () => {
       serveReply = () => Response.json(served("https://workstation.example.ts.net:8443"));
       await mountStep(command, "darwin");
       expect([commands(), qrCodes()]).toEqual([[], []]);
-      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await act(async () => { button("Open with Tailscale").click(); });
       await until(() => qrCodes().length === 1, "the served address's QR code");
       expect(asked("/api/access/tailscale/serve")).toBe(1);
-      expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net:8443/?pair=482913"]);
+      expect(qrCodes().map(drawnModules)).toEqual([qrModules("https://workstation.example.ts.net:8443/?pair=482913")]);
       expect(commands()).toEqual([]);
       // served: nothing reads Tailscale again
       expect(polls.every((poll) => poll.cleared)).toBe(true);
@@ -656,35 +646,35 @@ describe("Connect a phone on a phone", () => {
     it("a refused serve shows one line and the command as the way left, with the operator command where Linux refused for want of it", async () => {
       serveReply = () => Response.json({ error: { code: "tailscale_serve_refused", message: "refused", operator: true } }, { status: 409 });
       await mountStep(command, "linux");
-      await act(async () => { button("Open with Tailscale").props.onClick(); });
-      await until(() => panel().findAllByProps({ "data-testid": "tailscale-serve-refused" }).length === 1, "the refusal");
+      await act(async () => { button("Open with Tailscale").click(); });
+      await until(() => all('[data-testid="tailscale-serve-refused"]', panel()).length === 1, "the refusal");
       expect(commands()).toEqual([command.kind === "command" ? command.command : "", "sudo tailscale set --operator=$USER"]);
       expect(qrCodes()).toEqual([]);
       serveReply = () => Response.json({ error: { code: "tailscale_serve_refused", message: "refused" } }, { status: 409 });
-      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await act(async () => { button("Open with Tailscale").click(); });
       await until(() => commands().length === 1, "the refusal without the operator command");
     });
 
     it("a serve refused for want of this PC's Tailscale login shows one line and no command", async () => {
       serveReply = () => Response.json({ error: { code: "tailscale_owner_unknown", message: "unknown" } }, { status: 409 });
       await mountStep(command, "darwin");
-      await act(async () => { button("Open with Tailscale").props.onClick(); });
-      await until(() => panel().findAllByProps({ "data-testid": "tailscale-owner-unknown" }).length === 1, "the owner line");
-      expect(text(panel().findByProps({ "data-testid": "tailscale-owner-unknown" }))).toBe("This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.");
-      expect([commands(), qrCodes(), panel().findAllByProps({ "data-testid": "tailscale-serve-refused" })]).toEqual([[], [], []]);
+      await act(async () => { button("Open with Tailscale").click(); });
+      await until(() => all('[data-testid="tailscale-owner-unknown"]', panel()).length === 1, "the owner line");
+      expect(text(one('[data-testid="tailscale-owner-unknown"]', panel()))).toBe("This PC's Tailscale login can't be confirmed, so it can't be opened. Check the sign-in in the Tailscale app.");
+      expect([commands(), qrCodes(), all('[data-testid="tailscale-serve-refused"]', panel())]).toEqual([[], [], []]);
     });
 
     it("with no Tailscale, links to its download for this PC's platform and shows no command", async () => {
       await mountStep({ kind: "missing" }, "win32");
-      const link = panel().findAll((node) => node.type === "a" && text(node).trim() === "Get Tailscale");
-      expect(link.map((node) => node.props.href)).toEqual(["https://tailscale.com/download/windows"]);
+      const link = all("a", panel()).filter((node) => text(node).trim() === "Get Tailscale");
+      expect(link.map((node) => node.getAttribute("href"))).toEqual(["https://tailscale.com/download/windows"]);
       expect(commands()).toEqual([]);
     });
 
     it("with Tailscale off, Open Tailscale opens the app, and the tab moves on by itself once Tailscale is on, then to the QR in one press", async () => {
       await mountStep({ kind: "stopped" }, "darwin");
       expect(commands()).toEqual([]);
-      await act(async () => { button("Open Tailscale").props.onClick(); });
+      await act(async () => { button("Open Tailscale").click(); });
       await until(() => asked("/api/access/tailscale/open") === 1, "the app opened");
       expect(polls.filter((poll) => !poll.cleared)).toHaveLength(1);
       accessNow = tailscaleAccess({ state: "running", serve_command: command.kind === "command" ? command.command : null, serve_url: "https://workstation.example.ts.net:8443" });
@@ -692,11 +682,10 @@ describe("Connect a phone on a phone", () => {
       await until(() => buttons().includes("Open with Tailscale"), "the serve step");
       expect(commands()).toEqual([]);
       serveReply = () => Response.json(served("https://workstation.example.ts.net:8443"));
-      await act(async () => { button("Open with Tailscale").props.onClick(); });
+      await act(async () => { button("Open with Tailscale").click(); });
       await until(() => qrCodes().length === 1, "the QR code");
       // closing the dialog stops the watch
-      await act(async () => { renderer!.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       expect(polls.every((poll) => poll.cleared)).toBe(true);
     });
 
@@ -705,68 +694,58 @@ describe("Connect a phone on a phone", () => {
       expect(text(panel())).toContain("Turn on Tailscale and sign in.");
       expect([buttons().includes("Open Tailscale"), commands()]).toEqual([false, []]);
       accessNow = tailscaleAccess({ state: "running", serve_command: "tailscale serve --bg --https=443 http://127.0.0.1:7317", serve_url: "https://workstation.example.ts.net" });
-      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
       await until(() => buttons().includes("Open with Tailscale"), "the serve step after focus");
     });
   });
 
   describe("the SSH tab holds what Direct held, but the same-Wi-Fi line; the code is the relay tab's", () => {
     const mountDialog = async (options: { relay?: RelayState; tab?: "ssh" | "relay" } = {}) => {
-      Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-      const pageEvents = new EventTarget();
-      Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
-      descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
-      Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-      const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
       const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
-      await act(async () => {
-        renderer = create(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={options.relay ?? relayState()} readOnly={false} closesGate={false} canPair
-          signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>, { createNodeMock: node });
-      });
-      await act(async () => { renderer!.root.findByProps({ "data-tab": options.tab ?? "ssh" }).props.onClick(); });
+      await page.render(<SettingsProvider><ConnectPhoneDialog plan={served} tailscale={served} pairUrl={served.url} relay={options.relay ?? relayState()} readOnly={false} closesGate={false} canPair
+          signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={[]} onConnectMachine={() => {}} onClose={() => {}} /></SettingsProvider>);
+      await act(async () => { one(`[data-tab="${options.tab ?? "ssh"}"]`).click(); });
       for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-      return () => renderer!.root.findByProps({ "data-tab-panel": options.tab ?? "ssh" });
+      return () => one(`[data-tab-panel="${options.tab ?? "ssh"}"]`);
     };
-    // counted, not compared: a failing diff of test instances never finishes printing
-    const count = (panel: ReactTestInstance, props: Record<string, unknown>) => panel.findAllByProps(props).length;
 
     it("is the three tabs Ovis relay, Tailscale and SSH, with no Direct tab", async () => {
       await mountDialog();
-      expect(renderer!.root.findAll((each) => each.type === "button" && typeof each.props["data-tab"] === "string").map((each) => [each.props["data-tab"], text(each)]))
+      expect(all("button[data-tab]").map((each) => [each.getAttribute("data-tab"), text(each)]))
         .toEqual([["relay", "Ovis relay"], ["tailscale", "Tailscale"], ["ssh", "SSH"]]);
     });
 
     it("SSH: user@host first, Add by address a text link to the https address and its code, no same-Wi-Fi line and no code of this PC", async () => {
       const panel = await mountDialog();
-      expect(panel().findAll((each) => each.type === "label").map(text)).toEqual(["Add another PC from this one"]);
-      expect(panel().findAllByType("input").map((each) => each.props.placeholder)).toEqual(["user@host"]);
-      expect(count(panel(), { "data-testid": "direct-lan" })).toBe(0);
-      expect(count(panel(), { "data-testid": "connect-phone-scan" })).toBe(0);
-      expect(count(panel(), { "data-testid": "pair-with-code" })).toBe(0);
+      expect(all("label", panel()).map(text)).toEqual(["Add another PC from this one"]);
+      expect(inputs(panel()).map((each) => each.placeholder)).toEqual(["user@host"]);
+      expect(all('[data-testid="direct-lan"]', panel()).length).toBe(0);
+      expect(all('[data-testid="connect-phone-scan"]', panel()).length).toBe(0);
+      expect(all('[data-testid="pair-with-code"]', panel()).length).toBe(0);
       // the https address takes that PC's code (#4264), behind the link
-      const link = () => panel().find((each) => each.type === "button" && text(each) === "Add by address");
-      expect(link().props.className).toBe("connect-address-link");
-      expect(link().props["aria-expanded"]).toBe(false);
-      await act(async () => { link().props.onClick(); });
-      expect(link().props["aria-expanded"]).toBe(true);
-      expect(panel().findAllByType("input").map((each) => each.props.autoComplete)).toEqual(["off", "off", "one-time-code"]);
+      const link = () => matchingButton("Add by address", panel());
+      expect(link().className).toBe("connect-address-link");
+      expect(link().getAttribute("aria-expanded")).toBe("false");
+      await act(async () => { link().click(); });
+      expect(link().getAttribute("aria-expanded")).toBe("true");
+      expect(inputs(panel()).map((each) => each.getAttribute("autocomplete"))).toEqual(["off", "off", "one-time-code"]);
       // an https address typed in the SSH field moves to that form
-      await act(async () => { link().props.onClick(); });
-      await act(async () => { panel().findAllByType("input")[0]!.props.onChange({ target: { value: "https://desk.tail.ts.net" } }); });
-      await act(async () => { panel().findAllByType("form")[0]!.props.onSubmit({ preventDefault() {} }); });
-      expect(panel().findAllByType("input").map((each) => each.props.value)).toEqual(["", "https://desk.tail.ts.net", undefined]);
+      await act(async () => { link().click(); });
+      await page.type(inputs(panel())[0]!, "https://desk.tail.ts.net");
+      await act(async () => { submitForm(page, forms(panel())[0]!); });
+      expect(inputs(panel()).map((each) => each.getAttribute("value"))).toEqual(["", "https://desk.tail.ts.net", null]);
     });
 
     it("the relay tab: Pair with a code shows this PC's six-digit code", async () => {
       const panel = await mountDialog({ tab: "relay" });
-      const code = () => panel().findByProps({ "data-testid": "pair-with-code" });
+      const code = () => one('[data-testid="pair-with-code"]', panel());
       expect(text(code())).toContain("Pair with a code");
       await until(() => /\d{3} \d{3}/.test(text(code())), "the relay tab's code");
     });
 
     it("with no relay tab, Pair with a code sits under SSH instead, showing the code the Tailscale tab made", async () => {
       const panel = await mountDialog({ relay: { ...relayState(), unsupported: true } });
-      const code = () => panel().findByProps({ "data-testid": "pair-with-code" });
+      const code = () => one('[data-testid="pair-with-code"]', panel());
       await until(() => text(code()).includes("482 913"), "the code under SSH");
     });
 
@@ -780,32 +759,32 @@ describe("Connect a phone on a phone", () => {
       ] as const) {
         portalNow = status as unknown as PortalStatus;
         const panel = await mountDialog();
-        await until(() => count(panel(), { "data-testid": "portal-row" }) === 1, `Portal's row: ${line}`);
-        const row = () => panel().findByProps({ "data-testid": "portal-row" });
+        await until(() => all('[data-testid="portal-row"]', panel()).length === 1, `Portal's row: ${line}`);
+        const row = () => one('[data-testid="portal-row"]', panel());
         expect(text(row())).toBe(`Portal${line}${link}`);
-        expect(row().findAll((each) => each.type === "a").map((each) => each.props.href)).toEqual([help]);
-        expect(row().findAll((each) => each.type === "button").length).toBe(0);
-        await act(async () => { renderer!.unmount(); });
+        expect(all("a", row()).map((each) => each.getAttribute("href"))).toEqual([help]);
+        expect(all<HTMLButtonElement>("button", row()).length).toBe(0);
+        await page.render(null);
       }
     });
 
     it("Portal: one row at the foot of the SSH tab where this PC has it, its controls behind a press", async () => {
       portalNow = { supported: true, usable: true, blocked: null, phase: "running", url: "https://desk.portal.example", short_url: null, relay: "https://relay.example", auth: { method: "none", issuer: null, allow: [] }, auth_methods: ["none"], error: null, output: null } as unknown as PortalStatus;
       const panel = await mountDialog();
-      await until(() => count(panel(), { "data-testid": "portal-row" }) === 1, "Portal's row");
-      const row = () => panel().findByProps({ "data-testid": "portal-row" });
+      await until(() => all('[data-testid="portal-row"]', panel()).length === 1, "Portal's row");
+      const row = () => one('[data-testid="portal-row"]', panel());
       expect(text(row())).toContain("https://desk.portal.example");
-      const toggle = () => row().find((each) => each.type === "button" && text(each) === "Settings");
-      expect(toggle().props["aria-expanded"]).toBe(false);
-      await act(async () => { toggle().props.onClick(); });
+      const toggle = () => matchingButton("Settings", row());
+      expect(toggle().getAttribute("aria-expanded")).toBe("false");
+      await act(async () => { toggle().click(); });
       // the same one press closes it again: no second Close in a dialog that has its own
-      expect(toggle().props["aria-expanded"]).toBe(true);
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
       expect(text(row())).toContain("Stop");
-      await act(async () => { renderer!.unmount(); });
+      await page.render(null);
       portalNow = null;
       const without = await mountDialog();
       for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-      expect(count(without(), { "data-testid": "portal-row" })).toBe(0);
+      expect(all('[data-testid="portal-row"]', without()).length).toBe(0);
     });
   });
 
@@ -816,7 +795,7 @@ describe("Connect a phone on a phone", () => {
     expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true }, readOnly: false })).toEqual(["tailscale", "ssh"]);
     // a watching device or a Portal visitor cannot use the relay, and the hosted shell already is on it: no tab at all
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: true })).toEqual([]);
-    shellMeta = true;
+    inRelayShell(page);
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual([]);
   });
 
@@ -877,7 +856,7 @@ describe("Connect a phone on a phone", () => {
     expect(localWays({ readOnly: true, canPair: true, portal: null, plan: { kind: "stopped" } }).any).toBe(false);
     expect(localWays({ readOnly: false, canPair: false, portal: null, plan: { kind: "unknown" } }).any).toBe(false);
     // the hosted shell keeps its typed code, and offers no Tailscale step for a PC it does not run on
-    shellMeta = true;
+    inRelayShell(page);
     expect(localWays({ ...owner, plan: { kind: "missing" } })).toEqual({ address: null, tailscaleStep: null, code: true, portal: false, any: true });
   });
 
@@ -907,14 +886,14 @@ describe("Connect a phone on a phone", () => {
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
     expect(requests).toContain("/api/machines/ssh-candidates");
-    expect(text(renderer!.root)).not.toContain("nuc12");
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.onClick(); });
+    expect(text(document.body)).not.toContain("nuc12");
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Connect winvm"]').click(); });
     expect(added).toEqual([{ destination: "winvm.tail.ts.net", name: "winvm" }]);
-    await act(async () => { renderer!.unmount(); });
+    await page.render(null);
     await mount(<Tailscale machines={[ssh("winvm.tail.ts.net", { state: "connected" })]} onAddPc={() => undefined} />);
     await flushReads();
-    expect(renderer!.root.findAllByProps({ "aria-label": "Connect winvm" })).toHaveLength(0);
-    expect(text(renderer!.root)).toContain("Added");
+    expect(all<HTMLButtonElement>('[aria-label="Connect winvm"]')).toHaveLength(0);
+    expect(text(document.body)).toContain("Added");
   });
 
   it("lists an ssh config host written as a tailnet IP by its Tailscale name and MagicDNS name, and adds it under that name at that IP", async () => {
@@ -923,11 +902,11 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const row = renderer!.root.findAll((node) => node.props.className === "connect-found-row").find((node) => text(node).includes("old-desktop"))!;
-    expect(text(row.findByProps({ className: "connect-found-name" }))).toBe("old-desktop");
+    const row = all('[class="connect-found-row"]').find((node) => text(node).includes("old-desktop"))!;
+    expect(text(one('[class="connect-found-name"]', row))).toBe("old-desktop");
     // what Connect opens, the IP alias, before the press
-    expect(text(row.findByProps({ className: "connect-found-detail" }))).toBe("100.123.228.51 · old-desktop.tail.ts.net");
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect old-desktop" }).props.onClick(); });
+    expect(text(one('[class="connect-found-detail"]', row))).toBe("100.123.228.51 · old-desktop.tail.ts.net");
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Connect old-desktop"]').click(); });
     expect(added).toEqual([{ destination: "100.123.228.51", name: "old-desktop" }]);
   });
 
@@ -937,7 +916,7 @@ describe("Connect a phone on a phone", () => {
     await mount(<Tailscale machines={[]} onAddPc={ssh} />);
     await flushReads();
     requests.length = 0;
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.onClick(); });
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Connect winvm"]').click(); });
     await flushReads();
     expect(ssh).toHaveBeenCalledWith({ destination: "winvm.tail.ts.net", name: "winvm" });
     expect(requests).not.toContain("/api/machines/tailnet");
@@ -949,18 +928,18 @@ describe("Connect a phone on a phone", () => {
     tailnetOutdated = false;
     await mount(<Tailscale machines={[]} onAddPc={() => undefined} />);
     await flushReads();
-    expect(renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.disabled).toBe(true);
+    expect(one<HTMLButtonElement>('[aria-label="Connect winvm"]').disabled).toBe(true);
     await act(async () => { answer(); });
     await flushReads();
-    expect(renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.disabled).toBe(false);
+    expect(one<HTMLButtonElement>('[aria-label="Connect winvm"]').disabled).toBe(false);
   });
 
   it("tells a Tailscale PC with an older Ovis, one row with the ssh config host that reaches it, to update it there instead of offering Connect", async () => {
     extraCandidates = [{ name: "lab", destination: "lab", detail: "rise@winvm.tail.ts.net", source: "ssh_config", tailnet: "winvm.tail.ts.net" }];
     await mount(<Tailscale machines={[]} onAddPc={() => undefined} />);
     await flushReads();
-    expect(renderer!.root.findAllByProps({ "aria-label": "Connect winvm" })).toHaveLength(0);
-    expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(1);
+    expect(all<HTMLButtonElement>('[aria-label="Connect winvm"]')).toHaveLength(0);
+    expect(all("span").filter((node) => text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(1);
   });
 
   it("lists one row per Tailscale PC: the config aliases the server resolved to it go under its machine name, Connect opening the first", async () => {
@@ -972,34 +951,34 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
-    expect(rows.map((row) => text(row.findByProps({ className: "connect-found-name" })))).toEqual(["winvm", "macbookpro"]);
-    expect(renderer!.root.findByType("ul").props.className).toBe("connect-found-list connect-reach-list");
-    expect(rows[1]!.findByProps({ className: "connect-found-detail" }).findAllByType("wbr").length).toBeGreaterThan(2);
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect macbookpro" }).props.onClick(); });
+    const rows = all('[class="connect-found-row"]');
+    expect(rows.map((row) => text(one('[class="connect-found-name"]', row)))).toEqual(["winvm", "macbookpro"]);
+    expect(one("ul").className).toBe("connect-found-list connect-reach-list");
+    expect(all('[class="connect-found-detail"] wbr', rows[1]!).length).toBeGreaterThan(2);
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Connect macbookpro"]').click(); });
     expect(added).toEqual([{ destination: "mymac", name: "macbookpro" }]);
     // added under either alias, the one row says so
-    await act(async () => { renderer!.unmount(); });
+    await page.render(null);
     await mount(<Tailscale machines={[ssh("macbook")]} onAddPc={() => undefined} />);
     await flushReads();
-    expect(renderer!.root.findAllByProps({ "aria-label": "Connect macbookpro" })).toHaveLength(0);
+    expect(all<HTMLButtonElement>('[aria-label="Connect macbookpro"]')).toHaveLength(0);
   });
 
   it("takes a PC not in the Tailscale tab's list in a field at its foot, connected as the SSH tab connects a typed one", async () => {
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const field = renderer!.root.findByType("input");
-    expect(field.props.placeholder).toBe("user@host or address");
-    await act(async () => { field.props.onChange({ target: { value: " me@build-box " } }); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    const field = one<HTMLInputElement>("input");
+    expect(field.placeholder).toBe("user@host or address");
+    await page.type(field, " me@build-box ");
+    await act(async () => { submitForm(page, one<HTMLFormElement>("form")); });
     expect(added).toEqual([{ destination: "me@build-box" }]);
     // another PC's Ovis by its https address goes to its code, as in the SSH tab
-    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "https://desk.tail.ts.net:7317" } }); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    await page.type(one<HTMLInputElement>("input"), "https://desk.tail.ts.net:7317");
+    await act(async () => { submitForm(page, one<HTMLFormElement>("form")); });
     expect(added).toHaveLength(1);
-    expect(renderer!.root.findAllByProps({ "data-address-kind": "ovis" })).toHaveLength(1);
-    expect(renderer!.root.findAllByType("input").map((input) => input.props.value ?? input.props.autoComplete)).toEqual(["", "https://desk.tail.ts.net:7317", "one-time-code"]);
+    expect(all('[data-address-kind="ovis"]')).toHaveLength(1);
+    expect(inputs().map((input) => input.getAttribute("value") ?? input.getAttribute("autocomplete"))).toEqual(["", "https://desk.tail.ts.net:7317", "one-time-code"]);
   });
 
   it("lists in the relay tab the Tailscale PCs and ssh config hosts as one list, each with its way: Add opens Add PC for that host", async () => {
@@ -1012,35 +991,35 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Reachable machines={[]} accountPcs={new Set(["srv_winvm"])} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
-    const cell = (row: ReactTestInstance, className: string) => text(row.findByProps({ className }));
+    const rows = all('[class="connect-found-row"]');
+    const cell = (row: Element, className: string) => text(one(`[class="${className}"]`, row));
     expect(rows.map((row) => [cell(row, "connect-found-name"), cell(row, "connect-found-detail")])).toEqual([
       ["nuc12", "SSH config · rise@100.127.218.1"],
       ["winvm", "Tailscale · winvm.tail.ts.net"],
       ["macbookpro", "Tailscale · mymac · me@macbookpro.tail.ts.net"],
     ]);
     // what each row opens is its second line, whole, breaking after its dots rather than cut, in both tabs' lists
-    expect(renderer!.root.findByType("ul").props.className).toBe("connect-found-list connect-reach-list");
-    expect(rows[2]!.findByProps({ className: "connect-found-detail" }).findAllByType("wbr").length).toBeGreaterThan(2);
+    expect(one("ul").className).toBe("connect-found-list connect-reach-list");
+    expect(all('[class="connect-found-detail"] wbr', rows[2]!).length).toBeGreaterThan(2);
     // a PC whose relay ID is the account's is in it: nothing to add
     expect(text(rows[1]!)).toContain("In your account");
-    expect(renderer!.root.findAllByProps({ "aria-label": "Add winvm" })).toHaveLength(0);
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add macbookpro" }).props.onClick(); });
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add nuc12" }).props.onClick(); });
+    expect(all<HTMLButtonElement>('[aria-label="Add winvm"]')).toHaveLength(0);
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Add macbookpro"]').click(); });
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Add nuc12"]').click(); });
     expect(added).toEqual([{ destination: "mymac", name: "macbookpro" }, { destination: "nuc12", name: "nuc12" }]);
     // a PC not in the list, typed at the foot, goes the same way
-    const field = renderer!.root.findByType("input");
-    expect(field.props.placeholder).toBe("user@host");
-    await act(async () => { field.props.onChange({ target: { value: "root@hosthatch " } }); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    const field = one<HTMLInputElement>("input");
+    expect(field.placeholder).toBe("user@host");
+    await page.type(field, "root@hosthatch ");
+    await act(async () => { submitForm(page, one<HTMLFormElement>("form")); });
     expect(added.at(-1)).toEqual({ destination: "root@hosthatch" });
     // another PC's https address is no SSH address: it is not sent on as one, and the field says what it takes
-    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "https://desk.tail.ts.net:7317" } }); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    await page.type(one<HTMLInputElement>("input"), "https://desk.tail.ts.net:7317");
+    await act(async () => { submitForm(page, one<HTMLFormElement>("form")); });
     expect(added).toHaveLength(3);
-    expect(text(renderer!.root.findByProps({ role: "alert" }))).toBe("Enter an SSH address, such as user@host.");
-    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "me@desk" } }); });
-    expect(renderer!.root.findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(text(one('[role="alert"]'))).toBe("Enter an SSH address, such as user@host.");
+    await page.type(one<HTMLInputElement>("input"), "me@desk");
+    expect(all('[role="alert"]')).toHaveLength(0);
   });
 
   it("in the relay tab's list, keeps an alias on another port of a Tailscale PC a row of its own: Add on the PC opens the PC", async () => {
@@ -1049,10 +1028,10 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Reachable machines={[]} accountPcs={new Set()} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
-    expect(rows.map((row) => text(row.findByProps({ className: "connect-found-detail" })))).toEqual(["SSH config · rise@100.127.218.1", "Tailscale · winvm.tail.ts.net", "Tailscale · rise@winvm.tail.ts.net:2222"]);
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add winvm" }).props.onClick(); });
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add winvm-wsl" }).props.onClick(); });
+    const rows = all('[class="connect-found-row"]');
+    expect(rows.map((row) => text(one('[class="connect-found-detail"]', row)))).toEqual(["SSH config · rise@100.127.218.1", "Tailscale · winvm.tail.ts.net", "Tailscale · rise@winvm.tail.ts.net:2222"]);
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Add winvm"]').click(); });
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Add winvm-wsl"]').click(); });
     expect(added).toEqual([{ destination: "winvm.tail.ts.net", name: "winvm" }, { destination: "winvm-wsl", name: "winvm-wsl" }]);
   });
 
@@ -1060,11 +1039,11 @@ describe("Connect a phone on a phone", () => {
     tailnetOutdated = true;
     await mount(<Reachable machines={[ssh("nuc12")]} accountPcs={new Set()} onAddPc={() => undefined} />);
     await flushReads();
-    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
-    expect(rows.map((row) => row.props["data-reachable-state"])).toEqual(["added", "outdated"]);
+    const rows = all('[class="connect-found-row"]');
+    expect(rows.map((row) => row.getAttribute("data-reachable-state"))).toEqual(["added", "outdated"]);
     expect(text(rows[0]!)).toContain("Added");
     expect(text(rows[1]!)).toContain("Update Ovis on that PC to 0.5 first.");
-    expect(renderer!.root.findAll((node) => node.type === "button" && String(node.props["aria-label"] ?? "").startsWith("Add "))).toHaveLength(0);
+    expect(all('button[aria-label^="Add "]')).toHaveLength(0);
   });
 
   // r14b: an SSH add that stopped at the account (an old sign-in) leaves the PC saved here: Add stays, on that same PC entry
@@ -1073,70 +1052,63 @@ describe("Connect a phone on a phone", () => {
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Reachable machines={[ssh("nuc12", { server_id: "srv_nuc" })]} accountPcs={new Set()} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
-    expect(rows[0]!.props["data-reachable-state"]).toBe("open");
-    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add nuc12" }).props.onClick(); });
+    const rows = all('[class="connect-found-row"]');
+    expect(rows[0]!.getAttribute("data-reachable-state")).toBe("open");
+    await act(async () => { one<HTMLButtonElement>('[aria-label="Add nuc12"]').click(); });
     expect(added).toEqual([{ destination: "nuc12", name: "nuc12", machine_id: "nuc12" }]);
   });
 
-  const openByAddress = async () => { await act(async () => { renderer!.root.find((node) => node.type === "button" && text(node) === "Add by address").props.onClick(); }); };
+  const openByAddress = async () => { await act(async () => { matchingButton("Add by address", document.body).click(); }); };
   /** the field and the form of Add by address, once opened: after the SSH field and its form */
-  const typeAddress = async (value: string) => { await act(async () => { renderer!.root.findAllByType("input")[1]!.props.onChange({ target: { value } }); }); };
-  const submitAddress = async () => { await act(async () => { renderer!.root.findAllByType("form")[1]!.props.onSubmit({ preventDefault() {} }); }); };
+  const typeAddress = async (value: string) => { await page.type(inputs()[1]!, value); };
+  const submitAddress = async () => { await act(async () => { submitForm(page, forms()[1]!); }); };
 
   it("takes user@host in its field, and another PC's https address behind Add by address with the code that PC shows, opening it here", async () => {
     const added: (AddPcPreset | undefined)[] = [];
     const connected: Machine[] = [];
-    const code = { value: "" };
-    await act(async () => {
-      renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine); }} /></SettingsProvider>,
-        { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
-    });
+    await page.render(<SettingsProvider><Ssh machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine); }} /></SettingsProvider>);
     await flushReads();
-    const kind = () => renderer!.root.findAll((node) => node.props["data-address-kind"] !== undefined).map((node) => node.props["data-address-kind"]);
+    const kind = () => all("[data-address-kind]").map((node) => node.getAttribute("data-address-kind"));
     expect(kind()).toEqual([]);
     await openByAddress();
     expect(kind()).toEqual(["ovis"]);
     // one short line: where that PC shows its code
-    expect(text(renderer!.root.findByProps({ "data-address-kind": "ovis" }))).toBe("The code is on that PC under Pair with a code.");
+    expect(text(one('[data-address-kind="ovis"]'))).toBe("The code is on that PC under Pair with a code.");
     await typeAddress("https://desk.tail.ts.net:7317");
-    expect(renderer!.root.findAllByType("input")[2]!.props.autoComplete).toBe("one-time-code");
+    expect(inputs()[2]!.getAttribute("autocomplete")).toBe("one-time-code");
     addressRefusal = "address_pc_wrong_code";
-    code.value = "123450 ";
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123450 ");
     await submitAddress();
     expect(addressAsked).toEqual([{ address: "https://desk.tail.ts.net:7317", code: "123450" }]);
-    expect(renderer!.root.findByProps({ role: "alert" }).children.join("")).toBe("That code is wrong, spent or expired. Show a new code on that PC and type it.");
-    expect(code.value).toBe("123450 ");
+    expect(text(one('[role="alert"]'))).toBe("That code is wrong, spent or expired. Show a new code on that PC and type it.");
+    expect(one<HTMLInputElement>('input[autocomplete="one-time-code"]').value).toBe("123450 ");
     expect(connected).toEqual([]);
     addressRefusal = null;
-    code.value = "123456";
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123456");
     await submitAddress();
     expect(addressAsked.at(-1)).toEqual({ address: "https://desk.tail.ts.net:7317", code: "123456" });
     expect(connected.map((machine) => [machine.id, machine.kind])).toEqual([["desk", "address"]]);
-    expect(code.value).toBe("");
+    expect(one<HTMLInputElement>('input[autocomplete="one-time-code"]').value).toBe("");
     expect(added).toEqual([]);
     // the SSH field never adds an https address over SSH: one written in any case moves to the address form
     for (const written of ["https:desk.tail.ts.net", "HTTP:/desk"]) {
-      await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value: written } }); });
-      await act(async () => { renderer!.root.findAllByType("form")[0]!.props.onSubmit({ preventDefault() {} }); });
-      expect(renderer!.root.findAllByType("input")[1]!.props.value).toBe(written);
+      await page.type(inputs()[0]!, written);
+      await act(async () => { submitForm(page, forms()[0]!); });
+      expect(inputs()[1]!.value).toBe(written);
     }
     expect(added).toEqual([]);
-    await act(async () => { renderer!.root.findAllByType("input")[0]!.props.onChange({ target: { value: " dev@10.0.0.5 " } }); });
+    await page.type(inputs()[0]!, " dev@10.0.0.5 ");
     expect(kind()).toContain("ssh");
-    await act(async () => { renderer!.root.findAllByType("form")[0]!.props.onSubmit({ preventDefault() {} }); });
+    await act(async () => { submitForm(page, forms()[0]!); });
     expect(added).toEqual([{ destination: "dev@10.0.0.5" }]);
   });
 
   it("words every refusal of an address in the app's language, and pairs once however often Connect is pressed", async () => {
-    const code = { value: "123456" };
-    await act(async () => {
-      renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
-        { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
-    });
+    await page.render(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>);
     await flushReads();
     await openByAddress();
     await typeAddress("https://desk.tail.ts.net");
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123456");
     const submit = submitAddress;
     const words: Record<string, string> = {
       address_pc_address: "Enter only that PC's Ovis address, starting with https://",
@@ -1153,15 +1125,15 @@ describe("Connect a phone on a phone", () => {
     for (const [refusal, said] of Object.entries(words)) {
       addressRefusal = refusal;
       await submit();
-      expect([refusal, renderer!.root.findByProps({ role: "alert" }).children.join("")]).toEqual([refusal, said]);
+      expect([refusal, text(one('[role="alert"]'))]).toEqual([refusal, said]);
     }
     addressAsked = [];
     let open = () => undefined as void;
     addressGate = new Promise((resolve) => { open = resolve; });
     await act(async () => {
-      const form = renderer!.root.findAllByType("form")[1]!;
-      form.props.onSubmit({ preventDefault() {} });
-      form.props.onSubmit({ preventDefault() {} });
+      const form = forms()[1]!;
+      submitForm(page, form);
+      submitForm(page, form);
     });
     await act(async () => { open(); });
     await flushReads();
@@ -1169,12 +1141,8 @@ describe("Connect a phone on a phone", () => {
   });
 
   it("sends a pairing code only from a secure page, never one typed for another address, and takes it as that PC shows it", async () => {
-    const code = { value: "" };
     const mountDirect = async () => {
-      await act(async () => {
-        renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>,
-          { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
-      });
+      await page.render(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={() => undefined} /></SettingsProvider>);
       await flushReads();
       await openByAddress();
     };
@@ -1183,41 +1151,37 @@ describe("Connect a phone on a phone", () => {
     (window as { isSecureContext: boolean }).isSecureContext = false;
     await mountDirect();
     await type("https://desk.tail.ts.net");
-    expect(renderer!.root.findAllByType("input")[2]!.props.disabled).toBe(true);
-    expect(renderer!.root.findAllByType("form")[1]!.findByProps({ type: "submit" }).props.disabled).toBe(true);
-    expect(text(renderer!.root)).toContain("Needs HTTPS or localhost.");
-    code.value = "123456";
+    expect(inputs()[2]!.disabled).toBe(true);
+    expect(one<HTMLButtonElement>('[type="submit"]', forms()[1]!).disabled).toBe(true);
+    expect(text(document.body)).toContain("Needs HTTPS or localhost.");
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123456");
     await submit();
     expect(addressAsked).toEqual([]);
-    await act(async () => { renderer!.unmount(); });
+    await page.render(null);
     (window as { isSecureContext: boolean }).isSecureContext = true;
     await mountDirect();
     await type("https://desk.tail.ts.net");
-    code.value = "012 345";
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "012 345");
     await type("https://other.tail.ts.net");
-    expect(code.value).toBe("");
-    code.value = "012 345";
+    expect(one<HTMLInputElement>('input[autocomplete="one-time-code"]').value).toBe("");
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "012 345");
     await submit();
     expect(addressAsked).toEqual([{ address: "https://other.tail.ts.net", code: "012345" }]);
   });
 
   it("drops an answer for an address that was changed meanwhile, and words a malformed one", async () => {
     const connected: string[] = [];
-    const code = { value: "" };
-    await act(async () => {
-      renderer = create(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={(machine) => { connected.push(machine.id); }} /></SettingsProvider>,
-        { createNodeMock: (element) => (element.props as { autoComplete?: string }).autoComplete === "one-time-code" ? code : null });
-    });
+    await page.render(<SettingsProvider><Ssh machines={[]} onAddPc={() => undefined} onConnectMachine={(machine) => { connected.push(machine.id); }} /></SettingsProvider>);
     await flushReads();
     const type = typeAddress;
     const submit = submitAddress;
-    const alerts = () => renderer!.root.findAllByProps({ role: "alert" }).map((node) => node.children.join(""));
+    const alerts = () => all('[role="alert"]').map(text);
     await openByAddress();
     await type("https://alpha.tail.ts.net");
     let open = () => undefined as void;
     addressGate = new Promise((resolve) => { open = resolve; });
     addressRefusal = "address_pc_wrong_code";
-    code.value = "123456";
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123456");
     await submit();
     await type("https://beta.tail.ts.net");
     await act(async () => { open(); });
@@ -1225,7 +1189,7 @@ describe("Connect a phone on a phone", () => {
     expect(alerts()).toEqual([]);
     addressRefusal = null;
     addressGate = new Promise((resolve) => { open = resolve; });
-    code.value = "123456";
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123456");
     await submit();
     await type("https://gamma.tail.ts.net");
     await act(async () => { open(); });
@@ -1233,7 +1197,7 @@ describe("Connect a phone on a phone", () => {
     expect(connected).toEqual([]);
     addressGate = null;
     addressAnswer = {};
-    code.value = "123456";
+    await page.type(one<HTMLInputElement>('input[autocomplete="one-time-code"]'), "123456");
     await submit();
     expect(alerts()).toEqual(["That PC could not be added. Try again."]);
     expect(connected).toEqual([]);
@@ -1247,11 +1211,11 @@ describe("Connect a phone on a phone", () => {
     await flushReads();
     // the Tailscale PC is the Tailscale tab's
     expect(buttons()).toEqual(["Connect", "Add by address", "build-box", "nuc12"]);
-    await act(async () => { button("nuc12").props.onClick(); });
+    await act(async () => { button("nuc12").click(); });
     expect(added).toEqual([{ destination: "nuc12", name: "nuc12" }]);
-    await act(async () => { button("build-box").props.onClick(); });
+    await act(async () => { button("build-box").click(); });
     expect(connected).toEqual(["build-box"]);
-    expect(renderer!.root.findAllByType("a")).toEqual([]);
+    expect(all("a")).toEqual([]);
   });
 
   it("in SSH, says an added host is added and an older-Ovis Tailscale host needs an update, in words, and offers neither", async () => {
@@ -1260,9 +1224,9 @@ describe("Connect a phone on a phone", () => {
     await mount(<Ssh machines={[ssh("nuc12")]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => undefined} />);
     await flushReads();
     expect(buttons()).toEqual(["Connect", "Add by address", "lab"]);
-    expect(button("lab").props.disabled).toBe(true);
-    expect(text(renderer!.root)).toContain("nuc12 · Added");
-    expect(text(renderer!.root)).toContain("lab: Update Ovis on that PC to 0.5 first.");
+    expect(button("lab").disabled).toBe(true);
+    expect(text(document.body)).toContain("nuc12 · Added");
+    expect(text(document.body)).toContain("lab: Update Ovis on that PC to 0.5 first.");
   });
 
   it("reads the found PCs once for both tabs, so they agree, and one Try again reads them again for both", async () => {
@@ -1272,14 +1236,14 @@ describe("Connect a phone on a phone", () => {
     await flushReads();
     const reads = () => requests.filter((path) => path === "/api/machines/ssh-candidates" || path === "/api/machines/tailnet").length;
     expect(reads()).toBe(2);
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node).includes("Try again"))).toHaveLength(2);
+    expect(all<HTMLButtonElement>("button").filter((node) => text(node).includes("Try again"))).toHaveLength(2);
     candidatesRefused = null;
-    await act(async () => { renderer!.root.findAll((node) => node.type === "button" && text(node).includes("Try again"))[0]!.props.onClick(); });
+    await act(async () => { all<HTMLButtonElement>("button").filter((node) => text(node).includes("Try again"))[0]!.click(); });
     await flushReads();
     expect(reads()).toBe(4);
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node).includes("Try again"))).toHaveLength(0);
-    expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(1);
-    expect(text(renderer!.root)).toContain("lab: Update Ovis on that PC to 0.5 first.");
+    expect(all<HTMLButtonElement>("button").filter((node) => text(node).includes("Try again"))).toHaveLength(0);
+    expect(all("span").filter((node) => text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(1);
+    expect(text(document.body)).toContain("lab: Update Ovis on that PC to 0.5 first.");
   });
 
   it("says where the list can be seen when the server keeps it from this window, and still takes a typed address", async () => {
@@ -1290,29 +1254,29 @@ describe("Connect a phone on a phone", () => {
     candidatesRefused = "owner_only";
     await mount(<Ssh machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => {}} />);
     await flushReads();
-    expect(text(renderer!.root)).toContain(hint);
-    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "mymac" } }); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    expect(text(document.body)).toContain(hint);
+    await page.type(one<HTMLInputElement>("input"), "mymac");
+    await act(async () => { submitForm(page, one<HTMLFormElement>("form")); });
     expect(added).toEqual([{ destination: "mymac" }]);
-    await act(async () => { renderer!.unmount(); });
+    await page.render(null);
     // a watching device adds no PC: it is told nothing new
     candidatesRefused = "read_only";
     await mount(<Tailscale machines={[]} onAddPc={() => {}} />);
     await flushReads();
-    expect(text(renderer!.root)).not.toContain(hint);
-    expect(text(renderer!.root)).not.toContain("No other PC of this Tailscale login was found.");
+    expect(text(document.body)).not.toContain(hint);
+    expect(text(document.body)).not.toContain("No other PC of this Tailscale login was found.");
   });
 
   it("without the Ovis account here, the relay tab keeps the relay's own pairing: its switch, QR code and code to type", async () => {
     const tab = (relay: RelayState) => <RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={null} phone={false} />;
     await mount(tab(relayState()));
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: true })).toHaveLength(1);
+    expect(all(relaySwitch + '[aria-checked="true"]')).toHaveLength(1);
     expect(qrCodes()).toHaveLength(1);
-    expect(text(renderer!.root)).toContain("7K3QD-M2XHA");
+    expect(text(document.body)).toContain("7K3QD-M2XHA");
     expect(buttons()).not.toContain("Sign in to Ovis");
-    await act(async () => { renderer!.update(<SettingsProvider>{tab(relayState({ ...ONLINE, phase: "off" }))}</SettingsProvider>); });
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
+    await page.render(<SettingsProvider>{tab(relayState({ ...ONLINE, phase: "off" }))}</SettingsProvider>);
+    expect(all(relaySwitch + '[aria-checked="false"]')).toHaveLength(1);
   });
 
   it("keeps the desktop's relay QR code up front, with no self-pairing", async () => {
@@ -1339,14 +1303,13 @@ describe("the relay tab's QR code behind a press", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   const ACCOUNT_ID = "acct_0123456789abcdefgh";
   const SERVICE = { service: "https://account.ovis.example", onOpen: () => undefined, onSignedIn: () => undefined };
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let requests: string[];
   let ended: unknown[];
   let pcAccount: string | null;
   let devices: PairedDevice[];
   let codePending: boolean;
   let hidden: boolean;
-  let visibility: EventTarget;
   let held: boolean[];
   let revokedAll: number;
   let keptAlive: string[];
@@ -1367,6 +1330,7 @@ describe("the relay tab's QR code behind a press", () => {
   const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
 
   beforeEach(() => {
+    page = openPage("https://workstation.example.ts.net/");
     jest.useFakeTimers();
     requests = [];
     ended = [];
@@ -1374,7 +1338,6 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [device({})];
     codePending = true;
     hidden = false;
-    visibility = new EventTarget();
     held = [];
     revokedAll = 0;
     keptAlive = [];
@@ -1387,31 +1350,18 @@ describe("the relay tab's QR code behind a press", () => {
     pcList = null;
     offerAccount = undefined;
     listing = "ok";
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["indexedDB", "HTMLElement", "Event", "CustomEvent"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     // the page's own sign-in, which a signed-in tab lists this PC under before its QR code
     Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: { href: "https://workstation.example.ts.net/" },
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-      dispatchEvent: events.dispatchEvent.bind(events),
-      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-      querySelectorAll: () => [],
-      activeElement: null,
-      get hidden() { return hidden; },
-      addEventListener: visibility.addEventListener.bind(visibility),
-      removeEventListener: visibility.removeEventListener.bind(visibility),
-    } });
+    for (const key of ["HTMLElement", "Event", "CustomEvent"] as const) {
+      Object.defineProperty(globalThis, key, { configurable: true, value: page.window[key] });
+    }
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
+    Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" });
+    Object.defineProperty(page.window.navigator, "maxTouchPoints", { configurable: true, value: 0 });
+    Object.defineProperty(page.window.document, "hidden", { configurable: true, get: () => hidden });
+    // The account watch uses window timers; route them through Bun's fake clock.
+    Object.assign(page.window, { setTimeout, clearTimeout, setInterval, clearInterval });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net").pathname;
       requests.push(path);
@@ -1452,11 +1402,11 @@ describe("the relay tab's QR code behind a press", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     resetAccountQrWatch();
     mock.restore();
     jest.useRealTimers();
+    await page.close();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -1475,54 +1425,52 @@ describe("the relay tab's QR code behind a press", () => {
   );
   const flush = async () => { for (let round = 0; round < 6; round += 1) await act(async () => {}); };
   const mount = async (options?: TabOptions) => {
-    await act(async () => { renderer = create(tab(options), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {} }) }); });
+    await page.render(tab(options));
     await flush();
   };
-  const update = async (options?: TabOptions) => { await act(async () => { renderer!.update(tab(options)); }); await flush(); };
+  const update = async (options?: TabOptions) => { await page.render(tab(options)); await flush(); };
   const advance = async (ms: number) => { await act(async () => { jest.advanceTimersByTime(ms); }); await flush(); };
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const section = () => renderer!.root.findByProps({ "data-testid": "connect-account-qr" });
-  const buttons = () => section().findAll((node) => node.type === "button").map((node) => text(node).trim());
+  const section = () => one('[data-testid="connect-account-qr"]');
+  const buttons = () => all<HTMLButtonElement>("button", section()).map((node) => text(node).trim());
   const press = async (label: string) => {
-    const found = section().findAll((node) => node.type === "button" && text(node).trim() === label);
+    const found = all<HTMLButtonElement>("button", section()).filter((node) => text(node).trim() === label);
     expect(found.map(text)).toEqual([label]);
-    await act(async () => { found[0]!.props.onClick(); });
+    await act(async () => { found[0]!.click(); });
     await flush();
   };
-  const qrCodes = () => renderer!.root.findAllByType(QrCode);
   it("signed in to the account of a PC that follows its signed list, says where an invite for another PC is made: a PC's page makes none", async () => {
     const WHERE = "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.";
     pcAccount = ACCOUNT_ID;
     pcList = "f".repeat(64);
     await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
-    expect(renderer!.root.findAllByProps({ "data-testid": "invite-elsewhere" }).map(text)).toEqual([WHERE]);
-    expect(renderer!.root.findAllByProps({ "data-testid": "invite-pc" })).toHaveLength(0);
-    await act(async () => { renderer!.unmount(); });
+    expect(all('[data-testid="invite-elsewhere"]').map(text)).toEqual([WHERE]);
+    expect(all('[data-testid="invite-pc"]')).toHaveLength(0);
+    await page.render(null);
     // an account with no list has no invites: nothing is said of them
     pcList = null;
     await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
-    expect(text(renderer!.root)).not.toContain(WHERE);
-    await act(async () => { renderer!.unmount(); });
+    expect(text(document.body)).not.toContain(WHERE);
+    await page.render(null);
     // a PC in no account, and a PC that follows another account's list than the one signed in to, say nothing of it either
     pcAccount = null;
     pcList = "f".repeat(64);
     await mount();
-    expect(text(renderer!.root)).not.toContain(WHERE);
-    await act(async () => { renderer!.unmount(); });
+    expect(text(document.body)).not.toContain(WHERE);
+    await page.render(null);
     pcAccount = "acct_otheraccount000000";
     await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
-    expect(text(renderer!.root)).not.toContain(WHERE);
+    expect(text(document.body)).not.toContain(WHERE);
   });
 
   it("signed in to a bound PC's own account, the tab is the signed-in line and the phone's QR code: no list of the account's PCs, no prompt", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ pcAdd: true, joinBySignIn: true, provider: "github" });
-    expect(renderer!.root.findAll((node) => typeof node.props.className === "string" && node.props.className.includes("relay-account-pcs"))).toHaveLength(0);
-    expect(text(renderer!.root)).not.toContain("Your account's PCs");
+    expect(all('[class*="relay-account-pcs"]')).toHaveLength(0);
+    expect(text(document.body)).not.toContain("Your account's PCs");
     expect(text(section())).toContain("This PC is in your account.");
     expect(qrCodes()).toHaveLength(1);
-    expect(text(renderer!.root)).not.toContain("This PC is in an account. Add PCs from your account.");
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(0);
+    expect(text(document.body)).not.toContain("This PC is in an account. Add PCs from your account.");
+    expect(all<HTMLButtonElement>("button").filter((node) => text(node) === "Add from account")).toHaveLength(0);
   });
 
   // owner #25: a sign-in that ended in another account than the PC's is no sign-in to this PC: the tab is its sign-in
@@ -1530,42 +1478,43 @@ describe("the relay tab's QR code behind a press", () => {
   it("signed in to another account, a bound PC shows the sign-in buttons alone and the phone's QR code", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ pcAdd: true, accountId: "acct_mine_0000000000000" });
-    expect(text(renderer!.root)).not.toContain("This PC is in an account. Add PCs from your account.");
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add from account")).toHaveLength(0);
-    expect(text(renderer!.root)).not.toContain("Sign in to this PC's account.");
-    expect(text(renderer!.root)).not.toContain("If that account is not yours");
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-signin" })).toHaveLength(1);
-    expect(qrCodes().map((qr) => qr.props.value)).toEqual([signInLink(ONLINE.app, SERVER_ID, null)]);
+    expect(text(document.body)).not.toContain("This PC is in an account. Add PCs from your account.");
+    expect(all<HTMLButtonElement>("button").filter((node) => text(node) === "Add from account")).toHaveLength(0);
+    expect(text(document.body)).not.toContain("Sign in to this PC's account.");
+    expect(text(document.body)).not.toContain("If that account is not yours");
+    expect(all('[data-testid="connect-signin"]')).toHaveLength(1);
+    expect(qrCodes().map(drawnModules)).toEqual([qrModules(signInLink(ONLINE.app, SERVER_ID, null))]);
   });
   const minted = () => requests.filter((path) => path === "/api/relay/code" || path === "/api/relay/offer" || path === "/api/devices/pair/start");
   it("for a PC in this page's account, shows the QR code that opens this PC in the Ovis app with this page's sign-in, and asks the PC for no code", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ joinBySignIn: true, provider: "google" });
-    expect(qrCodes().map((qr) => qr.props.value)).toEqual([`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/#sign-in=google`]);
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-phone-scan" })).toHaveLength(1);
+    expect(qrCodes().map(drawnModules)).toEqual([qrModules(`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/#sign-in=google`)]);
+    expect(all('[data-testid="connect-phone-scan"]')).toHaveLength(1);
     expect(minted()).toEqual([]);
   });
   it("in this PC's own window where Add PC over SSH adds to the account, lays the account QR code out as the Tailscale tab's top, its six digits only on a press", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ joinBySignIn: true, provider: "github", addsOverSsh: true });
-    const scan = () => renderer!.root.findByProps({ "data-testid": "connect-phone-scan" });
+    const scan = () => one('[data-testid="connect-phone-scan"]');
     // the QR code is the account's, as on main: it opens this PC's page in the Ovis app, which signs in to the account and
     // joins it there; nothing that admits a device by itself is made as the tab opens
-    expect(scan().findAllByType(QrCode).map((qr) => qr.props.value)).toEqual([`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/#sign-in=github`]);
+    expect(qrCodes(scan()).map(drawnModules)).toEqual([qrModules(`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/#sign-in=github`)]);
     expect(minted()).toEqual([]);
-    expect(scan().findAllByProps({ className: "compact-pair-code" })).toHaveLength(0);
+    expect(all('[class="compact-pair-code"]', scan())).toHaveLength(0);
     // beside it, the six digits a device types where this PC's address opens, made only by a press of the person here
-    await act(async () => { scan().find((node) => node.type === "button" && text(node).trim() === "Get a pairing code").props.onClick(); });
+    await act(async () => { matchingButton("Get a pairing code", scan()).click(); });
     await flush();
     expect(minted()).toEqual(["/api/devices/pair/start"]);
-    expect(text(scan().findByProps({ className: "compact-pair-code" }))).toBe("246 813");
-    expect(scan().findAll((node) => node.type === "button").map((node) => text(node).trim())).toEqual(["Refresh", "Copy"]);
+    expect(text(one('[class="compact-pair-code"]', scan()))).toBe("246 813");
+    expect(all<HTMLButtonElement>("button", scan()).map((node) => text(node).trim())).toEqual(["Refresh", "Copy"]);
     expect(qrCodes()).toHaveLength(1);
-    const parts = section().children.filter((child): child is ReactTestInstance => typeof child !== "string");
-    const at = (match: (node: ReactTestInstance) => boolean) => parts.findIndex((part) => match(part) || part.findAll(match).length > 0);
-    expect(at((node) => node.props["data-testid"] === "connect-phone-scan")).toBeLessThan(at((node) => node.type === "p" && text(node) === "This PC is in your account."));
+    const parts = [...section().children];
+    const scanAt = parts.findIndex((part) => part.matches('[data-testid="connect-phone-scan"]') || part.querySelector('[data-testid="connect-phone-scan"]'));
+    const noticeAt = parts.findIndex((part) => [part, ...all("p", part)].some((node) => node.matches("p") && text(node) === "This PC is in your account."));
+    expect(scanAt).toBeLessThan(noticeAt);
     // with the relay off there is nothing a phone could use, and nothing is made
-    await act(async () => { renderer!.unmount(); });
+    await page.render(null);
     requests.length = 0;
     await mount({ joinBySignIn: true, provider: "github", addsOverSsh: true, relay: relayState({ ...ONLINE, phase: "off" }) });
     expect(qrCodes()).toHaveLength(0);
@@ -1583,15 +1532,12 @@ describe("the relay tab's QR code behind a press", () => {
       </SettingsProvider>
     );
     const open = async (addsOverSsh: boolean) => {
-      Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
-      Object.assign(document, { body: {} });
-      const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
-      await act(async () => { renderer = create(sheet(addsOverSsh), { createNodeMock: node }); });
+      await page.render(sheet(addsOverSsh));
       await flush();
     };
-    const relayPanel = () => renderer!.root.find((node) => node.props["data-tab-panel"] === "relay" && node.type === "div");
-    const digits = () => relayPanel().findAll((node) => node.props.className === "compact-pair-code").map(text);
-    const getCode = () => relayPanel().findAll((node) => node.type === "button" && text(node).trim() === "Get a pairing code");
+    const relayPanel = () => one('div[data-tab-panel="relay"]');
+    const digits = () => all('[class="compact-pair-code"]', relayPanel()).map(text);
+    const getCode = () => all<HTMLButtonElement>("button", relayPanel()).filter((node) => text(node).trim() === "Get a pairing code");
     /** what the setup guide's relay QR code does when its offer comes (RelayPanel announceFromRelay): the PC's pending code */
     const guideOffer = async (code: string) => { await act(async () => { announcePairingCode({ code, expires_at: new Date(Date.now() + 600_000).toISOString() }); }); await flush(); };
     const starts = () => requests.filter((path) => path === "/api/devices/pair/start").length;
@@ -1604,10 +1550,10 @@ describe("the relay tab's QR code behind a press", () => {
       // Pair with a code keeps its button: the six digits wait for the press here, whoever made the PC's pending code
       expect([digits(), getCode().length, starts()]).toEqual([[], 1, 0]);
       // the add's answer lays the top out as the Tailscale tab's: no digits there either
-      await act(async () => { renderer!.update(sheet(true)); });
+      await page.render(sheet(true));
       await flush();
       expect([digits(), getCode().length]).toEqual([[], 1]);
-      await act(async () => { getCode()[0]!.props.onClick(); });
+      await act(async () => { getCode()[0]!.click(); });
       await flush();
       expect([digits(), starts()]).toEqual([["246 813"], 1]);
       // the guide's QR code asks again and gets the PC's pending code, the one pressed for: it stays on screen
@@ -1621,11 +1567,11 @@ describe("the relay tab's QR code behind a press", () => {
       await guideOffer("023060");
       expect(digits()).toEqual([]);
       // the Tailscale tab shows a code as it opens: the PC's pending one, which the sheet now wants
-      await act(async () => { renderer!.root.findByProps({ "data-tab": "tailscale" }).props.onClick(); });
+      await act(async () => { one('[data-tab="tailscale"]').click(); });
       await flush();
-      const tailscalePanel = () => renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale" && node.type === "div");
-      expect(tailscalePanel().findAll((node) => node.props.className === "compact-pair-code").map(text)).toEqual(["023 060"]);
-      await act(async () => { renderer!.root.findByProps({ "data-tab": "relay" }).props.onClick(); });
+      const tailscalePanel = () => one('div[data-tab-panel="tailscale"]');
+      expect(all('[class="compact-pair-code"]', tailscalePanel()).map(text)).toEqual(["023 060"]);
+      await act(async () => { one('[data-tab="relay"]').click(); });
       await flush();
       expect([digits(), getCode().length, starts()]).toEqual([["023 060"], 0, 0]);
     });
@@ -1633,11 +1579,11 @@ describe("the relay tab's QR code behind a press", () => {
     it("keeps a code pressed for in this sheet before the add on screen after it", async () => {
       pcAccount = ACCOUNT_ID;
       await open(false);
-      await act(async () => { getCode()[0]!.props.onClick(); });
+      await act(async () => { getCode()[0]!.click(); });
       await flush();
       expect(digits()).toEqual(["246 813"]);
       await guideOffer("246813");
-      await act(async () => { renderer!.update(sheet(true)); });
+      await page.render(sheet(true));
       await flush();
       expect([digits(), getCode().length, starts()]).toEqual([["246 813"], 0, 1]);
     });
@@ -1645,7 +1591,7 @@ describe("the relay tab's QR code behind a press", () => {
   it("for a PC in an account this page cannot tell is its own, the QR code names no sign-in: the phone picks one", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ signedIn: false, provider: "github" });
-    expect(qrCodes().map((qr) => qr.props.value)).toEqual([`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/`]);
+    expect(qrCodes().map(drawnModules)).toEqual([qrModules(`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/`)]);
     expect(minted()).toEqual([]);
   });
   it("for a PC in an account whose relay is off, shows no QR code a phone could not use", async () => {
@@ -1656,10 +1602,10 @@ describe("the relay tab's QR code behind a press", () => {
   it("unreadable PC add state shows the retry line instead of either pairing path", async () => {
     const status = await pcAccountStatus(async () => Response.json({ account: null, pc_add_from_account: "unavailable" }));
     await mount({ pcAdd: status.pcAddFromAccount, joinBySignIn: true });
-    expect(text(renderer!.root)).toContain("Can't add a PC right now. Try again in a moment.");
-    expect(text(renderer!.root)).not.toContain("Add from account");
-    expect(text(renderer!.root)).not.toContain("Show the QR code");
-    expect(text(renderer!.root)).not.toContain("Your account's PCs");
+    expect(text(document.body)).toContain("Can't add a PC right now. Try again in a moment.");
+    expect(text(document.body)).not.toContain("Add from account");
+    expect(text(document.body)).not.toContain("Show the QR code");
+    expect(text(document.body)).not.toContain("Your account's PCs");
     expect(minted()).toEqual([]);
   });
   const count = (path: string) => requests.filter((request) => request === path).length;
@@ -1681,7 +1627,7 @@ describe("the relay tab's QR code behind a press", () => {
       expect(offerMarks).toEqual(["1"]);
       expect(qrCodes()).toHaveLength(1);
       expect(text(section())).not.toContain("7K3QD-M2XHA");
-      expect(section().findAll((node) => node.props["aria-label"] === "Code to type")).toHaveLength(0);
+      expect(all('[aria-label="Code to type"]', section())).toHaveLength(0);
       expect(buttons()).toEqual(["New code"]);
     });
   }
@@ -1754,7 +1700,7 @@ describe("the relay tab's QR code behind a press", () => {
       await press("Phone QR code");
       expect(qrCodes()).toHaveLength(1);
       expect(ended).toEqual([]);
-      expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+      expect(all('[role="alert"]', section())).toHaveLength(0);
       // nothing is written to an account the tab did not show
       if (what.startsWith("another")) expect(requests).not.toContain(`/v1/pcs/${SERVER_ID}`);
     });
@@ -1770,19 +1716,19 @@ describe("the relay tab's QR code behind a press", () => {
     it(`on a PC already in an account, ${name}: only the QR code that opens it in the Ovis app, no button and no code asked of the PC`, async () => {
       pcAccount = ACCOUNT_ID;
       await mount(options);
-      expect(section().props["data-account"]).toBe(whose);
-      if (heading !== null) expect(text(renderer!.root)).toContain(heading);
+      expect(section().getAttribute("data-account")).toBe(whose);
+      if (heading !== null) expect(text(document.body)).toContain(heading);
       // signed out, nothing above the sign-in says the PC is in an account: there is nothing to act on in it (owner #21)
-      else expect(text(renderer!.root)).not.toContain("This PC is in an Ovis account.");
-      expect(text(renderer!.root)).not.toContain("acct_");
+      else expect(text(document.body)).not.toContain("This PC is in an Ovis account.");
+      expect(text(document.body)).not.toContain("acct_");
       if (whose === "unknown") expect(text(section())).toBe("Scan it with the Ovis app on your phone");
       // owner #25: no paragraph the person cannot act on, whoever's account it is
       expect(text(section())).not.toContain("If that account is not yours");
-      expect(text(renderer!.root)).not.toContain("Sign in to this PC's account.");
+      expect(text(document.body)).not.toContain("Sign in to this PC's account.");
       expect(text(section())).not.toContain("Add with a QR code");
-      expect(text(renderer!.root)).not.toContain("On the new device, sign in to the same Ovis account.");
+      expect(text(document.body)).not.toContain("On the new device, sign in to the same Ovis account.");
       expect(buttons()).toEqual([]);
-      expect(qrCodes().map((qr) => qr.props.value)).toEqual([signInLink(ONLINE.app, SERVER_ID, null)]);
+      expect(qrCodes().map(drawnModules)).toEqual([qrModules(signInLink(ONLINE.app, SERVER_ID, null))]);
       expect(held.at(-1)).toBe(false);
       await advance(ACCOUNT_QR_POLL_MS * 4);
       expect(minted()).toEqual([]);
@@ -1792,8 +1738,8 @@ describe("the relay tab's QR code behind a press", () => {
   it("a signed-out browser on a bound PC offers sign-in, not a code, and leaves the relay's switch to More settings", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ signedIn: false, relay: relayState({ ...ONLINE, phase: "off" }) });
-    expect(text(renderer!.root)).not.toContain("This PC is in an Ovis account.");
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
+    expect(text(document.body)).not.toContain("This PC is in an Ovis account.");
+    expect(all(relaySwitch)).toHaveLength(0);
     expect(minted()).toEqual([]);
     expect(text(section())).not.toContain("this PC can show its QR code");
   });
@@ -1801,26 +1747,26 @@ describe("the relay tab's QR code behind a press", () => {
   it("a window signed out of a PC in an account shows the sign-in alone, no line above it and never the Add from account prompt beside it, and keeps the phone QR", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ signedIn: false, pcAdd: true });
-    const signIn = renderer!.root.findByProps({ "data-testid": "connect-signin" });
-    const lines = signIn.findAll((node) => node.type === "p" && typeof node.props.className === "string" && /settings-(description|hint)/.test(node.props.className)).map(text);
+    const signIn = one('[data-testid="connect-signin"]');
+    const lines = all('p[class*="settings-description"], p[class*="settings-hint"]', signIn).map(text);
     expect(lines).toEqual([]);
-    expect(renderer!.root.findAllByProps({ "data-testid": "pc-add-source-bound" })).toHaveLength(0);
-    expect(text(renderer!.root)).not.toContain("Add from account");
-    expect(text(renderer!.root)).not.toContain("acct_");
-    expect(signIn.findAll((node) => node.type === "button").length).toBeGreaterThan(0);
-    expect(qrCodes().map((qr) => qr.props.value)).toEqual([signInLink(ONLINE.app, SERVER_ID, null)]);
+    expect(all('[data-testid="pc-add-source-bound"]')).toHaveLength(0);
+    expect(text(document.body)).not.toContain("Add from account");
+    expect(text(document.body)).not.toContain("acct_");
+    expect(all<HTMLButtonElement>("button", signIn).length).toBeGreaterThan(0);
+    expect(qrCodes().map(drawnModules)).toEqual([qrModules(signInLink(ONLINE.app, SERVER_ID, null))]);
   });
 
   it("signed in on a PC already in an account, shows the relay's switch while it is not online, and never says to add this PC", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ signedIn: true, relay: relayState({ ...ONLINE, phase: "off" }) });
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
-    expect(text(renderer!.root)).not.toContain("add this PC to your account");
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Open the account")).toHaveLength(0);
-    expect(section().props["data-first"]).toBeUndefined();
+    expect(all(relaySwitch + '[aria-checked="false"]')).toHaveLength(1);
+    expect(text(document.body)).not.toContain("add this PC to your account");
+    expect(all<HTMLButtonElement>("button").filter((node) => text(node) === "Open the account")).toHaveLength(0);
+    expect(section().getAttribute("data-first")).toBeNull();
     await update({ signedIn: true, joinBySignIn: true });
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
-    expect(section().props["data-first"]).toBe(true);
+    expect(all(relaySwitch)).toHaveLength(0);
+    expect(section().getAttribute("data-first")).toBe("true");
   });
 
   it("a press on a PC that joined an account since the tab was drawn asks for no code, and says how a device is added", async () => {
@@ -1830,10 +1776,10 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     await press("Phone QR code");
     expect(minted()).toEqual([]);
-    expect(qrCodes().map((qr) => qr.props.value)).toEqual([signInLink(ONLINE.app, SERVER_ID, null)]);
+    expect(qrCodes().map(drawnModules)).toEqual([qrModules(signInLink(ONLINE.app, SERVER_ID, null))]);
     expect(buttons()).toEqual([]);
     expect(text(section())).toContain("This PC is in your account.");
-    expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(all('[role="alert"]', section())).toHaveLength(0);
     expect(held.at(-1)).toBe(false);
   });
 
@@ -1847,11 +1793,11 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Phone QR code");
     await flush();
     expect(qrCodes()).toHaveLength(0);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = one('[data-testid="connect-account-joined"]');
     expect(text(notice)).toContain("This PC is in your account.");
     expect(text(notice)).toContain("Added by Laptop · Chrome.");
     expect(count("/api/relay/offer")).toBe(1);
-    expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(all('[role="alert"]', section())).toHaveLength(0);
     // it had no code: a typed code another place shows on the PC is left alone
     expect(count("/api/relay/code/cancel")).toBe(0);
     await press("Done");
@@ -1867,7 +1813,7 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS);
     expect(qrCodes()).toHaveLength(0);
     expect(ended).toEqual([{ code: "482913" }]);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by Laptop · Chrome.");
+    expect(text(one('[data-testid="connect-account-joined"]'))).toContain("Added by Laptop · Chrome.");
     await press("Done");
     expect(buttons()).toEqual([]);
     expect(text(section())).toContain("This PC is in your account.");
@@ -1892,7 +1838,7 @@ describe("the relay tab's QR code behind a press", () => {
     endsPairings = false;
     await press("New code");
     expect(qrCodes()).toHaveLength(0);
-    expect(text(section().findByProps({ role: "alert" }))).toMatch(/^The old code could not be ended, so it may still work until it runs out: .+ New code tries again\.$/);
+    expect(text(one('[role="alert"]', section()))).toMatch(/^The old code could not be ended, so it may still work until it runs out: .+ New code tries again\.$/);
     endsPairings = true;
     await press("New code");
     expect(ended).toEqual([{ code: "482913" }]);
@@ -1924,11 +1870,11 @@ describe("the relay tab's QR code behind a press", () => {
   it("with the relay off, shows no switch, no button and no state on a PC in no account: signed in, Add this PC turns the relay on", async () => {
     const off = relayState({ ...ONLINE, phase: "off" });
     await mount({ signedIn: false, relay: off });
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
+    expect(all(relaySwitch)).toHaveLength(0);
     expect(buttons()).not.toContain("Phone QR code");
     expect(text(section())).toBe("");
     await update({ signedIn: true, relay: off });
-    expect(renderer!.root.findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
+    expect(all(relaySwitch)).toHaveLength(0);
     expect(text(section())).toBe("");
     expect(buttons()).not.toContain("Phone QR code");
     expect(minted()).toEqual([]);
@@ -1977,7 +1923,7 @@ describe("the relay tab's QR code behind a press", () => {
     await flush();
     expect(qrCodes()).toHaveLength(0);
     // no refusal to read, and no New code, which the PC would refuse again
-    expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(all('[role="alert"]', section())).toHaveLength(0);
     expect(buttons()).not.toContain("New code");
     expect([count("/api/relay/offer"), rereads]).toEqual([1, 1]);
     // the relay's state, read again, says no account is named: the button goes, and Add this PC above names one
@@ -1995,7 +1941,7 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Phone QR code");
     await flush();
     expect(qrCodes()).toHaveLength(0);
-    expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(all('[role="alert"]', section())).toHaveLength(0);
     expect(count("/api/relay/offer")).toBe(1);
     await advance(19_000);
     expect(count("/api/relay/offer")).toBe(1);
@@ -2007,7 +1953,7 @@ describe("the relay tab's QR code behind a press", () => {
   it("the relay's state is read again when asked, without waiting for the poll's next round", async () => {
     let relay: RelayState | undefined;
     const Probe = () => { relay = useRelay(); return null; };
-    await act(async () => { renderer = create(<Probe />); });
+    await page.render(<Probe />);
     await flush();
     expect([count("/api/relay"), relay?.status?.phase]).toEqual([1, "online"]);
     // the poll's next round is a quarter of a minute off, and no clock moves here
@@ -2037,14 +1983,14 @@ describe("the relay tab's QR code behind a press", () => {
     await mount();
     await press("Phone QR code");
     hidden = true;
-    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     await advance(ACCOUNT_QR_HIDDEN_MS - 1000);
     hidden = false;
-    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     await advance(ACCOUNT_QR_HIDDEN_MS);
     expect(qrCodes()).toHaveLength(1);
     hidden = true;
-    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     await advance(ACCOUNT_QR_HIDDEN_MS);
     expect(qrCodes()).toHaveLength(0);
     expect(buttons()).toEqual(["Show a new code"]);
@@ -2055,11 +2001,11 @@ describe("the relay tab's QR code behind a press", () => {
     await mount();
     await press("Phone QR code");
     hidden = true;
-    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     const now = Date.now();
     spyOn(Date, "now").mockImplementation(() => now + ACCOUNT_QR_HIDDEN_MS);
     hidden = false;
-    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     await flush();
     expect(qrCodes()).toHaveLength(0);
     expect(buttons()).toEqual(["Show a new code"]);
@@ -2076,8 +2022,7 @@ describe("the relay tab's QR code behind a press", () => {
     codePending = true;
     await press("Show a new code");
     expect(qrCodes()).toHaveLength(1);
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     await act(async () => {});
     expect(ended).toEqual([{ code: "482913" }, { code: "482913" }]);
     expect(count("/api/relay/code/cancel")).toBe(0);
@@ -2086,14 +2031,14 @@ describe("the relay tab's QR code behind a press", () => {
   it("ends the code with a request that outlives the page when the page goes: a reload, a closed tab", async () => {
     await mount();
     await press("Phone QR code");
-    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("pagehide")); });
     await flush();
     expect(ended).toEqual([{ code: "482913" }]);
     expect(keptAlive).toEqual(["/api/devices/pair/cancel"]);
     expect(qrCodes()).toHaveLength(0);
     expect(buttons()).toEqual(["Show a new code"]);
     expect(count("/api/devices/pair/cancel")).toBe(1);
-    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("pagehide")); });
     await flush();
     expect(count("/api/devices/pair/cancel")).toBe(1);
   });
@@ -2118,7 +2063,7 @@ describe("the relay tab's QR code behind a press", () => {
     offerAnswer = () => new Promise<Response>((resolve) => { answer = () => resolve(Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString() })); });
     await press("Phone QR code");
     await update({ active: false });
-    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("pagehide")); });
     await flush();
     expect([count("/api/relay/code/cancel"), count("/api/devices/pair/cancel")]).toEqual([0, 0]);
     await act(async () => { answer(); });
@@ -2141,7 +2086,7 @@ describe("the relay tab's QR code behind a press", () => {
     let answer = () => undefined as void;
     statusGate = new Promise((resolve) => { answer = resolve; });
     await press("Phone QR code");
-    expect(section().findAll((node) => node.type === "button")[0]!.props.disabled).toBe(true);
+    expect(all<HTMLButtonElement>("button", section())[0]!.disabled).toBe(true);
     await update({ active: false });
     await act(async () => { answer(); });
     await flush();
@@ -2166,7 +2111,7 @@ describe("the relay tab's QR code behind a press", () => {
     ["another tab opened", async () => { await update({ active: false }); }],
     ["the page was hidden for a minute", async () => {
       hidden = true;
-      await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+      await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
       await advance(ACCOUNT_QR_HIDDEN_MS);
     }],
   ] as const) {
@@ -2177,12 +2122,12 @@ describe("the relay tab's QR code behind a press", () => {
       codePending = false;
       await down();
       expect(qrCodes()).toHaveLength(0);
-      expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-joined" })).toHaveLength(0);
+      expect(all('[data-testid="connect-account-joined"]')).toHaveLength(0);
       expect(held.at(-1)).toBe(true);
       devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID })];
       pcAccount = ACCOUNT_ID;
       await advance(ACCOUNT_QR_POLL_MS);
-      const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+      const notice = one('[data-testid="connect-account-joined"]');
       expect(text(notice)).toContain("This PC is in your account.");
       expect(text(notice)).toContain("Added by iPhone · Safari.");
       expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
@@ -2196,8 +2141,7 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Phone QR code");
     devices = [...devices, phoneDevice()];
     codePending = false;
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     await flush();
     expect(accountQrPending()).toBe(true);
     devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID })];
@@ -2209,7 +2153,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(accountQrNoticeWaiting()).toBe(true);
     expect(accountQrPending()).toBe(false);
     await mount();
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = one('[data-testid="connect-account-joined"]');
     expect(text(notice)).toContain("Added by iPhone · Safari.");
     expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
     expect(accountQrNoticeWaiting()).toBe(false);
@@ -2250,14 +2194,14 @@ describe("the relay tab's QR code behind a press", () => {
     await update({ active: false });
     await update({ active: true });
     await advance(ACCOUNT_QR_ALONE_MS + ACCOUNT_QR_POLL_MS);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }))).toContain("Paired with this PC but not signed in to an Ovis account, so this PC is in no account yet: iPhone · Safari.");
+    expect(text(one('[data-testid="connect-account-alone"]'))).toContain("Paired with this PC but not signed in to an Ovis account, so this PC is in no account yet: iPhone · Safari.");
     await press("Keep it");
     expect(buttons()).toEqual(["Show a new code"]);
     expect(held.at(-1)).toBe(false);
     devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID })];
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by iPhone · Safari.");
+    expect(text(one('[data-testid="connect-account-joined"]'))).toContain("Added by iPhone · Safari.");
   });
 
   it("a new press while the PC is still watched tells a join it finds instead of showing a QR code", async () => {
@@ -2271,7 +2215,7 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     const before = minted().length;
     await press("Show a new code");
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by iPhone · Safari.");
+    expect(text(one('[data-testid="connect-account-joined"]'))).toContain("Added by iPhone · Safari.");
     expect(minted()).toHaveLength(before);
     expect(accountQrPending()).toBe(false);
   });
@@ -2299,7 +2243,7 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
     expect(qrCodes()).toHaveLength(0);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = one('[data-testid="connect-account-joined"]');
     expect(text(notice)).toContain("This PC is in your account.");
     expect(text(notice)).toContain("Added by iPhone · Safari.");
     expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
@@ -2322,7 +2266,7 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, phoneDevice({ account: ACCOUNT_ID, created_at: "2026-11-10T00:00:05Z" })];
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
-    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = () => one('[data-testid="connect-account-joined"]');
     expect(text(notice())).toContain("Added by iPhone · Safari.");
     expect(text(notice())).toContain("Checking a device that just paired: Stranger · Firefox.");
     expect(buttons()).toEqual(["Not me: revoke every device"]);
@@ -2344,7 +2288,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
     devices = [...devices, device({ id: "c", label: "Tablet · Chrome", created_at: "2026-11-10T00:00:02Z" })];
     await press("Done");
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("not in that account: Tablet · Chrome.");
+    expect(text(one('[data-testid="connect-account-joined"]'))).toContain("not in that account: Tablet · Chrome.");
     expect(buttons()).toEqual(["Not me: remove it", "Keep it", "Not me: revoke every device"]);
     expect(held.at(-1)).toBe(true);
     await press("Keep it");
@@ -2362,8 +2306,8 @@ describe("the relay tab's QR code behind a press", () => {
     statusGate = Promise.reject(new Error("offline"));
     statusGate.catch(() => undefined);
     await press("Done");
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-joined" })).toHaveLength(1);
-    expect(section().findAllByProps({ role: "alert" }).map(text).join("")).toContain("This PC's devices could not be read");
+    expect(all('[data-testid="connect-account-joined"]')).toHaveLength(1);
+    expect(all('[role="alert"]', section()).map(text).join("")).toContain("This PC's devices could not be read");
     statusGate = Promise.resolve();
     await press("Done");
     expect(buttons()).toEqual([]);
@@ -2379,7 +2323,7 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, device({ id: "c", label: "Tablet · Chrome", created_at: "2026-11-10T00:00:02Z" })];
     await press("Not me: remove it");
     expect(removed).toEqual(["b"]);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
+    const notice = one('[data-testid="connect-account-alone"]');
     expect(text(notice)).toContain("Tablet · Chrome");
     expect(text(notice)).not.toContain("iPhone · Safari");
     expect(buttons()).toEqual(["Not me: remove it", "Keep it"]);
@@ -2402,7 +2346,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(held.at(-1)).toBe(true);
     statusGate = Promise.resolve();
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }))).toContain("Tablet · Chrome");
+    expect(text(one('[data-testid="connect-account-alone"]'))).toContain("Tablet · Chrome");
     expect(buttons()).toEqual(["Not me: remove it", "Keep it"]);
   });
 
@@ -2414,7 +2358,7 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_ALONE_MS);
     devices = [...devices, phoneDevice({ id: "s", label: "Stranger · Firefox" })];
     await press("Keep it");
-    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
+    const notice = () => one('[data-testid="connect-account-alone"]');
     expect(buttons()).toEqual(["Show a new code"]);
     await advance(ACCOUNT_QR_ALONE_MS + ACCOUNT_QR_POLL_MS);
     expect(text(notice())).toContain("Stranger · Firefox");
@@ -2439,13 +2383,13 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS);
     await press("Not me: revoke every device");
     expect(count("/api/devices/revoke-all")).toBe(0);
-    const confirm = renderer!.root.findByType(ConfirmDialog);
-    expect(confirm.props.body).toContain("this PC leaves that account");
-    await act(async () => { await confirm.props.onConfirm(); });
+    const confirm = one('.confirm-dialog[role="alertdialog"]');
+    expect(text(one(".confirm-body", confirm))).toContain("this PC leaves that account");
+    await act(async () => { one("button.btn-danger", confirm).click(); });
     await flush();
     expect(count("/api/devices/revoke-all")).toBe(1);
     expect(revokedAll).toBe(1);
-    expect(renderer!.root.findAllByType(ConfirmDialog)).toHaveLength(0);
+    expect(all('.confirm-dialog[role="alertdialog"]')).toHaveLength(0);
     expect(text(section())).toContain("Every paired device was revoked");
     expect(buttons()).toEqual(["Show a new code"]);
     expect(buttons()).toEqual(["Show a new code"]);
@@ -2456,16 +2400,16 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Phone QR code");
     devices = [...devices, phoneDevice()];
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(all('[data-testid="connect-account-alone"]')).toHaveLength(0);
     await advance(ACCOUNT_QR_ALONE_MS);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
+    const notice = one('[data-testid="connect-account-alone"]');
     expect(text(notice)).toBe("Paired with this PC but not signed in to an Ovis account, so this PC is in no account yet: iPhone · Safari.If that is your device, keep it and sign in on it to add this PC to your account.Not me: remove itKeep it");
     expect(qrCodes()).toHaveLength(0);
     expect(held.at(-1)).toBe(true);
     devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID })];
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by iPhone · Safari.");
+    expect(text(one('[data-testid="connect-account-joined"]'))).toContain("Added by iPhone · Safari.");
   });
 
   // (2) a scan by a device that is not signed in gets a Not me too: one press removes it
@@ -2495,12 +2439,12 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_ALONE_MS);
     removable = false;
     await press("Not me: remove it");
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(1);
-    expect(section().findAllByProps({ role: "alert" })).toHaveLength(1);
+    expect(all('[data-testid="connect-account-alone"]')).toHaveLength(1);
+    expect(all('[role="alert"]', section())).toHaveLength(1);
     removable = true;
     devices = [devices[0]!];
     await press("Not me: remove it");
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(all('[data-testid="connect-account-alone"]')).toHaveLength(0);
     expect(buttons()).toEqual(["Show a new code"]);
   });
 
@@ -2510,18 +2454,17 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, phoneDevice()];
     await advance(ACCOUNT_QR_POLL_MS);
     await advance(ACCOUNT_QR_ALONE_MS);
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(1);
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    expect(all('[data-testid="connect-account-alone"]')).toHaveLength(1);
+    await page.render(null);
     await flush();
     expect(accountQrNoticeWaiting()).toBe(true);
     await mount();
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }))).toContain("iPhone · Safari");
+    expect(text(one('[data-testid="connect-account-alone"]'))).toContain("iPhone · Safari");
     expect(buttons()).toEqual(["Not me: remove it", "Keep it"]);
     devices = [devices[0]!, phoneDevice({ account: "acct_stranger_000000000" })];
     pcAccount = "acct_stranger_000000000";
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("This PC joined a different account.");
+    expect(text(one('[data-testid="connect-account-joined"]'))).toContain("This PC joined a different account.");
   });
 
   it("says so when the PC joined an account that is not the one this browser is signed in to, with Not me first", async () => {
@@ -2530,15 +2473,15 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, phoneDevice({ account: "acct_stranger_000000000" })];
     pcAccount = "acct_stranger_000000000";
     await advance(ACCOUNT_QR_POLL_MS);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
-    expect(notice.props["data-account"]).toBe("other");
+    const notice = one('[data-testid="connect-account-joined"]');
+    expect(notice.getAttribute("data-account")).toBe("other");
     expect(text(notice)).toContain("This PC joined a different account.");
     expect(text(notice)).toContain("Added by iPhone · Safari.");
     expect(text(notice)).not.toContain("This PC is in your account");
     expect(buttons()).toEqual(["Not me: revoke every device", "Keep it"]);
-    const [notMe, keep] = section().findAll((node) => node.type === "button");
-    expect(notMe!.props.className).toContain("btn-danger");
-    expect(keep!.props.className).not.toContain("btn-primary");
+    const [notMe, keep] = all<HTMLButtonElement>("button", section());
+    expect(notMe!.className).toContain("btn-danger");
+    expect(keep!.className).not.toContain("btn-primary");
   });
 
   it("signed out, says that this browser cannot tell whose account the PC joined, and tells once it is signed in", async () => {
@@ -2547,20 +2490,20 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, phoneDevice({ account: ACCOUNT_ID })];
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
-    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
-    expect(notice().props["data-account"]).toBe("unknown");
+    const notice = () => one('[data-testid="connect-account-joined"]');
+    expect(notice().getAttribute("data-account")).toBe("unknown");
     expect(text(notice())).toContain("Sign in to this PC's account.");
     expect(text(notice())).not.toContain("acct_");
     // something the owner can answer without knowing an account id, and Not me first: whoever scanned may be a stranger
     expect(text(notice())).toContain("If your own device did not just say that it added this PC, this was not you: revoke every device, and this PC leaves that account.");
     expect(buttons()).toEqual(["Not me: revoke every device", "Keep it"]);
-    const [notMe, keep] = section().findAll((node) => node.type === "button");
-    expect(notMe!.props.className).toContain("btn-danger");
-    expect(keep!.props.className).not.toContain("btn-primary");
+    const [notMe, keep] = all<HTMLButtonElement>("button", section());
+    expect(notMe!.className).toContain("btn-danger");
+    expect(keep!.className).not.toContain("btn-primary");
     await update({ signedIn: true, accountId: "acct_mine_0000000000000" });
-    expect(notice().props["data-account"]).toBe("other");
+    expect(notice().getAttribute("data-account")).toBe("other");
     await update({ signedIn: true, accountId: ACCOUNT_ID });
-    expect(notice().props["data-account"]).toBe("mine");
+    expect(notice().getAttribute("data-account")).toBe("mine");
     expect(text(notice())).toContain("This PC is in your account.");
     expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
   });
@@ -2573,8 +2516,8 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS);
     await press("Keep it");
     expect(buttons()).toEqual([]);
-    expect(section().props["data-account"]).toBe("unknown");
-    expect(text(renderer!.root)).not.toContain("This PC is in an Ovis account.");
+    expect(section().getAttribute("data-account")).toBe("unknown");
+    expect(text(document.body)).not.toContain("This PC is in an Ovis account.");
     expect(text(section())).toBe("Scan it with the Ovis app on your phone");
   });
 
@@ -2585,7 +2528,7 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [device({ account: ACCOUNT_ID }), phoneDevice({ label: "Stranger · Firefox" })];
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
-    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = () => one('[data-testid="connect-account-joined"]');
     expect(text(notice())).toContain("Added by Laptop · Chrome.");
     expect(text(notice())).not.toContain("Added by Stranger");
     // through the relay it gets its ten seconds to become a member: not asked about yet, and no Done meanwhile
@@ -2607,8 +2550,7 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Phone QR code");
     devices = [...devices, phoneDevice({ label: "Stranger · Firefox" })];
     codePending = false;
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     await flush();
     expect(accountQrPending()).toBe(true);
     devices = [device({ account: ACCOUNT_ID }), phoneDevice({ label: "Stranger · Firefox" })];
@@ -2616,7 +2558,7 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS);
     expect(accountQrNoticeWaiting()).toBe(true);
     await mount();
-    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = () => one('[data-testid="connect-account-joined"]');
     expect(text(notice())).toContain("Added by Laptop · Chrome.");
     expect(text(notice())).not.toContain("Added by Stranger");
     // the stranger's ten seconds run from when the watch first saw it, and until it is answered there is no Done
@@ -2640,16 +2582,14 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, phoneDevice({ account: "acct_stranger_000000000" })];
     pcAccount = "acct_stranger_000000000";
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-joined" })).toHaveLength(1);
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    expect(all('[data-testid="connect-account-joined"]')).toHaveLength(1);
+    await page.render(null);
     await flush();
     expect(accountQrNoticeWaiting()).toBe(true);
     await mount();
-    expect(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }).props["data-account"]).toBe("other");
+    expect(one('[data-testid="connect-account-joined"]').getAttribute("data-account")).toBe("other");
     await press("Keep it");
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     await flush();
     expect(accountQrNoticeWaiting()).toBe(false);
   });
@@ -2661,7 +2601,7 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
     await advance(ACCOUNT_QR_ALONE_MS);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    const notice = one('[data-testid="connect-account-joined"]');
     expect(text(notice)).not.toContain("Added by");
     expect(text(notice)).toContain("not in that account: iPhone · Safari.");
   });
@@ -2671,13 +2611,13 @@ describe("the relay tab's QR code behind a press", () => {
     await press("Phone QR code");
     devices = [...devices, device({ id: "c", label: "Tablet · Chrome", created_at: "2026-11-10T00:00:00Z" })];
     await advance(ACCOUNT_QR_POLL_MS);
-    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
+    const notice = one('[data-testid="connect-account-alone"]');
     expect(text(notice)).toContain("Paired with this PC at its own address while its QR code was up, not through the relay: Tablet · Chrome.");
     await press("Keep it");
     expect(removed).toEqual([]);
     expect(buttons()).toEqual(["Show a new code"]);
     await advance(ACCOUNT_QR_POLL_MS * 2);
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(all('[data-testid="connect-account-alone"]')).toHaveLength(0);
     expect(accountQrNoticeWaiting()).toBe(false);
   });
 
@@ -2691,12 +2631,12 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(5 * 60_000);
     devices = [...devices, device({ id: "p", label: "Pixel · Chrome", created_at: new Date().toISOString() })];
     await advance(ACCOUNT_QR_POLL_MS);
-    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(all('[data-testid="connect-account-alone"]')).toHaveLength(0);
     expect(buttons()).toEqual(["Show a new code"]);
     pcAccount = ACCOUNT_ID;
     devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID }), devices[2]!];
     await advance(ACCOUNT_QR_POLL_MS);
-    const joined = text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }));
+    const joined = text(one('[data-testid="connect-account-joined"]'));
     expect(joined).toContain("Added by iPhone · Safari.");
     expect(joined).not.toContain("Pixel");
   });
@@ -2707,7 +2647,7 @@ describe("the relay tab's QR code behind a press", () => {
     devices = [...devices, phoneDevice(), device({ id: "c", label: "Tablet · Chrome", created_at: "2026-11-10T00:00:00Z" })];
     await advance(ACCOUNT_QR_POLL_MS);
     await advance(ACCOUNT_QR_ALONE_MS);
-    const notice = text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }));
+    const notice = text(one('[data-testid="connect-account-alone"]'));
     expect(notice).toContain("so this PC is in no account yet: iPhone · Safari.If that is your device, keep it and sign in on it to add this PC to your account.");
     expect(notice).toContain("not through the relay: Tablet · Chrome.");
   });

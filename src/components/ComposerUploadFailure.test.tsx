@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { Composer } from "./Composer.tsx";
 import * as settingsModule from "../lib/settings.ts";
 import * as commandsModule from "../lib/usePaneCommands.ts";
@@ -11,22 +12,19 @@ import { ApiError, uploadPaneImage } from "../lib/api.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
 const pane = "upload-failure-pane", draftKey = `ovis:composer-draft:${pane}`;
-const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
+const browserGlobals = ["requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver"] as const;
 const saved = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
 beforeEach(() => {
-  for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    navigator: { languages: ["en"], userAgent: "test", maxTouchPoints: 0 },
-    window: { ...listen, location: { href: "https://ovis.test/" }, matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout },
-    document: { ...listen, querySelector: () => null },
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => {},
-  };
-  for (const key of globals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: values[key] });
+  page = openPage("https://ovis.test/");
+  for (const [key, value] of Object.entries({ languages: ["en"], userAgent: "test", maxTouchPoints: 0 })) {
+    Object.defineProperty(page.window.navigator, key, { configurable: true, value });
+  }
+  for (const key of browserGlobals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+  Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: () => 1 });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: page.window.ResizeObserver });
   const data = new Map<string, string>();
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
@@ -39,9 +37,8 @@ beforeEach(() => {
   composerDrafts.set(draftKey, "");
 });
 
-afterEach(() => {
-  act(() => { renderer?.unmount(); });
-  renderer = undefined;
+afterEach(async () => {
+  await page.close();
   composerDrafts.set(draftKey, "");
   mock.restore();
   for (const [key, descriptor] of saved) {
@@ -51,8 +48,15 @@ afterEach(() => {
   saved.clear();
 });
 
-const note = () => renderer!.root.findAll((node) => node.props.className === "composer-note-text").map((node) => node.children.filter((child) => typeof child === "string").join(""))[0] ?? null;
-const details = () => renderer!.root.findAllByType("code").map((node) => node.children.join(""));
+const note = () => [...(page.container.querySelector('[class="composer-note-text"]')?.childNodes ?? [])]
+  .filter((node) => node.nodeType === 3).map((node) => node.textContent).join("") || null;
+const details = () => [...page.container.querySelectorAll("code")].map((node) => node.textContent);
+
+async function attach(files: File[]): Promise<void> {
+  const input = page.one<HTMLInputElement>('input[type="file"]');
+  Object.defineProperty(input, "files", { configurable: true, value: files });
+  await act(async () => { input.dispatchEvent(new page.window.Event("change", { bubbles: true }) as unknown as Event); });
+}
 
 it("posts non-images named .jpe and .jfif as ordinary attachments", async () => {
   const requests: { name: string; content_type: string; data_base64: string }[] = [];
@@ -61,13 +65,10 @@ it("posts non-images named .jpe and .jfif as ordinary attachments", async () => 
     return Response.json({ path: "/work/.ovis/meeting-notes" });
   }, { preconnect: globalThis.fetch.preconnect });
   spyOn(globalThis, "fetch").mockImplementation(capture);
-  await act(async () => {
-    renderer = create(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={(file) => uploadPaneImage(pane, file)} />);
-  });
-  const input = renderer!.root.find((node) => node.type === "input" && node.props.type === "file");
+  await page.render(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={(file) => uploadPaneImage(pane, file)} />);
   const names = ["notes.jpe", "notes.jfif"];
   const files = names.map((name) => new File(["meeting notes"], name, { type: "application/octet-stream" }));
-  await act(async () => { input.props.onChange({ currentTarget: { files, value: "" } }); });
+  await attach(files);
   expect(requests.map(({ name, content_type, data_base64 }) => [name, content_type, atob(data_base64)]).sort()).toEqual(
     names.map((name) => [name, "application/octet-stream", "meeting notes"]).sort(),
   );
@@ -81,12 +82,9 @@ it.each([
   ["a known cause of an answer with no words, leaving its HTTP status out of Details,", new ApiError("/api/pane/image", 404, "", null), "IMG_4242.jpg could not be attached: It no longer exists on the PC", []],
 ])("puts %s on the line of an upload that failed", async (_name, error, said, detail) => {
   const upload = async (): Promise<string> => { throw error; };
-  await act(async () => {
-    renderer = create(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={upload} />);
-  });
-  const input = renderer!.root.find((node) => node.type === "input" && node.props.type === "file");
+  await page.render(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={upload} />);
   const photo = new File(["jpeg"], "IMG_4242.jpg", { type: "image/jpeg" });
-  await act(async () => { input.props.onChange({ currentTarget: { files: [photo], value: "" } }); });
+  await attach([photo]);
   expect(note()).toBe(said);
   expect(details()).toEqual(detail);
 });
@@ -98,15 +96,12 @@ it.each([
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response("", { status: 502, statusText })) as unknown as typeof fetch;
   try {
-    await act(async () => {
-      renderer = create(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={(file) => uploadPaneImage(pane, file)} />);
-    });
-    const input = renderer!.root.find((node) => node.type === "input" && node.props.type === "file");
+    await page.render(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={(file) => uploadPaneImage(pane, file)} />);
     const photo = new File(["jpeg"], "IMG_4242.jpg", { type: "image/jpeg" });
-    await act(async () => { input.props.onChange({ currentTarget: { files: [photo], value: "" } }); });
+    await attach([photo]);
     expect(note()).toBe("IMG_4242.jpg could not be attached: HTTP 502");
     expect(details()).toEqual([]);
-    expect(renderer!.root.findAll((node) => node.type === "button" && node.children.includes("Try again")).length).toBe(1);
+    expect([...page.container.querySelectorAll("button")].filter((node) => node.textContent === "Try again").length).toBe(1);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -117,12 +112,9 @@ it.each([
   ["Unicode line separators", `Upload failed${"\u2028".repeat(60)}tail`],
 ])("caps a diagnostic with %s on the note line and keeps the full message in Details", async (_label, full) => {
   const upload = async (): Promise<string> => { throw new ApiError("/api/pane/image", 502, full, null); };
-  await act(async () => {
-    renderer = create(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={upload} />);
-  });
-  const input = renderer!.root.find((node) => node.type === "input" && node.props.type === "file");
+  await page.render(<Composer paneId={pane} agent="claude" agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={upload} />);
   const photo = new File(["jpeg"], "IMG_4242.jpg", { type: "image/jpeg" });
-  await act(async () => { input.props.onChange({ currentTarget: { files: [photo], value: "" } }); });
+  await attach([photo]);
   expect(note()).toBe("IMG_4242.jpg could not be attached: Upload failed");
   expect(details()).toEqual([full]);
 });

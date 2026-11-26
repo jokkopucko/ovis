@@ -1,27 +1,43 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import type { SetupJob, SetupRequest } from "../../shared/machines.ts";
 import { AccountService } from "../lib/account/service.ts";
 import * as i18n from "../lib/i18n.ts";
 import { getTransport, setTransport } from "../lib/transport.ts";
 import { MachineDialog } from "./MachineDialog.tsx";
 
-const PC_META = 'meta[name="ovis-pc-account-service"]';
-const HOSTED_META = 'meta[name="ovis-account-service"]';
-/** a page that has only `meta` naming the account service: a PC's own page has the PC's, never the hosted shell's */
-const pcPage = (meta: string | null) => ({ querySelector: (selector: string) => selector === meta ? { getAttribute: () => "https://account.test" } : null });
+const PC_META = "ovis-pc-account-service";
+const HOSTED_META = "ovis-account-service";
+let page: Page;
+
+beforeEach(() => {
+  page = openPage("https://app.example/");
+  Object.defineProperty(page.window, "isSecureContext", { configurable: true, value: true });
+});
+afterEach(async () => { await page.close(); });
+
+/** A PC's own page has the PC's account service meta, never the hosted shell's. */
+function pcPage(name: string | null) {
+  if (name === null) return;
+  const meta = page.window.document.createElement("meta");
+  meta.name = name;
+  meta.content = "https://account.test";
+  page.window.document.head.appendChild(meta);
+}
+
+const buttons = () => [...page.container.querySelectorAll("button")];
+const submit = () => act(async () => {
+  const forms = page.window.document.querySelectorAll("form");
+  if (forms.length !== 1 || !forms[0]) throw new Error("Expected one setup form");
+  forms[0].dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+});
 
 async function exercise(action: "install_ovis" | "update_bridge") {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  const define = (key: string, value: unknown) => {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  };
   let poll: (() => void) | undefined;
-  define("window", { isSecureContext: true, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout(callback: () => void) { poll = callback; return 1; }, clearTimeout() {} });
-  define("document", pcPage(PC_META));
-  define("IS_REACT_ACT_ENVIRONMENT", true);
+  pcPage(PC_META);
+  Object.defineProperty(page.window, "setTimeout", { configurable: true, value: (callback: () => void) => { poll = callback; return 1; } });
+  Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: () => {} });
   const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
   const session = spyOn(AccountService.prototype, "session").mockResolvedValue({ service: "https://account.test", account: "acct_1", provider: "google", access_token: "test", refresh_token: "test", expires_at: Date.now() + 60_000 });
   const transport = getTransport();
@@ -30,7 +46,6 @@ async function exercise(action: "install_ovis" | "update_bridge") {
     ...(action === "update_bridge" ? { remote_ovis: { version: "0.5.8", latest_version: "0.5.10", updatable: true, reason: null, address: "lab", url: null } } : {}) };
   const lookup = Promise.withResolvers<Response>();
   let lookedUp = false;
-  let view: ReactTestRenderer | undefined;
   setTransport({ ...transport, fetch: async (input, init) => {
     switch (String(input)) {
       case "/api/health": return Response.json({ auth: { via: "local" } });
@@ -48,26 +63,25 @@ async function exercise(action: "install_ovis" | "update_bridge") {
     }
   } });
   try {
-    await act(async () => { view = create(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} })); });
-    const submit = () => act(async () => { view!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    await page.render(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} }));
     await submit();
     expect(sent[0]).toEqual({ destination: "lab", account_add: true });
     if (action === "update_bridge") {
-      expect(view!.root.findAllByType("button").some((button) => button.children.includes("Update this PC's Ovis and connect"))).toBe(true);
+      expect(buttons().some((button) => button.textContent === "Update this PC's Ovis and connect")).toBe(true);
       await submit();
       expect(sent.filter((request) => request.update_remote && request.account_add)).toEqual([]);
       // then the add, as its own setup, on the PC the update connected
       expect(sent.slice(1)).toEqual([{ destination: "lab", update_remote: true }, { destination: "lab", machine_id: "lab-pc", account_add: true }]);
     } else {
-      await act(async () => { view!.root.findAllByType("button").find((button) => button.children.includes("Install Ovis there"))!.props.onClick(); });
+      await act(async () => { buttons().find((button) => button.textContent === "Install Ovis there")!.click(); });
       await act(async () => { poll!(); });
       expect(lookedUp).toBe(true);
       await act(async () => { lookup.resolve(Response.json({ ...failed, phase: "connected", machine_id: "installed", id: "connected-setup" })); });
       expect(sent).toContainEqual({ destination: "lab", machine_id: "installed", account_add: true });
     }
   } finally {
-    await act(async () => view?.unmount()); setTransport(transport); session.mockRestore(); translation.mockRestore();
-    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+    await page.render(null);
+    setTransport(transport); session.mockRestore(); translation.mockRestore();
   }
 }
 
@@ -76,19 +90,12 @@ test("update-and-connect submits a setup the server accepts", () => exercise("up
 
 /** Add on a row of the relay tab's list opens this dialog for that host; what it offers, on a page with `meta` alone */
 async function offered(meta: string | null): Promise<{ label: boolean; ticked: boolean | null; sent: SetupRequest[] }> {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  const define = (key: string, value: unknown) => {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  };
-  define("window", { isSecureContext: true, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout: () => 1, clearTimeout() {} });
-  define("document", pcPage(meta));
-  define("IS_REACT_ACT_ENVIRONMENT", true);
+  page.window.document.head.querySelectorAll("meta").forEach((node) => node.remove());
+  pcPage(meta);
   const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
   const session = spyOn(AccountService.prototype, "session").mockResolvedValue({ service: "https://account.test", account: "acct_1", provider: "google", access_token: "test", refresh_token: "test", expires_at: Date.now() + 60_000 });
   const transport = getTransport();
   const sent: SetupRequest[] = [];
-  let view: ReactTestRenderer | undefined;
   setTransport({ ...transport, fetch: async (input, init) => {
     switch (String(input)) {
       case "/api/health": return Response.json({ auth: { via: "local" }, own_window: true });
@@ -98,15 +105,15 @@ async function offered(meta: string | null): Promise<{ label: boolean; ticked: b
     }
   } });
   try {
-    await act(async () => { view = create(createElement(MachineDialog, { preset: { destination: "p23pcb", name: "p23pcb" }, onClose() {}, onConnected() {} })); });
+    await page.render(createElement(MachineDialog, { preset: { destination: "p23pcb", name: "p23pcb" }, onClose() {}, onConnected() {} }));
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
-    const label = view!.root.findAll((node) => node.type === "label" && node.props.className === "machine-check" && node.children.includes("Add it to my account"));
-    const ticked = label.length === 0 ? null : label[0]!.findByType("input").props.checked as boolean;
-    await act(async () => { view!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    const label = [...page.container.querySelectorAll('label[class="machine-check"]')].filter((node) => node.textContent === "Add it to my account");
+    const ticked = label.length === 0 ? null : label[0]?.querySelector("input")?.checked ?? null;
+    await submit();
     return { label: label.length === 1, ticked, sent };
   } finally {
-    await act(async () => view?.unmount()); setTransport(transport); session.mockRestore(); translation.mockRestore();
-    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+    await page.render(null);
+    setTransport(transport); session.mockRestore(); translation.mockRestore();
   }
 }
 

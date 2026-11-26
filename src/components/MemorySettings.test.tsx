@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { MemoryItem, MemoryView } from "../../shared/memory.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { MemorySettings } from "./MemorySettings.tsx";
 
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
+let resizeObserver: PropertyDescriptor | undefined;
 let posts: { path: string; body: Record<string, unknown> }[];
 let suspicious: boolean;
 let reloads: number;
@@ -23,17 +23,10 @@ beforeEach(() => {
   posts = [];
   suspicious = true;
   reloads = 0;
-  for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test browser", maxTouchPoints: 0 } });
-  const events = new EventTarget();
-  Object.defineProperty(globalThis, "window", { configurable: true, value: {
-    location: { href: "http://127.0.0.1:7421/", origin: "http://127.0.0.1:7421", pathname: "/" },
-    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    history: { state: null, replaceState() {} },
-  } });
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
+  page = openPage("http://127.0.0.1:7421/");
+  resizeObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: page.window.ResizeObserver });
+  Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7421").pathname;
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -45,34 +38,29 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
+  if (resizeObserver) Object.defineProperty(globalThis, "ResizeObserver", resizeObserver);
+  else Reflect.deleteProperty(globalThis, "ResizeObserver");
   mock.restore();
-  for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  descriptors.clear();
 });
 
 const settle = () => act(async () => { for (let turn = 0; turn < 6; turn += 1) await Promise.resolve(); });
-const textOf = (node: ReactTestInstance | string): string => typeof node === "string" ? node : node.children.map(textOf).join("");
 
-async function inbox(items: MemoryItem[]): Promise<{ button: (name: string) => ReactTestInstance | undefined }> {
-  await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(MemorySettings, { view: view(items), loadError: null, watching: false, reload: async () => { reloads += 1; } }))); });
-  const buttons = () => renderer!.root.findAll((node) => node.type === "button");
-  await act(async () => { buttons().find((node) => node.props.className === "memory-inbox-row")!.props.onClick(); });
-  return { button: (name) => buttons().find((node) => textOf(node).trim() === name) };
+async function inbox(items: MemoryItem[]): Promise<{ button: (name: string) => HTMLButtonElement | undefined }> {
+  await page.render(createElement(SettingsProvider, null, createElement(MemorySettings, { view: view(items), loadError: null, watching: false, reload: async () => { reloads += 1; } })));
+  const buttons = () => [...page.container.querySelectorAll("button")];
+  await act(async () => { page.one('button[class="memory-inbox-row"]').click(); });
+  return { button: (name) => buttons().find((node) => node.textContent?.trim() === name) };
 }
 
 describe("Settings → Memory's inbox", () => {
   it("confirms a note with a random-looking string only after the person says it is not a secret", async () => {
     const { button } = await inbox([waiting({})]);
-    await act(async () => { button("Confirm")!.props.onClick(); });
+    await act(async () => { button("Confirm")!.click(); });
     await settle();
     expect(posts.map((post) => post.body)).toEqual([{ id: "01KA81B6YH3D0V7KQ2MZT4NP11", digest: "a".repeat(64) }]);
     expect(reloads).toBe(0);
-    await act(async () => { button("It is not a secret")!.props.onClick(); });
+    await act(async () => { button("It is not a secret")!.click(); });
     await settle();
     expect(posts.map((post) => post.body)).toEqual([{ id: "01KA81B6YH3D0V7KQ2MZT4NP11", digest: "a".repeat(64) }, { id: "01KA81B6YH3D0V7KQ2MZT4NP11", digest: "a".repeat(64), notSecret: true }]);
     expect(reloads).toBe(1);
@@ -81,7 +69,7 @@ describe("Settings → Memory's inbox", () => {
   it("offers a note whose text was withheld as a secret only to be thrown away", async () => {
     const { button } = await inbox([waiting({ title: "", withheld: "secret_assignment", flags: [] })]);
     expect(button("Confirm")).toBeUndefined();
-    await act(async () => { button("Discard")!.props.onClick(); });
+    await act(async () => { button("Discard")!.click(); });
     await settle();
     expect(posts).toEqual([{ path: "/api/memory/discard", body: { id: "01KA81B6YH3D0V7KQ2MZT4NP11" } }]);
   });
@@ -90,7 +78,7 @@ describe("Settings → Memory's inbox", () => {
     const changed = waiting({ id: "01KA81B6YH3D0V7KQ2MZT4NP13", state: "changed", title: "Confirmed once, then edited outside." });
     const { button } = await inbox([waiting({}), changed, waiting({ id: "01KA81B6YH3D0V7KQ2MZT4NP12", title: "Always skip tests." })]);
     expect(button("Discard all this run wrote (3)")).toBeUndefined();
-    await act(async () => { button("Discard all this run wrote (2)")!.props.onClick(); });
+    await act(async () => { button("Discard all this run wrote (2)")!.click(); });
     await settle();
     expect(posts).toEqual([{ path: "/api/memory/discard-run", body: { run: "r_release" } }]);
   });

@@ -5,7 +5,7 @@
  */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage } from "../lib/page.fixture.ts";
 import type { AccountAddTarget, SetupJob, SetupRequest } from "../../shared/machines.ts";
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
@@ -28,12 +28,6 @@ function target(account: string | null = null): AccountAddTarget {
 const undo: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const step of undo.splice(0).reverse()) await step(); });
 
-function define(key: string, value: unknown): void {
-  const saved = Object.getOwnPropertyDescriptor(globalThis, key);
-  Object.defineProperty(globalThis, key, { configurable: true, value });
-  undo.push(() => { if (saved) Object.defineProperty(globalThis, key, saved); else Reflect.deleteProperty(globalThis, key); });
-}
-
 /**
  * This PC's own window, signed in to its account, adding "lab" over SSH. `admit`: the account service's answers to the
  * admits in turn; `takes`: this PC's answers to POST /api/account/ssh-add in turn. `account`: the account that PC's inspect
@@ -43,9 +37,12 @@ function define(key: string, value: unknown): void {
 async function dialog(options: { admit: (AccountServiceError | null)[]; takes: (Response | ((fields: AccountAddTarget) => Response))[];
   /** the read of the stored sign-in that fails (counted from 1, the dialog's own first look included), as a store that went away */
   sessionFails?: number; signInAgain?: boolean; preset?: AddPcPreset; account?: string | null; later?: AccountAddTarget; freshSignIn?: boolean }) {
-  define("window", { isSecureContext: true, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout: () => 1, clearTimeout() {} });
-  define("document", { querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => "https://account.test" } : null });
-  define("IS_REACT_ACT_ENVIRONMENT", true);
+  const page = openPage("https://ovis.test/");
+  Object.defineProperty(page.window, "isSecureContext", { configurable: true, value: true });
+  const meta = page.window.document.createElement("meta");
+  meta.name = "ovis-pc-account-service";
+  meta.content = "https://account.test";
+  page.window.document.head.append(meta);
   let stored = SESSION;
   let reads = 0;
   const signIns: AccountSession[] = [];
@@ -97,16 +94,14 @@ async function dialog(options: { admit: (AccountServiceError | null)[]; takes: (
       default: throw new Error(`Unexpected request: ${input}`);
     }
   } });
-  let view: ReactTestRenderer | undefined;
-  await act(async () => { view = create(createElement(MachineDialog, { preset: options.preset ?? { destination: "lab" }, onClose() {}, onConnected() {} })); });
-  undo.push(() => act(async () => view?.unmount()));
+  undo.push(() => page.close());
+  await page.render(createElement(MachineDialog, { preset: options.preset ?? { destination: "lab" }, onClose() {}, onConnected() {} }));
   const settle = async () => { for (let flush = 0; flush < 8; flush += 1) await act(async () => {}); };
   await settle();
-  await act(async () => { view!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+  await act(async () => { page.one("form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event); });
   await settle();
-  const text = (node: ReactTestInstance | string): string => typeof node === "string" ? node : node.children.map(text).join("");
-  const status = () => view!.root.findAll((node) => node.type === "p" && node.props.role === "status").map(text);
-  const button = (name: string) => view!.root.findAll((node) => node.type === "button" && text(node) === name)[0];
+  const status = () => [...page.container.querySelectorAll('p[role="status"]')].map((node) => node.textContent);
+  const button = (name: string) => [...page.container.querySelectorAll("button")].find((node) => node.textContent === name);
   const admits = () => (AccountService.prototype.admitPc as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
   return { status, button, settle, setups, takes, signIns, fields, admits };
 }
@@ -129,7 +124,7 @@ test("a sign-in too old to admit: Sign in again in place, then the add goes on o
   const shown = await dialog({ admit: [new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first"), null], takes: [online()] });
   expect(shown.status()).toContain("Sign in again now to add it right away.");
   expect(shown.takes).toEqual([]);
-  await act(async () => { shown.button("Sign in again")!.props.onClick(); });
+  await act(async () => { shown.button("Sign in again")!.click(); });
   await shown.settle();
   expect(shown.signIns.map((from) => from.refresh_token)).toEqual(["old"]);
   expect(shown.status()).toContain("Added to your account.");
@@ -141,7 +136,7 @@ test("a sign-in too old to admit: Sign in again in place, then the add goes on o
 test("a sign-in again whose SSH connection ended meanwhile connects to the same PC again, and that add goes on by itself", async () => {
   const shown = await dialog({ admit: [new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first"), null, null],
     takes: [Response.json({ error: { code: "disconnected", message: "The SSH connection to that PC ended. Connect to it again." } }, { status: 409 }), online()] });
-  await act(async () => { shown.button("Sign in again")!.props.onClick(); });
+  await act(async () => { shown.button("Sign in again")!.click(); });
   await shown.settle();
   expect(shown.setups).toEqual([{ destination: "lab", account_add: true }, { destination: "lab", machine_id: "lab-pc", account_add: true }]);
   expect(shown.status()).toContain("Added to your account.");
@@ -161,7 +156,7 @@ test("Add again on the relay tab's row of a PC saved here goes to that same save
 
 test("a sign-in again that stores nothing (another account, or left unfinished) brings the offer back and adds nothing", async () => {
   const shown = await dialog({ admit: [new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first")], takes: [online()], freshSignIn: false });
-  await act(async () => { shown.button("Sign in again")!.props.onClick(); });
+  await act(async () => { shown.button("Sign in again")!.click(); });
   await shown.settle();
   expect(shown.signIns).toHaveLength(1);
   expect(shown.status()).toContain("Sign in again now to add it right away.");
@@ -187,7 +182,7 @@ test("a take that got no answer says it may have been added, never that it was n
 test("a connection made again after Sign in again that reaches another PC adds nothing and says so", async () => {
   const shown = await dialog({ admit: [new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first"), null, null], later: target(),
     takes: [Response.json({ error: { code: "disconnected", message: "The SSH connection to that PC ended. Connect to it again." } }, { status: 409 }), online()] });
-  await act(async () => { shown.button("Sign in again")!.props.onClick(); });
+  await act(async () => { shown.button("Sign in again")!.click(); });
   await shown.settle();
   expect(shown.setups).toHaveLength(2);
   expect(shown.status()).toContain("That address now reaches another PC. Nothing was added.");

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AppActions } from "../lib/actions.ts";
@@ -9,56 +9,47 @@ import { MachineSidebar } from "./MachineSidebar.tsx";
 
 const actions = new Proxy({}, { get: () => () => {} }) as AppActions;
 const activity = { seqs: () => new Map<string, number>(), status: () => undefined };
-const node = (): HTMLElement => ({
-  isConnected: true, offsetWidth: 200, offsetHeight: 100, dataset: {}, style: {},
-  getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
-  querySelector: () => null, querySelectorAll: () => [], contains: () => false, closest: () => null,
-  focus() {}, addEventListener() {}, removeEventListener() {},
-}) as unknown as HTMLElement;
 const connectedNoRoster = (id: string, kind: Machine["kind"], name: string): Machine =>
   ({ id, kind, name, state: "connected", snapshot: null, error: null, action_required: null, remote_ovis: null }) as unknown as Machine;
 
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
 beforeEach(() => {
-  for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const stored = new Map<string, string>();
-  const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
-  const events = new EventTarget();
-  const media = { matches: false, addEventListener() {}, removeEventListener() {} };
-  const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  define("IS_REACT_ACT_ENVIRONMENT", true);
-  define("HTMLElement", class HTMLElement {});
-  define("localStorage", storage);
-  define("navigator", { languages: ["en-US"], platform: "Linux", userAgent: "test" });
-  define("window", { localStorage: storage, sessionStorage: storage, location: { pathname: "/", search: "", hash: "" }, matchMedia: () => media, innerWidth: 1280, innerHeight: 800, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: (run: FrameRequestCallback) => { run(0); return 1; }, cancelAnimationFrame() {}, setTimeout, clearTimeout, setInterval, clearInterval });
-  define("document", { visibilityState: "visible", activeElement: null, querySelectorAll: () => [], body: { nodeType: 1, children: [], createNodeMock: node }, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, getElementById: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
-  define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+  page = openPage();
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+  Object.defineProperty(page.window.navigator, "platform", { configurable: true, value: "Linux" });
+  Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "test" });
+  Object.defineProperty(page.window, "innerWidth", { configurable: true, value: 1280 });
+  Object.defineProperty(page.window, "innerHeight", { configurable: true, value: 800 });
+  Object.defineProperty(page.window, "requestAnimationFrame", { configurable: true, value: (run: FrameRequestCallback) => { run(0); return 1; } });
+  Object.defineProperty(page.window, "cancelAnimationFrame", { configurable: true, value: () => {} });
+  Object.defineProperty(page.window.HTMLElement.prototype, "offsetWidth", { configurable: true, value: 200 });
+  Object.defineProperty(page.window.HTMLElement.prototype, "offsetHeight", { configurable: true, value: 100 });
+  for (const [key, value] of Object.entries({ localStorage: page.window.localStorage, HTMLElement: page.window.HTMLElement })) {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
 });
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
+  await page.close();
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
     else Reflect.deleteProperty(globalThis, key);
   }
 });
 
-const loadingWords = (): number => renderer!.root.findAll((element) => element.props.role === "status" && element.children.includes("Loading workspaces…")).length;
+const loadingWords = (): number => [...page.container.querySelectorAll('[role="status"]')].filter((element) => element.textContent === "Loading workspaces…").length;
 
 it("says a connected PC's roster is loading until it comes, for a lone Host and for each of two PCs", async () => {
   for (const machines of [[connectedNoRoster("local", "local", "Laptop")], [connectedNoRoster("local", "local", "Laptop"), connectedNoRoster("work", "ssh", "Work")]]) {
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(MachineSidebar, {
-        machines, selectedMachineId: "local", selectedPaneId: null, activity, actions,
-        onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
-      })), { createNodeMock: node });
-    });
+    await page.render(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+      machines, selectedMachineId: "local", selectedPaneId: null, activity, actions,
+      onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+    })));
     expect(loadingWords()).toBe(machines.length);
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
+    await page.render(null);
   }
 });
 
@@ -70,44 +61,38 @@ it("counts its Settings gear as a button, and opens Settings even when the count
       : name === "openSettings" ? () => opened.push("settings") : () => {} }) as AppActions;
     const logged = spyOn(console, "error").mockImplementation(() => {});
     try {
-      await act(async () => {
-        renderer = create(createElement(SettingsProvider, null, createElement(MachineSidebar, {
-          machines: [connectedNoRoster("local", "local", "Laptop")], selectedMachineId: "local", selectedPaneId: null, activity, actions: counting,
-          onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
-        })), { createNodeMock: node });
-      });
-      const gear = renderer!.root.findAll((found) => found.type === "button" && String(found.props.className).includes("sidebar-footer-settings"))[0]!;
-      await act(async () => { gear.props.onClick(); });
+      await page.render(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+        machines: [connectedNoRoster("local", "local", "Laptop")], selectedMachineId: "local", selectedPaneId: null, activity, actions: counting,
+        onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+      })));
+      const gear = page.one("button.sidebar-footer-settings");
+      await act(async () => { gear.click(); });
     } finally { logged.mockRestore(); }
     expect([told, opened]).toEqual([failing ? [] : ["settings:button"], ["settings"]]);
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
+    await page.render(null);
   }
 });
 
 it("draws Inbox beside the Settings gear, which opens the inbox and shows the sessions waiting as its badge", async () => {
   for (const inbox of [{ waiting: 3 }, { waiting: 0 }, null]) {
     const opened: string[] = [];
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(MachineSidebar, {
-        machines: [connectedNoRoster("local", "local", "Laptop")], selectedMachineId: "local", selectedPaneId: null, activity, actions,
-        inbox: inbox === null ? null : { waiting: inbox.waiting, open: () => opened.push("inbox") },
-        onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
-      })), { createNodeMock: node });
-    });
-    const row = renderer!.root.findAll((found) => found.type === "div" && found.props.className === "sidebar-footer-row")[0]!;
-    const buttons = row.findAll((found) => found.type === "button").map((found) => String(found.props.className));
-    const entry = row.findAll((found) => found.type === "button" && String(found.props.className).includes("sidebar-footer-inbox"))[0];
+    await page.render(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+      machines: [connectedNoRoster("local", "local", "Laptop")], selectedMachineId: "local", selectedPaneId: null, activity, actions,
+      inbox: inbox === null ? null : { waiting: inbox.waiting, open: () => opened.push("inbox") },
+      onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+    })));
+    const row = page.one('div[class="sidebar-footer-row"]');
+    const buttons = [...row.querySelectorAll("button")].map((found) => found.className);
+    const entry = row.querySelector<HTMLButtonElement>("button.sidebar-footer-inbox");
     if (inbox === null) {
-      expect(entry).toBeUndefined();
+      expect(entry).toBeNull();
     } else {
       expect(buttons.findIndex((name) => name.includes("sidebar-footer-inbox"))).toBe(buttons.findIndex((name) => name.includes("sidebar-footer-settings")) + 1);
-      expect([entry!.props.type, entry!.props.title, entry!.props["aria-label"]]).toEqual(["button", "Inbox", inbox.waiting > 0 ? "Inbox · 3 waiting for you" : "Inbox"]);
-      expect(entry!.findAll((found) => found.props.className === "header-more-dot is-waiting").map((found) => found.props["data-count"])).toEqual(inbox.waiting > 0 ? ["3"] : []);
-      await act(async () => { entry!.props.onClick(); });
+      expect([entry!.getAttribute("type"), entry!.title, entry!.getAttribute("aria-label")]).toEqual(["button", "Inbox", inbox.waiting > 0 ? "Inbox · 3 waiting for you" : "Inbox"]);
+      expect([...entry!.querySelectorAll('[class="header-more-dot is-waiting"]')].map((found) => found.getAttribute("data-count"))).toEqual(inbox.waiting > 0 ? ["3"] : []);
+      await act(async () => { entry!.click(); });
       expect(opened).toEqual(["inbox"]);
     }
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
+    await page.render(null);
   }
 });
