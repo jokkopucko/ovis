@@ -14,7 +14,7 @@
  * Only the real entrypoint (index.ts) makes one of these, so tests and a remote PC's bridge
  * send nothing.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { ACTIVE_LATE_DAYS, countBucket, COUNTS_LATE_DAYS, emptyUsage, harnessOf, sameUsage, TELEMETRY_ANSWER_WAYS, telemetryAgentVersion, TELEMETRY_VERSIONS_MAX, type TelemetryAgentDay, type TelemetryAnswerWay, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_SHOWN, telemetryCountsChange, telemetryHarnesses, telemetrySettings, telemetrySurface, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryBucket, type TelemetryChange, type TelemetryCounter, type TelemetryCounts, type TelemetryCountsChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetryRuntime, type TelemetrySettings, type TelemetryShown, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount, type TelemetryWidthCounts } from "../shared/telemetry.ts";
@@ -386,6 +386,20 @@ function offMark(offFile: string): string | null | undefined {
   } catch { return undefined; }
 }
 
+/** the bits of a page's counting generation below the counter: they name the off mark */
+const MARK_BITS = 24;
+
+/**
+ * The counting generation a page hears (TelemetryStatus.counts_generation) and names with its settings and batches: the
+ * counter of offs, and below it a hash of the off mark. Every off writes a new mark, and a mark never comes back once
+ * replaced, so a generation heard before an off is not the one after it, even when the off's server went before it raised
+ * the counter (#4213). It still grows with every off that does raise it, which a page's counts rely on.
+ */
+function pageGeneration(forgotten: number, mark: string | null | undefined): number {
+  const tag = typeof mark === "string" ? createHash("sha256").update(mark).digest().readUIntBE(0, MARK_BITS / 8) : 0;
+  return Math.min(forgotten, Math.floor(Number.MAX_SAFE_INTEGER / 2 ** MARK_BITS)) * 2 ** MARK_BITS + tag;
+}
+
 /** Whether FILE itself says on, whatever the mark says; false when it cannot be read. */
 function fileSaysOn(file: string): boolean {
   try {
@@ -645,6 +659,8 @@ export class Telemetry {
   }
 
   status(): TelemetryStatus {
+    // read before the refresh: the generation never names an off the state told with it did not see
+    const mark = offMark(this.offFile);
     this.refresh();
     return {
       enabled: this.saved.enabled,
@@ -652,7 +668,7 @@ export class Telemetry {
       notice_seen: this.saved.notice_seen_at !== null,
       next: this.pending(),
       active: this.activeMessage(this.saved.active.find((entry) => entry.day === utcDay(this.now()))),
-      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: this.saved.forgotten } : {}),
+      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: pageGeneration(this.saved.forgotten, mark) } : {}),
     };
   }
 
@@ -678,8 +694,8 @@ export class Telemetry {
         const migrated = offMark(this.offFile);
         if (migrated?.startsWith(MIGRATED_MARK)) markAtStart = migrated;
       }
-      // the counter as the request found it: settings told with the generation the page heard last are from now
-      const heard = this.saved.forgotten;
+      // the generation as the request found it: settings told with the one the page heard last are from now
+      const heard = pageGeneration(this.saved.forgotten, markAtStart);
       // an off another server marked and has not written yet: no page heard it, so settings told now may be from before it
       const offUnwritten = !this.saved.enabled && fileSaysOn(this.file);
       // off is marked before FILE is written, whatever another server writes to FILE meanwhile
@@ -857,7 +873,7 @@ export class Telemetry {
   tallyCounts(change: TelemetryCountsChange): false | undefined { return this.locked(() => {
       if (!this.countsOn() || !this.countingUsage()) return;
       // counted under another generation (before an off, in a tab that did not hear it), or by a page that names none
-      if (change.generation !== this.saved.forgotten) return;
+      if (change.generation !== pageGeneration(this.saved.forgotten, offMark(this.offFile))) return;
       const today = utcDay(this.now());
       const yesterday = utcDay(this.now() - 86_400_000);
       const day = change.day ?? today;
