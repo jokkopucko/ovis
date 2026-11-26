@@ -1,7 +1,8 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
-import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, errorFrom, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, errorFrom, fetchAgentCatalog, fetchAgentKinds, fetchPanePromptState, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { chatReadDeadlineMs } from "./chatReadDeadline.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
 import { setCurrentLanguage } from "./i18n.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
@@ -254,6 +255,25 @@ it("gives up a summary request a stalled PC holds after SUMMARY_REQUEST_MS, as a
     jest.advanceTimersByTime(1);
     expect(await answer).toMatchObject({ name: "AbortError" });
   } finally { jest.useRealTimers(); }
+});
+
+it("gives up a stalled prompt read so chat can poll again", async () => {
+  jest.useFakeTimers();
+  const requests = heldFetch();
+  const machine = "stalled-pc";
+  const read = fetchPanePromptState("w1:p1", machine).catch((error: unknown) => error);
+  const request = requests[0];
+  if (request === undefined) throw new Error("Expected a prompt request");
+  try {
+    jest.advanceTimersByTime(chatReadDeadlineMs(machine) - 1);
+    expect(request.signal.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(request.signal.aborted).toBe(true);
+    expect(await read).toMatchObject({ name: "TimeoutError" });
+  } finally {
+    request.answer(Response.json({ prompt: null }));
+    await read;
+  }
 });
 
 it("asks a PC for its panes' summaries, and answers null each time a bridge has no summary route", async () => {

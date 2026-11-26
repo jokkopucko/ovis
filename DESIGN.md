@@ -4171,6 +4171,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   then reads `Question 1 of 2`; the review after the last question keeps the chips, all checked.
 - Single options submit immediately; multi-select exposes checks plus Submit; supported custom input
   has its own labelled field. The prompt id names what the prompt says and which asking of it this is; an answer to another prompt, or to an earlier asking of the same one, is rejected with `prompt_changed`.
+- When Chat sees a terminal resize during a Claude Code approval, it keeps the card in place and
+  briefly disables its choices while reading the redrawn screen. This follows Claude Code's
+  terminal, where a resize leaves the approval open. The live answer check still binds the
+  selection to the command and permission scope on screen.
 - OpenCode's native multi-step form uses the same question card, not a new wizard. Back and
   answered-step chips save the current step's unsent text and checks before navigating. Returning
   restores them without submitting them to the agent. This keeps the existing T3 Code-inspired

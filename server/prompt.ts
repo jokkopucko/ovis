@@ -621,6 +621,9 @@ const queueFronts = new Map<string, QueueFront & { rollout: string }>();
 interface Asking { content: string | null; n: number; queued: boolean; call?: string; gjcCall?: string; picked?: string }
 const askings = new Map<string, Asking>();
 let askingCount = 0;
+// A read begun before a redraw can finish after the refreshed approval has been shown.
+const appliedClaudeReads = new Map<string, number>();
+let claudeReads = 0;
 const SERVER_RUN = randomBytes(6).toString("hex");
 /**
  * The panes an answer is on its way to. Its keys redraw the menu (a move, a row opened for typing,
@@ -737,6 +740,7 @@ export async function readPrompt(paneId: string, codexHome?: string, openCodeSta
   const { panes } = snapshot;
   for (const logged of fallbackLogged) if (!panes.some((candidate) => candidate.pane_id === logged)) fallbackLogged.delete(logged);
   for (const known of askings.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) askings.delete(known);
+  for (const known of appliedClaudeReads.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) appliedClaudeReads.delete(known);
   for (const known of answerTurns.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) answerTurns.delete(known);
   for (const known of heldCandidates.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) heldCandidates.delete(known);
   for (const known of chatSent.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) chatSent.delete(known);
@@ -746,9 +750,26 @@ export async function readPrompt(paneId: string, codexHome?: string, openCodeSta
   const agent = labelledAgent(pane.agent) ?? "";
   const status = waitStatus(pane, agent);
   const turns = answerTurns.get(paneId) ?? 0;
+  const claudeRead = agent === "claude" ? ++claudeReads : 0;
+  const occurrence = claudeRead === 0 ? undefined : askings.get(paneId)?.n;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
   if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
   const fallback = await fallbackCard(paneId, agent, status, known);
+  if (claudeRead !== 0) {
+    let obsolete = signal?.aborted === true;
+    if (!obsolete && claudeRead < (appliedClaudeReads.get(paneId) ?? 0)) {
+      const shown = fallback === null ? known.prompt : fallback.prompt;
+      const asking = askings.get(paneId);
+      // A poll overtaking an answer to the exact same occurrence must not refuse that answer.
+      obsolete = shown === null || asking === undefined || asking.n !== occurrence
+        || asking.content !== shown.id || (answerTurns.get(paneId) ?? 0) !== turns;
+    } else if (!obsolete && !answersUnderWay.has(paneId) && (answerTurns.get(paneId) ?? 0) === turns) {
+      // Like asked(), only publish reads outside an answer. A poll of an intermediate tab
+      // must not supersede the answer's own read verifying that tab.
+      appliedClaudeReads.set(paneId, claudeRead);
+    }
+    if (obsolete) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
+  }
   if (!fallback) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };

@@ -569,8 +569,13 @@ export function PaneTerminal({
   const [selectionQuote, setSelectionQuote] = useState<{ pane: string; text: string; range: { start: number; end: number } | null } | null>(null);
   const [chatRefresh, setChatRefresh] = useState(0);
   const [chatInvalidation, setChatInvalidation] = useState(0);
+  const [approvalReflow, setApprovalReflow] = useState({ pane: "", revision: 0, pending: false, promptId: "" });
   const { autoPeek, onCommandScreenClosed, stillOpen, stillOpenRef, setStillOpen, pendingOpenRef, undecidedOpenRef, chatHistoryRef, stillOpenNotedRef, onInputRowFrameRef, stillOpenNote, showStillOpen } = usePeekReturn({ activeRef, agent, agentRef, agentStatus, chatMounted, coarseRef, compositionCommitPendingRef, composingRef, draftHeldForRef, ended, findOpenRef, frameGateRef, inputRowNow, lineComposingRef, onEndPeekRef, onOpenTerminal, onPeekRef, paneId, paneRef, peek, peekRef, presented, receiptRowRef, stackRef, termRef, terminalId, t, heldRef, unsupportedRef });
   const { conversationPushes, setConversationPushes, onConversationWatch, chatOutputRef, onTerminalOutput, chatSent, setChatSent, chatUnsent, setChatUnsent, chatMetadata, redrawGreeting, onChatRead, greetingRoom, setGreetingRoom, greetingRef, chatPrompt, promptRefresh, setPromptRefresh, chatSuggestion, chatRestored, pendingAnswer, setPendingAnswer, promptDock, setPromptDock, onPromptAnswered, clearPendingAnswer, onChatPrompt, onChatMetadata, onChatSuggestion, onChatRestored } = useChatCallbacks({ activeRef, agentStatus, chatHistoryRef, chatViewRef, findOpenRef, machineId, pendingOpenRef, setStillOpen, socketRef, stackRef, stillOpenRef, undecidedOpenRef });
+  const finishApprovalReflow = useCallback((pane: string, revision: number) => {
+    setApprovalReflow((current) => current.pane === pane && current.revision === revision && current.pending
+      ? { ...current, pending: false } : current);
+  }, []);
   const [chatLocalSend, setChatLocalSend] = useState({ key: 0, navigationGeneration: 0 });
   const chatNavigation = useRef(0);
   const queueStore = messageQueues;
@@ -608,7 +613,17 @@ export function PaneTerminal({
   paneRef.current = paneId;
   endedRef.current = ended;
   onConnectionChangeRef.current = onConnectionChange;
-  onServerMessageRef.current = onServerMessage;
+  onServerMessageRef.current = (message) => {
+    onServerMessage?.(message);
+    if (message.type !== "pane-geometry" || message.pane_id !== paneId || !chatView
+      || chatPrompt?.pane !== paneId || chatPrompt.value.agent !== "claude" || chatPrompt.value.kind !== "approval") return;
+    const grid = sharedGridRef.current;
+    // A mirror announces its fixed grid on attach, then sends the same frame type on a resize.
+    if (message.fixed && grid === null) return;
+    if (grid?.cols === message.cols && grid.rows === message.rows) return;
+    const promptId = chatPrompt.value.id;
+    setApprovalReflow((current) => ({ pane: message.pane_id, revision: current.revision + 1, pending: true, promptId }));
+  };
   onRoleAckRef.current = onRoleAck;
 
   useEffect(() => {
@@ -769,7 +784,8 @@ export function PaneTerminal({
   // message ("stop, don't touch prod") must reach it, not become the answer; its card answers it
   // a fallback card is answered with its own buttons: what the user types still goes to the agent
   const answering = chatView && chatPrompt !== null && chatPrompt.pane === paneId && !chatPrompt.value.queued && !chatPrompt.value.fallback ? chatPrompt.value : null;
-  const answerPending = answering !== null && chatPrompt?.answered === true;
+  const refreshingApproval = approvalReflow.pane === paneId && approvalReflow.pending;
+  const answerPending = answering !== null && (chatPrompt?.answered === true || refreshingApproval);
   // ...and while it is open in the terminal it holds the input: nothing is sent into it
   const heldByOpenQueue = chatView && chatPrompt !== null && chatPrompt.pane === paneId && chatPrompt.value.queued === "open";
   const readyForQueue = agentStatus !== undefined && QUEUE_READY_STATUS[agentStatus] === true;
@@ -1165,6 +1181,10 @@ export function PaneTerminal({
             onSuggestion={onChatSuggestion}
             onRestored={onChatRestored}
             promptRefreshKey={promptRefresh}
+            approvalReflowRevision={approvalReflow.pane === paneId ? approvalReflow.revision : 0}
+            approvalReflowPromptId={approvalReflow.pane === paneId ? approvalReflow.promptId : undefined}
+            refreshingApproval={refreshingApproval}
+            onApprovalReflowRead={finishApprovalReflow}
             pendingAnswer={pendingAnswer !== null && pendingAnswer.pane === paneId ? pendingAnswer : null}
             onPendingAnswerDone={clearPendingAnswer}
             promptDock={promptDock}

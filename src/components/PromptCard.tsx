@@ -34,13 +34,14 @@ export interface PromptCardProps {
   typedAnswer?: TypedAnswer | null;
   onTypedAnswerDone?(): void;
   stale?: boolean;
+  refreshing?: boolean;
   screenWords?: string | null;
   context?: string | null;
   /** this device may only watch: the PC refuses its answers, so the card offers none and sends none, and says why */
   watching?: boolean;
 }
 
-export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, initialText, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null, context = null, watching = false }: PromptCardProps) {
+export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, initialText, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, refreshing = false, screenWords = null, context = null, watching = false }: PromptCardProps) {
   const t = useT();
   const { answerPanePrompt } = useMachineApi();
   const [selected, setSelected] = useState<Set<number>>(() => {
@@ -55,7 +56,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   const [custom, setCustom] = useState(() => initialText ?? prompt.default_custom_text ?? "");
   const [sending, setPending] = useState(false);
   const pending = sending || answered;
-  const held = pending || watching;
+  const held = pending || watching || refreshing;
   const watchReason = watching ? t("This device can only watch.") : undefined;
   const watchReasonId = useId();
   const watchDescribed = watching ? watchReasonId : undefined;
@@ -87,7 +88,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   }, []);
 
   const answer = async (choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, press?: { nativeEvent: Event; currentTarget: EventTarget }): Promise<boolean> => {
-    if (pendingRef.current || watching) return false;
+    if (pendingRef.current || watching || refreshing) return false;
     pendingRef.current = true;
     // Native OpenCode multiselect fields and pi-ask's take checks and a custom entry in one answer.
     if (sendsChecksWithText(prompt) && (choice.option_indices !== undefined || choice.custom_text !== undefined)) {
@@ -154,6 +155,10 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   const planFile = prompt.plan_file;
   const navigationBlocked = blocksStepNavigation(prompt, selected, custom);
   const stepsHeld = navigationBlocked || typedAnswer?.option_index !== undefined;
+  const statusText = [
+    pending ? t("Sending your answer…") : null,
+    stale ? t("Not updated: the question on screen may have changed.") : refreshing ? t("Checking…") : null,
+  ].filter(Boolean).join(" · ");
 
   return (
     <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
@@ -204,7 +209,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
         {/* in the header from its first render, clipped while empty (never display: none): a live region
             that appears together with its words is not read; one that is there and gets them is, and
             drawing it on one line in the header adds no row at rest and moves no option when the words arrive */}
-        <p className={`prompt-card-status${pending || stale ? "" : " is-empty"}`} role="status" title={pending && stale ? `${t("Sending your answer…")} · ${t("Not updated: the question on screen may have changed.")}` : stale ? t("Not updated: the question on screen may have changed.") : pending ? t("Sending your answer…") : undefined}>{pending && t("Sending your answer…")}{pending && stale && " · "}{stale && t("Not updated: the question on screen may have changed.")}</p>
+        <p className={`prompt-card-status${statusText ? "" : " is-empty"}`} role="status" title={statusText || undefined}>{statusText}</p>
         <button type="button" className="prompt-card-fold" disabled={typedAnswer?.option_index !== undefined} aria-expanded={!folded} aria-label={t(folded ? "Expand question" : "Collapse question")} title={t(folded ? "Expand question" : "Collapse question")} onClick={() => setFoldedByUser(!folded)}>
           {folded ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
         </button>
@@ -285,7 +290,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
       {hasChoices && (
         /* busy on the options alone, never on the card: a live region inside an aria-busy subtree is not
            read (Chromium), and the status line below has to be */
-        <div className={`prompt-card-options${watching ? " is-unavailable" : ""}`} role={prompt.multi_select ? "group" : undefined} aria-label={prompt.multi_select ? words.question : undefined} aria-busy={pending}>
+        <div className={`prompt-card-options${watching ? " is-unavailable" : ""}`} role={prompt.multi_select ? "group" : undefined} aria-label={prompt.multi_select ? words.question : undefined} aria-busy={pending || refreshing}>
           {prompt.options.map((option, index) => {
             if (index === prompt.custom_option_index) return null;
             const { text, recommended } = labelOf({ ...option, label: words.label(index) });
