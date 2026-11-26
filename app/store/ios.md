@@ -12,8 +12,8 @@ Extension, a later build; see [Later builds](#later-builds)).
 | Setting | Value | Where |
 |---|---|---|
 | Bundle ID | `sh.ovis.app` | `PRODUCT_BUNDLE_IDENTIFIER`, `app/ios/App/App.xcodeproj` |
-| Version | `1.0.2` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
-| Build | `11` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
+| Version | `1.0.3` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
+| Build | `12` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
 | Devices | iPhone and iPad | `TARGETED_DEVICE_FAMILY = "1,2"`, so the listing needs iPad screenshots too |
 | Minimum iOS | 15.0 | `IPHONEOS_DEPLOYMENT_TARGET` |
 | Signing | Automatic, no team yet | the owner picks the team in Xcode (section 3) |
@@ -39,9 +39,10 @@ Extension, a later build; see [Later builds](#later-builds)).
 
 ## 3. Build and upload (the owner, on his Mac with Xcode)
 
-The last upload is version 1.0.2 build 11, built from main at `d30527fd` (the app opens on the
-account sign-in, #4256, with the privacy manifest of #4273), approved and on the App Store
-since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
+The last upload is version 1.0.3 build 12, built from the tag `v0.5.11` (`ba4d41e3`) with that release's shell,
+uploaded on 2026-11-27 and in internal TestFlight testing only (not submitted for review). The App Store has version
+1.0.2 build 11, built from main at `d30527fd` (the app opens on the account sign-in, #4256, with the privacy manifest
+of #4273), approved and on sale since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
 build number in Debug and Release.
 
 The app carries the hosted shell of a release ([The shell inside the app](../../docs/native-app.md#the-shell-inside-the-app-ios)),
@@ -201,7 +202,7 @@ refuse addresses that are not an Ovis server, which is an app change, not a form
 > watch and control their coding agents and terminals (https://ovis.sh). The app connects only
 > to the user's own computer, directly or through the end-to-end encrypted Ovis relay that
 > computer turns on. Signing in is optional. To review the whole app without a computer: on the
-> first screen, Connect a PC, tap the SSH tab, then Add by address, type demo and tap Connect. With
+> first screen, Connect a PC, tap the Tailscale tab, type demo in the address field and tap Connect. With
 > no internet the app shows its own screen instead ("Can't connect to the internet"): type demo in
 > its address field and tap Connect. Either way it runs the full
 > interface with made-up agents and terminals, entirely on the phone. "Scan QR code" uses the camera only to read the
