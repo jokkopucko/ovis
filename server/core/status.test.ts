@@ -1416,7 +1416,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         options: { submitDelayMs: 0 }, clients: new Set([client]), attachments: new Map(), serialize, lastTyped: new Map(),
         sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
         submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
-        clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null },
+        clientSnapshot: () => h.status.deliverySnapshot(), omo: { sessionOf: () => null },
         queueHeld: (paneId, fresh) => { steps.push(fresh === true ? "hold read now" : "hold as last read"); const held = on.held?.(fresh === true) ?? h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
         SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
@@ -1487,6 +1487,29 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       d.on.read = () => { if (d.asked.length > 0 && !fired.yet) { fired.yet = true; fires(d.h.path); } };
       return fired;
     };
+
+    it.each(["claude", "codex"] as const)("sends queued input for %s on herdr readiness, not on the failure notice", async (agent) => {
+      const { h, writes, submit, flush, waiting } = await delivering();
+      const id = h.pane.pane_id;
+      const report = (status: "working" | "idle") => {
+        h.herdrSays({ ...h.pane, agent, agent_status: status });
+        handlers.onStatus(id, status, agent);
+      };
+      report("working");
+      h.status.hookTurn(id, agent, { turn: "began", prompt: "u1" });
+      await submit(91, "not yet");
+      expect(waiting()).toEqual(["queued"]);
+      h.status.hookTurn(id, agent, { turn: "ended", prompt: "u1", failed: true });
+      await flush();
+      expect(writes).toEqual([]);
+      expect(waiting()).toEqual(["queued"]);
+      // A new app-server turn notice without a matching end cannot hold herdr's ready event.
+      if (agent === "codex") h.status.hookTurn(id, agent, { turn: "began", prompt: "u2" });
+      report("idle");
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~not yet\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
+    });
 
     it("keeps a message sent as the wakeup fires waiting, and types it at the resumed turn's rest", async () => {
       const { h, delivery, writes, client, submit, flush } = await delivering();

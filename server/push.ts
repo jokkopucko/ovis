@@ -211,7 +211,7 @@ export interface PushService {
   firstStatus(paneId: string, created: AgentStatus, status: AgentStatus, machineId?: string): Promise<void>;
   onStatus(paneId: string, status: AgentStatus, machineId?: string): Promise<void>;
   onEnded(paneId: string, machineId?: string): Promise<void>;
-  onFailed(paneId: string, machineId?: string): Promise<void>;
+  onFailed(paneId: string, machineId?: string, failedBeforeQueuedTurn?: true): Promise<void>;
   mutesChanged(): void;
   settled(): Promise<void>;
 }
@@ -1138,10 +1138,10 @@ export function createPushService(options: PushServiceOptions): PushService {
       return statusChanged(paneId, status, machineId, true);
     },
 
-    async onFailed(paneId, machineId = "local") {
+    async onFailed(paneId, machineId = "local", failedBeforeQueuedTurn) {
       const key = paneStorageId(machineId, paneId);
       const at = lastStatus.get(key);
-      if (at === "working" || at === "blocked" || muted(machineId, paneId)) return;
+      if ((at === "working" && !failedBeforeQueuedTurn) || at === "blocked" || muted(machineId, paneId)) return;
       const to = [...store().values()].filter((subscription) => {
         const prefs = subscription.alerts ?? DEFAULT_ALERTS;
         return alertKindAllowed(prefs, "error") && alertPcAllowed(prefs, ...pcKeys(machineId));
@@ -1164,6 +1164,9 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (live.length === 0) return;
         await broadcast({ ...message, ...where(pane.key, machineId), tag: paneNotificationTag(pane.paneId, machineId) }, "normal", live, true);
       });
+      // told while a queued turn already runs: that turn's next status must not call this failure's alert off (a pane
+      // that is forgotten still silences it)
+      if (failedBeforeQueuedTurn) waiting.delete(key);
     },
 
     async onEnded(paneId, machineId = "local") {

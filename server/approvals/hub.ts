@@ -58,11 +58,10 @@ export interface ApprovalDialog {
   kind?: string;
 }
 
-/** A turn of the agent's that its hook told began (its prompt) or ended, with the prompt's id where the agent gives one. */
-export interface TurnEvent {
-  turn: "began" | "ended";
-  prompt: string | null;
-}
+/** A turn the agent told began or ended, with the prompt or turn id where the agent gives one. */
+export type TurnEvent = { readonly prompt: string | null } & (
+  { readonly turn: "began" } | { readonly turn: "ended"; readonly failed?: true }
+);
 
 /**
  * A command the agent's hook told it ran: one of its own (`builtin`), or a skill or custom command it expanded, with the
@@ -223,7 +222,7 @@ export class ApprovalHub {
 
   constructor(private readonly dir: string, adapters: readonly ApprovalAdapter[], private readonly options: {
     now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void; onSettled?: (paneId: string) => void; platform?: string;
-    /** a turn of the agent started in `paneId` began or ended, as its hook told */
+    /** a turn of the agent started in `paneId` began or ended, as its hook or app server told */
     onTurn?: (paneId: string, kind: string, turn: TurnEvent) => void;
     /** the agent started in `paneId` ran a command, as its hook told */
     onCommand?: (paneId: string, kind: string, command: CommandEvent) => void;
@@ -401,7 +400,7 @@ export class ApprovalHub {
           }
         }
       }
-      if (turn !== null) this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
+      if (turn !== null) this.tellTurn(launch.paneId, launch.adapter.kind, turn);
       else if (command !== null) this.options.onCommand?.(launch.paneId, launch.adapter.kind, command);
       return;
     }
@@ -414,6 +413,11 @@ export class ApprovalHub {
     timer = setTimeout(() => entry.settle(null), this.options.heldMs ?? HELD_MS);
     // the agent ended its hook (answered in the terminal, or timed out)
     socket.on("close", () => entry.settle(null));
+  }
+
+  /** Also used by the app-server connection, whose turn notifications need no hook reply. */
+  tellTurn(paneId: string, kind: string, turn: TurnEvent): void {
+    this.options.onTurn?.(paneId, kind, turn);
   }
 
   /** A held request of `paneId`, or null for a card that could not show it whole or as it is. */

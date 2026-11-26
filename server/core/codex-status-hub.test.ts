@@ -45,6 +45,75 @@ function codexHub(text: string) {
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
+  it("keeps herdr's done alert when the app server never ends the announced turn", async () => {
+    const h = codexHub(answered);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.status.hookTurn("w1:p1", "codex", { turn: "began", prompt: "u1" });
+      h.status.hookTurn("w1:p1", "codex", { turn: "ended", prompt: "other", failed: true });
+      h.herdrSays(pane("idle"));
+      handlers.onStatus("w1:p1", "idle", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("done");
+      expect(h.alerts).toEqual(["working", "done"]);
+      expect(h.failures).toEqual([]);
+    } finally { h.restore(); }
+  });
+
+  it("keeps a rollout-detected failure ready for delivery at codex/unknown", async () => {
+    const h = codexHub(failed);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.herdrSays(pane("unknown"));
+      handlers.onStatus("w1:p1", "unknown", "codex");
+      await h.looked();
+      expect(h.failures).toEqual(["w1:p1"]);
+      handlers.onStatus("w1:p1", "unknown", "codex");
+      expect(h.pending.current("w1:p1")).toBe("idle");
+      expect((await h.status.deliverySnapshot()).panes[0]?.agent_status).toBe("idle");
+    } finally { h.restore(); }
+  });
+
+  it("does not re-alert the same served turn after an in-flight working read outlasts herdr's done event", async () => {
+    const h = codexHub(failed);
+    const told = spyOn(served, "servedTurnEnd").mockReturnValue("failed");
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.status.hookTurn("w1:p1", "codex", { turn: "began", prompt: "u1" });
+      h.status.hookTurn("w1:p1", "codex", { turn: "ended", prompt: "u1", failed: true });
+      const release = await h.heldSnapshot();
+      h.herdrSays(pane("done"));
+      handlers.onStatus("w1:p1", "done", "codex");
+      await release();
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { told.mockRestore(); h.restore(); }
+  });
+
+  it("shows a served failure immediately without changing the delivery snapshot", async () => {
+    const h = codexHub(failed);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      const event = { turn: "ended", prompt: "u1", failed: true } as const;
+      h.status.hookTurn("w1:p1", "codex", event);
+      expect(h.last().status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+      expect(h.pending.current("w1:p1")).toBe("working");
+      expect((await h.status.deliverySnapshot()).panes[0]?.agent_status).toBe("working");
+      h.herdrSays(pane("done"));
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+      handlers.onStatus("w1:p1", "done", "codex");
+      h.status.hookTurn("w1:p1", "codex", event);
+      await h.looked();
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { h.restore(); }
+  });
+
   it("takes the turn's end its own app server told, and reads no rollout for it", async () => {
     // the rollout says answered: only the server's word can make this turn a failure
     const h = codexHub(answered);

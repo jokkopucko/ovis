@@ -113,8 +113,9 @@ export const claudeApprovals: ApprovalAdapter = {
     const relay = [{ type: "command", command: hook.command, args: hook.args }];
     hooks["PermissionRequest"] = [...theirs("PermissionRequest"), { matcher: MATCHER, hooks: relay }];
     for (const event of ["UserPromptSubmit", "Stop"]) hooks[event] = [...theirs(event), { hooks: relay }];
-    // told only of what is a command (command), and never waited on for long: the hub answers them at once
+    // told only, and never waited on for long: the hub answers them at once
     const told = [{ ...relay[0]!, timeout: TOLD_TIMEOUT_S }];
+    hooks["StopFailure"] = [...theirs("StopFailure"), { hooks: told }];
     for (const [event, matcher] of Object.entries(COMMAND_EVENTS)) hooks[event] = [...theirs(event), { ...(matcher ? { matcher } : {}), hooks: told }];
     const statusLine = statusLineOf(settings["statusLine"], hook, settingSources(flags), cwd);
     const path = settingsFile(JSON.stringify({ ...settings, hooks, ...(statusLine === null ? {} : { statusLine }) }), dir);
@@ -136,10 +137,13 @@ export const claudeApprovals: ApprovalAdapter = {
    * screen's and transcript's.
    */
   turn(event) {
-    const input = event as { hook_event_name?: unknown; prompt_id?: unknown; background_tasks?: unknown; session_crons?: unknown } | null;
+    const input = event as { hook_event_name?: unknown; prompt_id?: unknown; background_tasks?: unknown; session_crons?: unknown; error?: unknown; agent_id?: unknown } | null;
     const name = input?.hook_event_name;
     const prompt = typeof input?.prompt_id === "string" && input.prompt_id !== "" ? input.prompt_id : null;
     if (name === "UserPromptSubmit") return { turn: "began", prompt };
+    // Unlike Stop, StopFailure is a terminal API error and its hook cannot tell Claude to keep working.
+    // Only the main agent's failure ends the pane's turn. The error text stays in the transcript.
+    if (name === "StopFailure") return input?.agent_id === undefined && text(input?.error) !== null ? { turn: "ended", prompt, failed: true } : null;
     if (name !== "Stop") return null;
     const none = (list: unknown) => list === undefined || (Array.isArray(list) && list.length === 0);
     return none(input!.background_tasks) && none(input!.session_crons) ? { turn: "ended", prompt } : null;

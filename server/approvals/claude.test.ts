@@ -19,7 +19,7 @@ const launch = (hooks: ApprovalHub, paneId: string, args: string[] | undefined) 
 const ULTRACODE = JSON.stringify({ ultracode: true });
 type CommandHook = { type: string; command: string; args: string[] };
 type HookEntry = { matcher?: string; hooks: CommandHook[] };
-type HookSettings = { ultracode?: boolean; hooks: Record<"PermissionRequest" | "UserPromptSubmit" | "Stop" | "SessionStart" | "PostCompact" | "UserPromptExpansion", HookEntry[]> };
+type HookSettings = { ultracode?: boolean; hooks: Record<"PermissionRequest" | "UserPromptSubmit" | "Stop" | "StopFailure" | "SessionStart" | "PostCompact" | "UserPromptExpansion", HookEntry[]> };
 
 const roots: string[] = [];
 const started: ApprovalHub[] = [];
@@ -701,6 +701,22 @@ describe("Claude's other tools on a card from the hook's request", () => {
     // a turn left with background or scheduled work can begin again with no prompt: no rest from its Stop
     expect(claudeApprovals.turn!({ ...stop, background_tasks: [{ id: "b1" }] })).toBeNull();
     expect(claudeApprovals.turn!({ ...stop, session_crons: [{ id: "c1" }] })).toBeNull();
+  });
+
+  it("relays StopFailure for the main Claude turn without waiting for an answer", async () => {
+    const turns: unknown[] = [];
+    const hooks = new ApprovalHub(join(tempRoot(), "h"), [claudeApprovals], { onTurn: (_pane, _kind, event) => { turns.push(event); } });
+    started.push(hooks);
+    const args = launch(hooks, "p1", undefined);
+    const hook = args && settingsOf(args).settings.hooks.StopFailure?.at(-1)?.hooks[0];
+    if (!hook) throw new Error("Missing StopFailure hook in the launch's settings");
+    // Claude Code StopFailure schema, with common prompt_id; agent_id is only present in a subagent.
+    const event = { hook_event_name: "StopFailure", error: "server_error", error_details: "529 overloaded",
+      last_assistant_message: "API Error: 529 overloaded", session_id: "session", prompt_id: "prompt", transcript_path: "/project/session.jsonl", cwd: "/project" };
+    await ask(hook, { ...event, agent_id: "child" }).answer();
+    expect(await ask(hook, event).answer()).toBeNull();
+    expect(turns).toEqual([{ turn: "ended", prompt: "prompt", failed: true }]);
+    expect(hooks.held("p1")).toEqual([]);
   });
 
   it("tells the commands Claude's hooks said it ran, in the order it ran them, with nothing printed for Claude", async () => {

@@ -329,6 +329,8 @@ class Connection {
   private sure = false;
   /** The turn the pane's own thread runs or ran last. */
   private turnId: string | null = null;
+  private toldFailedTurn: string | null = null;
+  private resumedActive = false;
   private context: PaneContext | null = null;
   private rerouted: { turnId: string; model: string } | null = null;
   /** The model the pane's own thread runs, as the server said on resume or in its settings. */
@@ -446,6 +448,7 @@ class Connection {
     if (thread !== null && thread["id"] === this.thread && isObject(answer["result"])) {
       this.model = text(answer["result"]["model"]) ?? this.model;
       this.idle = isObject(thread["status"]) && thread["status"]["type"] === "idle";
+      this.resumedActive = isObject(thread["status"]) && thread["status"]["type"] === "active";
     }
   }
 
@@ -468,6 +471,8 @@ class Connection {
     this.sure = sure;
     this.turn = null;
     this.turnId = null;
+    this.toldFailedTurn = null;
+    this.resumedActive = false;
     this.context = null;
     this.rerouted = null;
     this.model = null;
@@ -478,6 +483,12 @@ class Connection {
   /** Whether a turn of `threadId` is the pane's: its own thread's, or any but a subagent's before Codex named one. */
   private ownTurn(threadId: string | null): threadId is string {
     return threadId !== null && !this.subagents.has(threadId) && (this.thread === null || threadId === this.thread);
+  }
+
+  private tellFailure(turnId: string): void {
+    if (this.toldFailedTurn === turnId) return;
+    this.toldFailedTurn = turnId;
+    this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "ended", prompt: turnId, failed: true });
   }
 
   status(): ServedStatus | null {
@@ -545,9 +556,15 @@ class Connection {
         if (threadId !== null && typeof turn["rootTurnId"] === "string" && turn["rootTurnId"] !== turn["id"]) this.subagents.add(threadId);
         if (threadId === null || this.subagents.has(threadId)) break;
         this.own(threadId, true);
+        const before = this.turnId;
         this.turn = "running";
         this.idle = false;
         this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
+        // A new turn drops the previous failure from display and dedupe, even without a new herdr title.
+        if (this.turnId === null || (this.turnId !== before && this.turnId !== this.toldFailedTurn)) {
+          this.toldFailedTurn = null;
+          this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "began", prompt: this.turnId });
+        }
         if (this.rerouted !== null && this.rerouted.turnId !== this.turnId) { this.rerouted = null; changed(this.paneId); }
         break;
       }
@@ -570,9 +587,25 @@ class Connection {
         this.rerouted = { turnId: params["turnId"], model: params["toModel"] };
         changed(this.paneId);
         break;
+      case "error": {
+        // 0.171.0's ErrorNotification includes retryable notices. A terminal one (including usageLimitExceeded)
+        // can precede turn/completed and is the same turn's failure, not another alert.
+        const error = params["error"];
+        if (threadId !== null && threadId === this.thread && this.ownTurn(threadId)
+          && (this.turn === "running" || (this.turn === null && this.resumedActive))
+          && params["willRetry"] === false && typeof params["turnId"] === "string"
+          && (this.turnId === null || params["turnId"] === this.turnId) && isObject(error) && typeof error["message"] === "string") {
+          this.tellFailure(params["turnId"]);
+        }
+        break;
+      }
       case "turn/completed": {
         const turn = isObject(params["turn"]) ? params["turn"] : {};
-        if (this.ownTurn(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
+        const id = typeof turn["id"] === "string" ? turn["id"] : null;
+        if (this.ownTurn(threadId)) {
+          this.turn = turn["status"] === "failed" ? "failed" : "answered";
+          if (threadId === this.thread && this.turn === "failed" && id !== null && (this.turnId === null || this.turnId === id)) this.tellFailure(id);
+        }
         if (threadId !== null && threadId === this.thread) this.idle = true;
         break;
       }

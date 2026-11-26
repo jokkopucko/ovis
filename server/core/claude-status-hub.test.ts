@@ -2,6 +2,7 @@ import { describe, expect, it, jest, type Mock, setSystemTime, spyOn } from "bun
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as conversation from "../conversation.ts";
+import { claudeApprovals } from "../approvals/claude.ts";
 import { claude, handlers, hub, line, root, workingClaude } from "./status.fake.ts";
 
 // Claude Code 2.1.321 at an API rate limit, as recorded: the turn's answer entry is the error (isApiErrorMessage)
@@ -28,6 +29,103 @@ async function claudeHub(text: string | null, found = false) {
 }
 
 describe("a Claude pane whose turn ended on an API error", () => {
+  it("alerts for the failed Claude turn even when its successor is queued inside Claude", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    const first = { turn: "ended", prompt: "p1", failed: true } as const;
+    h.status.hookTurn(id, "claude", first);
+    h.status.hookTurn(id, "claude", first);
+    expect(h.failures).toEqual([id]);
+    expect(h.last().status).toBe("working");
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2", failed: true });
+    expect(h.failures).toEqual([id, id]);
+    expect(h.last().status).toBe("idle");
+  });
+
+  it("finishes a queued successor without a readable transcript after the preceding prompt fails", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2" });
+    handlers.onStatus(id, "done", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    expect(h.failures).toEqual([id]);
+  });
+
+  it("alerts for a queued successor's transcript failure after a named failure", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    writeFileSync(h.path, failed);
+    handlers.onStatus(id, "done", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id, id]);
+  });
+
+  it("alerts for two different prompts even when herdr has not sampled working for the second", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    for (const prompt of ["p1", "p2"]) {
+      h.status.hookTurn(id, "claude", { turn: "began", prompt });
+      const failure = { turn: "ended", prompt, failed: true } as const;
+      h.status.hookTurn(id, "claude", failure);
+      h.status.hookTurn(id, "claude", failure);
+      handlers.onStatus(id, "idle", "claude");
+    }
+    expect(h.failures).toEqual([id, id]);
+  });
+
+  it("does not apply an older dropped prompt's StopFailure to a newer done turn", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    handlers.onStatus(id, "done", "claude");
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([]);
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2", failed: true });
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id]);
+  });
+
+  it("shows StopFailure before the transcript arrives without repeating the alert", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(id, "working", "claude");
+    // Claude Code's documented StopFailure schema (and common prompt_id), plus its recorded transcript below.
+    const input = { session_id: h.pane.agent_session.value, transcript_path: h.path, prompt_id: "p1" };
+    const submit = claudeApprovals.turn?.({ ...input, hook_event_name: "UserPromptSubmit" });
+    if (submit) h.status.hookTurn(id, "claude", submit);
+    const failure = claudeApprovals.turn?.({ ...input, hook_event_name: "StopFailure", error: "rate_limit",
+      error_details: "429 Too Many Requests", last_assistant_message: "API Error: Rate limit reached" });
+    if (failure) h.status.hookTurn(id, "claude", failure);
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id]);
+
+    handlers.onStatus(id, "working", "claude");
+    expect(h.last().status).toBe("idle");
+    writeFileSync(h.path, failed);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    handlers.onStatus(id, "done", "claude");
+    if (failure) h.status.hookTurn(id, "claude", failure);
+    expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+    expect(h.failures).toEqual([id]);
+  });
+
   it("reads at rest and tells the failure once, never DONE, for a turn this server saw run", async () => {
     const h = await claudeHub("");
     handlers.onStatus(h.pane.pane_id, "working", "claude");
@@ -396,6 +494,21 @@ describe("a Claude pane whose Stop hook told its turn ended", () => {
   // live, 2.1.330: a prompt typed under a turn is told as it is queued, before that turn's Stop
   const turn = (h: { status: { hookTurn: (paneId: string, kind: string, event: { turn: "began" | "ended"; prompt: string | null }) => void }; pane: { pane_id: string } }, kind: "began" | "ended", prompt: string) =>
     h.status.hookTurn(h.pane.pane_id, "claude", { turn: kind, prompt });
+
+  it("does not end unprompted work on an old dropped Stop after a newer prompt completed", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    turn(h, "began", "old");
+    handlers.onStatus(id, "working", "claude");
+    handlers.onStatus(id, "idle", "claude");
+    turn(h, "began", "new");
+    handlers.onStatus(id, "working", "claude");
+    turn(h, "ended", "new");
+    handlers.onStatus(id, "idle", "claude");
+    handlers.onStatus(id, "working", "claude");
+    turn(h, "ended", "old");
+    expect(h.last().status).toBe("working");
+  });
 
   it("stays at work through the Stop of a turn whose queued prompt was told, and rests at the queued turn's Stop", async () => {
     const h = await claudeHub("");

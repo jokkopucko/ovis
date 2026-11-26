@@ -194,7 +194,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     (pane, panes) => waitingCard(pane, panes, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir, openCodeState: cardOpenCode, ompLookups: cardOmp }),
     (paneId, waiting) => cardChanged(paneId, waiting),
   );
-  const alert = (paneId: string, status: AgentStatus): void => { push.onStatus(paneId, cards.status(paneId, status)).catch(logPushError); };
+  const alert = (paneId: string, status: AgentStatus): void => { push.onStatus(paneId, cards.status(paneId, displayStatus(paneId, status))).catch(logPushError); };
   let lastPanes: Map<string, HerdrPane> | null = null;
   let settling: string | null = null;
   const agentNow = new Map<string, string | null>();
@@ -257,9 +257,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const hookPrompts = new Map<string, (string | null)[]>();
   /** the prompts herdr's rest dropped from hookPrompts with no Stop: their Stop, if it comes, is late and ends nothing */
   const droppedPrompts = new Map<string, Set<string>>();
-  const dropPrompts = (paneId: string): void => {
+  /** Only the latest prompt from this rest can still supply a failure for it. Older IDs remain Stop tombstones. */
+  const lateClaudeFailure = new Map<string, string>();
+  const dropPrompts = (paneId: string, ready: boolean): void => {
     const open = (hookPrompts.get(paneId) ?? []).filter((prompt): prompt is string => prompt !== null);
     hookPrompts.delete(paneId);
+    const last = open.at(-1);
+    if (ready && last !== undefined) lateClaudeFailure.set(paneId, last);
+    else if (!ready) lateClaudeFailure.delete(paneId);
     if (open.length > 0) droppedPrompts.set(paneId, new Set([...(droppedPrompts.get(paneId) ?? []), ...open].slice(-16)));
   };
   /**
@@ -279,7 +284,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
     if (agent !== "claude" || status !== "working" || event) stoppedOnHook.delete(paneId);
     if (agent !== "claude") { hookPrompts.delete(paneId); droppedPrompts.delete(paneId); }
-    else if (event && status !== "working") dropPrompts(paneId);
+    if (agent !== "claude" || (event && status === "working")) lateClaudeFailure.delete(paneId);
+    else if (event && status !== "working") dropPrompts(paneId, atRest(status));
     if (agent !== "claude") { heard.delete(paneId); return; }
     const before = heard.get(paneId);
     heard.set(paneId, status);
@@ -355,7 +361,38 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onContext: (paneId, context) => contextChanged(paneId, context),
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
   });
-  const stopServed = onServedStatus((paneId) => plans.servedChanged(paneId));
+  // Hook/app-server failures are an overlay for clients and alerts only. The completion tracker also feeds delivery.
+  const toldFailures = new Map<string, { agent: "claude" | "codex"; thread?: string; rested: boolean; notified: boolean }>();
+  const toldClaudePrompts = new Map<string, Set<string>>();
+  const codexAlertTurn = new Map<string, { prompt: string | null; thread: string | undefined; failed: boolean; afterFailure: boolean }>();
+  const displayStatus = (paneId: string, status: AgentStatus): AgentStatus =>
+    status !== "blocked" && toldFailures.has(paneId) ? "idle" : status;
+  function broadcastDisplayStatus(paneId: string, status: AgentStatus): void {
+    broadcastAll({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)),
+      ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
+  }
+  function tellFailure(paneId: string, agent: "claude" | "codex"): void {
+    const thread = agent === "codex" ? servedStatus(paneId)?.threadId : undefined;
+    const status = completions.current(paneId);
+    toldFailures.set(paneId, { agent, ...(thread === undefined ? {} : { thread }), rested: status === "idle" || status === "done", notified: false });
+    broadcastDisplayStatus(paneId, status ?? "idle");
+    notifyToldFailure(paneId);
+  }
+  function notifyToldFailure(paneId: string): void {
+    const failure = toldFailures.get(paneId);
+    if (failure === undefined || failure.notified || waits.waiting(paneId)
+      || completions.current(paneId) === "blocked" || cards.status(paneId, "idle") === "blocked") return;
+    failure.notified = true;
+    alert(paneId, "idle");
+    push.onFailed(paneId).catch(logPushError);
+  }
+  const stopServed = onServedStatus((paneId) => {
+    const thread = servedStatus(paneId)?.threadId;
+    const failure = toldFailures.get(paneId);
+    if (failure?.agent === "codex" && failure.thread !== thread) toldFailures.delete(paneId);
+    if (codexAlertTurn.get(paneId)?.thread !== thread) codexAlertTurn.delete(paneId);
+    plans.servedChanged(paneId);
+  });
   const CODEX_LOOK_MS = 1000;
   const CODEX_RETRY_MS = 2000;
   const codexFailed = new Set<string>();
@@ -409,6 +446,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     push.onFailed(paneId).catch(logPushError);
   }
   function claudeFailHeldEnds(paneId: string): void {
+    notifyToldFailure(paneId);
     if (!claudeFailHeld.has(paneId) || waits.waiting(paneId) || !claudeFailed.has(paneId) || completions.current(paneId) !== "idle") return;
     claudeFailedAlert(paneId);
   }
@@ -453,7 +491,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     waits.status(paneId, status);
     broadcastAll(paneStatus(paneId, status));
     alert(paneId, alertStatus(status, waits.waiting(paneId)));
-    claudeFailedAlert(paneId);
+    if (!toldFailures.has(paneId)) claudeFailedAlert(paneId);
   }
   /** herdr calls such a pane's rest DONE as it calls any finish it did not see, or `unknown`: it is at rest, and READY */
   const failedRests = (snapshot: SessionSnapshot): SessionSnapshot => {
@@ -523,6 +561,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       stoppedOnHook.delete(paneId);
       hookPrompts.delete(paneId);
       droppedPrompts.delete(paneId);
+      lateClaudeFailure.delete(paneId);
+      toldClaudePrompts.delete(paneId);
+      toldFailures.delete(paneId);
+      codexAlertTurn.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
@@ -574,7 +616,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     return order ? { ...settled, ...order } : settled;
   };
   // clients see a card a pane waits on over what its agent reported, which the finishes and the turns were read from
-  const clientSnapshot = async (): Promise<SessionSnapshot> => cards.apply(await deliverySnapshot());
+  const clientSnapshot = async (): Promise<SessionSnapshot> => {
+    const snapshot = await deliverySnapshot();
+    if (toldFailures.size === 0) return cards.apply(snapshot);
+    const display = <T extends { pane_id: string; agent?: string | null; agent_status: AgentStatus }>(pane: T): T =>
+      toldFailures.get(pane.pane_id)?.agent === pane.agent ? { ...pane, agent_status: displayStatus(pane.pane_id, pane.agent_status) } : pane;
+    return cards.apply({ ...snapshot, panes: snapshot.panes.map(display), agents: snapshot.agents.map(display) });
+  };
   let visitReadAt = -Infinity;
   function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
@@ -613,7 +661,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }));
   }
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null; context?: PaneContext | null } = {}): ServerMessage =>
-    ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, status), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
+    ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
   const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
   if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine, signal) => startMachineBridge(machine, options.stateDir ?? defaultStateDir(), signal));
@@ -815,6 +863,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /** `askedAt`: a status replayed from a snapshot asked for then, which the queue takes as that snapshot (`pending.baseline`) */
   function reportStatus(paneId: string, raw: AgentStatus, agent: string | null, askedAt?: number): void {
+    const told = toldFailures.get(paneId);
+    if (told !== undefined) {
+      if (told.agent !== agent || (told.rested && raw === "working")) toldFailures.delete(paneId);
+      else if (atRest(raw)) told.rested = true;
+    }
     // back at work, the agent has had its answer, maybe from a terminal: the same prompt on
     // its screen after this is another asking, which an answer to the old card must not take.
     if (raw === "working") promptWaitEnded(paneId);
@@ -841,6 +894,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const tell = (): void => {
       broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
       alert(paneId, alertStatus(status, waits.waiting(paneId)));
+      notifyToldFailure(paneId);
     };
     if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId) && (codexTurns.get(paneId) ?? 0) > 0) {
       const turn = codexTurns.get(paneId);
@@ -848,7 +902,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       void Promise.race([codexRest(paneId), new Promise<void>((resolve) => { timer = setTimeout(resolve, CODEX_LOOK_MS); })])
         .then(() => { clearTimeout(timer); if (codexTurns.get(paneId) === turn && completions.current(paneId) === status) tell(); });
     } else tell();
-    if (claudeFailedNow && status === "idle") claudeFailedAlert(paneId);
+    if (claudeFailedNow && status === "idle" && !toldFailures.has(paneId)) claudeFailedAlert(paneId);
     if (claudeEnd === "answered") claudeLooked.delete(paneId);
     if (tracker === opencodeAgents && opencodeAgents.sessionOf(paneId)?.live !== true) {
       const begun = opencodeAgents.beginRead();
@@ -858,28 +912,60 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   }
 
   /**
-   * A turn of an agent this server started, as its hook told (server/approvals/hub.ts): Claude's Stop is its finish,
-   * told before herdr reads it from the screen, and the same as herdr's rest from then on (the transcript still says
-   * whether it failed), once no prompt it told of is left open (hookPrompts). A Stop after herdr's rest tells nothing
-   * new. Claude's UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
+   * A turn of an agent this server started, as its hook or app server told. Claude's Stop ends its prompt before herdr
+   * reads the rest. StopFailure tells it failed, without waiting for the transcript. Either is a rest only once no
+   * newer prompt is open. UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
    *
    * OmO's extension tells its runs instead (server/approvals/omo.ts): its session file stays the status's source, which
    * holds the rest it reads while a run told began has not ended (omo-status.ts), and is read again at once when one does.
    */
-  function hookTurn(paneId: string, kind: string, { turn, prompt }: TurnEvent): void {
+  function hookTurn(paneId: string, kind: string, event: TurnEvent): void {
+    const { turn, prompt } = event;
     if (kind === "omo") {
       omo.told(paneId, turn);
       if (turn === "ended") void omo.poll();
       return;
     }
+    if (kind === "codex") {
+      if (agentNow.get(paneId) !== "codex" || omo.runs(paneId) || gjc.runs(paneId)) return;
+      const previous = codexAlertTurn.get(paneId);
+      const thread = servedStatus(paneId)?.threadId;
+      if (turn === "began") {
+        const afterFailure = codexFailed.has(paneId);
+        codexAlertTurn.set(paneId, { prompt, thread, failed: false, afterFailure });
+        if (toldFailures.delete(paneId)) {
+          const next = completions.current(paneId) === "blocked" ? "blocked" : "working";
+          broadcastDisplayStatus(paneId, next);
+          alert(paneId, next);
+        }
+        return;
+      }
+      if (!event.failed || (previous?.prompt != null && prompt !== previous.prompt) || previous?.failed) return;
+      codexAlertTurn.set(paneId, { prompt, thread, failed: true, afterFailure: false });
+      if (!codexFailed.has(paneId) || previous?.afterFailure) tellFailure(paneId, "codex");
+      return;
+    }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
+      lateClaudeFailure.delete(paneId);
+      toldFailures.delete(paneId);
       hookPrompts.set(paneId, [...open, prompt]);
       hookRestEnds(paneId);
       return;
     }
     const at = open.indexOf(prompt);
+    if (event.failed) {
+      if (prompt !== null) {
+        if (at < 0 && (open.length > 0 || lateClaudeFailure.get(paneId) !== prompt)) return;
+        const seen = toldClaudePrompts.get(paneId) ?? new Set<string>();
+        if (seen.has(prompt)) return;
+        toldClaudePrompts.set(paneId, new Set([...seen, prompt].slice(-16)));
+      } else if (toldFailures.has(paneId)) return;
+      if (at >= 0 && at < open.length - 1) push.onFailed(paneId, undefined, true).catch(logPushError);
+      else if (!claudeFailed.has(paneId) || at >= 0) tellFailure(paneId, "claude");
+      return;
+    }
     // the Stop of a prompt herdr's rest already dropped: late, while another turn may run (a repeated Stop of a prompt
     // that ended, after another Stop hook blocked the first, is still the rest)
     if (at < 0 && prompt !== null && droppedPrompts.get(paneId)?.delete(prompt)) return;
@@ -1005,12 +1091,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
     codexFailed.add(paneId);
     codexFailedAt.set(paneId, codexReads);
+    const told = codexAlertTurn.get(paneId);
+    if (told !== undefined) told.afterFailure = false;
     const status = completions.observe(paneId, "idle", "codex", "failed");
     pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
     waits.status(paneId, status);
     broadcastAll(paneStatus(paneId, status));
     alert(paneId, status);
-    push.onFailed(paneId).catch(logPushError);
+    if (toldFailures.has(paneId)) notifyToldFailure(paneId);
+    else push.onFailed(paneId).catch(logPushError);
   }
 
   const shellSnapshots = new WeakSet<HerdrPane>();
@@ -1040,6 +1129,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     stoppedOnHook.delete(paneId);
     hookPrompts.delete(paneId);
     droppedPrompts.delete(paneId);
+    lateClaudeFailure.delete(paneId);
+    toldClaudePrompts.delete(paneId);
+    toldFailures.delete(paneId);
+    codexAlertTurn.delete(paneId);
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
     agentExited.delete(paneId);
@@ -1143,11 +1236,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       const renumber = finishes.moved(from, to);
       for (const state of [codexFailedAt, codexTurns, codexLooked, codexSessions, codexRetryAt] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
       if (codexFailed.delete(from)) codexFailed.add(to);
+      if (codexAlertTurn.has(from)) { codexAlertTurn.set(to, codexAlertTurn.get(from)!); codexAlertTurn.delete(from); }
+      if (toldFailures.has(from)) { toldFailures.set(to, toldFailures.get(from)!); toldFailures.delete(from); }
+      if (toldClaudePrompts.has(from)) { toldClaudePrompts.set(to, toldClaudePrompts.get(from)!); toldClaudePrompts.delete(from); }
       if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
       if (claudeFailed.delete(from)) claudeFailed.add(to);
       if (stoppedOnHook.has(from)) { stoppedOnHook.set(to, stoppedOnHook.get(from)!); stoppedOnHook.delete(from); }
       if (hookPrompts.has(from)) { hookPrompts.set(to, hookPrompts.get(from)!); hookPrompts.delete(from); }
       if (droppedPrompts.has(from)) { droppedPrompts.set(to, droppedPrompts.get(from)!); droppedPrompts.delete(from); }
+      const late = lateClaudeFailure.get(from);
+      if (late !== undefined) { lateClaudeFailure.set(to, late); lateClaudeFailure.delete(from); }
       if (claudeFailHeld.has(from)) { claudeFailHeld.set(to, claudeFailHeld.get(from) ?? null); claudeFailHeld.delete(from); }
       if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
       try { options.seenMoved?.(from, to, renumber); }

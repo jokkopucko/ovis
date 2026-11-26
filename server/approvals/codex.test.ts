@@ -381,14 +381,16 @@ describe("Ovis on the pane's Codex server", () => {
   function launched(version = "0.171.0", loaded: string[] = []) {
     const waiting: (() => void)[] = [];
     const settling: (() => void)[] = [];
-    const hub = new ApprovalHub(join(root(), "h"), [], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
+    const failures: (string | null)[] = [];
+    const hub = new ApprovalHub(join(root(), "h"), [], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.(),
+      onTurn: (_pane, _kind, event) => { if ("failed" in event && event.failed) failures.push(event.prompt); } });
     const servers = new CodexServers(hub, { tmp: root() });
     cleanups.push(() => { servers.stop(); hub.stop(); });
     const program = servers.launch("w1:p1", ["--model", "m"], "0.171.0")!;
     const codex = codexServer(program, version, loaded);
     const held = () => new Promise<void>((resolve) => waiting.push(resolve));
     const settled = () => new Promise<void>((resolve) => settling.push(resolve));
-    return { hub, servers, codex, held, settled, program };
+    return { hub, servers, codex, held, settled, failures, program };
   }
 
   /** Codex runs thread `id`: Ovis subscribes to it. */
@@ -499,6 +501,45 @@ describe("Ovis on the pane's Codex server", () => {
     codex.send({ method: "thread/status/changed", params: { threadId: id, status: { type: "active", activeFlags: [] } } });
     await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
   }
+
+  it("reports a terminal usage limit on a resumed main thread whose turn started before attachment", async () => {
+    const { codex, failures } = launched("0.171.0", ["t1"]);
+    codex.resumeWith("t1", { id: "t1", parentThreadId: null, ephemeral: false, status: { type: "active", activeFlags: [] } });
+    await codex.next((message) => message["method"] === "thread/resume");
+    await read(codex);
+    expect(servedStatus("w1:p1")?.threadId).toBe("t1");
+    codex.send({ method: "error", params: { threadId: "t1", turnId: "u1", willRetry: false,
+      error: { message: "Usage limit reached", codexErrorInfo: "usageLimitExceeded" } } });
+    await read(codex);
+    expect(failures).toEqual(["u1"]);
+  });
+
+  it("tells a terminal usage-limit error before completion and tells the turn's failure only once", async () => {
+    const { codex, failures } = launched();
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1" } } });
+    // codex-cli 0.171.0 generated v2/ErrorNotification.json and TurnCompletedNotification.json.
+    const error = { message: "Usage limit reached", codexErrorInfo: "usageLimitExceeded" };
+    const notice = { error, threadId: "t1", turnId: "u1", willRetry: false };
+    for (const params of [{ ...notice, willRetry: true }, { ...notice, threadId: "other" }, { ...notice, turnId: "old" }]) {
+      codex.send({ method: "error", params });
+    }
+    await read(codex);
+    expect(failures).toEqual([]);
+    expect(servedTurnEnd("w1:p1")).toBe("running");
+
+    codex.send({ method: "error", params: notice });
+    await read(codex);
+    expect(servedTurnEnd("w1:p1")).toBe("running");
+    expect(failures).toEqual(["u1"]);
+    const failedTurn = { status: "failed", items: [], error };
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u1" } } });
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u2" } } });
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u1" } } });
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u2" } } });
+    await read(codex);
+    expect(failures).toEqual(["u1", "u2"]);
+  });
 
   it("follows the pane's own thread as its server tells it, the side threads and a subagent's turn aside", async () => {
     const { codex } = launched();

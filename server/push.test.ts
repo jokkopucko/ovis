@@ -758,6 +758,23 @@ describe("alert timing and each device's choice", () => {
     expect(fake.received).toHaveLength(0);
   });
 
+  it("delivers a confirmed failure while Claude still looks busy with a queued successor", async () => {
+    const { push } = timed({ input: true, done: "off", error: true });
+    await push.onStatus("w1:p1", "working");
+    await push.onFailed("w1:p1", undefined, true);
+    await push.settled();
+    expect(fake.received.map((message) => message.payload.kind)).toEqual(["error"]);
+  });
+
+  it("keeps a failure told before a queued turn when that turn ends at once", async () => {
+    const { push } = timed({ input: true, done: "off", error: true });
+    await push.onStatus("w1:p1", "working");
+    await push.onFailed("w1:p1", undefined, true);
+    await push.onStatus("w1:p1", "idle");
+    await push.settled();
+    expect(fake.received.map((message) => message.payload.kind)).toEqual(["error"]);
+  });
+
   it("asks a waiting alert's device again for the PC as the alert goes out", async () => {
     const { push } = timed({ input: true, done: "off" });
     await push.onStatus("w1:p1", "working");
