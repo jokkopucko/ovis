@@ -330,7 +330,9 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        if: needs.changes.outputs.draft != 'true'
         with:
+          pty-host: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'restore' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
@@ -411,6 +413,7 @@ jobs:
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
+          pty-host: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
       # The base: for a pull request
@@ -479,6 +482,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
@@ -530,6 +534,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
@@ -601,6 +606,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile

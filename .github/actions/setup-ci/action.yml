@@ -17,6 +17,10 @@ inputs:
     description: "'true' checks that a self-hosted Linux runner's image has its pinned Rust toolchain; GitHub's images have Rust already."
     required: false
     default: 'false'
+  pty-host:
+    description: "'true' puts the Rust PTY host for this checkout's crates/pty-sidecar where the server finds it (Linux and macOS): the release's binary when the crate tree matches, else a cargo build. The step fails unless the server's own check takes it, so the job's terminal attaches run on it."
+    required: false
+    default: 'false'
   cache:
     description: "'save' restores and saves the Bun dependency cache; 'restore' only restores it, for a job that runs unpinned third-party code and must not write a cache other workflows trust; 'none' restores and saves no Actions cache, Bun's executable included, for every job of a run in which a publishing or signing job takes an artifact (pages.yml, the Release and the other publishing workflows, ci.yml when called with hosted_only) and for a job that publishes, signs or holds a secret itself: any job of a main run can write a cache under any key that later runs restore (scripts/privileged-jobs-workflow.test.ts)."
     required: false
@@ -90,6 +94,41 @@ runs:
         key: bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-${{ hashFiles('bun.lock') }}
         restore-keys: |
           bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-
+    # the PTY host alone (no ACP keeper beside it), only ever one built from this checkout's crates/pty-sidecar: the
+    # release's for this version, checked against its manifest, into bin/; else, as between a version bump and its
+    # release, the latest release's when its manifest names this crate tree; else a cargo build. The last two go where
+    # the server takes a host without one in bin/ (server/pty/host.ts). A runner with none of these fails here.
+    - name: Rust PTY host
+      if: inputs.pty-host == 'true' && runner.os != 'Windows'
+      shell: bash
+      env:
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        if ! bun -e 'const { install } = await import("./scripts/pty-sidecar.ts"); const result = await install(); console.log(result.message); process.exit(result.ok ? 0 : 1)'; then
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) platform=linux-x64 ;;
+            Linux-ARM64) platform=linux-arm64 ;;
+            macOS-X64) platform=darwin-x64 ;;
+            macOS-ARM64) platform=darwin-arm64 ;;
+            *) echo "::error::no Rust PTY host is built for $RUNNER_OS $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          tree=$(git rev-parse HEAD:crates/pty-sidecar)
+          tag=$(curl -fsSI --retry 3 "https://github.com/$REPOSITORY/releases/latest" | tr -d '\r' | sed -n 's|^[Ll]ocation: .*/releases/tag/||p')
+          manifest=$( [ -z "$tag" ] || curl -fsSL --retry 3 "https://github.com/$REPOSITORY/releases/download/$tag/ovis-pty-sidecar.json" || true)
+          out=crates/pty-sidecar/target/release
+          if [ -n "$manifest" ] && [ "$(jq -r .crate <<<"$manifest")" = "$tree" ]; then
+            mkdir -p "$out"
+            curl -fsSL --retry 3 "https://github.com/$REPOSITORY/releases/download/$tag/$(jq -r --arg p "$platform" '.assets[$p].file' <<<"$manifest")" -o "$out/ovis-pty-sidecar"
+            echo "$(jq -r --arg p "$platform" '.assets[$p].sha256' <<<"$manifest")  $out/ovis-pty-sidecar" | sha256sum -c -
+            chmod +x "$out/ovis-pty-sidecar"
+          elif command -v cargo >/dev/null; then
+            cargo build --release --locked --manifest-path crates/pty-sidecar/Cargo.toml
+          else
+            echo "::error::no released Rust PTY host for crate tree $tree, and no cargo on this runner to build one (a self-hosted image from before its Rust layer: rebuild scripts/self-hosted-runner/Dockerfile)" >&2
+            exit 1
+          fi
+        fi
+        bun -e 'const { rustSidecar } = await import("./server/pty/host.ts"); process.exit(rustSidecar() ? 0 : 1)'
     - name: Install checksum-pinned herdr 0.9.3
       if: inputs.herdr == 'true' && runner.environment != 'self-hosted'
       shell: bash
