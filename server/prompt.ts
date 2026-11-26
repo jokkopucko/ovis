@@ -29,6 +29,7 @@ import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.ts";
 import { agyCustomEditorMatches, agySameQuestion, parseAgyQuestion } from "./dialogs/agy.ts";
+import { codexAsyncAnswerMatches, parseCodexNotes } from "./dialogs/codex.ts";
 import { dshFreeTextRow, dshTypedText } from "./dialogs/dsh.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE, ompCustomEditorMatches } from "./dialogs/omp.ts";
@@ -2218,7 +2219,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const interaction = body.custom_text === undefined ? reader?.interaction?.(parsed) : undefined;
         const checkBeforeText = responder === "fallback-gjc-menu" || responder === "pi-ask-question"
           || responder === "pi-questionnaire-question" || responder === "agy-question";
-        const editorAnswer = body.custom_text !== undefined && (checkBeforeText || responder === "dsh-question"
+        const codexTyped = responder === "codex-question" || responder === "codex-async-question";
+        const editorAnswer = body.custom_text !== undefined && (checkBeforeText || responder === "dsh-question" || codexTyped
           || responder === "claude-question" || responder === "omp-question" || responder === "omo-question" || responder === "omo-review" || responder === "hermes-question"
           || responder === "hermes-input" || responder === "opencode-v1-question")
           ? { prompt: parsed, text: body.custom_text.trim() } : undefined;
@@ -2335,11 +2337,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const lettaTyping = committed && responder === "letta-model" && body.custom_text !== undefined;
           const claudeDown = responder === "claude-question" && parsed.multi_select && step.keys?.[0] === KEY.down;
           const gjcEditorPaste = committed && !customTyped && responder === "fallback-gjc-menu" && step.text !== undefined && parsed.gjcCall !== undefined;
+          const codexNotesPaste = committed && responder === "codex-question" && step.text !== undefined;
           const typedEditor = customTyped && step.keys?.length === 1 && (step.keys[0] === KEY.enter || claudeDown) ? editorAnswer : undefined;
-          if (!committed || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste) {
+          if (!committed || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste || codexNotesPaste) {
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
               (shown, screen, settled) => {
+                if (responder === "codex-question" && (codexNotesPaste || typedEditor)) {
+                  if (!asks() || request.signal.aborted) return false;
+                  const notes = parseCodexNotes(screen, typedEditor?.text);
+                  return notes !== null && withServedAsk(body.pane_id, notes).id === parsed.id;
+                }
                 if (gjcEditorPaste) {
                   if (!asks() || request.signal.aborted) return false;
                   return inlineEditorMatches(shown, screen, "");
@@ -2347,6 +2355,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                 if (typedEditor) {
                   if (!asks() || request.signal.aborted) return false;
                   if (checkBeforeText) return inlineEditorMatches(shown, screen, typedEditor.text);
+                  if (responder === "codex-async-question") return codexAsyncAnswerMatches(screen, parsed, typedEditor.text);
                   if (responder === "dsh-question") return dshFreeTextRow(screen, parsed, dshTypedText(typedEditor.text)) === "typed";
                   if (responder === "omp-question") return ompCustomEditorMatches(screen, typedEditor);
                   if (responder === "opencode-v1-question") return openCodeV1CustomEditorMatches(screen, typedEditor);
@@ -2354,7 +2363,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                 }
                 return lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch) : sameQuestion(shown, screen, onCursor, settled);
               }, () => ({ written: write() }),
-              typedEditor || gjcEditorPaste ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
+              typedEditor || gjcEditorPaste || codexNotesPaste ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
             const guarding = guardKey(body.pane_id, agent, look);

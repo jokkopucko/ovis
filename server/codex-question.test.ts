@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -29,9 +29,10 @@ function root(): string {
 }
 
 /** herdr with one Codex pane showing `SCREEN`: the keys sent to it are kept. */
-async function herdr(): Promise<{ sent: string[] }> {
+async function herdr(onInput: (input: string, screen: string) => string = (_, screen) => screen, initial = SCREEN): Promise<{ sent: string[] }> {
   const path = join(root(), "herdr.sock");
   const pane = { sent: [] as string[] };
+  let screen = initial;
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -44,12 +45,15 @@ async function herdr(): Promise<{ sent: string[] }> {
       const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { keys?: string[]; text?: string } };
       const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: "codex", agent_status: "blocked" }], layouts: [] } });
-      if (request.method === "pane.read") return answer({ read: { text: SCREEN } });
+      if (request.method === "pane.read") return answer({ read: { text: screen } });
       if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: [] } });
       if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method === "pane.send_keys" || request.method === "pane.send_text") {
-        pane.sent.push(...(request.params.keys ?? [`text:${request.params.text}`]));
+        for (const key of request.params.keys ?? [`text:${request.params.text}`]) {
+          pane.sent.push(key);
+          screen = onInput(key, screen);
+        }
         return answer({});
       }
       socket.end(`${JSON.stringify({ id: request.id, error: { code: "not_found", message: request.method } })}\n`);
@@ -183,4 +187,67 @@ test("leaves a note and several picks to the TUI", () => {
   expect(servedAnswers(ask, { pane_id: "p", prompt_id: "x", custom_text: "green" })).toBeNull();
   expect(servedAnswers(ask, { pane_id: "p", prompt_id: "x", option_index: 1 })).toBeNull();
   expect(servedAnswers(ask, { pane_id: "p", prompt_id: "x", option_indices: [0] })).toBeNull();
+});
+
+const COMPOSER = "› An unsent composer draft\n";
+
+test.each([
+  ["the notes editor stays open", (screen: string) => screen, 200],
+  ["the notes footer wraps to two rows", (screen: string) => screen.replace(" | enter to submit answer", "\n  enter to submit answer"), 200],
+  ["the visible note changes before Enter", (screen: string) => screen.replace("› green", "› blue"), 409],
+  ["the question closes during the paste", () => COMPOSER, 409],
+  ["another question takes its place", (screen: string) => screen.replace("  Which color do you choose?", "  Which color should we avoid?"), 409],
+] as const)("rechecks before sending Enter when %s", async (_, redraw, status) => {
+  const pane = await herdr((key, screen) => {
+    if (key === "down") return screen.replace(/^  › (\d\..*\n)    (?=\d\.)/mu, "    $1  › ");
+    if (key === "tab") return screen.replace(
+      "  tab to add notes | enter to submit answer | esc to interrupt",
+      "  › Add notes\n\n  tab or esc to clear notes | enter to submit answer",
+    );
+    if (key === "text:green") return redraw(screen.replace("  › Add notes", "  › green"));
+    return screen;
+  });
+  const prompt = await card();
+  const result = await answer(prompt.id, { custom_text: "green" });
+  const edit = ["down", "down", "tab", "text:green"];
+  expect([result, pane.sent]).toEqual([status, status === 200 ? [...edit, "enter"] : edit]);
+});
+
+test("does not paste into Codex's composer when the question closes after Tab", async () => {
+  const pane = await herdr((key, screen) => {
+    if (key === "down") return screen.replace(/^  › (\d\..*\n)    (?=\d\.)/mu, "    $1  › ");
+    return key === "tab" ? COMPOSER : screen;
+  });
+  const result = await answer((await card()).id, { custom_text: "green" });
+  expect([result, pane.sent]).toEqual([409, ["down", "down", "tab"]]);
+});
+
+test("answers a queued question in the old layout without the queue header", async () => {
+  const queue = (row: string) => `  Which color?\n    1. red\n    2. blue\n${row}\n  enter submit   ctrl+] skip   alt+↓ main prompt\n`;
+  const pane = await herdr((key, screen) => key === "text:green" ? queue("  › 3. green") : key === "enter" ? COMPOSER : screen, queue("  › 3. Other"));
+  const result = await answer((await card()).id, { custom_text: "green" });
+  expect([result, pane.sent]).toEqual([200, ["text:green", "enter"]]);
+});
+
+describe.each([
+  ["free-form", "  Type your answer", "  green"],
+  ["choice with Other", "    1. red\n    2. blue\n  › 3. Other", "    1. red\n    2. blue\n  › 3. green"],
+] as const)("%s queued question", (_, initial, typed) => {
+  test.each([
+    ["still open", (row: string) => row, 200],
+    ["closed during paste", () => null, 409],
+    ["answer changed", (row: string) => row.replace("green", "blue"), 409],
+    ["leading space was added", (row: string) => row.replace("green", " green"), 409],
+  ] as const)("checks the input before Enter when %s", async (_, redraw, status) => {
+    const queue = (row: string) => `• Queued follow-up inputs\n  Which color?\n${row}\n  enter submit   ctrl+] skip   alt+↓ main prompt\n`;
+    const pane = await herdr((key, screen) => {
+      if (key === "text:green") {
+        const shown = redraw(typed);
+        return shown === null ? COMPOSER : queue(shown);
+      }
+      return key === "enter" ? COMPOSER : screen;
+    }, queue(initial));
+    const result = await answer((await card()).id, { custom_text: "green" });
+    expect([result, pane.sent]).toEqual([status, ["text:green", ...(status === 200 ? ["enter"] : [])]]);
+  });
 });
