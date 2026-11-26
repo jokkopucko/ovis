@@ -66,7 +66,7 @@ const loop = startLoop({
   socket: target.path,
   session: target.session,
   cwd: screenFolder(env, process.cwd()),
-  server: ovisServer(env[SCREEN_SERVER] ?? null),
+  server: ovisServer(env[SCREEN_SERVER] ?? null, undefined, env),
   home: realHome,
   keys: readKeys(),
   readKeys,

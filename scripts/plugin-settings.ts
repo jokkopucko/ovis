@@ -3,7 +3,7 @@
  * at import, and `ovis tui` reads them without that import (scripts/plugin-tui.ts).
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mergeEnvLayers } from "../server/legacy-env.ts";
 
 /**
@@ -13,6 +13,12 @@ import { mergeEnvLayers } from "../server/legacy-env.ts";
 export const ENV_FILES = ["env", ".env"];
 export const PLUGIN_ID = "devswha.ovis";
 export const LEGACY_PLUGIN_ID = "devswha.herdr-web-ui";
+
+/** An installed launcher from before the app's first start after an upgrade has only its config directory. */
+export function desktopCommandRecord(env: Readonly<Record<string, string | undefined>>): string | undefined {
+  const config = env["HERDR_PLUGIN_CONFIG_DIR"];
+  return env["OVIS_DESKTOP_COMMAND_RECORD"] ?? (config && join(dirname(config), "desktop.json"));
+}
 
 /** the dir under its Ovis name, or under the name before the rename while only that one exists */
 export function ownDir(parent: string): string {

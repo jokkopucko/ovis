@@ -245,6 +245,10 @@ export const STRINGS = {
         return `${data["action"] === "delete_checkout" ? "Delete worktree checkout" : "New worktree"} needs the Ovis server: start it with \`ovis start\``;
       case "ovis_server_address":
         return "ovis_server_address: the Ovis server's address is not this PC's loopback; it was not asked";
+      case "ovis_desktop_not_running":
+        return "The Ovis desktop app is not running. Open it, then reopen this terminal screen.";
+      case "ovis_desktop_changed":
+        return "The Ovis desktop app stopped or restarted. Reopen this terminal screen while the app is running.";
       case "ovis_server_refused":
         return `${data["code"] ?? "refused"}: ${data["message"] || "the Ovis server refused it"}`;
       case "not_linked_worktree":

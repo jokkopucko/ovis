@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isFile } from "./children.ts";
+import { isFile } from "../../../shared/desktop-process.ts";
 import { installCommand, writeLauncher, type CommandHost } from "./terminalCommand.ts";
 
 let root: string;

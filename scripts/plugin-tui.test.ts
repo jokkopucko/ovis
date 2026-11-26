@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { writeSaved } from "../app/electron/src/children.ts";
+import { processStartSync } from "../shared/desktop-process.ts";
+import { recordDesktopListener } from "../server/desktop-listener.ts";
 import { ENTRIES } from "../server/entries.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
+import { ovisServer } from "../tui/core/ovis-server.ts";
 import { type Held, LEAVE, LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
 import { waiterCommand } from "./plugin-tui-waiter.ts";
@@ -330,6 +334,50 @@ describe("core choice", () => {
       const run = fake({ over: { settings, caller: { HOME, HC_SOCKET: SOCKET, OVIS_TUI_SERVER: "http://evil.test:80" } } });
       expect(await launchTui([], run.parts)).toBe(0);
       expect(run.runs[0]?.env["OVIS_TUI_SERVER"]).toBe(address);
+    }
+  });
+
+  it("keeps the desktop terminal screen usable without a verified desktop listener", async () => {
+    const record = join(scratch, "desktop.json");
+    writeFileSync(record, JSON.stringify({ port: 18555, server: null }));
+    const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, PORT: "18555", OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record } } });
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(run.runs[0]?.env["OVIS_TUI_SERVER"]).toBe("");
+    const env = run.runs[0]?.env ?? {};
+    const server = ovisServer(env["OVIS_TUI_SERVER"] ?? null, undefined, env);
+    expect(await server.createWorktree("w1", "worktree/a")).toMatchObject({ ok: false, code: "ovis_desktop_not_running" });
+  });
+
+  it("refuses both worktree actions when a desktop restarts on the same port while the screen is open", async () => {
+    const record = join(scratch, "desktop.json");
+    const seen: string[] = [];
+    const http = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      seen.push(new URL(request.url).pathname);
+      return Response.json({ ok: true, path: "/p", forced: false, workspace_id: "w2", pane_id: "p1", branch: "worktree/a", already_open: false });
+    } });
+    const next = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { env: process.env, stdin: "ignore" });
+    const save = (pid: number) => {
+      writeSaved(record, { port: Number(http.port), server: { pid, ready: true, bun: process.execPath, started: processStartSync(pid) } });
+      return recordDesktopListener(record, pid);
+    };
+    const withdraw = save(process.pid);
+    try {
+      const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, PORT: String(http.port), OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record } } });
+      expect(await launchTui([], run.parts)).toBe(0);
+      const env = run.runs[0]?.env ?? {};
+      const server = ovisServer(env["OVIS_TUI_SERVER"] ?? null, undefined, env);
+      expect(await server.removeWorktree("w1")).toMatchObject({ ok: true });
+      const withdrawNext = save(next.pid);
+      try {
+        const results = await Promise.all([server.createWorktree("w1", "worktree/a"), server.removeWorktree("w1")]);
+        expect(seen).toEqual(["/api/worktree/remove-checked"]);
+        for (const result of results) expect(result).toMatchObject({ ok: false, code: "ovis_desktop_changed" });
+      } finally { withdrawNext(); }
+    } finally {
+      withdraw();
+      next.kill();
+      await next.exited;
+      await http.stop(true);
     }
   });
 

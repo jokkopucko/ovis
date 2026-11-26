@@ -5,7 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { legacyName } from "../../../server/legacy-env.ts";
-import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
+import { readSaved } from "../../../shared/desktop-command-listener.ts";
+import { processStart, processStartSync, withoutInherited } from "../../../shared/desktop-process.ts";
+import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, serverEnv, startCore, startServer, stopServer, writeSaved } from "./children.ts";
 
 const dirs: string[] = [];
 const listeners: Server[] = [];

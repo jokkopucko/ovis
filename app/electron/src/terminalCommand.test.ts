@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordDesktopListener } from "../../../server/desktop-listener.ts";
-import { processStartSync } from "./children.ts";
+import { processStartSync } from "../../../shared/desktop-process.ts";
 import { commandState, installCommand, launcherText, PROFILE_LINE, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
 
 // these run the launcher with sh and make POSIX links in a real folder: a Windows host has neither, and runs the Windows cases

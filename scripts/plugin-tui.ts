@@ -19,13 +19,13 @@ import { coreLaunchEnv, withoutAskpass } from "../server/herdr-core/core-env.ts"
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
 import { type Held, undoHeld } from "../tui/host/guard.ts";
 import { makeHold, readHold, SCREEN_HOLD } from "../tui/host/hold.ts";
-import { EXIT_FAILED, parseArgs, SCREEN_FOLDER, SCREEN_SERVER, targetEnv } from "../tui/start.ts";
+import { EXIT_FAILED, parseArgs, SCREEN_DESKTOP_IDENTITY, SCREEN_DESKTOP_RECORD, SCREEN_FOLDER, SCREEN_SERVER, targetEnv } from "../tui/start.ts";
 import { openLibc } from "../tui/host/libc.ts";
 import { loopbackOrigin } from "../shared/loopback-origin.ts";
 import { appOrigin } from "./plugin-port.ts";
 import { execWaiter } from "./plugin-tui-waiter.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
-import { readPluginSettings } from "./plugin-settings.ts";
+import { desktopCommandRecord, readPluginSettings } from "./plugin-settings.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -313,8 +313,20 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
     return EXIT_FAILED;
   }
   const home = parts.home ?? (parts.caller["HOME"] || accountHome());
-  const origin = loopbackOrigin(appOrigin(mergeEnvLayers([parts.caller, parts.settings]), home));
-  return runScreen([], { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder, [SCREEN_SERVER]: origin ?? "" }, parts);
+  const screenEnv: Record<string, string> = { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder };
+  let origin: string | null;
+  if (parts.caller["OVIS_DESKTOP_COMMAND"] === "1") {
+    const record = desktopCommandRecord(parts.caller);
+    const listener = record ? await (await import("../shared/desktop-command-listener.ts")).desktopCommandListener(record) : null;
+    screenEnv[SCREEN_DESKTOP_RECORD] = record ?? "";
+    if (listener !== null && String(listener.port) === parts.caller["PORT"]) {
+      screenEnv[SCREEN_DESKTOP_IDENTITY] = listener.identity;
+      origin = `http://127.0.0.1:${listener.port}`;
+    } else origin = null;
+  } else {
+    origin = loopbackOrigin(appOrigin(mergeEnvLayers([parts.caller, parts.settings]), home));
+  }
+  return runScreen([], { ...screenEnv, [SCREEN_SERVER]: origin ?? "" }, parts);
 }
 
 /**

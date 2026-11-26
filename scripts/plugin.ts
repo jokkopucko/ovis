@@ -44,7 +44,7 @@ import { activePluginScript } from "./plugin-runtime.ts";
 import { isBareTui, runBareTui, runTui } from "./plugin-tui.ts";
 import { parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
 import { discardTyped } from "./libc.ts";
-import { ENV_FILES, LEGACY_PLUGIN_ID, ownDir, PLUGIN_ID, pluginConfigDir, readEnvFile } from "./plugin-settings.ts";
+import { desktopCommandRecord, ENV_FILES, LEGACY_PLUGIN_ID, ownDir, PLUGIN_ID, pluginConfigDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
@@ -66,6 +66,7 @@ if (import.meta.main || COMPILED) {
 }
 
 let desktopPort: number | null = null;
+let desktopListenerIsCurrent: (() => Promise<boolean>) | undefined;
 // help and the version are answered here without a server, so they work with the app closed
 if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && early.kind !== "version") {
   // The app owns its server; these commands only explain how to start or stop it.
@@ -73,15 +74,18 @@ if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && earl
     process.stderr.write(early.command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
     process.exit(1);
   }
-  const config = process.env["HERDR_PLUGIN_CONFIG_DIR"];
-  // An installed launcher from before the app's first start after an upgrade has only cli-settings.
-  const record = process.env["OVIS_DESKTOP_COMMAND_RECORD"] ?? (config && join(dirname(config), "desktop.json"));
-  const { desktopCommandPort } = await import("../app/electron/src/children.ts");
-  desktopPort = record ? await desktopCommandPort(record) : null;
-  if (desktopPort === null || String(desktopPort) !== process.env["PORT"]) {
+  const record = desktopCommandRecord(process.env);
+  const { desktopCommandListener } = await import("../shared/desktop-command-listener.ts");
+  const listener = record ? await desktopCommandListener(record) : null;
+  if (!record || listener === null || String(listener.port) !== process.env["PORT"]) {
     process.stderr.write("ovis: open the Ovis app first, then run this again\n");
     process.exit(1);
   }
+  desktopPort = listener.port;
+  desktopListenerIsCurrent = async () => {
+    const current = await desktopCommandListener(record);
+    return current?.port === listener.port && current.identity === listener.identity;
+  };
 }
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
@@ -279,7 +283,10 @@ function profileRelayOnly(): string {
 }
 
 function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
-  return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
+  if (door !== null) return ownerFetch(door, `http://localhost${path}`, init);
+  // A desktop command has a verified loopback target; neither a proxy nor a redirect can answer for it.
+  const options = desktopPort === null ? init : { ...init, proxy: false, redirect: "error" as const };
+  return fetch(`${origin}${path}`, options);
 }
 
 /** A request that ran past its `AbortSignal.timeout`: the server answered health, then stopped answering. */
@@ -1012,6 +1019,11 @@ async function pair(args: readonly string[], parts?: Awaited<ReturnType<typeof p
 async function approvePairings(): Promise<number> {
   const { approveJoins, approveWaiting, lockRefusal } = await import("./plugin-link.ts");
   if (!(await health())) return notRunning();
+  const listenerGone = new Error("Desktop listener closed");
+  const approvalFetch = async (path: string, init: RequestInit): Promise<Response> => {
+    if (desktopListenerIsCurrent !== undefined && !(await desktopListenerIsCurrent())) throw listenerGone;
+    return serverFetch(path, init);
+  };
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const errorCode = async (response: Response): Promise<unknown> => ((await response.json().catch(() => null)) as { error?: { code?: unknown } } | null)?.error?.code;
@@ -1027,21 +1039,22 @@ async function approvePairings(): Promise<number> {
   let joins: OwnJoin[];
   let account: string | null = null;
   try {
-    const listed = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
+    const listed = await approvalFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
     if (!listed.ok) return await refused("the waiting pairings", listed);
     ({ pairings } = (await listed.json()) as { pairings: WaitingDevice[] });
     // an Ovis older than this route lists none (404, 405)
-    const asked = await serverFetch("/api/relay/joins", { headers, signal: AbortSignal.timeout(15_000) });
+    const asked = await approvalFetch("/api/relay/joins", { headers, signal: AbortSignal.timeout(15_000) });
     if (asked.status === 404 || asked.status === 405) joins = [];
     else if (!asked.ok) return await refused("the waiting account joins", asked);
     else joins = ((await asked.json()) as { joins: OwnJoin[] }).joins;
     // a first join's admission came from this PC's account, named beside its device; left out when it cannot be read
     if (joins.some((join) => join.digits !== undefined)) {
-      const status = await serverFetch("/api/account/status", { headers, signal: AbortSignal.timeout(5_000) }).catch(() => null);
+      const status = await approvalFetch("/api/account/status", { headers, signal: AbortSignal.timeout(5_000) }).catch(() => null);
       const named = status?.ok === true ? ((await status.json().catch(() => null)) as { account?: unknown } | null)?.account : null;
       if (typeof named === "string") account = named;
     }
   } catch (error) {
+    if (error === listenerGone) return notRunning();
     if (!timedOut(error)) throw error;
     process.stderr.write(`Ovis at ${origin} did not answer in time; try again\n`);
     return 1;
@@ -1060,7 +1073,7 @@ async function approvePairings(): Promise<number> {
       out, lines, terminal, discard: discardTyped, signal, account, command: `${env["OVIS_CLI_NAME"] || "ovis"} approve`,
       approve: async (id, digits) => {
         try {
-          const typed = await serverFetch("/api/relay/join", { method: "POST", headers, body: JSON.stringify({ id, digits }), signal: AbortSignal.timeout(15_000) });
+          const typed = await approvalFetch("/api/relay/join", { method: "POST", headers, body: JSON.stringify({ id, digits }), signal: AbortSignal.timeout(15_000) });
           if (typed.ok) return "approved";
           const code = await errorCode(typed);
           if (code === "wrong_digits" || code === "locked" || code === "strict") return code;
@@ -1075,13 +1088,13 @@ async function approvePairings(): Promise<number> {
     out, lines, terminal, discard: discardTyped, signal,
     // read again before three digits approve: a request that came since may end in the same three
     list: async () => {
-      const again = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
+      const again = await approvalFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
       if (!again.ok) throw new Error(`could not read the waiting pairings (${again.status})`);
       return ((await again.json()) as { pairings: WaitingDevice[] }).pairings;
     },
     decide: async (id, decision) => {
       try {
-        const decided = await serverFetch("/api/relay/pairing", { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
+        const decided = await approvalFetch("/api/relay/pairing", { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
         return decided.ok ? "taken" : "gone";
       } catch { return "away"; }
     },

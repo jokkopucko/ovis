@@ -11,6 +11,7 @@
  */
 import { loopbackOrigin } from "../../shared/loopback-origin.ts";
 import type { WorktreeTarget } from "../model/effects.ts";
+import { SCREEN_DESKTOP_IDENTITY, SCREEN_DESKTOP_RECORD } from "../start.ts";
 
 /** What a call came to: the server's answer, or why there was none (`no_server`: no server answered at that address). */
 export type ServerAnswer<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: string; readonly message: string };
@@ -32,17 +33,32 @@ function fields(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The server at `given`, or none (the screen was not started by `ovis`): every call then answers `no_server`. */
-export function ovisServer(given: string | null, send: (url: string, init: DirectInit) => Promise<Response> = (url, init) => fetch(url, init)): OvisServer {
+/** The server at `given`, or none. A desktop launcher also pins calls to the listener it verified at startup. */
+export function ovisServer(
+  given: string | null,
+  send: (url: string, init: DirectInit) => Promise<Response> = (url, init) => fetch(url, init),
+  env: Readonly<Record<string, string | undefined>> = {},
+): OvisServer {
   const origin = given === null ? null : loopbackOrigin(given);
+  const record = env[SCREEN_DESKTOP_RECORD];
+  const identity = env[SCREEN_DESKTOP_IDENTITY];
   const call = async <T>(route: "create" | "remove", body: Record<string, unknown>, read: (value: Record<string, unknown>) => T | null): Promise<ServerAnswer<T>> => {
+    if (record !== undefined && identity === undefined) return { ok: false, code: "ovis_desktop_not_running", message: "" };
     if (given === null) return { ok: false, code: "no_server", message: "" };
     if (origin === null) return { ok: false, code: "server_not_loopback", message: given };
+    const init: DirectInit = {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(CALL_MS), redirect: "manual", proxy: false,
+    };
+    if (record !== undefined) {
+      const { desktopCommandListener } = await import("../../shared/desktop-command-listener.ts");
+      const current = await desktopCommandListener(record);
+      if (current === null || current.identity !== identity || `http://127.0.0.1:${current.port}` !== origin) {
+        return { ok: false, code: "ovis_desktop_changed", message: "" };
+      }
+    }
     let response: Response;
     try {
-      response = await send(`${origin}/api/worktree/${route}-checked`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(CALL_MS), redirect: "manual", proxy: false,
-      });
+      response = await send(`${origin}/api/worktree/${route}-checked`, init);
     } catch {
       return { ok: false, code: "no_server", message: origin };
     }

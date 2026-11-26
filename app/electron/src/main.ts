@@ -4,7 +4,9 @@ import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileS
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { choosePort, coreEnv, coreSession, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { readSaved } from "../../../shared/desktop-command-listener.ts";
+import { isFile, processStartSync } from "../../../shared/desktop-process.ts";
+import { choosePort, coreEnv, coreSession, endLeftover, installCore, layout, openLog, processCommand, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
 import { appUpdateState, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
