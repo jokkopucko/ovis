@@ -954,13 +954,13 @@ describe("providers", () => {
    * OpenCode 2's own credential store, the `credential` table of the DB `server/opencode.ts` reads;
    * `v1` leaves out `session_v2`, as in a 1.x store, whose `credential` table stays empty.
    */
-  function opencodeStore(rows: Array<{ id?: string; integration?: string; value: unknown; active?: number | null; updated?: number }>, dir = join(home, ".local", "share", "opencode"), v1 = false) {
+  function opencodeStore(rows: Array<{ id?: string; integration?: string; label?: string; value: unknown; active?: number | null; updated?: number }>, dir = join(home, ".local", "share", "opencode"), v1 = false) {
     mkdirSync(dir, { recursive: true });
     const db = new Database(join(dir, "opencode.db"));
     db.exec("create table credential (id text primary key, integration_id text, label text, value text, active integer, time_created integer, time_updated integer)");
     if (!v1) db.exec("create table session_v2 (id text primary key)");
     const insert = db.query("insert into credential values (?, ?, ?, ?, ?, ?, ?)");
-    rows.forEach((row, i) => insert.run(row.id ?? `cred_${i}`, row.integration ?? "opencode-go", "OpenCode Go", JSON.stringify(row.value), row.active === undefined ? 1 : row.active, i, row.updated ?? i));
+    rows.forEach((row, i) => insert.run(row.id ?? `cred_${i}`, row.integration ?? "opencode-go", row.label ?? "OpenCode Go", JSON.stringify(row.value), row.active === undefined ? 1 : row.active, i, row.updated ?? i));
     db.close();
   }
 
@@ -992,6 +992,155 @@ describe("providers", () => {
   it("leaves out the auth.json OpenCode 2 no longer reads when its store holds no key", async () => {
     opencodeStore([{ value: { type: "oauth", methodID: "browser", refresh: "rt" }, active: null }]);
     write(join(home, ".local", "share", "opencode", "auth.json"), { "opencode-go": { type: "api", key: "oc_sk_signed_out" } });
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  /** A device sign-in as OpenCode 2 stores it: the console account and workspace in `metadata`, both tokens beside it. */
+  const opencodeOauth = (metadata: Record<string, unknown> | null = { server: "https://console.opencode.ai", accountID: "acc_1", email: "me@example.com", orgID: "wrk_1", orgName: "Personal" }, expires = NOW + 24 * HOUR) =>
+    ({ type: "oauth", methodID: "device", refresh: "oc_refresh", access: "oc_access", expires, ...(metadata ? { metadata } : {}) });
+  const OPENCODE_USAGE = "https://opencode.ai/zen/go/v1/usage";
+
+  it("reads the Go limits of OpenCode 2's active OAuth sign-in as OpenCode asks for them", async () => {
+    opencodeStore([
+      { integration: "opencode", label: "Personal", value: { ...opencodeOauth(), access: "oc_access_old" }, active: 0 },
+      { integration: "opencode", label: "Personal", value: opencodeOauth(), active: 1 },
+    ]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 12 } } } });
+    const report = await new UsageService(context("linux"), only("opencode")).report();
+    expect(report.providers).toMatchObject([{ id: "opencode", key: "opencode:acc_1__wrk_1", account: "me@example.com", plan: "Go", problem: null, windows: [{ kind: "week", scope: null, used_percent: 12 }] }]);
+    expect(requests.map((request) => request.init.headers)).toMatchObject([{ authorization: "Bearer oc_access", "x-opencode-org-id": "wrk_1" }]);
+    expect(requests[0]?.init.redirect).toBe("manual");
+    expect(JSON.stringify(report)).not.toMatch(/oc_access|oc_refresh/);
+  });
+
+  // a key names no account, so one without Go is not listed; an OAuth sign-in is an account, signed in either way (#4683)
+  it("lists an OpenCode OAuth sign-in without Go as signed in, with no limits", async () => {
+    opencodeStore([{ integration: "opencode", label: "Personal", value: opencodeOauth(), active: 1 }]);
+    replies.set(OPENCODE_USAGE, { status: 403 });
+    const { providers } = await new UsageService(context("linux"), only("opencode")).report();
+    expect(providers).toMatchObject([{ id: "opencode", account: "me@example.com", plan: null, windows: [], problem: null }]);
+  });
+
+  it("still leaves out an OpenCode key without Go", async () => {
+    opencodeStore([{ value: { type: "key", key: "oc_sk_zen_only" } }]);
+    replies.set(OPENCODE_USAGE, { status: 403 });
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toEqual([]);
+  });
+
+  it("keeps OpenCode environment-key limits alongside a sign-in without a workspace", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth({ accountID: "acc_1", email: "me@example.com" }) }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 7 } } } });
+    const { providers } = await new UsageService({ ...context(), env: { OPENCODE_API_KEY: "oc_sk_env" } }, only("opencode")).report();
+    expect(providers).toHaveLength(2);
+    expect(providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account: "me@example.com", windows: [] }),
+      expect.objectContaining({ plan: "Go", windows: [expect.objectContaining({ kind: "week", used_percent: 7 })] }),
+    ]));
+    expect(requests.map((request) => new Headers(request.init.headers).get("authorization"))).toEqual(["Bearer oc_sk_env"]);
+  });
+
+  it("keeps the OpenCode OAuth account visible when an imported key has no Go subscription", async () => {
+    opencodeStore([
+      { integration: "opencode-go", value: { type: "key", key: "oc_sk_imported" }, active: null },
+      { integration: "opencode", value: opencodeOauth() },
+    ]);
+    replies.set(OPENCODE_USAGE, { status: 403 });
+    const { providers } = await new UsageService(context(), only("opencode")).report();
+    expect(providers).toMatchObject([{ account: "me@example.com", windows: [], problem: null }]);
+    expect(requests.map((request) => new Headers(request.init.headers).get("authorization"))).toEqual(
+      expect.arrayContaining(["Bearer oc_sk_imported", "Bearer oc_access"]),
+    );
+  });
+
+  it("keeps OpenCode environment-key limits when the OAuth workspace sign-in is expired", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth(undefined, NOW - HOUR) }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 7 } } } });
+    const { providers } = await new UsageService({ ...context(), env: { OPENCODE_API_KEY: "oc_sk_env" } }, only("opencode")).report();
+    expect(providers).toHaveLength(2);
+    expect(providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account: "me@example.com", problem: "expired", windows: [] }),
+      expect.objectContaining({ plan: "Go", problem: null, windows: [expect.objectContaining({ kind: "week", used_percent: 7 })] }),
+    ]));
+    expect(requests.map((request) => new Headers(request.init.headers).get("authorization"))).toEqual(["Bearer oc_sk_env"]);
+  });
+
+  it("does not carry OpenCode usage across consoles with matching account and workspace IDs", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth() }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 12 } } } });
+    const service = new UsageService(context(), only("opencode"));
+    const first = await service.report();
+    expect(first.providers).toMatchObject([{ account: "me@example.com", windows: [{ used_percent: 12 }] }]);
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([{ integration: "opencode", value: opencodeOauth({
+      server: "https://console.example.com", accountID: "acc_1", orgID: "wrk_1", email: "other@example.com",
+    }, NOW - HOUR) }]);
+    now += MIN_REFRESH_MS;
+    const second = await service.report(true);
+    expect(second.providers).toMatchObject([{ account: "other@example.com", windows: [], problem: "expired" }]);
+    expect(second.providers[0]?.key).not.toBe(first.providers[0]?.key);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("keeps OpenCode rate-limit backoff with its issuing console after a credential switch", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth() }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 12 } } } });
+    const service = new UsageService(context(), only("opencode"));
+    expect((await service.report()).providers).toMatchObject([{ account: "me@example.com", windows: [{ used_percent: 12 }] }]);
+
+    now += MIN_REFRESH_MS;
+    replies.set(OPENCODE_USAGE, { status: 429, headers: { "retry-after": "3600" } });
+    expect((await service.report(true)).providers).toMatchObject([{ account: "me@example.com", problem: "rate_limited", windows: [{ used_percent: 12 }] }]);
+
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([{ integration: "opencode", value: opencodeOauth({
+      server: "https://console.example.com", accountID: "acc_1", orgID: "wrk_1", email: "other@example.com",
+    }) }]);
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers).toMatchObject([{ account: "other@example.com", problem: null, windows: [] }]);
+
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([{ integration: "opencode", value: opencodeOauth() }]);
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers).toMatchObject([{ account: "me@example.com", problem: "rate_limited", windows: [] }]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("names an OpenCode OAuth sign-in by its row's label and asks nothing when it names no workspace or another server", async () => {
+    for (const metadata of [null, { accountID: "acc_1", orgID: "wrk_1", server: "https://console.example.com" }]) {
+      rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+      opencodeStore([{ id: "cred_a", integration: "opencode", label: "Personal", value: opencodeOauth(metadata), active: 1 }]);
+      const { providers } = await new UsageService(context("linux"), only("opencode")).report();
+      expect(providers).toMatchObject([{ id: "opencode", account: "Personal", plan: null, windows: [], problem: null }]);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it("reports an OpenCode OAuth sign-in whose access token ran out as expired, asking nothing", async () => {
+    opencodeStore([{ integration: "opencode", label: "Personal", value: opencodeOauth(undefined, NOW - HOUR), active: 1 }]);
+    const { providers } = await new UsageService(context("linux"), only("opencode")).report();
+    expect(providers).toMatchObject([{ id: "opencode", account: "me@example.com", problem: "expired", windows: [] }]);
+    expect(requests).toEqual([]);
+  });
+
+  it("reads an OpenCode key ahead of an OAuth sign-in, and the row OpenCode has active within one integration", async () => {
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 5 } } } });
+    opencodeStore([
+      { integration: "opencode", label: "Personal", value: opencodeOauth(), active: 1 },
+      { integration: "opencode-go", value: { type: "key", key: "oc_sk_go" }, active: 1 },
+    ]);
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toMatchObject([{ id: "opencode", account: null, plan: "Go" }]);
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([
+      { integration: "opencode", label: "Personal", value: opencodeOauth(), active: 0 },
+      { integration: "opencode", value: { type: "key", key: "oc_sk_zen" }, active: 1 },
+    ]);
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toMatchObject([{ id: "opencode", account: null, plan: "Go" }]);
+    expect(requests.map((request) => (request.init.headers as Record<string, string>)["authorization"])).toEqual(["Bearer oc_sk_go", "Bearer oc_sk_zen"]);
+  });
+
+  it("takes an OpenCode OAuth row that is not active for no sign-in", async () => {
+    opencodeStore([{ integration: "opencode", label: "Personal", value: opencodeOauth(), active: 0 }]);
     expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toEqual([]);
     expect(requests).toEqual([]);
   });

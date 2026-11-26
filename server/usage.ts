@@ -70,6 +70,11 @@ interface SignIn {
   cliOnly?: boolean;
   /** Copilot: named editor accounts to match when an older CLI cannot identify its token */
   editorAccounts?: string[];
+  /**
+   * OpenCode: set for an OAuth sign-in alone, the console workspace its Go limits are asked for; null
+   * when it names none, or a console other than opencode.ai, so nothing is asked with its token.
+   */
+  opencodeOrg?: string | null;
 }
 
 type Found = { source: string; home?: CredentialHome } & (SignIn | { locked: true; account?: Account | null });
@@ -771,26 +776,56 @@ const antigravity: UsageProvider = {
   },
 };
 
-// ---- OpenCode Go: the key OpenCode 2 keeps in its own store, else <XDG data>/opencode/auth.json, else OPENCODE_API_KEY ----
+// ---- OpenCode Go: the sign-in OpenCode 2 keeps in its own store, else <XDG data>/opencode/auth.json, else OPENCODE_API_KEY ----
 
 /** OpenCode's service may hold the write lock for a moment; a read waits this long, never more. */
 const OPENCODE_DB_BUSY_TIMEOUT_MS = 250;
 
+const OPENCODE_ORIGIN = "https://opencode.ai";
+/** the console a sign-in is for when it names none, as OpenCode 2.4.1 defaults it; it reads `console.opencode.ai` as this too */
+const OPENCODE_CONSOLE = `${OPENCODE_ORIGIN}/console`;
+
+/**
+ * A device or browser sign-in to the OpenCode console: `{"type":"oauth","access":…,"expires":…}`, its
+ * `metadata` naming the account (`accountID`, `email`), the workspace (`orgID`) and the console
+ * (`server`). OpenCode 2.4.1 asks the Go endpoint with the access token and the workspace in
+ * `x-opencode-org-id`, and asks nothing without a workspace. The token goes to opencode.ai alone:
+ * a sign-in to another console is listed without limits. An account is one person in one workspace;
+ * a sign-in that names neither is known by its row, and by the row's label when it names no email.
+ */
+function opencodeOauth(entry: Json, row: { id: string | null; label: string | null }): SignIn | null {
+  const token = text(entry["access"]);
+  if (!token) return null;
+  const metadata = record(entry["metadata"]);
+  const org = text(metadata["orgID"]);
+  const id = [text(metadata["accountID"]), org].filter(Boolean).join("__") || row.id;
+  const server = (text(metadata["server"]) ?? OPENCODE_CONSOLE).replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, OPENCODE_CONSOLE);
+  const origin = URL.parse(server)?.origin;
+  const publicConsole = origin === OPENCODE_ORIGIN;
+  // Console account and workspace IDs are local to their issuer. Keep non-public server names out of reports.
+  const accountId = id && !publicConsole ? `${createHash("sha256").update(origin ?? server).digest("hex")}:${id}` : id;
+  return {
+    token, expiresAt: number(entry["expires"]), opencodeOrg: publicConsole ? org : null,
+    account: accountId ? { id: accountId, label: text(metadata["email"]) ?? row.label } : null,
+  };
+}
+
 /**
  * OpenCode 2 keeps provider credentials itself, in the `credential` table of the store
- * `server/opencode.ts` reads: the live one is the active row whose value is `{"type":"key","key":…}`.
- * `auth.json` is the file OpenCode 1 wrote and 2 leaves standing, holding the key the service has
- * since replaced, so reading it alone reports a signed-in CLI as expired. The Go key is read first,
- * then the Zen key: the Go endpoint takes any console key, and answers 403 for one without a Go
- * subscription. A row is chosen as OpenCode chooses it: the active one, else the newest (rows it
- * imported from `auth.json` carry no flag). The store is OpenCode 2's when it has `session_v2`, as
+ * `server/opencode.ts` reads: a key is `{"type":"key","key":…}`, a console sign-in an OAuth value
+ * (opencodeOauth). `auth.json` is the file OpenCode 1 wrote and 2 leaves standing, holding the key
+ * the service has since replaced, so reading it alone reports a signed-in CLI as expired. The Go key
+ * is read first, then the Zen key: the Go endpoint takes any console key, and answers 403 for one
+ * without a Go subscription. A row is chosen as OpenCode chooses it: the active one, else the newest
+ * (rows it imported from `auth.json` carry no flag). An active key takes precedence over OAuth, but
+ * an imported key does not hide an active sign-in. OpenCode keeps the rows of earlier OAuth sign-ins,
+ * so only an active OAuth row counts. The store is OpenCode 2's when it has `session_v2`, as
  * `server/opencode.ts` tells them apart: 1.x stores have an empty `credential` table too. Null when
- * the file is not OpenCode 2's store (absent, OpenCode 1's, unreadable); `key` is null when the
- * store holds no key of its own (signed out, or an OAuth sign-in) or, once it is known to be
- * OpenCode 2's, cannot be read: the file it left standing holds a key it no longer uses either way.
+ * the file is not OpenCode 2's store (absent, OpenCode 1's, unreadable). A known store suppresses
+ * the old auth.json even when the store has no sign-in or its credentials cannot be read.
  * A value past MAX_READ_BYTES is not read, as for the files.
  */
-function opencodeStore(path: string | null): { key: string | null } | null {
+function opencodeStore(path: string | null): { key: string | null; oauth: SignIn | null } | null {
   if (path === null) return null;
   let db: Database | undefined;
   let known = false;
@@ -800,18 +835,21 @@ function opencodeStore(path: string | null): { key: string | null } | null {
     const tables = db.query("select count(*) as n from sqlite_master where type = 'table' and name in ('session_v2', 'credential')").get() as { n: number };
     if (tables.n < 2) return null;
     known = true;
-    const selected = db.query("select case when length(value) <= ? then value end as value from credential where integration_id = ? order by active desc, time_created desc, id desc limit 1");
+    const selected = db.query("select id, label, active, case when length(value) <= ? then value end as value from credential where integration_id = ? order by active desc, time_created desc, id desc limit 1");
+    let key: { token: string; unflagged: boolean } | null = null;
+    let oauth: SignIn | null = null;
     for (const provider of ["opencode-go", "opencode"]) {
-      const row = selected.get(MAX_READ_BYTES, provider) as { value?: unknown } | null;
+      const row = selected.get(MAX_READ_BYTES, provider) as { id?: unknown; label?: unknown; active?: unknown; value?: unknown } | null;
       const entry = record(parseJson(text(row?.value ?? null)));
-      const key = entry["type"] === "key" ? text(entry["key"]) : null;
-      if (key) return { key };
+      const token = entry["type"] === "key" ? text(entry["key"]) : null;
+      if (token) key ??= { token, unflagged: row?.active === null };
+      if (entry["type"] === "oauth" && row?.active === 1) oauth ??= opencodeOauth(entry, { id: text(row.id), label: text(row.label) });
     }
-    return { key: null };
+    return { key: key?.token ?? null, oauth: !key || key.unflagged ? oauth : null };
   } catch {
     // no file or not a database: not a store this reader knows; OpenCode 2's store that will not
     // answer now (busy past the timeout, damaged) still holds no key its old auth.json can stand in for
-    return known ? { key: null } : null;
+    return known ? { key: null, oauth: null } : null;
   } finally {
     db?.close();
   }
@@ -836,26 +874,40 @@ const opencode: UsageProvider = {
   async signIns(ctx) {
     // xdg-basedir, as OpenCode resolves it: XDG_DATA_HOME, else ~/.local/share, on macOS too
     const dir = join(ctx.env["XDG_DATA_HOME"] || join(ctx.home, ".local", "share"), "opencode");
-    // the key OpenCode 2 signs its own requests with, ahead of the file it no longer writes; the
-    // place stays `dir` either way, so one account keeps one identity whichever store answered
     const store = opencodeStore(opencodeDatabasePath(ctx.env, ctx.home));
-    if (store?.key) return [{ token: store.key, expiresAt: null, source: dir }];
-    // OpenCode 2 imports auth.json once, when it takes over a 1.x store, and never reads it again:
-    // a store without a key is a sign-out the file it left standing must not undo
+    const oauth = store?.oauth;
+    const found: Found[] = [];
+    if (oauth) found.push({ ...oauth, source: `${dir}#oauth` });
+    if (store?.key) {
+      found.push({ token: store.key, expiresAt: null, source: dir });
+      return found;
+    }
+    // OpenCode 2 imports auth.json once. The old file must not undo a sign-out in its current store.
     const file = store ? null : opencodeSignIn(readText(join(dir, "auth.json")));
     if (file) return [{ ...file, source: dir }];
-    // the variable OpenCode itself reads for both providers (models.dev)
+    // An expired sign-in is still listed, but cannot supply limits in place of the environment key.
     const token = text(ctx.env["OPENCODE_API_KEY"]);
-    return token ? [{ token, expiresAt: null, source: "env" }] : [];
+    if (token && (!oauth?.opencodeOrg || (oauth.expiresAt !== null && oauth.expiresAt <= ctx.now()))) {
+      found.push({ token, expiresAt: null, source: "env" });
+    }
+    return found;
   },
   async read(ctx, signIn) {
+    // a key names no account, so one without Go is not listed; an OAuth sign-in is an account,
+    // signed in whether or not it has Go, or a workspace to ask about
+    const signedIn: Reading | null = signIn.opencodeOrg === undefined ? null : { plan: null, windows: [] };
+    if (signIn.opencodeOrg === null) return signedIn;
     let body: Json;
     try {
-      body = await requestJson(ctx, "https://opencode.ai/zen/go/v1/usage", {
-        headers: { authorization: `Bearer ${signIn.token}`, accept: "application/json", "user-agent": USER_AGENT },
+      body = await requestJson(ctx, `${OPENCODE_ORIGIN}/zen/go/v1/usage`, {
+        ...(signIn.opencodeOrg ? { redirect: "manual" } as const : {}),
+        headers: {
+          authorization: `Bearer ${signIn.token}`, accept: "application/json", "user-agent": USER_AGENT,
+          ...(signIn.opencodeOrg ? { "x-opencode-org-id": signIn.opencodeOrg } : {}),
+        },
       });
     } catch (error) {
-      if (error instanceof UsageHttpError && error.status === 403) return null;
+      if (error instanceof UsageHttpError && error.status === 403) return signedIn;
       throw error;
     }
     const usage = record(body["usage"]);
@@ -1198,12 +1250,12 @@ export class UsageService {
       const kept = keptFor(signIn);
       if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder }];
       const entry = this.entries.get(source);
-      // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
+      // Reuse a reading only for the same holder, including during its Retry-After.
+      // Hidden or removed accounts keep their last reading without using their credentials (#3333).
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
-      // only while the place still holds that account: another one there is read anew, without the hidden one's row
-      const held = hidden && entry?.holder === holderOf(signIn);
-      const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
+      const current = entry !== undefined && entry.holder === holderOf(signIn) &&
+        (hidden || (now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
       if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
