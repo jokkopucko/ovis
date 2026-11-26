@@ -22,9 +22,14 @@ export function ghosttyOnly(mirrored: boolean): boolean {
   return !mirrored;
 }
 
+/**
+ * `screenTaken` is told once the screen held while libghostty loaded can be read: libghostty drew it, or xterm parsed
+ * it after the module or its drawing failed. With libghostty alone, a reader at a frame before then read xterm's rows, which held
+ * none of its text, and a program that waits (a password prompt) draws nothing more to be read at.
+ */
 export function captureForGhostty(
   term: Terminal, socket: HerdrSocket, host: HTMLElement, mirrored: () => boolean,
-  questionOwner: () => (() => boolean) = () => () => true,
+  questionOwner: () => (() => boolean) = () => () => true, screenTaken: () => void = () => {},
 ): () => void {
   const only = ghosttyOnly(mirrored());
   let held: (string | Uint8Array)[] | null = [];
@@ -96,7 +101,10 @@ export function captureForGhostty(
       const chunks = taken ?? held;
       held = null;
       unwrap();
-      if (only && !stopped && chunks) parseWhole(chunks);
+      if (only && !stopped && chunks) {
+        parseWhole(chunks);
+        write("", () => { if (!stopped) screenTaken(); });
+      }
     };
     void import("./overlay.ts")
       .then(({ attachGhosttyOverlay }) => held ? attachGhosttyOverlay(term, host, takeBacklog, only ? { questions } : undefined) : null)
@@ -105,6 +113,10 @@ export function captureForGhostty(
         questions.length = 0;
         if (stopped) { attached.dispose(false); return; }
         overlay = attached;
+        // with libghostty alone the held output is still drawing (a picture decodes first) and may yet be handed back
+        // to xterm: an empty write through the overlay is answered behind all of it
+        if (only) term.write("", () => { if (!stopped) screenTaken(); });
+        else screenTaken();
       }, (error: unknown) => {
         handBack();
         console.warn("libghostty could not draw this terminal; xterm draws it", error);

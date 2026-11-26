@@ -107,7 +107,9 @@ test.each([true, false])("startup keeps text and CPR out of xterm until the rend
   const replies: string[] = [];
   const answered = Promise.withResolvers<void>();
   term.onData((reply) => { replies.push(reply); answered.resolve(); });
-  const release = captureForGhostty(term, socket, stub, () => false);
+  // what a reader of the screen (the masked prompt) finds when told it can read the screen again
+  const taken: (string | undefined)[] = [];
+  const release = captureForGhostty(term, socket, stub, () => false, undefined, () => { taken.push(screenRows(term).getLine(1)?.translateToString(true)); });
   try {
     await started.promise;
     await parse(term, "abc\x1b[");
@@ -121,6 +123,7 @@ test.each([true, false])("startup keeps text and CPR out of xterm until the rend
     expect(replies).toEqual(["\x1b[2;5R"]);
     expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe(attached ? "" : "abc");
     expect(screenRows(term).getLine(1)?.translateToString(true)).toBe("last");
+    expect(taken).toEqual(["last"]);
   } finally {
     release(); setting.mockRestore(); features.mockRestore();
     term.dispose();

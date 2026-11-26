@@ -1024,6 +1024,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the masked prompt the screen shows now, if any (lib/secretScreen.ts). An attached pane's cursor is the
       // program's; a mirrored pane's repaints carry none, and a pane not known to be attached is read the same way
       const secretScreen = createSecretScreen(term, () => mirroredRef.current === false);
+      // the pane whose last frame parsed was whole (read for its prompt), null after one that ended inside a frame
+      let wholeFrameOf: string | null = null;
       // What the field shows: the prompt, and whether its answer is typed unchecked (HerdrSocket.typesSecret). That
       // changes when the bridge says what it takes, which can come after the prompt was drawn
       const showSecret = (pane: string, prompt: string | null): void => {
@@ -1040,8 +1042,22 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         else if (recoveringPane !== null) rejoin = true;
         frameGateRef.current.reset();
         if (!writingOutput || holdingForPictures) replayOscOpen = oscMayCopy();
+        wholeFrameOf = null;
       };
       retireOutputRef.current = retireOutput;
+      // the screen libghostty loaded for is read again once it can be (lib/ghostty/capture.ts): the frames read before
+      // then read xterm's rows, which held none of their text, and a prompt that waits draws no frame after them.
+      // Only with no frame queued or parsing (those read the screen themselves when they are parsed), and for a pane
+      // shown only after a whole frame; a pane only watched keeps the prompt for its typing, as a watched frame does
+      const screenTaken = (): void => {
+        const owner = paneRef.current;
+        if (disposed || owner === null || writingOutput || outputFrames.length > 0) return;
+        if (releasedRef.current) { secretRef.current = secretScreen.read(owner); return; }
+        if (owner !== wholeFrameOf) return;
+        const prompt = secretScreen.read(owner);
+        secretRef.current = prompt;
+        showSecret(owner, prompt);
+      };
       // libghostty answers the program's questions itself: only in the live output of the pane shown, never in a replay,
       // a hidden tab's view or output of a pane this terminal left (their questions were answered when they were new)
       if (ownEngine) (term as unknown as GhosttyTerminal).replyGate = () => !parsingReplay && !parsingView && parsingOwner === outputOwner;
@@ -1144,7 +1160,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const owner = outputOwner;
         const view = parsingView;
         return () => !view && owner === outputOwner;
-      });
+      }, screenTaken);
       let adjustingFaint = false;
       const clampGhosttyFaint = (): void => {
         if (adjustingFaint) return;
@@ -1406,7 +1422,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // A herdr-core pane's stream is the program's own bytes, with no frame of herdr's to wait for: a program
             // that opened a synchronized update and never closed it (a TUI killed mid-draw, `cat` of a raw log)
             // would leave every later chunk inside one, and a later prompt unread
-            if (stamp.boundary || socket.hasTerminalHistory()) {
+            wholeFrameOf = stamp.boundary || socket.hasTerminalHistory() ? owner : null;
+            if (wholeFrameOf !== null) {
               const prompt = secretScreen.read(owner);
               secretRef.current = prompt;
               if (promptUnknownFor === owner && lifetime === outputLifetime && recoveringPane !== owner) promptUnknownFor = null;
@@ -2366,8 +2383,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         invalidateArrowModes();
         endRecovery();
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
-        // A frame the old stream left open is not the new one's
+        // A frame the old stream left open is not the new one's, nor is a whole frame it ended on (screenTaken)
         frameGateRef.current.reset();
+        wholeFrameOf = null;
         const drewView = viewBuffer !== null && viewBuffer.length > 1;
         const viewReset = viewDropped || viewBuffer !== null;
         if (drewView && viewBuffer !== null) {
